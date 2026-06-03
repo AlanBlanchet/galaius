@@ -1,6 +1,14 @@
+from pathlib import Path
+
+import pytest
+
 from interact.browser import BrowserManager
 from interact.config import LOG_MAXLEN, Config
 from interact.state import InteractiveElement, ref_locator
+
+_ANNOTATE_JS = (
+    Path(__file__).parents[1] / "src" / "interact" / "js" / "annotate_elements.js"
+).read_text()
 
 
 def _el(index: int, ref: str | None = None) -> InteractiveElement:
@@ -129,3 +137,58 @@ def test_log_deque_maxlen():
 def test_is_recording_default_false():
     mgr = BrowserManager(Config())
     assert mgr.is_recording is False
+
+
+# --- annotate_elements.js scan: actionability filter + visibility/occlusion ranking ---
+
+# One crafted page exercises the whole contract: non-actionable elements are dropped, and
+# the survivors are ranked clickable-now → covered → off-screen so a fixed `limit` keeps the
+# controls a user can actually reach. No VLM/API key — pure DOM logic in a headless browser.
+_SCAN_PAGE = """
+<style>button{display:block;width:160px;height:30px}</style>
+<button id="vis">Visible</button>
+<button disabled>Disabled</button>
+<button aria-hidden="true">A11yHidden</button>
+<button style="visibility:hidden">Invisible</button>
+<button style="opacity:0">Transparent</button>
+<button id="covered" style="position:absolute;top:120px;left:0">Covered</button>
+<div style="position:absolute;top:120px;left:0;width:160px;height:30px;z-index:9;background:#fff"></div>
+<button style="position:absolute;top:3000px;left:0">BelowFold</button>
+"""
+
+
+async def _scan(html: str, limit: int = 50):
+    from playwright.async_api import async_playwright
+
+    async with async_playwright() as pw:
+        try:
+            browser = await pw.chromium.launch(headless=True)
+        except Exception as exc:  # no browser provisioned (bare CI) → not this test's concern
+            pytest.skip(f"no launchable chromium: {exc}")
+        page = await browser.new_page(viewport={"width": 1280, "height": 720})
+        await page.set_content(html)
+        boxes = await page.evaluate(_ANNOTATE_JS, {"scope": None, "limit": limit})
+        await browser.close()
+        return boxes
+
+
+@pytest.mark.asyncio
+async def test_scan_filters_and_ranks():
+    boxes = await _scan(_SCAN_PAGE)
+    names = [b["name"] for b in boxes]
+
+    # Non-actionable elements never surface as refs.
+    for dropped in ("Disabled", "A11yHidden", "Invisible", "Transparent"):
+        assert dropped not in names, f"{dropped} should be filtered out"
+
+    # Survivors ranked: clickable-now before covered before off-screen.
+    assert names == ["Visible", "Covered", "BelowFold"]
+    # Refs are sequential and match returned order (Python trusts the JS ref == index N).
+    assert [b["ref"] for b in boxes] == ["e1", "e2", "e3"]
+
+
+@pytest.mark.asyncio
+async def test_scan_limit_keeps_highest_ranked():
+    # limit=1 must keep the clickable-now control, not whatever came first in document order.
+    boxes = await _scan(_SCAN_PAGE, limit=1)
+    assert [b["name"] for b in boxes] == ["Visible"]

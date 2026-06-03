@@ -28,10 +28,6 @@ _log = logging.getLogger("interact")
 
 _PARTIAL_ATSPI_THRESHOLD = 3
 _LOW_ELEMENT_WARN = 5
-_REFINEMENT_MIN_DIM = 800
-_QUADRANT_THRESHOLD = 15
-_STRIP_HEIGHT_FRAC = 0.08
-_MIN_STRIP_HEIGHT = 100
 
 
 class _DetectedElement(BaseModel):
@@ -268,101 +264,6 @@ async def judge_missing_elements(
     return [label for label in labels if label][:8]
 
 
-async def _refine_regions(
-    screenshot_bytes: bytes,
-    context: str,
-    img_w: int,
-    img_h: int,
-    elements: list[DesktopElement],
-    regions: list[tuple[int, int, int, int]],
-    invocation_id: str | None = None,
-    model_override: str | None = None,
-) -> list[DesktopElement]:
-    if not regions:
-        return elements
-
-    async def _detect_region(crop: tuple[int, int, int, int]):
-        cropped = _crop_image(screenshot_bytes, *crop)
-        result, _, _, _ = await _vlm_detect_elements(
-            cropped,
-            context,
-            crop[2],
-            crop[3],
-            crop_offset=crop,
-            invocation_id=invocation_id,
-            simple=True,
-            model_override=model_override,
-        )
-        return result or []
-
-    results = await asyncio.gather(
-        *[_detect_region(r) for r in regions], return_exceptions=True
-    )
-    merged = list(elements)
-    for new_els in results:
-        if isinstance(new_els, BaseException):
-            _log.warning("region refinement failed: %s", new_els)
-            continue
-        merged = DesktopElement.merge_keeping(merged, new_els)
-    return merged
-
-
-async def _refine_dense_strips(
-    screenshot_bytes: bytes,
-    context: str,
-    img_w: int,
-    img_h: int,
-    elements: list[DesktopElement],
-    invocation_id: str | None = None,
-    model_override: str | None = None,
-) -> list[DesktopElement]:
-    strip_h = int(img_h * _STRIP_HEIGHT_FRAC)
-    if strip_h < _MIN_STRIP_HEIGHT:
-        return elements
-    strips: list[tuple[int, int, int, int]] = []
-    for y_start, y_end in [(0, strip_h), (img_h - strip_h, img_h)]:
-        if any(el.y < y_end and el.y2 > y_start for el in elements):
-            strips.append((0, y_start, img_w, y_end - y_start))
-    return await _refine_regions(
-        screenshot_bytes,
-        context,
-        img_w,
-        img_h,
-        elements,
-        strips,
-        invocation_id=invocation_id,
-        model_override=model_override,
-    )
-
-
-async def _refine_quadrants(
-    screenshot_bytes: bytes,
-    context: str,
-    img_w: int,
-    img_h: int,
-    elements: list[DesktopElement],
-    invocation_id: str | None = None,
-    model_override: str | None = None,
-) -> list[DesktopElement]:
-    half_w, half_h = img_w // 2, img_h // 2
-    quadrants = [
-        (0, 0, half_w, half_h),
-        (half_w, 0, img_w - half_w, half_h),
-        (0, half_h, half_w, img_h - half_h),
-        (half_w, half_h, img_w - half_w, img_h - half_h),
-    ]
-    return await _refine_regions(
-        screenshot_bytes,
-        context,
-        img_w,
-        img_h,
-        elements,
-        quadrants,
-        invocation_id=invocation_id,
-        model_override=model_override,
-    )
-
-
 def _is_wm_only(elements: list[DesktopElement], titlebar_y: int = _TITLEBAR_Y) -> bool:
     return bool(elements) and all(
         e.name in _WM_BUTTON_NAMES and e.role == "push button" and e.y < titlebar_y
@@ -551,32 +452,9 @@ async def _detect_desktop_elements(
             img_h,
         )
     elements = DesktopElement.filter_junk(elements, titlebar_y)
-    if (
-        config.detection_refine  # extra recall passes — the slow part; off → one fast pass
-        and not crop
-        and len(elements) > _LOW_ELEMENT_WARN
-        and max(img_w, img_h) > _REFINEMENT_MIN_DIM
-    ):
-        elements = await _refine_dense_strips(
-            screenshot_bytes,
-            context,
-            img_w,
-            img_h,
-            elements,
-            invocation_id=invocation_id,
-            model_override=model_override,
-        )
-        if len(elements) < _QUADRANT_THRESHOLD:
-            elements = await _refine_quadrants(
-                screenshot_bytes,
-                context,
-                img_w,
-                img_h,
-                elements,
-                invocation_id=invocation_id,
-                model_override=model_override,
-            )
-        elements = DesktopElement.filter_junk(elements, titlebar_y)
+    # Single pass — one screenshot, one VLM call. The multi-pass refinement (dense strips +
+    # quadrants) multiplied calls into 100s+ on large screens; recall is recovered on demand
+    # instead, since a follow-up (query-focused) detect accumulates into the window's refs.
     elements = DesktopElement.merge_into(win.wid, elements, win.name)
     _log.info(
         "detect_elements: vlm fallback %d elements in %.3fs", len(elements), vlm_elapsed

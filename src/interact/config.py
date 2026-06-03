@@ -23,9 +23,6 @@ class Config(BaseSettings):
     image_fallbacks: str = ""
     component_fallbacks: str = ""
     video_fallbacks: str = ""
-    # Detection refinement (extra VLM passes over dense strips / quadrants to recover missed
-    # elements). Improves recall but multiplies VLM calls — set false for faster detection.
-    detection_refine: bool = True
     headless: bool = True
     slow_mo: int = 0
     browser_type: Literal["chromium", "firefox", "webkit"] = "chromium"

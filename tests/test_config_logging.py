@@ -1,4 +1,4 @@
-"""Configurable fallbacks + detection-refine toggle + tool-input debug dumps + no coord leak."""
+"""Configurable fallbacks + tool-input debug dumps + no coord leak."""
 
 import json
 
@@ -10,12 +10,6 @@ def test_configurable_fallbacks(monkeypatch):
     config = Config()
     assert config.fallbacks_for("component") == ["gemini/x", "zai/y"]
     assert config.fallbacks_for("video") == []  # unset → bundled recommendations used
-
-
-def test_detection_refine_toggle(monkeypatch):
-    assert Config().detection_refine is True  # default: on (recall)
-    monkeypatch.setenv("INTERACT_DETECTION_REFINE", "false")
-    assert Config().detection_refine is False
 
 
 def test_dump_input_writes_both_files(tmp_path):

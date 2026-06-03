@@ -1,3 +1,4 @@
+import sys
 import subprocess
 import tempfile
 from collections import deque
@@ -159,8 +160,11 @@ class BrowserManager:
         return kw
 
     def _install_browser(self):
+        # `python -m playwright`, NOT the bare `playwright` CLI: the CLI isn't on PATH in an
+        # installed tool env (uv tool / pipx), which crashed every launch with a cryptic
+        # "[Errno 2] No such file or directory: 'playwright'".
         subprocess.run(
-            ["playwright", "install", self._config.browser_type],
+            [sys.executable, "-m", "playwright", "install", self._config.browser_type],
             check=True,
             capture_output=True,
         )
@@ -168,13 +172,20 @@ class BrowserManager:
     async def _ensure_browser(self):
         if self._browser:
             return
-        self._install_browser()
         self._playwright = await async_playwright().start()
         launcher = getattr(self._playwright, self._config.browser_type)
-        self._browser = await launcher.launch(
-            headless=self._config.headless,
-            slow_mo=self._config.slow_mo,
-        )
+        try:
+            # Launch straight away — when the browser is already installed (the common case)
+            # this skips the slow per-launch `playwright install` subprocess entirely.
+            self._browser = await launcher.launch(
+                headless=self._config.headless, slow_mo=self._config.slow_mo
+            )
+        except Exception:
+            # First run / missing browser → install once, then retry.
+            self._install_browser()
+            self._browser = await launcher.launch(
+                headless=self._config.headless, slow_mo=self._config.slow_mo
+            )
 
     async def _new_context(self, storage_state: dict | None = None, record_video_dir: str | None = None):
         kwargs = self._context_kwargs(record_video_dir)
