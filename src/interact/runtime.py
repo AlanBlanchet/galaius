@@ -53,6 +53,12 @@ class _LiveConfig:
         object.__getattribute__(self, "_overrides")[name] = value
         setattr(object.__getattribute__(self, "_inner"), name, value)
 
+    def clear_overrides(self) -> None:
+        """Drop all in-process overrides and rebuild from the file (used by tests for isolation,
+        so a transient override doesn't leak into later code/tests)."""
+        object.__getattribute__(self, "_overrides").clear()
+        self.refresh()
+
 
 config = _LiveConfig()
 breaker = CircuitBreaker()

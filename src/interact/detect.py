@@ -20,6 +20,7 @@ from interact.desktop import (
     _WM_BUTTON_NAMES,
 )
 from interact.formats import CoordFormat
+from interact.models import Model
 from interact.runtime import breaker, config
 from interact.state import annotate_screenshot
 from interact.vision import MediaItem, analyze_media
@@ -84,8 +85,20 @@ async def _vlm_detect_elements(
         transform = transform.with_crop(crop_offset[0], crop_offset[1])
     vlm_bytes, vlm_w, vlm_h = transform.resize_image(screenshot_bytes, img_w, img_h)
 
-    component_model = config.model_for("component")
-    image_model = config.model_for("image")
+    # Resolve each role to a concrete model: the configured id, else the auto default (first
+    # available model in the role's chain). Without this, an unconfigured (auto) install left
+    # these empty and the detect call ran with an empty-string model → instant silent failure.
+    def _resolved(role: str) -> str:
+        configured = config.model_for(role)
+        if configured:
+            return configured
+        prefs = config.chain_for(role).preferences
+        available = set(Model.available_providers())
+        chosen = next((m.id for m in prefs if m.provider in available), None)
+        return chosen or (prefs[0].id if prefs else "")
+
+    component_model = _resolved("component")
+    image_model = _resolved("image")
 
     if model_override:
         use_component = False
@@ -124,7 +137,11 @@ async def _vlm_detect_elements(
                 media_type=label,
                 max_tokens=None,
                 response_format=resp_fmt,
-                model_override=model_override,
+                # Pass the RESOLVED detection model, not the outer model_override: in auto mode
+                # model_override is None, and forwarding it made _vlm fall back to the (empty)
+                # configured image model → an empty-string model id → instant silent failure
+                # (0 elements, 0.00s). `model` is already the resolved component/image/override.
+                model_override=model,
             )
         )
         task_labels.append(label)

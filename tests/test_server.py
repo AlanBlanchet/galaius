@@ -25,11 +25,10 @@ def srv():
     from interact.server import breaker
 
     breaker.clear()
-    orig_component = _srv.config.component_model
     _srv.config.component_model = "test/component-model"
     with patch.object(_srv.Debug, "save"):
         yield _srv
-    _srv.config.component_model = orig_component
+    _srv.config.clear_overrides()  # drop the transient override so it can't leak into later tests
     breaker.clear()
 
 

@@ -16,6 +16,7 @@ def live_config(tmp_path, monkeypatch):
         monkeypatch.delenv(name, raising=False)
     from interact.runtime import config
 
+    config.clear_overrides()  # isolate from any override leaked by an earlier test
     return config
 
 
