@@ -587,7 +587,8 @@ async def screenshot(
     window and session are mutually exclusive.
 
     Returns depend on parameters:
-    - No selector/element, no query: page title + visible text content (browser) or window metadata (desktop).
+    - No selector/element, no query: page title + visible text content (browser) or, for a
+      desktop window, the detected interactive elements as a numbered ref list (act by [ref]).
     - No selector/element, with query: full screenshot analyzed by VLM.
     - With selector/element, no query: element metadata (browser only).
     - With selector/element, with query: cropped element screenshot analyzed by VLM (browser only).
@@ -630,11 +631,23 @@ async def screenshot(
                 model_override=model,
             )
             text = f"{_desktop_label(win)}\n{result or meta}"
-        else:
+        elif query:
             img_bytes, description = await _capture_desktop(
                 win, query, path, model_override=model
             )
             text = f"{_desktop_label(win)}\n{description}"
+        else:
+            # No query → don't return bare window metadata (an agent can't act on that, so it
+            # falls back to eyeballing pixels and clicking raw x,y). Detect interactive
+            # elements and return the ref list, so a plain desktop screenshot is actionable:
+            # the agent clicks by [ref] instead of guessing coordinates.
+            img_bytes = win.capture()
+            if path:
+                _save_to_path(path, img_bytes)
+            _, report = await _annotate_desktop(
+                win, None, None, invocation_id=inv, model_override=model
+            )
+            text = f"{_desktop_label(win)}\n{report}"
     elif element is not None or selector is not None:
         text = _session_response(
             session, await _element_screenshot(mgr, 0, selector, element, query, path)
