@@ -6921,24 +6921,24 @@
   },
   "recommendations": {
     "component": [
+      "gemini/gemini-3.5-flash",
       "chatgpt/gpt-5.4",
       "chatgpt/gpt-5.4-pro",
       "gemini/gemini-3.1-pro-preview",
       "chatgpt/gpt-5.3-codex",
       "chatgpt/gpt-5.3-codex-spark",
-      "gemini/gemini-3.5-flash",
       "gpt-5.5",
       "xai/grok-4.3",
       "xai/grok-4.3-latest",
       "chatgpt/gpt-5.2"
     ],
     "image": [
+      "gemini/gemini-3.5-flash",
       "gpt-5.5",
       "gemini/gemini-3.1-pro-preview",
       "chatgpt/gpt-5.4",
       "chatgpt/gpt-5.4-pro",
       "claude-opus-4-7",
-      "gemini/gemini-3.5-flash",
       "chatgpt/gpt-5.3-codex",
       "chatgpt/gpt-5.3-codex-spark",
       "xai/grok-4.3",
@@ -6969,8 +6969,8 @@
     "video": "Video analysis"
   },
   "defaults": {
-    "component.model": "gemini/gemini-3.1-pro-preview",
-    "image.model": "gpt-5.5",
+    "component.model": "gemini/gemini-3.5-flash",
+    "image.model": "gemini/gemini-3.5-flash",
     "video.model": "gpt-5.5"
   },
   "keyAliases": {
