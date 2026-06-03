@@ -45,6 +45,24 @@ def test_xy_report_nudges_to_refs_without_leaking_coords(monkeypatch):
     assert "ref" in report.lower()  # steers the agent back to detect-then-act by ref
 
 
+def test_raw_xy_snaps_to_detected_element_ref():
+    # When a detection exists for the window, a raw x,y inside an element's box resolves to that
+    # element (stable ref) instead of staying a blind pixel hit. Smallest box wins (button > panel).
+    import interact.dispatch as dispatch
+    from interact.desktop import DesktopElement, _element_cache
+
+    wid = 4242
+    panel = DesktopElement(index=1, role="panel", name="board", x=0, y=0, w=800, h=800)
+    square = DesktopElement(index=2, role="button", name="e4", x=100, y=100, w=100, h=100)
+    _element_cache[wid] = [panel, square]
+    try:
+        assert dispatch._element_at(wid, 150, 150).index == 2  # inside both → smallest (square)
+        assert dispatch._element_at(wid, 10, 10).index == 1    # only the panel
+        assert dispatch._element_at(wid, 900, 900) is None      # outside everything → no snap
+    finally:
+        _element_cache.pop(wid, None)
+
+
 def test_dump_output_records_exact_return_including_errors(tmp_path):
     from interact.debug_utils import Debug
 

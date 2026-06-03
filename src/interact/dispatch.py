@@ -31,7 +31,16 @@ from interact.state import DesktopState, PageState, StateChange
 
 _log = logging.getLogger("interact")
 
-_log = logging.getLogger("interact")
+
+def _element_at(wid: int, x: int, y: int):
+    """The smallest already-detected element whose box contains (x, y), or None. Smallest-area
+    wins so a click inside a button-within-a-panel snaps to the button, not the panel."""
+    hits = [
+        el
+        for el in (desktop.DesktopElement.cached(wid) or [])
+        if el.x <= x <= el.x + el.w and el.y <= y <= el.y + el.h
+    ]
+    return min(hits, key=lambda el: el.w * el.h) if hits else None
 
 
 def _resolve_action_coords(action, wid: int, win: DesktopWindow):
@@ -40,6 +49,13 @@ def _resolve_action_coords(action, wid: int, win: DesktopWindow):
     x = getattr(action, "x", None)
     y = getattr(action, "y", None)
     if x is not None and y is not None:
+        # Snap a raw x,y to an already-detected element whose box contains the point: the
+        # action then resolves by ref (stable across re-renders) and the report names the
+        # element instead of "raw coordinates". Only when a detection exists — no detection,
+        # no snap (and _xy_report nudges the agent to detect first).
+        el = _element_at(wid, x, y)
+        if el:
+            return el.center_x, el.center_y, el, None
         return x, y, None, None
     name = getattr(action, "name", None)
     if name:
