@@ -85,7 +85,13 @@ def _el_report(verb: str, el) -> str:
 
 
 def _xy_report(verb: str, x: int, y: int) -> str:
-    return f"{verb} cursor={_fmt_cursor()}"
+    # Raw-coordinate action: still don't echo the pixels, but flag it so the agent learns to
+    # detect-then-act by ref. Blind x,y clicks are brittle (they break on any layout shift);
+    # get_interactive_elements returns stable refs that survive re-renders.
+    return (
+        f"{verb} at raw coordinates cursor={_fmt_cursor()} "
+        "(hint: call get_interactive_elements and act by ref/element — refs are stable, raw x,y are not)"
+    )
 
 
 def _report_with_change(win_name: str, before: DesktopState, report: str) -> str:

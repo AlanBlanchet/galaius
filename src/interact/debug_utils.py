@@ -78,6 +78,20 @@ class Debug:
                      invocation_id=invocation_id)
 
     @classmethod
+    def dump_output(cls, invocation_id: str | None, result) -> None:
+        """Record the EXACT value handed back to the agent in ``output.txt`` — including
+        ``ERROR:``/``No window matching…`` strings, so a failed call (and any retry that
+        followed) is fully reconstructable from the logs, not just its inputs. ``result`` is
+        whatever the tool returns: a plain string, or the ``[text, Image]`` pair from a
+        ``return_image`` capture (only the text is written; the PNG is already dumped)."""
+        if not invocation_id:
+            return
+        if isinstance(result, (list, tuple)):  # [text, Image(...)] from return_image=True
+            result = next((p for p in result if isinstance(p, str)), "")
+        cls.save("output", result if isinstance(result, str) else str(result),
+                 invocation_id=invocation_id)
+
+    @classmethod
     def save(
         cls,
         label: str,

@@ -491,11 +491,6 @@ async def navigate(
     inv = Debug.new_invocation_dir(debug_dir, "navigate")
     Debug.dump_input(inv, {"tool": "navigate", "url": url, "query": query, "scope": scope,
                            "wait": wait, "session": session}, config.model_dump(mode="json"))
-    Debug.save(
-        "input",
-        json.dumps({"url": url, "query": query, "scope": scope, "wait": wait}),
-        invocation_id=inv,
-    )
     mgr = _sessions.get(session)
     page = await mgr.get_page()
     await page.goto(url)
@@ -512,7 +507,7 @@ async def navigate(
         result = _session_response(session, await _analyze(state, query))
     else:
         result = _session_response(session, state.text_summary())
-    Debug.save("output", result, invocation_id=inv)
+    Debug.dump_output(inv, result)
     return result
 
 
@@ -527,6 +522,10 @@ async def run_actions(
     session: str = _DEFAULT_SESSION,
 ) -> str:
     """Execute a sequence of actions on a browser session or desktop window.
+
+    PREFER REFS OVER COORDINATES: first call get_interactive_elements, then target elements by
+    `ref` (browser) or `element` index (desktop) in click/type_text/hover/drag. Raw `x`,`y` are
+    a last resort — they break on any layout shift, scroll, or window move; refs do not.
 
     Default: operates on browser session "default".
     With window: operates on a desktop window by title (use list_desktop_windows to discover).
@@ -554,20 +553,9 @@ async def run_actions(
     Debug.dump_input(inv, {"tool": "run_actions", "actions": [a.model_dump() for a in actions],
                            "query": query, "scope": scope, "wait": wait, "window": window,
                            "session": session}, config.model_dump(mode="json"))
-    Debug.save(
-        "input",
-        json.dumps(
-            {
-                "actions": [a.model_dump() for a in actions],
-                "query": query,
-                "window": window,
-                "session": session,
-            }
-        ),
-        invocation_id=inv,
-    )
     win, mgr, err = _resolve_target(window, session)
     if err:
+        Debug.dump_output(inv, err)
         return err
     if win:
         result = await _run_actions_desktop(win, actions, query, invocation_id=inv)
@@ -575,6 +563,7 @@ async def run_actions(
         result = await _run_actions_browser(
             mgr, actions, query, scope, wait, session, invocation_id=inv
         )
+    Debug.dump_output(inv, result)
     return result
 
 
@@ -612,15 +601,22 @@ async def screenshot(
         so the calling agent can SEE the pixels directly (not just a VLM summary).
     model: override the configured VLM model for this call. Uses the VS Code configured model when not set.
     """
+    inv = Debug.new_invocation_dir(debug_dir, "screenshot")
+    Debug.dump_input(inv, {"tool": "screenshot", "query": query, "scope": scope, "selector": selector,
+                           "element": element, "window": window, "session": session, "model": model},
+                     config.model_dump(mode="json"))
     win, mgr, err = _resolve_target(window, session)
     if err:
+        Debug.dump_output(inv, err)
         return err
     img_bytes: bytes | None = None
     if win:
         if element is not None:
             el = _resolve_desktop_el(win.wid, win.name, element=element)
             if el is None:
-                return _not_found(f"Element {element}")
+                nf = _not_found(f"Element {element}")
+                Debug.dump_output(inv, nf)
+                return nf
             raw = win.capture()
             img_bytes = _crop_image(raw, el.x, el.y, el.w, el.h)
             meta = (
@@ -654,16 +650,11 @@ async def screenshot(
             )
         else:
             text = _session_response(session, state.text_summary())
-    inv = Debug.new_invocation_dir(debug_dir, "screenshot")
-    Debug.dump_input(inv, {"tool": "screenshot", "query": query, "scope": scope, "selector": selector,
-                           "element": element, "window": window, "session": session, "model": model},
-                     config.model_dump(mode="json"))
     if img_bytes is not None:
         Debug.save("capture", img_bytes, ext="png", invocation_id=inv)
-    Debug.save("output", text if isinstance(text, str) else text[0], invocation_id=inv)
-    if return_image and img_bytes is not None:
-        return [text, Image(data=img_bytes, format="png")]
-    return text
+    result = [text, Image(data=img_bytes, format="png")] if (return_image and img_bytes is not None) else text
+    Debug.dump_output(inv, result)
+    return result
 
 
 @mcp.tool()
@@ -679,7 +670,8 @@ async def get_interactive_elements(
     method: str = "default",
     model: str | None = None,
 ) -> str:
-    """Annotate interactive elements with numbered badges and return their details.
+    """Annotate interactive elements with numbered badges and return their details. Call this
+    FIRST, then act by the returned `ref`/`element` in run_actions — never guess pixel x,y.
 
     Default: operates on browser session "default". Sets data-interact-ref attributes on DOM elements.
     With window: uses VLM to detect interactive elements in a desktop window screenshot.
@@ -702,13 +694,16 @@ async def get_interactive_elements(
                      config.model_dump(mode="json"))
     win, mgr, err = _resolve_target(window, session)
     if err:
+        Debug.dump_output(inv, err)
         return err
     if win:
         crop = None
         if element is not None:
             el = _resolve_desktop_el(win.wid, win.name, element=element)
             if el is None:
-                return _not_found(f"Element {element}")
+                nf = _not_found(f"Element {element}")
+                Debug.dump_output(inv, nf)
+                return nf
             crop = (el.x, el.y, el.w, el.h)
         _, report = await _annotate_desktop(
             win,
@@ -723,7 +718,7 @@ async def get_interactive_elements(
         result = _session_response(
             session, await _annotate_and_describe(mgr, tab, scope, query, limit)
         )
-    Debug.save("output", result, invocation_id=inv)
+    Debug.dump_output(inv, result)
     _log.info("get_interactive_elements: %s", "desktop" if win else "browser")
     return result
 
