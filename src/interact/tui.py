@@ -51,6 +51,34 @@ def _mask(value: str | None) -> str:
     return f"{value[:4]}…{value[-4:]}" if len(value) > 8 else "•" * len(value)
 
 
+_AUTO = "\x00auto"  # Select sentinel for "no explicit model — use auto" (Select can't hold "")
+
+
+def _model_options(role: str) -> list[tuple[str, str]]:
+    """Dropdown choices for a model role: ``(auto)`` first, then the bundled model ids capable
+    of this role (grounding for image/component, video for video) — so a user picks from a list
+    instead of typing ids by hand. Reads bundled JSON only; no network, no registry load."""
+    from interact.data import PackageData
+
+    data = PackageData.models_data()
+    # image/component need grounding; video lists any vision model (the registry tags vlm, no
+    # separate video capability). Falls back to vlm so the list is never empty for a role.
+    cap = "vlm" if role == "video" else "gui_grounding"
+    ids: set[str] = set()
+    for spec in data.get("providers", {}).values():
+        for model_id, mspec in (spec.get("models") or {}).items():
+            if cap in (mspec.get("capabilities") or []):
+                ids.add(model_id)
+    options = [("(auto — best available)", _AUTO)]
+    options += [(mid, mid) for mid in sorted(ids)]
+    return options
+
+
+def _model_select_value(role: str) -> str:
+    configured = UserConfig.get(f"{role}.model")
+    return configured if configured else _AUTO
+
+
 def _known_key_names() -> list[str]:
     """Provider credential env-var names, from the bundled model registry data (not
     hardcoded), sorted alphabetically."""
@@ -141,9 +169,8 @@ class InteractTUI(App):
                     for role, description in _MODEL_ROLES:
                         yield from _field(
                             f"{role} model", description,
-                            Input(value=UserConfig.get(f"{role}.model") or "",
-                                  placeholder="(leave empty for auto — see Status for what it resolves to)",
-                                  id=f"in-{role}"),
+                            Select(_model_options(role), value=_model_select_value(role),
+                                   allow_blank=False, id=f"in-{role}"),
                         )
                     yield from _field(
                         "desktop target",
@@ -357,8 +384,8 @@ class InteractTUI(App):
 
     def _save_config(self) -> None:
         for role, _ in _MODEL_ROLES:
-            value = self.query_one(f"#in-{role}", Input).value.strip()
-            UserConfig.set(f"{role}.model", value) if value else UserConfig.unset(f"{role}.model")
+            value = self.query_one(f"#in-{role}", Select).value
+            UserConfig.set(f"{role}.model", value) if value and value != _AUTO else UserConfig.unset(f"{role}.model")
         UserConfig.set("desktop.target", self.query_one("#sel-target", Select).value)
         UserConfig.set("nested.headless", str(self.query_one("#sw-headless", Switch).value).lower())
         UserConfig.set("nested.display", self.query_one("#in-nested-display", Input).value.strip() or "99")
@@ -374,7 +401,7 @@ class InteractTUI(App):
         """Clear all persisted config settings and restore the on-screen defaults."""
         for role, _ in _MODEL_ROLES:
             UserConfig.unset(f"{role}.model")
-            self.query_one(f"#in-{role}", Input).value = ""
+            self.query_one(f"#in-{role}", Select).value = _AUTO
         for key in ("desktop.target", "nested.headless", "nested.display", "nested.size",
                     "browser.headless", "debug.dir"):
             UserConfig.unset(key)

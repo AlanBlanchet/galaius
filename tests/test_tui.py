@@ -21,32 +21,38 @@ def test_mask(value, expected):
     assert _mask(value) == expected
 
 
+# A real grounding-capable id present in the model dropdown (so Select accepts it).
+_PICK = "gemini/gemini-3.5-flash"
+
+
 async def test_tui_saves_config(temp_config):
     # All panes' widgets are always in the DOM (TabbedContent keeps them mounted), so we
     # set values and invoke the save handler directly — no dependence on tab-switch timing.
     app = InteractTUI()
     async with app.run_test():
-        app.query_one("#in-image", Input).value = "gpt-4o"
+        app.query_one("#in-image", Select).value = _PICK  # pick from the dropdown, not free text
         app.query_one("#sel-target", Select).value = "nested"
         app.query_one("#sw-headless", Switch).value = True
         app.query_one("#in-debug-dir", Input).value = "/tmp/x/out"
         app._save_config()
 
     data = UserConfig.read()
-    assert data["INTERACT_IMAGE_MODEL"] == "gpt-4o"
+    assert data["INTERACT_IMAGE_MODEL"] == _PICK
     assert data["INTERACT_DESKTOP_TARGET"] == "nested"
     assert data["INTERACT_NESTED_HEADLESS"] == "true"
     assert data["INTERACT_DEBUG_DIR"] == "/tmp/x/out"
 
 
 async def test_tui_reset_to_defaults(temp_config):
-    UserConfig.set("image.model", "gpt-4o")
+    from interact.tui import _AUTO
+
+    UserConfig.set("image.model", _PICK)
     UserConfig.set("desktop.target", "nested")
     UserConfig.set("debug.dir", "/x/out")
     app = InteractTUI()
     async with app.run_test():
         app._reset_config()
-        assert app.query_one("#in-image", Input).value == ""
+        assert app.query_one("#in-image", Select).value == _AUTO  # back to "(auto)"
         assert app.query_one("#sel-target", Select).value == "local"
     data = UserConfig.read()
     assert "INTERACT_IMAGE_MODEL" not in data
@@ -54,11 +60,14 @@ async def test_tui_reset_to_defaults(temp_config):
     assert "INTERACT_DEBUG_DIR" not in data
 
 
-async def test_tui_save_clears_emptied_model(temp_config):
-    UserConfig.set("image.model", "gpt-4o")
+async def test_tui_save_auto_unsets_model(temp_config):
+    # Selecting "(auto)" must remove the persisted model (the clear-doesn't-save bug fix).
+    from interact.tui import _AUTO
+
+    UserConfig.set("image.model", _PICK)
     app = InteractTUI()
     async with app.run_test():
-        app.query_one("#in-image", Input).value = ""  # cleared → unset
+        app.query_one("#in-image", Select).value = _AUTO  # → unset
         app._save_config()
     assert "INTERACT_IMAGE_MODEL" not in UserConfig.read()
 
