@@ -63,6 +63,28 @@ _DBG_ACTIONS = "run_actions"
 _MAX_FALLBACKS = 3
 
 
+def _effective_model(model_override: str | None, role: str) -> str:
+    """The model id that will actually run for a role: an explicit override, else the configured
+    model, else the resolved auto default (first available in the role's chain)."""
+    if model_override:
+        return model_override
+    configured = config.model_for(role)
+    if configured:
+        return configured
+    prefs = config.chain_for(role).preferences
+    return prefs[0].id if prefs else ""
+
+
+def _resolved_config(model_override: str | None, role: str) -> dict:
+    """The full effective config for tool_input_resolved.json, with the per-call effective model
+    surfaced so the resolved dump reflects what actually ran (an override or the auto default) —
+    not just the empty configured field."""
+    resolved = config.model_dump(mode="json")
+    resolved["effective_model"] = _effective_model(model_override, role)
+    resolved["effective_model_role"] = role
+    return resolved
+
+
 async def _vlm(
     data: bytes,
     context: str,
@@ -492,7 +514,7 @@ async def navigate(
     config.refresh()  # ~/.interact/config.env is the source of truth: pick up live edits per call
     inv = Debug.new_invocation_dir(debug_dir, "navigate")
     Debug.dump_input(inv, {"tool": "navigate", "url": url, "query": query, "scope": scope,
-                           "wait": wait, "session": session}, config.model_dump(mode="json"))
+                           "wait": wait, "session": session}, _resolved_config(None, "image"))
     mgr = _sessions.get(session)
     page = await mgr.get_page()
     await page.goto(url)
@@ -551,10 +573,11 @@ async def run_actions(
     query: when set, returns vision analysis of the final state instead of text summary.
     debug_dir: when set, dump inputs/outputs/screenshots to this directory for debugging.
     """
+    config.refresh()  # source of truth before we snapshot the resolved config
     inv = Debug.new_invocation_dir(debug_dir, _DBG_ACTIONS)
     Debug.dump_input(inv, {"tool": "run_actions", "actions": [a.model_dump() for a in actions],
                            "query": query, "scope": scope, "wait": wait, "window": window,
-                           "session": session}, config.model_dump(mode="json"))
+                           "session": session}, _resolved_config(None, "component"))
     win, mgr, err = _resolve_target(window, session)
     if err:
         Debug.dump_output(inv, err)
@@ -590,7 +613,8 @@ async def screenshot(
 
     Returns depend on parameters:
     - No selector/element, no query: page title + visible text content (browser) or, for a
-      desktop window, the detected interactive elements as a numbered ref list (act by [ref]).
+      desktop window, already-detected interactive elements as a numbered ref list if any exist
+      (else metadata + a pointer to get_interactive_elements). screenshot never runs VLM grounding.
     - No selector/element, with query: full screenshot analyzed by VLM.
     - With selector/element, no query: element metadata (browser only).
     - With selector/element, with query: cropped element screenshot analyzed by VLM (browser only).
@@ -604,10 +628,11 @@ async def screenshot(
         so the calling agent can SEE the pixels directly (not just a VLM summary).
     model: override the configured VLM model for this call. Uses the VS Code configured model when not set.
     """
+    config.refresh()  # source of truth before we snapshot the resolved config
     inv = Debug.new_invocation_dir(debug_dir, "screenshot")
     Debug.dump_input(inv, {"tool": "screenshot", "query": query, "scope": scope, "selector": selector,
                            "element": element, "window": window, "session": session, "model": model},
-                     config.model_dump(mode="json"))
+                     _resolved_config(model, "image"))
     win, mgr, err = _resolve_target(window, session)
     if err:
         Debug.dump_output(inv, err)
@@ -639,17 +664,21 @@ async def screenshot(
             )
             text = f"{_desktop_label(win)}\n{description}"
         else:
-            # No query → don't return bare window metadata (an agent can't act on that, so it
-            # falls back to eyeballing pixels and clicking raw x,y). Detect interactive
-            # elements and return the ref list, so a plain desktop screenshot is actionable:
-            # the agent clicks by [ref] instead of guessing coordinates.
+            # No query → just capture. screenshot NEVER runs VLM grounding (that's
+            # get_interactive_elements' job, and a VLM call here would be slow + wrong). If a
+            # detection already exists for this window, surface those refs so the capture is
+            # actionable; otherwise return metadata and point the agent at the detect tool.
             img_bytes = win.capture()
             if path:
                 _save_to_path(path, img_bytes)
-            _, report = await _annotate_desktop(
-                win, None, None, invocation_id=inv, model_override=model
-            )
-            text = f"{_desktop_label(win)}\n{report}"
+            cached = DesktopElement.cached(win.wid)
+            if cached:
+                text = f"{_desktop_label(win)}\n{DesktopElement.format_list(cached)}"
+            else:
+                text = (
+                    f"{_desktop_label(win)}\n{_desktop_context(win)}\n"
+                    "(call get_interactive_elements to detect clickable elements and act by [ref])"
+                )
     elif element is not None or selector is not None:
         text = _session_response(
             session, await _element_screenshot(mgr, 0, selector, element, query, path)
@@ -702,11 +731,12 @@ async def get_interactive_elements(
     method: detection strategy — "default" (AT-SPI with VLM fallback) or "vlm" (force VLM only). Applies to desktop windows.
     model: override the configured VLM model for this call. Uses the VS Code configured model when not set.
     """
+    config.refresh()  # source of truth before we snapshot the resolved config
     inv = Debug.new_invocation_dir(debug_dir, _DBG_ELEMENTS)
     Debug.dump_input(inv, {"tool": "get_interactive_elements", "query": query, "scope": scope,
                            "element": element, "limit": limit, "tab": tab, "window": window,
                            "session": session, "method": method, "model": model},
-                     config.model_dump(mode="json"))
+                     _resolved_config(model, "component"))
     win, mgr, err = _resolve_target(window, session)
     if err:
         Debug.dump_output(inv, err)
