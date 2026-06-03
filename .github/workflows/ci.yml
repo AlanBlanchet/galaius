@@ -1,0 +1,121 @@
+name: ci
+
+# One workflow per push (so you don't see two runs for the same commit): the cross-OS test
+# matrix + the Linux desktop job, and THEN — only if those pass, only on push to main — the
+# tag/release job. Cross-OS uses GitHub's free macOS/Windows/Linux runners; integration tests
+# (keys + real browser) and desktop tests (live display) auto-skip via tests/conftest.py.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUTF8: "1"  # Windows console is cp1252 by default → ✓/→/… in output would crash
+
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Version files in sync (single source of truth)
+        run: uv run python -m interact.versioning check
+
+      - name: Run tests (integration + desktop auto-skip here)
+        run: uv run pytest -m "not integration" -q
+
+  # Desktop automation CAN be tested in CI on Linux: Xvfb gives the runner a virtual
+  # display, and the nested Xephyr sandbox drives real windows via xdotool/maim. (The
+  # local uinput path needs /dev/uinput — privileged — so those tests stay opt-in/skipped.)
+  desktop:
+    name: desktop (Linux · Xvfb)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Desktop deps (nested sandbox + a Tk-capable Python + recorder)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb xserver-xephyr xdotool maim x11-utils python3-tk ffmpeg
+      - name: Nested desktop tests under a virtual display (recorded)
+        run: |
+          export DISPLAY=:99
+          Xvfb :99 -screen 0 1280x1024x24 >/dev/null 2>&1 &
+          for _ in $(seq 1 30); do xdpyinfo -display :99 >/dev/null 2>&1 && break; sleep 0.5; done
+          mkdir -p out
+          # Record the virtual display so you can WATCH the runs afterwards (downloadable
+          # artifact — runners are headless, but this is free within Actions storage limits).
+          ffmpeg -y -loglevel error -f x11grab -video_size 1280x1024 -framerate 10 -i :99 \
+            out/ci-desktop.mp4 >/dev/null 2>&1 &
+          ff=$!
+          uv run pytest tests/test_desktop_scenario.py -q; rc=$?
+          kill "$ff" 2>/dev/null; sleep 1
+          exit $rc
+      - name: Upload the recording
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-recording
+          path: out/ci-desktop.mp4
+          if-no-files-found: warn
+
+  # Tag + GitHub release — ONLY after the matrix + desktop jobs pass, and only on push to
+  # main. Never tags a broken build. Single source of truth = pyproject.toml version (must
+  # match package.json); no-ops if the tag already exists, so re-pushes are safe.
+  release:
+    needs: [test, desktop]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Read & verify version
+        id: version
+        run: |
+          py=$(sed -nE 's/^version *= *"([^"]+)".*/\1/p' pyproject.toml | head -1)
+          ext=$(sed -nE 's/.*"version" *: *"([^"]+)".*/\1/p' vscode-extension/package.json | head -1)
+          if [ -z "$py" ]; then echo "::error::no version in pyproject.toml"; exit 1; fi
+          if [ -n "$ext" ] && [ "$ext" != "$py" ]; then
+            echo "::error::version mismatch — pyproject.toml=$py but package.json=$ext"; exit 1
+          fi
+          echo "version=$py" >> "$GITHUB_OUTPUT"
+      - name: Create & push tag if new
+        id: tag
+        run: |
+          tag="v${{ steps.version.outputs.version }}"
+          if git rev-parse "$tag" >/dev/null 2>&1; then
+            echo "$tag exists — nothing to do"; echo "created=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" -m "interact $tag"
+          git push origin "$tag"
+          echo "created=true" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: GitHub release
+        if: steps.tag.outputs.created == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          generate_release_notes: true

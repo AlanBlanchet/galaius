@@ -1,0 +1,456 @@
+{
+  "screenspot": {
+    "entries": [
+      {
+        "model_name": "UI-Venus-72B",
+        "score": 0.9528301886792453
+      },
+      {
+        "model_name": "Hcompany/Holo2-30B-A3B",
+        "score": 0.9488591660110149
+      },
+      {
+        "model_name": "Holo1.5-72B",
+        "score": 0.9441384736428009
+      },
+      {
+        "model_name": "UI-Venus-7B",
+        "score": 0.9410377358490566
+      },
+      {
+        "model_name": "Holo1.5-7B",
+        "score": 0.9331235247836349
+      },
+      {
+        "model_name": "Hcompany/Holo2-8B",
+        "score": 0.932336742722266
+      },
+      {
+        "model_name": "Hcompany/Holo2-4B",
+        "score": 0.9315499606608969
+      },
+      {
+        "model_name": "GUI-ARP-7B",
+        "score": 0.9175
+      },
+      {
+        "model_name": "Holo1.5-3B",
+        "score": 0.9166011014948859
+      },
+      {
+        "model_name": "AGUVIS-7B",
+        "score": 0.8726415094339622
+      },
+      {
+        "model_name": "ZonUI-3B",
+        "score": 0.8655660377358491
+      },
+      {
+        "model_name": "Qwen2.5-VL-7B-Instruct",
+        "score": 0.8647798742138365
+      },
+      {
+        "model_name": "OSAtlas-7B",
+        "score": 0.8333333333333334
+      },
+      {
+        "model_name": "ShowUI (2B)",
+        "score": 0.7727987421383647
+      },
+      {
+        "model_name": "UGround (7B)",
+        "score": 0.7625786163522013
+      },
+      {
+        "model_name": "OSAtlas-4B",
+        "score": 0.684748427672956
+      },
+      {
+        "model_name": "SeeClick (7B)",
+        "score": 0.5385220125786163
+      },
+      {
+        "model_name": "CogAgent (18B)",
+        "score": 0.5283018867924528
+      },
+      {
+        "model_name": "Qwen2.5-VL-3B-Instruct",
+        "score": 0.46855345911949686
+      },
+      {
+        "model_name": "MiniCPM-V (7B)",
+        "score": 0.4591194968553459
+      },
+      {
+        "model_name": "Qwen2-VL-72B",
+        "score": 0.4300314465408805
+      },
+      {
+        "model_name": "Qwen2-VL-7B",
+        "score": 0.3977987421383648
+      },
+      {
+        "model_name": "GPT-4o",
+        "score": 0.20125786163522014
+      },
+      {
+        "model_name": "QwenVL-7B",
+        "score": 0.060534591194968554
+      }
+    ],
+    "lib_recommendation": "UI-Venus-72B",
+    "retrieved": "2026-05-21",
+    "source_url": "https://raw.githubusercontent.com/GUI-Agent/grounding-leaderboard/main/results/screenspot_v2.json"
+  },
+  "screenspot_pro": {
+    "entries": [
+      {
+        "model_name": "KV-Ground-8B + Qwen3.5-27B Consistency Router",
+        "score": 0.809
+      },
+      {
+        "model_name": "KV-Ground-GuiOwl1.5-0315-8B-ZoomIn",
+        "score": 0.8051865907653384
+      },
+      {
+        "model_name": "Holo2-235B-A22B (Agentic)",
+        "score": 0.7849462365591398
+      },
+      {
+        "model_name": "MAI-UI-32B (MVP)",
+        "score": 0.7746212121212122
+      },
+      {
+        "model_name": "AdaZoom-GUI-4B (cond. zoom-in, refine w/ Qwen3.5-397B)",
+        "score": 0.7678684376976597
+      },
+      {
+        "model_name": "KV-Ground-GuiOwl1.5-4B-0228-ZoomIn",
+        "score": 0.7640733712839974
+      },
+      {
+        "model_name": "Holo2-30B-A3B (Agentic)",
+        "score": 0.7520556609740671
+      },
+      {
+        "model_name": "MVP_Qwen3VL-32B",
+        "score": 0.7414664981036663
+      },
+      {
+        "model_name": "MAI-UI-32B (Zoom In)",
+        "score": 0.734977862112587
+      },
+      {
+        "model_name": "KV-Ground-GuiOwl1.5-0315-8B",
+        "score": 0.7318153067678684
+      },
+      {
+        "model_name": "MAI-UI-8B (Zoom In)",
+        "score": 0.7191650853889943
+      },
+      {
+        "model_name": "Holo2-8B (Agentic)",
+        "score": 0.7141049968374447
+      },
+      {
+        "model_name": "AdaZoom-GUI-4B (conditional zoom-in)",
+        "score": 0.7058823529411765
+      },
+      {
+        "model_name": "Holo2-235B-A22B",
+        "score": 0.7058823529411765
+      },
+      {
+        "model_name": "KV-Ground-Qwen3VL-4B-ZoomIn",
+        "score": 0.702719797596458
+      },
+      {
+        "model_name": "UI-Venus-1-5-30B-A3B",
+        "score": 0.6963946869070209
+      },
+      {
+        "model_name": "Holo2-4B (Agentic)",
+        "score": 0.6856419987349779
+      },
+      {
+        "model_name": "UI-Venus-1-5-8B",
+        "score": 0.6843769765970904
+      },
+      {
+        "model_name": "MAI-UI-32B",
+        "score": 0.6786843769765971
+      },
+      {
+        "model_name": "KV-Ground-GuiOwl1.5-0228-4B",
+        "score": 0.6704617330803289
+      },
+      {
+        "model_name": "Holo2-30B-A3B",
+        "score": 0.6609740670461733
+      },
+      {
+        "model_name": "MAI-UI-8B",
+        "score": 0.6565464895635673
+      },
+      {
+        "model_name": "MVP_Qwen3VL-8B",
+        "score": 0.6502525252525253
+      },
+      {
+        "model_name": "GTA1-32B",
+        "score": 0.6363061353573688
+      },
+      {
+        "model_name": "Holo1.5-72B",
+        "score": 0.6325110689437066
+      },
+      {
+        "model_name": "KV-Ground-Qwen3VL-4B",
+        "score": 0.6318785578747628
+      },
+      {
+        "model_name": "MAI-UI-2B (Zoom In)",
+        "score": 0.6280834914611005
+      },
+      {
+        "model_name": "UI-Venus-72B",
+        "score": 0.618595825426945
+      },
+      {
+        "model_name": "AdaZoom-GUI-4B",
+        "score": 0.6160657811511702
+      },
+      {
+        "model_name": "UI-TARS-1.5",
+        "score": 0.6160657811511702
+      },
+      {
+        "model_name": "Seed-1.5-VL",
+        "score": 0.6091081593927894
+      },
+      {
+        "model_name": "GUI-ARP-7B",
+        "score": 0.6078
+      },
+      {
+        "model_name": "GUI-AIMA-3B",
+        "score": 0.5958254269449715
+      },
+      {
+        "model_name": "Holo2-8B",
+        "score": 0.5888678051865908
+      },
+      {
+        "model_name": "GTA1-Qwen2.5VL-72B",
+        "score": 0.5844402277039848
+      },
+      {
+        "model_name": "Holo1.5-7B",
+        "score": 0.5793801391524351
+      },
+      {
+        "model_name": "UI-Venus-1-5-2B",
+        "score": 0.5774826059456041
+      },
+      {
+        "model_name": "BAMI-7B",
+        "score": 0.5774826059456041
+      },
+      {
+        "model_name": "MAI-UI-2B",
+        "score": 0.5736875395319418
+      },
+      {
+        "model_name": "Holo2-4B",
+        "score": 0.5724225173940544
+      },
+      {
+        "model_name": "GTA1-7B",
+        "score": 0.5547122074636306
+      },
+      {
+        "model_name": "GTA1-Qwen2.5VL-32B",
+        "score": 0.5357368753953194
+      },
+      {
+        "model_name": "Qwen2.5-VL-72B-Instruct",
+        "score": 0.5332068311195446
+      },
+      {
+        "model_name": "GUI-Spotlight",
+        "score": 0.528147
+      },
+      {
+        "model_name": "V2P-7B",
+        "score": 0.5253164556962026
+      },
+      {
+        "model_name": "TianXi-Action-7B",
+        "score": 0.5186590765338394
+      },
+      {
+        "model_name": "Holo1.5-3B",
+        "score": 0.5148640101201771
+      },
+      {
+        "model_name": "Kimi-VL-A3B-Thinking-2506",
+        "score": 0.5098039215686274
+      },
+      {
+        "model_name": "UI-Venus-7B",
+        "score": 0.5079063883617964
+      },
+      {
+        "model_name": "GTA1-Qwen2.5VL-7B",
+        "score": 0.5009487666034156
+      },
+      {
+        "model_name": "Qwen2.5-VL-32B-Instruct",
+        "score": 0.48007590132827327
+      },
+      {
+        "model_name": "UI-AGILE-7B",
+        "score": 0.47881087919038584
+      },
+      {
+        "model_name": "SE-GUI-7B",
+        "score": 0.47248576850094876
+      },
+      {
+        "model_name": "UI-AGILE-3B",
+        "score": 0.4497153700189753
+      },
+      {
+        "model_name": "GUI-Actor-2.5VL-7B",
+        "score": 0.4459203036053131
+      },
+      {
+        "model_name": "GUI-Actor-2.5VL-3B",
+        "score": 0.42188488298545224
+      },
+      {
+        "model_name": "GUI-Actor-2VL-7B",
+        "score": 0.407337128399747
+      },
+      {
+        "model_name": "UI-TARS-72B",
+        "score": 0.38140417457305503
+      },
+      {
+        "model_name": "GUI-Actor-2VL-2B",
+        "score": 0.3668564199873498
+      },
+      {
+        "model_name": "GUI-G1",
+        "score": 0.3592662871600253
+      },
+      {
+        "model_name": "SE-GUI-3B",
+        "score": 0.35863377609108
+      },
+      {
+        "model_name": "UI-TARS-7B",
+        "score": 0.3573687539531942
+      },
+      {
+        "model_name": "UGround-v1-72B",
+        "score": 0.34535104364326374
+      },
+      {
+        "model_name": "Di-GUI-3B",
+        "score": 0.31562302340290954
+      },
+      {
+        "model_name": "UGround-V1-7B",
+        "score": 0.3105629348513599
+      },
+      {
+        "model_name": "ZonUI-3B",
+        "score": 0.28716002530044277
+      },
+      {
+        "model_name": "UI-TARS-2B",
+        "score": 0.27703984819734345
+      },
+      {
+        "model_name": "Qwen2.5-VL-7B-Instruct",
+        "score": 0.2675521821631879
+      },
+      {
+        "model_name": "UGround-V1-2B",
+        "score": 0.26628716002530045
+      },
+      {
+        "model_name": "Aguvis-7B",
+        "score": 0.22896900695762176
+      },
+      {
+        "model_name": "OS-Atlas-7B",
+        "score": 0.18912080961416824
+      },
+      {
+        "model_name": "GPT5-minimal (resized)",
+        "score": 0.18532574320050602
+      },
+      {
+        "model_name": "Claude (Computer Use)",
+        "score": 0.17101226993865032
+      },
+      {
+        "model_name": "UGround-7B",
+        "score": 0.1650853889943074
+      },
+      {
+        "model_name": "Qwen2.5-VL-3B-Instruct",
+        "score": 0.16065781151170144
+      },
+      {
+        "model_name": "AriaUI (MOE, 3.9B active)",
+        "score": 0.11321948134092347
+      },
+      {
+        "model_name": "ShowUI (2B)",
+        "score": 0.07716635041113219
+      },
+      {
+        "model_name": "CogAgent (18B)",
+        "score": 0.07716635041113219
+      },
+      {
+        "model_name": "GPT5-high (resized)",
+        "score": 0.06008855154965212
+      },
+      {
+        "model_name": "OS-Atlas-4B",
+        "score": 0.03731815306767868
+      },
+      {
+        "model_name": "MiniCPM-V (7B)",
+        "score": 0.030360531309297913
+      },
+      {
+        "model_name": "Qwen2-VL-7B",
+        "score": 0.015812776723592662
+      },
+      {
+        "model_name": "SeeClick (7B)",
+        "score": 0.011385199240986717
+      },
+      {
+        "model_name": "Qwen2-VL-72B-Instruct",
+        "score": 0.010120177103099304
+      },
+      {
+        "model_name": "GPT-4o",
+        "score": 0.008222643896268185
+      },
+      {
+        "model_name": "Qwen-VL-7B",
+        "score": 0.0006325110689437065
+      }
+    ],
+    "lib_recommendation": "KV-Ground-8B + Qwen3.5-27B Consistency Router",
+    "retrieved": "2026-05-21",
+    "source_url": "https://raw.githubusercontent.com/GUI-Agent/grounding-leaderboard/main/results/screenspot_pro.json"
+  }
+}

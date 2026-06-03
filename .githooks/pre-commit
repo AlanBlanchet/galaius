@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Tracked git hook (configured via `git config core.hooksPath .githooks`).
+set -e
+
+# 1) Version single-source-of-truth: pyproject.toml and the VS Code extension must agree.
+#    Stops a half-bumped commit before it reaches CI (which would refuse to tag).
+py=$(sed -nE 's/^version *= *"([^"]+)".*/\1/p' pyproject.toml | head -1)
+ext=$(sed -nE 's/.*"version" *: *"([^"]+)".*/\1/p' vscode-extension/package.json | head -1)
+if [ -n "$ext" ] && [ "$py" != "$ext" ]; then
+    echo "[hook] FAIL: version mismatch — pyproject.toml=$py but vscode-extension/package.json=$ext"
+    echo "[hook]   fix both at once:  python -m interact.versioning bump <major|minor|patch>"
+    exit 1
+fi
+
+# 2) Regenerate TS bindings when the Pydantic API surface changes.
+if git diff --cached --name-only | grep -qE '^src/interact/(models|formats|api_types)\.py$|^src/interact/benchmarks/(published|upstream)\.py$'; then
+    echo "[hook] Pydantic API changed — regenerating TS types..."
+    if bash vscode-extension/scripts/generate-types.sh 2>&1 | tail -2; then
+        git add vscode-extension/src/generated/types.ts 2>/dev/null || true
+    else
+        echo "[hook] WARN: type generation failed, continuing"
+    fi
+fi
+
+# 3) Rebuild the VS Code extension when its source changes (tolerant of missing npm).
+if git diff --cached --name-only | grep -q "^vscode-extension/"; then
+    echo "[hook] Extension files changed — rebuilding .vsix..."
+    (cd vscode-extension && npm run compile 2>&1 | tail -1 && npx vsce package --no-update-package-json 2>&1 | tail -1) || true
+    echo "[hook] Extension build step done."
+fi

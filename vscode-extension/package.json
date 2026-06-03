@@ -1,0 +1,168 @@
+{
+  "name": "interact",
+  "displayName": "Interact",
+  "description": "Interact — browser + desktop automation via an MCP server",
+  "version": "0.1.0",
+  "preview": true,
+  "publisher": "AlanBlanchet",
+  "icon": "icon.png",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AlanBlanchet/interact"
+  },
+  "homepage": "https://github.com/AlanBlanchet/interact#readme",
+  "bugs": {
+    "url": "https://github.com/AlanBlanchet/interact/issues"
+  },
+  "engines": {
+    "vscode": "^1.101.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "interact"
+      }
+    ],
+    "configuration": {
+      "title": "Interact",
+      "properties": {
+        "interact.projectPath": {
+          "type": "string",
+          "default": "",
+          "description": "Local project path for development (uses 'uv run' instead of 'uvx'). Leave empty when installed from PyPI."
+        },
+        "interact.image.model": {
+          "type": "string",
+          "default": "",
+          "description": "Primary vision model for screenshot analysis and media understanding. Use 'Select Model' command for tested recommendations."
+        },
+        "interact.video.model": {
+          "type": "string",
+          "default": "",
+          "description": "Vision model for video understanding. Requires native video support. Use 'Select Model' command for tested recommendations."
+        },
+        "interact.video.fps": {
+          "type": "number",
+          "default": 5,
+          "description": "Frames per second for video capture"
+        },
+        "interact.video.duration": {
+          "type": "number",
+          "default": 3,
+          "description": "Duration in seconds for video capture"
+        },
+        "interact.component.model": {
+          "type": "string",
+          "default": "",
+          "description": "Vision model for UI element detection. Falls back to image model when empty. Use 'Select Model' command for tested recommendations."
+        },
+        "interact.browser.headless": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run browser in headless mode"
+        },
+        "interact.browser.type": {
+          "type": "string",
+          "default": "chromium",
+          "enum": [
+            "chromium",
+            "firefox",
+            "webkit"
+          ],
+          "description": "Browser engine"
+        },
+        "interact.browser.viewportWidth": {
+          "type": "number",
+          "default": 1280,
+          "description": "Browser viewport width"
+        },
+        "interact.browser.viewportHeight": {
+          "type": "number",
+          "default": 720,
+          "description": "Browser viewport height"
+        },
+        "interact.browser.slowMo": {
+          "type": "number",
+          "default": 0,
+          "description": "Slow down browser actions by this many milliseconds (useful for observing automation)"
+        },
+        "interact.vlm.maxTokens": {
+          "type": "number",
+          "default": 2048,
+          "description": "Maximum tokens for VLM vision responses"
+        },
+        "interact.vlm.waitTimeout": {
+          "type": "number",
+          "default": 10000,
+          "description": "Default timeout in ms for waiting on elements"
+        },
+        "interact.debug.dir": {
+          "type": "string",
+          "default": "~/.interact",
+          "description": "Save every screenshot to this folder as timestamped PNGs (for debugging)"
+        },
+        "interact.desktop.target": {
+          "type": "string",
+          "default": "local",
+          "enum": [
+            "local",
+            "nested"
+          ],
+          "enumDescriptions": [
+            "Drive the real desktop session (system-wide input + capture)",
+            "Drive an isolated nested display (Xephyr) — a sandbox that never touches your real windows or cursor"
+          ],
+          "description": "Where desktop automation acts: the real session, or an isolated nested display"
+        },
+        "interact.desktop.nestedDisplay": {
+          "type": "number",
+          "default": 99,
+          "description": "X display number for the nested desktop target (e.g. 99 → :99)"
+        },
+        "interact.desktop.nestedSize": {
+          "type": "string",
+          "default": "1280x800",
+          "description": "Screen size of the nested desktop target (WIDTHxHEIGHT)"
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "interact.selectModel",
+        "title": "Interact: Select Model"
+      },
+      {
+        "command": "interact.manageApiKeys",
+        "title": "Interact: Manage API Keys"
+      },
+      {
+        "command": "interact.openDashboard",
+        "title": "Interact: Open Dashboard"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "bash scripts/generate-types.sh && node scripts/sync-data.js && tsc -p ./ && node -e \"try{require('fs').cpSync('src/models.json','out/models.json')}catch{}\" && node -e \"try{require('fs').cpSync('src/benchmarks.json','out/benchmarks.json')}catch{}\" && npm run build:webview",
+    "build:webview": "esbuild webview/app.tsx --bundle --outfile=out/webview.js --format=iife --target=es2022 --jsx=automatic --jsx-import-source=. && cp webview/styles.css out/webview.css",
+    "watch": "tsc -watch -p ./",
+    "generate-models": "uv run --project .. python scripts/generate-models.py",
+    "generate-benchmarks": "uv run --project .. python scripts/generate-benchmarks.py"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "@types/vscode": "^1.99.0",
+    "@vscode/vsce": "^3.5.0",
+    "esbuild": "^0.25.0",
+    "json-schema-to-typescript": "^15.0.4",
+    "typescript": "^5.7.0"
+  }
+}

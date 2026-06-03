@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Interact Scenario</title>
+  <style>
+    body { margin: 20px; font-family: sans-serif; background: #fff; }
+    button, input { margin: 8px; padding: 10px 20px; font-size: 16px; }
+    input[type="text"] { width: 260px; }
+    .box { display: inline-block; margin: 8px; padding: 16px 22px; border: 2px solid #444;
+           border-radius: 6px; font-size: 16px; background: #f3f3f3; }
+    #drop { border-style: dashed; min-width: 120px; color: #888; }
+    #hover:hover { background: #cde7ff; }
+    #echo { margin: 6px 8px; color: #555; min-height: 20px; }
+    #status { margin: 14px 8px; font-size: 22px; font-weight: bold; color: #0a7d00; min-height: 30px; }
+    .spacer { height: 1100px; }
+    #bottom { color: #b00020; font-weight: bold; font-size: 20px; }
+  </style>
+</head>
+<body>
+  <h1>Interact Scenario</h1>
+  <button onclick="setStatus('Clicked (' + (++window.c) + ')')">Click Me</button>
+  <input id="field" type="text" placeholder="Enter text..."
+         oninput="document.getElementById('echo').textContent = 'typing: ' + this.value">
+  <div id="echo"></div>
+  <div id="hover" class="box" onmouseover="setStatus('Hovering')">Hover Me</div>
+  <div id="drag" class="box" draggable="true">Drag Me</div>
+  <div id="drop" class="box" ondragover="event.preventDefault()"
+       ondrop="event.preventDefault(); setStatus('Dropped!')">Drop Here</div>
+  <div id="status"></div>
+  <div class="spacer"></div>
+  <div id="bottom">Scrolled to the bottom</div>
+  <script>
+    window.c = 0;
+    function setStatus(text) { document.getElementById('status').textContent = text; }
+    document.addEventListener('keydown', e => { if (e.key === 'End') setStatus('Key: End'); });
+  </script>
+</body>
+</html>

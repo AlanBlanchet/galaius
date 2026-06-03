@@ -1,0 +1,25 @@
+.github/memory/
+.vscode/
+
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Test output
+out/
+test_output/
+.env
+
+# VS Code extension build copies — source of truth is src/interact/data/
+vscode-extension/src/models.json
+vscode-extension/src/benchmarks.json
+
+# personal scratch prompt — never commit
+.github/prompt.txt

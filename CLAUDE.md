@@ -1,0 +1,70 @@
+# interact — contributor notes
+
+`interact` is a browser **and** desktop automation MCP server with optional VLM (vision)
+analysis, usable by any MCP client (Claude / Cursor / VS Code+Copilot / Codex / Windsurf /
+Zed / Claude Desktop). One Python core in `src/interact/` drives three surfaces: the
+**CLI**, the **MCP server** (`interact mcp`), and the **VS Code extension**
+(`vscode-extension/`).
+
+## Versioning — semver, batched
+
+- `pyproject.toml` `version` is the source of truth; keep `vscode-extension/package.json`
+  `version` in lock-step (`python -m interact.versioning bump <patch|minor|major>` bumps both;
+  `... check` verifies they agree — the pre-commit hook and CI enforce it).
+- Don't bump on every change. Bump once when cutting a release: **patch** = fix, **minor** =
+  backward-compatible feature, **major** = breaking change.
+- Tags are created by CI on push to `main` (never by hand). Editable installs cache the
+  version — `uv tool install --force --editable .` to refresh `interact --version`.
+
+## Architecture (where things live)
+
+- `desktop_backend.py` — `DesktopBackend` ABC. `LocalBackend` = the real session: a uinput
+  **absolute pointer** (`INPUT_PROP_DIRECT`, maps over the full X root across all monitors)
+  plus a separate uinput keyboard, `maim` capture. `NestedBackend` = an isolated display the
+  agent owns — **Xephyr** (visible) or **Xvfb** (headless). Pick via `select_desktop_backend`.
+- `desktop.py::DesktopWindow` — routes input/capture through a bound `DesktopBackend` when set
+  (the nested sandbox), else the real-display **xdotool** path. `frames.py` converts
+  coordinate spaces (screen ↔ monitor ↔ window ↔ image).
+- `cli.py` is for the user: bare `interact` → the config TUI; `install`/`status` (connectors),
+  `config`, `usage`, `providers`, `doctor`, `update`, `mcp`. **Not** scenarios.
+- `probe.py` (`DetectionProbe` / `Scenario` / `DesktopScenario`) is **test infrastructure**,
+  driven from `tests/`, never a user CLI command.
+- `tui.py` — the bare-`interact` config TUI; persists via `UserConfig` to
+  `~/.interact/config.env`, the same store the CLI reads and the extension mirrors through
+  `SETTING_ENV_MAP`.
+- Data sources of truth: `PackageData` (bundled `models.json` / `benchmarks.json` /
+  `published_scores.json`) and `~/.interact/logs/usage.jsonl` (VLM usage).
+
+## Tool surface model (the MCP API agents see)
+
+Generic actions are ONE tool selected by a `target` param — not a tool per surface — while
+browser-only capabilities stay as their own clearly-named tools:
+
+- **Generic** (`run_actions`, `screenshot`, `get_interactive_elements`, `record`): `target` =
+  `"browser"` (default) | `"screen"` (main monitor) | a window-title string.
+- **Browser-only** (no desktop meaning, stay separate): `navigate`, tab control,
+  `get_page_state`, network/console logs, sessions, `download_asset`, JS eval.
+- **Returns**: a short prose summary first, optional structured trailer; errors prefixed
+  `ERROR:` so an agent can branch.
+
+## Testing
+
+- Bug fix → write the failing test first.
+- Desktop tests use the **nested** sandbox (isolated, free, non-intrusive). The local uinput
+  path is system-wide and can't be isolated, so its rich e2e is opt-in (`INTERACT_LOCAL_E2E=1`).
+- **Never spend on models in unit tests.** A conftest fixture blocks real `litellm` calls in
+  non-`integration` tests, so any un-mocked VLM path fails fast instead of hanging/spending.
+  Real-model tests are `integration`-marked and key-gated; `pytest-timeout` (thread method)
+  turns any residual hang into a named failure.
+- **Availability never calls litellm.** `Model.is_available()` is a pure env-key check —
+  `litellm.validate_environment`/`acompletion` can trigger an interactive device-code auth
+  flow (e.g. the `chatgpt` provider) that blocks forever; never auto-select a keyless provider.
+- Reproduce CI locally with keys cleared + `DISPLAY=` before pushing; drive CI green.
+- Tk fixtures: spawn with a Tk-capable Python (uv's standalone Tk aborts under XCB) and use
+  normal WM-managed windows so click-to-focus works.
+
+## Git
+
+Direct commits to `main` with conventional messages, authored solely by the maintainer —
+**no AI / co-author trailers** in commit messages or PRs. Stage files explicitly. Enable the
+tracked hook once per clone: `git config core.hooksPath .githooks`.

@@ -1,0 +1,314 @@
+import * as vscode from "vscode";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+
+export const SETTING_SECTION = "interact";
+export const IS_SECRET_RE = /KEY|SECRET|TOKEN/i;
+
+// Canonical types — generated from src/interact/api_types.py.
+// Run `vscode-extension/scripts/generate-types.sh` to refresh.
+export type {
+  Model,
+  ModelSpec,
+  ProviderSpec,
+  ModelsConfig,
+  Benchmark,
+  BenchmarkRecommendation,
+  CoordFormat,
+  PublishedEntry,
+  PublishedTable,
+  GroundingResult,
+} from "./generated/types";
+
+import type { ModelSpec, ProviderSpec, ModelsConfig } from "./generated/types";
+
+export interface Action {
+  type: string;
+  label: string;
+  data?: Record<string, string>;
+  style?: "primary" | "secondary";
+}
+
+export type RangeId = "24h" | "7d" | "30d" | "all";
+
+export type CellContent =
+  | {
+      kind: "row";
+      label: string;
+      value?: string;
+      dot?: "ok" | "missing";
+      actions?: Action[];
+      tooltip?: string;
+    }
+  | { kind: "table"; headers: string[]; rows: string[][] }
+  | { kind: "chart"; points: { x: string; y: number }[]; yPrefix?: string }
+  | {
+      kind: "bar-h";
+      bars: { label: string; value: number; color?: string }[];
+      valuePrefix?: string;
+      ariaSummary: string;
+    }
+  | {
+      kind: "stacked-bar";
+      xLabels: string[];
+      series: { name: string; color: string; values: number[] }[];
+      valuePrefix?: string;
+      ariaSummary: string;
+    }
+  | {
+      kind: "small-multiples";
+      panels: {
+        title: string;
+        bars: { label: string; value: number; color: string }[];
+      }[];
+      valuePrefix?: string;
+      ariaSummary: string;
+    }
+  | {
+      kind: "donut";
+      segments: { label: string; value: number; color: string }[];
+      centerLabel?: string;
+      ariaSummary: string;
+    }
+  | {
+      kind: "range-selector";
+      current: RangeId;
+      options: { id: RangeId; label: string }[];
+    }
+  | { kind: "empty"; message: string };
+
+export interface CellUpdate {
+  id: string;
+  title: string;
+  content: CellContent[];
+}
+
+// UI-side enrichment of ModelSpec — generate-models.py injects fields
+// (intelligence_score, coord_format) that the server schema doesn't carry.
+export type ModelInfo = ModelSpec & {
+  coord_format?: string;
+  intelligence_score?: number;
+};
+
+// ProviderSpec's envKeys/models are optional in the generated schema
+// (Pydantic defaults). At runtime the generated models.json always
+// populates them, so the UI assumes presence.
+export type ProviderInfo = ProviderSpec & {
+  envKeys: string[];
+  models: Record<string, ModelInfo>;
+};
+
+// generate-models.py emits extra UI-only top-level keys not present in
+// the server-side ModelsConfig schema.
+export type ModelsData = ModelsConfig & {
+  providers: Record<string, ProviderInfo>;
+  taskDescriptions?: Record<string, string>;
+  keyAliases?: Record<string, string>;
+};
+
+export const SETTING_ENV_MAP: Record<string, string> = {
+  "image.model": "INTERACT_IMAGE_MODEL",
+  "video.model": "INTERACT_VIDEO_MODEL",
+  "video.fps": "INTERACT_VIDEO_FPS",
+  "video.duration": "INTERACT_VIDEO_DURATION",
+  "component.model": "INTERACT_COMPONENT_MODEL",
+  "browser.headless": "INTERACT_HEADLESS",
+  "browser.type": "INTERACT_BROWSER_TYPE",
+  "browser.viewportWidth": "INTERACT_VIEWPORT_WIDTH",
+  "browser.viewportHeight": "INTERACT_VIEWPORT_HEIGHT",
+  "browser.slowMo": "INTERACT_SLOW_MO",
+  "vlm.maxTokens": "INTERACT_MAX_TOKENS",
+  "vlm.waitTimeout": "INTERACT_WAIT_TIMEOUT",
+  "debug.dir": "INTERACT_SCREENSHOT_DUMP_DIR",
+  "desktop.target": "INTERACT_DESKTOP_TARGET",
+  "desktop.nestedDisplay": "INTERACT_NESTED_DISPLAY",
+  "desktop.nestedSize": "INTERACT_NESTED_SIZE",
+};
+
+export const SETTING_TO_TASK: Record<string, string> = {
+  "image.model": "image",
+  "video.model": "video",
+  "component.model": "component",
+};
+
+/** Path of interact's shared config store (the same file the CLI/TUI use). */
+export const INTERACT_CONFIG_PATH = path.join(os.homedir(), ".interact", "config.env");
+
+/**
+ * API-key store backed by interact's own ~/.interact/config.env — NOT VS Code secret
+ * storage. This makes interact the single source of truth for keys: the same file the
+ * `interact` CLI/TUI manage and that the `interact mcp` server reads at startup, so a key
+ * set in any of them is seen everywhere. The constructor still accepts a SecretStorage for
+ * call-site compatibility but ignores it.
+ */
+export class KeyManager {
+  private cache = new Map<string, string>();
+
+  constructor(_secrets?: vscode.SecretStorage) {}
+
+  private static readFile(): Map<string, string> {
+    const map = new Map<string, string>();
+    try {
+      for (const raw of fs.readFileSync(INTERACT_CONFIG_PATH, "utf8").split("\n")) {
+        const line = raw.trim();
+        if (!line || line.startsWith("#")) continue;
+        const eq = line.indexOf("=");
+        if (eq > 0) map.set(line.slice(0, eq).trim(), line.slice(eq + 1).trim());
+      }
+    } catch {
+      /* missing/unreadable file → empty */
+    }
+    return map;
+  }
+
+  private static writeFile(map: Map<string, string>): void {
+    fs.mkdirSync(path.dirname(INTERACT_CONFIG_PATH), { recursive: true });
+    const body = [...map.entries()].map(([k, v]) => `${k}=${v}`).join("\n");
+    fs.writeFileSync(INTERACT_CONFIG_PATH, body + "\n", { mode: 0o600 });
+  }
+
+  async loadAll(allEnvKeys: string[]): Promise<void> {
+    const file = KeyManager.readFile();
+    this.cache = new Map();
+    for (const key of allEnvKeys) {
+      const val = file.get(key);
+      if (val) this.cache.set(key, val);
+    }
+  }
+
+  get(key: string): string | undefined {
+    return this.cache.get(key);
+  }
+
+  async set(key: string, value: string): Promise<void> {
+    const file = KeyManager.readFile();
+    file.set(key, value);
+    KeyManager.writeFile(file);
+    this.cache.set(key, value);
+  }
+
+  async remove(key: string): Promise<void> {
+    const file = KeyManager.readFile();
+    file.delete(key);
+    KeyManager.writeFile(file);
+    this.cache.delete(key);
+  }
+
+  syncCache(key: string, value: string | undefined): void {
+    if (value) this.cache.set(key, value);
+    else this.cache.delete(key);
+  }
+
+  entries(): [string, string][] {
+    return [...this.cache.entries()];
+  }
+
+  missingKeys(required: string[]): string[] {
+    return required.filter((k) => !this.cache.has(k));
+  }
+}
+
+export function formatLabel(key: string): string {
+  return key
+    .split(".")
+    .map((s) => s.replace(/^./, (c) => c.toUpperCase()))
+    .join(" ");
+}
+
+export function cfg() {
+  return vscode.workspace.getConfiguration(SETTING_SECTION);
+}
+
+export function providerOf(
+  model: string,
+  modelsData: ModelsData,
+): string | undefined {
+  for (const [provider, info] of Object.entries(modelsData.providers)) {
+    if (model in info.models) return provider;
+  }
+}
+
+export function metaOf(model: string, data: ModelsData): ModelInfo | undefined {
+  const prov = providerOf(model, data);
+  return prov ? data.providers[prov]?.models[model] : undefined;
+}
+
+/**
+ * Resolve the command to launch interact.
+ * Shared between MCP server registration and dashboard subprocess spawning.
+ */
+export function resolveCommand(log?: vscode.OutputChannel): [string, string[]] {
+  const explicit = cfg().get<string>("projectPath") || "";
+  if (explicit) {
+    log?.appendLine(`Using explicit projectPath: ${explicit}`);
+    return ["uv", ["run", "--directory", explicit, "interact", "mcp"]];
+  }
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  log?.appendLine(`Scanning ${folders.length} workspace folder(s)`);
+  for (const folder of folders) {
+    const p = path.join(folder.uri.fsPath, "pyproject.toml");
+    try {
+      const pyproject = fs.readFileSync(p, "utf8");
+      if (pyproject.includes('name = "interact"')) {
+        log?.appendLine(`Auto-detected project at ${folder.uri.fsPath}`);
+        return ["uv", ["run", "--directory", folder.uri.fsPath, "interact", "mcp"]];
+      }
+    } catch (err) {
+      log?.appendLine(`Skip ${p}: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+  log?.appendLine("No local project found, falling back to uvx");
+  return ["uvx", ["interact", "mcp"]];
+}
+
+/** Locate the project root (parent of an interact pyproject.toml). */
+export function resolveProjectPath(): string | undefined {
+  const explicit = cfg().get<string>("projectPath") || "";
+  if (explicit) return explicit;
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  for (const folder of folders) {
+    const p = path.join(folder.uri.fsPath, "pyproject.toml");
+    try {
+      const pyproject = fs.readFileSync(p, "utf8");
+      if (pyproject.includes('name = "interact"')) {
+        return folder.uri.fsPath;
+      }
+    } catch {}
+  }
+  return undefined;
+}
+
+export async function ensureKeys(
+  provider: string,
+  modelsData: ModelsData,
+  keyManager: KeyManager,
+  emitter: vscode.EventEmitter<void>,
+): Promise<boolean> {
+  const info = modelsData.providers[provider];
+  if (!info) return true;
+  const missing = keyManager.missingKeys(info.envKeys);
+  for (const key of missing) {
+    if (process.env[key]) {
+      const use = await vscode.window.showInformationMessage(
+        `Found ${key} in your environment. Use it?`,
+        "Yes",
+        "No",
+      );
+      if (use === "Yes") {
+        await keyManager.set(key, process.env[key]!);
+        emitter.fire();
+        continue;
+      }
+    }
+    const value = await vscode.window.showInputBox({
+      prompt: `Enter your ${key}`,
+      password: IS_SECRET_RE.test(key),
+      ignoreFocusOut: true,
+    });
+    if (!value) return false;
+    await keyManager.set(key, value);
+    emitter.fire();
+  }
+  return true;
+}
