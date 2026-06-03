@@ -210,6 +210,7 @@ def _resolve_target(
     window: str | None,
     session: str,
 ) -> tuple[DesktopWindow | None, BrowserManager | None, str | None]:
+    config.refresh()  # ~/.interact/config.env is the source of truth: pick up live edits per call
     if window and session != _DEFAULT_SESSION:
         return None, None, "Cannot use both window and session"
     if window:
@@ -488,6 +489,7 @@ async def navigate(
     query: when set, returns vision analysis instead of text summary.
     debug_dir: when set, dump inputs/outputs/screenshots to this directory for debugging.
     """
+    config.refresh()  # ~/.interact/config.env is the source of truth: pick up live edits per call
     inv = Debug.new_invocation_dir(debug_dir, "navigate")
     Debug.dump_input(inv, {"tool": "navigate", "url": url, "query": query, "scope": scope,
                            "wait": wait, "session": session}, config.model_dump(mode="json"))
