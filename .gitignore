@@ -20,6 +20,7 @@ test_output/
 # VS Code extension build copies — source of truth is src/interact/data/
 vscode-extension/src/models.json
 vscode-extension/src/benchmarks.json
+vscode-extension/src/settings.json
 
 # personal scratch prompt — never commit
 .github/prompt.txt

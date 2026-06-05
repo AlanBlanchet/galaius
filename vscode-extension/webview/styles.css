@@ -9,7 +9,7 @@ body {
   color: var(--vscode-editor-foreground);
   background: var(--vscode-editor-background);
   font-size: 13px;
-  line-height: 1.4;
+  line-height: 1.5;
 }
 
 /* Tab bar */
@@ -54,16 +54,17 @@ body {
 
 /* Content area */
 .tab-content {
-  padding: 16px;
+  padding: 18px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 16px;
+  max-width: 880px;
 }
 
 .cell {
   border: 1px solid var(--vscode-widget-border, #333);
-  border-radius: 6px;
-  padding: 14px 16px;
+  border-radius: 8px;
+  padding: 16px 18px;
   background: var(
     --vscode-editorWidget-background,
     var(--vscode-editor-background)
@@ -72,11 +73,26 @@ body {
 
 .cell-title {
   font-weight: 600;
-  margin-bottom: 10px;
-  font-size: 11px;
+  margin-bottom: 12px;
+  font-size: 12px;
   text-transform: uppercase;
-  letter-spacing: 0.8px;
+  letter-spacing: 0.6px;
   color: var(--vscode-descriptionForeground);
+}
+
+/* Group heading inside a cell (settings sections) */
+.group-heading {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--vscode-textLink-foreground, var(--vscode-focusBorder, #4daafc));
+  margin: 14px 0 4px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.18));
+}
+.group-heading:first-child {
+  margin-top: 0;
 }
 
 /* Rows */
@@ -84,9 +100,9 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 6px 0;
-  gap: 8px;
-  min-height: 32px;
+  padding: 8px 0;
+  gap: 12px;
+  min-height: 36px;
 }
 
 .row + .row {
@@ -126,10 +142,10 @@ button {
   background: var(--vscode-button-background);
   color: var(--vscode-button-foreground);
   border: none;
-  padding: 4px 12px;
-  border-radius: 3px;
+  padding: 5px 14px;
+  border-radius: 4px;
   cursor: pointer;
-  font-size: 11px;
+  font-size: 12px;
   font-family: var(--vscode-font-family);
   white-space: nowrap;
 }
@@ -149,8 +165,12 @@ button.secondary:hover {
 
 .model-value {
   font-family: var(--vscode-editor-font-family);
-  opacity: 0.7;
+  opacity: 0.85;
   font-size: 12px;
+}
+
+.row-label {
+  font-size: 13px;
 }
 
 /* Tables */

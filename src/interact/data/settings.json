@@ -1,0 +1,230 @@
+{
+  "settings": [
+    {
+      "key": "image.model",
+      "field": "image_model",
+      "label": "Vision model",
+      "description": "Screenshots & media analysis (the default for most VLM calls).",
+      "group": "Models",
+      "kind": "model",
+      "role": "image",
+      "options": null,
+      "env": "INTERACT_IMAGE_MODEL",
+      "default": ""
+    },
+    {
+      "key": "component.model",
+      "field": "component_model",
+      "label": "Component model",
+      "description": "UI-element detection / GUI grounding (falls back to the vision model).",
+      "group": "Models",
+      "kind": "model",
+      "role": "component",
+      "options": null,
+      "env": "INTERACT_COMPONENT_MODEL",
+      "default": ""
+    },
+    {
+      "key": "video.model",
+      "field": "video_model",
+      "label": "Video model",
+      "description": "Video understanding (needs a model with native video support).",
+      "group": "Models",
+      "kind": "model",
+      "role": "video",
+      "options": null,
+      "env": "INTERACT_VIDEO_MODEL",
+      "default": ""
+    },
+    {
+      "key": "desktop.target",
+      "field": "desktop_target",
+      "label": "Desktop target",
+      "description": "Where desktop automation acts: your real session, or an isolated sandbox.",
+      "group": "Desktop",
+      "kind": "enum",
+      "role": null,
+      "options": [
+        {
+          "label": "local \u2014 your real session",
+          "value": "local"
+        },
+        {
+          "label": "nested \u2014 isolated sandbox display",
+          "value": "nested"
+        }
+      ],
+      "env": "INTERACT_DESKTOP_TARGET",
+      "default": "local"
+    },
+    {
+      "key": "desktop.nestedHeadless",
+      "field": "nested_headless",
+      "label": "Nested headless",
+      "description": "Sandbox only: ON = Xvfb in the background (CI/servers); OFF = Xephyr you can watch.",
+      "group": "Desktop",
+      "kind": "bool",
+      "role": null,
+      "options": null,
+      "env": "INTERACT_NESTED_HEADLESS",
+      "default": "false"
+    },
+    {
+      "key": "desktop.nestedDisplay",
+      "field": "nested_display",
+      "label": "Nested display",
+      "description": "X display number for the sandbox (e.g. 99 \u2192 :99).",
+      "group": "Desktop",
+      "kind": "int",
+      "role": null,
+      "options": null,
+      "env": "INTERACT_NESTED_DISPLAY",
+      "default": "99"
+    },
+    {
+      "key": "desktop.nestedSize",
+      "field": "nested_size",
+      "label": "Nested size",
+      "description": "Sandbox screen size, WIDTHxHEIGHT.",
+      "group": "Desktop",
+      "kind": "str",
+      "role": null,
+      "options": null,
+      "env": "INTERACT_NESTED_SIZE",
+      "default": "1280x800"
+    },
+    {
+      "key": "browser.headless",
+      "field": "headless",
+      "label": "Browser headless",
+      "description": "Run the automation browser without a visible window.",
+      "group": "Browser",
+      "kind": "bool",
+      "role": null,
+      "options": null,
+      "env": "INTERACT_HEADLESS",
+      "default": "true"
+    },
+    {
+      "key": "browser.type",
+      "field": "browser_type",
+      "label": "Browser engine",
+      "description": "Which Playwright engine drives browser automation.",
+      "group": "Browser",
+      "kind": "enum",
+      "role": null,
+      "options": [
+        {
+          "label": "Chromium",
+          "value": "chromium"
+        },
+        {
+          "label": "Firefox",
+          "value": "firefox"
+        },
+        {
+          "label": "WebKit",
+          "value": "webkit"
+        }
+      ],
+      "env": "INTERACT_BROWSER_TYPE",
+      "default": "chromium"
+    },
+    {
+      "key": "browser.viewportWidth",
+      "field": "viewport_width",
+      "label": "Viewport width",
+      "description": "Browser viewport width in pixels.",
+      "group": "Browser",
+      "kind": "int",
+      "role": null,
+      "options": null,
+      "env": "INTERACT_VIEWPORT_WIDTH",
+      "default": "1280"
+    },
+    {
+      "key": "browser.viewportHeight",
+      "field": "viewport_height",
+      "label": "Viewport height",
+      "description": "Browser viewport height in pixels.",
+      "group": "Browser",
+      "kind": "int",
+      "role": null,
+      "options": null,
+      "env": "INTERACT_VIEWPORT_HEIGHT",
+      "default": "720"
+    },
+    {
+      "key": "browser.slowMo",
+      "field": "slow_mo",
+      "label": "Slow-mo (ms)",
+      "description": "Delay added between browser actions, in ms (0 = full speed; useful when watching).",
+      "group": "Browser",
+      "kind": "int",
+      "role": null,
+      "options": null,
+      "env": "INTERACT_SLOW_MO",
+      "default": "0"
+    },
+    {
+      "key": "vlm.maxTokens",
+      "field": "max_tokens",
+      "label": "VLM max tokens",
+      "description": "Cap on VLM output tokens per call (blank = the model's default).",
+      "group": "Advanced",
+      "kind": "int",
+      "role": null,
+      "options": null,
+      "env": "INTERACT_MAX_TOKENS",
+      "default": ""
+    },
+    {
+      "key": "vlm.waitTimeout",
+      "field": "wait_timeout",
+      "label": "Action wait timeout (ms)",
+      "description": "How long a browser action waits for its target before failing (default 10000).",
+      "group": "Advanced",
+      "kind": "int",
+      "role": null,
+      "options": null,
+      "env": "INTERACT_WAIT_TIMEOUT",
+      "default": "10000"
+    },
+    {
+      "key": "video.fps",
+      "field": "video_fps",
+      "label": "Video FPS",
+      "description": "Frames per second sampled from a recording for analysis.",
+      "group": "Advanced",
+      "kind": "int",
+      "role": null,
+      "options": null,
+      "env": "INTERACT_VIDEO_FPS",
+      "default": "5"
+    },
+    {
+      "key": "video.duration",
+      "field": "video_duration",
+      "label": "Video duration (s)",
+      "description": "Default desktop recording length, in seconds.",
+      "group": "Advanced",
+      "kind": "str",
+      "role": null,
+      "options": null,
+      "env": "INTERACT_VIDEO_DURATION",
+      "default": "3.0"
+    },
+    {
+      "key": "debug.dir",
+      "field": "debug_dir",
+      "label": "Debug / output dir",
+      "description": "Where interact writes logs + debug artifacts (blank = ~/.interact; point at a project's out/ when working locally).",
+      "group": "Advanced",
+      "kind": "path",
+      "role": null,
+      "options": null,
+      "env": "INTERACT_DEBUG_DIR",
+      "default": "~/.interact"
+    }
+  ]
+}

@@ -7,9 +7,9 @@ import {
   Action,
   RangeId,
   cfg,
-  SETTING_TO_TASK,
+  SETTINGS,
+  Setting,
   metaOf,
-  formatLabel,
   ensureKeys,
 } from "./shared";
 import {
@@ -172,9 +172,8 @@ export class DashboardPanel {
     const cells: CellUpdate[] = [
       this.statusCell(),
       this.apiKeysCell(),
-      this.modelsCell(),
+      this.settingsCell(),
       await this.consumptionCell(),
-      this.debugDirCell(),
       this.benchmarksCell(),
       this.recommendationsCell(),
     ];
@@ -214,20 +213,9 @@ export class DashboardPanel {
         this.refresh();
         break;
       }
-      case "changeDebugDir": {
-        const value = await vscode.window.showInputBox({
-          prompt: "Debug directory path",
-          value: cfg().get<string>("debug.dir") || "",
-          ignoreFocusOut: true,
-        });
-        if (value !== undefined) {
-          await cfg().update(
-            "debug.dir",
-            value,
-            vscode.ConfigurationTarget.Global,
-          );
-          this.refresh();
-        }
+      case "changeSetting": {
+        const setting = SETTINGS.find((s) => s.key === msg.setting);
+        if (setting) await this.editSetting(setting);
         break;
       }
       case "refresh":
@@ -242,6 +230,39 @@ export class DashboardPanel {
         break;
       }
     }
+  }
+
+  /** Prompt for a setting's new value with the control its kind implies (enum/bool → quick-pick,
+   *  numbers/strings/paths → input box), then persist it. Empty clears the override (→ default). */
+  private async editSetting(s: Setting): Promise<void> {
+    const current = cfg().get<string | number | boolean>(s.key);
+    let value: string | number | boolean | undefined;
+    if (s.kind === "bool") {
+      const pick = await vscode.window.showQuickPick(["on", "off"], {
+        placeHolder: `${s.label} — ${s.description}`,
+      });
+      if (pick === undefined) return;
+      value = pick === "on";
+    } else if (s.kind === "enum") {
+      const pick = await vscode.window.showQuickPick(
+        (s.options ?? []).map((o) => ({ label: o.label, value: o.value })),
+        { placeHolder: `${s.label} — ${s.description}` },
+      );
+      if (!pick) return;
+      value = pick.value;
+    } else {
+      const text = await vscode.window.showInputBox({
+        prompt: `${s.label} — ${s.description}`,
+        value: current === undefined ? "" : String(current),
+        placeHolder: s.default ? `default: ${s.default}` : "",
+        ignoreFocusOut: true,
+      });
+      if (text === undefined) return;
+      value =
+        text === "" ? undefined : s.kind === "int" ? Number(text) : text;
+    }
+    await cfg().update(s.key, value, vscode.ConfigurationTarget.Global);
+    this.refresh();
   }
 
   private statusCell(): CellUpdate {
@@ -282,38 +303,51 @@ export class DashboardPanel {
     return { id: "apiKeys", title: "API Keys", content };
   }
 
-  private modelsCell(): CellUpdate {
+  /** The whole settings panel, rendered from the shared schema (the same spec the `interact`
+   *  TUI shows). Each setting is one row: current value (or its auto/default) + a Change action;
+   *  model rows also show cost and the fallback chain. Grouped by the schema's groups. */
+  private settingsCell(): CellUpdate {
     const recs = this.modelsData.recommendations || {};
     const content: CellContent[] = [];
-    for (const key of Object.keys(SETTING_TO_TASK)) {
-      const value = cfg().get<string>(key) || "(not set)";
-      const meta =
-        value !== "(not set)" ? metaOf(value, this.modelsData) : undefined;
-      let costInfo = "";
-      if (meta?.input_cost_per_million) {
-        costInfo = ` — $${meta.input_cost_per_million}/M in, $${meta.output_cost_per_million ?? 0}/M out`;
+    let group = "";
+    for (const s of SETTINGS) {
+      if (s.group !== group) {
+        group = s.group;
+        content.push({ kind: "heading", text: group });
+      }
+      const raw = cfg().get<string | number | boolean>(s.key);
+      const isSet = raw !== undefined && raw !== "";
+      let value = isSet ? String(raw) : `auto · ${s.default || "default"}`;
+      const action = s.kind === "model" ? "changeModel" : "changeSetting";
+      if (s.kind === "model" && isSet) {
+        const meta = metaOf(String(raw), this.modelsData);
+        if (meta?.input_cost_per_million) {
+          value += ` — $${meta.input_cost_per_million}/M in, $${meta.output_cost_per_million ?? 0}/M out`;
+        }
       }
       content.push({
         kind: "row",
-        label: formatLabel(key) + ":",
-        value: value + costInfo,
-        actions: [
-          { type: "changeModel", label: "Change", data: { setting: key } },
-        ],
+        label: s.label,
+        value,
+        tooltip: s.description,
+        actions: [{ type: action, label: "Change", data: { setting: s.key } }],
       });
-      const task = SETTING_TO_TASK[key];
-      const chain = (recs[task] || []).filter((m) => m !== value).slice(0, 3);
-      if (chain.length) {
-        content.push({
-          kind: "row",
-          label: "  Fallback chain:",
-          value: "→ " + chain.join(" → "),
-          tooltip:
-            "If the primary model fails, the next is tried automatically (max 3 fallbacks).",
-        });
+      if (s.kind === "model") {
+        const chain = (recs[s.role ?? ""] || [])
+          .filter((m) => m !== raw)
+          .slice(0, 3);
+        if (chain.length) {
+          content.push({
+            kind: "row",
+            label: "  ↳ fallback chain",
+            value: chain.join(" → "),
+            tooltip:
+              "If the primary model fails, the next is tried automatically (max 3).",
+          });
+        }
       }
     }
-    return { id: "models", title: "Model Configuration", content };
+    return { id: "settings", title: "Settings", content };
   }
 
   private async consumptionCell(): Promise<CellUpdate> {
@@ -448,21 +482,6 @@ export class DashboardPanel {
         tokensCell,
         { kind: "row", label: "Calls per model" },
         donutCell,
-      ],
-    };
-  }
-
-  private debugDirCell(): CellUpdate {
-    const dir = cfg().get<string>("debug.dir") || "(not set)";
-    return {
-      id: "debugDir",
-      title: "Debug Directory",
-      content: [
-        {
-          kind: "row",
-          label: dir,
-          actions: [{ type: "changeDebugDir", label: "Change" }],
-        },
       ],
     };
   }

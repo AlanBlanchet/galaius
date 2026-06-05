@@ -52,6 +52,7 @@ type CellContent =
       current: RangeId;
       options: { id: RangeId; label: string }[];
     }
+  | { kind: "heading"; text: string }
   | { kind: "empty"; message: string };
 
 interface CellUpdate {
@@ -74,7 +75,7 @@ const TABS = [
   {
     id: "config",
     label: "Configuration",
-    cells: ["apiKeys", "models", "debugDir"],
+    cells: ["apiKeys", "settings"],
   },
 ] as const;
 
@@ -592,6 +593,8 @@ function renderContent(item: CellContent): Node | null {
       return <Donut item={item} />;
     case "range-selector":
       return <RangeSelector item={item} />;
+    case "heading":
+      return <div className="group-heading">{item.text}</div>;
     case "empty":
       return <div className="empty">{item.message}</div>;
   }

@@ -8,7 +8,7 @@ const path = require("path");
 const from = path.resolve(__dirname, "../../src/interact/data");
 const to = path.resolve(__dirname, "../src");
 
-for (const name of ["models.json", "benchmarks.json"]) {
+for (const name of ["models.json", "benchmarks.json", "settings.json"]) {
   fs.cpSync(path.join(from, name), path.join(to, name));
   console.log(`synced ${name} from ${from}`);
 }

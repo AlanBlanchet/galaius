@@ -35,13 +35,12 @@ from textual.widgets import (
 )
 
 from interact.clients import ClientTarget
+from interact.settings_schema import SETTINGS, Setting, groups
 from interact.userconfig import UserConfig
 
-_MODEL_ROLES = (
-    ("image", "Vision model for screenshots and media analysis"),
-    ("component", "UI-element detection / GUI grounding (falls back to the image model)"),
-    ("video", "Video understanding (needs native video support)"),
-)
+# The three model roles (image/component/video) come from the shared schema — the Status tab
+# shows the model resolved for each; the Config tab renders every setting from the same schema.
+_MODEL_SETTINGS = [s for s in SETTINGS if s.kind == "model"]
 _TAB_ORDER = ("tab-status", "tab-connectors", "tab-config", "tab-keys", "tab-usage")
 
 
@@ -51,32 +50,42 @@ def _mask(value: str | None) -> str:
     return f"{value[:4]}…{value[-4:]}" if len(value) > 8 else "•" * len(value)
 
 
-_AUTO = "\x00auto"  # Select sentinel for "no explicit model — use auto" (Select can't hold "")
+_AUTO = "\x00auto"  # Select sentinel for "no explicit value — use the default" (Select can't hold "")
 
 
-def _model_options(role: str) -> list[tuple[str, str]]:
-    """Dropdown choices for a model role: ``(auto)`` first, then the bundled model ids capable
-    of this role (grounding for image/component, video for video) — so a user picks from a list
-    instead of typing ids by hand. Reads bundled JSON only; no network, no registry load."""
-    from interact.data import PackageData
-
-    data = PackageData.models_data()
-    # image/component need grounding; video lists any vision model (the registry tags vlm, no
-    # separate video capability). Falls back to vlm so the list is never empty for a role.
-    cap = "vlm" if role == "video" else "gui_grounding"
-    ids: set[str] = set()
-    for spec in data.get("providers", {}).values():
-        for model_id, mspec in (spec.get("models") or {}).items():
-            if cap in (mspec.get("capabilities") or []):
-                ids.add(model_id)
-    options = [("(auto — best available)", _AUTO)]
-    options += [(mid, mid) for mid in sorted(ids)]
-    return options
+def _field_id(setting: Setting) -> str:
+    """A Textual-safe widget id for a setting (ids can't contain dots)."""
+    return "set-" + setting.key.replace(".", "-")
 
 
-def _model_select_value(role: str) -> str:
-    configured = UserConfig.get(f"{role}.model")
-    return configured if configured else _AUTO
+def _select_options(setting: Setting) -> list[tuple[str, str]]:
+    """(label, value) choices for a model/enum setting. Model dropdowns lead with ``(auto)``
+    mapped to the _AUTO sentinel; enums use the schema's options as-is."""
+    if setting.kind == "model":
+        return [
+            (opt.label, _AUTO if opt.value == "" else opt.value)
+            for opt in setting.model_options()
+        ]
+    return [(opt.label, opt.value) for opt in (setting.options or [])]
+
+
+def _build_widget(setting: Setting):
+    """Render the right Textual control for a setting's kind, pre-filled from the live config.
+    Reads/writes by ``setting.env`` (the canonical INTERACT_* var) so the friendly key naming is
+    free to match the VS Code extension's keys without affecting what's stored."""
+    configured = UserConfig.get(setting.env)
+    wid = _field_id(setting)
+    if setting.kind in ("model", "enum"):
+        if setting.kind == "model":
+            value = configured if configured else _AUTO
+        else:
+            value = configured or setting.default
+        return Select(_select_options(setting), value=value, allow_blank=False, id=wid)
+    if setting.kind == "bool":
+        on = (configured if configured is not None else setting.default).lower() == "true"
+        return Switch(value=on, id=wid)
+    # int / str / path → text input; show the default as a placeholder, not a forced value.
+    return Input(value=configured or "", placeholder=setting.default or "", id=wid)
 
 
 def _known_key_names() -> list[str]:
@@ -111,6 +120,7 @@ class InteractTUI(App):
     Screen { align: center top; }
     .field { height: auto; padding: 1 2 0 2; }
     .field .desc { margin-bottom: 1; }
+    .group-heading { padding: 1 2 0 2; text-style: bold; color: $accent; }
     .row { height: auto; padding: 0 2; }
     .label { width: 24; content-align: left middle; }
     Input, Select { width: 56; }
@@ -142,7 +152,7 @@ class InteractTUI(App):
 
     # Filled by the background worker; placeholders show instantly on first paint.
     _models_info = "[dim]checking…[/dim]"
-    _model_lines = tuple(f"  {role:<10} [dim]…[/dim]" for role, _ in _MODEL_ROLES)
+    _model_lines = tuple(f"  {s.role:<10} [dim]…[/dim]" for s in _MODEL_SETTINGS)
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -166,45 +176,14 @@ class InteractTUI(App):
 
             with TabPane("Config", id="tab-config"):
                 with VerticalScroll():
-                    for role, description in _MODEL_ROLES:
-                        yield from _field(
-                            f"{role} model", description,
-                            Select(_model_options(role), value=_model_select_value(role),
-                                   allow_blank=False, id=f"in-{role}"),
-                        )
-                    yield from _field(
-                        "desktop target",
-                        "Where desktop automation acts: your real session, or an isolated sandbox",
-                        Select([("local — your real session", "local"),
-                                ("nested — isolated sandbox display", "nested")],
-                               value=UserConfig.get("desktop.target") or "local",
-                               allow_blank=False, id="sel-target"),
-                    )
-                    yield from _field(
-                        "nested headless",
-                        "Sandbox only: ON = Xvfb in the background (CI/servers); OFF = Xephyr you can watch",
-                        Switch(value=(UserConfig.get("nested.headless") or "").lower() == "true", id="sw-headless"),
-                    )
-                    yield from _field(
-                        "nested display", "X display number for the sandbox (e.g. 99 → :99)",
-                        Input(value=UserConfig.get("nested.display") or "99", id="in-nested-display"),
-                    )
-                    yield from _field(
-                        "nested size", "Sandbox screen size, WIDTHxHEIGHT",
-                        Input(value=UserConfig.get("nested.size") or "1280x800", id="in-nested-size"),
-                    )
-                    yield from _field(
-                        "browser headless", "Run the automation browser without a visible window",
-                        Switch(value=(UserConfig.get("browser.headless") or "true").lower() == "true",
-                               id="sw-browser-headless"),
-                    )
-                    yield from _field(
-                        "debug dir",
-                        "Where interact writes its logs + debug artifacts (default ~/.interact; "
-                        "point at a project's out/ when working locally)",
-                        Input(value=UserConfig.get("debug.dir") or "", placeholder="~/.interact",
-                              id="in-debug-dir"),
-                    )
+                    # Every field comes from the shared settings schema — the same spec the VS Code
+                    # extension renders — so the two front ends never drift.
+                    for group_name, settings in groups():
+                        yield Label(f"[b]{group_name}[/b]", classes="group-heading")
+                        for setting in settings:
+                            yield from _field(
+                                setting.label, setting.description, _build_widget(setting)
+                            )
                     with Horizontal(classes="actions"):
                         yield Button("Save (Ctrl+S)", variant="primary", id="btn-save-config")
                         yield Button("Reset to defaults", id="btn-reset-config")
@@ -311,10 +290,10 @@ class InteractTUI(App):
                 return chosen or (preferences[0].id if preferences else "?")
 
             lines = []
-            for role, _ in _MODEL_ROLES:
-                configured = UserConfig.get(f"{role}.model")
-                lines.append(f"  {role:<10} {configured}" if configured
-                             else f"  {role:<10} [dim]auto →[/dim] {auto(role)}")
+            for setting in _MODEL_SETTINGS:
+                configured = UserConfig.get(setting.env)
+                lines.append(f"  {setting.role:<10} {configured}" if configured
+                             else f"  {setting.role:<10} [dim]auto →[/dim] {auto(setting.role)}")
             self._model_lines = tuple(lines)
 
             def provider_of(name: str) -> str:
@@ -382,35 +361,43 @@ class InteractTUI(App):
     def action_save_config(self) -> None:
         self._save_config()
 
+    def _widget_value(self, setting: Setting) -> str:
+        """Current on-screen value of a setting's widget, as the string we'd persist."""
+        wid = f"#{_field_id(setting)}"
+        if setting.kind in ("model", "enum"):
+            return str(self.query_one(wid, Select).value)
+        if setting.kind == "bool":
+            return str(self.query_one(wid, Switch).value).lower()
+        return self.query_one(wid, Input).value.strip()
+
+    def _persist(self, setting: Setting, value: str) -> None:
+        """Write a setting, but only when it differs from the default — so config.env holds just
+        the user's overrides (``(auto)``/blank/the default all mean "unset")."""
+        if value in ("", _AUTO) or value == setting.default:
+            UserConfig.unset(setting.env)
+        else:
+            UserConfig.set(setting.env, value)
+
     def _save_config(self) -> None:
-        for role, _ in _MODEL_ROLES:
-            value = self.query_one(f"#in-{role}", Select).value
-            UserConfig.set(f"{role}.model", value) if value and value != _AUTO else UserConfig.unset(f"{role}.model")
-        UserConfig.set("desktop.target", self.query_one("#sel-target", Select).value)
-        UserConfig.set("nested.headless", str(self.query_one("#sw-headless", Switch).value).lower())
-        UserConfig.set("nested.display", self.query_one("#in-nested-display", Input).value.strip() or "99")
-        UserConfig.set("nested.size", self.query_one("#in-nested-size", Input).value.strip() or "1280x800")
-        UserConfig.set("browser.headless", str(self.query_one("#sw-browser-headless", Switch).value).lower())
-        debug_dir = self.query_one("#in-debug-dir", Input).value.strip()
-        UserConfig.set("debug.dir", debug_dir) if debug_dir else UserConfig.unset("debug.dir")
+        for setting in SETTINGS:
+            self._persist(setting, self._widget_value(setting))
         self.query_one("#save-status", Static).update("✓ saved to ~/.interact/config.env")
         self.query_one("#status-body", Static).update(self._status_text())
         self.run_worker(self._load_registry_info, thread=True)  # auto-resolution may change
 
     def _reset_config(self) -> None:
         """Clear all persisted config settings and restore the on-screen defaults."""
-        for role, _ in _MODEL_ROLES:
-            UserConfig.unset(f"{role}.model")
-            self.query_one(f"#in-{role}", Select).value = _AUTO
-        for key in ("desktop.target", "nested.headless", "nested.display", "nested.size",
-                    "browser.headless", "debug.dir"):
-            UserConfig.unset(key)
-        self.query_one("#sel-target", Select).value = "local"
-        self.query_one("#sw-headless", Switch).value = False
-        self.query_one("#in-nested-display", Input).value = "99"
-        self.query_one("#in-nested-size", Input).value = "1280x800"
-        self.query_one("#sw-browser-headless", Switch).value = True
-        self.query_one("#in-debug-dir", Input).value = ""
+        for setting in SETTINGS:
+            UserConfig.unset(setting.env)
+            wid = f"#{_field_id(setting)}"
+            if setting.kind == "model":
+                self.query_one(wid, Select).value = _AUTO
+            elif setting.kind == "enum":
+                self.query_one(wid, Select).value = setting.default
+            elif setting.kind == "bool":
+                self.query_one(wid, Switch).value = setting.default.lower() == "true"
+            else:
+                self.query_one(wid, Input).value = ""
         self.query_one("#save-status", Static).update("✓ reset to defaults")
         self.query_one("#status-body", Static).update(self._status_text())
 

@@ -131,6 +131,11 @@
           "type": "string",
           "default": "1280x800",
           "description": "Screen size of the nested desktop target (WIDTHxHEIGHT)"
+        },
+        "interact.desktop.nestedHeadless": {
+          "type": "boolean",
+          "default": false,
+          "description": "Nested target only: ON = Xvfb in the background (CI/servers); OFF = Xephyr you can watch"
         }
       }
     },
@@ -151,7 +156,7 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
-    "compile": "bash scripts/generate-types.sh && node scripts/sync-data.js && tsc -p ./ && node -e \"try{require('fs').cpSync('src/models.json','out/models.json')}catch{}\" && node -e \"try{require('fs').cpSync('src/benchmarks.json','out/benchmarks.json')}catch{}\" && npm run build:webview",
+    "compile": "bash scripts/generate-types.sh && node scripts/sync-data.js && tsc -p ./ && node -e \"try{require('fs').cpSync('src/models.json','out/models.json')}catch{}\" && node -e \"try{require('fs').cpSync('src/benchmarks.json','out/benchmarks.json')}catch{}\" && node -e \"try{require('fs').cpSync('src/settings.json','out/settings.json')}catch{}\" && npm run build:webview",
     "build:webview": "esbuild webview/app.tsx --bundle --outfile=out/webview.js --format=iife --target=es2022 --jsx=automatic --jsx-import-source=. && cp webview/styles.css out/webview.css",
     "watch": "tsc -watch -p ./",
     "generate-models": "uv run --project .. python scripts/generate-models.py",

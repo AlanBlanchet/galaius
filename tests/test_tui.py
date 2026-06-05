@@ -3,8 +3,14 @@
 import pytest
 from textual.widgets import Input, Select, Static, Switch, TabbedContent
 
-from interact.tui import InteractTUI, _mask
+from interact.settings_schema import by_key
+from interact.tui import InteractTUI, _field_id, _mask
 from interact.userconfig import UserConfig
+
+
+def _sid(key: str) -> str:
+    """The TUI widget id for a setting (rendered from the shared schema)."""
+    return "#" + _field_id(by_key(key))
 
 
 @pytest.fixture
@@ -30,10 +36,10 @@ async def test_tui_saves_config(temp_config):
     # set values and invoke the save handler directly — no dependence on tab-switch timing.
     app = InteractTUI()
     async with app.run_test():
-        app.query_one("#in-image", Select).value = _PICK  # pick from the dropdown, not free text
-        app.query_one("#sel-target", Select).value = "nested"
-        app.query_one("#sw-headless", Switch).value = True
-        app.query_one("#in-debug-dir", Input).value = "/tmp/x/out"
+        app.query_one(_sid("image.model"), Select).value = _PICK  # pick from the dropdown
+        app.query_one(_sid("desktop.target"), Select).value = "nested"
+        app.query_one(_sid("desktop.nestedHeadless"), Switch).value = True
+        app.query_one(_sid("debug.dir"), Input).value = "/tmp/x/out"
         app._save_config()
 
     data = UserConfig.read()
@@ -52,8 +58,8 @@ async def test_tui_reset_to_defaults(temp_config):
     app = InteractTUI()
     async with app.run_test():
         app._reset_config()
-        assert app.query_one("#in-image", Select).value == _AUTO  # back to "(auto)"
-        assert app.query_one("#sel-target", Select).value == "local"
+        assert app.query_one(_sid("image.model"), Select).value == _AUTO  # back to "(auto)"
+        assert app.query_one(_sid("desktop.target"), Select).value == "local"
     data = UserConfig.read()
     assert "INTERACT_IMAGE_MODEL" not in data
     assert "INTERACT_DESKTOP_TARGET" not in data
@@ -67,7 +73,7 @@ async def test_tui_save_auto_unsets_model(temp_config):
     UserConfig.set("image.model", _PICK)
     app = InteractTUI()
     async with app.run_test():
-        app.query_one("#in-image", Select).value = _AUTO  # → unset
+        app.query_one(_sid("image.model"), Select).value = _AUTO  # → unset
         app._save_config()
     assert "INTERACT_IMAGE_MODEL" not in UserConfig.read()
 

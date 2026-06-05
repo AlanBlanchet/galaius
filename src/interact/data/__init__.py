@@ -27,6 +27,7 @@ class PackageData:
     MODELS = "models.json"
     BENCHMARKS = "benchmarks.json"
     PUBLISHED = "published_scores.json"
+    SETTINGS = "settings.json"
 
     @classmethod
     def path(cls, name: str) -> Path:
@@ -48,6 +49,18 @@ class PackageData:
     def models_data(cls) -> dict:
         """Parsed ``models.json`` (env or bundled); ``{}`` when missing or invalid."""
         raw = cls.models_raw()
+        if not raw:
+            return {}
+        try:
+            return json.loads(raw)
+        except (ValueError, TypeError):
+            return {}
+
+    @classmethod
+    def settings_data(cls) -> dict:
+        """Parsed ``settings.json`` — the shared user-settings schema the TUI and the VS Code
+        extension both render from. Regenerate with ``python -m interact.settings_schema``."""
+        raw = cls.read(cls.SETTINGS)
         if not raw:
             return {}
         try:
