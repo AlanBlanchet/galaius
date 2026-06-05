@@ -41,9 +41,13 @@ Generic actions are ONE tool selected by a `target` param — not a tool per sur
 browser-only capabilities stay as their own clearly-named tools:
 
 - **Generic** (`run_actions`, `screenshot`, `get_interactive_elements`, `record`): `target` =
-  `"browser"` (default) | `"screen"` (main monitor) | a window-title string.
+  unset/`"browser"` (default — the browser session named by `session`) | a window-title string
+  (a native desktop window). A desktop `target` and a non-default `session` are mutually
+  exclusive. (Whole-screen capture is not a target yet — only browser + named windows.)
 - **Browser-only** (no desktop meaning, stay separate): `navigate`, tab control,
-  `get_page_state`, network/console logs, sessions, `download_asset`, JS eval.
+  `get_page_state`, network/console logs, sessions, `download_asset`, JS eval. `get_page_state`
+  and no-query `screenshot` also return the page's `ref` list (pure DOM scan, no VLM) so the
+  agent can act by `ref` without a separate `get_interactive_elements` call.
 - **Returns**: a short prose summary first, optional structured trailer; errors prefixed
   `ERROR:` so an agent can branch.
 

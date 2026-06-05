@@ -13,7 +13,7 @@ uv run python tests/fixtures/test_gui.py &
 ### 1. Detect elements
 
 ```
-get_interactive_elements(window="Interact Test", debug_dir="out/")
+get_interactive_elements(target="Interact Test", debug_dir="out/")
 ```
 
 Verify: buttons (Click Me, Toggle, Reset, +, -), entry, switch, drag source, drop target all detected.
@@ -21,7 +21,7 @@ Verify: buttons (Click Me, Toggle, Reset, +, -), entry, switch, drag source, dro
 ### 2. Click button via ref
 
 ```
-run_actions(window="Interact Test", actions=[
+run_actions(target="Interact Test", actions=[
   {"type": "click", "ref": "e<N>"}  # ref for "Click Me" button
 ])
 ```
@@ -31,7 +31,7 @@ Verify: status shows "Clicked: Click Me". Use `observe` to confirm.
 ### 3. Type text via ref
 
 ```
-run_actions(window="Interact Test", actions=[
+run_actions(target="Interact Test", actions=[
   {"type": "click", "ref": "e<N>"},        # click entry field
   {"type": "type_text", "text": "hello"},
   {"type": "screenshot", "query": "What does the echo label show?"}
@@ -43,7 +43,7 @@ Verify: echo label shows "hello".
 ### 4. Toggle switch via ref
 
 ```
-run_actions(window="Interact Test", actions=[
+run_actions(target="Interact Test", actions=[
   {"type": "click", "ref": "e<N>"}  # ref for switch
 ], query="What is the switch status?")
 ```
@@ -53,7 +53,7 @@ Verify: switch_status label shows "ON".
 ### 5. Counter increment via ref
 
 ```
-run_actions(window="Interact Test", actions=[
+run_actions(target="Interact Test", actions=[
   {"type": "click", "ref": "e<N>"},  # ref for "+"
   {"type": "click", "ref": "e<N>"},  # click again
   {"type": "click", "ref": "e<N>"},  # and again
@@ -65,7 +65,7 @@ Verify: counter shows "Count: 3".
 ### 6. Drag & Drop via refs
 
 ```
-run_actions(window="Interact Test", actions=[
+run_actions(target="Interact Test", actions=[
   {"type": "drag", "from_ref": "e<N>", "to_ref": "e<N>"}  # drag source → drop target
 ], query="What does the drop zone say?")
 ```

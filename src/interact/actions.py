@@ -272,7 +272,8 @@ class ScreenshotAction(ObservationAction):
 
 class WaitForAction(ObservationAction):
     type: Literal["wait_for"] = "wait_for"
-    selector: str
+    selector: str | None = None
+    text: str | None = None  # wait until this substring appears in the page's visible text
     state: Literal["visible", "hidden", "attached", "detached"] = "visible"
     timeout: int = 10000
 
@@ -283,7 +284,22 @@ class WaitForAction(ObservationAction):
             raise ValueError("timeout must be > 0")
         return v
 
+    @model_validator(mode="after")
+    def _require_condition(self):
+        if (self.selector is None) == (self.text is None):
+            raise ValueError("Provide exactly one of `selector` or `text` to wait for")
+        return self
+
     async def execute(self, page: Page):
+        # Deterministic alternative to a guessed `sleep`: block until a concrete condition holds
+        # (an element reaches a state, or text appears), then continue — no fixed duration to tune.
+        if self.text is not None:
+            await page.wait_for_function(
+                "t => !!document.body && document.body.innerText.includes(t)",
+                arg=self.text,
+                timeout=self.timeout,
+            )
+            return f"text {self.text!r} appeared"
         await page.wait_for_selector(
             self.selector, state=self.state, timeout=self.timeout
         )
@@ -316,6 +332,8 @@ class AnnotateAction(ObservationAction):
 
 class SleepAction(ObservationAction):
     type: Literal["sleep"] = "sleep"
+    # A FIXED pause. For waiting on content/navigation prefer wait_for (selector/text) or a
+    # `wait` on the preceding action — they block exactly until ready instead of guessing a duration.
     duration: float = Field(1.0, gt=0, le=30)
 
     async def execute(self, page: Page):

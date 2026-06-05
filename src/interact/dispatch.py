@@ -2,6 +2,8 @@ import asyncio
 import base64
 import logging
 
+from playwright.async_api import Error as PlaywrightError, TimeoutError as PlaywrightTimeout
+
 from interact import desktop
 from interact.atspi import AtSpi
 from interact.actions import (
@@ -83,6 +85,48 @@ def _resolve_action_coords(action, wid: int, win: DesktopWindow):
             return 0, 0, None, f"No desktop element matching '{selector}'"
         return el.center_x, el.center_y, el, None
     return 0, 0, None, "Provide x,y, name, ref, selector, or element for desktop action"
+
+
+# Actions that target a DOM element — the ones where "use a stable ref instead" is the right
+# advice on a timeout / ambiguous-selector failure. navigate/evaluate_js/etc. are NOT here:
+# a ref means nothing for them, so their errors pass through with only the dump trimmed.
+_TARGETING_TYPES = frozenset({"click", "hover", "type_text", "drag"})
+
+
+def _selector_of(action):
+    """The selector an action targeted, if any — for a precise timeout message."""
+    return getattr(action, "selector", None)
+
+
+async def _execute_browser_action(action, page):
+    """Run a browser action, converting Playwright's opaque 30s "Timeout exceeded" / strict-mode
+    dumps into a short message. For element-targeting actions a dead/ambiguous selector is the
+    single most common run_actions failure and the recovery is almost always a stable `ref`, so
+    we say so; other actions get the same trim without the (irrelevant) ref nudge."""
+    targets_element = action.type in _TARGETING_TYPES or bool(_selector_of(action))
+    try:
+        return await action.execute(page)
+    except PlaywrightTimeout:
+        sel = _selector_of(action)
+        if not targets_element:
+            raise ValueError(
+                f"{action.type} timed out after the configured wait — check the page state."
+            ) from None
+        where = f" for selector {sel!r}" if sel else ""
+        raise ValueError(
+            f"{action.type} timed out{where}: the target never became actionable. "
+            "Call get_interactive_elements (or get_page_state) and act by `ref` — refs are "
+            "unique and stable; selectors break on dynamic class names and re-renders."
+        ) from None
+    except PlaywrightError as e:
+        first = str(e).splitlines()[0]  # trim Playwright's multi-line call-log dump
+        if not targets_element:
+            raise ValueError(f"{action.type} failed: {first}") from None
+        sel = _selector_of(action)
+        where = f" (selector {sel!r})" if sel else ""
+        raise ValueError(
+            f"{action.type} failed{where}: {first} — try a `ref` from get_interactive_elements."
+        ) from None
 
 
 async def _named_locator(page, action):
@@ -505,12 +549,12 @@ async def _run_actions_browser(
             step_reports.append(_step(i, action.type, report))
 
         elif not action.mutates:
-            result = await action.execute(page)
+            result = await _execute_browser_action(action, page)
             step_reports.append(_step(i, action.type, str(result)))
 
         else:
             before = await _capture(mgr, tab=current_tab)
-            result = await action.execute(page)
+            result = await _execute_browser_action(action, page)
             if action.wait:
                 await _wait_fn(page, action.wait)
             final = await _capture(mgr, tab=current_tab)

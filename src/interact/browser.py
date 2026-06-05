@@ -192,6 +192,12 @@ class BrowserManager:
         if storage_state is not None:
             kwargs["storage_state"] = storage_state
         self._context = await self._browser.new_context(**kwargs)
+        # Fail fast on a missing/non-actionable selector: Playwright's 30s default makes a bad
+        # selector hang the agent for half a minute before erroring. config.wait_timeout (10s) is
+        # the one knob; a dead selector then surfaces as an actionable nudge (see dispatch) in ~10s.
+        from interact.runtime import config
+
+        self._context.set_default_timeout(config.wait_timeout)
         await self._context.grant_permissions(["clipboard-read", "clipboard-write"])
         page = await self._context.new_page()
         self._attach_page_listeners(page)

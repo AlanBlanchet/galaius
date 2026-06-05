@@ -228,14 +228,18 @@ def _find_desktop_window(title: str) -> DesktopWindow | str:
 
 
 def _resolve_target(
-    window: str | None,
+    target: str | None,
     session: str,
 ) -> tuple[DesktopWindow | None, BrowserManager | None, str | None]:
+    """Resolve the one `target` param to a surface. ``None``/``"browser"`` → the browser session
+    named by `session` (the default). Any other string → a desktop window matched by title.
+    Unifies the old `window`/`session` split into a single "what am I driving?" choice."""
     config.refresh()  # ~/.interact/config.env is the source of truth: pick up live edits per call
-    if window and session != _DEFAULT_SESSION:
-        return None, None, "Cannot use both window and session"
-    if window:
-        result = _find_desktop_window(window)
+    is_desktop = bool(target) and target.strip().lower() != "browser"
+    if is_desktop and session != _DEFAULT_SESSION:
+        return None, None, "Cannot combine a desktop `target` with a browser `session`"
+    if is_desktop:
+        result = _find_desktop_window(target)
         if isinstance(result, str):
             return None, None, result
         return result, None, None
@@ -384,12 +388,16 @@ async def _capture(mgr: BrowserManager, scope: str | None = None, tab: int = 0):
     return state
 
 
-async def _annotate_page(
+async def _scan_elements(
     mgr: BrowserManager,
     tab: int = 0,
     scope: str | None = None,
     limit: int = DEFAULT_LIMIT,
-) -> tuple[bytes, list[InteractiveElement]]:
+) -> list[InteractiveElement]:
+    """The DOM scan behind every browser ref — pure ``page.evaluate`` over the page's own DOM,
+    NO VLM. It sets ``data-interact-ref`` attributes and returns the elements, so refs are
+    model-agnostic (they work with any configured model, or none) and free to surface widely.
+    The element map is registered so a following run_actions can act by these refs."""
     page = await mgr.get_page(tab)
     raw_boxes = await page.evaluate(_ANNOTATE_JS, {"scope": scope, "limit": limit})
     elements = [
@@ -405,6 +413,18 @@ async def _annotate_page(
         )
         for i, raw in enumerate(raw_boxes)
     ]
+    mgr.set_element_map(tab, elements)
+    return elements
+
+
+async def _annotate_page(
+    mgr: BrowserManager,
+    tab: int = 0,
+    scope: str | None = None,
+    limit: int = DEFAULT_LIMIT,
+) -> tuple[bytes, list[InteractiveElement]]:
+    elements = await _scan_elements(mgr, tab, scope, limit)
+    page = await mgr.get_page(tab)
     screenshot_bytes = await page.screenshot(type="png")
     return annotate_screenshot(screenshot_bytes, elements), elements
 
@@ -417,7 +437,6 @@ async def _annotate_and_describe(
     limit: int = DEFAULT_LIMIT,
 ) -> str:
     annotated_bytes, elements = await _annotate_page(mgr, tab, scope, limit)
-    mgr.set_element_map(tab, elements)
     element_list = format_element_list(elements)
     context = (
         f"Annotated page with {len(elements)} interactive elements:\n{element_list}"
@@ -541,17 +560,18 @@ async def run_actions(
     scope: str | None = None,
     wait: str | None = None,
     debug_dir: str | None = None,
-    window: str | None = None,
+    target: str | None = None,
     session: str = _DEFAULT_SESSION,
 ) -> str:
     """Execute a sequence of actions on a browser session or desktop window.
 
-    TARGET — pick ONE surface:
-    - A web page (the common case): omit `window`; actions run on browser session "default"
-      (or `session`). This is the default — leave both unset for normal web automation.
+    TARGET — the `target` param picks ONE surface:
+    - A web page (the common case): leave `target` unset (or "browser"); actions run on browser
+      session "default" (or the named `session`). This is the default for all web automation.
     - A NATIVE desktop app (not a web page — e.g. a terminal, editor, Electron/GTK/Qt window):
-      pass `window=<title substring>`. Call list_desktop_windows FIRST to discover exact titles.
-    `window` and `session` are mutually exclusive. If your work is a website, do NOT set `window`.
+      set `target=<window title substring>`. Call list_desktop_windows FIRST to discover titles.
+    A desktop `target` and a non-default `session` are mutually exclusive. For a website, leave
+    `target` unset.
 
     PREFER REFS OVER COORDINATES: first call get_interactive_elements, then target elements by
     `ref` (browser) or `element` index (desktop) in click/type_text/hover/drag. Raw `x`,`y` are
@@ -564,12 +584,15 @@ async def run_actions(
     Mutating: click, type_text, scroll, drag, navigate, evaluate_js, upload_file, key_press, click_element
     Observations: screenshot, wait_for, http_request, hover, annotate
     Tab control: new_tab, switch_tab, close_tab
-    Timing: sleep — pause execution for a duration (max 30s), useful for waiting on animations or delayed UI updates.
+    Timing: sleep — a FIXED pause (max 30s). Use ONLY for genuine fixed delays (e.g. an
+      animation). To wait on something concrete, do NOT sleep-and-guess: attach `wait` to the
+      preceding action, or add a `wait_for` step — both block exactly until the condition holds.
     Comparison: compare — VLM comparison of snapshots from earlier steps (by 1-based index).
 
-    Browser-only actions (navigate, evaluate_js, wait_for, upload_file, new_tab, switch_tab, close_tab) error when used with window.
+    Browser-only actions (navigate, evaluate_js, wait_for, upload_file, new_tab, switch_tab, close_tab) error when used with a desktop target.
 
     Any action can include 'wait' to wait after execution (networkidle, load, domcontentloaded, or a CSS selector — browser only).
+    wait_for blocks until a `selector` reaches a state OR a `text` substring appears — prefer it over `sleep` for content/navigation.
     Any action can include 'observe' (a VLM query string) to capture a screenshot after execution and analyze it. The snapshot is stored by step index for later compare actions.
 
     scope: CSS selector to restrict the final capture to a page sub-tree (browser only).
@@ -580,9 +603,9 @@ async def run_actions(
     config.refresh()  # source of truth before we snapshot the resolved config
     inv = Debug.new_invocation_dir(debug_dir, _DBG_ACTIONS)
     Debug.dump_input(inv, {"tool": "run_actions", "actions": [a.model_dump() for a in actions],
-                           "query": query, "scope": scope, "wait": wait, "window": window,
+                           "query": query, "scope": scope, "wait": wait, "target": target,
                            "session": session}, _resolved_config(None, "component"))
-    win, mgr, err = _resolve_target(window, session)
+    win, mgr, err = _resolve_target(target, session)
     if err:
         Debug.dump_output(inv, err)
         return err
@@ -605,15 +628,15 @@ async def screenshot(
     path: str | None = None,
     return_image: bool = False,
     debug_dir: str | None = None,
-    window: str | None = None,
+    target: str | None = None,
     session: str = _DEFAULT_SESSION,
     model: str | None = None,
 ):
     """Capture the current page or a desktop window.
 
-    Default: operates on browser session "default".
-    With window: captures a desktop window by title (use list_desktop_windows to discover).
-    window and session are mutually exclusive.
+    Default (target unset): operates on browser session "default".
+    target=<window title>: captures a desktop window (use list_desktop_windows to discover).
+    A desktop target and a non-default session are mutually exclusive.
 
     Returns depend on parameters:
     - No selector/element, no query: page title + visible text content (browser) or, for a
@@ -635,9 +658,9 @@ async def screenshot(
     config.refresh()  # source of truth before we snapshot the resolved config
     inv = Debug.new_invocation_dir(debug_dir, "screenshot")
     Debug.dump_input(inv, {"tool": "screenshot", "query": query, "scope": scope, "selector": selector,
-                           "element": element, "window": window, "session": session, "model": model},
+                           "element": element, "target": target, "session": session, "model": model},
                      _resolved_config(model, "image"))
-    win, mgr, err = _resolve_target(window, session)
+    win, mgr, err = _resolve_target(target, session)
     if err:
         Debug.dump_output(inv, err)
         return err
@@ -697,7 +720,16 @@ async def screenshot(
                 session, await _analyze(state, query, model_override=model)
             )
         else:
-            text = _session_response(session, state.text_summary())
+            # No query → no VLM. Surface the page's refs (pure DOM scan) so the capture is
+            # actionable: the agent can click/type by `ref` without a follow-up detect call.
+            elements = await _scan_elements(mgr, 0, scope)
+            refs = (
+                f"\n\nInteractive elements (act by ref in run_actions):\n"
+                f"{format_element_list(elements)}"
+                if elements
+                else ""
+            )
+            text = _session_response(session, state.text_summary() + refs)
     if img_bytes is not None:
         Debug.save("capture", img_bytes, ext="png", invocation_id=inv)
     result = [text, Image(data=img_bytes, format="png")] if (return_image and img_bytes is not None) else text
@@ -713,7 +745,7 @@ async def get_interactive_elements(
     limit: int = DEFAULT_LIMIT,
     tab: int = 0,
     debug_dir: str | None = None,
-    window: str | None = None,
+    target: str | None = None,
     session: str = _DEFAULT_SESSION,
     method: str = "default",
     model: str | None = None,
@@ -721,9 +753,10 @@ async def get_interactive_elements(
     """Annotate interactive elements with numbered badges and return their details. Call this
     FIRST, then act by the returned `ref`/`element` in run_actions — never guess pixel x,y.
 
-    Default: operates on browser session "default". Sets data-interact-ref attributes on DOM elements.
-    With window: uses VLM to detect interactive elements in a desktop window screenshot.
-    window and session are mutually exclusive. Use list_desktop_windows to discover windows.
+    Default (target unset): browser session "default" — sets data-interact-ref attributes via a
+    pure DOM scan (no VLM). NOTE: get_page_state and screenshot now return these refs too, so you
+    often already have them. target=<window title>: VLM-detects elements in a desktop window.
+    A desktop target and a non-default session are mutually exclusive (list_desktop_windows lists them).
 
     Returns a numbered list with role/name for each element.
     Use element indices in subsequent click_element actions, or ref values for click/type_text/hover (browser only).
@@ -738,10 +771,10 @@ async def get_interactive_elements(
     config.refresh()  # source of truth before we snapshot the resolved config
     inv = Debug.new_invocation_dir(debug_dir, _DBG_ELEMENTS)
     Debug.dump_input(inv, {"tool": "get_interactive_elements", "query": query, "scope": scope,
-                           "element": element, "limit": limit, "tab": tab, "window": window,
+                           "element": element, "limit": limit, "tab": tab, "target": target,
                            "session": session, "method": method, "model": model},
                      _resolved_config(model, "component"))
-    win, mgr, err = _resolve_target(window, session)
+    win, mgr, err = _resolve_target(target, session)
     if err:
         Debug.dump_output(inv, err)
         return err
@@ -776,16 +809,27 @@ async def get_interactive_elements(
 async def get_page_state(
     scope: str | None = None, session: str = _DEFAULT_SESSION
 ) -> str:
-    """Get current page URL, title, accessibility tree, focused element, and visible text. scope: CSS selector to restrict to a page sub-tree."""
+    """Get current page URL, title, accessibility tree, focused element, visible text, and the
+    page's interactive elements as a numbered `ref` list — so you can act by `ref` in run_actions
+    immediately, no separate get_interactive_elements call needed. Refs come from a pure DOM scan
+    (no VLM, works with any model). scope: CSS selector to restrict to a page sub-tree."""
+    config.refresh()
     mgr = _sessions.get(session)
     state = await _capture(mgr, scope)
+    elements = await _scan_elements(mgr, 0, scope)
+    refs = (
+        f"Interactive elements (act by ref in run_actions):\n{format_element_list(elements)}"
+        if elements
+        else "Interactive elements: none detected"
+    )
     return _session_response(
         session,
         f"URL: {state.url}\n"
         f"Title: {state.title}\n"
         f"Focused: {state.focused_element}\n\n"
         f"Accessibility Tree:\n{state.accessibility_tree}\n\n"
-        f"Visible Text:\n{state.visible_text}",
+        f"Visible Text:\n{state.visible_text}\n\n"
+        f"{refs}",
     )
 
 
@@ -884,22 +928,22 @@ async def record(
     duration: float | None = None,
     fps: int | None = None,
     path: str | None = None,
-    window: str | None = None,
+    target: str | None = None,
     session: str = _DEFAULT_SESSION,
 ) -> str:
     """Record actions as video and optionally analyze with vision.
 
-    Browser (session): Two-step — record(start=True) then perform actions then record(start=False).
-    Desktop (window): Records for duration seconds, then returns.
-    window and session are mutually exclusive. Use list_desktop_windows to discover windows.
+    Browser (target unset): Two-step — record(start=True), perform actions, then record(start=False).
+    Desktop (target=<window title>): records for duration seconds, then returns.
+    A desktop target and a non-default session are mutually exclusive (list_desktop_windows lists them).
 
     start: True to begin recording, False to stop and export (browser only).
     query: question for VLM visual analysis of the recording.
-    duration: recording length in seconds (when recording a window, default from config).
-    fps: frames per second (when recording a window, default from config).
+    duration: recording length in seconds (desktop target, default from config).
+    fps: frames per second (desktop target, default from config).
     path: save the video file to this path.
     """
-    win, mgr, err = _resolve_target(window, session)
+    win, mgr, err = _resolve_target(target, session)
     if err:
         return err
     if win:
