@@ -18,7 +18,6 @@ export type {
   CoordFormat,
   PublishedEntry,
   PublishedTable,
-  GroundingResult,
 } from "./generated/types";
 
 import type { ModelSpec, ProviderSpec, ModelsConfig } from "./generated/types";

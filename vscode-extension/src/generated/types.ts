@@ -14,11 +14,11 @@ export type ModelCapability = "llm" | "vlm" | "gui_grounding";
 export type BoxOrder = "xyxy" | "yxyx" | "xywh";
 
 /**
- * A published benchmark for evaluating VLM capability.
+ * A benchmark for evaluating VLM capability.
  *
- * Published scores live in :attr:`published` (immutable snapshot).
- * Measured scores (from our own eval runs) live in :attr:`_measured`,
- * keyed by ``Model.id``.
+ * Scores come from published online leaderboards (:attr:`published`). Optional
+ * measured scores — injected via ``INTERACT_GROUNDING_JSON`` (e.g. fetched from an
+ * online source), never from our own paid eval — live in :attr:`_measured`.
  */
 export interface Benchmark {
   id: string;
@@ -83,23 +83,6 @@ export interface CoordFormat {
   box_key?: string;
   divisor?: number;
   prompt_template?: string;
-}
-/**
- * Per-model evaluation result. Persisted as JSON next to models.json.
- */
-export interface GroundingResult {
-  model_id: string;
-  dataset: string;
-  split: string;
-  n_samples: number;
-  overall_accuracy: number;
-  text_accuracy: number;
-  icon_accuracy: number;
-  by_source: {
-    [k: string]: number;
-  };
-  ran_at: string;
-  commit_sha?: string | null;
 }
 export interface ModelSpec {
   input_cost_per_million?: number | null;
