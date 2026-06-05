@@ -239,7 +239,11 @@ def _resolve_target(
     if is_desktop and session != _DEFAULT_SESSION:
         return None, None, "Cannot combine a desktop `target` with a browser `session`"
     if is_desktop:
-        result = _find_desktop_window(target)
+        t = target.strip()
+        if t.lower() == "screen" or t.lower().startswith("screen:"):
+            result = DesktopWindow.screen(t)
+        else:
+            result = _find_desktop_window(t)
         if isinstance(result, str):
             return None, None, result
         return result, None, None
@@ -570,6 +574,8 @@ async def run_actions(
       session "default" (or the named `session`). This is the default for all web automation.
     - A NATIVE desktop app (not a web page — e.g. a terminal, editor, Electron/GTK/Qt window):
       set `target=<window title substring>`. Call list_desktop_windows FIRST to discover titles.
+    - The whole desktop: `target="screen"` (all monitors combined) or `target="screen:<index>"`
+      for one monitor (list_desktop_windows shows the monitor indexes).
     A desktop `target` and a non-default `session` are mutually exclusive. For a website, leave
     `target` unset.
 
@@ -635,7 +641,8 @@ async def screenshot(
     """Capture the current page or a desktop window.
 
     Default (target unset): operates on browser session "default".
-    target=<window title>: captures a desktop window (use list_desktop_windows to discover).
+    target=<window title>: captures a desktop window. target="screen"/"screen:<index>": the whole
+    desktop or one monitor (use list_desktop_windows to discover windows + monitor indexes).
     A desktop target and a non-default session are mutually exclusive.
 
     Returns depend on parameters:
@@ -755,7 +762,8 @@ async def get_interactive_elements(
 
     Default (target unset): browser session "default" — sets data-interact-ref attributes via a
     pure DOM scan (no VLM). NOTE: get_page_state and screenshot now return these refs too, so you
-    often already have them. target=<window title>: VLM-detects elements in a desktop window.
+    often already have them. target=<window title>: VLM-detects elements in a desktop window;
+    target="screen"/"screen:<index>": VLM-detects across the whole desktop or one monitor.
     A desktop target and a non-default session are mutually exclusive (list_desktop_windows lists them).
 
     Returns a numbered list with role/name for each element.
@@ -914,11 +922,23 @@ async def get_console_log(
 
 @mcp.tool()
 async def list_desktop_windows() -> str:
-    """List all visible desktop windows."""
+    """List desktop targets for the `target` param: each connected monitor (target="screen" for
+    the whole desktop, or target="screen:<index>" for one monitor) and each open window (target
+    by title)."""
+    monitors = DesktopWindow.monitors()
     windows = DesktopWindow.all()
-    if not windows:
+    if not monitors and not windows:
         return _NO_WINDOWS_MSG
-    return DesktopWindow.listing(windows)
+    parts = []
+    if monitors:
+        mon_lines = "\n".join(
+            f"  target=\"screen:{m['index']}\" — {m['name']} ({m['w']}x{m['h']} at {m['x']},{m['y']})"
+            for m in monitors
+        )
+        parts.append(f'Screens (target="screen" = all {len(monitors)} combined):\n{mon_lines}')
+    if windows:
+        parts.append(f"Windows (target=<title>):\n{DesktopWindow.listing(windows)}")
+    return "\n\n".join(parts)
 
 
 @mcp.tool()

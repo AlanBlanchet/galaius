@@ -15,14 +15,20 @@ _DND_DISPATCH_JS = (Path(__file__).parent / "js" / "dnd_dispatch.js").read_text(
 _JS_NEEDS_ASYNC = re.compile(r"\b(return|await)\b")
 
 
-def _wrap_js(script: str) -> str:
-    """Make a multi-statement script's top-level ``return``/``await`` valid for
-    ``page.evaluate``. Agents naturally write ``const r = await fetch(...); return r.status`` —
-    bare, that raises "Illegal return statement" / "await is only valid in async functions",
-    because ``evaluate`` runs the string as a function *body* only when it is itself a function.
-    Wrapping in an async IIFE makes both legal. A single expression (``document.title``) has
-    neither keyword and is passed through untouched, so its value is still returned."""
+def _wrap_js(script: str, has_args: bool = False) -> str:
+    """Prepare a script for ``page.evaluate`` so agents can write natural JS.
+
+    Without args: a multi-statement script's top-level ``return``/``await`` is otherwise illegal
+    (``page.evaluate`` only runs a string as a function body when it IS a function), so wrap it in
+    an async IIFE. A single expression (``document.title``) has neither keyword and passes through
+    untouched, so its value is still returned.
+
+    With args: emit an ``async (args) => {{ ... }}`` function expression — Playwright invokes it
+    with the serialised ``args`` value, which the script reads as ``args``. The body should
+    ``return`` the value it wants back."""
     src = script.strip()
+    if has_args:
+        return f"async (args) => {{ {src} }}"
     if _JS_NEEDS_ASYNC.search(src):
         return f"(async () => {{ {src} }})()"
     return src
@@ -257,8 +263,14 @@ class NavigateAction(Action):
 class EvaluateJsAction(Action):
     type: Literal["evaluate_js"] = "evaluate_js"
     script: str
+    # Optional JSON-serialisable value passed to the script as `args` (Playwright serialises it
+    # across to the page). Lets a script be parameterised by data instead of string-building it
+    # into the source — e.g. {"type":"evaluate_js","script":"return args.ids.length","args":{...}}.
+    args: object | None = None
 
     async def execute(self, page: Page):
+        if self.args is not None:
+            return await page.evaluate(_wrap_js(self.script, has_args=True), self.args)
         return await page.evaluate(_wrap_js(self.script))
 
 

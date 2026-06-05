@@ -42,14 +42,32 @@ browser-only capabilities stay as their own clearly-named tools:
 
 - **Generic** (`run_actions`, `screenshot`, `get_interactive_elements`, `record`): `target` =
   unset/`"browser"` (default — the browser session named by `session`) | a window-title string
-  (a native desktop window). A desktop `target` and a non-default `session` are mutually
-  exclusive. (Whole-screen capture is not a target yet — only browser + named windows.)
+  (a native desktop window) | `"screen"` (whole virtual desktop) | `"screen:<index>"` or
+  `"screen:<output>"` (one monitor, enumerated via `xrandr --listmonitors`, shown by
+  `list_desktop_windows`). A desktop `target` and a non-default `session` are mutually exclusive.
+  Screen/monitor targets capture via `maim` geometry and map input by the region origin (so
+  multi-monitor clicks land on the right screen).
 - **Browser-only** (no desktop meaning, stay separate): `navigate`, tab control,
   `get_page_state`, network/console logs, sessions, `download_asset`, JS eval. `get_page_state`
   and no-query `screenshot` also return the page's `ref` list (pure DOM scan, no VLM) so the
   agent can act by `ref` without a separate `get_interactive_elements` call.
 - **Returns**: a short prose summary first, optional structured trailer; errors prefixed
   `ERROR:` so an agent can branch.
+
+## Dogfood client logs (do this BEFORE each iteration)
+
+`interact` is consumed as an MCP server by the user's other projects; those clients (Claude
+Code) log every tool call + result under `~/.claude/projects`. Real usage fails in ways the
+tests don't. **Before starting work each time, run the scan** and fold any new errors into the
+iteration — don't wait for a bug report:
+
+```bash
+uv run python scripts/scan_client_errors.py            # last 24h, grouped by error
+uv run python scripts/scan_client_errors.py --all      # whole-history taxonomy
+```
+
+Note: the editable install is live, so a reconnecting client can momentarily run half-edited
+source — verify a surprising logged error against committed code before treating it as a bug.
 
 ## Testing
 

@@ -260,6 +260,9 @@ class CoordTransform(BaseModel):
         return buf.getvalue(), new_w, new_h
 
 
+_SCREEN_WID = -1  # synthetic wid base for screen targets — a cache key, never a real X window
+
+
 class DesktopWindow(BaseModel):
     name: str
     wid: int
@@ -267,6 +270,11 @@ class DesktopWindow(BaseModel):
     h: int
     x: int
     y: int
+
+    # Set for a whole-screen / single-monitor target: capture via `maim` geometry instead of a
+    # window id, and treat detected coords as screen-relative (no window to activate, no
+    # decoration offset). "" = the whole virtual screen; "WxH+X+Y" = one monitor's region.
+    screen_geometry: str | None = None
 
     # When bound (e.g. to a nested sandbox backend), input/capture route through the
     # DesktopBackend instead of the default real-display xdotool path. Left unset for the
@@ -277,6 +285,69 @@ class DesktopWindow(BaseModel):
     @property
     def area(self) -> int:
         return self.w * self.h
+
+    @property
+    def is_screen(self) -> bool:
+        return self.screen_geometry is not None
+
+    @classmethod
+    def monitors(cls) -> list[dict]:
+        """Connected monitors via ``xrandr --listmonitors`` — index, output name, and pixel
+        geometry — so an agent can target a specific screen on a multi-monitor setup."""
+        try:
+            out = subprocess.check_output(
+                ["xrandr", "--listmonitors"], text=True, timeout=5
+            )
+        except (FileNotFoundError, subprocess.SubprocessError):
+            return []
+        # `xrandr --listmonitors` line, e.g.:
+        #   " 0: +*DP-1 2560/598x1440/336+0+0  DP-1"
+        # The first token after the index carries flags (+*); the clean output name is the LAST
+        # token. Capture: index, WxH+X+Y from the geometry token, and the trailing output name.
+        mons: list[dict] = []
+        for line in out.splitlines():
+            m = re.match(
+                r"\s*(\d+):\s+\S+\s+(\d+)/\d+x(\d+)/\d+\+(\d+)\+(\d+)\s+(\S+)", line
+            )
+            if m:
+                mons.append(
+                    {
+                        "index": int(m.group(1)),
+                        "name": m.group(6),
+                        "w": int(m.group(2)),
+                        "h": int(m.group(3)),
+                        "x": int(m.group(4)),
+                        "y": int(m.group(5)),
+                    }
+                )
+        return mons
+
+    @classmethod
+    def screen(cls, spec: str = "screen") -> "DesktopWindow | str":
+        """Build a capture target for the whole virtual screen (``spec="screen"``) or a single
+        monitor (``"screen:0"`` by index, or ``"screen:HDMI-1"`` by output name). Returns an
+        error string listing the monitors if the requested one isn't found."""
+        rest = spec.split(":", 1)[1].strip() if ":" in spec else ""
+        mons = cls.monitors()
+        if not rest:  # whole virtual screen = bounding box of every monitor; bare `maim` captures it
+            w = max((mm["x"] + mm["w"] for mm in mons), default=0)
+            h = max((mm["y"] + mm["h"] for mm in mons), default=0)
+            return cls(name="screen", wid=_SCREEN_WID, x=0, y=0, w=w, h=h, screen_geometry="")
+        mon = next((mm for mm in mons if rest.isdigit() and mm["index"] == int(rest)), None)
+        if mon is None:
+            mon = next((mm for mm in mons if mm["name"].lower() == rest.lower()), None)
+        if mon is None:
+            listing = ", ".join(f"{mm['index']}:{mm['name']}" for mm in mons) or "none detected"
+            return f"No monitor '{rest}'. Available monitors: {listing}"
+        return cls(
+            name=f"screen:{mon['index']} ({mon['name']})",
+            wid=_SCREEN_WID - 1 - mon["index"],  # distinct per monitor → no ref-cache collision
+            x=mon["x"],
+            y=mon["y"],
+            w=mon["w"],
+            h=mon["h"],
+            screen_geometry=f"{mon['w']}x{mon['h']}+{mon['x']}+{mon['y']}",
+        )
 
     @classmethod
     def find_in(cls, backend, title: str) -> Self | None:
@@ -341,6 +412,10 @@ class DesktopWindow(BaseModel):
     def capture(self) -> bytes:
         if self._backend is not None:
             return self._backend.capture_window(self.name)
+        if self.screen_geometry is not None:
+            # whole virtual screen → bare `maim`; a single monitor → `maim -g WxH+X+Y`.
+            cmd = ["maim", "-g", self.screen_geometry] if self.screen_geometry else ["maim"]
+            return subprocess.check_output(cmd, timeout=10)
         return subprocess.check_output(["maim", "-i", str(self.wid)], timeout=10)
 
     def capture_video(self, duration: float = 3.0, fps: int = 10) -> bytes:
@@ -396,6 +471,26 @@ class DesktopWindow(BaseModel):
     def _to_xdotool(self, x: int, y: int) -> tuple[int, int]:
         return CoordTransform.get(self.wid).screenshot_to_xdotool(x, y)
 
+    def _input_xy(self, x: int, y: int) -> tuple[int, int]:
+        """Capture-space (x, y) → absolute screen coords for xdotool. A screen/monitor target's
+        detected coords are relative to the captured region, so map by the region origin; a
+        window target maps through its stored CoordTransform (decoration/shadow offsets)."""
+        if self.is_screen:
+            return self.x + x, self.y + y
+        return self._to_xdotool(x, y)
+
+    async def _activate(self):
+        """Raise the target window before input — a no-op for a screen target (no window to
+        raise; the local pointer is already absolute over the whole root)."""
+        if not self.is_screen:
+            await self._run("xdotool", "windowactivate", "--sync", str(self.wid))
+
+    async def _focus(self):
+        if self.is_screen:
+            return
+        await self._run("xdotool", "windowactivate", "--sync", str(self.wid))
+        await self._run("xdotool", "windowfocus", "--sync", str(self.wid))
+
     _BUTTON_NAMES = {1: "left", 2: "middle", 3: "right"}
 
     async def click(self, x: int, y: int, button: int = 1):
@@ -404,8 +499,8 @@ class DesktopWindow(BaseModel):
             sx, sy = self.to_screen(x, y)
             await asyncio.to_thread(self._backend.click, sx, sy, self._BUTTON_NAMES.get(button, "left"))
             return
-        xdo_x, xdo_y = self._to_xdotool(x, y)
-        await self._run("xdotool", "windowactivate", "--sync", str(self.wid))
+        xdo_x, xdo_y = self._input_xy(x, y)
+        await self._activate()
         await asyncio.sleep(_FOCUS_DELAY)
         await self._xdo(self.wid, "mousemove", str(xdo_x), str(xdo_y))
         await asyncio.sleep(_FOCUS_DELAY)
@@ -415,8 +510,7 @@ class DesktopWindow(BaseModel):
         if self._backend is not None:
             await asyncio.to_thread(self._backend.type_text, text)
             return
-        await self._run("xdotool", "windowactivate", "--sync", str(self.wid))
-        await self._run("xdotool", "windowfocus", "--sync", str(self.wid))
+        await self._focus()
         await asyncio.sleep(_FOCUS_DELAY)
         await self._run(
             "xdotool",
@@ -432,8 +526,7 @@ class DesktopWindow(BaseModel):
         if self._backend is not None:
             await asyncio.to_thread(self._backend.key, self.map_key(key))
             return
-        await self._run("xdotool", "windowactivate", "--sync", str(self.wid))
-        await self._run("xdotool", "windowfocus", "--sync", str(self.wid))
+        await self._focus()
         await asyncio.sleep(_FOCUS_DELAY)
         await self._run("xdotool", "key", "--clearmodifiers", "--", self.map_key(key))
 
@@ -448,7 +541,7 @@ class DesktopWindow(BaseModel):
 
             await asyncio.to_thread(_do)
             return
-        xdo_x, xdo_y = self._to_xdotool(x, y)
+        xdo_x, xdo_y = self._input_xy(x, y)
         await self._xdo(self.wid, "mousemove", str(xdo_x), str(xdo_y))
         button = str(_SCROLL_BUTTON[direction])
         for _ in range(amount):
@@ -461,9 +554,9 @@ class DesktopWindow(BaseModel):
             stx, sty = self.to_screen(tx, ty)
             await asyncio.to_thread(self._backend.drag, sfx, sfy, stx, sty, steps)
             return
-        xfx, xfy = self._to_xdotool(fx, fy)
-        xtx, xty = self._to_xdotool(tx, ty)
-        await self._run("xdotool", "windowactivate", "--sync", str(self.wid))
+        xfx, xfy = self._input_xy(fx, fy)
+        xtx, xty = self._input_xy(tx, ty)
+        await self._activate()
         await asyncio.sleep(_FOCUS_DELAY)
         await self._xdo(self.wid, "mousemove", str(xfx), str(xfy))
         await asyncio.sleep(_FOCUS_DELAY)
@@ -480,8 +573,8 @@ class DesktopWindow(BaseModel):
             sx, sy = self.to_screen(x, y)
             await asyncio.to_thread(self._backend.move, sx, sy)
             return
-        xdo_x, xdo_y = self._to_xdotool(x, y)
-        await self._run("xdotool", "windowactivate", "--sync", str(self.wid))
+        xdo_x, xdo_y = self._input_xy(x, y)
+        await self._activate()
         await asyncio.sleep(_FOCUS_DELAY)
         await self._xdo(self.wid, "mousemove", str(xdo_x), str(xdo_y))
 
