@@ -6,7 +6,7 @@ from pydantic import model_validator
 from pydantic_settings import BaseSettings
 
 from interact.data import PackageData
-from interact.models import ModelChain, ModelRole
+from interact.models import CircuitBreaker, ModelChain, ModelRole
 
 DEFAULT_LIMIT = 50
 LOG_MAXLEN = 1000
@@ -69,6 +69,38 @@ class Config(BaseSettings):
         if role == "component":
             return self.component_model
         return self.image_model
+
+    def resolve_model(
+        self, role: ModelRole, override: str = "", breaker: CircuitBreaker | None = None
+    ) -> str:
+        """Single resolution site for a role's model id — the boundary where "which model"
+        is decided once, so nothing downstream ever runs with an empty id (the bug behind the
+        "[Vision not configured]" returns: the auto path left ``model_for`` empty and that ``""``
+        flowed all the way into the VLM call). Precedence:
+
+        1. an explicit per-call ``override`` (the agent's ``model=`` argument),
+        2. else the configured pin (``model_for`` — honoured even if its key is missing, so a
+           bad pin surfaces a clear auth error rather than being silently swapped out),
+        3. else the first *available* model in the role's preference chain (key present, cheapest
+           ranked, skipping circuit-broken ones),
+        4. else the chain's top preference (so a missing key becomes a clear downstream auth
+           error, never an empty-id silent no-op).
+
+        Raises if the catalog is empty (no models.json and no litellm) — fail loud here, at the
+        one resolution site, not by leaking a sentinel for deeper code to re-validate.
+        """
+        if override:
+            return override
+        configured = self.model_for(role)
+        if configured:
+            return configured
+        chain = self.chain_for(role)
+        active = chain.active(breaker)
+        if active is not None:
+            return active.id
+        if chain.preferences:
+            return chain.preferences[0].id
+        raise RuntimeError(f"no model available for role {role!r}: empty model catalog")
 
     @functools.cached_property
     def _recommendations(self) -> dict[str, list[str]]:

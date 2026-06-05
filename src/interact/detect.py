@@ -20,7 +20,6 @@ from interact.desktop import (
     _WM_BUTTON_NAMES,
 )
 from interact.formats import CoordFormat
-from interact.models import Model
 from interact.runtime import breaker, config
 from interact.state import annotate_screenshot
 from interact.vision import MediaItem, analyze_media
@@ -85,20 +84,12 @@ async def _vlm_detect_elements(
         transform = transform.with_crop(crop_offset[0], crop_offset[1])
     vlm_bytes, vlm_w, vlm_h = transform.resize_image(screenshot_bytes, img_w, img_h)
 
-    # Resolve each role to a concrete model: the configured id, else the auto default (first
-    # available model in the role's chain). Without this, an unconfigured (auto) install left
-    # these empty and the detect call ran with an empty-string model → instant silent failure.
-    def _resolved(role: str) -> str:
-        configured = config.model_for(role)
-        if configured:
-            return configured
-        prefs = config.chain_for(role).preferences
-        available = set(Model.available_providers())
-        chosen = next((m.id for m in prefs if m.provider in available), None)
-        return chosen or (prefs[0].id if prefs else "")
-
-    component_model = _resolved("component")
-    image_model = _resolved("image")
+    # Resolve each role to a concrete model at this boundary via the one resolution site
+    # (Config.resolve_model): the configured id, else the first available model in the role's
+    # chain. Without it an unconfigured (auto) install ran detection with an empty-string model
+    # → instant silent failure (0 elements, 0.00s).
+    component_model = config.resolve_model("component", breaker=breaker)
+    image_model = config.resolve_model("image", breaker=breaker)
 
     if model_override:
         use_component = False
@@ -272,7 +263,11 @@ async def judge_missing_elements(
         "their visible labels, or exactly NONE if every interactive element is boxed."
     )
     result = await analyze_media(
-        media, "detection completeness check", config, prompt, model_override=model_override
+        media,
+        "detection completeness check",
+        config,
+        prompt,
+        model=config.resolve_model("component", model_override or ""),
     )
     text = (result.text or "").strip()
     if not text or text.upper().startswith("NONE") or text.startswith("["):

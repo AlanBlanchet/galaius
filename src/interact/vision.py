@@ -163,20 +163,14 @@ async def analyze_media(
     prompt: str | None = None,
     max_tokens: int | None | _Unset = _UNSET,
     response_format: type[BaseModel] | dict | None = None,
-    config_media_type: str | None = None,
-    model_override: str | None = None,
+    *,
+    model: str,
 ) -> VLMResult:
-    has_video = any(m.media_type == "video" for m in media)
-    routing = config_media_type or ("video" if has_video else "image")
-    if model_override:
-        model = model_override
-    else:
-        model = config.model_for(routing)
-    if not model:
-        return VLMResult(
-            text="[Vision not configured — select a model in VS Code settings or set INTERACT_IMAGE_MODEL]",
-            elapsed=0,
-        )
+    """Run a VLM over media. ``model`` is REQUIRED and already resolved — callers pass the
+    output of ``Config.resolve_model`` (the boundary that turns "auto"/a pin/an override into a
+    concrete id). There is deliberately no "model unset → friendly note" branch here: an empty id
+    cannot reach this function, so the only remaining failure is a genuinely-missing API key,
+    surfaced once below."""
     if not litellm.validate_environment(model)["keys_in_environment"]:
         return VLMResult(
             text=f"[Vision unavailable — {model} API key not configured] {context}",
@@ -207,4 +201,5 @@ async def analyze_screenshot(
         f"Page: {state.title} ({state.url})",
         config,
         prompt,
+        model=config.resolve_model("image"),
     )

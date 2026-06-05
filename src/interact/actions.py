@@ -1,4 +1,5 @@
 import asyncio
+import re
 from typing import Annotated, ClassVar, Literal
 from pathlib import Path
 
@@ -10,6 +11,21 @@ from interact.config import DEFAULT_LIMIT
 from interact.state import ref_locator
 
 _DND_DISPATCH_JS = (Path(__file__).parent / "js" / "dnd_dispatch.js").read_text()
+
+_JS_NEEDS_ASYNC = re.compile(r"\b(return|await)\b")
+
+
+def _wrap_js(script: str) -> str:
+    """Make a multi-statement script's top-level ``return``/``await`` valid for
+    ``page.evaluate``. Agents naturally write ``const r = await fetch(...); return r.status`` —
+    bare, that raises "Illegal return statement" / "await is only valid in async functions",
+    because ``evaluate`` runs the string as a function *body* only when it is itself a function.
+    Wrapping in an async IIFE makes both legal. A single expression (``document.title``) has
+    neither keyword and is passed through untouched, so its value is still returned."""
+    src = script.strip()
+    if _JS_NEEDS_ASYNC.search(src):
+        return f"(async () => {{ {src} }})()"
+    return src
 
 
 class Action(BaseModel):
@@ -62,7 +78,22 @@ class _CoordinateTargetMixin(TargetedAction):
         if (self.x is not None) != (self.y is not None):
             raise ValueError("Provide both x and y, or neither")
         if self._targeting_groups() > 1:
-            raise ValueError("Provide at most one: name, selector, coordinates, or ref")
+            provided = [
+                label
+                for label, present in (
+                    ("ref", bool(self.ref)),
+                    ("selector", bool(self.selector)),
+                    ("name", bool(self.name)),
+                    ("coordinates", self.x is not None and self.y is not None),
+                    ("element", getattr(self, "element", None) is not None),
+                )
+                if present
+            ]
+            raise ValueError(
+                f"Ambiguous target: you set {' + '.join(provided)} together. Provide exactly "
+                "ONE of ref / selector / name / coordinates. Prefer `ref` from "
+                "get_interactive_elements (unique & stable); raw coordinates are a last resort."
+            )
 
     @model_validator(mode="after")
     def _require_target(self):
@@ -228,10 +259,7 @@ class EvaluateJsAction(Action):
     script: str
 
     async def execute(self, page: Page):
-        src = self.script.strip()
-        if src.startswith("return ") or src.startswith("return\n"):
-            src = f"(() => {{ {src} }})()"
-        return await page.evaluate(src)
+        return await page.evaluate(_wrap_js(self.script))
 
 
 class ScreenshotAction(ObservationAction):

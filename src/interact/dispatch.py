@@ -85,6 +85,33 @@ def _resolve_action_coords(action, wid: int, win: DesktopWindow):
     return 0, 0, None, "Provide x,y, name, ref, selector, or element for desktop action"
 
 
+async def _named_locator(page, action):
+    """Resolve a name/role/text target to a *single* locator, or fail with an actionable,
+    ref-nudging message. Playwright's ``get_by_role``/``get_by_text`` are strict: when the name
+    matches many elements they raise an opaque "strict mode violation" dumping every match (the
+    real run hit 17). interact pre-checks the count and instead tells the agent how to recover —
+    the stable fix is a unique ``ref`` from ``get_interactive_elements``, which can't be
+    ambiguous by construction (raw text/role can)."""
+    locator = (
+        page.get_by_role(action.role, name=action.name)
+        if action.role
+        else page.get_by_text(action.name, exact=False)
+    )
+    target = f"name={action.name!r}" + (f" role={action.role!r}" if action.role else "")
+    count = await locator.count()
+    if count == 0:
+        raise ValueError(
+            f"No element matches {target}. Call get_interactive_elements and act by `ref`, "
+            "or check the name/role."
+        )
+    if count > 1:
+        raise ValueError(
+            f"{count} elements match {target} — ambiguous. Call get_interactive_elements and "
+            "act by `ref` (unique & stable), or pass a more specific `name`/`selector`."
+        )
+    return locator
+
+
 def _step(i: int, action_type: str, msg: str) -> str:
     return f"Step {i + 1} ({action_type}): {msg}"
 
@@ -412,10 +439,7 @@ async def _run_actions_browser(
         ):
             before = await _capture(mgr, tab=current_tab)
             if action.name:
-                if action.role:
-                    locator = page.get_by_role(action.role, name=action.name)
-                else:
-                    locator = page.get_by_text(action.name, exact=False)
+                locator = await _named_locator(page, action)
                 await locator.click()
             else:
                 el = mgr.get_element(action.element, current_tab)
@@ -439,18 +463,12 @@ async def _run_actions_browser(
             step_reports.append(_step(i, action.type, change.description))
 
         elif isinstance(action, HoverAction) and action.name:
-            if action.role:
-                locator = page.get_by_role(action.role, name=action.name)
-            else:
-                locator = page.get_by_text(action.name, exact=False)
+            locator = await _named_locator(page, action)
             await locator.hover()
             step_reports.append(_step(i, action.type, "hovered"))
 
         elif isinstance(action, TypeTextAction) and action.name:
-            if action.role:
-                locator = page.get_by_role(action.role, name=action.name)
-            else:
-                locator = page.get_by_text(action.name, exact=False)
+            locator = await _named_locator(page, action)
             await locator.click()
             before = await _capture(mgr, tab=current_tab)
             if action.clear_first:

@@ -44,12 +44,20 @@ class InteractiveElement(Element):
     @model_validator(mode="before")
     @classmethod
     def _remap_dimensions(cls, values):
-        """Accept width/height as aliases for w/h (browser JS compat)."""
+        """Normalise raw DOM-scan geometry at construction — the boundary where browser JS dicts
+        enter. Accept ``width``/``height`` as aliases for ``w``/``h``, and round sub-pixel
+        coordinates to pixel ints: ``getBoundingClientRect`` returns fractional px (e.g.
+        ``y=364.390625``) but ``Element.{x,y,w,h}`` are ints, so passing the float straight
+        through crashed ``get_interactive_elements`` with a strict-int validation error. Resolve
+        here once rather than letting floats reach (and fail) the field validators."""
         if isinstance(values, dict):
             if "width" in values and "w" not in values:
-                values["w"] = int(values.pop("width"))
+                values["w"] = values.pop("width")
             if "height" in values and "h" not in values:
-                values["h"] = int(values.pop("height"))
+                values["h"] = values.pop("height")
+            for key in ("x", "y", "w", "h"):
+                if values.get(key) is not None:
+                    values[key] = round(values[key])
         return values
 
     @property

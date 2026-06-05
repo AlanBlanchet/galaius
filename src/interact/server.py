@@ -64,15 +64,9 @@ _MAX_FALLBACKS = 3
 
 
 def _effective_model(model_override: str | None, role: str) -> str:
-    """The model id that will actually run for a role: an explicit override, else the configured
-    model, else the resolved auto default (first available in the role's chain)."""
-    if model_override:
-        return model_override
-    configured = config.model_for(role)
-    if configured:
-        return configured
-    prefs = config.chain_for(role).preferences
-    return prefs[0].id if prefs else ""
+    """The model id that will actually run for a role — delegates to the one resolution site
+    (:meth:`Config.resolve_model`) so the resolved dump matches what the VLM path runs."""
+    return config.resolve_model(role, model_override or "")
 
 
 def _resolved_config(model_override: str | None, role: str) -> dict:
@@ -99,9 +93,13 @@ async def _vlm(
 
     item_type = "video" if media_type == "video" else "image"
     routing = media_type or "image"
-    effective_model = model_override or config.model_for(routing)
+    # Resolve ONCE, at this boundary, to a concrete id — then both the primary call and the
+    # fallback chain run against real models. The old code resolved only for the fallback path
+    # and handed the raw (often None) override to the primary call, so auto-mode vision always
+    # hit analyze_media's empty-model branch → "[Vision not configured]" (39 real failures).
+    effective_model = config.resolve_model(routing, model_override or "", breaker)
 
-    async def _call(model_id: str | None) -> VLMResult:
+    async def _call(model_id: str) -> VLMResult:
         return await analyze_media(
             [MediaItem.from_bytes(data, item_type, mime)],
             context,
@@ -109,12 +107,11 @@ async def _vlm(
             query,
             max_tokens=max_tokens,
             response_format=response_format,
-            config_media_type=media_type,
-            model_override=model_id,
+            model=model_id,
         )
 
     try:
-        return await _call(model_override)
+        return await _call(effective_model)
     except (asyncio.CancelledError, KeyboardInterrupt):
         raise
     except Exception as primary_err:
@@ -193,7 +190,9 @@ async def _run_compare(
         )
     try:
         media = [MediaItem.from_bytes(snapshots[s]) for s in steps]
-        r = await analyze_media(media, context, config, query)
+        r = await analyze_media(
+            media, context, config, query, model=config.resolve_model("image")
+        )
         return _fmt_timing(r)
     except Exception as e:
         return f"compare error: {e}"
@@ -437,7 +436,7 @@ async def _analyze(
             f"Page: {state.title} ({state.url})",
             config,
             query,
-            model_override=model_override,
+            model=model_override,
         )
     else:
         r = await analyze_screenshot(state, config, query)
@@ -547,13 +546,18 @@ async def run_actions(
 ) -> str:
     """Execute a sequence of actions on a browser session or desktop window.
 
+    TARGET — pick ONE surface:
+    - A web page (the common case): omit `window`; actions run on browser session "default"
+      (or `session`). This is the default — leave both unset for normal web automation.
+    - A NATIVE desktop app (not a web page — e.g. a terminal, editor, Electron/GTK/Qt window):
+      pass `window=<title substring>`. Call list_desktop_windows FIRST to discover exact titles.
+    `window` and `session` are mutually exclusive. If your work is a website, do NOT set `window`.
+
     PREFER REFS OVER COORDINATES: first call get_interactive_elements, then target elements by
     `ref` (browser) or `element` index (desktop) in click/type_text/hover/drag. Raw `x`,`y` are
-    a last resort — they break on any layout shift, scroll, or window move; refs do not.
-
-    Default: operates on browser session "default".
-    With window: operates on a desktop window by title (use list_desktop_windows to discover).
-    window and session are mutually exclusive.
+    a last resort — they break on any layout shift, scroll, or window move; refs do not. A `ref`
+    is also unique by construction, so it never hits the "N elements match" ambiguity that a bare
+    `name`/role/text target can.
 
     Each action needs a 'type' key to select the action model.
 

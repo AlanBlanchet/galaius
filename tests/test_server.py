@@ -118,8 +118,8 @@ async def test_vlm_detect_elements_fallback_uses_generic_prompt(srv):
         patch.object(srv, "_vlm", fail),
         patch.object(srv, "config") as mock_config,
     ):
-        mock_config.model_for.side_effect = lambda mt: (
-            "gemini/gemini-2.0-flash" if mt == "component" else "openai/gpt-4.1"
+        mock_config.resolve_model.side_effect = lambda role, *a, **k: (
+            "gemini/gemini-2.0-flash" if role == "component" else "openai/gpt-4.1"
         )
         mock_config.vlm_max_dim = 1280
         mock_config.vlm_min_dim = 768
@@ -204,15 +204,16 @@ async def test_unset_sentinel_uses_config_max_tokens():
     cfg = Config()
     media_item = [MediaItem(data="dGVzdA==", media_type="image", mime_type="image/png")]
     mock_completion = AsyncMock(return_value=VLMResult(text="ok", elapsed=0.1))
+    # model is now resolved at the boundary and passed in; analyze_media no longer reads
+    # config.model_for. It still validates the key, so patch that True.
     with (
         patch("interact.vision._vision_completion", mock_completion),
         patch(
             "interact.vision.litellm.validate_environment",
             return_value={"keys_in_environment": True},
         ),
-        patch.object(Config, "model_for", return_value="test-model"),
     ):
-        await analyze_media(media_item, "ctx", cfg, max_tokens=_UNSET)
+        await analyze_media(media_item, "ctx", cfg, max_tokens=_UNSET, model="test-model")
 
     # Should have passed config.max_tokens (default: None)
     assert mock_completion.call_args.kwargs["max_tokens"] == cfg.max_tokens
@@ -224,9 +225,8 @@ async def test_unset_sentinel_uses_config_max_tokens():
             "interact.vision.litellm.validate_environment",
             return_value={"keys_in_environment": True},
         ),
-        patch.object(Config, "model_for", return_value="test-model"),
     ):
-        await analyze_media(media_item, "ctx", cfg, max_tokens=512)
+        await analyze_media(media_item, "ctx", cfg, max_tokens=512, model="test-model")
 
     assert mock_completion.call_args.kwargs["max_tokens"] == 512
 
@@ -625,12 +625,15 @@ async def test_vlm_rate_limit_triggers_fallback(srv):
             raise RateLimitError("rate limited", "test", "test")
         return VLMResult(text="fallback response", elapsed=0.1, model="fallback/model")
 
+    # Two-model chain: the primary now resolves at the boundary (resolve_model → first available
+    # = primary/model), fails, and the breaker trips IT — then the chain advances to fallback.
+    primary = Model(
+        id="primary/model", provider="test", capabilities={ModelCapability.VLM}
+    )
     fallback = Model(
         id="fallback/model", provider="test", capabilities={ModelCapability.VLM}
     )
-    chain = ModelChain(role="image", preferences=[fallback])
-
-    effective_model = srv.config.model_for("image")
+    chain = ModelChain(role="image", preferences=[primary, fallback])
 
     with (
         patch("interact.server.analyze_media", _mock_analyze),
@@ -640,7 +643,7 @@ async def test_vlm_rate_limit_triggers_fallback(srv):
         result = await srv._vlm(_PNG, "test context", "test query")
 
     assert call_count == 2
-    assert breaker.tripped(effective_model)
+    assert breaker.tripped("primary/model")
     assert "fallback" in result.text.lower()
 
 
@@ -670,10 +673,13 @@ async def test_vlm_falls_back_on_error(srv, make_error):
             raise make_error()
         return VLMResult(text="recovered", elapsed=0.1, model="fallback/model")
 
+    primary = Model(
+        id="primary/model", provider="test", capabilities={ModelCapability.VLM}
+    )
     fallback = Model(
         id="fallback/model", provider="test", capabilities={ModelCapability.VLM}
     )
-    chain = ModelChain(role="image", preferences=[fallback])
+    chain = ModelChain(role="image", preferences=[primary, fallback])
 
     with (
         patch("interact.server.analyze_media", _mock),
