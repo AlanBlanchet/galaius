@@ -263,6 +263,16 @@ class CoordTransform(BaseModel):
 _SCREEN_WID = -1  # synthetic wid base for screen targets — a cache key, never a real X window
 
 
+def _is_blank_png(data: bytes) -> bool:
+    """True if the PNG is a single uniform colour (e.g. all black) — the signature of a failed
+    window-id capture of a hardware-accelerated surface (so we can retry by geometry)."""
+    try:
+        lo, hi = Image.open(io.BytesIO(data)).convert("L").getextrema()
+    except Exception:
+        return False
+    return lo == hi
+
+
 class DesktopWindow(BaseModel):
     name: str
     wid: int
@@ -416,7 +426,34 @@ class DesktopWindow(BaseModel):
             # whole virtual screen → bare `maim`; a single monitor → `maim -g WxH+X+Y`.
             cmd = ["maim", "-g", self.screen_geometry] if self.screen_geometry else ["maim"]
             return subprocess.check_output(cmd, timeout=10)
-        return subprocess.check_output(["maim", "-i", str(self.wid)], timeout=10)
+        img = subprocess.check_output(["maim", "-i", str(self.wid)], timeout=10)
+        if _is_blank_png(img):
+            # Hardware-accelerated / GL windows (Android emulator, games, video players) commonly
+            # capture solid black via window-id; re-grab the window's screen region by geometry,
+            # which reads the framebuffer regardless. Generic — applies to any such app.
+            geom = self._geometry_now()
+            if geom:
+                try:
+                    img = subprocess.check_output(["maim", "-g", geom], timeout=10)
+                except subprocess.SubprocessError:
+                    pass
+        return img
+
+    def _geometry_now(self) -> str | None:
+        """Current on-screen geometry as ``WxH+X+Y`` (for region capture), via xdotool."""
+        try:
+            out = subprocess.check_output(
+                ["xdotool", "getwindowgeometry", "--shell", str(self.wid)],
+                text=True,
+                timeout=5,
+            )
+        except (FileNotFoundError, subprocess.SubprocessError):
+            return None
+        p = dict(ln.split("=", 1) for ln in out.strip().splitlines() if "=" in ln)
+        try:
+            return f"{p['WIDTH']}x{p['HEIGHT']}+{max(0, int(p['X']))}+{max(0, int(p['Y']))}"
+        except (KeyError, ValueError):
+            return None
 
     def capture_video(self, duration: float = 3.0, fps: int = 10) -> bytes:
         geom = subprocess.check_output(
@@ -479,6 +516,23 @@ class DesktopWindow(BaseModel):
             return self.x + x, self.y + y
         return self._to_xdotool(x, y)
 
+    async def _mousemove(self, x: int, y: int):
+        """Position the pointer. A window target moves window-relative (``--window <wid>``); a
+        screen/monitor target has no window, so move to the absolute screen coordinate — using
+        ``--window`` with its synthetic wid would fail."""
+        if self.is_screen:
+            await self._run("xdotool", "mousemove", str(x), str(y))
+        else:
+            await self._xdo(self.wid, "mousemove", str(x), str(y))
+
+    async def _clickbtn(self, button: str):
+        """Press a mouse button — window-scoped for a window target, absolute for a screen
+        target (no window to scope to)."""
+        if self.is_screen:
+            await self._run("xdotool", "click", button)
+        else:
+            await self._xdo(self.wid, "click", button)
+
     async def _activate(self):
         """Raise the target window before input — a no-op for a screen target (no window to
         raise; the local pointer is already absolute over the whole root)."""
@@ -502,7 +556,7 @@ class DesktopWindow(BaseModel):
         xdo_x, xdo_y = self._input_xy(x, y)
         await self._activate()
         await asyncio.sleep(_FOCUS_DELAY)
-        await self._xdo(self.wid, "mousemove", str(xdo_x), str(xdo_y))
+        await self._mousemove(xdo_x, xdo_y)
         await asyncio.sleep(_FOCUS_DELAY)
         await self._run("xdotool", "click", str(button))
 
@@ -542,10 +596,10 @@ class DesktopWindow(BaseModel):
             await asyncio.to_thread(_do)
             return
         xdo_x, xdo_y = self._input_xy(x, y)
-        await self._xdo(self.wid, "mousemove", str(xdo_x), str(xdo_y))
+        await self._mousemove(xdo_x, xdo_y)
         button = str(_SCROLL_BUTTON[direction])
         for _ in range(amount):
-            await self._xdo(self.wid, "click", button)
+            await self._clickbtn(button)
 
     async def drag(self, fx: int, fy: int, tx: int, ty: int, steps: int = _DRAG_STEPS):
         steps = max(1, steps)
@@ -558,13 +612,13 @@ class DesktopWindow(BaseModel):
         xtx, xty = self._input_xy(tx, ty)
         await self._activate()
         await asyncio.sleep(_FOCUS_DELAY)
-        await self._xdo(self.wid, "mousemove", str(xfx), str(xfy))
+        await self._mousemove(xfx, xfy)
         await asyncio.sleep(_FOCUS_DELAY)
         await self._run("xdotool", "mousedown", "1")
         for i in range(1, steps + 1):
             ix = xfx + (xtx - xfx) * i // steps
             iy = xfy + (xty - xfy) * i // steps
-            await self._xdo(self.wid, "mousemove", str(ix), str(iy))
+            await self._mousemove(ix, iy)
             await asyncio.sleep(0.02)
         await self._run("xdotool", "mouseup", "1")
 
@@ -576,7 +630,7 @@ class DesktopWindow(BaseModel):
         xdo_x, xdo_y = self._input_xy(x, y)
         await self._activate()
         await asyncio.sleep(_FOCUS_DELAY)
-        await self._xdo(self.wid, "mousemove", str(xdo_x), str(xdo_y))
+        await self._mousemove(xdo_x, xdo_y)
 
     @staticmethod
     def _net_client_list() -> set[int]:

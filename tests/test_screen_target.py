@@ -81,6 +81,42 @@ def test_capture_command_per_target(win_kwargs, expected_cmd):
     assert co.call_args.args[0] == expected_cmd
 
 
+@pytest.mark.asyncio
+async def test_screen_target_input_is_absolute_not_window_scoped(monkeypatch):
+    """A screen/monitor target has no real window — input must use absolute pointer positioning,
+    never `xdotool --window <synthetic-wid>` (which fails). Regression for the screen-input bug."""
+    from unittest.mock import AsyncMock
+
+    with patch.object(DesktopWindow, "monitors", return_value=_MONS):
+        mon = DesktopWindow.screen("screen:1")
+    run, xdo = AsyncMock(), AsyncMock()
+    monkeypatch.setattr(DesktopWindow, "_run", run)
+    monkeypatch.setattr(DesktopWindow, "_xdo", xdo)
+
+    await mon.click(10, 10)
+
+    assert not xdo.called, "screen target must not scope input to a (synthetic) window id"
+    moves = [c.args for c in run.call_args_list if "mousemove" in c.args]
+    assert moves == [("xdotool", "mousemove", "2570", "10")]  # absolute, region-origin mapped
+
+
+@pytest.mark.asyncio
+async def test_window_target_input_stays_window_relative(monkeypatch):
+    """A real window keeps window-relative input (--window <wid>) — unchanged behaviour."""
+    from unittest.mock import AsyncMock
+
+    win = DesktopWindow(name="App", wid=4242, x=0, y=0, w=100, h=100)
+    monkeypatch.setattr(DesktopWindow, "_run", AsyncMock())
+    monkeypatch.setattr(DesktopWindow, "_xdo", AsyncMock())
+    monkeypatch.setattr(
+        "interact.desktop.CoordTransform.get",
+        lambda wid: __import__("interact.desktop", fromlist=["CoordTransform"]).CoordTransform(),
+    )
+    await win.hover(5, 6)
+    DesktopWindow._xdo.assert_awaited()  # window path uses --window via _xdo
+    assert DesktopWindow._xdo.await_args.args[0] == 4242
+
+
 def test_resolve_target_routes_screen_to_screen_builder(monkeypatch):
     sentinel = DesktopWindow(name="screen", wid=_SCREEN_WID, x=0, y=0, w=1, h=1, screen_geometry="")
     monkeypatch.setattr(DesktopWindow, "screen", classmethod(lambda cls, spec: sentinel))
