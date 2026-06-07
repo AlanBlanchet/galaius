@@ -35,6 +35,10 @@ class ModelSpec(BaseModel):
     input_cost_per_million: float | None = None
     output_cost_per_million: float | None = None
     supports_response_schema: bool = False
+    # Capability tags carried from the upstream catalog (litellm) into models.json, so a
+    # model's behaviour (e.g. its grounding default) is DERIVED from a live source, not a
+    # hardcoded list. See generate-models.py for how these are sourced.
+    capabilities: list[str] = Field(default_factory=list)
 
 
 class ProviderSpec(BaseModel):
@@ -59,6 +63,10 @@ class ModelCapability(StrEnum):
     LLM = "llm"
     VLM = "vlm"
     GUI_GROUNDING = "gui_grounding"
+    # Native computer-use: the model emits click coordinates directly (Anthropic/OpenAI
+    # computer-use tool). Sourced from litellm's `supports_computer_use` — not hardcoded.
+    COMPUTER_USE = "computer_use"
+    VIDEO = "video"  # native video input — from litellm's `supports_video_input`
 
 
 class RegistryMixin:
@@ -109,6 +117,25 @@ class Model(RegistryMixin, BaseModel):
 
     def can(self, cap: ModelCapability) -> bool:
         return cap in self.capabilities
+
+    def grounding_strategy(self) -> str:
+        """How this model should be driven to act on a target — DERIVED from its capabilities,
+        not a hardcoded per-model list (the default sits at the bottom of the provider→model
+        override hierarchy):
+
+        - ``"coords"``  — the model emits click coordinates itself (native computer-use, or a
+          known GUI-grounding box convention). Fewest round-trips.
+        - ``"ref_list"`` — give it the DOM/accessibility ref list and let it pick (the safe
+          default; works for every model including non-grounding ones, no VLM cost).
+
+        Computer-use is the strongest signal (the model literally returns click points), then a
+        registered grounding box-format; otherwise refs. An explicit per-call / per-config
+        override layers on top of this default."""
+        if self.can(ModelCapability.COMPUTER_USE):
+            return "coords"
+        if self.can(ModelCapability.GUI_GROUNDING):
+            return "coords"
+        return "ref_list"
 
     def litellm_id(self) -> str:
         return self.id
@@ -180,6 +207,10 @@ class Model(RegistryMixin, BaseModel):
         caps: set[ModelCapability] = set()
         if cost_entry.get("supports_vision"):
             caps.add(ModelCapability.VLM)
+        if cost_entry.get("supports_computer_use"):  # litellm flag → native coordinate output
+            caps.add(ModelCapability.COMPUTER_USE)
+        if cost_entry.get("supports_video_input"):
+            caps.add(ModelCapability.VIDEO)
         fmt = CoordFormat.for_model(model_id)
         if fmt != CoordFormat():
             caps.add(ModelCapability.GUI_GROUNDING)
@@ -238,6 +269,14 @@ class Model(RegistryMixin, BaseModel):
                 fmt = cls._match_coord_format(model_id, models_config.coord_formats)
                 if fmt is not None or model_id in component_recs:
                     caps.add(ModelCapability.GUI_GROUNDING)
+                # Capability tags carried from the upstream catalog (litellm) — e.g.
+                # computer_use / video — so behaviour derives from a live source, not a
+                # second hardcoded list. Unknown tags are ignored.
+                for tag in model_spec.capabilities:
+                    try:
+                        caps.add(ModelCapability(tag))
+                    except ValueError:
+                        pass
                 cls._register(
                     cls(
                         id=model_id,

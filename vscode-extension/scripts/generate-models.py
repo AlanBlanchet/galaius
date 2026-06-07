@@ -520,13 +520,18 @@ for model, info in litellm.model_cost.items():
     if aa_score is not None:
         model_entry["intelligence_score"] = round(aa_score, 2)
 
-    # Capabilities
+    # Capabilities — derived from litellm's live flags (soft-link, not a hardcoded list) plus
+    # the coord-format prefix table for grounding box conventions.
     caps = ["vlm"]
     model_lower = model.lower()
     for prefix in _COORD_FORMATS:
         if model_lower.startswith(prefix):
             caps.append("gui_grounding")
             break
+    if info.get("supports_computer_use"):  # native click-coordinate output (Anthropic/OpenAI CU)
+        caps.append("computer_use")
+    if info.get("supports_video_input"):
+        caps.append("video")
     model_entry["capabilities"] = caps
 
     # Internal score for recommendation computation (not written to JSON)
