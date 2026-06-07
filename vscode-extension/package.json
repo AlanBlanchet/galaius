@@ -39,6 +39,11 @@
           "default": "",
           "description": "Local project path for development (uses 'uv run' instead of 'uvx'). Leave empty when installed from PyPI."
         },
+        "interact.display.currency": {
+          "type": "string",
+          "default": "USD",
+          "description": "Currency for displaying spend in the dashboard. Costs are recorded in USD and converted at live ECB rates (frankfurter.app); display-only."
+        },
         "interact.image.model": {
           "type": "string",
           "default": "",
@@ -151,6 +156,10 @@
       {
         "command": "interact.openDashboard",
         "title": "Interact: Open Dashboard"
+      },
+      {
+        "command": "interact.reloadPanel",
+        "title": "Interact: Reload Panel"
       }
     ]
   },

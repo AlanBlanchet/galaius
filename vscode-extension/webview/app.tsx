@@ -75,7 +75,14 @@ const TABS = [
   {
     id: "config",
     label: "Configuration",
-    cells: ["apiKeys", "settings"],
+    cells: [
+      "apiKeys",
+      "cfg-models",
+      "cfg-desktop",
+      "cfg-browser",
+      "cfg-advanced",
+      "cfg-display",
+    ],
   },
 ] as const;
 
@@ -102,6 +109,13 @@ function TabBar(): Node {
           {tab.label}
         </button>
       ))}
+      <button
+        className="tab-reload"
+        title="Reload panel (picks up rebuilt UI without reloading the window)"
+        onClick={() => post("reloadPanel")}
+      >
+        ↻
+      </button>
     </div>
   );
 }

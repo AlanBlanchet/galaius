@@ -459,6 +459,9 @@ export async function activate(
         emitter,
       ),
     ),
+    vscode.commands.registerCommand("interact.reloadPanel", () =>
+      DashboardPanel.instance?.reload(),
+    ),
   );
 }
 

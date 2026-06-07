@@ -52,6 +52,21 @@ body {
   color: var(--vscode-foreground);
 }
 
+.tab-reload {
+  margin-left: auto;
+  align-self: center;
+  background: none;
+  color: var(--vscode-foreground);
+  opacity: 0.6;
+  font-size: 14px;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+.tab-reload:hover {
+  opacity: 1;
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.15));
+}
+
 /* Content area */
 .tab-content {
   padding: 18px;
