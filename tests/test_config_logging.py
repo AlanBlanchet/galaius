@@ -36,13 +36,15 @@ def test_el_report_never_leaks_coordinates(monkeypatch):
     assert "137" not in report and "451" not in report  # pixel coords NOT leaked
 
 
-def test_xy_report_nudges_to_refs_without_leaking_coords(monkeypatch):
+def test_xy_report_is_factual_and_never_leaks_pixels(monkeypatch):
+    """A coordinate action is reported factually — no prescriptive 'use refs instead' nudge (it
+    fights coordinate-capable agents), but still never echoes the raw pixels back."""
     import interact.dispatch as dispatch
 
     monkeypatch.setattr(dispatch, "_fmt_cursor", lambda: "default")
     report = dispatch._xy_report("clicked", 137, 451)
-    assert "137" not in report and "451" not in report  # still no raw pixels echoed
-    assert "ref" in report.lower()  # steers the agent back to detect-then-act by ref
+    assert "137" not in report and "451" not in report  # no raw pixels echoed
+    assert "hint" not in report.lower()  # no prescriptive nudge
 
 
 def test_raw_xy_snaps_to_detected_element_ref():

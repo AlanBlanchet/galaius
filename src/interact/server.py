@@ -579,11 +579,10 @@ async def run_actions(
     A desktop `target` and a non-default `session` are mutually exclusive. For a website, leave
     `target` unset.
 
-    PREFER REFS OVER COORDINATES: first call get_interactive_elements, then target elements by
-    `ref` (browser) or `element` index (desktop) in click/type_text/hover/drag. Raw `x`,`y` are
-    a last resort — they break on any layout shift, scroll, or window move; refs do not. A `ref`
-    is also unique by construction, so it never hits the "N elements match" ambiguity that a bare
-    `name`/role/text target can.
+    TARGETING a click/type_text/hover/drag — any of: `ref` (browser, from get_interactive_elements
+    / get_page_state / screenshot — unique, survives re-renders), `element` index (desktop),
+    `selector` (CSS), `name`(+`role`) (accessible name), or `x`,`y` coordinates. Use whichever
+    fits; a `ref` avoids the "N elements match" ambiguity a bare name/selector can hit.
 
     Each action needs a 'type' key to select the action model.
 
@@ -757,12 +756,13 @@ async def get_interactive_elements(
     method: str = "default",
     model: str | None = None,
 ) -> str:
-    """Annotate interactive elements with numbered badges and return their details. Call this
-    FIRST, then act by the returned `ref`/`element` in run_actions — never guess pixel x,y.
+    """List the interactive elements with numbered badges + their details; act on them by the
+    returned `ref`/`element` in run_actions.
 
     Default (target unset): browser session "default" — sets data-interact-ref attributes via a
-    pure DOM scan (no VLM). NOTE: get_page_state and screenshot now return these refs too, so you
-    often already have them. target=<window title>: VLM-detects elements in a desktop window;
+    pure DOM scan (no VLM). get_page_state and screenshot return these refs too, so you often
+    already have them without a separate call. target=<window title>: VLM-detects elements in a
+    desktop window;
     target="screen"/"screen:<index>": VLM-detects across the whole desktop or one monitor.
     A desktop target and a non-default session are mutually exclusive (list_desktop_windows lists them).
 

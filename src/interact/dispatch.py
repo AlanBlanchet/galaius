@@ -115,8 +115,7 @@ async def _execute_browser_action(action, page):
         where = f" for selector {sel!r}" if sel else ""
         raise ValueError(
             f"{action.type} timed out{where}: the target never became actionable. "
-            "Call get_interactive_elements (or get_page_state) and act by `ref` — refs are "
-            "unique and stable; selectors break on dynamic class names and re-renders."
+            "get_interactive_elements / get_page_state return the page's current elements as refs."
         ) from None
     except PlaywrightError as e:
         first = str(e).splitlines()[0]  # trim Playwright's multi-line call-log dump
@@ -125,7 +124,8 @@ async def _execute_browser_action(action, page):
         sel = _selector_of(action)
         where = f" (selector {sel!r})" if sel else ""
         raise ValueError(
-            f"{action.type} failed{where}: {first} — try a `ref` from get_interactive_elements."
+            f"{action.type} failed{where}: {first}. "
+            "get_interactive_elements lists the page's elements as refs."
         ) from None
 
 
@@ -145,13 +145,13 @@ async def _named_locator(page, action):
     count = await locator.count()
     if count == 0:
         raise ValueError(
-            f"No element matches {target}. Call get_interactive_elements and act by `ref`, "
-            "or check the name/role."
+            f"No element matches {target}. Check the name/role, or use a `ref` from "
+            "get_interactive_elements."
         )
     if count > 1:
         raise ValueError(
-            f"{count} elements match {target} — ambiguous. Call get_interactive_elements and "
-            "act by `ref` (unique & stable), or pass a more specific `name`/`selector`."
+            f"{count} elements match {target} — ambiguous. Use a `ref` from "
+            "get_interactive_elements, or a more specific `name`/`selector`."
         )
     return locator
 
@@ -172,13 +172,9 @@ def _el_report(verb: str, el) -> str:
 
 
 def _xy_report(verb: str, x: int, y: int) -> str:
-    # Raw-coordinate action: still don't echo the pixels, but flag it so the agent learns to
-    # detect-then-act by ref. Blind x,y clicks are brittle (they break on any layout shift);
-    # get_interactive_elements returns stable refs that survive re-renders.
-    return (
-        f"{verb} at raw coordinates cursor={_fmt_cursor()} "
-        "(hint: call get_interactive_elements and act by ref/element — refs are stable, raw x,y are not)"
-    )
+    # Raw-coordinate action — report it factually. No prescriptive nudge: the agent can act by
+    # coordinates if it wants; refs are available from get_interactive_elements if it prefers them.
+    return f"{verb} at coordinates cursor={_fmt_cursor()}"
 
 
 def _report_with_change(win_name: str, before: DesktopState, report: str) -> str:

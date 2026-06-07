@@ -97,8 +97,8 @@ class _CoordinateTargetMixin(TargetedAction):
             ]
             raise ValueError(
                 f"Ambiguous target: you set {' + '.join(provided)} together. Provide exactly "
-                "ONE of ref / selector / name / coordinates. Prefer `ref` from "
-                "get_interactive_elements (unique & stable); raw coordinates are a last resort."
+                "ONE of ref / selector / name / coordinates (a `ref` from get_interactive_elements "
+                "is unique if you want to avoid name/selector ambiguity)."
             )
 
     @model_validator(mode="after")
