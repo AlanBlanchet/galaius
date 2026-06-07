@@ -64,7 +64,12 @@ iteration — don't wait for a bug report:
 ```bash
 uv run python scripts/scan_client_errors.py            # last 24h, grouped by error
 uv run python scripts/scan_client_errors.py --all      # whole-history taxonomy
+gh issue list --repo AlanBlanchet/interact              # reports filed via the report_issue tool
 ```
+
+Two feedback channels feed the iteration: the **client-log scan** (errors agents hit, even when
+unreported) and **GitHub issues** (what an agent or user actively reported via the `report_issue`
+MCP tool / `interact.feedback`). Check both, fold new items in.
 
 Note: the editable install is live, so a reconnecting client can momentarily run half-edited
 source — verify a surprising logged error against committed code before treating it as a bug.

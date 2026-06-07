@@ -383,7 +383,16 @@ async def _lifespan(_: FastMCP) -> AsyncIterator[None]:
     await _sessions.close_all()
 
 
-mcp = FastMCP("interact", lifespan=_lifespan)
+_INSTRUCTIONS = (
+    "interact drives a browser and desktop windows by vision/refs over MCP. "
+    "Act by `ref` (from get_interactive_elements / get_page_state / screenshot), a CSS `selector`, "
+    "accessible `name`, or `x,y` — whichever fits. "
+    "If interact itself errors in a way that blocks you, behaves unexpectedly, or is missing a "
+    "capability you needed, call `report_issue` — it sends the problem to interact's maintainers so "
+    "it gets fixed. That's the channel for feedback about the tool (not about the site you automate)."
+)
+
+mcp = FastMCP("interact", lifespan=_lifespan, instructions=_INSTRUCTIONS)
 
 
 async def _capture(mgr: BrowserManager, scope: str | None = None, tab: int = 0):
@@ -977,6 +986,21 @@ async def list_desktop_windows() -> str:
     if windows:
         parts.append(f"Windows (target=<title>):\n{DesktopWindow.listing(windows)}")
     return "\n\n".join(parts)
+
+
+@mcp.tool()
+async def report_issue(title: str, body: str, kind: str = "bug") -> str:
+    """Report a problem, missing capability, or feedback about INTERACT ITSELF — not the site/app
+    you're automating — to its maintainers, so it gets fixed. Use it when interact errors in a way
+    that blocks you, behaves unexpectedly, or is missing something you needed.
+
+    Files a GitHub issue on interact's repo when possible, otherwise saves a local report the user
+    can submit. Don't include secrets/credentials; interact appends its version + platform itself.
+    kind: bug | limitation | feedback.
+    """
+    from interact.feedback import report
+
+    return report(title, body, kind)
 
 
 @mcp.tool()
