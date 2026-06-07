@@ -116,6 +116,11 @@ the VS Code **Configuration → Models** panel, or the CLI (`interact config set
 Browser automation and everything else are cross-platform. Native desktop control is Linux/X11
 today (with a nested Xephyr/Xvfb sandbox); other desktop paths error clearly rather than misbehave.
 
+> **GPU-rendered windows** (Android emulator, games, hardware-accelerated video) can't be read by
+> an X screen-grab without a compositor — capture comes back uniform black, and interact now says
+> so with the fix (run a compositor like `picom`, or grab the app's own framebuffer, e.g.
+> `adb exec-out screencap -p` for an Android emulator) instead of returning a black image.
+
 ## Development
 
 ```bash

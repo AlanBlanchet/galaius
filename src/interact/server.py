@@ -1019,6 +1019,9 @@ async def _record_desktop(
     dur = duration or config.video_duration
     actual_fps = fps or config.video_fps
     video_bytes = win.capture_video(dur, actual_fps)
+    if desktop.Motion.is_blank(video_bytes):
+        # x11grab read a uniform-black surface — same GPU-surface wall as still capture.
+        raise desktop.gpu_surface_error(win.name)
     if path:
         _save_to_path(path, video_bytes)
 

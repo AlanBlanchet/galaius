@@ -263,6 +263,24 @@ class CoordTransform(BaseModel):
 _SCREEN_WID = -1  # synthetic wid base for screen targets — a cache key, never a real X window
 
 
+class CaptureError(RuntimeError):
+    """A window/screen capture could not produce real pixels (e.g. an unreadable GPU surface).
+    Surfaced to the agent as a clear, actionable error instead of a black image."""
+
+
+def gpu_surface_error(name: str) -> "CaptureError":
+    """The one diagnostic for a uniform-black grab — an X screen-grab (maim or ffmpeg x11grab)
+    can't read a GPU-rendered surface. Names the cause + the fixes, shared by capture() and the
+    record path so the agent gets the same actionable message wherever it hits this."""
+    return CaptureError(
+        f"Capture of {name!r} came back a single uniform colour — an X screen-grab can't read it. "
+        "That's the signature of a GPU-rendered surface (Android emulator, game, hardware-"
+        "accelerated video) that isn't in the X framebuffer. Fixes: run a compositing manager "
+        "(e.g. picom) so the surface is redirected and grabbable, or capture the app's own "
+        "framebuffer — for an Android emulator: `adb exec-out screencap -p` rather than a desktop grab."
+    )
+
+
 def _is_blank_png(data: bytes) -> bool:
     """True if the PNG is a single uniform colour (e.g. all black) — the signature of a failed
     window-id capture of a hardware-accelerated surface (so we can retry by geometry)."""
@@ -425,18 +443,22 @@ class DesktopWindow(BaseModel):
         if self.screen_geometry is not None:
             # whole virtual screen → bare `maim`; a single monitor → `maim -g WxH+X+Y`.
             cmd = ["maim", "-g", self.screen_geometry] if self.screen_geometry else ["maim"]
-            return subprocess.check_output(cmd, timeout=10)
-        img = subprocess.check_output(["maim", "-i", str(self.wid)], timeout=10)
+            img = subprocess.check_output(cmd, timeout=10)
+        else:
+            img = subprocess.check_output(["maim", "-i", str(self.wid)], timeout=10)
+            if _is_blank_png(img):
+                # window-id capture of a hardware-accelerated surface can come back blank; retry by
+                # geometry (reads the framebuffer region) — recovers non-GPU cases.
+                geom = self._geometry_now()
+                if geom:
+                    try:
+                        img = subprocess.check_output(["maim", "-g", geom], timeout=10)
+                    except subprocess.SubprocessError:
+                        pass
         if _is_blank_png(img):
-            # Hardware-accelerated / GL windows (Android emulator, games, video players) commonly
-            # capture solid black via window-id; re-grab the window's screen region by geometry,
-            # which reads the framebuffer regardless. Generic — applies to any such app.
-            geom = self._geometry_now()
-            if geom:
-                try:
-                    img = subprocess.check_output(["maim", "-g", geom], timeout=10)
-                except subprocess.SubprocessError:
-                    pass
+            # Still uniform → an X screen-grab genuinely can't read this surface. Don't hand back a
+            # black image the model will misread as a broken UI; say what it is and how to capture it.
+            raise gpu_surface_error(self.name)
         return img
 
     def _geometry_now(self) -> str | None:
@@ -1016,6 +1038,28 @@ _NUMERIC_NAME_RE = re.compile(r"^[+-]?\d+$")
 
 class Motion:
     """Video motion detection helpers."""
+
+    @staticmethod
+    def is_blank(video_bytes: bytes) -> bool:
+        """True if the recording's first frame is a single uniform colour — a GPU surface that
+        ffmpeg x11grab couldn't read (distinct from a static-but-real frame)."""
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                vp = Path(tmpdir) / "in.mp4"
+                vp.write_bytes(video_bytes)
+                out = Path(tmpdir) / "f.png"
+                subprocess.run(
+                    ["ffmpeg", "-y", "-i", str(vp), "-vframes", "1", str(out)],
+                    check=True,
+                    capture_output=True,
+                    timeout=15,
+                )
+                if not out.exists():
+                    return False
+                lo, hi = Image.open(out).convert("L").getextrema()
+                return lo == hi
+        except Exception:
+            return False
 
     @staticmethod
     def detect(

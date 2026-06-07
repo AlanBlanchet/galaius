@@ -117,6 +117,30 @@ async def test_window_target_input_stays_window_relative(monkeypatch):
     assert DesktopWindow._xdo.await_args.args[0] == 4242
 
 
+def test_blank_gpu_surface_capture_raises_actionable_error(monkeypatch):
+    """An Android-emulator / GPU-surface window grabs uniform black via X — don't hand back a
+    black image; raise a clear error naming the cause + the adb/compositor fixes."""
+    import io
+    from PIL import Image as PILImage
+    from interact.desktop import CaptureError
+
+    buf = io.BytesIO()
+    PILImage.new("RGB", (40, 40), "black").save(buf, format="PNG")
+    black = buf.getvalue()
+
+    def fake(cmd, *a, **k):  # maim → black; xdotool geometry → a valid region
+        if cmd[0] == "xdotool":
+            return "WIDTH=388\nHEIGHT=863\nX=0\nY=0\n"
+        return black
+
+    monkeypatch.setattr("interact.desktop.subprocess.check_output", fake)
+    win = DesktopWindow(name="Android Emulator - Pixel_7:5554", wid=123, x=0, y=0, w=388, h=863)
+    with pytest.raises(CaptureError) as exc:
+        win.capture()
+    msg = str(exc.value)
+    assert "GPU" in msg and "adb" in msg and "Android Emulator" in msg
+
+
 def test_resolve_target_routes_screen_to_screen_builder(monkeypatch):
     sentinel = DesktopWindow(name="screen", wid=_SCREEN_WID, x=0, y=0, w=1, h=1, screen_geometry="")
     monkeypatch.setattr(DesktopWindow, "screen", classmethod(lambda cls, spec: sentinel))
