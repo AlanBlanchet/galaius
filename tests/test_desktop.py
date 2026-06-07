@@ -65,30 +65,26 @@ def test_format_desktop_elements():
     assert "at 10,20" not in result
 
 
-def test_parse_elements_from_vlm_valid():
-    response = 'Here are the elements: [{"role": "button", "name": "OK", "x": 100, "y": 200, "w": 80, "h": 40}]'
-    elements = DesktopElement.parse_vlm(response)
-    assert elements is not None
-    assert len(elements) == 1
-    assert elements[0].role == "button"
-    assert elements[0].name == "OK"
-    assert elements[0].x == 100
-    assert elements[0].center_x == 140
+@pytest.mark.parametrize(
+    "response, count",
+    [
+        ('elements: [{"role":"button","name":"OK","x":100,"y":200,"w":80,"h":40}]', 1),
+        ("No elements found in this image.", 0),  # no JSON → None
+        ("[{invalid json}]", 0),  # malformed → None
+        ('[{"role":"b","name":"OK","x":10,"y":20,"w":30,"h":40},{"bad":true}]', 1),  # skips bad entry
+    ],
+    ids=["valid", "no-json", "malformed", "partial"],
+)
+def test_parse_vlm_elements_count(response, count):
+    els = DesktopElement.parse_vlm(response)
+    assert (len(els) if els else 0) == count
 
 
-def test_parse_elements_from_vlm_no_json():
-    assert DesktopElement.parse_vlm("No elements found in this image.") is None
-
-
-def test_parse_elements_from_vlm_malformed():
-    assert DesktopElement.parse_vlm("[{invalid json}]") is None
-
-
-def test_parse_elements_from_vlm_partial():
-    response = '[{"role": "button", "name": "OK", "x": 10, "y": 20, "w": 30, "h": 40}, {"bad": true}]'
-    elements = DesktopElement.parse_vlm(response)
-    assert elements is not None
-    assert len(elements) == 1
+def test_parse_vlm_elements_fields():
+    el = DesktopElement.parse_vlm(
+        '[{"role":"button","name":"OK","x":100,"y":200,"w":80,"h":40}]'
+    )[0]
+    assert (el.role, el.name, el.x, el.center_x) == ("button", "OK", 100, 140)
 
 
 def test_ref_to_index():
@@ -712,22 +708,19 @@ def test_coord_transform_clamp(x, y, w, h, img_w, img_h, expected):
         assert (result.x, result.y, result.w, result.h) == expected
 
 
-def test_for_resize_noop_between_bounds():
-    t = CoordTransform.for_resize(900, 700, max_dim=1280, min_dim=768)
-    assert t.scale_x == 1.0
-    assert t.scale_y == 1.0
-
-
-def test_for_resize_scales():
-    t = CoordTransform.for_resize(1920, 1080)
-    assert t.scale_x == pytest.approx(1920 / 1280)
+@pytest.mark.parametrize(
+    "w, h, sx",
+    [
+        (900, 700, 1.0),  # between bounds → no scaling
+        (1920, 1080, 1920 / 1280),  # over max_dim → downscale
+        (400, 383, 400 / 768),  # under min_dim → upscale
+    ],
+    ids=["noop", "downscale", "upscale"],
+)
+def test_for_resize_scale(w, h, sx):
+    t = CoordTransform.for_resize(w, h, max_dim=1280, min_dim=768)
+    assert t.scale_x == pytest.approx(sx)
     assert t.scale_y == t.scale_x
-
-
-def test_for_resize_upscales_small():
-    t = CoordTransform.for_resize(400, 383, max_dim=1280, min_dim=768)
-    assert t.scale_x == pytest.approx(400 / 768)
-    assert t.scale_y == pytest.approx(400 / 768)
 
 
 def test_with_crop():
@@ -739,50 +732,29 @@ def test_with_crop():
     assert tc.scale_y == t.scale_y
 
 
-def test_resize_image_noop():
+@pytest.mark.parametrize(
+    "orig, expected, noop",
+    [
+        ((800, 600), (800, 600), True),  # default transform → unchanged, same bytes
+        ((1920, 1080), (1280, 720), False),  # downscale to max_dim
+        ((400, 383), (768, 735), False),  # upscale to min_dim
+    ],
+    ids=["noop", "downscale", "upscale"],
+)
+def test_resize_image(orig, expected, noop):
     from PIL import Image as PILImage
     import io
 
-    img = PILImage.new("RGB", (800, 600), color="red")
     buf = io.BytesIO()
-    img.save(buf, format="PNG")
+    PILImage.new("RGB", orig, color="red").save(buf, format="PNG")
     png = buf.getvalue()
-    t = CoordTransform()
-    result, w, h = t.resize_image(png, 800, 600)
-    assert result is png
-    assert (w, h) == (800, 600)
-
-
-def test_resize_image_downscales():
-    from PIL import Image as PILImage
-    import io
-
-    img = PILImage.new("RGB", (1920, 1080), color="blue")
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    png = buf.getvalue()
-    t = CoordTransform.for_resize(1920, 1080)
-    result, w, h = t.resize_image(png, 1920, 1080)
-    assert w == 1280
-    assert h == 720
-    result_img = PILImage.open(io.BytesIO(result))
-    assert result_img.size == (1280, 720)
-
-
-def test_resize_image_upscales():
-    from PIL import Image as PILImage
-    import io
-
-    img = PILImage.new("RGB", (400, 383), color="green")
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    png = buf.getvalue()
-    t = CoordTransform.for_resize(400, 383, max_dim=1280, min_dim=768)
-    result, w, h = t.resize_image(png, 400, 383)
-    assert w == 768
-    assert h == 735
-    result_img = PILImage.open(io.BytesIO(result))
-    assert result_img.size == (768, 735)
+    t = CoordTransform() if noop else CoordTransform.for_resize(*orig, max_dim=1280, min_dim=768)
+    result, w, h = t.resize_image(png, *orig)
+    assert (w, h) == expected
+    if noop:
+        assert result is png  # untouched, no re-encode
+    else:
+        assert PILImage.open(io.BytesIO(result)).size == expected
 
 
 def test_merge_into_accumulates_within_page_and_clears_on_change():
