@@ -42,6 +42,8 @@ for bench in Benchmark.registry():
             "name": bench.name,
             "description": bench.description,
             "category": bench.category,
+            "source": bench.source,
+            "source_auth": bench.source_auth,
             "url": bench.url,
             "metric": bench.metric,
             "published": {

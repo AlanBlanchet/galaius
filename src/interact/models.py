@@ -443,6 +443,10 @@ class Benchmark(RegistryMixin, BaseModel):
     description: str
     # Which capability the benchmark measures, so the UI can group + explain by task.
     category: Literal["image", "gui_grounding", "video"] = "gui_grounding"
+    # Where its live scores come from, and the env key that source needs ("" = keyless / auto).
+    # Surfaced in the config so the user can supply an optional key per source — no CLI needed.
+    source: str = ""
+    source_auth: str = ""
     metric: str = "accuracy"
     url: str = ""
     published: PublishedTable | None = None
@@ -632,6 +636,8 @@ Benchmark._register(
         id="screenspot",
         name="ScreenSpot",
         category="gui_grounding",
+        source="GUI-Agent grounding leaderboard",
+        source_auth="",
         description=(
             "GUI grounding: given an instruction, click the right single element across "
             "iOS/Android/macOS/Windows/Web. Measures whether a model can localize where to act."
@@ -645,6 +651,8 @@ Benchmark._register(
         id="screenspot_pro",
         name="ScreenSpot-Pro",
         category="gui_grounding",
+        source="GUI-Agent grounding leaderboard",
+        source_auth="",
         description=(
             "Hard GUI grounding on professional high-resolution apps (23 apps, 5 industries, "
             "3 OSes) with tiny cluttered targets — the closest benchmark to real desktop automation."
@@ -659,6 +667,8 @@ Benchmark._register(
         id="mmmu",
         name="MMMU",
         category="image",
+        source="Artificial Analysis",
+        source_auth="ARTIFICIAL_ANALYSIS_API_KEY",
         description=(
             "College-exam-level multi-discipline reasoning over diagrams, charts and figures "
             "(14 disciplines) — the headline image-understanding benchmark."
@@ -672,6 +682,8 @@ Benchmark._register(
         id="mmbench",
         name="MMBench",
         category="image",
+        source="Artificial Analysis",
+        source_auth="ARTIFICIAL_ANALYSIS_API_KEY",
         description=(
             "Broad multiple-choice perception + reasoning over images (EN/CN), with "
             "robustness checks — a wide general image-understanding measure."
@@ -686,6 +698,8 @@ Benchmark._register(
         id="video_mme",
         name="Video-MME",
         category="video",
+        source="OpenCompass video leaderboard",
+        source_auth="",
         description=(
             "Full-spectrum video understanding: 900 videos (11s–1hr) across 6 domains with "
             "2,700 QA pairs — the canonical video benchmark."
@@ -699,6 +713,8 @@ Benchmark._register(
         id="mvbench",
         name="MVBench",
         category="video",
+        source="OpenCompass video leaderboard",
+        source_auth="",
         description=(
             "20 temporal-reasoning tasks (action/sequence understanding) that can't be solved "
             "from a single frame — tests genuine video, not stills."

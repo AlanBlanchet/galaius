@@ -5,6 +5,8 @@
       "name": "ScreenSpot",
       "description": "GUI grounding: given an instruction, click the right single element across iOS/Android/macOS/Windows/Web. Measures whether a model can localize where to act.",
       "category": "gui_grounding",
+      "source": "GUI-Agent grounding leaderboard",
+      "source_auth": "",
       "url": "https://huggingface.co/datasets/rootsautomation/ScreenSpot",
       "metric": "accuracy",
       "published": {
@@ -160,6 +162,8 @@
       "name": "ScreenSpot-Pro",
       "description": "Hard GUI grounding on professional high-resolution apps (23 apps, 5 industries, 3 OSes) with tiny cluttered targets \u2014 the closest benchmark to real desktop automation.",
       "category": "gui_grounding",
+      "source": "GUI-Agent grounding leaderboard",
+      "source_auth": "",
       "url": "https://huggingface.co/datasets/TIGER-Lab/ScreenSpot-Pro",
       "metric": "accuracy",
       "published": {
@@ -563,6 +567,8 @@
       "name": "MMMU",
       "description": "College-exam-level multi-discipline reasoning over diagrams, charts and figures (14 disciplines) \u2014 the headline image-understanding benchmark.",
       "category": "image",
+      "source": "Artificial Analysis",
+      "source_auth": "ARTIFICIAL_ANALYSIS_API_KEY",
       "url": "https://mmmu-benchmark.github.io/",
       "metric": "accuracy",
       "published": {
@@ -614,6 +620,8 @@
       "name": "MMBench",
       "description": "Broad multiple-choice perception + reasoning over images (EN/CN), with robustness checks \u2014 a wide general image-understanding measure.",
       "category": "image",
+      "source": "Artificial Analysis",
+      "source_auth": "ARTIFICIAL_ANALYSIS_API_KEY",
       "url": "https://github.com/open-compass/MMBench",
       "metric": "accuracy",
       "published": null,
@@ -626,6 +634,8 @@
       "name": "Video-MME",
       "description": "Full-spectrum video understanding: 900 videos (11s\u20131hr) across 6 domains with 2,700 QA pairs \u2014 the canonical video benchmark.",
       "category": "video",
+      "source": "OpenCompass video leaderboard",
+      "source_auth": "",
       "url": "https://video-mme.github.io/",
       "metric": "accuracy",
       "published": {
@@ -665,6 +675,8 @@
       "name": "MVBench",
       "description": "20 temporal-reasoning tasks (action/sequence understanding) that can't be solved from a single frame \u2014 tests genuine video, not stills.",
       "category": "video",
+      "source": "OpenCompass video leaderboard",
+      "source_auth": "",
       "url": "https://github.com/OpenGVLab/Ask-Anything",
       "metric": "accuracy",
       "published": null,

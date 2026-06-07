@@ -81,6 +81,7 @@ const TABS = [
       "cfg-desktop",
       "cfg-browser",
       "cfg-advanced",
+      "cfg-benchmarks",
       "cfg-display",
     ],
   },

@@ -59,6 +59,8 @@ interface BenchmarkData {
   name: string;
   description: string;
   category: "image" | "gui_grounding" | "video";
+  source: string;
+  source_auth: string;
   url: string;
   metric: string;
   published: PublishedTableData | null;
@@ -186,6 +188,7 @@ export class DashboardPanel {
       this.statusCell(),
       this.apiKeysCell(),
       ...this.settingsCells(),
+      this.benchmarkDataCell(),
       this.displayCell(),
       await this.consumptionCell(),
       this.benchmarksCell(),
@@ -200,6 +203,7 @@ export class DashboardPanel {
     type: string;
     setting?: string;
     provider?: string;
+    key?: string;
   }): Promise<void> {
     switch (msg.type) {
       case "ready":
@@ -230,6 +234,27 @@ export class DashboardPanel {
       case "changeSetting": {
         const setting = SETTINGS.find((s) => s.key === msg.setting);
         if (setting) await this.editSetting(setting);
+        break;
+      }
+      case "setBenchmarkKey": {
+        if (!msg.key) break;
+        const value = await vscode.window.showInputBox({
+          prompt: `${msg.key} — key for a benchmark data source (improves model recommendations)`,
+          password: true,
+          ignoreFocusOut: true,
+        });
+        if (value) {
+          await this.keyManager.set(msg.key, value);
+          this.emitter.fire(); // re-inject into the server env
+          this.refresh();
+        }
+        break;
+      }
+      case "clearBenchmarkKey": {
+        if (!msg.key) break;
+        await this.keyManager.remove(msg.key);
+        this.emitter.fire();
+        this.refresh();
         break;
       }
       case "changeCurrency": {
@@ -382,6 +407,51 @@ export class DashboardPanel {
       title: group,
       content,
     }));
+  }
+
+  /** Benchmark data sources — where each benchmark's live scores come from and the optional key
+   *  that source needs. Lets the user supply keys in-UI (no CLI), grouped per benchmark, with a
+   *  nudge: live scores let interact recommend the best current model. */
+  private benchmarkDataCell(): CellUpdate {
+    const content: CellContent[] = [
+      {
+        kind: "row",
+        label:
+          "interact ranks models from public benchmark scores. Add a source key below to fetch " +
+          "live data so it knows the best current model — optional; curated snapshots are used otherwise.",
+      },
+    ];
+    for (const cat of BENCHMARK_CATEGORIES) {
+      const benches = this.benchmarksData.benchmarks.filter((b) => b.category === cat.id);
+      if (!benches.length) continue;
+      content.push({ kind: "heading", text: cat.label });
+      for (const b of benches) {
+        if (b.source_auth) {
+          const set = !!this.keyManager.get(b.source_auth);
+          content.push({
+            kind: "row",
+            label: b.name,
+            value: `${b.source} · ${set ? "key set" : "needs a key"}`,
+            dot: set ? "ok" : "missing",
+            tooltip: `${b.source_auth} — ${b.description}`,
+            actions: set
+              ? [
+                  { type: "clearBenchmarkKey", label: "Clear", data: { key: b.source_auth }, style: "secondary" },
+                ]
+              : [{ type: "setBenchmarkKey", label: "Add key", data: { key: b.source_auth } }],
+          });
+        } else {
+          content.push({
+            kind: "row",
+            label: b.name,
+            value: `${b.source} · auto · no key needed`,
+            dot: "ok",
+            tooltip: b.description,
+          });
+        }
+      }
+    }
+    return { id: "cfg-benchmarks", title: "Benchmark data", content };
   }
 
   /** Display preferences (UI-only, not server config) — currently the spend display currency. */
@@ -578,7 +648,7 @@ export class DashboardPanel {
           content.push({
             kind: "row",
             label: "  ↳ scores",
-            value: "not fetched yet — run interact-fetch-upstream",
+            value: "no live scores yet — add this source's key in Configuration → Benchmark data",
           });
         }
       }
