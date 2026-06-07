@@ -68,6 +68,35 @@ Settings and keys live in `~/.interact/config.env` and are picked up whenever a 
 launches the server. API keys are read from the usual provider env vars
 (`OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `ZAI_API_KEY`, …).
 
+### Which model should I use?
+
+interact uses a model for three distinct jobs. Set each, or leave it on **auto** (the safe
+default — it resolves to the best available model among the providers you have keys for, cheapest
+capable first, and falls back automatically if one errors):
+
+| Role | What it does | Pick one that's good at… | Ranked by (Benchmarks tab) |
+| --- | --- | --- | --- |
+| **image** | reads a screenshot to answer a `query`; the default for most vision calls | general image understanding | **Image** (e.g. MMMU) |
+| **component** | detects the clickable UI elements / grounds _where_ to click | **GUI grounding** | **GUI grounding** (ScreenSpot-Pro) |
+| **video** | reads a recorded interaction's frames to explain what happened | temporal / sequence understanding | **Video** (Video-MME) |
+
+How to choose, in order of effort:
+
+- **Do nothing — use auto.** It already picks a capable, cheaper-first model per role for your keys.
+- **Want the strongest for a job?** Open the dashboard's **Benchmarks** tab: it ranks current
+  models per category (Image / GUI grounding / Video) from public leaderboards and shows the best
+  ones — pick the top model your provider offers. Each benchmark explains the task it measures, so
+  you know _why_ a model is "best" for that job. (Keep scores live by adding a source key under
+  **Benchmark data**.)
+- **Cost-conscious?** The dashboard and `interact providers` show cost per model; auto already
+  prefers cheaper capable models, and `interact usage` tracks what you've spent.
+- **The one that matters most is `component` (grounding).** Reliable clicking on dense desktop /
+  canvas UIs needs a _grounding-capable_ model (one with the `gui_grounding` / `computer_use`
+  capability — derived from the live catalog, shown in the panel); a general VLM mislocates.
+
+`interact status` shows what each role currently resolves to. Change them in the TUI (`interact`),
+the VS Code **Configuration → Models** panel, or the CLI (`interact config set <role>.model <id>`).
+
 ## What your agent can do
 
 - **`navigate`** — open a URL; returns title + visible text (or a vision answer with `query`).
