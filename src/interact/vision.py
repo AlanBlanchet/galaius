@@ -79,33 +79,41 @@ def _image_content(item: MediaItem) -> dict:
     }
 
 
-def _extract_frames(video_base64: str, mime_type: str, fps: int = 1) -> list[str]:
+def evenly_sampled(items: list, k: int) -> list:
+    """At most ``k`` items, evenly spaced and always including the first and last — the cost cap
+    for video frames. ``k <= 0`` means no cap. Keeps the whole list when it's already small."""
+    if k <= 0 or len(items) <= k:
+        return items
+    if k == 1:
+        return [items[0]]
+    step = (len(items) - 1) / (k - 1)
+    return [items[round(i * step)] for i in range(k)]
+
+
+def _extract_frames(
+    video_base64: str, mime_type: str, fps: int = 1, max_frames: int = 0
+) -> list[str]:
+    """Sample frames from a clip at ``fps``, then cap to ``max_frames`` evenly-spaced frames so
+    the VLM cost is bounded by frame count, not clip length."""
     video_bytes = base64.b64decode(video_base64)
     with tempfile.TemporaryDirectory() as tmpdir:
         ext = "mp4" if "mp4" in mime_type else "webm"
         video_path = f"{tmpdir}/input.{ext}"
         Path(video_path).write_bytes(video_bytes)
         subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-i",
-                video_path,
-                "-vf",
-                f"fps={fps}",
-                f"{tmpdir}/frame_%03d.jpg",
-            ],
+            ["ffmpeg", "-y", "-i", video_path, "-vf", f"fps={fps}", f"{tmpdir}/frame_%03d.jpg"],
             check=True,
             capture_output=True,
         )
-        return [
+        frames = [
             bytes_to_b64(fp.read_bytes())
             for fp in sorted(Path(tmpdir).glob("frame_*.jpg"))
         ]
+    return evenly_sampled(frames, max_frames)
 
 
-def _video_content(item: MediaItem) -> list[dict]:
-    frames = _extract_frames(item.data, item.mime_type)
+def _video_content(item: MediaItem, fps: int = 1, max_frames: int = 0) -> list[dict]:
+    frames = _extract_frames(item.data, item.mime_type, fps=fps, max_frames=max_frames)
     return [
         {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{f}"}}
         for f in frames
@@ -181,7 +189,9 @@ async def analyze_media(
         if item.media_type == "image":
             content.append(_image_content(item))
         else:
-            content.extend(_video_content(item))
+            content.extend(
+                _video_content(item, fps=config.video_fps, max_frames=config.video_max_frames)
+            )
     tok = max_tokens if max_tokens is not _UNSET else config.max_tokens
     messages = _build_messages(content, prompt)
     return await _vision_completion(

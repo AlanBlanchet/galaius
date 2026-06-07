@@ -557,6 +557,38 @@ async def navigate(
     return result
 
 
+async def _run_actions_browser_recorded(
+    mgr: BrowserManager,
+    actions: list[AnyAction],
+    query: str | None,
+    scope: str | None,
+    wait: str | None,
+    session: str,
+    invocation_id: str | None,
+) -> str:
+    """Run a browser action sequence inside a recording context, then analyse the resulting video
+    so a model understands the interaction's flow (not just its end state). The query rides on the
+    video; the action run returns its normal step report. start_recording opens a fresh context,
+    so the sequence should navigate first."""
+    await mgr.start_recording()
+    try:
+        result = await _run_actions_browser(
+            mgr, actions, None, scope, wait, session, invocation_id=invocation_id
+        )
+    finally:
+        video = await mgr.stop_recording()
+    if not video:
+        return result + "\n\n[recording] no video captured"
+    r = await _vlm(
+        video,
+        "Sequential recording of a browser interaction.",
+        query or "Describe what happened during this interaction, step by step.",
+        "video",
+        "video/webm",
+    )
+    return result + f"\n\n[recording] {_fmt_timing(r)}"
+
+
 @mcp.tool()
 async def run_actions(
     actions: list[AnyAction],
@@ -566,6 +598,7 @@ async def run_actions(
     debug_dir: str | None = None,
     target: str | None = None,
     session: str = _DEFAULT_SESSION,
+    record: bool = False,
 ) -> str:
     """Execute a sequence of actions on a browser session or desktop window.
 
@@ -602,7 +635,11 @@ async def run_actions(
 
     scope: CSS selector to restrict the final capture to a page sub-tree (browser only).
     wait: after all actions, wait for a condition (browser only).
-    query: when set, returns vision analysis of the final state instead of text summary.
+    query: when set, returns vision analysis of the final state (or, with record, of the recording).
+    record: when True (browser only), record the whole sequence as video and analyze it with a
+        video model — so the model understands the *flow* (animations, transitions, gameplay), not
+        just the end state. Cost is bounded to a fixed frame budget (config.video_max_frames).
+        NOTE: recording runs the actions in a fresh browser context, so begin with a `navigate`.
     debug_dir: when set, dump inputs/outputs/screenshots to this directory for debugging.
     """
     config.refresh()  # source of truth before we snapshot the resolved config
@@ -616,6 +653,10 @@ async def run_actions(
         return err
     if win:
         result = await _run_actions_desktop(win, actions, query, invocation_id=inv)
+    elif record:
+        result = await _run_actions_browser_recorded(
+            mgr, actions, query, scope, wait, session, inv
+        )
     else:
         result = await _run_actions_browser(
             mgr, actions, query, scope, wait, session, invocation_id=inv

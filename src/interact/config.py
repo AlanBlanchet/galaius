@@ -35,6 +35,10 @@ class Config(BaseSettings):
     debug_dir: Path = Path.home() / ".interact"
     video_fps: int = 5
     video_duration: float = 3.0
+    # Cost cap for video understanding: a recording is sampled down to at most this many frames
+    # (evenly spaced) before going to the VLM, so spend is bounded by frame count, not clip
+    # length — enough frames to follow what happened (UI flow, gameplay), without paying per second.
+    video_max_frames: int = 12
     max_tokens: int | None = None
     wait_timeout: int = 10000
     vlm_max_dim: int = 1280
