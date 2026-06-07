@@ -4,11 +4,35 @@ Two things matter: a recording is sampled down to a fixed frame budget before th
 spend is bounded by frame count, not clip length), and run_actions can record a sequence and have
 a model describe the flow."""
 
+import base64
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-from interact.vision import evenly_sampled
+from interact.vision import _extract_frames, evenly_sampled
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg required")
+def test_extract_frames_real_ffmpeg_respects_budget():
+    """End-to-end with real ffmpeg: a clip is decoded to frames and the budget actually caps the
+    count (the cost guarantee), while no cap returns the full sampling."""
+    with tempfile.TemporaryDirectory() as d:
+        clip = Path(d) / "clip.mp4"
+        subprocess.run(
+            ["ffmpeg", "-y", "-f", "lavfi", "-i",
+             "testsrc=duration=3:size=160x120:rate=10", "-pix_fmt", "yuv420p", str(clip)],
+            check=True, capture_output=True,
+        )
+        data = base64.b64encode(clip.read_bytes()).decode()
+        capped = _extract_frames(data, "video/mp4", fps=5, max_frames=6)
+        uncapped = _extract_frames(data, "video/mp4", fps=5, max_frames=0)
+    assert len(capped) == 6  # ~15 sampled frames → capped to the budget
+    assert all(isinstance(f, str) and f for f in capped)  # base64 JPEGs
+    assert len(uncapped) > 6  # without a cap, the full fps sampling comes through
 
 
 @pytest.mark.parametrize(

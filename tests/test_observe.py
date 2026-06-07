@@ -66,6 +66,21 @@ def browser_mocks():
 # --- observe on/off parametrized ---
 
 
+@pytest.mark.asyncio
+async def test_record_frames_collects_one_per_step(browser_mocks):
+    """record_frames captures a frame after every step — so a recorded interaction has the result
+    of each action, with no uniform-sampling gaps."""
+    from interact.server import _run_actions_browser
+
+    browser_mocks["page"].screenshot = AsyncMock(return_value=_PNG)
+    frames: list[bytes] = []
+    actions = [ScrollAction(), ScrollAction(), ScrollAction()]
+    await _run_actions_browser(
+        browser_mocks["mgr"], actions, None, None, None, "default", record_frames=frames
+    )
+    assert len(frames) == 3 and all(f == _PNG for f in frames)
+
+
 @pytest.mark.parametrize(
     "observe, expect_vlm, expect_snapshot",
     [
