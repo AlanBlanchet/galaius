@@ -41,6 +41,7 @@ for bench in Benchmark.registry():
             "id": bench.id,
             "name": bench.name,
             "description": bench.description,
+            "category": bench.category,
             "url": bench.url,
             "metric": bench.metric,
             "published": {

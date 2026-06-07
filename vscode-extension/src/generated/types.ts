@@ -7,7 +7,7 @@
 /* Do not modify it by hand - just update the pydantic models and then re-run the script
 */
 
-export type ModelCapability = "llm" | "vlm" | "gui_grounding";
+export type ModelCapability = "llm" | "vlm" | "gui_grounding" | "computer_use" | "video";
 /**
  * How bounding box values are sequenced in model output.
  */
@@ -24,6 +24,7 @@ export interface Benchmark {
   id: string;
   name: string;
   description: string;
+  category?: "image" | "gui_grounding" | "video";
   metric?: string;
   url?: string;
   published?: PublishedTable | null;
@@ -88,6 +89,7 @@ export interface ModelSpec {
   input_cost_per_million?: number | null;
   output_cost_per_million?: number | null;
   supports_response_schema?: boolean;
+  capabilities?: string[];
 }
 /**
  * Typed schema for models.json content.
@@ -126,4 +128,5 @@ export interface UpstreamSource {
   name: string;
   url: string;
   benchmark_id: string;
+  insecure?: boolean;
 }

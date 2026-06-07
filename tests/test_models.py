@@ -370,11 +370,22 @@ class TestBenchmarkRecommend:
 
     def test_registry_contains_grounding_benchmarks(self):
         ids = {b.id for b in Benchmark.registry()}
-        assert "screenspot" in ids
-        assert "screenspot_pro" in ids
+        assert {"screenspot", "screenspot_pro"} <= ids
         b = Benchmark.by_id("screenspot")
         assert b is not None
-        assert "huggingface.co/datasets/rootsautomation" in b.description
+        assert b.category == "gui_grounding"
+        assert b.description and b.url.startswith("https://")  # task explained + linked
+
+    def test_registry_covers_all_three_capability_categories(self):
+        """Image / GUI grounding / Video are each represented (the categorized benchmarks UI)."""
+        by_cat: dict[str, set[str]] = {}
+        for b in Benchmark.registry():
+            by_cat.setdefault(b.category, set()).add(b.id)
+        assert "mmmu" in by_cat.get("image", set())
+        assert "video_mme" in by_cat.get("video", set())
+        assert {"screenspot", "screenspot_pro"} <= by_cat.get("gui_grounding", set())
+        # every benchmark explains its task and links out
+        assert all(b.description and b.url for b in Benchmark.registry())
 
     def test_benchmarks_hydrated_from_grounding_env(self, monkeypatch):
         sample = json.dumps(

@@ -172,8 +172,37 @@ _SCREENSPOT_V2_FALLBACK = PublishedTable(
 )
 
 
+# Small "never leave the user with nothing" snapshots for the image/video benchmarks, until
+# `interact-fetch-upstream` populates the live OpenVLM tables. Approximate top entries from
+# public leaderboards (frontier numbers diverge by eval protocol); provenance + retrieved date
+# below. These are the offline fallback, NOT the source of truth — the fetch overwrites them.
+_MMMU_FALLBACK = PublishedTable(
+    source_url="https://mmmu-benchmark.github.io/",
+    retrieved="2026-06-07",
+    lib_recommendation="GPT-5.4",
+    entries=[
+        PublishedEntry(model_name="GPT-5.4", score=0.94),
+        PublishedEntry(model_name="Claude Opus 4.7", score=0.927),
+        PublishedEntry(model_name="Gemini 3.1 Pro", score=0.84),
+        PublishedEntry(model_name="Qwen3.5", score=0.77),
+    ],
+)
+_VIDEO_MME_FALLBACK = PublishedTable(
+    source_url="https://video-mme.github.io/",
+    retrieved="2026-06-07",
+    lib_recommendation="Kimi K2.5",
+    entries=[
+        PublishedEntry(model_name="Kimi K2.5", score=0.874),
+        PublishedEntry(model_name="Gemini 2.5 Pro", score=0.848),
+        PublishedEntry(model_name="Qwen3.6 Plus", score=0.842),
+    ],
+)
+
+
 _FALLBACKS: dict[str, PublishedTable] = {
     "screenspot_pro": _SCREENSPOT_PRO_FALLBACK,
     "screenspot": _SCREENSPOT_V2_FALLBACK,
+    "mmmu": _MMMU_FALLBACK,
+    "video_mme": _VIDEO_MME_FALLBACK,
 }
 

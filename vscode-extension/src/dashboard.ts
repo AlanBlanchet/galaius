@@ -42,7 +42,6 @@ const VIEW_TYPE = "interact.dashboard";
 
 // Benchmark ids the dashboard surfaces. These are taxonomy ids (matches
 // Benchmark.id in benchmarks.json), not domain data.
-const BENCHMARK_IDS = ["screenspot_pro", "screenspot"];
 const RECOMMENDATION_BENCHMARK = "screenspot_pro";
 
 interface PublishedEntryData {
@@ -59,6 +58,7 @@ interface BenchmarkData {
   id: string;
   name: string;
   description: string;
+  category: "image" | "gui_grounding" | "video";
   url: string;
   metric: string;
   published: PublishedTableData | null;
@@ -66,6 +66,13 @@ interface BenchmarkData {
   measured: Record<string, number>;
   recommendations: RecommendationData[];
 }
+
+// Display order + human labels for the three benchmark categories.
+const BENCHMARK_CATEGORIES: { id: BenchmarkData["category"]; label: string }[] = [
+  { id: "image", label: "Image understanding" },
+  { id: "gui_grounding", label: "GUI grounding (where to click)" },
+  { id: "video", label: "Video understanding" },
+];
 interface RecommendationData {
   model_id: string;
   score: number;
@@ -543,40 +550,43 @@ export class DashboardPanel {
 
   private benchmarksCell(): CellUpdate {
     const content: CellContent[] = [];
-    for (const id of BENCHMARK_IDS) {
-      const bench = this.benchmarksData.benchmarks.find((b) => b.id === id);
-      if (!bench) continue;
-      const rows: string[][] = [];
-      if (bench.published?.lib_recommendation) {
-        rows.push([
-          `${bench.published.lib_recommendation} (lib recommendation)`,
-          "—",
-          "published",
-        ]);
+    for (const cat of BENCHMARK_CATEGORIES) {
+      const benches = this.benchmarksData.benchmarks.filter(
+        (b) => b.category === cat.id,
+      );
+      if (!benches.length) continue;
+      content.push({ kind: "heading", text: cat.label });
+      for (const bench of benches) {
+        // What the benchmark measures + freshness, so the user knows what e.g. ScreenSpot is.
+        const asOf = bench.published?.retrieved ? ` · as of ${bench.published.retrieved}` : "";
+        content.push({
+          kind: "row",
+          label: bench.name,
+          value: bench.description,
+          tooltip: `${bench.url}${asOf}`,
+        });
+        const rows: string[][] = [];
+        for (const e of (bench.published?.entries ?? []).slice(0, 5)) {
+          rows.push([e.model_name, e.score.toFixed(3)]);
+        }
+        for (const [modelId, score] of Object.entries(bench.measured)) {
+          rows.push([modelId, score.toFixed(3)]);
+        }
+        if (rows.length) {
+          content.push({ kind: "table", headers: ["Best models", "Score"], rows });
+        } else {
+          content.push({
+            kind: "row",
+            label: "  ↳ scores",
+            value: "not fetched yet — run interact-fetch-upstream",
+          });
+        }
       }
-      const topPublished = (bench.published?.entries ?? []).slice(0, 5);
-      for (const e of topPublished) {
-        rows.push([e.model_name, e.score.toFixed(3), "published"]);
-      }
-      for (const [modelId, score] of Object.entries(bench.measured)) {
-        rows.push([modelId, score.toFixed(3), "measured"]);
-      }
-      if (!rows.length) continue;
-      content.push({
-        kind: "row",
-        label: bench.name,
-        value: bench.url,
-      });
-      content.push({
-        kind: "table",
-        headers: ["Model", "Score", "Source"],
-        rows,
-      });
     }
     if (content.length === 0) {
       content.push({ kind: "empty", message: "No benchmark data available" });
     }
-    return { id: "benchmarks", title: "Benchmark Reference", content };
+    return { id: "benchmarks", title: "Benchmarks by capability", content };
   }
 
   private recommendationsCell(): CellUpdate {

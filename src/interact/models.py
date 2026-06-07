@@ -441,6 +441,8 @@ class Benchmark(RegistryMixin, BaseModel):
     id: str
     name: str
     description: str
+    # Which capability the benchmark measures, so the UI can group + explain by task.
+    category: Literal["image", "gui_grounding", "video"] = "gui_grounding"
     metric: str = "accuracy"
     url: str = ""
     published: PublishedTable | None = None
@@ -624,13 +626,15 @@ _ = PublishedTable  # re-exported via __all__; reference here silences unused-im
 
 # Pre-register known grounding benchmarks at import time.
 # Published tables for these benchmarks live in interact.benchmarks.published.
+# GUI grounding — "can the model point at the right on-screen element to click?"
 Benchmark._register(
     Benchmark(
         id="screenspot",
         name="ScreenSpot",
+        category="gui_grounding",
         description=(
-            "Single-element GUI grounding across iOS/Android/macOS/Windows/Web. "
-            "Dataset: huggingface.co/datasets/rootsautomation/ScreenSpot (1272 samples)."
+            "GUI grounding: given an instruction, click the right single element across "
+            "iOS/Android/macOS/Windows/Web. Measures whether a model can localize where to act."
         ),
         url="https://huggingface.co/datasets/rootsautomation/ScreenSpot",
         published=PublishedTable.load("screenspot"),
@@ -640,13 +644,67 @@ Benchmark._register(
     Benchmark(
         id="screenspot_pro",
         name="ScreenSpot-Pro",
+        category="gui_grounding",
         description=(
-            "Professional high-resolution computer-use grounding across 23 apps in "
-            "5 industries on 3 OSes. "
-            "Dataset: huggingface.co/datasets/TIGER-Lab/ScreenSpot-Pro."
+            "Hard GUI grounding on professional high-resolution apps (23 apps, 5 industries, "
+            "3 OSes) with tiny cluttered targets — the closest benchmark to real desktop automation."
         ),
         url="https://huggingface.co/datasets/TIGER-Lab/ScreenSpot-Pro",
         published=PublishedTable.load("screenspot_pro"),
+    )
+)
+# Image understanding — "how well does the model reason over a static image?"
+Benchmark._register(
+    Benchmark(
+        id="mmmu",
+        name="MMMU",
+        category="image",
+        description=(
+            "College-exam-level multi-discipline reasoning over diagrams, charts and figures "
+            "(14 disciplines) — the headline image-understanding benchmark."
+        ),
+        url="https://mmmu-benchmark.github.io/",
+        published=PublishedTable.load("mmmu"),
+    )
+)
+Benchmark._register(
+    Benchmark(
+        id="mmbench",
+        name="MMBench",
+        category="image",
+        description=(
+            "Broad multiple-choice perception + reasoning over images (EN/CN), with "
+            "robustness checks — a wide general image-understanding measure."
+        ),
+        url="https://github.com/open-compass/MMBench",
+        published=PublishedTable.load("mmbench"),
+    )
+)
+# Video understanding — "can the model reason over time across frames?"
+Benchmark._register(
+    Benchmark(
+        id="video_mme",
+        name="Video-MME",
+        category="video",
+        description=(
+            "Full-spectrum video understanding: 900 videos (11s–1hr) across 6 domains with "
+            "2,700 QA pairs — the canonical video benchmark."
+        ),
+        url="https://video-mme.github.io/",
+        published=PublishedTable.load("video_mme"),
+    )
+)
+Benchmark._register(
+    Benchmark(
+        id="mvbench",
+        name="MVBench",
+        category="video",
+        description=(
+            "20 temporal-reasoning tasks (action/sequence understanding) that can't be solved "
+            "from a single frame — tests genuine video, not stills."
+        ),
+        url="https://github.com/OpenGVLab/Ask-Anything",
+        published=PublishedTable.load("mvbench"),
     )
 )
 

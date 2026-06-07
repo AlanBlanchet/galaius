@@ -3,7 +3,8 @@
     {
       "id": "screenspot",
       "name": "ScreenSpot",
-      "description": "Single-element GUI grounding across iOS/Android/macOS/Windows/Web. Dataset: huggingface.co/datasets/rootsautomation/ScreenSpot (1272 samples).",
+      "description": "GUI grounding: given an instruction, click the right single element across iOS/Android/macOS/Windows/Web. Measures whether a model can localize where to act.",
+      "category": "gui_grounding",
       "url": "https://huggingface.co/datasets/rootsautomation/ScreenSpot",
       "metric": "accuracy",
       "published": {
@@ -110,11 +111,7 @@
         ]
       },
       "lib_recommendation_model_id": null,
-      "measured": {
-        "openai/gpt-4o-mini": 0.05,
-        "openai/gpt-4o": 0.05,
-        "openai/gpt-5-mini": 0.0
-      },
+      "measured": {},
       "recommendations": [
         {
           "model_id": "nebius/Qwen/Qwen2-VL-7B-Instruct",
@@ -161,7 +158,8 @@
     {
       "id": "screenspot_pro",
       "name": "ScreenSpot-Pro",
-      "description": "Professional high-resolution computer-use grounding across 23 apps in 5 industries on 3 OSes. Dataset: huggingface.co/datasets/TIGER-Lab/ScreenSpot-Pro.",
+      "description": "Hard GUI grounding on professional high-resolution apps (23 apps, 5 industries, 3 OSes) with tiny cluttered targets \u2014 the closest benchmark to real desktop automation.",
+      "category": "gui_grounding",
       "url": "https://huggingface.co/datasets/TIGER-Lab/ScreenSpot-Pro",
       "metric": "accuracy",
       "published": {
@@ -515,7 +513,7 @@
           }
         ]
       },
-      "lib_recommendation_model_id": null,
+      "lib_recommendation_model_id": "ollama/qwen3.5",
       "measured": {},
       "recommendations": [
         {
@@ -531,8 +529,8 @@
           "score": 0.48007590132827327,
           "source": "published",
           "rank": 2,
-          "cost_per_million": 0.7999999999999999,
-          "quality_per_dollar": 0.6000948766603417
+          "cost_per_million": 0.8,
+          "quality_per_dollar": 0.6000948766603416
         },
         {
           "model_id": "nebius/Qwen/Qwen2-VL-7B-Instruct",
@@ -559,6 +557,120 @@
           "quality_per_dollar": 0.008433480919249422
         }
       ]
+    },
+    {
+      "id": "mmmu",
+      "name": "MMMU",
+      "description": "College-exam-level multi-discipline reasoning over diagrams, charts and figures (14 disciplines) \u2014 the headline image-understanding benchmark.",
+      "category": "image",
+      "url": "https://mmmu-benchmark.github.io/",
+      "metric": "accuracy",
+      "published": {
+        "source_url": "https://mmmu-benchmark.github.io/",
+        "retrieved": "2026-06-07",
+        "lib_recommendation": "GPT-5.4",
+        "entries": [
+          {
+            "model_name": "GPT-5.4",
+            "score": 0.94
+          },
+          {
+            "model_name": "Claude Opus 4.7",
+            "score": 0.927
+          },
+          {
+            "model_name": "Gemini 3.1 Pro",
+            "score": 0.84
+          },
+          {
+            "model_name": "Qwen3.5",
+            "score": 0.77
+          }
+        ]
+      },
+      "lib_recommendation_model_id": "azure/gpt-5",
+      "measured": {},
+      "recommendations": [
+        {
+          "model_id": "azure/gpt-5",
+          "score": 0.94,
+          "source": "published",
+          "rank": 1,
+          "cost_per_million": 11.25,
+          "quality_per_dollar": 0.08355555555555555
+        },
+        {
+          "model_id": "dashscope/qwen3.5-plus",
+          "score": 0.77,
+          "source": "published",
+          "rank": 2,
+          "cost_per_million": null,
+          "quality_per_dollar": null
+        }
+      ]
+    },
+    {
+      "id": "mmbench",
+      "name": "MMBench",
+      "description": "Broad multiple-choice perception + reasoning over images (EN/CN), with robustness checks \u2014 a wide general image-understanding measure.",
+      "category": "image",
+      "url": "https://github.com/open-compass/MMBench",
+      "metric": "accuracy",
+      "published": null,
+      "lib_recommendation_model_id": null,
+      "measured": {},
+      "recommendations": []
+    },
+    {
+      "id": "video_mme",
+      "name": "Video-MME",
+      "description": "Full-spectrum video understanding: 900 videos (11s\u20131hr) across 6 domains with 2,700 QA pairs \u2014 the canonical video benchmark.",
+      "category": "video",
+      "url": "https://video-mme.github.io/",
+      "metric": "accuracy",
+      "published": {
+        "source_url": "https://video-mme.github.io/",
+        "retrieved": "2026-06-07",
+        "lib_recommendation": "Kimi K2.5",
+        "entries": [
+          {
+            "model_name": "Kimi K2.5",
+            "score": 0.874
+          },
+          {
+            "model_name": "Gemini 2.5 Pro",
+            "score": 0.848
+          },
+          {
+            "model_name": "Qwen3.6 Plus",
+            "score": 0.842
+          }
+        ]
+      },
+      "lib_recommendation_model_id": null,
+      "measured": {},
+      "recommendations": [
+        {
+          "model_id": "ollama/qwen3.6",
+          "score": 0.842,
+          "source": "published",
+          "rank": 1,
+          "cost_per_million": null,
+          "quality_per_dollar": null
+        }
+      ]
+    },
+    {
+      "id": "mvbench",
+      "name": "MVBench",
+      "description": "20 temporal-reasoning tasks (action/sequence understanding) that can't be solved from a single frame \u2014 tests genuine video, not stills.",
+      "category": "video",
+      "url": "https://github.com/OpenGVLab/Ask-Anything",
+      "metric": "accuracy",
+      "published": null,
+      "lib_recommendation_model_id": null,
+      "measured": {},
+      "recommendations": []
     }
   ]
 }

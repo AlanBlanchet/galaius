@@ -68,6 +68,9 @@ class UpstreamSource(RegistryMixin, BaseModel):
     name: str
     url: str
     benchmark_id: str
+    # Some upstreams (OpenCompass OpenXLB) serve a valid JSON body but with an EXPIRED TLS cert;
+    # the official HF leaderboard apps fetch them anyway. Scope the verify-skip to those sources.
+    insecure: bool = False
 
     @classmethod
     def for_benchmark(cls, bid: str) -> list[Self]:
@@ -79,7 +82,9 @@ class UpstreamSource(RegistryMixin, BaseModel):
     # --- helpers shared by subclasses ---
 
     def _get(self, timeout: float = 15.0) -> str:
-        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+        with httpx.Client(
+            timeout=timeout, follow_redirects=True, verify=not self.insecure
+        ) as client:
             resp = client.get(self.url)
             resp.raise_for_status()
             return resp.text
@@ -96,6 +101,8 @@ class GroundingLeaderboardJS(UpstreamSource):
     """
 
     score_path: tuple[str, ...] = ("results", "overall", "avg")
+    # Multiply raw scores to normalise to [0,1]; OpenCompass reports 0–100, so set 0.01 there.
+    score_scale: float = 1.0
     retrieved: str = ""
 
     def parse(self, text: str) -> PublishedTable:
@@ -113,7 +120,9 @@ class GroundingLeaderboardJS(UpstreamSource):
                     break
                 cur = cur[key]
             if isinstance(cur, (int, float)):
-                entries.append(PublishedEntry(model_name=str(name), score=float(cur)))
+                entries.append(
+                    PublishedEntry(model_name=str(name), score=float(cur) * self.score_scale)
+                )
         entries.sort(key=lambda e: e.score, reverse=True)
         return PublishedTable(
             source_url=self.url,
@@ -209,6 +218,34 @@ UpstreamSource._register(
         benchmark_id="screenspot",
     )
 )
+
+# Image + Video: OpenCompass OpenVLM is the only machine-readable aggregate covering these
+# benchmark families (no clean no-auth alternative exists — researched 2026-06-07). It serves a
+# valid JSON body but the HTTPS cert is expired (the official HF leaderboard Spaces fetch it the
+# same way), so `insecure=True`. One object keyed by model; the score for a benchmark lives at
+# data[model][<field>] as a 0–100 number → score_scale=0.01. Field keys per OpenVLM/video JSON.
+_OPENVLM = "https://opencompass.openxlab.space/assets/OpenVLM.json"
+_OPENVLM_VIDEO = "https://opencompass.openxlab.space/utils/video_leaderboard.json"
+for _bid, _field, _name in [
+    ("mmmu", "MMMU_VAL", "MMMU (OpenVLM leaderboard)"),
+    ("mmbench", "MMBench_V11", "MMBench (OpenVLM leaderboard)"),
+]:
+    UpstreamSource._register(
+        GroundingLeaderboardJS(
+            id=f"{_bid}_openvlm", name=_name, url=_OPENVLM, benchmark_id=_bid,
+            score_path=(_field,), score_scale=0.01, insecure=True,
+        )
+    )
+for _bid, _field, _name in [
+    ("video_mme", "Video-MME(w/o subs)", "Video-MME (OpenVLM video leaderboard)"),
+    ("mvbench", "MVBench", "MVBench (OpenVLM video leaderboard)"),
+]:
+    UpstreamSource._register(
+        GroundingLeaderboardJS(
+            id=f"{_bid}_openvlm", name=_name, url=_OPENVLM_VIDEO, benchmark_id=_bid,
+            score_path=(_field,), score_scale=0.01, insecure=True,
+        )
+    )
 
 
 def fetch_all(benchmark_ids: list[str] | None = None) -> dict[str, PublishedTable]:
