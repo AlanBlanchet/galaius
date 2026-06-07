@@ -557,36 +557,27 @@ async def navigate(
     return result
 
 
-async def _run_actions_browser_recorded(
-    mgr: BrowserManager,
-    actions: list[AnyAction],
-    query: str | None,
-    scope: str | None,
-    wait: str | None,
-    session: str,
-    invocation_id: str | None,
-) -> str:
-    """Run a browser action sequence inside a recording context, then analyse the resulting video
-    so a model understands the interaction's flow (not just its end state). The query rides on the
-    video; the action run returns its normal step report. start_recording opens a fresh context,
-    so the sequence should navigate first."""
-    await mgr.start_recording()
-    try:
-        result = await _run_actions_browser(
-            mgr, actions, None, scope, wait, session, invocation_id=invocation_id
-        )
-    finally:
-        video = await mgr.stop_recording()
-    if not video:
-        return result + "\n\n[recording] no video captured"
-    r = await _vlm(
-        video,
-        "Sequential recording of a browser interaction.",
-        query or "Describe what happened during this interaction, step by step.",
-        "video",
-        "video/webm",
+async def _analyze_interaction_frames(frames: list[bytes], query: str | None) -> str:
+    """Analyse the per-step frames of an interaction as an ordered sequence, so a model sees what
+    each action produced — not just the end state. One frame per step is captured during the run;
+    here it's sampled down to config.video_max_frames (evenly) to bound cost, then sent to the
+    video model with the query."""
+    from interact.vision import evenly_sampled
+
+    sampled = evenly_sampled(frames, config.video_max_frames)
+    media = [MediaItem.from_bytes(f, "image", "image/png") for f in sampled]
+    context = (
+        f"{len(sampled)} screenshots captured in order during an interaction — each is the page/"
+        "window state right after one step. Read them as a sequence to see what happened."
     )
-    return result + f"\n\n[recording] {_fmt_timing(r)}"
+    r = await analyze_media(
+        media,
+        context,
+        config,
+        query or "Describe what happened across these frames, step by step.",
+        model=config.resolve_model("video"),
+    )
+    return f"\n\n[recording: {len(sampled)} frames] {_fmt_timing(r)}"
 
 
 @mcp.tool()
@@ -636,10 +627,11 @@ async def run_actions(
     scope: CSS selector to restrict the final capture to a page sub-tree (browser only).
     wait: after all actions, wait for a condition (browser only).
     query: when set, returns vision analysis of the final state (or, with record, of the recording).
-    record: when True (browser only), record the whole sequence as video and analyze it with a
-        video model — so the model understands the *flow* (animations, transitions, gameplay), not
-        just the end state. Cost is bounded to a fixed frame budget (config.video_max_frames).
-        NOTE: recording runs the actions in a fresh browser context, so begin with a `navigate`.
+    record: when True, capture one frame per step and have a video model read them in order — so
+        it understands what each action produced (the flow), not just the end state. Works on
+        browser and desktop targets, on the live session (no context reset). Cost is bounded: the
+        frames are sampled to config.video_max_frames, so a short interaction keeps every step and
+        a long one is evenly down-sampled.
     debug_dir: when set, dump inputs/outputs/screenshots to this directory for debugging.
     """
     config.refresh()  # source of truth before we snapshot the resolved config
@@ -651,16 +643,21 @@ async def run_actions(
     if err:
         Debug.dump_output(inv, err)
         return err
+    # When recording, capture a frame per step and let the video model read the sequence; the
+    # action run itself returns its normal step report (so the query goes to the frames, not the
+    # final state, avoiding a duplicate analysis).
+    frames: list[bytes] | None = [] if record else None
+    dispatch_query = None if record else query
     if win:
-        result = await _run_actions_desktop(win, actions, query, invocation_id=inv)
-    elif record:
-        result = await _run_actions_browser_recorded(
-            mgr, actions, query, scope, wait, session, inv
+        result = await _run_actions_desktop(
+            win, actions, dispatch_query, invocation_id=inv, record_frames=frames
         )
     else:
         result = await _run_actions_browser(
-            mgr, actions, query, scope, wait, session, invocation_id=inv
+            mgr, actions, dispatch_query, scope, wait, session, invocation_id=inv, record_frames=frames
         )
+    if frames:
+        result += await _analyze_interaction_frames(frames, query)
     Debug.dump_output(inv, result)
     return result
 

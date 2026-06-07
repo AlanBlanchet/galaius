@@ -4,7 +4,7 @@ Two things matter: a recording is sampled down to a fixed frame budget before th
 spend is bounded by frame count, not clip length), and run_actions can record a sequence and have
 a model describe the flow."""
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -36,44 +36,38 @@ def test_evenly_sampled_is_evenly_spaced():
 
 
 @pytest.mark.asyncio
-async def test_run_actions_record_analyzes_the_recording_with_the_query():
-    """record=True wraps the sequence in a recording context and sends the video (carrying the
-    query) to the VLM — so the result describes the flow, not just the end state."""
+async def test_record_analyzes_per_step_frames_capped_with_query():
+    """record captures one frame per step; a long interaction is sampled to the frame budget and
+    the whole sequence (carrying the query) goes to the video model — so it reads the flow."""
     import interact.server as srv
 
-    mgr = AsyncMock()
-    mgr.start_recording = AsyncMock(return_value="about:blank")
-    mgr.stop_recording = AsyncMock(return_value=b"WEBMDATA")
-    vlm = AsyncMock(return_value=srv.VLMResult(text="user logged in then opened settings", elapsed=0.2))
+    frames = [f"frame{i}".encode() for i in range(100)]  # 100 steps
+    captured: dict = {}
 
-    with (
-        patch.object(srv, "_run_actions_browser", AsyncMock(return_value="[session: default]\nStep 1…")),
-        patch.object(srv, "_vlm", vlm),
-    ):
-        out = await srv._run_actions_browser_recorded(
-            mgr, [], "what happened?", None, None, "default", None
-        )
+    async def fake_analyze(media, context, config, prompt=None, **kw):
+        captured["n"] = len(media)
+        captured["prompt"] = prompt
+        return srv.VLMResult(text="logged in, then opened settings", elapsed=0.1)
 
-    mgr.start_recording.assert_awaited_once()
-    mgr.stop_recording.assert_awaited_once()
-    # the video bytes + the query went to the VLM as a video
-    assert vlm.await_args.args[0] == b"WEBMDATA"
-    assert vlm.await_args.args[2] == "what happened?"
-    assert vlm.await_args.args[3] == "video"
-    assert "[recording]" in out and "logged in then opened settings" in out
+    with patch.object(srv, "analyze_media", fake_analyze):
+        out = await srv._analyze_interaction_frames(frames, "what happened?")
+
+    assert captured["n"] == 12  # capped to config.video_max_frames (default)
+    assert captured["prompt"] == "what happened?"
+    assert "[recording: 12 frames]" in out and "opened settings" in out
 
 
 @pytest.mark.asyncio
-async def test_run_actions_record_handles_no_video():
+async def test_record_keeps_every_frame_for_short_interactions():
+    """The common case — a short sequence keeps a frame for every step, nothing dropped."""
     import interact.server as srv
 
-    mgr = AsyncMock()
-    mgr.start_recording = AsyncMock(return_value="about:blank")
-    mgr.stop_recording = AsyncMock(return_value=b"")
-    with (
-        patch.object(srv, "_run_actions_browser", AsyncMock(return_value="ok")),
-        patch.object(srv, "_vlm", AsyncMock()) as vlm,
-    ):
-        out = await srv._run_actions_browser_recorded(mgr, [], None, None, None, "default", None)
-    assert "no video captured" in out
-    vlm.assert_not_called()  # nothing to analyse → no spend
+    captured: dict = {}
+
+    async def fake_analyze(media, *a, prompt=None, **kw):
+        captured["n"] = len(media)
+        return srv.VLMResult(text="ok", elapsed=0.1)
+
+    with patch.object(srv, "analyze_media", fake_analyze):
+        await srv._analyze_interaction_frames([b"a", b"b", b"c"], None)
+    assert captured["n"] == 3  # every step kept

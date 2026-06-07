@@ -190,6 +190,7 @@ async def _run_actions_desktop(
     actions: list[AnyAction],
     query: str | None,
     invocation_id: str | None = None,
+    record_frames: list[bytes] | None = None,
 ) -> str:
     from interact.server import (  # noqa: PLC0415 — circular: server imports dispatch
         _annotate_desktop,
@@ -354,6 +355,9 @@ async def _run_actions_desktop(
         if step_reports:
             Debug.step_save(invocation_id, i, action.type, "report", step_reports[-1])
 
+        if record_frames is not None:  # one frame per step → captures every action's result
+            record_frames.append(win.capture())
+
         if action.observe:
             obs_bytes = win.capture()
             snapshots[step_idx] = obs_bytes
@@ -393,6 +397,7 @@ async def _run_actions_browser(
     wait: str | None,
     session: str,
     invocation_id: str | None = None,
+    record_frames: list[bytes] | None = None,
 ) -> str:
     from interact.server import (  # noqa: PLC0415 — circular: server imports dispatch
         _annotate_and_describe,
@@ -562,6 +567,9 @@ async def _run_actions_browser(
 
         if step_reports:
             Debug.step_save(invocation_id, i, action.type, "report", step_reports[-1])
+
+        if record_frames is not None:  # one frame per step → captures every action's result
+            record_frames.append(await page.screenshot(type="png"))
 
         if action.observe:
             obs_bytes = await page.screenshot(type="png")
