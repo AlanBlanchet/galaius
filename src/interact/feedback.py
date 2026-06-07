@@ -20,20 +20,13 @@ KINDS = ("bug", "limitation", "feedback")
 FEEDBACK_DIR = Path.home() / ".interact" / "feedback"
 
 
-def _version() -> str:
-    try:
-        from importlib.metadata import version
-
-        return version("interact")
-    except Exception:
-        return "unknown"
-
-
 def _footer() -> str:
     import platform
 
+    from interact import __version__
+
     return (
-        f"\n\n---\n_interact {_version()} · Python {sys.version.split()[0]} · "
+        f"\n\n---\n_interact {__version__} · Python {sys.version.split()[0]} · "
         f"{platform.platform()} · reported via report_issue_"
     )
 

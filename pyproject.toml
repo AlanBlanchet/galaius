@@ -4,6 +4,9 @@ version = "0.1.0"
 description = "MCP server for browser + desktop automation with vision analysis"
 readme = "README.md"
 authors = [{ name = "Alan Blanchet", email = "alan@alan-blanchet.fr" }]
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["mcp", "automation", "browser", "desktop", "playwright", "vision", "agent", "llm"]
 requires-python = ">=3.11"
 dependencies = [
     "cyclopts>=3.0",
@@ -19,6 +22,21 @@ dependencies = [
     "datasets>=2.20",
     "textual>=8.2.7",
 ]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Software Development :: Libraries",
+]
+
+[project.urls]
+Homepage = "https://github.com/AlanBlanchet/interact"
+Repository = "https://github.com/AlanBlanchet/interact"
+Issues = "https://github.com/AlanBlanchet/interact/issues"
+Changelog = "https://github.com/AlanBlanchet/interact/blob/main/CHANGELOG.md"
 
 [dependency-groups]
 dev = [
@@ -37,6 +55,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
+packages = ["src/interact"]
 artifacts = ["src/interact/js/*.js", "src/interact/data/*.json"]
 
 [project.scripts]

@@ -264,7 +264,9 @@ export function resolveCommand(log?: vscode.OutputChannel): [string, string[]] {
     }
   }
   log?.appendLine("No local project found, falling back to uvx");
-  return ["uvx", ["interact", "mcp"]];
+  // Zero-config: run straight from the repo (interact isn't on PyPI — the bare `interact`
+  // name belongs to an unrelated package there). uvx caches the build after the first run.
+  return ["uvx", ["--from", "git+https://github.com/AlanBlanchet/interact", "interact", "mcp"]];
 }
 
 /** Locate the project root (parent of an interact pyproject.toml). */

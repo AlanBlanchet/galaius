@@ -9,13 +9,13 @@ Instead of screenshot → analyze → act loops, each tool returns a **text summ
 ## Install
 
 ```bash
-uvx interact mcp
+uvx --from git+https://github.com/AlanBlanchet/interact interact mcp
 ```
 
 Or add to a project:
 
 ```bash
-uv add interact
+uv add git+https://github.com/AlanBlanchet/interact
 ```
 
 Playwright browsers are auto-installed on first run. Desktop window analysis requires X11 + `maim` (Linux).
@@ -346,7 +346,7 @@ run_actions(actions=[
 Set `INTERACT_SCREENSHOT_DUMP_DIR` to a folder path and every `PageState` capture will save a timestamped PNG there. Filenames are `{timestamp}_{url_host}.png`. Screenshots are still consumed and analyzed normally — dumping is additive.
 
 ```bash
-INTERACT_SCREENSHOT_DUMP_DIR=./debug-screenshots uvx interact mcp
+INTERACT_SCREENSHOT_DUMP_DIR=./debug-screenshots uvx --from git+https://github.com/AlanBlanchet/interact interact mcp
 ```
 
 ---

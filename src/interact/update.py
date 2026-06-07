@@ -6,26 +6,19 @@ the UI; it just means "no update info this time".
 
 import json
 import urllib.request
-from importlib.metadata import PackageNotFoundError, distribution
-from importlib.metadata import version as _installed
+from importlib.metadata import distribution
 
+from interact import DIST_NAME, installed_version
 from interact.versioning import is_newer
 
 REPO = "AlanBlanchet/interact"
-
-
-def installed_version() -> str:
-    try:
-        return _installed("interact")
-    except PackageNotFoundError:
-        return "0.0.0"
 
 
 def is_editable_install() -> bool:
     """True for a local editable/dev checkout (``uv tool install --editable .`` / ``pip -e``).
     Such installs track local source, so we never nag them to update from GitHub."""
     try:
-        raw = distribution("interact").read_text("direct_url.json")
+        raw = distribution(DIST_NAME).read_text("direct_url.json")
         return bool(raw) and json.loads(raw).get("dir_info", {}).get("editable", False)
     except Exception:
         return False

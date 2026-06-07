@@ -2,5 +2,9 @@
 src/**
 scripts/**
 node_modules/**
-tsconfig.json
 webview/**
+tsconfig.json
+package-lock.json
+.gitignore
+**/*.map
+*.vsix

@@ -19,7 +19,19 @@
     "vscode": "^1.101.0"
   },
   "categories": [
+    "AI",
+    "Testing",
     "Other"
+  ],
+  "keywords": [
+    "mcp",
+    "automation",
+    "browser",
+    "playwright",
+    "desktop",
+    "agent",
+    "vision",
+    "ai"
   ],
   "activationEvents": [
     "onStartupFinished"
@@ -37,7 +49,7 @@
         "interact.projectPath": {
           "type": "string",
           "default": "",
-          "description": "Local project path for development (uses 'uv run' instead of 'uvx'). Leave empty when installed from PyPI."
+          "description": "Local project path for development (uses 'uv run' instead of 'uvx'). Leave empty to run interact from GitHub via uvx (zero-config)."
         },
         "interact.display.currency": {
           "type": "string",

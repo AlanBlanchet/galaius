@@ -3,6 +3,7 @@
 **Browser _and_ desktop automation for AI agents — over MCP.**
 
 [![CI](https://github.com/AlanBlanchet/interact/actions/workflows/ci.yml/badge.svg)](https://github.com/AlanBlanchet/interact/actions/workflows/ci.yml)
+[![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/AlanBlanchet.interact?label=VS%20Code)](https://marketplace.visualstudio.com/items?itemName=AlanBlanchet.interact)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/)
 [![MCP](https://img.shields.io/badge/MCP-server-black.svg)](https://modelcontextprotocol.io/)
@@ -31,16 +32,21 @@ happened.
 ## Install
 
 ```bash
-# one-liner (installs uv if missing, then the global `interact` CLI)
+# macOS / Linux — one-liner (installs uv if missing, then the global `interact` CLI)
 curl -LsSf https://raw.githubusercontent.com/AlanBlanchet/interact/main/install.sh | sh
 
-# or with uv directly
+# any platform, including Windows — with uv
 uv tool install git+https://github.com/AlanBlanchet/interact
 uvx --from git+https://github.com/AlanBlanchet/interact interact mcp   # run without installing
 ```
 
-VS Code users can also install the **Interact** extension (publisher `AlanBlanchet`) for a
-dashboard + settings UI — it launches the same server.
+> Installs the **`interact`** command from GitHub (`uv` makes it one command on macOS, Linux, and
+> Windows). interact isn't on PyPI — the bare `interact` name is taken there.
+
+**VS Code** — install the **Interact** extension for a dashboard + settings UI (it launches the
+same server):
+[Marketplace](https://marketplace.visualstudio.com/items?itemName=AlanBlanchet.interact) ·
+[Open VSX](https://open-vsx.org/extension/AlanBlanchet/interact) (Cursor / Windsurf / VSCodium).
 
 ## Connect it to your agent
 
@@ -130,14 +136,14 @@ uv run pytest -m "not integration"      # fast, cross-platform suite
 uv tool install --force --editable .    # put your checkout's `interact` on PATH
 ```
 
-CI runs the suite on Linux/macOS/Windows plus a sandboxed desktop job; releases are tagged
-automatically from `pyproject.toml`'s version on push to `main`.
+CI runs the suite on Linux/macOS/Windows plus a sandboxed desktop job; on push to `main` it tags
+and publishes the release automatically from `pyproject.toml`'s version (see [RELEASING.md](RELEASING.md)).
 
 ## Contributing
 
 Issues and PRs welcome. Please add a failing test for a bug before fixing it, keep the suite
-green (`uv run pytest -m "not integration"`), and bump the version with
-`uv run python -m interact.versioning bump <patch|minor|major>` when your change ships.
+green (`uv run pytest -m "not integration"`), and note user-facing changes in
+[CHANGELOG.md](CHANGELOG.md). Cutting a release is one command — see [RELEASING.md](RELEASING.md).
 
 ## License
 

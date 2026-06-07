@@ -1,10 +1,16 @@
 """Version single-source-of-truth helpers — the spine of the release automation."""
 
 import json
+import tomllib
+from pathlib import Path
 
 import pytest
 
+import interact
 from interact import versioning
+
+_ROOT = versioning.repo_root(Path(__file__).parent)
+_PYPROJECT = tomllib.loads((_ROOT / "pyproject.toml").read_text())
 
 
 @pytest.mark.parametrize("text,expected", [("1.2.3", (1, 2, 3)), ("v0.10.4", (0, 10, 4)), ("2.0.0-rc1", (2, 0, 0))])
@@ -71,3 +77,23 @@ def test_main_check_returns_nonzero_on_mismatch(tmp_path, monkeypatch):
     monkeypatch.setattr(versioning, "repo_root", lambda *a, **k: root)
     assert versioning.main(["check"]) == 1
     assert versioning.main(["current"]) == 0
+
+
+# Packaging single-source-of-truth. These guard the drift that silently breaks a release:
+# interact.DIST_NAME diverging from the real package name (version lookups → 0.0.0), an
+# unbuildable wheel (no package dir selected), or the `interact` command going missing.
+
+
+def test_dist_name_matches_pyproject():
+    assert interact.DIST_NAME == _PYPROJECT["project"]["name"] == "interact"
+
+
+def test_wheel_packages_point_at_a_real_dir():
+    """hatchling must select a package dir that exists, or `uv build` fails with
+    'Unable to determine which files to ship'."""
+    packages = _PYPROJECT["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"]
+    assert packages and all((_ROOT / p).is_dir() for p in packages)
+
+
+def test_interact_command_is_defined():
+    assert _PYPROJECT["project"]["scripts"].get("interact", "").startswith("interact.cli")

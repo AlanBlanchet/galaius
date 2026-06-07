@@ -8,26 +8,18 @@ imported inside the commands that need them so ``--help``, ``install`` and ``con
 start instantly.
 """
 
-from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Annotated
 
 from cyclopts import App, Parameter
 
+from interact import installed_version
 from interact.clients import ClientTarget, MCPServer, Scope
 from interact.userconfig import UserConfig
 
-
-def _version() -> str:
-    try:
-        return version("interact")
-    except PackageNotFoundError:
-        return "0.0.0"
-
-
 app = App(
     name="interact",
-    version=_version(),
+    version=installed_version(),
     help="Browser + desktop automation MCP server, plus tools to install and configure it.",
 )
 
