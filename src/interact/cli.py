@@ -27,13 +27,7 @@ app = App(
 @app.command
 def mcp() -> None:
     """Run the MCP server over stdio. Clients launch this; register it with `interact install`."""
-    UserConfig.apply()  # ~/.interact/config.env — the durable, cwd-independent key/setting store
-    # Also honour a project .env when the client spawns us inside a checkout (dev convenience,
-    # override=False so config.env / host env win). Without this the server saw no keys even
-    # when the CLI did, because only the CLI loaded .env.
-    from interact.dotenv_loader import load_dotenv_for_cli
-
-    load_dotenv_for_cli()
+    # Keys/settings (config.env + project .env) are loaded centrally in main() before dispatch.
     from interact.server import main as serve  # deferred: pulls in Playwright + litellm + FastMCP
 
     serve()
@@ -57,7 +51,6 @@ def status(
     from interact.runtime import config
     from interact.usage import UsageReport
 
-    UserConfig.apply()
     root = project.resolve()
     print("interact status\n")
 
@@ -145,7 +138,6 @@ def providers() -> None:
     """List providers and grounding models available in the current environment."""
     from interact.models import Model, ModelCapability
 
-    UserConfig.apply()
     Model.load_registry()
     available = Model.available_providers()
     print(f"Available providers ({len(available)}): {', '.join(available) or 'none — no API keys found'}")
@@ -162,7 +154,6 @@ def dashboard() -> None:
     Renders the same declarative `View` an HTTP endpoint will serve to the browser
     and the VS Code webview — defined once, shown on every surface. No VLM calls.
     """
-    UserConfig.apply()
     from interact.render import CliRenderer
     from interact.runtime import config
     from interact.view import View
@@ -248,7 +239,6 @@ def doctor() -> None:
 
     from interact.models import Model, ModelCapability
 
-    UserConfig.apply()
     print("interact doctor\n")
     print(f"  command       : {shutil.which('interact') or 'NOT on PATH'}")
     print(f"  config file   : {UserConfig.PATH} ({'present' if UserConfig.PATH.exists() else 'absent'})")
@@ -338,13 +328,21 @@ def main() -> None:
     from interact.versioning import force_utf8_io
 
     force_utf8_io()  # UTF-8 stdout so glyphs (✓, →) don't crash on Windows' cp1252 console
+    # Load keys/settings once for EVERY command: persisted config first, then a project
+    # `.env` (both override=False, so precedence is host env > config.env > .env).
+    # Centralised here so providers/doctor/status/dashboard, the TUI and the server all
+    # see the same keys — previously only `mcp` loaded .env, so `interact providers`
+    # reported none inside a checkout that had a .env.
+    UserConfig.apply()
+    from interact.dotenv_loader import load_dotenv_for_cli
+
+    load_dotenv_for_cli()
     # Bare `interact` in a terminal opens the configuration TUI (configure models/keys,
     # see bindings, view usage — no commands to memorise). With args, or when stdout
     # isn't a TTY (piped/scripted), behave as the normal command-line app.
     import sys
 
     if len(sys.argv) == 1 and sys.stdout.isatty():
-        UserConfig.apply()
         from interact.tui import run as run_tui
 
         run_tui()
