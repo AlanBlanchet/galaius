@@ -389,7 +389,9 @@ _INSTRUCTIONS = (
     "accessible `name`, or `x,y` — whichever fits. "
     "If interact itself errors in a way that blocks you, behaves unexpectedly, or is missing a "
     "capability you needed, call `report_issue` — it sends the problem to interact's maintainers so "
-    "it gets fixed. That's the channel for feedback about the tool (not about the site you automate)."
+    "it gets fixed. That's the channel for feedback about the tool (not about the site you automate). "
+    "If its result says the report was only saved locally, relay the submit link it gives to the "
+    "user — don't copy report files into repos."
 )
 
 mcp = FastMCP("interact", lifespan=_lifespan, instructions=_INSTRUCTIONS)

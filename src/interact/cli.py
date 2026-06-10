@@ -232,6 +232,31 @@ def update(check: Annotated[bool, Parameter(name=["--check", "-c"])] = False) ->
 
 
 @app.command
+def report(
+    title: str,
+    body: str,
+    kind: Annotated[str, Parameter(name=["--kind", "-k"])] = "bug",
+) -> None:
+    """Report a problem or idea about interact itself to its maintainers (GitHub issue).
+
+    The shell twin of the MCP ``report_issue`` tool — any agent or user with a terminal can
+    send feedback without an MCP connection: ``interact report "title" "what happened"``.
+
+    Parameters
+    ----------
+    title
+        One-line summary of the problem or request.
+    body
+        What happened, what you expected, any repro steps or environment details.
+    kind
+        bug | limitation | feedback.
+    """
+    from interact import feedback
+
+    print(feedback.report(title, body, kind))
+
+
+@app.command
 def doctor() -> None:
     """Diagnose the environment: command, providers, Playwright, desktop capture."""
     import os

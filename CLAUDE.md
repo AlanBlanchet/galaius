@@ -54,22 +54,27 @@ browser-only capabilities stay as their own clearly-named tools:
 - **Returns**: a short prose summary first, optional structured trailer; errors prefixed
   `ERROR:` so an agent can branch.
 
-## Dogfood client logs (do this BEFORE each iteration)
+## Issues first, then client logs (do this BEFORE each iteration — no exceptions)
 
-`interact` is consumed as an MCP server by the user's other projects; those clients (Claude
-Code) log every tool call + result under `~/.claude/projects`. Real usage fails in ways the
-tests don't. **Before starting work each time, run the scan** and fold any new errors into the
-iteration — don't wait for a bug report:
+**Step zero of every iteration: read the GitHub issues.** They are what agents and users
+actively reported (via the `report_issue` MCP tool or `interact report`); each open issue is
+a candidate work item — integrate what's actionable into the iteration, and when a fix ships,
+comment + close the issue. Then scan the client logs: `interact` is consumed as an MCP server
+by the user's other projects, and those clients (Claude Code) log every tool call + result
+under `~/.claude/projects` — real usage fails in ways the tests don't.
 
 ```bash
-uv run python scripts/scan_client_errors.py            # last 24h, grouped by error
+gh issue list --repo AlanBlanchet/interact              # FIRST: active reports → work items
+uv run python scripts/scan_client_errors.py            # then: last 24h errors, grouped
 uv run python scripts/scan_client_errors.py --all      # whole-history taxonomy
-gh issue list --repo AlanBlanchet/interact              # reports filed via the report_issue tool
 ```
 
-Two feedback channels feed the iteration: the **client-log scan** (errors agents hit, even when
-unreported) and **GitHub issues** (what an agent or user actively reported via the `report_issue`
-MCP tool / `interact.feedback`). Check both, fold new items in.
+Feedback always travels through the channel, never the tree: file problems with
+`interact report "<title>" "<body>" --kind bug|limitation|feedback` (or the `report_issue`
+MCP tool — same path; falls back to `~/.interact/feedback/` + a prefilled issue URL when
+GitHub is unreachable). Never hand-write report files into `.github/` or elsewhere in the
+repo. If a fallback file shows up in `~/.interact/feedback/`, deliver it (file the issue),
+then delete it.
 
 Note: the editable install is live, so a reconnecting client can momentarily run half-edited
 source — verify a surprising logged error against committed code before treating it as a bug.

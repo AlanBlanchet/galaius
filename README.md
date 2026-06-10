@@ -111,6 +111,9 @@ the VS Code **Configuration → Models** panel, or the CLI (`interact config set
 - **`screenshot`**, **`get_interactive_elements`**, **`get_page_state`** — see and inspect.
 - **Desktop** — `list_desktop_windows`, and the same actions/screenshot against a window or the
   whole screen, with an isolated nested-display sandbox for safe testing.
+- **`report_issue`** — hit a bug or a missing capability in interact itself? Agents can file it
+  straight to the maintainers (it becomes a GitHub issue). Same channel from any shell:
+  `interact report "title" "what happened" --kind bug|limitation|feedback`.
 
 ## Platform support
 
