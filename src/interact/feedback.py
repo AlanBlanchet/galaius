@@ -2,9 +2,10 @@
 back to the maintainers, so issues hit in the wild actually surface.
 
 Deliberately AGENT-INITIATED, not automatic telemetry: the caller composes the report, so there's
-no surprise data collection and no secret leakage by default. Files a GitHub issue via `gh` when
-it's available + authed; otherwise saves a local report the user can submit by hand. interact's
-version + platform are appended automatically (safe, useful triage context).
+no surprise data collection and no secret leakage by default. Delivery ladder: a GitHub issue via
+`gh` when it's available + authed; else the prefilled new-issue page opens in the user's browser
+(submitting = one click); else a local report + submit link. interact's version + platform are
+appended automatically (safe, useful triage context).
 """
 
 from __future__ import annotations
@@ -71,9 +72,43 @@ def _prefilled_url(title: str, body: str) -> str:
     return f"https://github.com/{REPO}/issues/new?title={quote(title)}&body={encoded}"
 
 
+def _open_browser(url: str) -> bool:
+    """Open ``url`` in the user's browser, detached. Never touches our stdin/stdout/stderr —
+    inside an MCP stdio server those ARE the protocol pipes (same hygiene as the gh call).
+    Returns False when there's no opener (headless box, SSH session)."""
+    if sys.platform == "darwin":
+        cmd = ["open", url]
+    elif sys.platform.startswith("win"):
+        try:
+            import os
+
+            os.startfile(url)  # ShellExecute — detached by construction, no pipes
+            return True
+        except OSError:
+            return False
+    else:
+        cmd = ["xdg-open", url]
+    if not shutil.which(cmd[0]):
+        return False
+    try:
+        subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        return True
+    except OSError:
+        return False
+
+
 def report(title: str, body: str, kind: str = "bug") -> str:
-    """File the report. Returns a human-readable status (issue URL, or local path + a
-    prefilled submit link). Never raises — reporting a bug must not itself blow up."""
+    """File the report and say what happened. Delivery ladder: an authed ``gh`` files the
+    issue outright; otherwise the user's browser opens on the prefilled new-issue page
+    (submitting = pressing the button); only with no browser either (headless/SSH) is the
+    report saved locally with the submit link. Never raises — reporting a bug must not
+    itself blow up."""
     kind = kind if kind in KINDS else "feedback"
     title = f"[{kind}] {title.strip()}" if not title.lower().startswith(f"[{kind}]") else title.strip()
     full = body.strip() + _footer()
@@ -82,9 +117,16 @@ def report(title: str, body: str, kind: str = "bug") -> str:
     if url:
         return f"Reported to interact — {url}"
 
-    # Fallback: persist locally so the report isn't lost, say WHY gh failed, and hand back
-    # a prefilled link so delivery is still one click.
     submit = _prefilled_url(title, full)
+    if _open_browser(submit):
+        return (
+            f"Couldn't file via gh ({reason}), so the prefilled issue page was opened in the "
+            f"user's browser — ask them to press Submit there. (Link, in case the tab was "
+            f"lost: {submit})"
+        )
+
+    # Last resort (no gh, no browser): persist locally so the report isn't lost, say WHY,
+    # and hand back the prefilled link so delivery is still one click.
     try:
         FEEDBACK_DIR.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")

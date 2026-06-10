@@ -1,9 +1,19 @@
-"""report_issue must reliably get a problem to the maintainers (GitHub issue when gh is there,
-local file otherwise) and must NEVER raise — reporting a bug can't itself blow up."""
+"""report_issue must reliably get a problem to the maintainers: GitHub issue when gh is
+authed, else a prefilled issue page opened in the user's browser, else a local file + link.
+And it must NEVER raise — reporting a bug can't itself blow up."""
 
 import pytest
 
 import interact.feedback as fb
+
+
+@pytest.fixture(autouse=True)
+def no_real_browser(monkeypatch):
+    """Tests must never open an actual browser tab; pretend no browser is available unless
+    a test installs its own capture. Returns the real opener for tests that exercise it."""
+    real = getattr(fb, "_open_browser", None)
+    monkeypatch.setattr(fb, "_open_browser", lambda url: False, raising=False)
+    return real
 
 
 class _Ok:
@@ -97,14 +107,66 @@ def test_gh_never_inherits_stdin(monkeypatch, tmp_path):
     assert captured.get("stdin") == fb.subprocess.DEVNULL
 
 
+def test_no_gh_opens_the_prefilled_issue_page_in_the_browser(monkeypatch, tmp_path):
+    """Default UX without gh: the user's browser opens straight on the prefilled new-issue
+    page so submitting is just pressing the button — no file hunting."""
+    opened: list[str] = []
+    monkeypatch.setattr(fb.shutil, "which", lambda c: None)
+    monkeypatch.setattr(fb, "_open_browser", lambda url: opened.append(url) or True)
+    monkeypatch.setattr(fb, "FEEDBACK_DIR", tmp_path / "feedback")
+    out = fb.report("crash on launch", "details here")
+    assert opened and f"https://github.com/{fb.REPO}/issues/new?" in opened[0]
+    assert "crash%20on%20launch" in opened[0]
+    assert "browser" in out.lower() and "submit" in out.lower()
+    assert not (tmp_path / "feedback").exists()  # delivered to the browser, not squirreled away
+
+
+def test_gh_failure_also_opens_the_browser(monkeypatch, tmp_path):
+    """gh present but failing (not authed, network, scopes) gets the same browser hand-off."""
+
+    class _Denied:
+        returncode = 1
+        stdout = ""
+        stderr = "gh: To get started with GitHub CLI, please run: gh auth login"
+
+    opened: list[str] = []
+    monkeypatch.setattr(fb.shutil, "which", lambda c: "/usr/bin/gh")
+    monkeypatch.setattr(fb.subprocess, "run", lambda *a, **k: _Denied())
+    monkeypatch.setattr(fb, "_open_browser", lambda url: opened.append(url) or True)
+    monkeypatch.setattr(fb, "FEEDBACK_DIR", tmp_path / "feedback")
+    out = fb.report("t", "b")
+    assert opened
+    assert "gh auth login" in out  # the reason still reaches the caller
+
+
 def test_fallback_offers_a_prefilled_issue_url(monkeypatch, tmp_path):
-    """Without gh, the report must still be one click from delivered: the message carries a
-    prefilled new-issue URL (title + body encoded), not just a bare repo link."""
+    """No gh AND no browser (headless/SSH): the report is saved locally and the message
+    still carries the prefilled new-issue URL, so nothing is ever lost."""
     monkeypatch.setattr(fb.shutil, "which", lambda c: None)
     monkeypatch.setattr(fb, "FEEDBACK_DIR", tmp_path / "feedback")
     out = fb.report("crash on launch", "details here")
     assert f"https://github.com/{fb.REPO}/issues/new?" in out
     assert "crash%20on%20launch" in out
+    assert "Saved feedback locally" in out
+
+
+def test_browser_spawn_never_touches_our_stdio(monkeypatch, no_real_browser):
+    """The browser opener runs inside an MCP stdio server: the spawned process must get
+    DEVNULL for stdin/stdout/stderr (an inherited pipe = corrupted protocol), detached."""
+    captured: dict = {}
+
+    def fake_popen(cmd, **k):
+        captured.update(k, cmd=cmd)
+        return object()
+
+    monkeypatch.setattr(fb.sys, "platform", "linux")  # pin the xdg-open branch everywhere
+    monkeypatch.setattr(fb.shutil, "which", lambda c: f"/usr/bin/{c}")
+    monkeypatch.setattr(fb.subprocess, "Popen", fake_popen)
+    assert no_real_browser("https://example.com/x") is True
+    assert captured["stdin"] == fb.subprocess.DEVNULL
+    assert captured["stdout"] == fb.subprocess.DEVNULL
+    assert captured["stderr"] == fb.subprocess.DEVNULL
+    assert captured.get("start_new_session") is True
 
 
 @pytest.mark.parametrize("huge", ["x" * 50_000, "\n " * 25_000], ids=["plain", "all-escaped"])

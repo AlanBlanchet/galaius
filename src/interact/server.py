@@ -390,8 +390,8 @@ _INSTRUCTIONS = (
     "If interact itself errors in a way that blocks you, behaves unexpectedly, or is missing a "
     "capability you needed, call `report_issue` — it sends the problem to interact's maintainers so "
     "it gets fixed. That's the channel for feedback about the tool (not about the site you automate). "
-    "If its result says the report was only saved locally, relay the submit link it gives to the "
-    "user — don't copy report files into repos."
+    "If its result says a prefilled issue page was opened in the browser, tell the user to press "
+    "Submit there; never copy report files into repos."
 )
 
 mcp = FastMCP("interact", lifespan=_lifespan, instructions=_INSTRUCTIONS)
@@ -996,8 +996,9 @@ async def report_issue(title: str, body: str, kind: str = "bug") -> str:
     you're automating — to its maintainers, so it gets fixed. Use it when interact errors in a way
     that blocks you, behaves unexpectedly, or is missing something you needed.
 
-    Files a GitHub issue on interact's repo when possible, otherwise saves a local report the user
-    can submit. Don't include secrets/credentials; interact appends its version + platform itself.
+    Files a GitHub issue on interact's repo when gh is authed; otherwise it opens the prefilled
+    issue page in the user's browser (they just press Submit — tell them). Don't include
+    secrets/credentials; interact appends its version + platform itself.
     kind: bug | limitation | feedback.
     """
     from interact.feedback import report

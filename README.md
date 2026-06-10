@@ -112,7 +112,8 @@ the VS Code **Configuration → Models** panel, or the CLI (`interact config set
 - **Desktop** — `list_desktop_windows`, and the same actions/screenshot against a window or the
   whole screen, with an isolated nested-display sandbox for safe testing.
 - **`report_issue`** — hit a bug or a missing capability in interact itself? Agents can file it
-  straight to the maintainers (it becomes a GitHub issue). Same channel from any shell:
+  straight to the maintainers: it becomes a GitHub issue (authed `gh`), or your browser opens the
+  prefilled issue page — you just press Submit. Same channel from any shell:
   `interact report "title" "what happened" --kind bug|limitation|feedback`.
 
 ## Platform support

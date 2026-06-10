@@ -71,10 +71,11 @@ uv run python scripts/scan_client_errors.py --all      # whole-history taxonomy
 
 Feedback always travels through the channel, never the tree: file problems with
 `interact report "<title>" "<body>" --kind bug|limitation|feedback` (or the `report_issue`
-MCP tool — same path; falls back to `~/.interact/feedback/` + a prefilled issue URL when
-GitHub is unreachable). Never hand-write report files into `.github/` or elsewhere in the
-repo. If a fallback file shows up in `~/.interact/feedback/`, deliver it (file the issue),
-then delete it.
+MCP tool — same path). Without an authed gh it opens the prefilled issue page in the user's
+browser (they press Submit); only with no browser either does it save to
+`~/.interact/feedback/` + a submit link. Never hand-write report files into `.github/` or
+elsewhere in the repo. If a fallback file shows up in `~/.interact/feedback/`, deliver it
+(file the issue), then delete it.
 
 Note: the editable install is live, so a reconnecting client can momentarily run half-edited
 source — verify a surprising logged error against committed code before treating it as a bug.
