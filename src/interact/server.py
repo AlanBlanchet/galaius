@@ -1121,6 +1121,14 @@ async def launch_app(command: str, wait: float = 6.0) -> str:
     if not windows:
         return (f"Launched `{command}` in the sandbox but no window appeared within {wait:.0f}s. "
                 f"It may still be starting — retry list_desktop_windows, or raise `wait`.")
+    # A software-GL app (Flutter/Electron) presents a stale black buffer to X until a configure
+    # event makes it repaint; nudge each new window once so it starts rendered (the repaint then
+    # persists for later captures). Best-effort — capture self-heals the same way if it recurs.
+    repaint = getattr(backend, "force_repaint", None)
+    if repaint is not None:
+        await asyncio.sleep(0.6)  # let the window reach its real size before resizing it
+        for _, name in windows:
+            await asyncio.to_thread(repaint, name)
     targets = "\n".join(f'  target="nested:{name}"' for _, name in windows)
     return f"Launched `{command}` in the sandbox. Drive it with:\n{targets}"
 

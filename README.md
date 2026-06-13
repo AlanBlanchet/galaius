@@ -114,7 +114,10 @@ the VS Code **Configuration → Models** panel, or the CLI (`interact config set
   it's always interactable.
 - **`launch_app`** — run an app in an isolated display the agent owns, then drive it with
   `target="nested:<title>"`. Non-intrusive (never touches your windows/cursor/focus) and
-  occlusion-proof — the reliable path for apps that fight the window manager.
+  occlusion-proof — the reliable path for apps that fight the window manager. A software-GL app
+  (e.g. a Flutter Linux build run with `env LIBGL_ALWAYS_SOFTWARE=1 …`) can hand X a stale black
+  buffer until it repaints; interact forces a repaint on launch and self-heals a black capture, so
+  the window — including a blurred `BottomNavigationBar` — renders without you nudging it.
 - **`report_issue`** — hit a bug or a missing capability in interact itself? Agents can file it
   straight to the maintainers: it becomes a GitHub issue (authed `gh`), or your browser opens the
   prefilled issue page — you just press Submit. Same channel from any shell:

@@ -599,6 +599,14 @@ class DesktopWindow(BaseModel):
 
     _BUTTON_NAMES = {1: "left", 2: "middle", 3: "right"}
 
+    async def _backend_focus(self) -> None:
+        """Focus the target window on a bound (sandbox) backend before keyboard input — WM-less,
+        nothing holds focus by default so keys would otherwise go nowhere. Pointer events route by
+        position, so clicks don't need this. Best-effort; no-op if the backend can't focus."""
+        focus = getattr(self._backend, "focus", None)
+        if focus is not None:
+            await asyncio.to_thread(focus, self.name)
+
     async def click(self, x: int, y: int, button: int = 1):
         _log.debug("desktop_click wid=%s x=%s y=%s button=%s", self.wid, x, y, button)
         if self._backend is not None:
@@ -614,6 +622,7 @@ class DesktopWindow(BaseModel):
 
     async def type_text(self, text: str):
         if self._backend is not None:
+            await self._backend_focus()
             await asyncio.to_thread(self._backend.type_text, text)
             return
         await self._focus()
@@ -630,6 +639,7 @@ class DesktopWindow(BaseModel):
 
     async def press_key(self, key: str):
         if self._backend is not None:
+            await self._backend_focus()
             await asyncio.to_thread(self._backend.key, self.map_key(key))
             return
         await self._focus()

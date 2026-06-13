@@ -6,6 +6,26 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-06-13
+
+### Fixed
+
+- **Nested sandbox: a Flutter/GL window no longer captures black.** Under software GL
+  (`LIBGL_ALWAYS_SOFTWARE=1`) a Flutter/Electron window can present a stale, uninitialised buffer to
+  X — the whole frame, or its blurred `BottomNavigationBar`, comes back solid black, hiding (and
+  making untappable) the nav. `launch_app` now nudges each new window once (a 2px resize) to force a
+  full repaint, which then persists; and capture self-heals — a frame that looks unrendered triggers
+  one repaint + recapture. Verified live driving aino's GPU UI in the sandbox
+  ([#7](https://github.com/AlanBlanchet/interact/issues/7),
+  [#8](https://github.com/AlanBlanchet/interact/issues/8)). A genuinely pure-black/OLED UI (where
+  the repaint changes nothing) is nudged at most once, then left alone, so its scroll isn't reset on
+  every capture ([#9](https://github.com/AlanBlanchet/interact/issues/9)).
+- **Keyboard input now reaches a sandbox window.** The sandbox has no window manager, so nothing
+  held the X input focus and typed text/keys went nowhere; `type`/`key` now focus the target first
+  via `windowfocus` (XSetInputFocus), which works WM-less — unlike `windowactivate`, which needs
+  `_NET_ACTIVE_WINDOW`, the very error that drove a consumer to drive windows by hand
+  ([#6](https://github.com/AlanBlanchet/interact/issues/6)).
+
 ## [0.2.0] — 2026-06-13
 
 ### Added
@@ -83,6 +103,7 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 - Initial release: MCP server for browser **and** desktop automation with optional VLM analysis, a
   unified `interact` CLI + config TUI, and a VS Code extension — usable from any MCP client.
 
-[Unreleased]: https://github.com/AlanBlanchet/interact/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/AlanBlanchet/interact/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/AlanBlanchet/interact/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/AlanBlanchet/interact/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/AlanBlanchet/interact/releases/tag/v0.1.0

@@ -14,6 +14,7 @@ this module imports everywhere. Capture and window enumeration stay per-display-
 Coordinates are screen pixels; map other spaces in via :class:`interact.frames.Frame`.
 """
 
+import io
 import math
 import os
 import shutil
@@ -23,6 +24,41 @@ from abc import ABC, abstractmethod
 
 ABS_MAX = 32767
 _BUTTONS = {"left": 1, "middle": 2, "right": 3}
+
+
+def _frac_dark(gray, cutoff: int = 8) -> float:
+    """Fraction of (near-)true-black pixels in an 8-bit grayscale PIL image, via its histogram
+    (C-fast, no Python per-pixel loop). The cutoff is deliberately low: an unrendered GL buffer is
+    *exactly* black (0,0,0), whereas a real dark theme (#1e1e1e ≈ 30) sits well above it — so the
+    repaint heuristic fires on the unrendered case without flagging a legitimately dark UI."""
+    hist = gray.histogram()
+    total = sum(hist) or 1
+    return sum(hist[:cutoff]) / total
+
+
+def _gl_unrendered(png: bytes, *, strip_frac: float = 0.12, hard: float = 0.9) -> bool:
+    """True when a nested GL-window capture looks like it never painted: the whole frame is
+    near-black, or a black bottom strip sits over a rendered body — a blurred BottomNavigationBar
+    that software GL (``LIBGL_ALWAYS_SOFTWARE=1``) left black (#7/#8). Both clear after a repaint
+    nudge. A genuinely dark theme has a dark body too, so the strip-only case demands a much lighter
+    body — otherwise every capture of a dark UI would needlessly nudge (and reset its scroll)."""
+    try:
+        from PIL import Image
+
+        gray = Image.open(io.BytesIO(png)).convert("L")
+    except Exception:
+        return False
+    w, h = gray.size
+    if not w or not h:
+        return False
+    if _frac_dark(gray) >= hard:
+        return True
+    cut = int(h * (1 - strip_frac))
+    if cut <= 0 or cut >= h:
+        return False
+    strip = _frac_dark(gray.crop((0, cut, w, h)))
+    body = _frac_dark(gray.crop((0, 0, w, cut)))
+    return strip >= hard and body < 0.5
 
 
 def screen_to_abs(
@@ -389,6 +425,10 @@ class NestedBackend(DesktopBackend):
         width, height = size.split("x")
         self.screen_w, self.screen_h = int(width), int(height)
         self._procs: list[subprocess.Popen] = []
+        # Windows whose black frame a repaint did NOT change — an intentionally pure-black/OLED UI,
+        # not an unrendered GL buffer. Don't nudge them again (a resize on every capture would reset
+        # the app's scroll); see capture_window.
+        self._repaint_useless: set[str] = set()
         command = nested_server_command(self.display, size, headless)
         self.server_name = command[0]
         if shutil.which(self.server_name) is None:
@@ -419,16 +459,69 @@ class NestedBackend(DesktopBackend):
     def _xdotool(self, *args: str) -> None:
         subprocess.run(["xdotool", *args], env=self.env, check=True)
 
+    def _xdotool_ok(self, *args: str) -> None:
+        """Best-effort xdotool that never raises — for repaint/focus nudges where a transient
+        failure must not crash a capture."""
+        subprocess.run(
+            ["xdotool", *args], env=self.env, check=False,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+
     def capture(self) -> bytes:
         return subprocess.run(["maim"], env=self.env, capture_output=True, check=True).stdout
 
+    def _maim_window(self, wid: str) -> bytes:
+        return subprocess.run(["maim", "-i", wid], env=self.env, capture_output=True, check=True).stdout
+
     def capture_window(self, name: str) -> bytes:
-        """PNG of one nested window by title (``maim -i <id>``). Nothing can occlude it
-        here, so this always reflects the window's true content."""
+        """PNG of one nested window by title (``maim -i <id>``). Nothing can occlude it here, so this
+        is its true content — except a software-GL surface can present a stale black buffer until it
+        repaints, so a frame that looks unrendered (:func:`_gl_unrendered`) triggers exactly one
+        repaint nudge + recapture. The nudge is idempotent and the repaint persists, so a rendered
+        frame is returned untouched (no scroll-resetting resize on every screenshot)."""
         wid = self._window_id(name)
         if wid is None:
             return self.capture()
-        return subprocess.run(["maim", "-i", wid], env=self.env, capture_output=True, check=True).stdout
+        img = self._maim_window(wid)
+        useless = getattr(self, "_repaint_useless", set())
+        if _gl_unrendered(img) and name not in useless and self.force_repaint(name):
+            wid = self._window_id(name) or wid
+            img = self._maim_window(wid)
+            if _gl_unrendered(img):
+                # The repaint didn't change a black frame → this UI is intentionally black, not an
+                # unrendered GL surface. Remember it so future captures don't nudge (and scroll-reset)
+                # it every time. The #7/#8 case repaints to a rendered frame, so it's never marked.
+                useless.add(name)
+        return img
+
+    def force_repaint(self, name: str) -> bool:
+        """Force a full repaint by nudging the window's size (shrink 2px, restore); returns True if
+        it nudged. A Flutter/GL app under software GL presents a stale/uninitialised buffer to X
+        until a configure event makes it relayout — so a fresh launch (or its blurred bottom bar)
+        captures solid black. One resize triggers a complete repaint that then persists for later
+        frames. Verified live driving aino's GPU UI in the sandbox."""
+        wid = self._window_id(name)
+        geo = self.window_geometry(name)
+        if wid is None or geo is None:
+            return False
+        _, _, w, h = geo
+        if w < 4 or h < 4:
+            return False
+        self._xdotool_ok("windowsize", wid, str(w), str(h - 2))
+        time.sleep(0.35)
+        self._xdotool_ok("windowsize", wid, str(w), str(h))
+        time.sleep(0.4)
+        return True
+
+    def focus(self, name: str) -> None:
+        """Give the named window X input focus so keyboard events reach it. The sandbox has no
+        window manager, so nothing holds the focus by default and keys would go nowhere (pointer
+        events route by position regardless). Uses ``windowfocus`` (XSetInputFocus), which works
+        WM-less — unlike ``windowactivate``, which needs ``_NET_ACTIVE_WINDOW`` (the very error
+        that drove a consumer to abandon interact, #6)."""
+        wid = self._window_id(name)
+        if wid is not None:
+            self._xdotool_ok("windowfocus", wid)
 
     def move(self, x: float, y: float) -> None:
         self._xdotool("mousemove", "--sync", str(round(x)), str(round(y)))
