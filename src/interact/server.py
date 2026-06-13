@@ -223,8 +223,14 @@ _sandbox: "object | None" = None  # the headless NestedBackend, created on first
 def _get_sandbox():
     """The server-owned isolated display (Xephyr if a display is present, else headless Xvfb).
     Created on first use so a window the user moved/buried — or a GPU app that won't screen-grab on
-    the real desktop — can be driven in a clean, occlusion-proof, non-intrusive sandbox."""
+    the real desktop — can be driven in a clean, occlusion-proof, non-intrusive sandbox.
+
+    A long session can exhaust or kill the nested X server (e.g. dozens of leaked GPU apps); the
+    cached backend would then reject every launch until restarted. So a dead sandbox is torn down
+    and respawned transparently here — the agent never has to manually reset it (#10)."""
     global _sandbox
+    if _sandbox is not None and not _sandbox.is_alive():
+        _close_sandbox()  # dead/hung X server → tear it down so a fresh one can take the display
     if _sandbox is None:
         from interact.desktop_backend import NestedBackend
 
@@ -462,6 +468,9 @@ def _instructions() -> str:
         "an isolated, occlusion-proof display. If `launch_app` isn't in your tool list, your interact "
         "server is out of date: ask the user to reconnect/restart the interact MCP server to load it "
         "(don't fall back to raw shell automation). "
+        "If sandbox launches start failing (e.g. rc=1 for every app after many launches), the display "
+        "is respawned automatically on the next `launch_app`, or call `reset_sandbox` to force a clean "
+        "one — keep using the sandbox, don't switch to driving the real desktop. "
         "If interact itself errors in a way that blocks you, behaves unexpectedly, or is missing a "
         "capability you needed, call `report_issue` — it sends the problem to interact's maintainers so "
         "it gets fixed. That's the channel for feedback about the tool (not about the site you automate). "
@@ -1112,8 +1121,12 @@ async def launch_app(command: str, wait: float = 6.0) -> str:
     windows: list[tuple[int, str]] = []
     while asyncio.get_event_loop().time() < deadline:
         if proc.poll() is not None and proc.returncode != 0:
-            return (f"App exited immediately (rc={proc.returncode}) — check the command. "
-                    f"Sandbox stays up for retries.")
+            tail = ""
+            if hasattr(backend, "proc_output"):
+                tail = await asyncio.to_thread(backend.proc_output, proc)
+            detail = f"\nIts output:\n{tail}" if tail else ""
+            return (f"App exited immediately (rc={proc.returncode}) — the command failed, not the "
+                    f"sandbox (the display was healthy and is kept up for retries).{detail}")
         windows = await asyncio.to_thread(backend.list_windows)
         if windows:
             break
@@ -1131,6 +1144,25 @@ async def launch_app(command: str, wait: float = 6.0) -> str:
             await asyncio.to_thread(repaint, name)
     targets = "\n".join(f'  target="nested:{name}"' for _, name in windows)
     return f"Launched `{command}` in the sandbox. Drive it with:\n{targets}"
+
+
+@mcp.tool()
+async def reset_sandbox() -> str:
+    """Tear down interact's isolated sandbox display — kill every app launched into it and stop the
+    nested X server. The next launch_app starts a fresh display.
+
+    Use it when sandbox launches start failing (e.g. after many launch_app cycles a long session can
+    leak apps and exhaust the display), or to clear all running sandbox apps between rebuilds. The
+    real desktop is unaffected — this only touches the isolated display interact owns. A dead display
+    is also respawned automatically on the next launch_app, so this is mainly for a proactive reset."""
+    import asyncio
+
+    global _sandbox
+    if _sandbox is None:
+        return "No sandbox is running. The next launch_app will create a fresh one."
+    n = len(getattr(_sandbox, "_procs", []))
+    await asyncio.to_thread(_close_sandbox)
+    return f"Sandbox reset — stopped the nested display and {n} app(s). The next launch_app respawns it."
 
 
 @mcp.tool()

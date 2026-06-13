@@ -1,0 +1,147 @@
+"""The nested sandbox must survive a long session: a dead/exhausted X server is respawned
+transparently, exited apps are reaped (no leak), a crash surfaces the app's own output, and a
+`reset_sandbox` tool clears everything on demand (#10). Display-free — no real X server is started;
+the genuine death/respawn was verified live.
+"""
+
+import subprocess
+
+import pytest
+
+from interact import server as srv
+from interact.desktop_backend import NestedBackend
+
+
+def _bare_backend() -> NestedBackend:
+    """A NestedBackend without an X server — every X call is stubbed by the test."""
+    nb = NestedBackend.__new__(NestedBackend)
+    nb.env = {"DISPLAY": ":88"}
+    nb.screen_w, nb.screen_h = 400, 400
+    nb._procs = []
+    nb._logs = {}
+    nb._repaint_useless = set()
+    return nb
+
+
+# --- is_alive: dead server, or a server that no longer answers, is not alive ---
+
+
+def test_is_alive_false_when_server_exited(monkeypatch):
+    nb = _bare_backend()
+    nb._xserver = type("P", (), {"poll": lambda self: 1})()  # exited
+    monkeypatch.setattr("interact.desktop_backend._x11_screen_size", lambda env: (400, 400))
+    assert nb.is_alive() is False
+
+
+def test_is_alive_false_when_display_unresponsive(monkeypatch):
+    nb = _bare_backend()
+    nb._xserver = type("P", (), {"poll": lambda self: None})()  # running...
+    def boom(env):
+        raise subprocess.CalledProcessError(1, "xdotool")
+    monkeypatch.setattr("interact.desktop_backend._x11_screen_size", boom)  # ...but not answering
+    assert nb.is_alive() is False
+
+
+def test_is_alive_true_when_running_and_answering(monkeypatch):
+    nb = _bare_backend()
+    nb._xserver = type("P", (), {"poll": lambda self: None})()
+    monkeypatch.setattr("interact.desktop_backend._x11_screen_size", lambda env: (400, 400))
+    assert nb.is_alive() is True
+
+
+# --- _get_sandbox: a dead sandbox is torn down and respawned; a live one is reused ---
+
+
+class _FakeNested:
+    instances: list["_FakeNested"] = []
+
+    def __init__(self, *a, alive=True, **k):
+        self.alive = alive
+        self.closed = False
+        _FakeNested.instances.append(self)
+
+    def is_alive(self):
+        return self.alive
+
+    def close(self):
+        self.closed = True
+
+
+@pytest.fixture(autouse=True)
+def _reset_sandbox_global():
+    srv._sandbox = None
+    _FakeNested.instances = []
+    yield
+    srv._sandbox = None
+
+
+def test_get_sandbox_respawns_a_dead_display(monkeypatch):
+    monkeypatch.setattr("interact.desktop_backend.NestedBackend", _FakeNested)
+    dead = _FakeNested(alive=False)
+    srv._sandbox = dead
+
+    fresh = srv._get_sandbox()
+
+    assert dead.closed is True, "the dead sandbox must be torn down"
+    assert fresh is not dead and fresh.alive, "a fresh sandbox replaces it"
+    assert srv._sandbox is fresh
+
+
+def test_get_sandbox_reuses_a_live_display(monkeypatch):
+    monkeypatch.setattr("interact.desktop_backend.NestedBackend", _FakeNested)
+    live = _FakeNested(alive=True)
+    srv._sandbox = live
+    assert srv._get_sandbox() is live
+    assert len(_FakeNested.instances) == 1, "no needless respawn of a healthy sandbox"
+
+
+# --- reaping + crash diagnostics use real short-lived processes (no X needed) ---
+
+
+def test_spawn_captures_output_readable_after_crash():
+    nb = _bare_backend()
+    proc = nb.spawn(["sh", "-c", "echo kaboom 1>&2; exit 3"])
+    proc.wait(timeout=5)
+    assert proc.returncode == 3
+    assert "kaboom" in nb.proc_output(proc)
+
+
+def test_reap_drops_exited_apps_and_unlinks_logs():
+    import os
+
+    nb = _bare_backend()
+    proc = nb.spawn(["sh", "-c", "exit 0"])
+    proc.wait(timeout=5)
+    log = nb._logs[proc.pid]
+    assert os.path.exists(log)
+    nb.spawn(["sleep", "0.1"])  # a second spawn reaps the first (now-exited) proc
+    assert proc not in nb._procs, "an exited app is reaped on the next spawn"
+    assert not os.path.exists(log), "its captured-output log is unlinked"
+    for p in nb._procs:
+        p.terminate()
+
+
+# --- reset_sandbox tool ---
+
+
+@pytest.mark.asyncio
+async def test_reset_sandbox_tears_down_and_clears_global():
+    closed = {"v": False}
+
+    class S:
+        _procs = [object(), object()]
+
+        def close(self):
+            closed["v"] = True
+
+    srv._sandbox = S()
+    msg = await srv.reset_sandbox()
+    assert closed["v"] is True and srv._sandbox is None
+    assert "2 app" in msg
+
+
+@pytest.mark.asyncio
+async def test_reset_sandbox_when_none():
+    srv._sandbox = None
+    msg = await srv.reset_sandbox()
+    assert "No sandbox" in msg

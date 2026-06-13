@@ -19,11 +19,28 @@ import math
 import os
 import shutil
 import subprocess
+import tempfile
 import time
 from abc import ABC, abstractmethod
 
 ABS_MAX = 32767
 _BUTTONS = {"left": 1, "middle": 2, "right": 3}
+
+
+def _tail_file(path: str | None, limit: int) -> str:
+    """Last ``limit`` bytes of a file, decoded — for surfacing a dead X server's / crashed app's own
+    output in an error message. Empty string on any problem (best-effort diagnostics)."""
+    if not path:
+        return ""
+    try:
+        with open(path, "rb") as f:
+            try:
+                f.seek(-limit, os.SEEK_END)
+            except OSError:
+                f.seek(0)
+            return f.read().decode("utf-8", "replace").strip()
+    except OSError:
+        return ""
 
 
 def _frac_dark(gray, cutoff: int = 8) -> float:
@@ -425,6 +442,7 @@ class NestedBackend(DesktopBackend):
         width, height = size.split("x")
         self.screen_w, self.screen_h = int(width), int(height)
         self._procs: list[subprocess.Popen] = []
+        self._logs: dict[int, str] = {}  # pid -> temp logfile of a launched app's stdout/stderr
         # Windows whose black frame a repaint did NOT change — an intentionally pure-black/OLED UI,
         # not an unrendered GL buffer. Don't nudge them again (a resize on every capture would reset
         # the app's scroll); see capture_window.
@@ -434,15 +452,28 @@ class NestedBackend(DesktopBackend):
         if shutil.which(self.server_name) is None:
             pkg = "xvfb" if headless else "xserver-xephyr"
             raise RuntimeError(f"{self.server_name} not installed (apt install {pkg})")
-        self._xserver = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # Log the X server's own output so a death mid-session can be explained, not just "rc=1".
+        self._xserver_log_path = self._open_log(f"{self.server_name.lower()}{self.display}")
+        with open(self._xserver_log_path, "wb") as f:
+            self._xserver = subprocess.Popen(command, stdout=f, stderr=subprocess.STDOUT)
         self._await_ready(ready_timeout)
+
+    @staticmethod
+    def _open_log(label: str) -> str:
+        fd, path = tempfile.mkstemp(prefix=f"interact-{label}-", suffix=".log")
+        os.close(fd)
+        return path
 
     def _await_ready(self, timeout: float) -> None:
         """Block until the nested server answers, so spawn/capture don't race startup."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if self._xserver.poll() is not None:
-                raise RuntimeError(f"{self.server_name} {self.display} exited (rc={self._xserver.returncode})")
+                tail = _tail_file(self._xserver_log_path, 600)
+                why = f": {tail}" if tail else ""
+                raise RuntimeError(
+                    f"{self.server_name} {self.display} exited (rc={self._xserver.returncode}){why}"
+                )
             try:
                 _x11_screen_size(self.env)
                 return
@@ -450,11 +481,49 @@ class NestedBackend(DesktopBackend):
                 time.sleep(0.1)
         raise RuntimeError(f"{self.server_name} {self.display} did not become ready in {timeout}s")
 
+    def is_alive(self) -> bool:
+        """True if the nested X server is still running AND answering. A long session can exhaust the
+        display (dozens of leaked GPU apps) so the server dies; the cached backend would then reject
+        every launch — even ``xterm`` — until it is respawned (#10)."""
+        if self._xserver.poll() is not None:
+            return False
+        try:
+            _x11_screen_size(self.env)
+            return True
+        except (subprocess.CalledProcessError, FileNotFoundError, ValueError):
+            return False
+
+    def _reap(self) -> None:
+        """Drop exited child apps (and unlink their logs) so a long session doesn't accumulate dead
+        entries — the leak behind a display that eventually refuses new clients (#10)."""
+        alive: list[subprocess.Popen] = []
+        for proc in self._procs:
+            if proc.poll() is None:
+                alive.append(proc)
+            else:
+                stale = self._logs.pop(proc.pid, None)
+                if stale:
+                    try:
+                        os.unlink(stale)
+                    except OSError:
+                        pass
+        self._procs = alive
+
     def spawn(self, argv: list[str]) -> subprocess.Popen:
-        """Launch a process inside the nested display (tracked for teardown)."""
-        proc = subprocess.Popen(argv, env=self.env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        """Launch a process inside the nested display (tracked for teardown), capturing its
+        stdout/stderr so a crash can be explained. Reaps previously-exited apps first."""
+        self._reap()
+        path = self._open_log("app")
+        with open(path, "wb") as f:
+            proc = subprocess.Popen(argv, env=self.env, stdout=f, stderr=subprocess.STDOUT)
         self._procs.append(proc)
+        self._logs[proc.pid] = path
         return proc
+
+    def proc_output(self, proc: subprocess.Popen, limit: int = 1500) -> str:
+        """Tail of what a launched process wrote (stdout+stderr) — to tell an app crash from a dead
+        display in a launch error. Empty if the proc isn't tracked."""
+        return _tail_file(self._logs.get(proc.pid), limit)
 
     def _xdotool(self, *args: str) -> None:
         subprocess.run(["xdotool", *args], env=self.env, check=True)
@@ -614,6 +683,13 @@ class NestedBackend(DesktopBackend):
                     proc.wait(timeout=2)
                 except subprocess.TimeoutExpired:
                     proc.kill()
+        for path in (*self._logs.values(), getattr(self, "_xserver_log_path", None)):
+            if path:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+        self._logs.clear()
 
 
 def select_desktop_backend(config) -> DesktopBackend:

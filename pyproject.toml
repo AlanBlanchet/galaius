@@ -1,6 +1,6 @@
 [project]
 name = "interact"
-version = "0.2.1"
+version = "0.2.2"
 description = "MCP server for browser + desktop automation with vision analysis"
 readme = "README.md"
 authors = [{ name = "Alan Blanchet", email = "alan@alan-blanchet.fr" }]

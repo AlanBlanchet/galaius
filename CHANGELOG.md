@@ -6,6 +6,19 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ## [Unreleased]
 
+## [0.2.2] — 2026-06-13
+
+### Fixed
+
+- **The sandbox recovers when its display dies mid-session.** A long session can exhaust or kill the
+  nested X server (e.g. dozens of GPU apps left running across rebuilds); the cached backend was
+  reused regardless, so *every* later `launch_app` — even `xterm` — returned `rc=1` with no way to
+  reset. Now a dead/unresponsive display is detected and **respawned automatically** on the next
+  `launch_app` (or `screenshot`/`run_actions` against `nested:`), exited apps are reaped so they
+  don't pile up, and a `reset_sandbox` tool force-clears everything on demand. A genuine app crash
+  now surfaces the app's **own stderr** in the message, so "the app failed" reads differently from
+  "the display died" ([#10](https://github.com/AlanBlanchet/interact/issues/10)).
+
 ## [0.2.1] — 2026-06-13
 
 ### Fixed
@@ -103,7 +116,8 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 - Initial release: MCP server for browser **and** desktop automation with optional VLM analysis, a
   unified `interact` CLI + config TUI, and a VS Code extension — usable from any MCP client.
 
-[Unreleased]: https://github.com/AlanBlanchet/interact/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/AlanBlanchet/interact/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/AlanBlanchet/interact/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/AlanBlanchet/interact/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/AlanBlanchet/interact/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/AlanBlanchet/interact/releases/tag/v0.1.0
