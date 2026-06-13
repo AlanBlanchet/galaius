@@ -45,6 +45,10 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ### Fixed
 
+- **Sandbox targeting picks the real window.** `target="nested:<title>"` now selects the largest
+  visible window of that title — toolkits (Flutter/GTK) map a hidden same-titled helper window, and
+  the phantom would win; `list_windows` also reports a just-mapped window so `launch_app`'s poll
+  detects an app mid-startup. Verified driving aino's GPU UI in the sandbox.
 - **A moved or backgrounded window is now interactable.** Capture/record raise + activate the
   target window first, so it yields its own pixels instead of whatever buries it — the gap that
   drove a consumer to run `xdotool windowactivate` by hand ([#1](https://github.com/AlanBlanchet/interact/issues/1)).

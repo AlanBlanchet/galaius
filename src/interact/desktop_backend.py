@@ -451,10 +451,33 @@ class NestedBackend(DesktopBackend):
         self._xdotool("key", name)  # xdotool keysym syntax, e.g. "ctrl+a", "Return"
 
     def _window_id(self, name: str) -> str | None:
-        ids = subprocess.run(
+        """The wid of the window titled ``name`` — visible matches first, and among several the
+        largest. A toolkit (Flutter/GTK) spawns hidden same-titled helper windows (a 10x10 GL
+        surface); without this filter the helper wins and capture/input hit the wrong window."""
+        visible = subprocess.run(
+            ["xdotool", "search", "--onlyvisible", "--name", name],
+            env=self.env, capture_output=True, text=True,
+        ).stdout.split()
+        ids = visible or subprocess.run(
             ["xdotool", "search", "--name", name], env=self.env, capture_output=True, text=True
         ).stdout.split()
-        return ids[0] if ids else None
+        if not ids:
+            return None
+        if len(ids) == 1:
+            return ids[0]
+
+        def _area(wid: str) -> int:
+            try:
+                info = subprocess.run(
+                    ["xdotool", "getwindowgeometry", "--shell", wid],
+                    env=self.env, capture_output=True, text=True, check=True,
+                ).stdout
+                v = dict(ln.split("=", 1) for ln in info.splitlines() if "=" in ln)
+                return int(v["WIDTH"]) * int(v["HEIGHT"])
+            except (subprocess.SubprocessError, KeyError, ValueError):
+                return 0
+
+        return max(ids, key=_area)
 
     def window_geometry(self, name: str) -> tuple[int, int, int, int] | None:
         """``(x, y, w, h)`` of the first window whose title matches ``name`` (or None)."""
@@ -469,18 +492,24 @@ class NestedBackend(DesktopBackend):
         return int(vals["X"]), int(vals["Y"]), int(vals["WIDTH"]), int(vals["HEIGHT"])
 
     def list_windows(self) -> list[tuple[int, str]]:
-        """``(wid, title)`` of every named, visible window on the nested display. There's no WM
-        here, so query X directly (``xdotool``); used to report what an app launched."""
+        """``(wid, title)`` of named windows on the nested display, one per distinct title. There's
+        no WM here, so query X directly. Falls back to non-visible matches: a window that's mapped
+        but not yet marked viewable (an app mid-startup) must still be reported, or launch_app's
+        poll would say nothing appeared when it did."""
         ids = subprocess.run(
             ["xdotool", "search", "--onlyvisible", "--name", ".+"],
             env=self.env, capture_output=True, text=True,
+        ).stdout.split() or subprocess.run(
+            ["xdotool", "search", "--name", ".+"], env=self.env, capture_output=True, text=True
         ).stdout.split()
         out: list[tuple[int, str]] = []
+        seen: set[str] = set()
         for wid in ids:
             name = subprocess.run(
                 ["xdotool", "getwindowname", wid], env=self.env, capture_output=True, text=True
             ).stdout.strip()
-            if name:
+            if name and name not in seen:
+                seen.add(name)
                 out.append((int(wid), name))
         return out
 

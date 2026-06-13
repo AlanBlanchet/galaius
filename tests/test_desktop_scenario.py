@@ -199,6 +199,36 @@ def test_panel_interactions_nested(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(_skip_reason() is not None, reason=_skip_reason() or "")
+def test_window_id_prefers_the_largest_same_titled_window(tmp_path):
+    """A toolkit can map several windows with one title — Flutter spawns a hidden ~10x10 GL helper
+    alongside the real window. _window_id must pick the largest, or capture/input hit the phantom:
+    the exact bug that made `target="nested:aino"` grab the wrong window."""
+    backend = NestedBackend(display=98, size="900x900")
+    try:
+        backend.spawn([_tk_python(), str(PANEL), str(tmp_path / "small.json"), "200x200+0+0"])
+        backend.spawn([_tk_python(), str(PANEL), str(tmp_path / "big.json"), "640x760+150+80"])
+        chosen = None
+        for _ in range(60):
+            ids = subprocess.run(
+                ["xdotool", "search", "--name", "interact-panel"],
+                env=backend.env, capture_output=True, text=True,
+            ).stdout.split()
+            if len(ids) >= 2:
+                chosen = backend._window_id("interact-panel")
+                break
+            time.sleep(0.25)
+        assert chosen is not None, "the two panel windows never both appeared"
+        info = subprocess.run(
+            ["xdotool", "getwindowgeometry", "--shell", chosen],
+            env=backend.env, capture_output=True, text=True, check=True,
+        ).stdout
+        geo = dict(ln.split("=", 1) for ln in info.splitlines() if "=" in ln)
+        assert int(geo["WIDTH"]) >= 500, f"picked a phantom small window ({geo['WIDTH']}x{geo['HEIGHT']})"
+    finally:
+        backend.close()
+
+
+@pytest.mark.skipif(_skip_reason() is not None, reason=_skip_reason() or "")
 def test_desktop_window_drives_nested_backend(tmp_path: Path) -> None:
     """The SAME DesktopWindow the MCP `run_actions` path uses, bound to the nested
     backend, drives real clicks/typing into the sandbox — proving the backend is wired
