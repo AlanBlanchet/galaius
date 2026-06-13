@@ -221,10 +221,18 @@ def _find_desktop_window(title: str) -> DesktopWindow | str:
     windows = DesktopWindow.all()
     if not windows:
         return _NO_WINDOWS_MSG
-    win = DesktopWindow.find(title, windows)
-    if win is None:
+    matches = DesktopWindow.matching(title, windows)
+    if not matches:
         return f"No window matching '{title}'. Available:\n{DesktopWindow.listing(windows)}"
-    return win
+    # An exact title (sorted first by matching()) or a sole partial match is unambiguous; several
+    # partial matches with no exact one would be a silent guess — make the agent pick (#1.3).
+    hint = title.strip().lower()
+    if len(matches) == 1 or any(w.name.lower() == hint for w in matches):
+        return matches[0]
+    return (
+        f"'{title}' matches {len(matches)} windows — pass a more specific or the exact title:\n"
+        f"{DesktopWindow.listing(matches)}"
+    )
 
 
 def _resolve_target(
@@ -534,6 +542,7 @@ async def navigate(
     query: str | None = None,
     scope: str | None = None,
     wait: str | None = None,
+    timeout: float | None = None,
     debug_dir: str | None = None,
     session: str = _DEFAULT_SESSION,
 ) -> str:
@@ -541,16 +550,19 @@ async def navigate(
 
     scope: CSS selector to restrict to a page sub-tree.
     wait: "networkidle", "load", "domcontentloaded", or a CSS selector (waits for visibility, 10s timeout).
+    timeout: max milliseconds to wait for navigation. Default uses the 10s context default; raise it
+        for slow dev servers that compile routes on first hit (e.g. 60000 for a cold Next.js route).
     query: when set, returns vision analysis instead of text summary.
     debug_dir: when set, dump inputs/outputs/screenshots to this directory for debugging.
     """
     config.refresh()  # ~/.interact/config.env is the source of truth: pick up live edits per call
     inv = Debug.new_invocation_dir(debug_dir, "navigate")
     Debug.dump_input(inv, {"tool": "navigate", "url": url, "query": query, "scope": scope,
-                           "wait": wait, "session": session}, _resolved_config(None, "image"))
+                           "wait": wait, "timeout": timeout, "session": session},
+                     _resolved_config(None, "image"))
     mgr = _sessions.get(session)
     page = await mgr.get_page()
-    await page.goto(url)
+    await page.goto(url, **({"timeout": timeout} if timeout is not None else {}))
     await _wait(page, wait)
     state = await _capture(mgr, scope)
     if state.screenshot_base64:
@@ -980,11 +992,16 @@ async def list_desktop_windows() -> str:
         return _NO_WINDOWS_MSG
     parts = []
     if monitors:
+        # Offer the connector name (DP-1, eDP-1) as the target: indices reorder across sessions /
+        # display-manager restarts, the connector is stable (#1.6).
         mon_lines = "\n".join(
-            f"  target=\"screen:{m['index']}\" — {m['name']} ({m['w']}x{m['h']} at {m['x']},{m['y']})"
+            f"  target=\"screen:{m['name']}\" (or screen:{m['index']}) — {m['w']}x{m['h']} at {m['x']},{m['y']}"
             for m in monitors
         )
-        parts.append(f'Screens (target="screen" = all {len(monitors)} combined):\n{mon_lines}')
+        parts.append(
+            f'Screens (target="screen" = all {len(monitors)} combined; screen:<name> is stable '
+            f"across sessions):\n{mon_lines}"
+        )
     if windows:
         parts.append(f"Windows (target=<title>):\n{DesktopWindow.listing(windows)}")
     return "\n\n".join(parts)

@@ -18,8 +18,16 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
   monitor (enumerated via `list_desktop_windows`), with correct multi-monitor input mapping.
 - **Per-step interaction video** — `run_actions(record=True)` captures a frame per step so a video
   model can explain what happened, sampled to a cost bound.
+- **`navigate` accepts a `timeout`** (ms) for slow dev servers that compile routes on first hit —
+  e.g. `timeout=60000` for a cold Next.js route ([#4](https://github.com/AlanBlanchet/interact/issues/4)).
 
 ### Changed
+
+- **Window targeting prefers an exact title** and refuses to silently guess: several partial
+  matches with no exact one return the candidate list so the agent can disambiguate (`"aino"` vs
+  `"aino - Visual Studio Code"`) ([#1](https://github.com/AlanBlanchet/interact/issues/1)).
+- **`list_desktop_windows` offers connector-name screen targets** (`screen:DP-1`) — stable across
+  sessions, unlike indices that reorder on display-manager restart ([#1](https://github.com/AlanBlanchet/interact/issues/1)).
 
 - **Grounding strategy is derived from live model capabilities** (computer-use / GUI-grounding /
   video, read from the model catalog) instead of being hardcoded — native-coordinate models like
@@ -31,6 +39,9 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ### Fixed
 
+- **`record(target="screen:N")` crashed** asking xdotool for the geometry of a synthetic screen
+  window id; it now grabs the monitor's known region directly, like `screenshot`
+  ([#3](https://github.com/AlanBlanchet/interact/issues/3)).
 - **VS Code zero-config launch** — the extension now runs interact from GitHub via `uvx` instead of
   failing to resolve it (the bare `interact` name on PyPI is an unrelated package).
 - **GPU-surface capture** (Android emulator, games, hardware-accelerated video) now reports a clear

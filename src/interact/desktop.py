@@ -422,14 +422,20 @@ class DesktopWindow(BaseModel):
         return candidates
 
     @classmethod
-    def find(cls, title: str, windows: list[Self] | None = None) -> Self | None:
+    def matching(cls, title: str, windows: list[Self] | None = None) -> list[Self]:
+        """Windows whose title contains ``title`` (case-insensitive), most-likely-intended first:
+        an exact title match leads, then larger windows. So a title that is *also* a substring of a
+        longer one (``"aino"`` vs ``"aino - Visual Studio Code"``) still resolves to the exact window."""
         if windows is None:
             windows = cls.all()
-        hint = title.lower()
+        hint = title.strip().lower()
         matches = [w for w in windows if hint in w.name.lower()]
-        if not matches:
-            return None
-        return max(matches, key=lambda w: w.area)
+        return sorted(matches, key=lambda w: (w.name.lower() != hint, -w.area))
+
+    @classmethod
+    def find(cls, title: str, windows: list[Self] | None = None) -> Self | None:
+        matches = cls.matching(title, windows)
+        return matches[0] if matches else None
 
     @classmethod
     def listing(cls, windows: list[Self]) -> str:
@@ -477,19 +483,21 @@ class DesktopWindow(BaseModel):
         except (KeyError, ValueError):
             return None
 
-    def capture_video(self, duration: float = 3.0, fps: int = 10) -> bytes:
-        geom = subprocess.check_output(
-            ["xdotool", "getwindowgeometry", "--shell", str(self.wid)],
-            text=True,
-            timeout=5,
+    def _grab_region(self) -> tuple[int, int, int, int]:
+        """Pixel region ``(w, h, x, y)`` to grab for video via ffmpeg x11grab. A screen/monitor
+        target uses its known geometry — it has no window, so querying xdotool for the synthetic
+        wid would fail (#3). A window target reads its current on-screen geometry from xdotool, so
+        a window the user moved still records correctly."""
+        if self.is_screen:
+            return self.w, self.h, max(0, self.x), max(0, self.y)
+        out = subprocess.check_output(
+            ["xdotool", "getwindowgeometry", "--shell", str(self.wid)], text=True, timeout=5
         )
-        props = {}
-        for line in geom.strip().splitlines():
-            k, v = line.split("=")
-            props[k] = v
+        p = dict(ln.split("=", 1) for ln in out.strip().splitlines() if "=" in ln)
+        return int(p["WIDTH"]), int(p["HEIGHT"]), max(0, int(p["X"])), max(0, int(p["Y"]))
 
-        props["X"] = str(max(0, int(props["X"])))
-        props["Y"] = str(max(0, int(props["Y"])))
+    def capture_video(self, duration: float = 3.0, fps: int = 10) -> bytes:
+        grab_w, grab_h, grab_x, grab_y = self._grab_region()
 
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
             output_path = Path(f.name)
@@ -502,11 +510,11 @@ class DesktopWindow(BaseModel):
                     "-f",
                     "x11grab",
                     "-video_size",
-                    f"{props['WIDTH']}x{props['HEIGHT']}",
+                    f"{grab_w}x{grab_h}",
                     "-framerate",
                     str(fps),
                     "-i",
-                    f":0+{props['X']},{props['Y']}",
+                    f":0+{grab_x},{grab_y}",
                     "-c:v",
                     "libx264",
                     "-preset",

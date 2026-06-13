@@ -42,6 +42,42 @@ def test_resolve_target_desktop_and_named_session_conflict(monkeypatch):
     assert win is None and mgr is None and "Cannot combine" in err
 
 
+# --- #4: navigate timeout is configurable (slow dev servers compile routes for 15-60s) ---
+
+
+def _fake_navigate_env(monkeypatch):
+    """Stub navigate's collaborators; return the page whose .goto we assert on."""
+    page = MagicMock()
+    page.goto = AsyncMock()
+    mgr = MagicMock()
+    mgr.get_page = AsyncMock(return_value=page)
+    sessions = MagicMock()
+    sessions.get.return_value = mgr
+    state = MagicMock()
+    state.screenshot_base64 = None
+    state.text_summary.return_value = "ok"
+    monkeypatch.setattr(srv, "_sessions", sessions)
+    monkeypatch.setattr(srv, "Debug", MagicMock())
+    monkeypatch.setattr(srv, "_wait", AsyncMock())
+    monkeypatch.setattr(srv, "_capture", AsyncMock(return_value=state))
+    return page
+
+
+@pytest.mark.asyncio
+async def test_navigate_forwards_custom_timeout_to_goto(monkeypatch):
+    page = _fake_navigate_env(monkeypatch)
+    await srv.navigate("http://localhost:3000", timeout=60000)
+    assert page.goto.call_args.kwargs.get("timeout") == 60000
+
+
+@pytest.mark.asyncio
+async def test_navigate_without_timeout_uses_the_context_default(monkeypatch):
+    """No explicit timeout → don't override; the browser context's default still applies."""
+    page = _fake_navigate_env(monkeypatch)
+    await srv.navigate("http://localhost:3000")
+    assert page.goto.call_args.kwargs.get("timeout") is None
+
+
 # --- wait_for: a concrete condition instead of a guessed sleep ---
 
 

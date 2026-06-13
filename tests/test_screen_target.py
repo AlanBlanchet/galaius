@@ -5,7 +5,7 @@ its detected coords are region-relative, so input must add the monitor origin to
 right screen. These are display-free unit tests (xrandr/maim mocked); the real e2e is opt-in.
 """
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -148,3 +148,79 @@ def test_resolve_target_routes_screen_to_screen_builder(monkeypatch):
     assert win is sentinel and mgr is None and err is None
     win, mgr, err = srv._resolve_target("screen:0", "default")
     assert win is sentinel
+
+
+# --- #3: record(target="screen:N") must grab the monitor by its known geometry, never ask
+#     xdotool for the geometry of the synthetic screen wid (which crashed with exit 1). ---
+
+
+def _run_capture_video(win):
+    """Run capture_video with ffmpeg/xdotool stubbed; return the ffmpeg argv it built."""
+    run_cmds: list[list[str]] = []
+
+    def fake_run(cmd, **k):
+        run_cmds.append(cmd)
+        return MagicMock(returncode=0)
+
+    def no_xdotool(cmd, *a, **k):
+        if cmd and cmd[0] == "xdotool":
+            raise AssertionError("a screen target must not query xdotool for geometry")
+        return "WIDTH=800\nHEIGHT=600\nX=10\nY=20\n"
+
+    with patch("interact.desktop.subprocess.run", fake_run), \
+         patch("interact.desktop.subprocess.check_output", no_xdotool):
+        win.capture_video(duration=1, fps=5)
+    return run_cmds[0]
+
+
+def test_capture_video_screen_target_uses_known_geometry(monkeypatch):
+    with patch.object(DesktopWindow, "monitors", return_value=_MONS):
+        mon = DesktopWindow.screen("screen:1")  # 1920x1080 at +2560,0
+    ff = _run_capture_video(mon)
+    assert "x11grab" in ff and "1920x1080" in ff
+    assert ff[ff.index("-i") + 1] == ":0+2560,0"  # region origin = monitor origin
+
+
+def test_capture_video_window_target_still_queries_xdotool():
+    win = DesktopWindow(name="App", wid=4242, x=0, y=0, w=100, h=100)
+    run_cmds: list[list[str]] = []
+
+    def fake_co(cmd, *a, **k):  # the window path DOES read live geometry from xdotool
+        assert cmd[:2] == ["xdotool", "getwindowgeometry"]
+        return "WIDTH=800\nHEIGHT=600\nX=10\nY=20\n"
+
+    with patch("interact.desktop.subprocess.run", lambda c, **k: run_cmds.append(c) or MagicMock()), \
+         patch("interact.desktop.subprocess.check_output", fake_co):
+        win.capture_video(duration=1, fps=5)
+    ff = run_cmds[0]
+    assert "800x600" in ff and ff[ff.index("-i") + 1] == ":0+10,20"
+
+
+# --- #1.3: title targeting must prefer an exact match and refuse to silently guess between
+#     several partial matches (e.g. "aino" vs "aino - Visual Studio Code"). ---
+
+
+def _all(*windows):
+    return classmethod(lambda cls, *a, **k: list(windows))
+
+
+def test_exact_title_wins_over_a_larger_partial_match(monkeypatch):
+    small = DesktopWindow(name="aino", wid=1, x=0, y=0, w=50, h=50)
+    ide = DesktopWindow(name="aino - Visual Studio Code", wid=2, x=0, y=0, w=2000, h=1200)
+    monkeypatch.setattr(DesktopWindow, "all", _all(ide, small))
+    assert srv._find_desktop_window("aino") is small  # exact beats the bigger IDE window
+
+
+def test_ambiguous_partial_matches_error_lists_candidates(monkeypatch):
+    a = DesktopWindow(name="Chrome — Gmail", wid=1, x=0, y=0, w=100, h=100)
+    b = DesktopWindow(name="Chrome — GitHub", wid=2, x=0, y=0, w=100, h=100)
+    monkeypatch.setattr(DesktopWindow, "all", _all(a, b))
+    out = srv._find_desktop_window("Chrome")
+    assert isinstance(out, str) and "Gmail" in out and "GitHub" in out
+    assert "2" in out  # tells the agent how many matched, so it can disambiguate
+
+
+def test_single_partial_match_is_returned(monkeypatch):
+    only = DesktopWindow(name="aino - Visual Studio Code", wid=1, x=0, y=0, w=100, h=100)
+    monkeypatch.setattr(DesktopWindow, "all", _all(only))
+    assert srv._find_desktop_window("aino") is only
