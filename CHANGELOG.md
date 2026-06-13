@@ -6,6 +6,8 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-06-13
+
 ### Added
 
 - **Publishing pipeline** — CI publishes the VS Code extension to the Marketplace and Open VSX on
@@ -26,6 +28,10 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
   the agent owns (Xephyr, or headless Xvfb), then drive it with `target="nested:<title>"` /
   `target="nested"`. Non-intrusive (never touches the user's windows, cursor, or focus) and
   occlusion-proof — for apps that fight the WM or won't screen-grab on the real desktop ([#1](https://github.com/AlanBlanchet/interact/issues/1)).
+- **The server steers agents to the sandbox and reports its version.** Connection instructions now
+  tell agents to drive native apps with `launch_app` (never shell out to xdotool) when a window
+  fights the WM or screen-grabs black, and carry `interact vX.Y.Z` — so a stale server (one missing
+  the newer tools) is obvious and the fix is "reconnect," not "reimplement with raw shell."
 
 ### Changed
 
@@ -77,5 +83,6 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 - Initial release: MCP server for browser **and** desktop automation with optional VLM analysis, a
   unified `interact` CLI + config TUI, and a VS Code extension — usable from any MCP client.
 
-[Unreleased]: https://github.com/AlanBlanchet/interact/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/AlanBlanchet/interact/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/AlanBlanchet/interact/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/AlanBlanchet/interact/releases/tag/v0.1.0

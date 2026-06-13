@@ -448,18 +448,29 @@ async def _lifespan(_: FastMCP) -> AsyncIterator[None]:
     _close_sandbox()
 
 
-_INSTRUCTIONS = (
-    "interact drives a browser and desktop windows by vision/refs over MCP. "
-    "Act by `ref` (from get_interactive_elements / get_page_state / screenshot), a CSS `selector`, "
-    "accessible `name`, or `x,y` — whichever fits. "
-    "If interact itself errors in a way that blocks you, behaves unexpectedly, or is missing a "
-    "capability you needed, call `report_issue` — it sends the problem to interact's maintainers so "
-    "it gets fixed. That's the channel for feedback about the tool (not about the site you automate). "
-    "If its result says a prefilled issue page was opened in the browser, tell the user to press "
-    "Submit there; never copy report files into repos."
-)
+def _instructions() -> str:
+    from interact import __version__
 
-mcp = FastMCP("interact", lifespan=_lifespan, instructions=_INSTRUCTIONS)
+    return (
+        f"interact v{__version__} — drives a browser and desktop windows by vision/refs over MCP. "
+        "Act by `ref` (from get_interactive_elements / get_page_state / screenshot), a CSS `selector`, "
+        "accessible `name`, or `x,y` — whichever fits. "
+        "DESKTOP: to drive a native app, use interact's own tools — never shell out to xdotool/wmctrl. "
+        "For an app that fights the window manager, runs in the background, or is GPU-rendered and "
+        "screen-grabs black (Flutter/Electron/games/emulators), launch it with `launch_app(\"<cmd>\")` "
+        "(add `env LIBGL_ALWAYS_SOFTWARE=1` for GPU apps) and drive it via `target=\"nested:<title>\"` — "
+        "an isolated, occlusion-proof display. If `launch_app` isn't in your tool list, your interact "
+        "server is out of date: ask the user to reconnect/restart the interact MCP server to load it "
+        "(don't fall back to raw shell automation). "
+        "If interact itself errors in a way that blocks you, behaves unexpectedly, or is missing a "
+        "capability you needed, call `report_issue` — it sends the problem to interact's maintainers so "
+        "it gets fixed. That's the channel for feedback about the tool (not about the site you automate). "
+        "If its result says a prefilled issue page was opened in the browser, tell the user to press "
+        "Submit there; never copy report files into repos."
+    )
+
+
+mcp = FastMCP("interact", lifespan=_lifespan, instructions=_instructions())
 
 
 async def _capture(mgr: BrowserManager, scope: str | None = None, tab: int = 0):
