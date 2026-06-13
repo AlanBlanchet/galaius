@@ -439,6 +439,12 @@ class NestedBackend(DesktopBackend):
         self.size = size
         self.headless = headless
         self.env = {**os.environ, "DISPLAY": self.display}
+        # Force software GL for everything in the sandbox. A nested Xephyr/Xvfb display has no usable
+        # hardware GL, so a GPU app (Flutter/Electron/games) that tries hardware EGL hits
+        # `DRI2: failed to create any config` and renders BLACK; Mesa's swrast always provides a
+        # config. Setting it here means the agent just `launch_app("<binary>")` — no incantation, no
+        # black screen — generic across apps. setdefault so an explicit global override still wins.
+        self.env.setdefault("LIBGL_ALWAYS_SOFTWARE", "1")
         width, height = size.split("x")
         self.screen_w, self.screen_h = int(width), int(height)
         self._procs: list[subprocess.Popen] = []

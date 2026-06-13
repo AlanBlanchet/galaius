@@ -145,3 +145,33 @@ async def test_reset_sandbox_when_none():
     srv._sandbox = None
     msg = await srv.reset_sandbox()
     assert "No sandbox" in msg
+
+
+# --- sandbox forces software GL so a GPU app renders instead of capturing black (agent-friendly) ---
+
+
+class _DummyProc:
+    def poll(self):
+        return None
+
+
+def _construct_without_xserver(monkeypatch):
+    """Run NestedBackend.__init__ without actually starting an X server."""
+    monkeypatch.setattr("interact.desktop_backend.shutil.which", lambda _: "/usr/bin/Xephyr")
+    monkeypatch.setattr("interact.desktop_backend.subprocess.Popen", lambda *a, **k: _DummyProc())
+    monkeypatch.setattr(NestedBackend, "_open_log", staticmethod(lambda label: "/dev/null"))
+    monkeypatch.setattr(NestedBackend, "_await_ready", lambda self, timeout: None)
+
+
+def test_sandbox_forces_software_gl_by_default(monkeypatch):
+    monkeypatch.delenv("LIBGL_ALWAYS_SOFTWARE", raising=False)
+    _construct_without_xserver(monkeypatch)
+    nb = NestedBackend(display=77)
+    assert nb.env["LIBGL_ALWAYS_SOFTWARE"] == "1", "GPU apps must software-render or they capture black"
+
+
+def test_sandbox_respects_explicit_gl_override(monkeypatch):
+    monkeypatch.setenv("LIBGL_ALWAYS_SOFTWARE", "0")
+    _construct_without_xserver(monkeypatch)
+    nb = NestedBackend(display=77)
+    assert nb.env["LIBGL_ALWAYS_SOFTWARE"] == "0", "an explicit global setting still wins"

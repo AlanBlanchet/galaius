@@ -6,6 +6,16 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ## [Unreleased]
 
+## [0.2.3] — 2026-06-13
+
+### Changed
+
+- **The sandbox forces software GL, so `launch_app` needs no env tricks.** A nested Xephyr/Xvfb
+  display has no usable hardware GL, so a GPU app that tries hardware EGL hit
+  `DRI2: failed to create any config` and rendered black — agents had to know to prefix
+  `env LIBGL_ALWAYS_SOFTWARE=1`. The sandbox now sets that itself (overridable), so
+  `launch_app("<binary>")` renders out of the box. Verified driving aino with a bare command.
+
 ## [0.2.2] — 2026-06-13
 
 ### Fixed
@@ -116,7 +126,8 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 - Initial release: MCP server for browser **and** desktop automation with optional VLM analysis, a
   unified `interact` CLI + config TUI, and a VS Code extension — usable from any MCP client.
 
-[Unreleased]: https://github.com/AlanBlanchet/interact/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/AlanBlanchet/interact/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/AlanBlanchet/interact/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/AlanBlanchet/interact/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/AlanBlanchet/interact/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/AlanBlanchet/interact/compare/v0.1.0...v0.2.0
