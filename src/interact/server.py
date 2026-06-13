@@ -221,7 +221,16 @@ def _find_desktop_window(title: str) -> DesktopWindow | str:
     windows = DesktopWindow.all()
     if not windows:
         return _NO_WINDOWS_MSG
-    matches = DesktopWindow.matching(title, windows)
+    t = title.strip()
+    if t.lower().startswith("wid:"):  # exact, unambiguous targeting by window id (#5)
+        raw = t[4:].strip()
+        try:
+            wid = int(raw, 0)  # accepts decimal or 0x-hex (as xwininfo prints)
+        except ValueError:
+            return f"Invalid window id '{raw}' — use the wid shown by list_desktop_windows."
+        match = next((w for w in windows if w.wid == wid), None)
+        return match or f"No window with wid {raw}. Available:\n{DesktopWindow.listing(windows)}"
+    matches = DesktopWindow.matching(t, windows)
     if not matches:
         return f"No window matching '{title}'. Available:\n{DesktopWindow.listing(windows)}"
     # An exact title (sorted first by matching()) or a sole partial match is unambiguous; several
@@ -984,8 +993,9 @@ async def get_console_log(
 @mcp.tool()
 async def list_desktop_windows() -> str:
     """List desktop targets for the `target` param: each connected monitor (target="screen" for
-    the whole desktop, or target="screen:<index>" for one monitor) and each open window (target
-    by title)."""
+    the whole desktop, target="screen:<name>" e.g. screen:DP-1, or target="screen:<index>") and
+    each open window. Target a window by its title, or — when a title isn't unique — by its id
+    shown here as target="wid:<id>" (the unambiguous selector)."""
     monitors = DesktopWindow.monitors()
     windows = DesktopWindow.all()
     if not monitors and not windows:

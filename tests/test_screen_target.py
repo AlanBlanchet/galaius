@@ -224,3 +224,27 @@ def test_single_partial_match_is_returned(monkeypatch):
     only = DesktopWindow(name="aino - Visual Studio Code", wid=1, x=0, y=0, w=100, h=100)
     monkeypatch.setattr(DesktopWindow, "all", _all(only))
     assert srv._find_desktop_window("aino") is only
+
+
+# --- #5 part 2: when no title is unique (an app titled "aino" is a substring of the IDE's
+#     "aino - Visual Studio Code"), the window id is the only stable selector. ---
+
+
+def test_listing_includes_window_id():
+    app = DesktopWindow(name="aino", wid=29360135, x=0, y=0, w=464, h=1014)
+    assert "wid:29360135" in DesktopWindow.listing([app])  # the id the user can copy to target
+
+
+def test_target_by_window_id_selects_exactly(monkeypatch):
+    app = DesktopWindow(name="aino", wid=29360135, x=0, y=0, w=464, h=1014)
+    ide = DesktopWindow(name="aino - Visual Studio Code", wid=12, x=0, y=0, w=1920, h=1080)
+    monkeypatch.setattr(DesktopWindow, "all", _all(ide, app))
+    assert srv._find_desktop_window("wid:29360135") is app  # decimal
+    assert srv._find_desktop_window("wid:0x1c00007") is app  # hex (== 29360135), as xwininfo prints
+
+
+def test_unknown_window_id_errors_with_listing(monkeypatch):
+    app = DesktopWindow(name="aino", wid=29360135, x=0, y=0, w=464, h=1014)
+    monkeypatch.setattr(DesktopWindow, "all", _all(app))
+    out = srv._find_desktop_window("wid:999")
+    assert isinstance(out, str) and "999" in out and "aino" in out

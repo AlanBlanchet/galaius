@@ -20,6 +20,8 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
   model can explain what happened, sampled to a cost bound.
 - **`navigate` accepts a `timeout`** (ms) for slow dev servers that compile routes on first hit —
   e.g. `timeout=60000` for a cold Next.js route ([#4](https://github.com/AlanBlanchet/interact/issues/4)).
+- **Target a window by id** — `target="wid:<id>"` (decimal or `0x` hex, shown by
+  `list_desktop_windows`) selects exactly when no title is unique ([#5](https://github.com/AlanBlanchet/interact/issues/5)).
 
 ### Changed
 
@@ -39,6 +41,11 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ### Fixed
 
+- **VS Code usage panel now live-syncs.** It watches the usage log — which the MCP server writes
+  from a separate process — and refreshes instead of freezing at open. It also reads the log under
+  the configured `interact.debug.dir` instead of a hardcoded `~/.interact`, and that setting now
+  maps to the correct `INTERACT_DEBUG_DIR` (it was wired to the screenshot-dump dir and kept in a
+  duplicate env map that defeated the shared settings schema; the extension now uses the schema).
 - **`record(target="screen:N")` crashed** asking xdotool for the geometry of a synthetic screen
   window id; it now grabs the monitor's known region directly, like `screenshot`
   ([#3](https://github.com/AlanBlanchet/interact/issues/3)).

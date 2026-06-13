@@ -19,6 +19,14 @@ export interface DailyCost {
 const LOG_DIR = path.join(os.homedir(), ".interact", "logs");
 const LOG_FILE = path.join(LOG_DIR, "usage.jsonl");
 
+/** The usage log under a given interact base dir (mirrors Python's debug_dir/logs/usage.jsonl). */
+export function usageLogPathFor(baseDir: string): string {
+  const dir = baseDir.startsWith("~")
+    ? path.join(os.homedir(), baseDir.slice(1))
+    : baseDir;
+  return path.join(dir, "logs", "usage.jsonl");
+}
+
 // Theme-only chart palette — rotates by hash(name).
 export const CHART_COLORS = [
   "var(--vscode-charts-blue)",
@@ -39,9 +47,9 @@ export function ensureLogDir(): void {
   fs.mkdirSync(LOG_DIR, { recursive: true });
 }
 
-export async function readUsageLog(): Promise<UsageEntry[]> {
+export async function readUsageLog(logFile: string = LOG_FILE): Promise<UsageEntry[]> {
   try {
-    const content = await fs.promises.readFile(LOG_FILE, "utf8");
+    const content = await fs.promises.readFile(logFile, "utf8");
     const entries: UsageEntry[] = [];
     for (const line of content.split("\n")) {
       if (!line.trim()) continue;

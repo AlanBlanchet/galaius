@@ -7,6 +7,8 @@ import {
   ModelsData,
   ModelInfo,
   ProviderInfo,
+  SETTING_ENV_MAP,
+  SETTING_TO_TASK,
 } from "./shared";
 
 const SETTING_SECTION = "interact";
@@ -16,30 +18,9 @@ interface ModelSettingItem extends vscode.QuickPickItem {
   settingKey: string;
 }
 
-const SETTING_ENV_MAP: Record<string, string> = {
-  "image.model": "INTERACT_IMAGE_MODEL",
-  "video.model": "INTERACT_VIDEO_MODEL",
-  "video.fps": "INTERACT_VIDEO_FPS",
-  "video.duration": "INTERACT_VIDEO_DURATION",
-  "component.model": "INTERACT_COMPONENT_MODEL",
-  "browser.headless": "INTERACT_HEADLESS",
-  "browser.type": "INTERACT_BROWSER_TYPE",
-  "browser.viewportWidth": "INTERACT_VIEWPORT_WIDTH",
-  "browser.viewportHeight": "INTERACT_VIEWPORT_HEIGHT",
-  "browser.slowMo": "INTERACT_SLOW_MO",
-  "vlm.maxTokens": "INTERACT_MAX_TOKENS",
-  "vlm.waitTimeout": "INTERACT_WAIT_TIMEOUT",
-  "debug.dir": "INTERACT_SCREENSHOT_DUMP_DIR",
-  "desktop.target": "INTERACT_DESKTOP_TARGET",
-  "desktop.nestedDisplay": "INTERACT_NESTED_DISPLAY",
-  "desktop.nestedSize": "INTERACT_NESTED_SIZE",
-};
-
-const SETTING_TO_TASK: Record<string, string> = {
-  "image.model": "image",
-  "video.model": "video",
-  "component.model": "component",
-};
+// SETTING_ENV_MAP / SETTING_TO_TASK come from the shared schema (generated from settings.json) —
+// the single source of truth, so the server's env can't drift from the settings UI (this is what
+// previously sent debug.dir to the wrong env var and dropped desktop.nestedHeadless entirely).
 
 function cfg() {
   return vscode.workspace.getConfiguration(SETTING_SECTION);

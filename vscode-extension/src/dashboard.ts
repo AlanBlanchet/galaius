@@ -1,4 +1,6 @@
 import * as vscode from "vscode";
+import * as fs from "fs";
+import * as path from "path";
 import {
   KeyManager,
   ModelsData,
@@ -20,6 +22,7 @@ import {
 } from "./currency";
 import {
   readUsageLog,
+  usageLogPathFor,
   filterByRange,
   aggregateByProvider,
   aggregateStackedByModel,
@@ -103,6 +106,8 @@ export class DashboardPanel {
   private readonly panel: vscode.WebviewPanel;
   private disposed = false;
   private range: RangeId = "7d";
+  private watchers: fs.FSWatcher[] = [];
+  private refreshTimer: ReturnType<typeof setTimeout> | undefined;
 
   private constructor(
     panel: vscode.WebviewPanel,
@@ -120,10 +125,53 @@ export class DashboardPanel {
     panel.webview.onDidReceiveMessage((msg) => this.handleMessage(msg));
     panel.onDidDispose(() => {
       this.disposed = true;
+      this.stopWatching();
       DashboardPanel.instance = undefined;
     });
     panel.webview.html = this.getHtml();
     setTimeout(() => this.refresh(), 500);
+    this.startWatching();
+  }
+
+  /** Path of the usage log the running server writes to — under the configured base dir, so a
+   *  custom `interact.debug.dir` (== Python's INTERACT_DEBUG_DIR) is honoured, not hardcoded. */
+  private usageLogPath(): string {
+    return usageLogPathFor(cfg().get<string>("debug.dir") || "~/.interact");
+  }
+
+  /** Live-sync the panel: the MCP server is a SEPARATE process that appends to the usage log and
+   *  config.env as you work, so without watching them the panel would freeze at open time. Watch
+   *  both the logs dir (usage) and the base dir (config.env), debounced into one refresh. */
+  private startWatching(): void {
+    const logsDir = path.dirname(this.usageLogPath());
+    const baseDir = path.dirname(logsDir);
+    for (const dir of new Set([logsDir, baseDir])) {
+      try {
+        fs.mkdirSync(dir, { recursive: true });
+        const w = fs.watch(dir, () => this.scheduleRefresh());
+        w.on("error", () => {}); // a transient watch error must not crash the panel
+        this.watchers.push(w);
+      } catch {
+        /* unwatchable dir → just no live updates from it */
+      }
+    }
+  }
+
+  private stopWatching(): void {
+    if (this.refreshTimer) clearTimeout(this.refreshTimer);
+    for (const w of this.watchers) {
+      try {
+        w.close();
+      } catch {
+        /* already closed */
+      }
+    }
+    this.watchers = [];
+  }
+
+  private scheduleRefresh(): void {
+    if (this.refreshTimer) clearTimeout(this.refreshTimer);
+    this.refreshTimer = setTimeout(() => this.refresh(), 300); // coalesce bursty appends
   }
 
   static createOrShow(
@@ -474,7 +522,7 @@ export class DashboardPanel {
   }
 
   private async consumptionCell(): Promise<CellUpdate> {
-    const all = await readUsageLog();
+    const all = await readUsageLog(this.usageLogPath());
     const entries = filterByRange(all, this.range);
 
     const rangeSelector: CellContent = {

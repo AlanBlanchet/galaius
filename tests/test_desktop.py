@@ -25,8 +25,8 @@ def test_window_listing_format():
     result = DesktopWindow.listing(windows)
     lines = result.split("\n")
     assert len(lines) == 2
-    assert lines[0] == "  Alacritty (800x600)"
-    assert lines[1] == "  Zed (1920x1080)"
+    assert lines[0] == "  Alacritty (800x600, wid:1)"  # wid shown for exact targeting (#5)
+    assert lines[1] == "  Zed (1920x1080, wid:2)"
 
 
 def test_window_listing_empty():

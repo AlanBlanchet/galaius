@@ -439,8 +439,10 @@ class DesktopWindow(BaseModel):
 
     @classmethod
     def listing(cls, windows: list[Self]) -> str:
+        # Include the window id: when no title is unique (an app titled "aino" is a substring of
+        # "aino - Visual Studio Code"), target="wid:<id>" is the only unambiguous selector (#5).
         return "\n".join(
-            f"  {w.name} ({w.w}x{w.h})" for w in sorted(windows, key=lambda w: w.name)
+            f"  {w.name} ({w.w}x{w.h}, wid:{w.wid})" for w in sorted(windows, key=lambda w: w.name)
         )
 
     def capture(self) -> bytes:
