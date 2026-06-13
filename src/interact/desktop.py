@@ -794,7 +794,7 @@ class Box(Element):
 
 
 _element_cache: dict[int, list] = {}
-_page_sig: dict[int, str] = {}  # last page signature (window title) per wid → clear refs on change
+_page_sig: dict[int, str] = {}  # last page signature (screenshot content hash) per wid → clear refs on change
 
 
 class DesktopElement(Box):
@@ -805,8 +805,9 @@ class DesktopElement(Box):
     @classmethod
     def merge_into(cls, wid: int, elements: list[Self], signature: str) -> list[Self]:
         """Accumulate detections for a window across detect calls, keyed by a page
-        ``signature`` (the window title). Same page → union with the existing refs (a
-        second/targeted detect *adds* to what we already found). Page changed → drop the
+        ``signature`` (a content fingerprint of the screenshot — NOT the title, which is
+        constant in single-window apps). Same screen → union with the existing refs (a
+        second/targeted detect *adds* to what we already found). Screen changed → drop the
         now-stale refs first, since those elements are gone. Returns the full current set
         (re-indexed), which becomes the live ref table for this window.
         """

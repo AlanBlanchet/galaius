@@ -1,6 +1,8 @@
-from unittest.mock import AsyncMock, patch
+import io
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from PIL import Image as PILImage
 
 from interact.desktop import (
     Box,
@@ -10,6 +12,58 @@ from interact.desktop import (
     DesktopWindow,
     Motion,
 )
+
+
+@pytest.mark.asyncio
+async def test_detection_discards_prior_screen_when_content_changes(monkeypatch):
+    """A single-window app (Flutter/aino) keeps ONE window title across every screen, so re-detecting
+    after navigating must DISCARD the prior screen's refs — not union them onto the new screenshot.
+    Regression: home-screen refs (1..8) piled onto the quiz screen because the cache keyed off the
+    (unchanging) window title."""
+    import interact.desktop as desktop
+    import interact.detect as detect
+
+    def png(color):
+        b = io.BytesIO()
+        PILImage.new("RGB", (412, 915), color).save(b, "PNG")
+        return b.getvalue()
+
+    home_el = [DesktopElement(index=1, role="button", name="Quiz du jour", x=10, y=300, w=180, h=120)]
+    quiz_el = [DesktopElement(index=1, role="button", name="le Tibre", x=10, y=600, w=380, h=60)]
+    captures = iter([png((235, 235, 235)), png((20, 20, 60))])  # home, then a different screen
+
+    win = MagicMock(wid=778899, w=412, h=915)
+    win.name = "aino"  # NOT a MagicMock(name=) kwarg — that sets the mock's repr, not the attr
+    win.capture = lambda: next(captures)
+    monkeypatch.setattr(detect, "_desktop_context", lambda w: "ctx")
+    monkeypatch.setattr(detect.CoordTransform, "from_xprop", staticmethod(lambda wid: CoordTransform()))
+    monkeypatch.setattr(detect.CoordTransform, "store", staticmethod(lambda *a, **k: None))
+    monkeypatch.setattr(detect.Debug, "save", lambda *a, **k: None)
+    monkeypatch.setattr(detect, "_vlm_detect_elements",
+                        AsyncMock(side_effect=[(home_el, 0.1, "", "vlm"), (quiz_el, 0.1, "", "vlm")]))
+    desktop._element_cache.pop(778899, None)
+    desktop._page_sig.pop(778899, None)
+
+    _, first, *_ = await detect._detect_desktop_elements(win, method="vlm")
+    _, second, *_ = await detect._detect_desktop_elements(win, method="vlm")
+    assert [e.name for e in first] == ["Quiz du jour"]
+    assert [e.name for e in second] == ["le Tibre"], "prior screen's elements were not discarded"
+
+
+def test_page_signature_tracks_content_not_identity():
+    """The page key must be deterministic, change with screen CONTENT, and never raise — it errs
+    toward resetting (a new key) rather than ever keeping stale refs."""
+    import interact.detect as detect
+
+    def png(color):
+        b = io.BytesIO()
+        PILImage.new("RGB", (400, 400), color).save(b, "PNG")
+        return b.getvalue()
+
+    home, quiz = png((230, 230, 230)), png((20, 20, 60))
+    assert detect._page_signature(home) == detect._page_signature(home)  # deterministic
+    assert detect._page_signature(home) != detect._page_signature(quiz)  # content change → new key
+    assert detect._page_signature(b"not a png")  # bad bytes → a hash, never an exception
 
 
 def test_area_computed():

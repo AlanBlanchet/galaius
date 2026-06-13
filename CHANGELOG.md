@@ -45,6 +45,11 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ### Fixed
 
+- **`get_interactive_elements` no longer piles stale annotations from earlier screens onto the
+  current one.** The per-window ref cache keyed off the window *title* — constant in single-window
+  apps (Flutter/Electron/games) — so it never reset and unioned every detection (8→28 boxes across
+  one session, refs pointing at gone elements). It now keys off a screenshot content fingerprint, so
+  navigating to a new screen discards the old refs.
 - **Sandbox targeting picks the real window.** `target="nested:<title>"` now selects the largest
   visible window of that title — toolkits (Flutter/GTK) map a hidden same-titled helper window, and
   the phantom would win; `list_windows` also reports a just-mapped window so `launch_app`'s poll

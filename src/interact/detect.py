@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import hashlib
 import io
 import json
 import logging
@@ -283,6 +284,19 @@ def _is_wm_only(elements: list[DesktopElement], titlebar_y: int = _TITLEBAR_Y) -
     )
 
 
+def _page_signature(png_bytes: bytes) -> str:
+    """Content fingerprint of the window screenshot — the key for "is this still the same screen?".
+    Downscaled + grayscaled so the tiniest pixel diffs wash out; any real content change yields a
+    new key. It errs toward a NEW key (re-detect) over a stale match — the safe direction. Must NOT
+    be the window title: a single-window app (Flutter, Electron, a game) keeps one title across
+    every screen, so a title key never resets and stale refs from the previous screen pile up."""
+    try:
+        thumb = PILImage.open(io.BytesIO(png_bytes)).convert("L").resize((16, 16))
+        return hashlib.sha1(thumb.tobytes()).hexdigest()
+    except Exception:  # never let signing a screenshot break detection
+        return hashlib.sha1(png_bytes).hexdigest()
+
+
 async def _detect_desktop_elements(
     win: DesktopWindow,
     crop: tuple[int, int, int, int] | None = None,
@@ -331,6 +345,9 @@ async def _detect_desktop_elements(
                 visible_w,
                 visible_h,
             )
+    # Sign the full visible window BEFORE any region crop, so region-refinement passes on the same
+    # screen share one signature (and accumulate), while a navigated-to screen gets a new one.
+    page_sig = _page_signature(screenshot_bytes)
     if crop:
         screenshot_bytes = _srv._crop_image(screenshot_bytes, *crop)
 
@@ -407,7 +424,7 @@ async def _detect_desktop_elements(
             )
             if vlm_elements:
                 fused = DesktopElement.fuse(vlm_elements, atspi_result)
-                fused = DesktopElement.merge_into(win.wid, fused, win.name)
+                fused = DesktopElement.merge_into(win.wid, fused, page_sig)
                 total_elapsed = time.monotonic() - t0
                 _log.info(
                     "detect_elements: fused %d elements (atspi=%d, vlm=%d) in %.3fs",
@@ -425,7 +442,7 @@ async def _detect_desktop_elements(
                     img_w,
                     img_h,
                 )
-        atspi_result = DesktopElement.merge_into(win.wid, atspi_result, win.name)
+        atspi_result = DesktopElement.merge_into(win.wid, atspi_result, page_sig)
         _log.info(
             "detect_elements: atspi %d elements in %.3fs", len(atspi_result), elapsed
         )
@@ -467,7 +484,7 @@ async def _detect_desktop_elements(
     # Single pass — one screenshot, one VLM call. The multi-pass refinement (dense strips +
     # quadrants) multiplied calls into 100s+ on large screens; recall is recovered on demand
     # instead, since a follow-up (query-focused) detect accumulates into the window's refs.
-    elements = DesktopElement.merge_into(win.wid, elements, win.name)
+    elements = DesktopElement.merge_into(win.wid, elements, page_sig)
     _log.info(
         "detect_elements: vlm fallback %d elements in %.3fs", len(elements), vlm_elapsed
     )
