@@ -468,6 +468,22 @@ class NestedBackend(DesktopBackend):
         vals = dict(line.split("=", 1) for line in info.splitlines() if "=" in line)
         return int(vals["X"]), int(vals["Y"]), int(vals["WIDTH"]), int(vals["HEIGHT"])
 
+    def list_windows(self) -> list[tuple[int, str]]:
+        """``(wid, title)`` of every named, visible window on the nested display. There's no WM
+        here, so query X directly (``xdotool``); used to report what an app launched."""
+        ids = subprocess.run(
+            ["xdotool", "search", "--onlyvisible", "--name", ".+"],
+            env=self.env, capture_output=True, text=True,
+        ).stdout.split()
+        out: list[tuple[int, str]] = []
+        for wid in ids:
+            name = subprocess.run(
+                ["xdotool", "getwindowname", wid], env=self.env, capture_output=True, text=True
+            ).stdout.strip()
+            if name:
+                out.append((int(wid), name))
+        return out
+
     def close(self) -> None:
         for proc in (*self._procs, self._xserver):
             if proc.poll() is None:

@@ -109,8 +109,12 @@ the VS Code **Configuration → Models** panel, or the CLI (`interact config set
 - **`run_actions`** — the workhorse: a batch of `click` / `type_text` / `scroll` / `drag` /
   `key_press` (+ `wait`/`observe` per step), each reporting what changed.
 - **`screenshot`**, **`get_interactive_elements`**, **`get_page_state`** — see and inspect.
-- **Desktop** — `list_desktop_windows`, and the same actions/screenshot against a window or the
-  whole screen, with an isolated nested-display sandbox for safe testing.
+- **Desktop** — `list_desktop_windows`, and the same actions/screenshot against a window (by title
+  or `wid:<id>`) or the whole screen. A moved or backgrounded window is raised before capture, so
+  it's always interactable.
+- **`launch_app`** — run an app in an isolated display the agent owns, then drive it with
+  `target="nested:<title>"`. Non-intrusive (never touches your windows/cursor/focus) and
+  occlusion-proof — the reliable path for apps that fight the window manager.
 - **`report_issue`** — hit a bug or a missing capability in interact itself? Agents can file it
   straight to the maintainers: it becomes a GitHub issue (authed `gh`), or your browser opens the
   prefilled issue page — you just press Submit. Same channel from any shell:
@@ -127,9 +131,10 @@ Browser automation and everything else are cross-platform. Native desktop contro
 today (with a nested Xephyr/Xvfb sandbox); other desktop paths error clearly rather than misbehave.
 
 > **GPU-rendered windows** (Android emulator, games, hardware-accelerated video) can't be read by
-> an X screen-grab without a compositor — capture comes back uniform black, and interact now says
-> so with the fix (run a compositor like `picom`, or grab the app's own framebuffer, e.g.
-> `adb exec-out screencap -p` for an Android emulator) instead of returning a black image.
+> an X screen-grab without a compositor — capture comes back uniform black, and interact says so
+> (rather than handing back a black image). Options: run the app via `launch_app` in the sandbox
+> (often software-renders, so it captures), run a compositor like `picom`, or grab the app's own
+> framebuffer (e.g. `adb exec-out screencap -p` for an Android emulator).
 
 ## Development
 

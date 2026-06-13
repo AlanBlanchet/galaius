@@ -103,6 +103,13 @@ def _collect(root: str) -> tuple[dict, dict]:
     return uses, results
 
 
+def _candidate_roots() -> list[str]:
+    """Known MCP-client transcript roots to scan by default. Claude Code (both the CLI and the
+    VS Code extension) write to ~/.claude/projects, keyed by project path; other clients are added
+    here as they grow scannable transcripts, so coverage stays explicit rather than assumed."""
+    return [os.path.expanduser("~/.claude/projects")]
+
+
 def _normalize(line: str) -> str:
     line = re.sub(r"0x[0-9a-fA-F]+", "0xHEX", line[:160])
     return re.sub(r"\s+", " ", re.sub(r"\d+", "N", line)).strip()
@@ -115,8 +122,9 @@ def main() -> int:
     parser.add_argument("--all", action="store_true", help="whole history (ignore --since/--hours)")
     parser.add_argument(
         "--projects-root",
-        default=os.path.expanduser("~/.claude/projects"),
-        help="MCP client transcript root",
+        action="append",
+        default=None,
+        help="MCP client transcript root (repeatable; default: every known client root)",
     )
     args = parser.parse_args()
 
@@ -127,7 +135,26 @@ def main() -> int:
     else:
         since = (datetime.now(timezone.utc) - timedelta(hours=args.hours)).isoformat()
 
-    uses, results = _collect(args.projects_root)
+    # Cover every surface a consumer runs interact from, and SAY which — a scan silently pointed at
+    # one path manufactures false confidence that no consumer is failing. Claude Code (CLI and the
+    # VS Code extension) both transcript to ~/.claude/projects; add more roots as clients gain them.
+    roots = args.projects_root or _candidate_roots()
+    uses: dict[str, tuple] = {}
+    results: dict[str, tuple] = {}
+    scanned, absent = [], []
+    for root in roots:
+        if os.path.isdir(root):
+            u, r = _collect(root)
+            uses.update(u)
+            results.update(r)
+            scanned.append(root)
+        else:
+            absent.append(root)
+    coverage = "scanned: " + (", ".join(scanned) or "none")
+    if absent:
+        coverage += f"   |   absent: {', '.join(absent)}"
+    print(coverage)
+
     recent = [(t, inp, proj, ts, *results.get(tid, ("", False))) for tid, (t, inp, proj, ts) in uses.items() if ts >= since]
 
     window = "all history" if args.all else f"since {since}"

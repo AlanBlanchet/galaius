@@ -88,7 +88,8 @@ class ClientTarget(BaseModel):
     note: str = ""
 
     _registry: ClassVar[dict[str, "ClientTarget"]] = {}
-    _aliases: ClassVar[dict[str, str]] = {"copilot": "vscode"}
+    # In VS Code the MCP host is GitHub Copilot, so "github"/"copilot" both resolve to the vscode target.
+    _aliases: ClassVar[dict[str, str]] = {"copilot": "vscode", "github": "vscode"}
 
     def model_post_init(self, _context: object) -> None:
         ClientTarget._registry[self.id] = self

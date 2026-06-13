@@ -22,6 +22,10 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
   e.g. `timeout=60000` for a cold Next.js route ([#4](https://github.com/AlanBlanchet/interact/issues/4)).
 - **Target a window by id** — `target="wid:<id>"` (decimal or `0x` hex, shown by
   `list_desktop_windows`) selects exactly when no title is unique ([#5](https://github.com/AlanBlanchet/interact/issues/5)).
+- **Headless / sandboxed app driving** — `launch_app("<cmd>")` runs an app in an isolated display
+  the agent owns (Xephyr, or headless Xvfb), then drive it with `target="nested:<title>"` /
+  `target="nested"`. Non-intrusive (never touches the user's windows, cursor, or focus) and
+  occlusion-proof — for apps that fight the WM or won't screen-grab on the real desktop ([#1](https://github.com/AlanBlanchet/interact/issues/1)).
 
 ### Changed
 
@@ -41,6 +45,11 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ### Fixed
 
+- **A moved or backgrounded window is now interactable.** Capture/record raise + activate the
+  target window first, so it yields its own pixels instead of whatever buries it — the gap that
+  drove a consumer to run `xdotool windowactivate` by hand ([#1](https://github.com/AlanBlanchet/interact/issues/1)).
+- **The client-log scan reports its coverage** and takes multiple roots (`--projects-root`
+  repeatable), so the dogfood loop can't silently miss a surface a consumer runs from.
 - **VS Code usage panel now live-syncs.** It watches the usage log — which the MCP server writes
   from a separate process — and refreshes instead of freezing at open. It also reads the log under
   the configured `interact.debug.dir` instead of a hardcoded `~/.interact`, and that setting now

@@ -217,6 +217,51 @@ async def _media_response(
     return _fmt_timing(r)
 
 
+_sandbox: "object | None" = None  # the headless NestedBackend, created on first launch_app
+
+
+def _get_sandbox():
+    """The server-owned isolated display (Xephyr if a display is present, else headless Xvfb).
+    Created on first use so a window the user moved/buried — or a GPU app that won't screen-grab on
+    the real desktop — can be driven in a clean, occlusion-proof, non-intrusive sandbox."""
+    global _sandbox
+    if _sandbox is None:
+        from interact.desktop_backend import NestedBackend
+
+        _sandbox = NestedBackend(
+            config.nested_display, config.nested_size, headless=config.nested_headless
+        )
+    return _sandbox
+
+
+def _close_sandbox() -> None:
+    global _sandbox
+    if _sandbox is not None:
+        try:
+            _sandbox.close()
+        finally:
+            _sandbox = None
+
+
+def _resolve_nested_target(spec: str) -> tuple[DesktopWindow | None, None, str | None]:
+    """Resolve target="nested" (whole sandbox screen) or "nested:<title>" (one sandbox window)."""
+    try:
+        backend = _get_sandbox()
+    except RuntimeError as e:  # nested server (Xephyr/Xvfb) not installed
+        return None, None, f"ERROR: sandbox unavailable — {e}"
+    title = spec.split(":", 1)[1].strip() if ":" in spec else ""
+    if not title:  # whole nested screen
+        win = DesktopWindow(name="sandbox", wid=0, x=0, y=0, w=backend.screen_w, h=backend.screen_h)
+        win._backend = backend
+        return win, None, None
+    win = DesktopWindow.find_in(backend, title)
+    if win is None:
+        windows = backend.list_windows()
+        avail = "\n".join(f'  target="nested:{n}"' for _, n in windows) or "  (none — launch_app first)"
+        return None, None, f"No sandbox window titled '{title}'. In the sandbox:\n{avail}"
+    return win, None, None
+
+
 def _find_desktop_window(title: str) -> DesktopWindow | str:
     windows = DesktopWindow.all()
     if not windows:
@@ -257,6 +302,8 @@ def _resolve_target(
         return None, None, "Cannot combine a desktop `target` with a browser `session`"
     if is_desktop:
         t = target.strip()
+        if t.lower() == "nested" or t.lower().startswith("nested:"):
+            return _resolve_nested_target(t)
         if t.lower() == "screen" or t.lower().startswith("screen:"):
             result = DesktopWindow.screen(t)
         else:
@@ -398,6 +445,7 @@ def _desktop_label(win: DesktopWindow) -> str:
 async def _lifespan(_: FastMCP) -> AsyncIterator[None]:
     yield
     await _sessions.close_all()
+    _close_sandbox()
 
 
 _INSTRUCTIONS = (
@@ -1014,7 +1062,56 @@ async def list_desktop_windows() -> str:
         )
     if windows:
         parts.append(f"Windows (target=<title>):\n{DesktopWindow.listing(windows)}")
+    if _sandbox is not None:
+        nested = "\n".join(f'  target="nested:{n}"' for _, n in _sandbox.list_windows())
+        parts.append(f"Sandbox windows (isolated display; launch_app to add):\n{nested or '  (empty)'}")
     return "\n\n".join(parts)
+
+
+@mcp.tool()
+async def launch_app(command: str, wait: float = 6.0) -> str:
+    """Launch an app in interact's isolated sandbox display and drive it there.
+
+    The sandbox is a clean, WM-less X display the agent owns — non-intrusive (it never touches the
+    user's real windows, cursor, or focus) and occlusion-proof. Use it when a window must be driven
+    reliably regardless of what the user is doing, or when a GPU/desktop app won't screen-grab on
+    the real desktop. After launching, drive it with the normal tools using target="nested:<title>"
+    (one window) or target="nested" (the whole sandbox screen): screenshot, run_actions, etc.
+
+    command: the shell command to run (e.g. "xterm", "flutter run -d linux", a built binary's path).
+    wait: seconds to wait for a window to appear before returning.
+    """
+    import asyncio
+    import shlex
+
+    config.refresh()
+    try:
+        backend = _get_sandbox()
+    except RuntimeError as e:  # Xephyr/Xvfb not installed
+        return f"ERROR: sandbox unavailable — {e}"
+    try:
+        argv = shlex.split(command)
+    except ValueError as e:
+        return f"ERROR: could not parse command ({e})"
+    if not argv:
+        return "ERROR: empty command"
+
+    proc = await asyncio.to_thread(backend.spawn, argv)
+    deadline = asyncio.get_event_loop().time() + wait
+    windows: list[tuple[int, str]] = []
+    while asyncio.get_event_loop().time() < deadline:
+        if proc.poll() is not None and proc.returncode != 0:
+            return (f"App exited immediately (rc={proc.returncode}) — check the command. "
+                    f"Sandbox stays up for retries.")
+        windows = await asyncio.to_thread(backend.list_windows)
+        if windows:
+            break
+        await asyncio.sleep(0.3)
+    if not windows:
+        return (f"Launched `{command}` in the sandbox but no window appeared within {wait:.0f}s. "
+                f"It may still be starting — retry list_desktop_windows, or raise `wait`.")
+    targets = "\n".join(f'  target="nested:{name}"' for _, name in windows)
+    return f"Launched `{command}` in the sandbox. Drive it with:\n{targets}"
 
 
 @mcp.tool()

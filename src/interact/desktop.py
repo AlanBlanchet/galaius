@@ -445,6 +445,24 @@ class DesktopWindow(BaseModel):
             f"  {w.name} ({w.w}x{w.h}, wid:{w.wid})" for w in sorted(windows, key=lambda w: w.name)
         )
 
+    def _raise_window(self) -> None:
+        """Bring this window to the front and focus it (xdotool, best-effort) before capture or
+        record. Without this a window the user moved or buried hands back occluded pixels — the
+        bug that made a consumer abandon interact and raise windows by hand. No-op for screen
+        targets (no window) and the nested backend (isolated, nothing can occlude)."""
+        if self.is_screen or self._backend is not None:
+            return
+        try:
+            subprocess.run(
+                ["xdotool", "windowactivate", "--sync", str(self.wid)],
+                check=False,
+                timeout=5,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except (FileNotFoundError, subprocess.SubprocessError):
+            pass  # raising is best-effort; capture still attempts
+
     def capture(self) -> bytes:
         if self._backend is not None:
             return self._backend.capture_window(self.name)
@@ -453,6 +471,7 @@ class DesktopWindow(BaseModel):
             cmd = ["maim", "-g", self.screen_geometry] if self.screen_geometry else ["maim"]
             img = subprocess.check_output(cmd, timeout=10)
         else:
+            self._raise_window()  # a moved/buried window must come to the front first
             img = subprocess.check_output(["maim", "-i", str(self.wid)], timeout=10)
             if _is_blank_png(img):
                 # window-id capture of a hardware-accelerated surface can come back blank; retry by
@@ -499,6 +518,7 @@ class DesktopWindow(BaseModel):
         return int(p["WIDTH"]), int(p["HEIGHT"]), max(0, int(p["X"])), max(0, int(p["Y"]))
 
     def capture_video(self, duration: float = 3.0, fps: int = 10) -> bytes:
+        self._raise_window()  # record the target window's own pixels, not whatever buried it
         grab_w, grab_h, grab_x, grab_y = self._grab_region()
 
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:

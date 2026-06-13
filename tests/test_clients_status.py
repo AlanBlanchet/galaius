@@ -2,7 +2,17 @@
 
 import json
 
-from interact.clients import JsonClient, TomlClient
+import pytest
+
+from interact.clients import ClientTarget, JsonClient, TomlClient
+
+
+@pytest.mark.parametrize("alias", ["github", "copilot"])
+def test_vscode_aliases_resolve(alias):
+    """In VS Code the MCP host is GitHub Copilot, so `interact install github` (and the legacy
+    `copilot`) must resolve to the vscode target."""
+    target = ClientTarget.by_id(alias)
+    assert target is not None and target.id == "vscode"
 
 
 def test_json_client_detects_registration(tmp_path):

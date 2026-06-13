@@ -76,9 +76,52 @@ def test_window_input_unaffected_uses_coordtransform():
 )
 def test_capture_command_per_target(win_kwargs, expected_cmd):
     win = DesktopWindow(name="t", wid=123, x=0, y=0, w=10, h=10, **win_kwargs)
-    with patch("interact.desktop.subprocess.check_output", return_value=b"PNG") as co:
+    with patch("interact.desktop.subprocess.run", return_value=MagicMock(returncode=0)), \
+         patch("interact.desktop.subprocess.check_output", return_value=b"PNG") as co:
         win.capture()
     assert co.call_args.args[0] == expected_cmd
+
+
+def _nonblank_png() -> bytes:
+    import io
+    from PIL import Image as PILImage
+
+    img = PILImage.new("RGB", (8, 8), "black")
+    img.putpixel((0, 0), (255, 255, 255))  # non-uniform → not treated as a blank GPU surface
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_capture_raises_window_before_grabbing(monkeypatch):
+    """A window the user moved or buried must be brought to the front before capture, or maim
+    grabs whatever occludes it. This is the consumer red flag: an agent had to xdotool-activate
+    by hand because interact captured the wrong window."""
+    win = DesktopWindow(name="App", wid=4242, x=0, y=0, w=100, h=100)
+    order: list[str] = []
+    monkeypatch.setattr(
+        "interact.desktop.subprocess.run",
+        lambda cmd, *a, **k: order.append(" ".join(map(str, cmd))) or MagicMock(returncode=0),
+    )
+    monkeypatch.setattr(
+        "interact.desktop.subprocess.check_output",
+        lambda cmd, *a, **k: order.append(" ".join(map(str, cmd))) or _nonblank_png(),
+    )
+    win.capture()
+    raise_i = next(i for i, c in enumerate(order) if "windowactivate" in c and "4242" in c)
+    grab_i = next(i for i, c in enumerate(order) if c.startswith("maim"))
+    assert raise_i < grab_i, f"window must be raised before maim grabs it; order={order}"
+
+
+def test_screen_target_capture_does_not_activate(monkeypatch):
+    """A screen/monitor target has no window to raise — never call windowactivate for it."""
+    with patch.object(DesktopWindow, "monitors", return_value=_MONS):
+        mon = DesktopWindow.screen("screen:1")
+    run = MagicMock(returncode=0)
+    with patch("interact.desktop.subprocess.run", return_value=run) as r, \
+         patch("interact.desktop.subprocess.check_output", return_value=_nonblank_png()):
+        mon.capture()
+    assert not any("windowactivate" in " ".join(map(str, c.args[0])) for c in r.call_args_list)
 
 
 @pytest.mark.asyncio
@@ -192,7 +235,7 @@ def test_capture_video_window_target_still_queries_xdotool():
     with patch("interact.desktop.subprocess.run", lambda c, **k: run_cmds.append(c) or MagicMock()), \
          patch("interact.desktop.subprocess.check_output", fake_co):
         win.capture_video(duration=1, fps=5)
-    ff = run_cmds[0]
+    ff = next(c for c in run_cmds if c[0] == "ffmpeg")  # skip the pre-record window-raise
     assert "800x600" in ff and ff[ff.index("-i") + 1] == ":0+10,20"
 
 
@@ -248,3 +291,40 @@ def test_unknown_window_id_errors_with_listing(monkeypatch):
     monkeypatch.setattr(DesktopWindow, "all", _all(app))
     out = srv._find_desktop_window("wid:999")
     assert isinstance(out, str) and "999" in out and "aino" in out
+
+
+# --- headless/dedicated env: target="nested[:title]" drives an app in the isolated sandbox,
+#     non-intrusive and occlusion-proof — the fix for a window that fought the user's WM. ---
+
+
+class _FakeSandbox:
+    screen_w, screen_h = 640, 480
+
+    def list_windows(self):
+        return [(1, "xclock")]
+
+
+def test_resolve_nested_whole_screen_binds_the_sandbox(monkeypatch):
+    monkeypatch.setattr(srv, "_get_sandbox", lambda: _FakeSandbox())
+    win, mgr, err = srv._resolve_target("nested", "default")
+    assert err is None and mgr is None
+    assert win.name == "sandbox" and (win.w, win.h) == (640, 480)
+    assert win._backend is not None  # capture/input route through the sandbox, not the real display
+
+
+def test_resolve_nested_titled_window(monkeypatch):
+    sentinel = DesktopWindow(name="xclock", wid=5, x=0, y=0, w=164, h=164)
+    monkeypatch.setattr(srv, "_get_sandbox", lambda: _FakeSandbox())
+    monkeypatch.setattr(
+        DesktopWindow, "find_in",
+        classmethod(lambda cls, be, title: sentinel if title == "xclock" else None),
+    )
+    win, mgr, err = srv._resolve_target("nested:xclock", "default")
+    assert win is sentinel and err is None
+
+
+def test_resolve_nested_unknown_title_lists_sandbox_windows(monkeypatch):
+    monkeypatch.setattr(srv, "_get_sandbox", lambda: _FakeSandbox())
+    monkeypatch.setattr(DesktopWindow, "find_in", classmethod(lambda cls, be, title: None))
+    win, mgr, err = srv._resolve_target("nested:missing", "default")
+    assert win is None and isinstance(err, str) and "xclock" in err
