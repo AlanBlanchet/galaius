@@ -207,14 +207,18 @@ async def _media_response(
     mime: str = "image/png",
     model_override: str | None = None,
 ) -> str | None:
-    if path:
-        _save_to_path(path, data)
-    if not query:
-        return None
-    r = await _vlm(
-        data, context, query, media_type, mime, model_override=model_override
-    )
-    return _fmt_timing(r)
+    try:
+        if not query:
+            return None
+        r = await _vlm(
+            data, context, query, media_type, mime, model_override=model_override
+        )
+        return _fmt_timing(r)
+    finally:
+        # Save AFTER the (slow) VLM call, in a finally — so the file on disk is exactly the frame
+        # that was analyzed/returned, and is still written even if the VLM errors (#17).
+        if path:
+            _save_to_path(path, data)
 
 
 _sandbox: "object | None" = None  # the headless NestedBackend, created on first launch_app
@@ -843,7 +847,11 @@ async def screenshot(
             img_bytes = win.capture()
             if path:
                 _save_to_path(path, img_bytes)
-            cached = DesktopElement.cached(win.wid)
+            # Surface cached refs ONLY if they belong to the frame just captured — after a navigation
+            # the live frame's signature differs, so we don't list a prior screen's refs on a screen
+            # that's no longer shown (the screenshot↔elements desync, #19).
+            from interact.detect import _page_signature
+            cached = DesktopElement.cached_for(win.wid, _page_signature(img_bytes))
             if cached:
                 text = f"{_desktop_label(win)}\n{DesktopElement.format_list(cached)}"
             else:

@@ -21,7 +21,8 @@ _log = logging.getLogger("interact")
 _MIN_AREA = 500
 _FOCUS_DELAY = 0.05
 _TYPE_DELAY_MS = 12
-_DRAG_STEPS = 10
+_DRAG_STEPS = 24  # Flutter needs a fine, slow pointer path to register a kinetic drag/scroll (#13)
+_DRAG_STEP_DELAY = 0.015
 _MOTION_FRACTION = 0.001
 _MOTION_DELTA = 10
 _IOU_OVERLAP_THRESHOLD = 0.3
@@ -518,6 +519,10 @@ class DesktopWindow(BaseModel):
         return int(p["WIDTH"]), int(p["HEIGHT"]), max(0, int(p["X"])), max(0, int(p["Y"]))
 
     def capture_video(self, duration: float = 3.0, fps: int = 10) -> bytes:
+        if self._backend is not None:
+            # A sandbox window lives on the backend's display (:N), not :0 — record there, or every
+            # frame is a black grab of the wrong display (#18). Mirrors capture()'s backend dispatch.
+            return self._backend.capture_video(self.name, duration, fps)
         self._raise_window()  # record the target window's own pixels, not whatever buried it
         grab_w, grab_h, grab_x, grab_y = self._grab_region()
 
@@ -648,6 +653,7 @@ class DesktopWindow(BaseModel):
 
     async def scroll(self, x: int, y: int, direction: str, amount: int = 3):
         if self._backend is not None:
+            await self._backend_focus()  # focus first so the toolkit accepts the wheel (#12/#13)
             sx, sy = self.to_screen(x, y)
             clicks = amount if direction == "up" else -amount
 
@@ -658,7 +664,14 @@ class DesktopWindow(BaseModel):
             await asyncio.to_thread(_do)
             return
         xdo_x, xdo_y = self._input_xy(x, y)
+        # A wheel event is delivered to the window under the pointer that also holds focus — so
+        # raise + focus the window first (clicks worked without this only because they self-focus).
+        # Without it a Flutter/GTK surface silently drops the synthetic wheel (#12, #13).
+        await self._activate()
+        await asyncio.sleep(_FOCUS_DELAY)
         await self._mousemove(xdo_x, xdo_y)
+        await self._focus()
+        await asyncio.sleep(_FOCUS_DELAY)
         button = str(_SCROLL_BUTTON[direction])
         for _ in range(amount):
             await self._clickbtn(button)
@@ -666,6 +679,7 @@ class DesktopWindow(BaseModel):
     async def drag(self, fx: int, fy: int, tx: int, ty: int, steps: int = _DRAG_STEPS):
         steps = max(1, steps)
         if self._backend is not None:
+            await self._backend_focus()  # focus first so the toolkit accepts the drag (#12/#13)
             sfx, sfy = self.to_screen(fx, fy)
             stx, sty = self.to_screen(tx, ty)
             await asyncio.to_thread(self._backend.drag, sfx, sfy, stx, sty, steps)
@@ -677,11 +691,14 @@ class DesktopWindow(BaseModel):
         await self._mousemove(xfx, xfy)
         await asyncio.sleep(_FOCUS_DELAY)
         await self._run("xdotool", "mousedown", "1")
+        # float division (not //) so mid-points aren't quantized to the same pixel, plus a small
+        # per-step delay — Flutter needs a continuous, time-spread pointer path to recognise a drag
+        # and fling, not a couple of teleports (#12, #13).
         for i in range(1, steps + 1):
-            ix = xfx + (xtx - xfx) * i // steps
-            iy = xfy + (xty - xfy) * i // steps
+            ix = round(xfx + (xtx - xfx) * i / steps)
+            iy = round(xfy + (xty - xfy) * i / steps)
             await self._mousemove(ix, iy)
-            await asyncio.sleep(0.02)
+            await asyncio.sleep(_DRAG_STEP_DELAY)
         await self._run("xdotool", "mouseup", "1")
 
     async def hover(self, x: int, y: int):
@@ -837,6 +854,17 @@ class DesktopElement(Box):
 
     @classmethod
     def cached(cls, wid: int) -> list[Self] | None:
+        return _element_cache.get(wid) or None
+
+    @classmethod
+    def cached_for(cls, wid: int, signature: str) -> list[Self] | None:
+        """Cached refs ONLY if they were detected on the currently-displayed frame (its content
+        ``signature`` matches the one stored when the refs were detected). After a navigation the
+        live frame's signature differs, so the prior screen's refs are NOT surfaced — preventing a
+        screenshot from listing refs for a screen that's no longer shown, and clicks landing on gone
+        targets (#19)."""
+        if _page_sig.get(wid) != signature:
+            return None
         return _element_cache.get(wid) or None
 
     @staticmethod

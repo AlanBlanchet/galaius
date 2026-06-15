@@ -31,6 +31,9 @@ def _png(fill=(0, 0, 0), size=(412, 915), bottom=None, bottom_frac=0.12) -> byte
     [
         (_png((0, 0, 0)), True, "whole frame black → GL surface never painted"),
         (_png((230, 230, 230), bottom=(0, 0, 0)), True, "rendered body, black bottom bar (#7)"),
+        (_png((230, 230, 230), bottom=(0, 0, 0), bottom_frac=0.16), True,
+         "taller (~16%) black ConvexAppBar strip is detected too (#14-#20, variable bar height)"),
+        (_png((230, 230, 230), bottom=(0, 0, 0), bottom_frac=0.08), True, "thin (~8%) black bar detected"),
         (_png((230, 230, 230)), False, "fully rendered light UI → leave it alone"),
         (_png((8, 8, 10)), False, "genuinely dark theme (dark body too) → don't nudge every grab"),
         (_png((240, 240, 240), bottom=(20, 22, 30)), False, "dark-but-painted bar → not black"),
@@ -45,7 +48,9 @@ def _backend_no_server() -> NestedBackend:
     nb = NestedBackend.__new__(NestedBackend)
     nb.env = {"DISPLAY": ":88"}
     nb.screen_w, nb.screen_h = 412, 915
+    nb._procs, nb._logs = [], {}
     nb._repaint_useless = set()
+    nb._repaint_attempts = {}
     return nb
 
 
@@ -64,20 +69,37 @@ def test_capture_window_repaints_on_black(monkeypatch):
     assert not _gl_unrendered(img), "recaptured frame after repaint is rendered"
 
 
-def test_intentionally_black_ui_is_nudged_at_most_once(monkeypatch):
-    """A genuinely pure-black (#000000 / OLED) UI stays black after a repaint — so it must NOT be
-    nudged on every capture (a resize would reset the app's scroll). Nudge once; if the frame is
-    still black, remember it and skip the nudge thereafter (#9)."""
+def test_persistently_black_ui_is_nudged_at_most_twice(monkeypatch):
+    """A frame that STAYS black after a repaint is either a genuine OLED UI or a software-GL blur
+    that won't composite under X11 (#14-#20). Try at most twice (a stubborn blur can need a second,
+    stronger relayout), then stop nudging so a real OLED UI isn't resized (scroll-reset) on every
+    capture (#9)."""
     nb = _backend_no_server()
     monkeypatch.setattr(nb, "_window_id", lambda name: "0x1")
     monkeypatch.setattr(nb, "_maim_window", lambda wid: _png((0, 0, 0)))  # always black
     repaints = []
     monkeypatch.setattr(nb, "force_repaint", lambda name: repaints.append(name) or True)
 
-    nb.capture_window("oled")  # black → one nudge, still black → marked useless
-    nb.capture_window("oled")  # must NOT nudge again
-    nb.capture_window("oled")
-    assert repaints == ["oled"], f"a persistently-black UI must be nudged at most once, got {repaints}"
+    for _ in range(5):
+        nb.capture_window("oled")
+    assert repaints == ["oled", "oled"], f"a persistently-black UI must be nudged at most twice, got {repaints}"
+
+
+def test_window_rerendered_after_nudge_is_rearmed(monkeypatch):
+    """A window that renders after a nudge clears its attempt counter, so a LATER navigation that
+    goes black is nudged again — the heuristic must not permanently give up on a once-good window."""
+    nb = _backend_no_server()
+    monkeypatch.setattr(nb, "_window_id", lambda name: "0x1")
+    # black → (nudge) rendered ; later black again → (nudge) rendered
+    frames = iter([_png((0, 0, 0)), _png((220, 220, 220)), _png((0, 0, 0)), _png((220, 220, 220))])
+    monkeypatch.setattr(nb, "_maim_window", lambda wid: next(frames))
+    repaints = []
+    monkeypatch.setattr(nb, "force_repaint", lambda name: repaints.append(name) or True)
+
+    nb.capture_window("aino")  # black→nudge→rendered (re-armed)
+    nb.capture_window("aino")  # black→nudge→rendered again
+    assert repaints == ["aino", "aino"], "a re-blackened window must be nudged again, not abandoned"
+    assert "aino" not in nb._repaint_useless
 
 
 def test_capture_window_does_not_repaint_when_rendered(monkeypatch):
@@ -98,7 +120,8 @@ def test_capture_window_does_not_repaint_when_rendered(monkeypatch):
 
 
 def test_force_repaint_shrinks_then_restores(monkeypatch):
-    """The nudge resizes the window 2px smaller, then back to its exact original size."""
+    """The nudge resizes the window smaller by _repaint_delta (60px, capped at h/4) — big enough to
+    rebind a blurred bar's Skia layer, not just relayout the body — then back to its exact size."""
     nb = _backend_no_server()
     monkeypatch.setattr(nb, "_window_id", lambda name: "0x1")
     monkeypatch.setattr(nb, "window_geometry", lambda name: (0, 0, 412, 915))
@@ -110,7 +133,7 @@ def test_force_repaint_shrinks_then_restores(monkeypatch):
     )
 
     assert nb.force_repaint("aino") is True
-    assert sizes == [("412", "913"), ("412", "915")], "shrink by 2px, then restore exactly"
+    assert sizes == [("412", "855"), ("412", "915")], "shrink by 60px, then restore exactly"
 
 
 def test_force_repaint_noop_without_window(monkeypatch):

@@ -53,12 +53,15 @@ def _frac_dark(gray, cutoff: int = 8) -> float:
     return sum(hist[:cutoff]) / total
 
 
-def _gl_unrendered(png: bytes, *, strip_frac: float = 0.12, hard: float = 0.9) -> bool:
+def _gl_unrendered(png: bytes, *, strip_fracs: tuple[float, ...] = (0.08, 0.12, 0.18),
+                   hard: float = 0.9, body_max: float = 0.5) -> bool:
     """True when a nested GL-window capture looks like it never painted: the whole frame is
-    near-black, or a black bottom strip sits over a rendered body — a blurred BottomNavigationBar
-    that software GL (``LIBGL_ALWAYS_SOFTWARE=1``) left black (#7/#8). Both clear after a repaint
-    nudge. A genuinely dark theme has a dark body too, so the strip-only case demands a much lighter
-    body — otherwise every capture of a dark UI would needlessly nudge (and reset its scroll)."""
+    near-black, or a black bottom strip sits over a rendered body — a blurred bottom nav
+    (BottomNavigationBar / convex_bottom_bar ConvexAppBar) that software GL left black (#7/#8,
+    #14-#20). Both clear after a repaint nudge. The black bar's height varies by toolkit, so scan a
+    band of candidate strip fractions, not one fixed 12%. A genuinely dark theme has a dark body
+    too, so the strip-only case demands a much lighter body — otherwise every capture of a dark UI
+    would needlessly nudge (and reset its scroll)."""
     try:
         from PIL import Image
 
@@ -70,12 +73,15 @@ def _gl_unrendered(png: bytes, *, strip_frac: float = 0.12, hard: float = 0.9) -
         return False
     if _frac_dark(gray) >= hard:
         return True
-    cut = int(h * (1 - strip_frac))
-    if cut <= 0 or cut >= h:
-        return False
-    strip = _frac_dark(gray.crop((0, cut, w, h)))
-    body = _frac_dark(gray.crop((0, 0, w, cut)))
-    return strip >= hard and body < 0.5
+    for sf in strip_fracs:
+        cut = int(h * (1 - sf))
+        if cut <= 0 or cut >= h:
+            continue
+        strip = _frac_dark(gray.crop((0, cut, w, h)))
+        body = _frac_dark(gray.crop((0, 0, w, cut)))
+        if strip >= hard and body < body_max:
+            return True
+    return False
 
 
 def screen_to_abs(
@@ -453,6 +459,8 @@ class NestedBackend(DesktopBackend):
         # not an unrendered GL buffer. Don't nudge them again (a resize on every capture would reset
         # the app's scroll); see capture_window.
         self._repaint_useless: set[str] = set()
+        self._repaint_attempts: dict[str, int] = {}  # per-window nudge count before giving up
+        self._repaint_delta = 60  # px the repaint nudge resizes by — big enough to rebind a blur layer
         command = nested_server_command(self.display, size, headless)
         self.server_name = command[0]
         if shutil.which(self.server_name) is None:
@@ -543,6 +551,7 @@ class NestedBackend(DesktopBackend):
         )
 
     def capture(self) -> bytes:
+        self._reap()  # drop apps that exited since the last spawn so zombies don't accumulate (#11)
         return subprocess.run(["maim"], env=self.env, capture_output=True, check=True).stdout
 
     def _maim_window(self, wid: str) -> bytes:
@@ -551,30 +560,64 @@ class NestedBackend(DesktopBackend):
     def capture_window(self, name: str) -> bytes:
         """PNG of one nested window by title (``maim -i <id>``). Nothing can occlude it here, so this
         is its true content — except a software-GL surface can present a stale black buffer until it
-        repaints, so a frame that looks unrendered (:func:`_gl_unrendered`) triggers exactly one
-        repaint nudge + recapture. The nudge is idempotent and the repaint persists, so a rendered
-        frame is returned untouched (no scroll-resetting resize on every screenshot)."""
+        repaints, so a frame that looks unrendered (:func:`_gl_unrendered`) triggers a repaint nudge
+        + recapture. Up to 2 nudges are tried (a blurred ConvexAppBar can need a stronger relayout),
+        then the window is left alone so a genuinely-black UI isn't resized on every screenshot. A
+        window that renders is re-armed, so a later navigation that goes black is nudged again."""
+        self._reap()  # reap exited apps every capture, not only on spawn (#11)
         wid = self._window_id(name)
         if wid is None:
             return self.capture()
         img = self._maim_window(wid)
-        useless = getattr(self, "_repaint_useless", set())
-        if _gl_unrendered(img) and name not in useless and self.force_repaint(name):
-            wid = self._window_id(name) or wid
-            img = self._maim_window(wid)
-            if _gl_unrendered(img):
-                # The repaint didn't change a black frame → this UI is intentionally black, not an
-                # unrendered GL surface. Remember it so future captures don't nudge (and scroll-reset)
-                # it every time. The #7/#8 case repaints to a rendered frame, so it's never marked.
-                useless.add(name)
+        if _gl_unrendered(img) and name not in self._repaint_useless:
+            n = self._repaint_attempts.get(name, 0)
+            if n < 2 and self.force_repaint(name):
+                self._repaint_attempts[name] = n + 1
+                wid = self._window_id(name) or wid
+                img = self._maim_window(wid)
+                if not _gl_unrendered(img):
+                    self._repaint_attempts.pop(name, None)  # rendered → re-arm for the next screen
+                elif n + 1 >= 2:
+                    # Still black after 2 nudges → intentionally black (OLED) or a software-GL
+                    # BackdropFilter blur that won't composite under X11 (#14-#20). Stop nudging (and
+                    # scroll-resetting) it; the Wayland/sway backend renders this class correctly.
+                    self._repaint_useless.add(name)
+                    self._repaint_attempts.pop(name, None)
         return img
 
+    def capture_video(self, name: str, duration: float = 3.0, fps: int = 10) -> bytes:
+        """Record one nested window via ffmpeg x11grab on THIS display (``DISPLAY=:N``), not ``:0``.
+        Recording a sandbox window grabbed the real display and returned all-black frames while
+        screenshot() worked (#18). Forces a repaint first so the first frame isn't a black GL
+        buffer (same software-GL cause as the still-capture nudge)."""
+        geo = self.window_geometry(name)
+        x, y, w, h = geo if geo is not None else (0, 0, self.screen_w, self.screen_h)
+        self.force_repaint(name)
+        fd, out = tempfile.mkstemp(suffix=".mp4")
+        os.close(fd)
+        try:
+            subprocess.run(
+                ["ffmpeg", "-y", "-f", "x11grab", "-video_size", f"{w}x{h}",
+                 "-framerate", str(fps), "-i", f"{self.env['DISPLAY']}+{max(0, x)},{max(0, y)}",
+                 "-c:v", "libx264", "-preset", "ultrafast", "-t", str(duration),
+                 "-pix_fmt", "yuv420p", "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", out],
+                env=self.env, check=True, capture_output=True, timeout=duration + 10,
+            )
+            with open(out, "rb") as fh:
+                return fh.read()
+        finally:
+            try:
+                os.unlink(out)
+            except OSError:
+                pass
+
     def force_repaint(self, name: str) -> bool:
-        """Force a full repaint by nudging the window's size (shrink 2px, restore); returns True if
-        it nudged. A Flutter/GL app under software GL presents a stale/uninitialised buffer to X
-        until a configure event makes it relayout — so a fresh launch (or its blurred bottom bar)
-        captures solid black. One resize triggers a complete repaint that then persists for later
-        frames. Verified live driving aino's GPU UI in the sandbox."""
+        """Force a full repaint by nudging the window's size (shrink, restore); returns True if it
+        nudged. A Flutter/GL app under software GL presents a stale/uninitialised buffer to X until a
+        configure event makes it relayout — so a fresh launch (or its blurred bottom bar) captures
+        solid black. The resize delta (``_repaint_delta``, default 60px, capped at h/4) is large
+        enough to make Skia rebind a blurred bar's layer, not just relayout the body. The repaint
+        then persists for later frames. Verified live driving aino's GPU UI in the sandbox."""
         wid = self._window_id(name)
         geo = self.window_geometry(name)
         if wid is None or geo is None:
@@ -582,7 +625,8 @@ class NestedBackend(DesktopBackend):
         _, _, w, h = geo
         if w < 4 or h < 4:
             return False
-        self._xdotool_ok("windowsize", wid, str(w), str(h - 2))
+        delta = max(2, min(getattr(self, "_repaint_delta", 60), h // 4))
+        self._xdotool_ok("windowsize", wid, str(w), str(h - delta))
         time.sleep(0.35)
         self._xdotool_ok("windowsize", wid, str(w), str(h))
         time.sleep(0.4)

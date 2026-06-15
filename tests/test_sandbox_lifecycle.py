@@ -5,6 +5,7 @@ the genuine death/respawn was verified live.
 """
 
 import subprocess
+import types
 
 import pytest
 
@@ -20,6 +21,7 @@ def _bare_backend() -> NestedBackend:
     nb._procs = []
     nb._logs = {}
     nb._repaint_useless = set()
+    nb._repaint_attempts = {}
     return nb
 
 
@@ -104,6 +106,43 @@ def test_spawn_captures_output_readable_after_crash():
     proc.wait(timeout=5)
     assert proc.returncode == 3
     assert "kaboom" in nb.proc_output(proc)
+
+
+def test_capture_reaps_exited_apps(monkeypatch):
+    """capture() reaps apps that exited since the last spawn, so zombies don't accumulate between
+    launches in a long session (#11)."""
+    nb = _bare_backend()
+    proc = nb.spawn(["sh", "-c", "exit 0"])
+    proc.wait(timeout=5)
+    monkeypatch.setattr(
+        "interact.desktop_backend.subprocess.run",
+        lambda *a, **k: types.SimpleNamespace(stdout=b"PNG"),
+    )
+    nb.capture()
+    assert proc not in nb._procs, "capture() must reap an exited app (#11)"
+
+
+def test_capture_video_grabs_nested_display_not_zero(monkeypatch):
+    """record() on a sandbox window must x11grab the NESTED display (:N), not :0 — the bug that
+    returned all-black frames for a nested window while screenshot() worked (#18)."""
+    nb = _bare_backend()
+    nb.env = {"DISPLAY": ":99"}
+    monkeypatch.setattr(nb, "window_geometry", lambda name: (10, 20, 300, 400))
+    monkeypatch.setattr(nb, "force_repaint", lambda name: True)
+    captured = {}
+
+    def fake_run(cmd, **k):
+        captured["cmd"] = cmd
+        with open(cmd[-1], "wb") as fh:
+            fh.write(b"\x00\x00FAKEMP4")
+        return types.SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("interact.desktop_backend.subprocess.run", fake_run)
+    data = nb.capture_video("aino", duration=1, fps=5)
+    cmd = captured["cmd"]
+    grab = cmd[cmd.index("-i") + 1]
+    assert grab == ":99+10,20", f"must grab the nested display+offset, got {grab!r}"
+    assert data == b"\x00\x00FAKEMP4"
 
 
 def test_reap_drops_exited_apps_and_unlinks_logs():

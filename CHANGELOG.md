@@ -6,6 +6,41 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ## [Unreleased]
 
+## [0.2.4] — 2026-06-15
+
+### Fixed
+
+- **`record()` on a sandbox window no longer returns all-black frames.** Video capture hardcoded
+  ffmpeg `x11grab` on `:0` (the real display), so recording a `nested:` window grabbed the wrong
+  display while `screenshot()` worked; it now records the window's own nested display. Verified live
+  (non-black frames) ([#18](https://github.com/AlanBlanchet/interact/issues/18)).
+- **A screenshot no longer lists element refs from a screen that's no longer shown.** Cached
+  interactive-element refs are now surfaced only when the live frame's content signature matches the
+  frame they were detected on — after a navigation the stale refs are withheld, so a click can't
+  land on a gone target ([#19](https://github.com/AlanBlanchet/interact/issues/19)). A query
+  screenshot also writes its file *after* the VLM call (in a `finally`), so the saved frame is
+  exactly the one analysed, even on a VLM error ([#17](https://github.com/AlanBlanchet/interact/issues/17)).
+- **Scroll and drag now reach a Flutter/GTK window.** Scroll raises + focuses the window before
+  emitting wheel events (an unfocused toolkit silently drops them), and drag uses a fine,
+  float-interpolated, time-spread pointer path instead of a couple of pixel-quantized teleports — so
+  the toolkit recognises a drag/fling. Applies to both the real-desktop and sandbox paths
+  ([#12](https://github.com/AlanBlanchet/interact/issues/12),
+  [#13](https://github.com/AlanBlanchet/interact/issues/13)).
+- **Sandbox zombie reaping is more aggressive.** Exited apps are now reaped on every capture, not
+  only on the next `launch_app`, so a long session can't accumulate `<defunct>` children between
+  launches (with the v0.2.2 dead-display respawn, closes the rc=1 root cause)
+  ([#11](https://github.com/AlanBlanchet/interact/issues/11)).
+- **The repaint heuristic handles a blur-backed bottom bar better.** The black-strip detector scans
+  a band of candidate strip heights (a `ConvexAppBar` is taller than a plain nav bar), the repaint
+  nudge resizes by a larger delta (enough to make Skia rebind a blurred layer, not just relayout),
+  and up to two nudges are tried before a window is left alone — re-arming once it renders so a later
+  navigation that goes black is nudged again ([#14](https://github.com/AlanBlanchet/interact/issues/14),
+  [#15](https://github.com/AlanBlanchet/interact/issues/15),
+  [#16](https://github.com/AlanBlanchet/interact/issues/16),
+  [#20](https://github.com/AlanBlanchet/interact/issues/20)). A real compositor renders this class
+  natively; a sway-headless backend is tracked as the durable fix
+  ([#1](https://github.com/AlanBlanchet/interact/issues/1)).
+
 ## [0.2.3] — 2026-06-13
 
 ### Changed
@@ -126,7 +161,8 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 - Initial release: MCP server for browser **and** desktop automation with optional VLM analysis, a
   unified `interact` CLI + config TUI, and a VS Code extension — usable from any MCP client.
 
-[Unreleased]: https://github.com/AlanBlanchet/interact/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/AlanBlanchet/interact/compare/v0.2.4...HEAD
+[0.2.4]: https://github.com/AlanBlanchet/interact/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/AlanBlanchet/interact/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/AlanBlanchet/interact/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/AlanBlanchet/interact/compare/v0.2.0...v0.2.1
