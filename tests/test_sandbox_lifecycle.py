@@ -4,13 +4,21 @@ transparently, exited apps are reaped (no leak), a crash surfaces the app's own 
 the genuine death/respawn was verified live.
 """
 
+import os
 import subprocess
+import sys
 import types
 
 import pytest
 
 from interact import server as srv
 from interact.desktop_backend import NestedBackend
+
+# Spawn real short-lived processes the cross-platform way — `sh`/`sleep` don't exist on Windows
+# (the CI matrix runs macOS + Windows too), but the Python interpreter always does.
+_EXIT0 = [sys.executable, "-c", ""]
+_CRASH = [sys.executable, "-c", "import sys; sys.stderr.write('kaboom'); sys.exit(3)"]
+_SLEEP = [sys.executable, "-c", "import time; time.sleep(0.3)"]
 
 
 def _bare_backend() -> NestedBackend:
@@ -102,7 +110,7 @@ def test_get_sandbox_reuses_a_live_display(monkeypatch):
 
 def test_spawn_captures_output_readable_after_crash():
     nb = _bare_backend()
-    proc = nb.spawn(["sh", "-c", "echo kaboom 1>&2; exit 3"])
+    proc = nb.spawn(_CRASH)
     proc.wait(timeout=5)
     assert proc.returncode == 3
     assert "kaboom" in nb.proc_output(proc)
@@ -112,7 +120,7 @@ def test_capture_reaps_exited_apps(monkeypatch):
     """capture() reaps apps that exited since the last spawn, so zombies don't accumulate between
     launches in a long session (#11)."""
     nb = _bare_backend()
-    proc = nb.spawn(["sh", "-c", "exit 0"])
+    proc = nb.spawn(_EXIT0)
     proc.wait(timeout=5)
     monkeypatch.setattr(
         "interact.desktop_backend.subprocess.run",
@@ -149,11 +157,11 @@ def test_reap_drops_exited_apps_and_unlinks_logs():
     import os
 
     nb = _bare_backend()
-    proc = nb.spawn(["sh", "-c", "exit 0"])
+    proc = nb.spawn(_EXIT0)
     proc.wait(timeout=5)
     log = nb._logs[proc.pid]
     assert os.path.exists(log)
-    nb.spawn(["sleep", "0.1"])  # a second spawn reaps the first (now-exited) proc
+    nb.spawn(_SLEEP)  # a second spawn reaps the first (now-exited) proc
     assert proc not in nb._procs, "an exited app is reaped on the next spawn"
     assert not os.path.exists(log), "its captured-output log is unlinked"
     for p in nb._procs:
@@ -198,7 +206,7 @@ def _construct_without_xserver(monkeypatch):
     """Run NestedBackend.__init__ without actually starting an X server."""
     monkeypatch.setattr("interact.desktop_backend.shutil.which", lambda _: "/usr/bin/Xephyr")
     monkeypatch.setattr("interact.desktop_backend.subprocess.Popen", lambda *a, **k: _DummyProc())
-    monkeypatch.setattr(NestedBackend, "_open_log", staticmethod(lambda label: "/dev/null"))
+    monkeypatch.setattr(NestedBackend, "_open_log", staticmethod(lambda label: os.devnull))
     monkeypatch.setattr(NestedBackend, "_await_ready", lambda self, timeout: None)
 
 

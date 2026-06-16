@@ -43,10 +43,22 @@ uvx --from git+https://github.com/AlanBlanchet/interact interact mcp   # run wit
 > Installs the **`interact`** command from GitHub (`uv` makes it one command on macOS, Linux, and
 > Windows). interact isn't on PyPI — the bare `interact` name is taken there.
 
-**VS Code** — install the **Interact** extension for a dashboard + settings UI (it launches the
-same server):
-[Marketplace](https://marketplace.visualstudio.com/items?itemName=AlanBlanchet.interact) ·
-[Open VSX](https://open-vsx.org/extension/AlanBlanchet/interact) (Cursor / Windsurf / VSCodium).
+### VS Code — two ways (pick one)
+
+1. **Just the tools** (simplest): `interact install vscode` registers the MCP server with VS Code,
+   so Copilot's agent mode can drive the browser/desktop. No extension, nothing to build — it runs
+   the published `interact` via `uvx`.
+2. **The Interact extension** — adds a dashboard + model/key settings UI on top of the same server.
+   Install from the
+   [Marketplace](https://marketplace.visualstudio.com/items?itemName=AlanBlanchet.interact) ·
+   [Open VSX](https://open-vsx.org/extension/AlanBlanchet/interact) (Cursor / Windsurf / VSCodium).
+
+> The Marketplace listing is published by CI on each release tag (once the `VSCE_PAT` / `OVSX_PAT`
+> secrets are set — see [RELEASING.md](RELEASING.md)). To hand a colleague a build directly, run
+> `cd vscode-extension && npm run package` → an `interact-<version>.vsix`, then
+> `code --install-extension interact-<version>.vsix`. The extension runs the **released** interact
+> pinned to its own version — never your local checkout (set `interact.projectPath` or
+> `INTERACT_PROJECT_PATH` to opt into a dev tree; see `.env.example`).
 
 ## Connect it to your agent
 

@@ -243,47 +243,43 @@ export function metaOf(model: string, data: ModelsData): ModelInfo | undefined {
  * Resolve the command to launch interact.
  * Shared between MCP server registration and dashboard subprocess spawning.
  */
-export function resolveCommand(log?: vscode.OutputChannel): [string, string[]] {
-  const explicit = cfg().get<string>("projectPath") || "";
-  if (explicit) {
-    log?.appendLine(`Using explicit projectPath: ${explicit}`);
-    return ["uv", ["run", "--directory", explicit, "interact", "mcp"]];
+/** The extension's own version — used to pin the uvx install to the matching released git tag, so
+ *  a colleague gets exactly the interact that ships with their extension, never `main`/dev HEAD. */
+function extensionVersion(): string {
+  try {
+    const pkg = path.join(__dirname, "..", "package.json");
+    return JSON.parse(fs.readFileSync(pkg, "utf8")).version || "";
+  } catch {
+    return "";
   }
-  const folders = vscode.workspace.workspaceFolders ?? [];
-  log?.appendLine(`Scanning ${folders.length} workspace folder(s)`);
-  for (const folder of folders) {
-    const p = path.join(folder.uri.fsPath, "pyproject.toml");
-    try {
-      const pyproject = fs.readFileSync(p, "utf8");
-      if (pyproject.includes('name = "interact"')) {
-        log?.appendLine(`Auto-detected project at ${folder.uri.fsPath}`);
-        return ["uv", ["run", "--directory", folder.uri.fsPath, "interact", "mcp"]];
-      }
-    } catch (err) {
-      log?.appendLine(`Skip ${p}: ${err instanceof Error ? err.message : err}`);
-    }
-  }
-  log?.appendLine("No local project found, falling back to uvx");
-  // Zero-config: run straight from the repo (interact isn't on PyPI — the bare `interact`
-  // name belongs to an unrelated package there). uvx caches the build after the first run.
-  return ["uvx", ["--from", "git+https://github.com/AlanBlanchet/interact", "interact", "mcp"]];
 }
 
-/** Locate the project root (parent of an interact pyproject.toml). */
-export function resolveProjectPath(): string | undefined {
-  const explicit = cfg().get<string>("projectPath") || "";
-  if (explicit) return explicit;
-  const folders = vscode.workspace.workspaceFolders ?? [];
-  for (const folder of folders) {
-    const p = path.join(folder.uri.fsPath, "pyproject.toml");
-    try {
-      const pyproject = fs.readFileSync(p, "utf8");
-      if (pyproject.includes('name = "interact"')) {
-        return folder.uri.fsPath;
-      }
-    } catch {}
+/** A local interact checkout to run instead of the released build — **DEV ONLY, opt-in**. Set the
+ *  `interact.projectPath` setting, or the `INTERACT_PROJECT_PATH` env var (e.g. exported from a
+ *  `.env` you source). It is **never** auto-detected from the workspace: a colleague who merely
+ *  opens a clone of this repo must still get the released build, not your working tree. */
+export function devProjectPath(): string {
+  return (cfg().get<string>("projectPath") || process.env.INTERACT_PROJECT_PATH || "").trim();
+}
+
+export function resolveCommand(log?: vscode.OutputChannel): [string, string[]] {
+  const dev = devProjectPath();
+  if (dev) {
+    log?.appendLine(`Dev mode (opt-in): running interact from ${dev}`);
+    return ["uv", ["run", "--directory", dev, "interact", "mcp"]];
   }
-  return undefined;
+  // Default for everyone: the published build via uvx (interact isn't on PyPI — the bare `interact`
+  // name belongs to an unrelated package there), pinned to this extension's release tag so the
+  // server matches the extension. uvx caches the build after the first run.
+  const v = extensionVersion();
+  const ref = v ? `@v${v}` : "";
+  log?.appendLine(`Running published interact via uvx (${ref || "main"})`);
+  return ["uvx", ["--from", `git+https://github.com/AlanBlanchet/interact${ref}`, "interact", "mcp"]];
+}
+
+/** A local interact checkout, if one is opted into (same source as resolveCommand). DEV ONLY. */
+export function resolveProjectPath(): string | undefined {
+  return devProjectPath() || undefined;
 }
 
 export async function ensureKeys(

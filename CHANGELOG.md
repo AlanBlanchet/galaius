@@ -6,6 +6,33 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ## [Unreleased]
 
+## [0.2.5] — 2026-06-16
+
+### Changed
+
+- **The VS Code extension no longer silently runs a local checkout.** It used to auto-detect any
+  workspace folder whose `pyproject.toml` is interact's and run *that working tree* via `uv run` —
+  so a colleague who merely opened a clone got an unbuilt dev version. Dev mode is now **opt-in
+  only** (the `interact.projectPath` setting or the `INTERACT_PROJECT_PATH` env var); by default
+  everyone gets the published build via `uvx`, **pinned to the extension's own release tag** so the
+  server matches the extension version — never `main`/dev HEAD. New `.env.example` documents this
+  and the other `INTERACT_*` overrides (the home for anything machine-specific, kept out of the
+  codebase).
+
+### Fixed
+
+- **CI is green across the matrix again** (it had been red on macOS/Windows since v0.2.0, which
+  blocked every release tag and the Marketplace publish). The sandbox lifecycle tests spawned
+  `sh`/`sleep` and opened `/dev/null` — POSIX-only — so they errored on Windows; they now spawn the
+  Python interpreter and use `os.devnull`, so the cross-OS test job passes and the tag/release job
+  can run.
+
+### Added
+
+- `npm run package` / `npm run publish` in the extension (build an `interact-<version>.vsix` or push
+  to the Marketplace), and a README section clarifying the two VS Code paths (`interact install
+  vscode` for just the tools, or the extension for the dashboard UI).
+
 ## [0.2.4] — 2026-06-15
 
 ### Fixed
@@ -161,7 +188,8 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 - Initial release: MCP server for browser **and** desktop automation with optional VLM analysis, a
   unified `interact` CLI + config TUI, and a VS Code extension — usable from any MCP client.
 
-[Unreleased]: https://github.com/AlanBlanchet/interact/compare/v0.2.4...HEAD
+[Unreleased]: https://github.com/AlanBlanchet/interact/compare/v0.2.5...HEAD
+[0.2.5]: https://github.com/AlanBlanchet/interact/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/AlanBlanchet/interact/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/AlanBlanchet/interact/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/AlanBlanchet/interact/compare/v0.2.1...v0.2.2

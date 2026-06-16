@@ -2,7 +2,7 @@
   "name": "interact",
   "displayName": "Interact",
   "description": "Interact — browser + desktop automation via an MCP server",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "preview": true,
   "publisher": "AlanBlanchet",
   "icon": "icon.png",
@@ -49,7 +49,7 @@
         "interact.projectPath": {
           "type": "string",
           "default": "",
-          "description": "Local project path for development (uses 'uv run' instead of 'uvx'). Leave empty to run interact from GitHub via uvx (zero-config)."
+          "description": "DEV ONLY — path to a local interact checkout to run via 'uv run' instead of the released build. Leave EMPTY (the default) to run the published interact from GitHub via uvx (zero-config). Never auto-detected, so opening a clone of the repo does not silently run your working tree. Can also be set with the INTERACT_PROJECT_PATH env var."
         },
         "interact.display.currency": {
           "type": "string",
@@ -180,6 +180,8 @@
     "compile": "bash scripts/generate-types.sh && node scripts/sync-data.js && tsc -p ./ && node -e \"try{require('fs').cpSync('src/models.json','out/models.json')}catch{}\" && node -e \"try{require('fs').cpSync('src/benchmarks.json','out/benchmarks.json')}catch{}\" && node -e \"try{require('fs').cpSync('src/settings.json','out/settings.json')}catch{}\" && npm run build:webview",
     "build:webview": "esbuild webview/app.tsx --bundle --outfile=out/webview.js --format=iife --target=es2022 --jsx=automatic --jsx-import-source=. && cp webview/styles.css out/webview.css",
     "watch": "tsc -watch -p ./",
+    "package": "npm run compile && npx @vscode/vsce package",
+    "publish": "npm run compile && npx @vscode/vsce publish",
     "generate-models": "uv run --project .. python scripts/generate-models.py",
     "generate-benchmarks": "uv run --project .. python scripts/generate-benchmarks.py"
   },
