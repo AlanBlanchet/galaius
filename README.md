@@ -119,7 +119,9 @@ the VS Code **Configuration → Models** panel, or the CLI (`interact config set
 
 - **`navigate`** — open a URL; returns title + visible text (or a vision answer with `query`).
 - **`run_actions`** — the workhorse: a batch of `click` / `type_text` / `scroll` / `drag` /
-  `key_press` (+ `wait`/`observe` per step), each reporting what changed.
+  `key_press` (+ `wait`/`observe` per step), each reporting what changed. `evaluate_js` returns its
+  value (JSON, for reading geometry/computed-style off the live DOM); `emulate_device` sets a phone
+  viewport (`"iPhone 13"`, or explicit width/height + DPR/touch) to check responsive layouts.
 - **`screenshot`**, **`get_interactive_elements`**, **`get_page_state`** — see and inspect.
 - **Desktop** — `list_desktop_windows`, and the same actions/screenshot against a window (by title
   or `wid:<id>`) or the whole screen. A moved or backgrounded window is raised before capture, so
@@ -142,8 +144,12 @@ the VS Code **Configuration → Models** panel, or the CLI (`interact config set
 | Browser, MCP server, CLI, TUI | ✅ | ✅ | ✅ |
 | Desktop control (real windows) | ✅ (X11; uinput input also on Wayland) | ⏳ | ⏳ |
 
-Browser automation and everything else are cross-platform. Native desktop control is Linux/X11
-today (with a nested Xephyr/Xvfb sandbox); other desktop paths error clearly rather than misbehave.
+Browser automation, the MCP server, CLI and TUI are cross-platform — install interact on macOS or
+Windows and your agent gets full browser control. Native desktop control is Linux/X11 today (with a
+nested Xephyr/Xvfb sandbox); off Linux the desktop tools (`launch_app`, `target=<window>/screen`)
+return one clear message pointing you at the browser target instead of leaking a low-level error.
+Native macOS/Windows desktop backends are tracked in
+[#24](https://github.com/AlanBlanchet/interact/issues/24).
 
 > **GPU-rendered windows** (Android emulator, games, hardware-accelerated video) can't be read by
 > an X screen-grab without a compositor — capture comes back uniform black, and interact says so

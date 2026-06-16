@@ -17,14 +17,43 @@ Coordinates are screen pixels; map other spaces in via :class:`interact.frames.F
 import io
 import math
 import os
+import platform
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from abc import ABC, abstractmethod
 
 ABS_MAX = 32767
 _BUTTONS = {"left": 1, "middle": 2, "right": 3}
+
+
+class DesktopUnsupportedError(RuntimeError):
+    """Raised when native desktop automation is requested on an OS that has no backend yet
+    (anything but Linux). The message is actionable and points at the browser tools, which DO
+    work everywhere — so callers can surface it verbatim to the agent."""
+
+
+def desktop_supported() -> bool:
+    """True when this OS has a working native-desktop backend. interact drives native windows
+    through Linux X11 (``/dev/uinput`` input + maim/Xephyr capture); macOS and Windows have no
+    backend yet. Browser automation (Playwright) works on every platform regardless — this gates
+    only the desktop tools (launch_app, target=window/screen/nested)."""
+    return sys.platform.startswith("linux")
+
+
+def desktop_unsupported_message() -> str:
+    """The single actionable error shown when a desktop tool is used off Linux — names the OS and
+    steers to the browser tools (the working path) and the tracking issue, instead of leaking a
+    cryptic evdev/maim failure from deep in a backend."""
+    return (
+        f"Desktop automation isn't supported on {platform.system() or sys.platform} yet — "
+        "interact drives native windows through Linux X11 (uinput input + maim/Xephyr capture). "
+        "Browser automation works fully on this OS: use navigate / run_actions / screenshot with "
+        "the default browser target (omit `target`). Track native macOS/Windows desktop support: "
+        "https://github.com/AlanBlanchet/interact/issues/24"
+    )
 
 
 def _tail_file(path: str | None, limit: int) -> str:
@@ -557,6 +586,23 @@ class NestedBackend(DesktopBackend):
     def _maim_window(self, wid: str) -> bytes:
         return subprocess.run(["maim", "-i", wid], env=self.env, capture_output=True, check=True).stdout
 
+    def _grab_window(self, name: str, wid: str) -> bytes:
+        """``maim -i <wid>``, resilient to a wid that went stale between enumeration and capture: a
+        multi-process app (Chrome) recreates its top-level window, so the enumerated id can already
+        be dead by the time maim runs (the recurring real-world ``maim -i N returned non-zero``).
+        Re-resolve the title once and retry; if the window is truly gone, fall back to a full
+        nested-screen grab so the agent still gets pixels instead of a hard error."""
+        try:
+            return self._maim_window(wid)
+        except subprocess.CalledProcessError:
+            fresh = self._window_id(name)
+            if fresh and fresh != wid:
+                try:
+                    return self._maim_window(fresh)
+                except subprocess.CalledProcessError:
+                    pass
+            return self.capture()  # whole nested display — last resort, never crash-or-black
+
     def capture_window(self, name: str) -> bytes:
         """PNG of one nested window by title (``maim -i <id>``). Nothing can occlude it here, so this
         is its true content — except a software-GL surface can present a stale black buffer until it
@@ -568,13 +614,13 @@ class NestedBackend(DesktopBackend):
         wid = self._window_id(name)
         if wid is None:
             return self.capture()
-        img = self._maim_window(wid)
+        img = self._grab_window(name, wid)
         if _gl_unrendered(img) and name not in self._repaint_useless:
             n = self._repaint_attempts.get(name, 0)
             if n < 2 and self.force_repaint(name):
                 self._repaint_attempts[name] = n + 1
                 wid = self._window_id(name) or wid
-                img = self._maim_window(wid)
+                img = self._grab_window(name, wid)
                 if not _gl_unrendered(img):
                     self._repaint_attempts.pop(name, None)  # rendered → re-arm for the next screen
                 elif n + 1 >= 2:
@@ -746,7 +792,11 @@ def select_desktop_backend(config) -> DesktopBackend:
     """Build the backend named by ``config.desktop_target`` (``local`` | ``nested``).
 
     For ``nested``, ``config.nested_headless`` picks Xvfb (background) vs Xephyr (visible).
+    On a non-Linux host (no native backend) this raises :class:`DesktopUnsupportedError` with an
+    actionable message rather than letting a deeper evdev/maim failure leak out.
     """
+    if not desktop_supported():
+        raise DesktopUnsupportedError(desktop_unsupported_message())
     if config.desktop_target == "nested":
         return NestedBackend(
             config.nested_display, config.nested_size, headless=config.nested_headless

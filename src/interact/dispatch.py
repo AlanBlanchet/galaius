@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import json
 import logging
 
 from playwright.async_api import Error as PlaywrightError, TimeoutError as PlaywrightTimeout
@@ -15,6 +16,8 @@ from interact.actions import (
     CloseTabAction,
     CompareAction,
     DragAction,
+    EmulateDeviceAction,
+    EvaluateJsAction,
     HoverAction,
     HttpRequestAction,
     KeyPressAction,
@@ -158,6 +161,27 @@ async def _named_locator(page, action):
 
 def _step(i: int, action_type: str, msg: str) -> str:
     return f"Step {i + 1} ({action_type}): {msg}"
+
+
+_JS_RESULT_CAP = 4000  # the return value is the point of evaluate_js, so cap generously
+
+
+def _render_js_result(value) -> str:
+    """The evaluate_js return value, JSON-serialised (devtools-style) so dicts / lists / numbers /
+    strings all read back unambiguously — this IS the step's output. undefined/null → an explicit
+    nudge, since the usual cause is a script that computed a value without ``return``ing it."""
+    if value is None:
+        return (
+            "→ returned undefined/null. To read a value back, `return` it "
+            "(e.g. `return document.title`) or use an arrow that returns one."
+        )
+    try:
+        rendered = json.dumps(value, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        rendered = str(value)
+    if len(rendered) > _JS_RESULT_CAP:
+        rendered = rendered[:_JS_RESULT_CAP] + f"… (+{len(rendered) - _JS_RESULT_CAP} chars)"
+    return rendered
 
 
 def _fmt_cursor() -> str:
@@ -548,6 +572,33 @@ async def _run_actions_browser(
                     report = f"{state.title} — {state.visible_text[:300]}"
                 final = state
             step_reports.append(_step(i, action.type, report))
+
+        elif isinstance(action, EvaluateJsAction):
+            # The return value IS the output — surface it JSON-serialised as the step's primary
+            # text (never bury it under a change description). Any DOM mutation the script caused
+            # shows in the final state / the next observation.
+            result = await _execute_browser_action(action, page)
+            if action.wait:
+                await _wait_fn(page, action.wait)
+            step_reports.append(_step(i, action.type, _render_js_result(result)))
+
+        elif isinstance(action, EmulateDeviceAction):
+            try:
+                desc = await mgr.emulate_device(
+                    device=action.device,
+                    width=action.width,
+                    height=action.height,
+                    device_scale_factor=action.device_scale_factor,
+                    is_mobile=action.is_mobile,
+                    has_touch=action.has_touch,
+                    user_agent=action.user_agent,
+                    reset=action.reset,
+                )
+                current_tab = 0
+                page = await mgr.get_page(current_tab)  # context rebuilt → refresh the handle
+            except ValueError as e:
+                desc = f"SKIPPED: {e}"
+            step_reports.append(_step(i, action.type, desc))
 
         elif not action.mutates:
             result = await _execute_browser_action(action, page)

@@ -8,6 +8,7 @@ Display-free: maim/xdotool are stubbed; the real GL behaviour is verified live, 
 """
 
 import io
+import subprocess
 
 import pytest
 from PIL import Image
@@ -52,6 +53,42 @@ def _backend_no_server() -> NestedBackend:
     nb._repaint_useless = set()
     nb._repaint_attempts = {}
     return nb
+
+
+def test_capture_window_recovers_from_stale_wid(monkeypatch):
+    """`maim -i <wid>` can fail when the wid went stale between enumeration and capture — a
+    multi-process app (Chrome) recreates its top-level window (the recurring real-world
+    `maim -i N returned non-zero` error). Re-resolve the title once and retry, not crash."""
+    nb = _backend_no_server()
+    resolved = {"wid": "0x1"}
+    monkeypatch.setattr(nb, "_window_id", lambda name: resolved["wid"])
+    good = _png((230, 230, 230))
+
+    def maim(wid):
+        if wid == "0x1":  # the stale id the window was enumerated under
+            resolved["wid"] = "0x2"  # …it has since been recreated under a fresh id
+            raise subprocess.CalledProcessError(1, ["maim", "-i", "0x1"])
+        return good
+
+    monkeypatch.setattr(nb, "_maim_window", maim)
+    monkeypatch.setattr(nb, "force_repaint", lambda name: pytest.fail("rendered frame → no repaint"))
+    assert nb.capture_window("chrome") == good
+
+
+def test_capture_window_falls_back_to_screen_when_window_gone(monkeypatch):
+    """If the window is truly gone (re-resolve gives the same dead id, maim keeps failing), return a
+    whole-nested-screen grab so the agent still gets pixels — never a hard error."""
+    nb = _backend_no_server()
+    monkeypatch.setattr(nb, "_window_id", lambda name: "0x1")  # no fresh window to find
+
+    def maim(wid):
+        raise subprocess.CalledProcessError(1, ["maim", "-i", wid])
+
+    monkeypatch.setattr(nb, "_maim_window", maim)
+    screen = _png((210, 210, 210))
+    monkeypatch.setattr(nb, "capture", lambda: screen)
+    monkeypatch.setattr(nb, "force_repaint", lambda name: pytest.fail("fallback frame → no repaint"))
+    assert nb.capture_window("chrome") == screen
 
 
 def test_capture_window_repaints_on_black(monkeypatch):

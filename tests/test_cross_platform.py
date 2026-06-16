@@ -1,0 +1,60 @@
+"""Cross-platform guarantee (#24): the MCP server boots and browser automation works on Linux,
+macOS and Windows; native-desktop tools degrade with ONE actionable message off Linux instead of
+leaking a cryptic evdev/maim error. These are pure (no display, no browser, no key) so they run on
+the whole ubuntu/macos/windows CI matrix and keep the promise honest."""
+
+import importlib
+
+import pytest
+
+from interact import desktop_backend as db
+from interact.browser import BrowserManager
+from interact.config import Config
+
+
+def test_server_module_imports_on_any_platform():
+    # The import chain must not pull in a Linux-only native module at load time (evdev/uinput are
+    # lazy + sys_platform-marked; atspi is try/except). If this fails, the server won't even start
+    # on macOS/Windows.
+    server = importlib.import_module("interact.server")
+    assert server.mcp is not None
+
+
+def test_browser_manager_constructs_without_a_display():
+    # Constructing a session must not require X11 / a browser launch — browser tools are the
+    # cross-platform path and must be reachable everywhere.
+    BrowserManager(Config())
+
+
+def test_desktop_supported_is_linux_only(monkeypatch):
+    monkeypatch.setattr(db.sys, "platform", "linux")
+    assert db.desktop_supported() is True
+    for plat in ("darwin", "win32"):
+        monkeypatch.setattr(db.sys, "platform", plat)
+        assert db.desktop_supported() is False
+
+
+@pytest.mark.parametrize("plat", ["darwin", "win32"])
+def test_select_backend_raises_actionable_error_off_linux(monkeypatch, plat):
+    monkeypatch.setattr(db.sys, "platform", plat)
+    with pytest.raises(db.DesktopUnsupportedError) as exc:
+        db.select_desktop_backend(Config())
+    msg = str(exc.value).lower()
+    # Steers to the working path + the tracking issue, not a raw stack-trace.
+    assert "browser" in msg
+    assert "issues/24" in msg
+
+
+def test_server_desktop_guard_off_linux(monkeypatch):
+    import interact.server as server
+
+    monkeypatch.setattr(db.sys, "platform", "win32")
+    msg = server._desktop_unsupported()
+    assert msg and msg.startswith("ERROR:") and "browser" in msg.lower()
+
+
+def test_server_desktop_guard_passes_on_linux(monkeypatch):
+    import interact.server as server
+
+    monkeypatch.setattr(db.sys, "platform", "linux")
+    assert server._desktop_unsupported() is None

@@ -14,19 +14,35 @@ _DND_DISPATCH_JS = (Path(__file__).parent / "js" / "dnd_dispatch.js").read_text(
 
 _JS_NEEDS_ASYNC = re.compile(r"\b(return|await)\b")
 
+# A script the agent already wrote AS a function — an arrow (`(a) => …`, `a => …`) or a `function`
+# expression, optionally `async`. Playwright invokes such a string itself (passing `args` as the
+# parameter), so it MUST pass through unwrapped: wrapping `() => { return x }` in another IIFE
+# defines the inner arrow without ever calling it, so the value is lost (page.evaluate returns
+# undefined) — that was the root of "evaluate_js return value is blank" for any function-bodied
+# script (e.g. `() => { const r = el.getBoundingClientRect(); return r.width }`).
+_JS_IS_FUNCTION = re.compile(
+    r"""^\s*(async\s+)?(
+        function\b              # function () { … } / async function () { … }
+      | \([^)]*\)\s*=>          # (args) => …
+      | [A-Za-z_$][\w$]*\s*=>   # arg => …   (single param, no parens)
+    )""",
+    re.VERBOSE,
+)
+
 
 def _wrap_js(script: str, has_args: bool = False) -> str:
-    """Prepare a script for ``page.evaluate`` so agents can write natural JS.
+    """Prepare a script for ``page.evaluate`` so agents can write natural JS — a bare expression,
+    a statement body that ``return``s, or a full function — and always get the value back.
 
-    Without args: a multi-statement script's top-level ``return``/``await`` is otherwise illegal
-    (``page.evaluate`` only runs a string as a function body when it IS a function), so wrap it in
-    an async IIFE. A single expression (``document.title``) has neither keyword and passes through
-    untouched, so its value is still returned.
-
-    With args: emit an ``async (args) => {{ ... }}`` function expression — Playwright invokes it
-    with the serialised ``args`` value, which the script reads as ``args``. The body should
-    ``return`` the value it wants back."""
+    - Already a function (arrow or ``function``, maybe ``async``): pass through untouched —
+      Playwright calls it itself (with the serialised ``args`` as the parameter). Re-wrapping it
+      would define the function without calling it and lose the return value.
+    - Otherwise with args: emit an ``async (args) => {{ … }}`` so the body reads ``args``.
+    - Otherwise a body with top-level ``return``/``await``: wrap in an async IIFE so it's legal.
+    - Otherwise a single expression (``document.title``): pass through so its value is returned."""
     src = script.strip()
+    if _JS_IS_FUNCTION.match(src):
+        return src
     if has_args:
         return f"async (args) => {{ {src} }}"
     if _JS_NEEDS_ASYNC.search(src):
@@ -404,6 +420,41 @@ class HttpRequestAction(ObservationAction):
             return f"{response.status_code} {response.reason_phrase}\n{response.text[:2000]}"
 
 
+class EmulateDeviceAction(ObservationAction):
+    """Reconfigure the browser session's viewport / device profile for the rest of the session —
+    to verify responsive & mobile layouts at true device metrics (CSS size, DPR, touch). Give a
+    Playwright ``device`` name (``"iPhone 13"``, ``"Pixel 7"``, ``"iPad Mini"``) OR an explicit
+    ``width``+``height`` (plus optional ``device_scale_factor`` / ``is_mobile`` / ``has_touch`` /
+    ``user_agent``); ``reset=true`` restores the configured default viewport.
+
+    Viewport/DPR/mobile/touch are fixed when a browser context is created, so this rebuilds the
+    session context — cookies are preserved and the current URL is re-opened. Run it before
+    navigating (or it reloads the current page at the new size). At ``device_scale_factor`` ≠ 1 a
+    screenshot is DPR-scaled, so VLM/annotator ref boxes can be offset; layout/visual checks are
+    unaffected. ``is_mobile`` is Chromium-only (ignored on Firefox/WebKit)."""
+
+    type: Literal["emulate_device"] = "emulate_device"
+    device: str | None = None
+    width: int | None = None
+    height: int | None = None
+    device_scale_factor: float | None = None
+    is_mobile: bool | None = None
+    has_touch: bool | None = None
+    user_agent: str | None = None
+    reset: bool = False
+
+    @model_validator(mode="after")
+    def _require_profile(self):
+        if (self.width is None) != (self.height is None):
+            raise ValueError("Provide both width and height, or neither.")
+        if not self.reset and not self.device and self.width is None:
+            raise ValueError(
+                "Provide a `device` name (e.g. 'iPhone 13'), or both `width` and `height`, "
+                "or `reset=true`."
+            )
+        return self
+
+
 AnyAction = Annotated[
     ClickAction
     | HoverAction
@@ -422,6 +473,7 @@ AnyAction = Annotated[
     | HttpRequestAction
     | AnnotateAction
     | ClickElementAction
+    | EmulateDeviceAction
     | SleepAction
     | CompareAction,
     Field(discriminator="type"),
@@ -436,5 +488,6 @@ BROWSER_ONLY_ACTIONS = frozenset(
         "new_tab",
         "switch_tab",
         "close_tab",
+        "emulate_device",
     }
 )

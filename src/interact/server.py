@@ -56,6 +56,16 @@ _sessions = SessionRegistry(config)
 _DEFAULT_SESSION = "default"
 _NO_WINDOWS_MSG = "No desktop windows detected (X11/maim required)."
 _ANNOTATE_JS = (Path(__file__).parent / "js" / "annotate_elements.js").read_text()
+
+
+def _desktop_unsupported() -> str | None:
+    """``"ERROR: …"`` (actionable, steering to the browser tools) when native desktop automation
+    isn't available on this OS — non-Linux; ``None`` when it is. Every desktop entry point checks
+    this first so macOS/Windows agents get one clear message instead of a cryptic evdev/maim
+    failure, while browser tools keep working. The check is a cheap ``sys.platform`` test."""
+    from interact.desktop_backend import desktop_supported, desktop_unsupported_message
+
+    return None if desktop_supported() else f"ERROR: {desktop_unsupported_message()}"
 _DBG_ELEMENTS = "get_interactive_elements"
 _DBG_ACTIONS = "run_actions"
 
@@ -310,6 +320,8 @@ def _resolve_target(
     is_desktop = bool(target) and target.strip().lower() != "browser"
     if is_desktop and session != _DEFAULT_SESSION:
         return None, None, "Cannot combine a desktop `target` with a browser `session`"
+    if is_desktop and (unsupported := _desktop_unsupported()):
+        return None, None, unsupported
     if is_desktop:
         t = target.strip()
         if t.lower() == "nested" or t.lower().startswith("nested:"):
@@ -465,6 +477,9 @@ def _instructions() -> str:
         f"interact v{__version__} — drives a browser and desktop windows by vision/refs over MCP. "
         "Act by `ref` (from get_interactive_elements / get_page_state / screenshot), a CSS `selector`, "
         "accessible `name`, or `x,y` — whichever fits. "
+        "Browser automation works on Linux, macOS and Windows; native desktop automation "
+        "(launch_app, target=<window>/screen/nested) is Linux-only today — off Linux those tools "
+        "return a clear message and you should use the browser target instead. "
         "DESKTOP: to drive a native app, use interact's own tools — never shell out to xdotool/wmctrl. "
         "For an app that fights the window manager, runs in the background, or is GPU-rendered and "
         "screen-grabs black (Flutter/Electron/games/emulators), launch it with `launch_app(\"<cmd>\")` "
@@ -718,12 +733,17 @@ async def run_actions(
     Mutating: click, type_text, scroll, drag, navigate, evaluate_js, upload_file, key_press, click_element
     Observations: screenshot, wait_for, http_request, hover, annotate
     Tab control: new_tab, switch_tab, close_tab
+    Viewport: emulate_device — set the session to a device profile (a Playwright `device` name like
+      "iPhone 13", or explicit width+height (+ device_scale_factor/is_mobile/has_touch), or
+      reset=true) to verify responsive/mobile layouts at true device metrics. Run it before
+      navigating; the return value of an evaluate_js step is surfaced JSON-serialised as that step's
+      output (use `return <expr>` or an arrow that returns).
     Timing: sleep — a FIXED pause (max 30s). Use ONLY for genuine fixed delays (e.g. an
       animation). To wait on something concrete, do NOT sleep-and-guess: attach `wait` to the
       preceding action, or add a `wait_for` step — both block exactly until the condition holds.
     Comparison: compare — VLM comparison of snapshots from earlier steps (by 1-based index).
 
-    Browser-only actions (navigate, evaluate_js, wait_for, upload_file, new_tab, switch_tab, close_tab) error when used with a desktop target.
+    Browser-only actions (navigate, evaluate_js, wait_for, upload_file, new_tab, switch_tab, close_tab, emulate_device) error when used with a desktop target.
 
     Any action can include 'wait' to wait after execution (networkidle, load, domcontentloaded, or a CSS selector — browser only).
     wait_for blocks until a `selector` reaches a state OR a `text` substring appears — prefer it over `sleep` for content/navigation.
@@ -1073,6 +1093,8 @@ async def list_desktop_windows() -> str:
     the whole desktop, target="screen:<name>" e.g. screen:DP-1, or target="screen:<index>") and
     each open window. Target a window by its title, or — when a title isn't unique — by its id
     shown here as target="wid:<id>" (the unambiguous selector)."""
+    if unsupported := _desktop_unsupported():
+        return unsupported
     monitors = DesktopWindow.monitors()
     windows = DesktopWindow.all()
     if not monitors and not windows:
@@ -1113,6 +1135,8 @@ async def launch_app(command: str, wait: float = 6.0) -> str:
     import asyncio
     import shlex
 
+    if unsupported := _desktop_unsupported():
+        return unsupported
     config.refresh()
     try:
         backend = _get_sandbox()

@@ -6,6 +6,33 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-06-16
+
+### Added
+
+- **Browser automation is now first-class on macOS and Windows.** The MCP server boots on every OS
+  and Playwright drives the browser there fully; the OS-agnostic suite runs on the ubuntu/macos/
+  windows CI matrix to keep that guarantee. Native desktop control stays Linux/X11, but off Linux
+  the desktop tools (`launch_app`, `target=<window>/screen/nested`, `list_desktop_windows`) now
+  return **one actionable message** steering to the browser target instead of leaking a low-level
+  `evdev`/`maim` error. Tracked for native backends: #24.
+- **`emulate_device` action** (#21) — set a browser session to a device profile (a Playwright
+  device name like `"iPhone 13"`, or explicit `width`+`height` with optional `device_scale_factor`/
+  `is_mobile`/`has_touch`/`user_agent`; `reset=true` restores the default) to verify responsive and
+  mobile layouts at true device metrics. Rebuilds the session context, preserving cookies + URL.
+
+### Fixed
+
+- **`evaluate_js` now returns its value** (#22, #23). A function-bodied script — `() => { …; return
+  x }`, the shape every `getBoundingClientRect`/`getComputedStyle` read uses — was wrapped in a
+  second IIFE that defined the arrow without calling it, so `page.evaluate` returned `undefined`.
+  Function scripts now pass through untouched, and the return value is surfaced JSON-serialised as
+  the step's primary output (not buried under a change description).
+- **Nested-window capture survives a stale window id.** A multi-process app (Chrome) recreates its
+  top-level window, so `maim -i <id>` could fail with a non-zero exit between enumeration and
+  capture; it now re-resolves the title and retries, falling back to a full nested-screen grab
+  rather than erroring.
+
 ## [0.2.5] — 2026-06-16
 
 ### Changed
