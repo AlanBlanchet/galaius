@@ -12,6 +12,15 @@ import pytest
 from interact import server as srv
 from interact.desktop import DesktopWindow, _SCREEN_WID
 
+
+@pytest.fixture(autouse=True)
+def _desktop_gate_open(monkeypatch):
+    # These tests verify Linux-only desktop-resolution logic with mocked backends, so they run on
+    # every CI OS (no display needed). Open the platform gate that _resolve_target now applies off
+    # Linux — the gate itself is covered independently by test_cross_platform.py.
+    monkeypatch.setattr(srv, "_desktop_unsupported", lambda: None)
+
+
 _XRANDR = """Monitors: 2
  0: +*DP-1 2560/598x1440/336+0+0  DP-1
  1: +HDMI-1 1920/509x1080/286+2560+0  HDMI-1

@@ -17,6 +17,14 @@ from interact.actions import WaitForAction
 from interact.dispatch import _execute_browser_action
 
 
+@pytest.fixture(autouse=True)
+def _desktop_gate_open(monkeypatch):
+    # The desktop-target tests below verify Linux-only resolution logic with mocked backends and
+    # run on every CI OS. Open the platform gate _resolve_target applies off Linux (covered itself
+    # by test_cross_platform.py); harmless for the browser-target tests, which never hit it.
+    monkeypatch.setattr(srv, "_desktop_unsupported", lambda: None)
+
+
 # --- target: one param, browser default or a desktop window ---
 
 
