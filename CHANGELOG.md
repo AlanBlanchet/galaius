@@ -6,6 +6,8 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ## [Unreleased]
 
+## [0.3.2] — 2026-06-16
+
 ### Fixed
 
 - **Sandbox keyboard input focuses the exact target window** (#25). On the WM-less nested display,
@@ -14,6 +16,10 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
   resolved window — "clicks work, typing doesn't". Keyboard input now focuses the window's resolved
   `wid` (the same one click/scroll act on) with `--sync`. Verified driving a real Chrome `--app`
   window in a nested display (text + key presses land in the focused field).
+- **Inline `screenshot` actions honour `path`** (#27). A `screenshot` action inside `run_actions`
+  silently dropped its `path` (the field didn't exist), so the PNG was never written and agents had
+  to make a separate standalone call that re-captured a now-changed page. The inline action now
+  writes `path` the same way the standalone screenshot tool does (browser and desktop targets).
 
 ## [0.3.1] — 2026-06-16
 

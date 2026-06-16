@@ -296,6 +296,10 @@ class ScreenshotAction(ObservationAction):
     query: str | None = None
     selector: str | None = None
     element: int | None = None
+    # Absolute path to also write the captured PNG to — same as the standalone screenshot tool, so
+    # an inline screenshot in a run_actions sequence can keep a frame without a follow-up tool call
+    # that would re-capture a now-changed page (#27).
+    path: str | None = None
 
 
 class WaitForAction(ObservationAction):

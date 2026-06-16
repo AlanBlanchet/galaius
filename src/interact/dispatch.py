@@ -344,7 +344,7 @@ async def _run_actions_desktop(
             step_reports.append(_step(i, action.type, report))
 
         elif isinstance(action, ScreenshotAction):
-            screenshot_bytes, report = await _capture_desktop(win, action.query)
+            screenshot_bytes, report = await _capture_desktop(win, action.query, action.path)
             snapshots[step_idx] = screenshot_bytes
             Debug.step_save(
                 invocation_id,
@@ -430,6 +430,7 @@ async def _run_actions_browser(
         _element_screenshot,
         _run_compare,
         _run_observe,
+        _save_to_path,
         _session_response,
         _wait as _wait_fn,
     )
@@ -553,7 +554,7 @@ async def _run_actions_browser(
         elif isinstance(action, ScreenshotAction):
             if action.element is not None or action.selector is not None:
                 report = await _element_screenshot(
-                    mgr, current_tab, action.selector, action.element, action.query
+                    mgr, current_tab, action.selector, action.element, action.query, action.path
                 )
             else:
                 state = await _capture(mgr, action.scope, current_tab)
@@ -566,10 +567,14 @@ async def _run_actions_browser(
                     snapshots[step_idx],
                     ext="png",
                 )
+                if action.path:  # honour an inline screenshot's path, like the standalone tool (#27)
+                    _save_to_path(action.path, snapshots[step_idx])
                 if action.query:
                     report = await _analyze(state, action.query)
                 else:
                     report = f"{state.title} — {state.visible_text[:300]}"
+                if action.path:
+                    report += f"  (saved {action.path})"
                 final = state
             step_reports.append(_step(i, action.type, report))
 
