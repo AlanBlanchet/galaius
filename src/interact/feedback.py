@@ -26,9 +26,19 @@ def _footer() -> str:
 
     from interact import __version__
 
+    # platform.platform() can shell out internally (e.g. macOS/Windows code paths), so it breaks
+    # under a mocked subprocess and on the odd host. The footer is cosmetic and must never crash a
+    # bug report, so fall back to the pieces that read straight from os.uname/sys.
+    try:
+        plat = platform.platform()
+    except Exception:
+        try:
+            plat = f"{platform.system()}-{platform.release()}-{platform.machine()}"
+        except Exception:
+            plat = sys.platform
     return (
         f"\n\n---\n_interact {__version__} · Python {sys.version.split()[0]} · "
-        f"{platform.platform()} · reported via report_issue_"
+        f"{plat} · reported via report_issue_"
     )
 
 

@@ -196,3 +196,16 @@ def test_cli_report_command_sends_through_feedback(monkeypatch, capsys):
     cli.report("emulator black", "frames are black", kind="limitation")
     assert sent == {"title": "emulator black", "body": "frames are black", "kind": "limitation"}
     assert "issues/7" in capsys.readouterr().out
+
+
+def test_footer_survives_platform_platform_raising(monkeypatch):
+    """report()'s env footer must never crash the report: platform.platform() can shell out
+    internally and raise (the macOS-under-mocked-subprocess case that reddened CI), so _footer
+    falls back to os.uname-backed pieces. Regression for the cross-OS CI failure."""
+    import platform as _pl
+
+    import interact.feedback as fb
+
+    monkeypatch.setattr(_pl, "platform", lambda *a, **k: (_ for _ in ()).throw(AttributeError("boom")))
+    footer = fb._footer()
+    assert "reported via report_issue" in footer and "interact" in footer
