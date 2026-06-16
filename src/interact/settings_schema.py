@@ -70,8 +70,13 @@ class Setting(BaseModel):
             return "true" if value else "false"
         if value is None:
             return ""
-        text = str(value)
-        home = str(Path.home())
+        if isinstance(value, Path):
+            # Render path defaults POSIX-style (forward slashes) so the exported JSON is byte-identical
+            # on every OS — otherwise Windows bakes `~\.interact` and drifts from the bundled (Linux-
+            # generated) settings.json, failing the lockstep check.
+            text, home = value.as_posix(), Path.home().as_posix()
+        else:
+            text, home = str(value), str(Path.home())
         return "~" + text[len(home):] if text.startswith(home) else text
 
     def model_options(self) -> list[Option]:
