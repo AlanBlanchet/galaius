@@ -6,6 +6,15 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-06-16
+
+### Fixed
+
+- **`interact doctor` / `interact status` no longer print Linux-only advice on macOS/Windows.** They
+  used to report `maim=MISSING (apt install maim)` and `/dev/uinput NOT writable — add a udev rule`
+  on any OS, which reads as "broken" to a colleague whose browser automation is actually ready. Off
+  Linux they now report desktop automation as not-available-here and point at the browser path.
+
 ## [0.3.0] — 2026-06-16
 
 ### Added

@@ -67,10 +67,15 @@ def status(
     print("\nModels:")
     for role in ("image", "component", "video"):
         print(f"  {role:<10} {getattr(config, f'{role}_model') or '(auto — best available)'}")
-    target_line = f"target={config.desktop_target}"
-    if config.desktop_target == "nested":
-        target_line += f"  headless={config.nested_headless}  display=:{config.nested_display}"
-    print(f"  desktop    {target_line}")
+    from interact.desktop_backend import desktop_supported
+
+    if not desktop_supported():
+        print("  desktop    not available on this OS (Linux/X11 only) — browser automation works here")
+    else:
+        target_line = f"target={config.desktop_target}"
+        if config.desktop_target == "nested":
+            target_line += f"  headless={config.nested_headless}  display=:{config.nested_display}"
+        print(f"  desktop    {target_line}")
 
     Model.load_registry()
     providers = Model.available_providers()
@@ -275,26 +280,36 @@ def doctor() -> None:
     except ImportError:
         print("  playwright    : MISSING — run `uv run playwright install`")
 
+    from interact.desktop_backend import desktop_supported
     from interact.runtime import config
 
-    session = os.environ.get("XDG_SESSION_TYPE", "?")
-    display = os.environ.get("WAYLAND_DISPLAY") or os.environ.get("DISPLAY")
-    maim = shutil.which("maim")
-    print(f"  desktop       : session={session} display={display or 'none'} maim={maim or 'MISSING (apt install maim)'}")
-    if session == "wayland":
-        print("                  note: browser + the nested sandbox + uinput input work on "
-              "Wayland; local (non-nested) window capture/enumeration is X11-only for now "
-              "→ prefer `desktop.target=nested`.")
-    print(f"  desktop target: {config.desktop_target}  (set: interact config set desktop.target local|nested)")
-    if config.desktop_target == "nested":
-        server = "Xvfb" if config.nested_headless else "Xephyr"
-        pkg = "xvfb" if config.nested_headless else "xserver-xephyr"
-        server_path = shutil.which(server) or f"MISSING (apt install {pkg})"
-        xdotool = shutil.which("xdotool") or "MISSING (apt install xdotool)"
-        mode = "headless/background" if config.nested_headless else "visible"
-        print(f"  nested deps   : {server}={server_path} ({mode}) xdotool={xdotool} display=:{config.nested_display}")
-    uinput = "writable" if os.access("/dev/uinput", os.W_OK) else "NOT writable — add a udev rule + join `input` group (no root)"
-    print(f"  input driver  : /dev/uinput {uinput}  (absolute pointer, works on X11 + Wayland)")
+    # Desktop diagnostics are Linux/X11-specific (maim, /dev/uinput, Xephyr). On macOS/Windows
+    # they'd print misleading "MISSING (apt install …)" / "udev rule" advice, so report cleanly
+    # that desktop automation is N/A here and browser automation is the ready path.
+    if not desktop_supported():
+        import platform as _pf
+
+        print(f"  desktop       : not available on {_pf.system()} — desktop automation is "
+              "Linux/X11 only (issues/24); browser automation works fully here.")
+    else:
+        session = os.environ.get("XDG_SESSION_TYPE", "?")
+        display = os.environ.get("WAYLAND_DISPLAY") or os.environ.get("DISPLAY")
+        maim = shutil.which("maim")
+        print(f"  desktop       : session={session} display={display or 'none'} maim={maim or 'MISSING (apt install maim)'}")
+        if session == "wayland":
+            print("                  note: browser + the nested sandbox + uinput input work on "
+                  "Wayland; local (non-nested) window capture/enumeration is X11-only for now "
+                  "→ prefer `desktop.target=nested`.")
+        print(f"  desktop target: {config.desktop_target}  (set: interact config set desktop.target local|nested)")
+        if config.desktop_target == "nested":
+            server = "Xvfb" if config.nested_headless else "Xephyr"
+            pkg = "xvfb" if config.nested_headless else "xserver-xephyr"
+            server_path = shutil.which(server) or f"MISSING (apt install {pkg})"
+            xdotool = shutil.which("xdotool") or "MISSING (apt install xdotool)"
+            mode = "headless/background" if config.nested_headless else "visible"
+            print(f"  nested deps   : {server}={server_path} ({mode}) xdotool={xdotool} display=:{config.nested_display}")
+        uinput = "writable" if os.access("/dev/uinput", os.W_OK) else "NOT writable — add a udev rule + join `input` group (no root)"
+        print(f"  input driver  : /dev/uinput {uinput}  (absolute pointer, works on X11 + Wayland)")
 
     Model.load_registry()
     available = Model.available_providers()

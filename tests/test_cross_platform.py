@@ -58,3 +58,26 @@ def test_server_desktop_guard_passes_on_linux(monkeypatch):
 
     monkeypatch.setattr(db.sys, "platform", "linux")
     assert server._desktop_unsupported() is None
+
+
+def test_doctor_diagnostics_are_clean_off_linux(monkeypatch, capsys):
+    # A Mac/Windows colleague running `interact doctor` must not see Linux-only advice
+    # (`apt install maim`, `/dev/uinput … udev rule`) — that reads as "broken" when browser
+    # automation is actually ready. Report N/A cleanly instead.
+    import interact.cli as cli
+
+    monkeypatch.setattr("interact.desktop_backend.desktop_supported", lambda: False)
+    cli.doctor()
+    out = capsys.readouterr().out
+    assert "not available on" in out
+    assert "/dev/uinput" not in out
+    assert "apt install maim" not in out
+
+
+def test_status_desktop_line_clean_off_linux(monkeypatch, capsys):
+    import interact.cli as cli
+
+    monkeypatch.setattr("interact.desktop_backend.desktop_supported", lambda: False)
+    cli.status()
+    out = capsys.readouterr().out
+    assert "desktop" in out and "not available on this OS" in out
