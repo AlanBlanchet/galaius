@@ -6,6 +6,15 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Sandbox keyboard input focuses the exact target window** (#25). On the WM-less nested display,
+  keyboard focus re-searched by title every keystroke (and without `--sync`), so it could land on a
+  hidden helper window (Chrome spawns a 10×10 "clipboard" window) while clicks correctly used the
+  resolved window — "clicks work, typing doesn't". Keyboard input now focuses the window's resolved
+  `wid` (the same one click/scroll act on) with `--sync`. Verified driving a real Chrome `--app`
+  window in a nested display (text + key presses land in the focused field).
+
 ## [0.3.1] — 2026-06-16
 
 ### Fixed

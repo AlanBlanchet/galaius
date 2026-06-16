@@ -180,9 +180,10 @@ def test_force_repaint_noop_without_window(monkeypatch):
     assert nb.force_repaint("ghost") is False
 
 
-def test_focus_uses_windowfocus_not_activate(monkeypatch):
+def test_focus_uses_windowfocus_sync_not_activate(monkeypatch):
     """WM-less, keyboard focus must use windowfocus (XSetInputFocus) — windowactivate needs
-    _NET_ACTIVE_WINDOW, which a bare X server rejects (the consumer's xdotool error)."""
+    _NET_ACTIVE_WINDOW, which a bare X server rejects (the consumer's xdotool error, #6) — and
+    --sync so it settles before the XTEST keystrokes that follow (#25)."""
     nb = _backend_no_server()
     monkeypatch.setattr(nb, "_window_id", lambda name: "0x1")
     cmds: list[list[str]] = []
@@ -191,5 +192,21 @@ def test_focus_uses_windowfocus_not_activate(monkeypatch):
         lambda cmd, **k: cmds.append(cmd),
     )
     nb.focus("aino")
-    assert cmds == [["xdotool", "windowfocus", "0x1"]]
+    assert cmds == [["xdotool", "windowfocus", "--sync", "0x1"]]
     assert not any("windowactivate" in c for c in cmds)
+
+
+def test_focus_wid_targets_exact_window_and_skips_empty(monkeypatch):
+    """focus_wid focuses a specific wid (so keyboard targets the SAME window click did, #25), and
+    no-ops for an empty wid so it never shells out to focus 'nothing'."""
+    nb = _backend_no_server()
+    cmds: list[list[str]] = []
+    monkeypatch.setattr(
+        "interact.desktop_backend.subprocess.run", lambda cmd, **k: cmds.append(cmd)
+    )
+    nb.focus_wid("0x7")
+    assert cmds == [["xdotool", "windowfocus", "--sync", "0x7"]]
+    cmds.clear()
+    for empty in (None, 0, "0"):
+        nb.focus_wid(empty)
+    assert cmds == []

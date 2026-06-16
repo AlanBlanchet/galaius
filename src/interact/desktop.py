@@ -607,10 +607,21 @@ class DesktopWindow(BaseModel):
     async def _backend_focus(self) -> None:
         """Focus the target window on a bound (sandbox) backend before keyboard input — WM-less,
         nothing holds focus by default so keys would otherwise go nowhere. Pointer events route by
-        position, so clicks don't need this. Best-effort; no-op if the backend can't focus."""
-        focus = getattr(self._backend, "focus", None)
-        if focus is not None:
-            await asyncio.to_thread(focus, self.name)
+        position, so clicks don't need this. Best-effort; no-op if the backend can't focus.
+
+        Focus the EXACT window this DesktopWindow resolved to (``self.wid``) — the same window
+        click/scroll act on — not a re-search by title: a title can match a hidden helper window
+        (Chrome spawns a 10x10 "clipboard" window), so re-resolving could focus the wrong one and
+        the keystrokes land nowhere ("clicks work, typing doesn't", #25)."""
+        backend = self._backend
+        focus_wid = getattr(backend, "focus_wid", None)
+        if focus_wid is not None and self.wid:
+            await asyncio.to_thread(focus_wid, self.wid)
+        else:
+            focus = getattr(backend, "focus", None)
+            if focus is not None:
+                await asyncio.to_thread(focus, self.name)
+        await asyncio.sleep(_FOCUS_DELAY)  # let focus settle before the XTEST keystrokes
 
     async def click(self, x: int, y: int, button: int = 1):
         _log.debug("desktop_click wid=%s x=%s y=%s button=%s", self.wid, x, y, button)

@@ -71,6 +71,32 @@ async def test_scroll_focuses_window_before_wheel(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_backend_keyboard_focuses_resolved_wid_not_title():
+    """On the sandbox backend, keyboard input must focus the EXACT window this DesktopWindow
+    resolved to (its wid) — the same window clicks act on — never re-search by title, which can
+    pick a hidden helper window so 'clicks work but typing doesn't' (#25)."""
+    calls: list[tuple] = []
+
+    class FakeBackend:
+        def focus_wid(self, wid):
+            calls.append(("focus_wid", wid))
+
+        def focus(self, name):
+            calls.append(("focus_by_name", name))
+
+        def type_text(self, text):
+            calls.append(("type", text))
+
+    win = DesktopWindow(name="Payload", wid=99, x=0, y=0, w=400, h=800)
+    win._backend = FakeBackend()
+    await win.type_text("hi")
+
+    assert ("focus_wid", 99) in calls
+    assert all(c[0] != "focus_by_name" for c in calls), "must not re-resolve focus by title"
+    assert calls.index(("focus_wid", 99)) < calls.index(("type", "hi")), "focus before typing"
+
+
+@pytest.mark.asyncio
 async def test_drag_emits_fine_time_spread_path(monkeypatch):
     """Flutter recognises a drag/fling only from a continuous, time-spread pointer path — many small
     moves (float-interpolated, not pixel-quantized) with per-step delays, not a couple of teleports

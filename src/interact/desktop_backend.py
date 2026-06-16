@@ -679,14 +679,28 @@ class NestedBackend(DesktopBackend):
         return True
 
     def focus(self, name: str) -> None:
-        """Give the named window X input focus so keyboard events reach it. The sandbox has no
-        window manager, so nothing holds the focus by default and keys would go nowhere (pointer
-        events route by position regardless). Uses ``windowfocus`` (XSetInputFocus), which works
-        WM-less — unlike ``windowactivate``, which needs ``_NET_ACTIVE_WINDOW`` (the very error
-        that drove a consumer to abandon interact, #6)."""
-        wid = self._window_id(name)
-        if wid is not None:
-            self._xdotool_ok("windowfocus", wid)
+        """Give the named window X input focus so keyboard events reach it. Resolves by title, then
+        delegates to :meth:`focus_wid`."""
+        self.focus_wid(self._window_id(name))
+
+    def focus_wid(self, wid) -> None:
+        """Give a SPECIFIC window X input focus (XSetInputFocus) so the XTEST keystrokes that
+        follow land in it. The sandbox has no window manager, so nothing holds focus by default and
+        keys would go nowhere (pointer events route by position regardless). ``--sync`` blocks until
+        the server confirms the focus change, so a separate ``xdotool type`` process can't fire
+        before focus settles. ``windowfocus`` (not ``windowactivate``, which needs
+        ``_NET_ACTIVE_WINDOW`` — the error that drove a consumer to abandon interact, #6) works
+        WM-less. Bounded so a window that refuses focus can't hang keyboard input (#25)."""
+        if wid in (None, 0, "0"):
+            return
+        try:
+            subprocess.run(
+                ["xdotool", "windowfocus", "--sync", str(wid)],
+                env=self.env, check=False, timeout=3,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        except subprocess.TimeoutExpired:
+            pass
 
     def move(self, x: float, y: float) -> None:
         self._xdotool("mousemove", "--sync", str(round(x)), str(round(y)))
