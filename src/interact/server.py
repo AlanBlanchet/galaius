@@ -1119,6 +1119,35 @@ async def list_desktop_windows() -> str:
     return "\n\n".join(parts)
 
 
+def _flutter_software_render(argv: list[str]) -> tuple[list[str], str]:
+    """A Flutter Linux bundle's GPU compositing — notably a `BackdropFilter`/blur (a `ConvexAppBar`
+    blurred bottom bar) — renders as a solid black strip under the sandbox's software GL (llvmpipe),
+    so the nav is invisible and untappable (#28). Flutter's Skia CPU rasteriser bypasses GL entirely
+    and renders it correctly, so add `--enable-software-rendering` for a detected Flutter bundle.
+    Idempotent; a no-op for non-Flutter commands. Returns (argv, note-for-the-result)."""
+    import re
+
+    if "--enable-software-rendering" in argv:
+        return argv, ""
+    exe = next((t for t in argv if t != "env" and not re.match(r"^\w+=", t)), None)
+    if not exe:
+        return argv, ""
+    try:
+        bundle = Path(exe).resolve().parent
+    except (OSError, RuntimeError):
+        return argv, ""
+    is_flutter = (bundle / "data" / "flutter_assets").is_dir() or (
+        bundle / "lib" / "libflutter_linux_gtk.so"
+    ).exists()
+    if not is_flutter:
+        return argv, ""
+    return (
+        [*argv, "--enable-software-rendering"],
+        " (added --enable-software-rendering: a Flutter bundle's blur renders black under the "
+        "sandbox's software GL, so its Skia CPU rasteriser is used instead)",
+    )
+
+
 @mcp.tool()
 async def launch_app(command: str, wait: float = 6.0) -> str:
     """Launch an app in interact's isolated sandbox display and drive it there.
@@ -1155,6 +1184,7 @@ async def launch_app(command: str, wait: float = 6.0) -> str:
     if not argv:
         return "ERROR: empty command"
 
+    argv, flutter_note = _flutter_software_render(argv)
     proc = await asyncio.to_thread(backend.spawn, argv)
     deadline = asyncio.get_event_loop().time() + wait
     windows: list[tuple[int, str]] = []
@@ -1171,7 +1201,7 @@ async def launch_app(command: str, wait: float = 6.0) -> str:
             break
         await asyncio.sleep(0.3)
     if not windows:
-        return (f"Launched `{command}` in the sandbox but no window appeared within {wait:.0f}s. "
+        return (f"Launched `{command}` in the sandbox but no window appeared within {wait:.0f}s.{flutter_note} "
                 f"It may still be starting — retry list_desktop_windows, or raise `wait`.")
     # A software-GL app (Flutter/Electron) presents a stale black buffer to X until a configure
     # event makes it repaint; nudge each new window once so it starts rendered (the repaint then
@@ -1182,7 +1212,7 @@ async def launch_app(command: str, wait: float = 6.0) -> str:
         for _, name in windows:
             await asyncio.to_thread(repaint, name)
     targets = "\n".join(f'  target="nested:{name}"' for _, name in windows)
-    return f"Launched `{command}` in the sandbox. Drive it with:\n{targets}"
+    return f"Launched `{command}` in the sandbox.{flutter_note} Drive it with:\n{targets}"
 
 
 @mcp.tool()

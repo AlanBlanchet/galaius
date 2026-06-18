@@ -29,6 +29,14 @@ ABS_MAX = 32767
 _BUTTONS = {"left": 1, "middle": 2, "right": 3}
 
 
+def _rects_overlap(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> bool:
+    """True if axis-aligned rects ``(x, y, w, h)`` intersect — used to composite a popup into the
+    window it overlaps."""
+    ax, ay, aw, ah = a
+    bx, by, bw, bh = b
+    return ax < bx + bw and bx < ax + aw and ay < by + bh and by < ay + ah
+
+
 class DesktopUnsupportedError(RuntimeError):
     """Raised when native desktop automation is requested on an OS that has no backend yet
     (anything but Linux). The message is actionable and points at the browser tools, which DO
@@ -586,19 +594,75 @@ class NestedBackend(DesktopBackend):
     def _maim_window(self, wid: str) -> bytes:
         return subprocess.run(["maim", "-i", wid], env=self.env, capture_output=True, check=True).stdout
 
-    def _grab_window(self, name: str, wid: str) -> bytes:
-        """``maim -i <wid>``, resilient to a wid that went stale between enumeration and capture: a
-        multi-process app (Chrome) recreates its top-level window, so the enumerated id can already
-        be dead by the time maim runs (the recurring real-world ``maim -i N returned non-zero``).
-        Re-resolve the title once and retry; if the window is truly gone, fall back to a full
-        nested-screen grab so the agent still gets pixels instead of a hard error."""
+    def _maim_region(self, x: int, y: int, w: int, h: int) -> bytes:
+        return subprocess.run(
+            ["maim", "-g", f"{w}x{h}+{x}+{y}"], env=self.env, capture_output=True, check=True
+        ).stdout
+
+    def _overlay_rects(self) -> list[tuple[int, int, int, int]]:
+        """Absolute ``(x, y, w, h)`` of mapped override-redirect windows on the nested display —
+        menus, Qt/GTK combo drop-downs, tooltips. These open as SEPARATE top-level windows (the WM
+        is bypassed, so they're root children), which a per-window ``maim -i`` never includes; we
+        composite them into the capture (#31). Best-effort: no python-xlib → empty → plain grab."""
         try:
+            from Xlib import display as _xdisplay  # lazy: Linux X11 only, optional
+        except ImportError:
+            return []
+        rects: list[tuple[int, int, int, int]] = []
+        try:
+            disp = _xdisplay.Display(self.env["DISPLAY"])
+            try:
+                root = disp.screen().root
+                for win in root.query_tree().children:
+                    attrs = win.get_attributes()
+                    if attrs.map_state != 2 or not attrs.override_redirect:  # 2 = IsViewable
+                        continue
+                    geo = win.get_geometry()
+                    if geo.width <= 4 or geo.height <= 4:
+                        continue
+                    abs_pos = root.translate_coords(win, 0, 0)
+                    rects.append((abs_pos.x, abs_pos.y, geo.width, geo.height))
+            finally:
+                disp.close()
+        except Exception:  # any X error → degrade to no overlays, never break a capture
+            return []
+        return rects
+
+    def _composited_grab(self, name: str, wid: str) -> bytes:
+        """``maim`` of the window, expanded right/down to also capture any override-redirect popup
+        overlapping it (#31). Anchored at the window's own top-left so image coordinates stay
+        window-relative (what the click path expects) — a popup that opens upward/leftward is
+        clipped (rare; use target="nested" for that), but a normal downward drop-down is included."""
+        try:
+            geo = self.window_geometry(name)
+        except (subprocess.SubprocessError, OSError, ValueError, KeyError):
+            geo = None  # can't read geometry → just grab the window, never fail the capture
+        if geo is None:
             return self._maim_window(wid)
+        wx, wy, ww, wh = geo
+        overlays = [r for r in self._overlay_rects() if _rects_overlap(r, geo)]
+        if not overlays:
+            return self._maim_window(wid)
+        right = max([wx + ww] + [r[0] + r[2] for r in overlays])
+        bottom = max([wy + wh] + [r[1] + r[3] for r in overlays])
+        x0, y0 = max(0, wx), max(0, wy)
+        x1 = min(self.screen_w, right)
+        y1 = min(self.screen_h, bottom)
+        return self._maim_region(x0, y0, x1 - x0, y1 - y0)
+
+    def _grab_window(self, name: str, wid: str) -> bytes:
+        """Capture the window (compositing in any popup, #31), resilient to a wid that went stale
+        between enumeration and capture: a multi-process app (Chrome) recreates its top-level
+        window, so the enumerated id can already be dead by the time maim runs (the recurring
+        real-world ``maim -i N returned non-zero``). Re-resolve the title once and retry; if the
+        window is truly gone, fall back to a full nested-screen grab rather than a hard error."""
+        try:
+            return self._composited_grab(name, wid)
         except subprocess.CalledProcessError:
             fresh = self._window_id(name)
             if fresh and fresh != wid:
                 try:
-                    return self._maim_window(fresh)
+                    return self._composited_grab(name, fresh)
                 except subprocess.CalledProcessError:
                     pass
             return self.capture()  # whole nested display — last resort, never crash-or-black
@@ -723,9 +787,12 @@ class NestedBackend(DesktopBackend):
         self._xdotool("key", name)  # xdotool keysym syntax, e.g. "ctrl+a", "Return"
 
     def _window_id(self, name: str) -> str | None:
-        """The wid of the window titled ``name`` — visible matches first, and among several the
-        largest. A toolkit (Flutter/GTK) spawns hidden same-titled helper windows (a 10x10 GL
-        surface); without this filter the helper wins and capture/input hit the wrong window."""
+        """The wid of the window titled ``name``. A toolkit spawns several same-/substring-titled
+        top-levels: a Flutter app exposes both its app-id window (``com.example.aino``) and the
+        titled one (``aino``), and a 10x10 GL/clipboard helper. Title-substring matching hits them
+        all, so rank candidates: a RENDERED window beats a black/transient helper (so capture +
+        input never land on the unrendered one, #28/#1.4), then the largest. Single match → fast
+        path, no grab."""
         visible = subprocess.run(
             ["xdotool", "search", "--onlyvisible", "--name", name],
             env=self.env, capture_output=True, text=True,
@@ -749,7 +816,16 @@ class NestedBackend(DesktopBackend):
             except (subprocess.SubprocessError, KeyError, ValueError):
                 return 0
 
-        return max(ids, key=_area)
+        def _rank(wid: str) -> tuple[int, int]:
+            rendered = 1
+            try:
+                if _gl_unrendered(self._maim_window(wid)):
+                    rendered = 0  # a solid-black helper/transient → deprioritise vs a real window
+            except subprocess.CalledProcessError:
+                rendered = 0
+            return (rendered, _area(wid))
+
+        return max(ids, key=_rank)
 
     def window_geometry(self, name: str) -> tuple[int, int, int, int] | None:
         """``(x, y, w, h)`` of the first window whose title matches ``name`` (or None)."""

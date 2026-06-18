@@ -180,6 +180,45 @@ def test_force_repaint_noop_without_window(monkeypatch):
     assert nb.force_repaint("ghost") is False
 
 
+@pytest.mark.parametrize(
+    "a,b,expect",
+    [
+        ((0, 0, 100, 100), (50, 50, 100, 100), True),
+        ((0, 0, 600, 400), (11, 35, 578, 210), True),  # the real QComboBox popup case (#31)
+        ((0, 0, 100, 100), (100, 0, 100, 100), False),  # edge-touching, not overlapping
+        ((0, 0, 50, 50), (900, 900, 50, 50), False),  # far-away popup
+    ],
+)
+def test_rects_overlap(a, b, expect):
+    from interact.desktop_backend import _rects_overlap
+
+    assert _rects_overlap(a, b) is expect
+
+
+def test_composited_grab_expands_to_overlapping_popup(monkeypatch):
+    """A mapped override-redirect popup overlapping the window → capture the union region (anchored
+    at the window origin, expanded down/right to the popup), so the popup pixels are included (#31)."""
+    nb = _backend_no_server()  # screen 412x915
+    monkeypatch.setattr(nb, "window_geometry", lambda name: (0, 0, 400, 300))
+    monkeypatch.setattr(nb, "_overlay_rects", lambda: [(10, 250, 380, 200)])  # extends to y=450
+    region: dict = {}
+    monkeypatch.setattr(nb, "_maim_region", lambda x, y, w, h: region.update(r=(x, y, w, h)) or b"R")
+    monkeypatch.setattr(nb, "_maim_window", lambda wid: b"W")
+    assert nb._composited_grab("app", "0x1") == b"R"
+    assert region["r"] == (0, 0, 400, 450)  # window origin, expanded to the popup's bottom
+
+
+def test_composited_grab_plain_without_or_with_distant_overlay(monkeypatch):
+    nb = _backend_no_server()
+    monkeypatch.setattr(nb, "window_geometry", lambda name: (0, 0, 200, 200))
+    monkeypatch.setattr(nb, "_maim_window", lambda wid: b"W")
+    monkeypatch.setattr(nb, "_maim_region", lambda *a: pytest.fail("should not region-grab"))
+    monkeypatch.setattr(nb, "_overlay_rects", lambda: [])
+    assert nb._composited_grab("app", "0x1") == b"W"
+    monkeypatch.setattr(nb, "_overlay_rects", lambda: [(900, 900, 50, 50)])  # no overlap
+    assert nb._composited_grab("app", "0x1") == b"W"
+
+
 def test_focus_uses_windowfocus_sync_not_activate(monkeypatch):
     """WM-less, keyboard focus must use windowfocus (XSetInputFocus) — windowactivate needs
     _NET_ACTIVE_WINDOW, which a bare X server rejects (the consumer's xdotool error, #6) — and

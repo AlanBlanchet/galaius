@@ -6,6 +6,31 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ## [Unreleased]
 
+## [0.3.4] — 2026-06-18
+
+### Fixed
+
+- **Qt/menu popups are captured** (#31). A `QComboBox` drop-down (and any menu/tooltip) opens as a
+  separate override-redirect window that a per-window `maim -i` never included, so the capture
+  showed the control still collapsed. The nested capture now composites mapped override-redirect
+  windows overlapping the target (a screen-region grab anchored at the window origin). Verified live
+  driving a real PySide6 `QComboBox` in the sandbox.
+- **Flutter blurred bars no longer render as a black strip** (#28). A Flutter `BackdropFilter`
+  blur (e.g. a `ConvexAppBar` bottom nav) composites to solid black under the sandbox's software GL;
+  `launch_app` now detects a Flutter Linux bundle and adds `--enable-software-rendering` (Skia CPU
+  raster, no GL), so the bar renders and is tappable. Verified launching the real bundle.
+- **Capture/input prefer the rendered window** (#28, #1). When a title matches several top-levels —
+  a Flutter app exposes both its app-id window (`com.example.aino`) and the titled one (`aino`),
+  one of which can be a transient black helper — window resolution now ranks a rendered window
+  above a black one, so capture and clicks never land on the unrendered helper.
+
+### Verified
+
+- **Sandbox Chrome `--app` keyboard input** (#25) confirmed end-to-end on a multi-field login form
+  (click field → type; each field receives its text) — the focus-by-resolved-wid + `--sync` fix
+  from 0.3.2. Opt-in e2e reproductions added under `tests/test_sandbox_e2e.py`
+  (`INTERACT_LOCAL_E2E=1`).
+
 ## [0.3.3] — 2026-06-18
 
 ### Fixed
