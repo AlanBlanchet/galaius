@@ -6,6 +6,20 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-06-18
+
+### Added
+
+- **`target="screen"` desktop automation now works on macOS and Windows** (#24). The PortableBackend
+  is wired through the MCP tool surface: `screenshot`, `run_actions`, `get_interactive_elements`
+  with `target="screen"` capture + drive the real desktop on macOS/Windows (not just Linux).
+  `list_desktop_windows` reports the screen target there; window-title targets and the `launch_app`
+  nested sandbox stay Linux-only with a clear, actionable message. The whole path is verified on the
+  **macos-latest + windows-latest CI runners** — capture, pointer round-trip, and the
+  `target="screen"` tool resolution all pass on the real GUI sessions (3/3 on both, and a dedicated
+  CI step shows the per-test result). The cross-platform goal: browser everywhere, plus real
+  screen-level desktop automation everywhere.
+
 ## [0.3.6] — 2026-06-18
 
 ### Added

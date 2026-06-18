@@ -58,14 +58,25 @@ _NO_WINDOWS_MSG = "No desktop windows detected (X11/maim required)."
 _ANNOTATE_JS = (Path(__file__).parent / "js" / "annotate_elements.js").read_text()
 
 
-def _desktop_unsupported() -> str | None:
-    """``"ERROR: …"`` (actionable, steering to the browser tools) when native desktop automation
-    isn't available on this OS — non-Linux; ``None`` when it is. Every desktop entry point checks
-    this first so macOS/Windows agents get one clear message instead of a cryptic evdev/maim
-    failure, while browser tools keep working. The check is a cheap ``sys.platform`` test."""
-    from interact.desktop_backend import desktop_supported, desktop_unsupported_message
+def _desktop_unsupported(is_screen: bool = False) -> str | None:
+    """``"ERROR: …"`` when the requested desktop target isn't available on this OS; ``None`` when it
+    is. On Linux everything works. Off Linux (macOS/Windows) the cross-platform PortableBackend
+    drives the whole screen, so a ``screen`` target works — but window-title targets (no window
+    enumeration yet) and the nested Xephyr sandbox (Linux-only) don't, so those get one clear
+    actionable message steering to ``target="screen"`` or the browser tools (#24)."""
+    from interact.desktop_backend import desktop_supported
 
-    return None if desktop_supported() else f"ERROR: {desktop_unsupported_message()}"
+    if desktop_supported() or is_screen:
+        return None
+    import platform as _pf
+
+    return (
+        f"ERROR: on {_pf.system()} only target=\"screen\" desktop automation is available (the "
+        "portable mss/pynput backend drives the whole screen); window-title targets and the nested "
+        "sandbox (launch_app) are Linux-only. Browser automation works fully — omit `target`. "
+        "Track native per-window macOS/Windows support: "
+        "https://github.com/AlanBlanchet/interact/issues/24"
+    )
 _DBG_ELEMENTS = "get_interactive_elements"
 _DBG_ACTIONS = "run_actions"
 
@@ -263,6 +274,31 @@ def _close_sandbox() -> None:
             _sandbox = None
 
 
+_portable: "object | None" = None  # the macOS/Windows real-desktop backend (mss + pynput)
+
+
+def _get_portable():
+    """The cross-platform real-desktop backend used for ``target="screen"`` on macOS/Windows,
+    created on first use (verified on real mac/win CI runners, #24)."""
+    global _portable
+    if _portable is None:
+        from interact.desktop_backend import PortableBackend
+
+        _portable = PortableBackend()
+    return _portable
+
+
+def _resolve_portable_screen() -> DesktopWindow:
+    """A whole-screen DesktopWindow bound to the portable backend — capture (mss) + input (pynput)
+    route through it, so ``target="screen"`` drives the real macOS/Windows desktop (#24)."""
+    from interact.desktop import _SCREEN_WID
+
+    pb = _get_portable()
+    win = DesktopWindow(name="screen", wid=_SCREEN_WID, x=0, y=0, w=pb.screen_w, h=pb.screen_h)
+    win._backend = pb
+    return win
+
+
 def _resolve_nested_target(spec: str) -> tuple[DesktopWindow | None, None, str | None]:
     """Resolve target="nested" (whole sandbox screen) or "nested:<title>" (one sandbox window)."""
     try:
@@ -320,13 +356,18 @@ def _resolve_target(
     is_desktop = bool(target) and target.strip().lower() != "browser"
     if is_desktop and session != _DEFAULT_SESSION:
         return None, None, "Cannot combine a desktop `target` with a browser `session`"
-    if is_desktop and (unsupported := _desktop_unsupported()):
-        return None, None, unsupported
     if is_desktop:
         t = target.strip()
+        is_screen = t.lower() == "screen" or t.lower().startswith("screen:")
+        if unsupported := _desktop_unsupported(is_screen):
+            return None, None, unsupported
+        from interact.desktop_backend import desktop_supported
+
+        if is_screen and not desktop_supported():
+            return _resolve_portable_screen(), None, None  # macOS/Windows whole-screen
         if t.lower() == "nested" or t.lower().startswith("nested:"):
             return _resolve_nested_target(t)
-        if t.lower() == "screen" or t.lower().startswith("screen:"):
+        if is_screen:
             result = DesktopWindow.screen(t)
         else:
             result = _find_desktop_window(t)
@@ -1096,8 +1137,16 @@ async def list_desktop_windows() -> str:
     the whole desktop, target="screen:<name>" e.g. screen:DP-1, or target="screen:<index>") and
     each open window. Target a window by its title, or — when a title isn't unique — by its id
     shown here as target="wid:<id>" (the unambiguous selector)."""
-    if unsupported := _desktop_unsupported():
-        return unsupported
+    from interact.desktop_backend import desktop_supported
+
+    if not desktop_supported():
+        # macOS/Windows: the portable backend drives the whole screen; per-window enum is Linux-only.
+        pb = _get_portable()
+        return (
+            f'Screen (the only desktop target on this OS): target="screen" — {pb.screen_w}x'
+            f"{pb.screen_h}. Per-window targeting + the launch_app sandbox are Linux-only (#24); "
+            "browser automation works fully (omit `target`)."
+        )
     monitors = DesktopWindow.monitors()
     windows = DesktopWindow.all()
     if not monitors and not windows:

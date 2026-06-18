@@ -52,8 +52,11 @@ def test_server_desktop_guard_off_linux(monkeypatch):
     import interact.server as server
 
     monkeypatch.setattr(db.sys, "platform", "win32")
-    msg = server._desktop_unsupported()
-    assert msg and msg.startswith("ERROR:") and "browser" in msg.lower()
+    # window-title / nested targets stay unsupported off Linux, with an actionable message…
+    msg = server._desktop_unsupported(is_screen=False)
+    assert msg and msg.startswith("ERROR:") and "browser" in msg.lower() and "screen" in msg.lower()
+    # …but the `screen` target IS available off Linux (PortableBackend drives the whole screen, #24).
+    assert server._desktop_unsupported(is_screen=True) is None
 
 
 def test_server_desktop_guard_passes_on_linux(monkeypatch):

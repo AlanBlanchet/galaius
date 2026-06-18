@@ -59,3 +59,21 @@ def test_portable_input_primitives_do_not_raise():
         pb.key("Return")
     except Exception as exc:
         pytest.skip(f"synthetic input unavailable (grant Accessibility?): {exc}")
+
+
+def test_screen_target_resolves_and_captures_through_the_tool_path():
+    """End-to-end through the server: target=\"screen\" on macOS/Windows resolves to the portable
+    backend and captures the real desktop — the MCP tool path agents actually use (#24)."""
+    if sys.platform.startswith("linux"):
+        pytest.skip("Linux uses LocalBackend; PortableBackend is the macOS/Windows path")
+    import interact.server as server
+
+    win, mgr, err = server._resolve_target("screen", "default")
+    if err and ("Screen" in err or "Accessibility" in err):
+        pytest.skip(f"desktop unavailable on this host: {err}")
+    assert err is None and win is not None and mgr is None
+    try:
+        png = win.capture()
+    except Exception as exc:
+        pytest.skip(f"capture unavailable (grant Screen Recording?): {exc}")
+    assert png[:8] == b"\x89PNG\r\n\x1a\n" and len(png) > 1000

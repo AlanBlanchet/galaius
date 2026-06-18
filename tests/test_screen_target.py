@@ -18,7 +18,7 @@ def _desktop_gate_open(monkeypatch):
     # These tests verify Linux-only desktop-resolution logic with mocked backends, so they run on
     # every CI OS (no display needed). Open the platform gate that _resolve_target now applies off
     # Linux — the gate itself is covered independently by test_cross_platform.py.
-    monkeypatch.setattr(srv, "_desktop_unsupported", lambda: None)
+    monkeypatch.setattr(srv, "_desktop_unsupported", lambda *a, **k: None)
 
 
 _XRANDR = """Monitors: 2

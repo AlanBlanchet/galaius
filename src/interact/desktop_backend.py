@@ -492,6 +492,12 @@ class PortableBackend(DesktopBackend):
         self._Button = mouse.Button
         self._kbd = keyboard.Controller()
         self._Key = keyboard.Key
+        with mss.mss() as sct:
+            mon = sct.monitors[0]  # [0] = the full virtual screen across all monitors
+        self.screen_w, self.screen_h = int(mon["width"]), int(mon["height"])
+
+    def is_alive(self) -> bool:
+        return True  # the real desktop is always there (no nested server to die)
 
     def capture(self) -> bytes:
         from PIL import Image  # noqa: PLC0415
