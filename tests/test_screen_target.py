@@ -15,9 +15,11 @@ from interact.desktop import DesktopWindow, _SCREEN_WID
 
 @pytest.fixture(autouse=True)
 def _desktop_gate_open(monkeypatch):
-    # These tests verify Linux-only desktop-resolution logic with mocked backends, so they run on
-    # every CI OS (no display needed). Open the platform gate that _resolve_target now applies off
-    # Linux — the gate itself is covered independently by test_cross_platform.py.
+    # These tests verify Linux desktop-resolution logic with mocked backends, so they run on every
+    # CI OS (no display needed). Pin the Linux resolution path: force desktop_supported() True (so
+    # _resolve_target doesn't take the macOS/Windows portable-screen branch on a mac/win runner) and
+    # open the unsupported gate. The off-Linux behaviour is covered in test_cross_platform.py.
+    monkeypatch.setattr("interact.desktop_backend.desktop_supported", lambda: True)
     monkeypatch.setattr(srv, "_desktop_unsupported", lambda *a, **k: None)
 
 
