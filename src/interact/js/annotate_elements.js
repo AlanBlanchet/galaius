@@ -1,4 +1,13 @@
 ({ scope, limit }) => {
+  // Clear every ref from a prior scan FIRST (whole document, not just this scope). An SPA can keep
+  // a node alive across re-renders/navigations with its old data-interact-ref still on it; if this
+  // scan then hands the same eN to a new node, `[data-interact-ref="eN"]` would match BOTH and a
+  // click-by-ref hits Playwright's strict-mode "resolved to 2 elements". Clearing guarantees each
+  // ref is unique to the current snapshot (#29).
+  document
+    .querySelectorAll("[data-interact-ref]")
+    .forEach((el) => el.removeAttribute("data-interact-ref"));
+
   const root = (scope ? document.querySelector(scope) : document.body) || document.body;
   const tags =
     "a,button,input,select,textarea,[role=button],[role=link],[role=checkbox],[role=radio],[role=tab],[role=menuitem],[role=combobox],[role=textbox],[draggable=true],[role=listitem][aria-grabbed],[role=option]";

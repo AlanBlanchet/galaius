@@ -156,6 +156,18 @@ Native macOS/Windows desktop backends are tracked in
 > (rather than handing back a black image). Options: run the app via `launch_app` in the sandbox
 > (often software-renders, so it captures), run a compositor like `picom`, or grab the app's own
 > framebuffer (e.g. `adb exec-out screencap -p` for an Android emulator).
+>
+> **Blurred bars under software GL** — a Flutter `BackdropFilter`/`ImageFilter` blur (e.g. a
+> `ConvexAppBar` bottom nav) often composites to a solid black strip under software GL (`llvmpipe`),
+> so the bar's controls aren't visible or tappable. interact nudges a repaint on launch but can't
+> make `llvmpipe` composite the blur; reach those controls via in-app routing, run on a real GPU, or
+> disable the blur in a debug build. Tracked in [#1](https://github.com/AlanBlanchet/interact/issues/1).
+>
+> **Transient popups (menus, Qt/`QComboBox` drop-downs, tooltips)** open as _separate_
+> override-redirect windows that aren't composited into a single-window grab and aren't listed by
+> title — `screenshot target="nested:<title>"` shows the control still collapsed. Capture the whole
+> sandbox screen with **`target="nested"`** to see and act on the popup, or drive the widget by
+> keyboard (arrow keys + Enter). Tracked in [#1](https://github.com/AlanBlanchet/interact/issues/1).
 
 ## Development
 

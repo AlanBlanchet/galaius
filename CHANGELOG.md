@@ -6,6 +6,29 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ## [Unreleased]
 
+## [0.3.3] — 2026-06-18
+
+### Fixed
+
+- **`data-interact-ref` is unique per snapshot** (#29). A re-render could leave a stale ref on a
+  surviving node while a new node got the same `eN`, so a click-by-ref hit Playwright's strict-mode
+  "resolved to 2 elements". The DOM scan now clears all prior refs first, guaranteeing uniqueness.
+- **A multi-match selector click targets the first VISIBLE element** (#29). `:has-text('Annuler')`
+  / duplicated link text (breadcrumb mirroring the sidebar) used to click whatever was first in DOM
+  order — often a hidden one, so the click silently landed wrong. It now picks the first visible
+  match, and a genuinely ambiguous locator returns an actionable "narrow it / use a ref" message
+  instead of Playwright's strict-mode dump.
+- **Tab-less captures follow the active tab** (#30). After `new_tab` / `switch_tab`, a standalone
+  `screenshot` / `get_page_state` / `get_interactive_elements` captured tab 0 instead of the tab the
+  agent switched to. The session now tracks an active tab that those tools default to.
+
+### Documentation
+
+- Documented two software-GL/X11 sandbox capture limits and their workarounds (#28, #31): a Flutter
+  blurred bar can render as a black strip under software GL, and Qt/menu popups open as separate
+  override-redirect windows — capture the whole sandbox screen (`target="nested"`) or drive by
+  keyboard. Both tracked under #1.
+
 ## [0.3.2] — 2026-06-16
 
 ### Fixed

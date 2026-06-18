@@ -142,7 +142,7 @@ class ClickAction(_CoordinateTargetMixin):
         if self.ref:
             await self._locator(page).click()
         elif self.selector:
-            await page.click(self.selector)
+            await _click_selector(page, self.selector)
         else:
             await page.mouse.click(self.x, self.y)
 
@@ -214,6 +214,25 @@ class ScrollAction(Action):
         dx, dy = self.DELTA[self.direction]
         for _ in range(self.amount):
             await page.mouse.wheel(dx, dy)
+
+
+async def _click_selector(page: Page, selector: str) -> None:
+    """Click a CSS selector, preferring the first VISIBLE match when several match. Duplicated link
+    text (a breadcrumb mirroring the sidebar) or a generic button label (`:has-text('Annuler')`)
+    makes a selector resolve to many nodes; `page.click` would target whatever is first in DOM
+    order — often a hidden/off-screen one, so the click silently lands wrong or times out (#29).
+    A single match clicks directly; none-visible falls back to the first so a hidden-but-actionable
+    target still works."""
+    loc = page.locator(selector)
+    if await loc.count() <= 1:
+        await loc.click()
+        return
+    for i in range(await loc.count()):
+        item = loc.nth(i)
+        if await item.is_visible():
+            await item.click()
+            return
+    await loc.first.click()
 
 
 async def _ref_center(page: Page, ref: str) -> tuple[float, float]:

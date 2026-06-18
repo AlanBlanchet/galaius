@@ -502,15 +502,15 @@ def _instructions() -> str:
 mcp = FastMCP("interact", lifespan=_lifespan, instructions=_instructions())
 
 
-async def _capture(mgr: BrowserManager, scope: str | None = None, tab: int = 0):
-    page = await mgr.get_page(tab)
+async def _capture(mgr: BrowserManager, scope: str | None = None, tab: int | None = None):
+    page = await mgr.get_page(tab)  # tab=None → the session's active tab (#30)
     state = await PageState.capture(page, scope=scope)
     return state
 
 
 async def _scan_elements(
     mgr: BrowserManager,
-    tab: int = 0,
+    tab: int | None = None,
     scope: str | None = None,
     limit: int = DEFAULT_LIMIT,
 ) -> list[InteractiveElement]:
@@ -881,7 +881,7 @@ async def screenshot(
                 )
     elif element is not None or selector is not None:
         text = _session_response(
-            session, await _element_screenshot(mgr, 0, selector, element, query, path)
+            session, await _element_screenshot(mgr, mgr.active_tab, selector, element, query, path)
         )
     else:
         state = await _capture(mgr, scope)
@@ -895,7 +895,7 @@ async def screenshot(
         else:
             # No query → no VLM. Surface the page's refs (pure DOM scan) so the capture is
             # actionable: the agent can click/type by `ref` without a follow-up detect call.
-            elements = await _scan_elements(mgr, 0, scope)
+            elements = await _scan_elements(mgr, scope=scope)
             refs = (
                 f"\n\nInteractive elements (act by ref in run_actions):\n"
                 f"{format_element_list(elements)}"
@@ -916,7 +916,7 @@ async def get_interactive_elements(
     query: str | None = None,
     element: int | None = None,
     limit: int = DEFAULT_LIMIT,
-    tab: int = 0,
+    tab: int | None = None,
     debug_dir: str | None = None,
     target: str | None = None,
     session: str = _DEFAULT_SESSION,
@@ -991,7 +991,7 @@ async def get_page_state(
     config.refresh()
     mgr = _sessions.get(session)
     state = await _capture(mgr, scope)
-    elements = await _scan_elements(mgr, 0, scope)
+    elements = await _scan_elements(mgr, scope=scope)
     refs = (
         f"Interactive elements (act by ref in run_actions):\n{format_element_list(elements)}"
         if elements
@@ -1128,6 +1128,12 @@ async def launch_app(command: str, wait: float = 6.0) -> str:
     reliably regardless of what the user is doing, or when a GPU/desktop app won't screen-grab on
     the real desktop. After launching, drive it with the normal tools using target="nested:<title>"
     (one window) or target="nested" (the whole sandbox screen): screenshot, run_actions, etc.
+
+    Transient popups — menus, Qt/QComboBox drop-downs, tooltips — open as SEPARATE override-redirect
+    windows that a single-window capture (target="nested:<title>") doesn't include; capture the whole
+    sandbox screen (target="nested") to see/act on them, or drive the widget by keyboard (arrows +
+    Enter). A blurred bar (Flutter BackdropFilter) can render as a black strip under software GL —
+    reach its controls via in-app routing or run on a real GPU.
 
     command: the shell command to run (e.g. "xterm", "flutter run -d linux", a built binary's path).
     wait: seconds to wait for a window to appear before returning.

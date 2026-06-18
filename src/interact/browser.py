@@ -24,6 +24,10 @@ class BrowserManager:
         # An active device-emulation profile (set by emulate_device); None → the configured
         # default viewport at DPR 1. Folded into every new context via _context_kwargs.
         self._device_override: dict | None = None
+        # The tab that tab-less tool calls (screenshot / get_page_state / get_interactive_elements)
+        # act on. new_tab / switch_tab move it, so a standalone capture after a switch sees the tab
+        # the agent switched to, not tab 0 (#30).
+        self._active_tab = 0
 
     def set_element_map(self, tab: int, elements: list[InteractiveElement]):
         self._element_map[tab] = elements
@@ -46,10 +50,22 @@ class BrowserManager:
         await self._ensure_browser()
         await self._new_context()
 
-    async def get_page(self, tab_index: int = 0) -> Page:
+    @property
+    def active_tab(self) -> int:
+        return self._active_tab
+
+    def set_active_tab(self, index: int) -> None:
+        """Remember which tab later tab-less tool calls act on (#30)."""
+        self._active_tab = max(0, index)
+
+    async def get_page(self, tab_index: int | None = None) -> Page:
+        """The page for ``tab_index``; ``None`` → the session's active tab, so a standalone tool
+        call after a tab switch sees the tab the agent switched to, not tab 0 (#30)."""
         await self.ensure_ready()
         pages = self._context.pages
-        if tab_index < len(pages):
+        if tab_index is None:
+            tab_index = min(self._active_tab, len(pages) - 1)  # a closed tab can leave it stale
+        if 0 <= tab_index < len(pages):
             return pages[tab_index]
         raise IndexError(f"Tab {tab_index} does not exist — {len(pages)} tab(s) open")
 
@@ -59,7 +75,13 @@ class BrowserManager:
         self._attach_page_listeners(page)
         if url:
             await page.goto(url)
-        return len(self._context.pages) - 1
+        self._active_tab = len(self._context.pages) - 1  # a freshly opened tab becomes active
+        return self._active_tab
+
+    async def switch_tab(self, index: int) -> Page:
+        page = await self.get_page(index)  # validates the index exists
+        self._active_tab = index
+        return page
 
     async def close_tab(self, tab_index: int):
         await self.ensure_ready()
@@ -67,6 +89,11 @@ class BrowserManager:
         if tab_index >= len(pages):
             raise IndexError(f"Tab {tab_index} not found")
         await pages[tab_index].close()
+        # Keep the active tab valid + pointing at the same logical tab after the close.
+        if tab_index == self._active_tab:
+            self._active_tab = max(0, tab_index - 1)
+        elif tab_index < self._active_tab:
+            self._active_tab -= 1
 
     async def save_state(self) -> dict:
         await self.ensure_ready()
@@ -295,6 +322,7 @@ class BrowserManager:
         if storage_state is not None:
             kwargs["storage_state"] = storage_state
         self._context = await self._browser.new_context(**kwargs)
+        self._active_tab = 0  # a fresh context has exactly one page
         # Fail fast on a missing/non-actionable selector: Playwright's 30s default makes a bad
         # selector hang the agent for half a minute before erroring. config.wait_timeout (10s) is
         # the one knob; a dead selector then surfaces as an actionable nudge (see dispatch) in ~10s.

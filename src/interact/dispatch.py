@@ -121,7 +121,18 @@ async def _execute_browser_action(action, page):
             "get_interactive_elements / get_page_state return the page's current elements as refs."
         ) from None
     except PlaywrightError as e:
-        first = str(e).splitlines()[0]  # trim Playwright's multi-line call-log dump
+        msg = str(e)
+        first = msg.splitlines()[0]  # trim Playwright's multi-line call-log dump
+        if "strict mode violation" in msg:
+            # A selector (often :has-text) matched several nodes — duplicated link text
+            # (breadcrumb mirrors sidebar) or a generic button label. Say so precisely instead of
+            # dumping every match, and point at the unambiguous recoveries (#29).
+            sel = _selector_of(action)
+            target = f"selector {sel!r}" if sel else "the locator"
+            raise ValueError(
+                f"{action.type}: {target} matched multiple elements — narrow it (add :visible, a "
+                "parent scope, or `>> nth=0`) or use a unique `ref` from get_interactive_elements."
+            ) from None
         if not targets_element:
             raise ValueError(f"{action.type} failed: {first}") from None
         sel = _selector_of(action)
@@ -458,21 +469,18 @@ async def _run_actions_browser(
             step_reports.append(_step(i, action.type, f"opened tab {idx}"))
 
         elif isinstance(action, SwitchTabAction):
+            page = await mgr.switch_tab(action.index)  # persists the active tab on the session (#30)
             current_tab = action.index
-            page = await mgr.get_page(current_tab)
             step_reports.append(
                 _step(i, action.type, f"switched to tab {action.index}")
             )
 
         elif isinstance(action, CloseTabAction):
             idx = action.index if action.index is not None else mgr.tab_count - 1
-            await mgr.close_tab(idx)
+            await mgr.close_tab(idx)  # adjusts the session's active tab to stay valid
+            current_tab = mgr.active_tab
+            page = await mgr.get_page(current_tab)
             step_reports.append(_step(i, action.type, f"closed tab {idx}"))
-            if idx == current_tab:
-                current_tab = max(0, current_tab - 1)
-                page = await mgr.get_page(current_tab)
-            elif idx < current_tab:
-                current_tab -= 1
 
         elif isinstance(action, AnnotateAction):
             report = await _annotate_and_describe(
