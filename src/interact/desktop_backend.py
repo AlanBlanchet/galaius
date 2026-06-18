@@ -454,6 +454,90 @@ class LocalBackend(DesktopBackend):
         self._pointer.close()
 
 
+class PortableBackend(DesktopBackend):
+    """A cross-platform real-session backend — the one selected on **macOS / Windows**, where the
+    Linux uinput/X11 path doesn't exist. Screen capture via **mss**, pointer + keyboard via
+    **pynput**, both pure-Python and OS-native underneath (Quartz on macOS, Win32 SendInput/GDI on
+    Windows, Xlib on Linux). It drives the whole virtual desktop in screen pixels, so
+    ``target="screen"`` works everywhere; per-window targeting on macOS/Windows is a follow-up
+    (mss/pynput don't enumerate windows). On macOS the process needs Screen-Recording (capture) +
+    Accessibility (input) permission, granted once to the host terminal/app.
+
+    Linux keeps :class:`LocalBackend` (deeper, works on X11 + Wayland); this is the portable
+    fallback. It's verifiable on Linux too (mss/pynput honour ``DISPLAY``), so the macOS/Windows
+    behaviour is exercised in CI on real runners."""
+
+    _BUTTONS = ("left", "right", "middle")
+    # chord tokens → pynput Key attribute names
+    _KEYS = {
+        "return": "enter", "enter": "enter", "tab": "tab", "esc": "esc", "escape": "esc",
+        "space": "space", "backspace": "backspace", "delete": "delete", "del": "delete",
+        "up": "up", "down": "down", "left": "left", "right": "right", "home": "home", "end": "end",
+        "pageup": "page_up", "pagedown": "page_down", "ctrl": "ctrl", "control": "ctrl",
+        "alt": "alt", "option": "alt", "shift": "shift", "cmd": "cmd", "super": "cmd",
+        "meta": "cmd", "win": "cmd",
+    }
+
+    def __init__(self):
+        try:
+            import mss  # noqa: PLC0415 — optional cross-platform deps, present on macOS/Windows
+            from pynput import keyboard, mouse  # noqa: PLC0415
+        except ImportError as exc:
+            raise RuntimeError(
+                "the portable desktop backend (macOS/Windows) needs `mss` + `pynput` "
+                "(`uv add mss pynput`)"
+            ) from exc
+        self._mss = mss
+        self._mouse = mouse.Controller()
+        self._Button = mouse.Button
+        self._kbd = keyboard.Controller()
+        self._Key = keyboard.Key
+
+    def capture(self) -> bytes:
+        from PIL import Image  # noqa: PLC0415
+
+        with self._mss.mss() as sct:
+            shot = sct.grab(sct.monitors[0])  # [0] = the full virtual screen across all monitors
+        img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return buf.getvalue()
+
+    def move(self, x: float, y: float) -> None:
+        self._mouse.position = (int(x), int(y))
+
+    def _button(self, name: str):
+        return getattr(self._Button, name if name in self._BUTTONS else "left")
+
+    def mouse_down(self, button: str = "left") -> None:
+        self._mouse.press(self._button(button))
+
+    def mouse_up(self, button: str = "left") -> None:
+        self._mouse.release(self._button(button))
+
+    def scroll(self, clicks: int) -> None:
+        self._mouse.scroll(0, clicks)  # pynput: positive dy scrolls up
+
+    def type_text(self, text: str) -> None:
+        self._kbd.type(text)
+
+    def _resolve_key(self, token: str):
+        if len(token) == 1:
+            return token  # a literal character
+        return getattr(self._Key, self._KEYS.get(token.lower(), token.lower()), token)
+
+    def key(self, name: str) -> None:
+        *mods, final = name.split("+")
+        held = [self._resolve_key(m) for m in mods]
+        target = self._resolve_key(final)
+        for k in held:
+            self._kbd.press(k)
+        self._kbd.press(target)
+        self._kbd.release(target)
+        for k in reversed(held):
+            self._kbd.release(k)
+
+
 def nested_server_command(display: str, size: str, headless: bool) -> list[str]:
     """The nested X server command line: ``Xvfb`` when headless (runs in the
     background, no window — for CI/servers), else ``Xephyr`` (renders as a window on
@@ -942,14 +1026,16 @@ class NestedBackend(DesktopBackend):
 def select_desktop_backend(config) -> DesktopBackend:
     """Build the backend named by ``config.desktop_target`` (``local`` | ``nested``).
 
-    For ``nested``, ``config.nested_headless`` picks Xvfb (background) vs Xephyr (visible).
-    On a non-Linux host (no native backend) this raises :class:`DesktopUnsupportedError` with an
-    actionable message rather than letting a deeper evdev/maim failure leak out.
+    - ``nested`` → an isolated Xephyr/Xvfb display (Linux-only; raises
+      :class:`DesktopUnsupportedError` elsewhere — the nested sandbox needs an X server).
+    - ``local`` → the real session: :class:`LocalBackend` (uinput/maim) on Linux, the
+      cross-platform :class:`PortableBackend` (pynput/mss) on macOS/Windows so ``target="screen"``
+      automation works there too.
     """
-    if not desktop_supported():
-        raise DesktopUnsupportedError(desktop_unsupported_message())
     if config.desktop_target == "nested":
+        if not desktop_supported():
+            raise DesktopUnsupportedError(desktop_unsupported_message())
         return NestedBackend(
             config.nested_display, config.nested_size, headless=config.nested_headless
         )
-    return LocalBackend()
+    return LocalBackend() if desktop_supported() else PortableBackend()

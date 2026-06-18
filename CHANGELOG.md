@@ -6,6 +6,22 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ## [Unreleased]
 
+## [0.3.6] — 2026-06-18
+
+### Added
+
+- **Cross-platform desktop backend for macOS/Windows** (#24). `PortableBackend` drives the real
+  desktop via `mss` (screen capture) + `pynput` (pointer/keyboard) — OS-native underneath (Quartz /
+  Win32 / Xlib) — so `target="screen"` automation has a real backend on macOS and Windows, not just
+  Linux. `select_desktop_backend` picks it for `local` off Linux (Linux keeps the deeper
+  uinput/X11 `LocalBackend`; the `nested` Xephyr sandbox stays Linux-only).
+- **The macOS/Windows path is now tested on real runners.** `tests/test_portable_backend.py`
+  exercises capture + pointer round-trip on the **macos-latest and windows-latest** CI matrix (the
+  genuine GUI sessions), self-skipping on Linux and skipping-with-a-diagnostic when a host denies
+  Screen-Recording/Accessibility — so there's a reproducible mac/win desktop test, not an
+  unverifiable claim. (MCP-tool exposure of mac/win desktop targets follows once CI confirms the
+  backend on those runners.)
+
 ## [0.3.5] — 2026-06-18
 
 ### Fixed

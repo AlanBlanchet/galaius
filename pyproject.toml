@@ -1,6 +1,6 @@
 [project]
 name = "interact"
-version = "0.3.5"
+version = "0.3.6"
 description = "MCP server for browser + desktop automation with vision analysis"
 readme = "README.md"
 authors = [{ name = "Alan Blanchet", email = "alan@alan-blanchet.fr" }]
@@ -13,6 +13,8 @@ dependencies = [
     "rich>=13.0",
     "evdev>=1.9; sys_platform == 'linux'", # /dev/uinput absolute input (X11 + Wayland)
     "python-xlib>=0.33; sys_platform == 'linux'", # enumerate override-redirect popups to composite into captures (#31)
+    "mss>=9.0", # cross-platform screen capture for the macOS/Windows desktop backend (#24)
+    "pynput>=1.7", # cross-platform pointer + keyboard for the macOS/Windows desktop backend (#24)
     "httpx>=0.28.1",
     "litellm>=1.83.4",
     "mcp[cli]>=1.27.0",
