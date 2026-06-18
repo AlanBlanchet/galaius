@@ -478,16 +478,8 @@ class NestedBackend(DesktopBackend):
 
     def __init__(self, display: int = 99, size: str = "1280x800", *,
                  headless: bool = False, ready_timeout: float = 5.0):
-        self.display = f":{display}"
         self.size = size
         self.headless = headless
-        self.env = {**os.environ, "DISPLAY": self.display}
-        # Force software GL for everything in the sandbox. A nested Xephyr/Xvfb display has no usable
-        # hardware GL, so a GPU app (Flutter/Electron/games) that tries hardware EGL hits
-        # `DRI2: failed to create any config` and renders BLACK; Mesa's swrast always provides a
-        # config. Setting it here means the agent just `launch_app("<binary>")` — no incantation, no
-        # black screen — generic across apps. setdefault so an explicit global override still wins.
-        self.env.setdefault("LIBGL_ALWAYS_SOFTWARE", "1")
         width, height = size.split("x")
         self.screen_w, self.screen_h = int(width), int(height)
         self._procs: list[subprocess.Popen] = []
@@ -498,16 +490,73 @@ class NestedBackend(DesktopBackend):
         self._repaint_useless: set[str] = set()
         self._repaint_attempts: dict[str, int] = {}  # per-window nudge count before giving up
         self._repaint_delta = 60  # px the repaint nudge resizes by — big enough to rebind a blur layer
-        command = nested_server_command(self.display, size, headless)
-        self.server_name = command[0]
+        self.server_name = "Xvfb" if headless else "Xephyr"
         if shutil.which(self.server_name) is None:
             pkg = "xvfb" if headless else "xserver-xephyr"
             raise RuntimeError(f"{self.server_name} not installed (apt install {pkg})")
+        # Start the X server on a FREE display, trying the next free one if a concurrent interact
+        # server grabbed it between our check and the server's claim. Hardcoding :99 made several
+        # MCP servers fight over it — the loser's Xephyr died seconds in, taking the launched app's
+        # windows with it (#33). Picking a free number also sidesteps a stale lock from a crashed
+        # prior server.
+        last_err: Exception | None = None
+        for candidate in self._free_displays(display):
+            self.display = f":{candidate}"
+            # Force software GL for everything in the sandbox. A nested Xephyr/Xvfb display has no
+            # usable hardware GL, so a GPU app (Flutter/Electron/games) that tries hardware EGL hits
+            # `DRI2: failed to create any config` and renders BLACK; Mesa's swrast always provides a
+            # config. setdefault so an explicit global override still wins.
+            self.env = {**os.environ, "DISPLAY": self.display}
+            self.env.setdefault("LIBGL_ALWAYS_SOFTWARE", "1")
+            try:
+                self._start_server(ready_timeout)
+                return
+            except RuntimeError as exc:
+                last_err = exc  # display raced/unusable → reap the failed server, try the next
+        raise last_err or RuntimeError(f"could not start {self.server_name} on any free display")
+
+    @staticmethod
+    def _free_displays(preferred: int) -> list[int]:
+        """Display numbers to try, free ones first from ``preferred`` up — a display is taken if its
+        X lock (``/tmp/.X<n>-lock``) or socket exists. Read-only probe; never writes (#33)."""
+        free = [
+            n for n in range(preferred, preferred + 64)
+            if not os.path.exists(f"/tmp/.X{n}-lock") and not os.path.exists(f"/tmp/.X11-unix/X{n}")
+        ]
+        return free or [preferred]
+
+    def _start_server(self, ready_timeout: float) -> None:
+        """Spawn the X server on ``self.display`` and wait until it answers. On failure, reap the
+        process (so a raced display doesn't leave a Xephyr zombie) and re-raise so __init__ can try
+        the next display."""
+        command = nested_server_command(self.display, self.size, self.headless)
         # Log the X server's own output so a death mid-session can be explained, not just "rc=1".
         self._xserver_log_path = self._open_log(f"{self.server_name.lower()}{self.display}")
         with open(self._xserver_log_path, "wb") as f:
             self._xserver = subprocess.Popen(command, stdout=f, stderr=subprocess.STDOUT)
-        self._await_ready(ready_timeout)
+        try:
+            self._await_ready(ready_timeout)
+        except RuntimeError:
+            self._reap_server()
+            raise
+
+    def _reap_server(self) -> None:
+        """Tear down (and reap) the X server process + its log — for a failed/raced startup so no
+        ``<defunct>`` Xephyr lingers."""
+        srv = getattr(self, "_xserver", None)
+        if srv is not None:
+            if srv.poll() is None:
+                srv.terminate()
+                try:
+                    srv.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    srv.kill()
+        path = getattr(self, "_xserver_log_path", None)
+        if path:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
 
     @staticmethod
     def _open_log(label: str) -> str:
@@ -543,6 +592,18 @@ class NestedBackend(DesktopBackend):
             return True
         except (subprocess.CalledProcessError, FileNotFoundError, ValueError):
             return False
+
+    def display_health(self) -> str:
+        """One-line diagnostic for when a launch produced no window: whether the nested X server is
+        alive, and its recent output if it died — so launch_app can explain a dead display instead
+        of only listing the generic Qt-helper windows (#33)."""
+        if self.is_alive():
+            return ""
+        tail = _tail_file(getattr(self, "_xserver_log_path", None), 400)
+        rc = getattr(getattr(self, "_xserver", None), "returncode", "?")
+        return f"The sandbox {self.server_name} {self.display} is DOWN (rc={rc})" + (
+            f": {tail}" if tail else " — call reset_sandbox to respawn it."
+        )
 
     def _reap(self) -> None:
         """Drop exited child apps (and unlink their logs) so a long session doesn't accumulate dead

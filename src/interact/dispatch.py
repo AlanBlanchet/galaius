@@ -93,7 +93,7 @@ def _resolve_action_coords(action, wid: int, win: DesktopWindow):
 # Actions that target a DOM element — the ones where "use a stable ref instead" is the right
 # advice on a timeout / ambiguous-selector failure. navigate/evaluate_js/etc. are NOT here:
 # a ref means nothing for them, so their errors pass through with only the dump trimmed.
-_TARGETING_TYPES = frozenset({"click", "hover", "type_text", "drag"})
+_TARGETING_TYPES = frozenset({"click", "hover", "type_text", "drag", "double_click", "select_text"})
 
 
 def _selector_of(action):

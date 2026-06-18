@@ -180,6 +180,18 @@ def test_force_repaint_noop_without_window(monkeypatch):
     assert nb.force_repaint("ghost") is False
 
 
+def test_free_displays_skips_taken(monkeypatch):
+    """A display is taken if its X lock or socket exists; _free_displays returns free ones from the
+    preferred number up, so concurrent sandboxes don't collide on :99 (#33)."""
+    import interact.desktop_backend as db
+
+    taken = {"/tmp/.X99-lock", "/tmp/.X11-unix/X100", "/tmp/.X101-lock"}
+    monkeypatch.setattr(db.os.path, "exists", lambda p: p in taken)
+    got = db.NestedBackend._free_displays(99)
+    assert got[0] == 102  # first free at/above 99 (99,100,101 taken)
+    assert all(n not in got for n in (99, 100, 101))
+
+
 @pytest.mark.parametrize(
     "a,b,expect",
     [

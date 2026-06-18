@@ -6,6 +6,26 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ## [Unreleased]
 
+## [0.3.5] — 2026-06-18
+
+### Fixed
+
+- **The nested sandbox no longer dies under concurrent interact servers** (#33). The Xephyr/Xvfb
+  display number was hardcoded to `:99`, so several MCP servers (a user can have many) fought over
+  it and the loser's display died seconds after `launch_app`, taking the launched app's windows
+  with it. The sandbox now starts on the first FREE display (probing the X lock/socket) and retries
+  the next free one on a startup race, reaping a failed server so no `<defunct>` Xephyr lingers.
+  When a launch still maps no window, `launch_app` reports the X server's health/exit output instead
+  of only the generic Qt-helper targets. Verified: two concurrent sandboxes now take distinct live
+  displays.
+
+### Added
+
+- **`double_click` and `select_text` actions** (#32). `double_click` selects a word / fires a real
+  dblclick (two `click`s don't coalesce); `select_text` makes a real DOM Selection in an element —
+  so a selection-gated control (a Lexical/Payload inline toolbar, a colour swatch) can be actuated,
+  which `drag` (HTML5 drag-and-drop) couldn't. Verified live in a contenteditable.
+
 ## [0.3.4] — 2026-06-18
 
 ### Fixed

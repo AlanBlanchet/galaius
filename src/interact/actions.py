@@ -216,23 +216,24 @@ class ScrollAction(Action):
             await page.mouse.wheel(dx, dy)
 
 
-async def _click_selector(page: Page, selector: str) -> None:
-    """Click a CSS selector, preferring the first VISIBLE match when several match. Duplicated link
-    text (a breadcrumb mirroring the sidebar) or a generic button label (`:has-text('Annuler')`)
-    makes a selector resolve to many nodes; `page.click` would target whatever is first in DOM
-    order — often a hidden/off-screen one, so the click silently lands wrong or times out (#29).
-    A single match clicks directly; none-visible falls back to the first so a hidden-but-actionable
-    target still works."""
+async def _click_selector(page: Page, selector: str, *, double: bool = False) -> None:
+    """Click (or double-click) a CSS selector, preferring the first VISIBLE match when several
+    match. Duplicated link text (a breadcrumb mirroring the sidebar) or a generic button label
+    (`:has-text('Annuler')`) makes a selector resolve to many nodes; `page.click` would target
+    whatever is first in DOM order — often a hidden/off-screen one, so the click silently lands
+    wrong or times out (#29). A single match clicks directly; none-visible falls back to the first
+    so a hidden-but-actionable target still works."""
     loc = page.locator(selector)
+    target = None
     if await loc.count() <= 1:
-        await loc.click()
-        return
-    for i in range(await loc.count()):
-        item = loc.nth(i)
-        if await item.is_visible():
-            await item.click()
-            return
-    await loc.first.click()
+        target = loc
+    else:
+        for i in range(await loc.count()):
+            if await loc.nth(i).is_visible():
+                target = loc.nth(i)
+                break
+        target = target or loc.first
+    await (target.dblclick() if double else target.click())
 
 
 async def _ref_center(page: Page, ref: str) -> tuple[float, float]:
@@ -307,6 +308,53 @@ class EvaluateJsAction(Action):
         if self.args is not None:
             return await page.evaluate(_wrap_js(self.script, has_args=True), self.args)
         return await page.evaluate(_wrap_js(self.script))
+
+
+class DoubleClickAction(Action):
+    """Double-click a target — selects a word in a contenteditable (Lexical/Payload richtext) so a
+    selection-gated toolbar appears, fires a dblclick handler, etc. Two separate `click` actions do
+    NOT coalesce into a dblclick, so this is the way to get one (#32). Browser only."""
+
+    type: Literal["double_click"] = "double_click"
+    ref: str | None = None
+    selector: str | None = None
+    x: int | None = None
+    y: int | None = None
+
+    @model_validator(mode="after")
+    def _require_target(self):
+        if not (self.ref or self.selector or (self.x is not None and self.y is not None)):
+            raise ValueError("Provide ref, selector, or x+y for double_click")
+        return self
+
+    async def execute(self, page: Page):
+        if self.ref:
+            await page.locator(ref_locator(self.ref)).dblclick()
+        elif self.selector:
+            await _click_selector(page, self.selector, double=True)
+        else:
+            await page.mouse.dblclick(self.x, self.y)
+
+
+class SelectTextAction(Action):
+    """Select the text inside an element as a real DOM Selection — so a selection-gated control
+    (a Lexical inline toolbar, a colour swatch) shows. `drag` across text dispatches HTML5
+    drag-and-drop, not a selection, so it can't do this (#32). Browser only."""
+
+    type: Literal["select_text"] = "select_text"
+    ref: str | None = None
+    selector: str | None = None
+
+    @model_validator(mode="after")
+    def _require_target(self):
+        if not (self.ref or self.selector):
+            raise ValueError("Provide ref or selector for select_text")
+        return self
+
+    async def execute(self, page: Page):
+        loc = page.locator(ref_locator(self.ref)) if self.ref else page.locator(self.selector)
+        await loc.select_text()
+        return f"selected text in {self.ref or self.selector!r}"
 
 
 class ScreenshotAction(ObservationAction):
@@ -496,6 +544,8 @@ AnyAction = Annotated[
     | HttpRequestAction
     | AnnotateAction
     | ClickElementAction
+    | DoubleClickAction
+    | SelectTextAction
     | EmulateDeviceAction
     | SleepAction
     | CompareAction,
@@ -512,5 +562,7 @@ BROWSER_ONLY_ACTIONS = frozenset(
         "switch_tab",
         "close_tab",
         "emulate_device",
+        "double_click",
+        "select_text",
     }
 )

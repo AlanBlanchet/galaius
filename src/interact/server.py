@@ -730,7 +730,10 @@ async def run_actions(
 
     Each action needs a 'type' key to select the action model.
 
-    Mutating: click, type_text, scroll, drag, navigate, evaluate_js, upload_file, key_press, click_element
+    Mutating: click, double_click, type_text, scroll, drag, navigate, evaluate_js, upload_file, key_press, click_element
+      - double_click: select a word / fire a dblclick (browser; two clicks don't coalesce).
+      - select_text (browser): make a real DOM text selection in an element — for a selection-gated
+        control like a Lexical inline toolbar (drag dispatches drag-and-drop, not a selection).
     Observations: screenshot, wait_for, http_request, hover, annotate
     Tab control: new_tab, switch_tab, close_tab
     Viewport: emulate_device — set the session to a device profile (a Playwright `device` name like
@@ -743,7 +746,7 @@ async def run_actions(
       preceding action, or add a `wait_for` step — both block exactly until the condition holds.
     Comparison: compare — VLM comparison of snapshots from earlier steps (by 1-based index).
 
-    Browser-only actions (navigate, evaluate_js, wait_for, upload_file, new_tab, switch_tab, close_tab, emulate_device) error when used with a desktop target.
+    Browser-only actions (navigate, evaluate_js, wait_for, upload_file, new_tab, switch_tab, close_tab, emulate_device, double_click, select_text) error when used with a desktop target.
 
     Any action can include 'wait' to wait after execution (networkidle, load, domcontentloaded, or a CSS selector — browser only).
     wait_for blocks until a `selector` reaches a state OR a `text` substring appears — prefer it over `sleep` for content/navigation.
@@ -1201,7 +1204,9 @@ async def launch_app(command: str, wait: float = 6.0) -> str:
             break
         await asyncio.sleep(0.3)
     if not windows:
-        return (f"Launched `{command}` in the sandbox but no window appeared within {wait:.0f}s.{flutter_note} "
+        health = backend.display_health() if hasattr(backend, "display_health") else ""
+        health = f" {health}" if health else ""
+        return (f"Launched `{command}` in the sandbox but no window appeared within {wait:.0f}s.{flutter_note}{health} "
                 f"It may still be starting — retry list_desktop_windows, or raise `wait`.")
     # A software-GL app (Flutter/Electron) presents a stale black buffer to X until a configure
     # event makes it repaint; nudge each new window once so it starts rendered (the repaint then
