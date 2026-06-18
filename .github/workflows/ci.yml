@@ -38,6 +38,14 @@ jobs:
       - name: Run tests (integration + desktop auto-skip here)
         run: uv run pytest -m "not integration" -q
 
+      # The macOS/Windows runners are real GUI sessions, so drive the PortableBackend (mss + pynput)
+      # on them and SHOW the per-test result (-rs prints skip reasons): this is the visible mac/win
+      # desktop-automation check (#24). Non-fatal — a host that denies Screen-Recording/Accessibility
+      # skips with a diagnostic rather than failing.
+      - name: Desktop automation (macOS/Windows real GUI)
+        if: runner.os != 'Linux'
+        run: uv run pytest tests/test_portable_backend.py -v -rs
+
   # Desktop automation CAN be tested in CI on Linux: Xvfb gives the runner a virtual
   # display, and the nested Xephyr sandbox drives real windows via xdotool/maim. (The
   # local uinput path needs /dev/uinput — privileged — so those tests stay opt-in/skipped.)
