@@ -1,5 +1,6 @@
+import asyncio
 import base64
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 import json
 import os
 import logging
@@ -504,11 +505,42 @@ def _desktop_label(win: DesktopWindow) -> str:
     return f"[window: {win.name}]"
 
 
+def _reap_sandbox() -> None:
+    """Drop a nested sandbox whose X server has died (``is_alive`` polls it, reaping the zombie),
+    so no ``<defunct>`` Xephyr lingers and the display frees up for a clean respawn on next use."""
+    if _sandbox is not None and not _sandbox.is_alive():
+        _close_sandbox()
+
+
+async def _idle_session_reaper(ttl: int) -> None:
+    """Periodically auto-close browser sessions idle beyond ``ttl`` so a long-lived MCP server (one
+    per open editor window) doesn't accumulate idle Chromium instances — a left-open page can spin
+    CPU for hours. Also reaps a dead sandbox. ``ttl`` <= 0 disables the loop entirely."""
+    if ttl <= 0:
+        return
+    interval = min(60, ttl)
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            closed = await _sessions.close_idle(ttl)
+            if closed:
+                _log.info("auto-closed idle browser session(s): %s", ", ".join(closed))
+            _reap_sandbox()
+        except Exception:  # a transient error must never kill the reaper
+            _log.exception("idle session reaper error")
+
+
 @asynccontextmanager
 async def _lifespan(_: FastMCP) -> AsyncIterator[None]:
-    yield
-    await _sessions.close_all()
-    _close_sandbox()
+    reaper = asyncio.create_task(_idle_session_reaper(config.session_idle_ttl))
+    try:
+        yield
+    finally:
+        reaper.cancel()
+        with suppress(asyncio.CancelledError):
+            await reaper
+        await _sessions.close_all()
+        _close_sandbox()
 
 
 def _instructions() -> str:
@@ -1054,11 +1086,18 @@ async def get_page_state(
 
 @mcp.tool()
 async def list_sessions() -> str:
-    """List all active browser sessions."""
+    """List active browser sessions and how long each has been idle."""
     sessions = _sessions.active()
     if not sessions:
         return "No active sessions."
-    return "\n".join(f"  {s}" for s in sessions)
+    lines = []
+    for s in sessions:
+        idle = _sessions.idle_seconds(s)
+        lines.append(f"  {s}" + (f" — idle {idle:.0f}s" if idle is not None else " — no browser open"))
+    ttl = config.session_idle_ttl
+    if ttl > 0:
+        lines.append(f"(idle sessions auto-close after {ttl}s; set INTERACT_SESSION_IDLE_TTL=0 to disable)")
+    return "\n".join(lines)
 
 
 @mcp.tool()

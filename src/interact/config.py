@@ -41,6 +41,12 @@ class Config(BaseSettings):
     video_max_frames: int = 12
     max_tokens: int | None = None
     wait_timeout: int = 10000
+    # Auto-close a browser session whose browser has sat idle (no tool call) this many seconds,
+    # freeing its Chromium + driver; it re-opens lazily on next use (a non-default session starts
+    # fresh — cookies/login are not preserved across the close). 0 disables. Stops a long-lived MCP
+    # server (one per open editor window) from piling up idle browsers that spin CPU on a left-open
+    # page. Override with INTERACT_SESSION_IDLE_TTL.
+    session_idle_ttl: int = 900
     vlm_max_dim: int = 1280
     vlm_min_dim: int = 768
     detection_max_retries: int = 3  # judge-driven re-detection passes to recover missed elements

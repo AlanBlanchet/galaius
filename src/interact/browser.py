@@ -2,6 +2,7 @@ import sys
 import subprocess
 import tempfile
 from collections import deque
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -28,6 +29,20 @@ class BrowserManager:
         # act on. new_tab / switch_tab move it, so a standalone capture after a switch sees the tab
         # the agent switched to, not tab 0 (#30).
         self._active_tab = 0
+        # Last time this session's browser was touched (monotonic). The idle reaper closes a
+        # session unused past the configured TTL so idle Chromium instances don't pile up.
+        self._last_active = time.monotonic()
+
+    def idle_seconds(self) -> float | None:
+        """Seconds since the browser was last used, or None if no browser is open (nothing to reap)."""
+        if self._browser is None:
+            return None
+        return time.monotonic() - self._last_active
+
+    def is_idle(self, ttl: float) -> bool:
+        """True if a browser is open and has gone unused for at least ``ttl`` seconds."""
+        idle = self.idle_seconds()
+        return idle is not None and idle >= ttl
 
     def _tab_key(self, tab: int | None) -> int:
         """Normalize a tab argument to a concrete index so a tab-less scan (tab=None → the active
@@ -69,6 +84,7 @@ class BrowserManager:
     async def get_page(self, tab_index: int | None = None) -> Page:
         """The page for ``tab_index``; ``None`` → the session's active tab, so a standalone tool
         call after a tab switch sees the tab the agent switched to, not tab 0 (#30)."""
+        self._last_active = time.monotonic()  # every browser action funnels here → marks the session live
         await self.ensure_ready()
         pages = self._context.pages
         if tab_index is None:
@@ -412,6 +428,20 @@ class SessionRegistry:
 
     def active(self) -> list[str]:
         return list(self._sessions.keys())
+
+    def idle_seconds(self, session_id: str) -> float | None:
+        mgr = self._sessions.get(session_id)
+        return mgr.idle_seconds() if mgr else None
+
+    async def close_idle(self, ttl: float) -> list[str]:
+        """Close + drop sessions whose browser has been idle for at least ``ttl`` seconds (``ttl``
+        <= 0 disables, returning []). Each closed session re-opens lazily on the next ``get``."""
+        if ttl <= 0:
+            return []
+        stale = [sid for sid, mgr in self._sessions.items() if mgr.is_idle(ttl)]
+        for sid in stale:
+            await self.close(sid)
+        return stale
 
     async def close_all(self):
         for mgr in self._sessions.values():

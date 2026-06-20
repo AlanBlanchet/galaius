@@ -6,7 +6,17 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ## [Unreleased]
 
-## [0.4.1] — 2026-06-20
+## [0.5.0] — 2026-06-20
+
+### Added
+
+- **Idle browser sessions auto-close** so a long-lived MCP server (one per open editor window)
+  stops accumulating Chromium instances that linger — and CPU-spin on a left-open page — for the
+  whole life of the client. A background reaper closes any session whose browser has been idle past
+  `INTERACT_SESSION_IDLE_TTL` (default **900s**; `0` disables); it re-opens lazily on next use (a
+  non-default session starts fresh — cookies/login aren't preserved across the close). `list_sessions`
+  now shows each session's idle time and the auto-close policy. The reaper also tears down a dead
+  nested sandbox so no `<defunct>` Xephyr lingers.
 
 ### Fixed
 
