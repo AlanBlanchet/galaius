@@ -6,7 +6,19 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ## [Unreleased]
 
-## [0.4.0] — 2026-06-18
+## [0.4.1] — 2026-06-20
+
+### Fixed
+
+- **A browser `ref` now survives between tool calls** (#34). A `ref` handed out by
+  `get_interactive_elements` / `get_page_state` / `screenshot` failed with "Element N not found"
+  the moment it was used in a *separate* later `run_actions` call — even with no navigation or
+  re-render. Cause: a tab-less scan registered the element map under key `None` while `run_actions`
+  read it under the hardcoded tab `0` (`None != 0`), so the lookup always missed. The element map
+  now keys on the active tab consistently, `run_actions` starts on the active tab, and a ref also
+  resolves directly against the live `data-interact-ref` attribute (which persists across calls) —
+  so a ref clicks even if the server-side map was cleared. Refs are now a first-class cross-call
+  handle, no re-annotate-every-call workaround needed.
 
 ### Added
 

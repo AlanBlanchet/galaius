@@ -77,6 +77,17 @@ browser (they press Submit); only with no browser either does it save to
 elsewhere in the repo. If a fallback file shows up in `~/.interact/feedback/`, deliver it
 (file the issue), then delete it.
 
+**Innovative feature ideas go through the same channel — but only the pertinent ones.** When a
+genuinely interesting capability surfaces (often while using interact to drive a real app and
+hitting a gap), don't just mention it in chat — file it as `--kind feedback` so it persists as a
+work item. First judge whether it's *pertinent for interact*, because the bar is fit, not novelty:
+does it generalize across MCP clients (not a one-off for the app you happen to be driving); does
+it sit cleanly in the tool-surface model (a `target` on an existing generic tool, or a clearly
+browser-only tool — not a redundant near-duplicate); does it keep the core generic, clean, and
+flexible for integrators; does the value earn its surface area? Yes on those → file it (a crisp
+title + the use case + why it's general). No → drop it rather than spend an issue on it. When in
+doubt, file as feedback and let triage decide; never spam the tracker with every passing thought.
+
 Note: the editable install is live, so a reconnecting client can momentarily run half-edited
 source — verify a surprising logged error against committed code before treating it as a bug.
 

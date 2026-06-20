@@ -32,7 +32,7 @@ from interact.browser import BrowserManager
 from interact.debug_utils import Debug
 from interact.desktop import DesktopWindow
 from interact.detect import _desktop_context
-from interact.state import DesktopState, PageState, StateChange
+from interact.state import DesktopState, PageState, StateChange, ref_locator
 
 _log = logging.getLogger("interact")
 
@@ -168,6 +168,34 @@ async def _named_locator(page, action):
             "get_interactive_elements, or a more specific `name`/`selector`."
         )
     return locator
+
+
+async def _click_element(page, mgr, element: int, tab: int) -> bool:
+    """Click the numbered ``element`` on ``page``. Prefers the stored element map (its ref →
+    locator, or center coordinates); if the map has no entry — it was cleared, or the ref came
+    from a scan in a separate call — falls back to the live ``data-interact-ref="e{N}"`` attribute,
+    which persists on the DOM across tool calls until the next scan. So a ref from an earlier
+    get_interactive_elements still clicks even when the server-side map is stale (#34). Returns
+    False only when the element resolves by neither route (a genuinely stale ref)."""
+    el = mgr.get_element(element, tab)
+    if el is not None:
+        if el.ref:
+            await page.locator(el.playwright_ref).click()
+        else:
+            await page.mouse.click(el.center_x, el.center_y)
+        return True
+    locator = page.locator(ref_locator(f"e{element}"))
+    if await locator.count() == 1:  # the badge is still on the live DOM — resolve it directly
+        await locator.click()
+        return True
+    return False
+
+
+def _element_miss(element: int) -> str:
+    return (
+        f"Element {element} not found on the active tab — re-run get_interactive_elements "
+        "(or switch_tab first if it is on another tab)."
+    )
 
 
 def _step(i: int, action_type: str, msg: str) -> str:
@@ -446,7 +474,7 @@ async def _run_actions_browser(
         _wait as _wait_fn,
     )
 
-    current_tab = 0
+    current_tab = mgr.active_tab  # the tab the prior tab-less scan acted on, so its refs resolve (#34)
     page = await mgr.get_page(current_tab)
     step_reports: list[str] = []
     final: PageState | None = None
@@ -491,26 +519,15 @@ async def _run_actions_browser(
             snapshots[step_idx] = base64.b64decode(final.screenshot_base64)
 
         elif isinstance(action, ClickElementAction):
-            el = mgr.get_element(action.element, current_tab)
-            if el is None:
-                step_reports.append(
-                    _step(
-                        i,
-                        action.type,
-                        f"Element {action.element} not found — run annotate first",
-                    )
-                )
-            else:
-                before = await _capture(mgr, tab=current_tab)
-                if el.ref:
-                    await page.locator(el.playwright_ref).click()
-                else:
-                    await page.mouse.click(el.center_x, el.center_y)
-                if action.wait:
-                    await _wait_fn(page, action.wait)
-                final = await _capture(mgr, tab=current_tab)
-                change = StateChange.compute(before, final)
-                step_reports.append(_step(i, action.type, change.description))
+            before = await _capture(mgr, tab=current_tab)
+            if not await _click_element(page, mgr, action.element, current_tab):
+                step_reports.append(_step(i, action.type, _element_miss(action.element)))
+                continue
+            if action.wait:
+                await _wait_fn(page, action.wait)
+            final = await _capture(mgr, tab=current_tab)
+            change = StateChange.compute(before, final)
+            step_reports.append(_step(i, action.type, change.description))
 
         elif isinstance(action, ClickAction) and (
             action.name or action.element is not None
@@ -519,21 +536,9 @@ async def _run_actions_browser(
             if action.name:
                 locator = await _named_locator(page, action)
                 await locator.click()
-            else:
-                el = mgr.get_element(action.element, current_tab)
-                if el is None:
-                    step_reports.append(
-                        _step(
-                            i,
-                            action.type,
-                            f"Element {action.element} not found — run annotate first",
-                        )
-                    )
-                    continue
-                if el.ref:
-                    await page.locator(el.playwright_ref).click()
-                else:
-                    await page.mouse.click(el.center_x, el.center_y)
+            elif not await _click_element(page, mgr, action.element, current_tab):
+                step_reports.append(_step(i, action.type, _element_miss(action.element)))
+                continue
             if action.wait:
                 await _wait_fn(page, action.wait)
             final = await _capture(mgr, tab=current_tab)

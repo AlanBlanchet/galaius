@@ -29,11 +29,19 @@ class BrowserManager:
         # the agent switched to, not tab 0 (#30).
         self._active_tab = 0
 
-    def set_element_map(self, tab: int, elements: list[InteractiveElement]):
-        self._element_map[tab] = elements
+    def _tab_key(self, tab: int | None) -> int:
+        """Normalize a tab argument to a concrete index so a tab-less scan (tab=None → the active
+        tab) and an explicit active-tab int land in the SAME element-map bucket. Without this a
+        tab-less get_interactive_elements/get_page_state/screenshot stores its refs under key None
+        while the following run_actions reads them under the active-tab int — None != 0, so every
+        ref is lost between calls (#34)."""
+        return self._active_tab if tab is None else tab
 
-    def get_element(self, index: int, tab: int = 0) -> InteractiveElement | None:
-        for el in self._element_map.get(tab, []):
+    def set_element_map(self, tab: int | None, elements: list[InteractiveElement]):
+        self._element_map[self._tab_key(tab)] = elements
+
+    def get_element(self, index: int, tab: int | None = None) -> InteractiveElement | None:
+        for el in self._element_map.get(self._tab_key(tab), []):
             if el.index == index:
                 return el
         return None
