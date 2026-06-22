@@ -220,15 +220,42 @@ def test_composited_grab_expands_to_overlapping_popup(monkeypatch):
     assert region["r"] == (0, 0, 400, 450)  # window origin, expanded to the popup's bottom
 
 
-def test_composited_grab_plain_without_or_with_distant_overlay(monkeypatch):
+def test_composited_grab_plain_region_grabs_the_window_not_stale_pixmap(monkeypatch):
+    """No overlapping popup → still a region grab of the window's OWN rectangle (the live front
+    buffer), never `maim -i <wid>` (the backing pixmap that goes stale after a software-GL in-app
+    navigation, lagging screenshot a frame behind the element scan, #40/#41). A distant, non-
+    overlapping popup is ignored — the region stays the window's own bounds."""
     nb = _backend_no_server()
     monkeypatch.setattr(nb, "window_geometry", lambda name: (0, 0, 200, 200))
-    monkeypatch.setattr(nb, "_maim_window", lambda wid: b"W")
-    monkeypatch.setattr(nb, "_maim_region", lambda *a: pytest.fail("should not region-grab"))
+    monkeypatch.setattr(nb, "_maim_window", lambda wid: pytest.fail("must not grab the stale by-wid pixmap"))
+    region: dict = {}
+    monkeypatch.setattr(nb, "_maim_region", lambda x, y, w, h: region.update(r=(x, y, w, h)) or b"R")
     monkeypatch.setattr(nb, "_overlay_rects", lambda: [])
-    assert nb._composited_grab("app", "0x1") == b"W"
-    monkeypatch.setattr(nb, "_overlay_rects", lambda: [(900, 900, 50, 50)])  # no overlap
-    assert nb._composited_grab("app", "0x1") == b"W"
+    assert nb._composited_grab("app", "0x1") == b"R"
+    assert region["r"] == (0, 0, 200, 200)
+    monkeypatch.setattr(nb, "_overlay_rects", lambda: [(900, 900, 50, 50)])  # distant, no overlap
+    assert nb._composited_grab("app", "0x1") == b"R"
+    assert region["r"] == (0, 0, 200, 200)  # unchanged — the distant popup is ignored
+
+
+def test_nested_captures_hide_the_cursor(monkeypatch):
+    """maim superimposes the X pointer by default; every nested grab passes --hidecursor so the
+    cursor (parked mid-display) doesn't land in the capture — region grabs read the live root
+    framebuffer where the sprite would otherwise show (the visual-critic caught it in a screenshot)."""
+    nb = _backend_no_server()
+    cmds: list[list[str]] = []
+
+    class _R:
+        stdout = b"PNG"
+
+    monkeypatch.setattr(
+        "interact.desktop_backend.subprocess.run", lambda cmd, **k: cmds.append(cmd) or _R()
+    )
+    nb.capture()
+    nb._maim_window("0x1")
+    nb._maim_region(0, 0, 412, 915)
+    assert len(cmds) == 3
+    assert all("--hidecursor" in cmd for cmd in cmds), cmds
 
 
 def test_focus_uses_windowfocus_sync_not_activate(monkeypatch):

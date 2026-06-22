@@ -155,6 +155,25 @@ def _keyboard_codes(ecodes) -> list[int]:
     return [getattr(ecodes, n) for n in names if hasattr(ecodes, n)]
 
 
+def _parse_chord(name: str) -> tuple[list[str], str]:
+    """Split a key spec like ``"ctrl+shift+a"`` into (held modifiers, final key) — the shared
+    grammar for every backend that synthesises a chord (uinput, pynput). A bare ``"a"`` → ([], "a")."""
+    *mods, final = name.split("+")
+    return mods, final
+
+
+# Modifier token → evdev LEFT_* key name, for the uinput chord path.
+_UINPUT_MODIFIERS = {
+    "ctrl": "KEY_LEFTCTRL",
+    "control": "KEY_LEFTCTRL",
+    "shift": "KEY_LEFTSHIFT",
+    "alt": "KEY_LEFTALT",
+    "super": "KEY_LEFTMETA",
+    "meta": "KEY_LEFTMETA",
+    "cmd": "KEY_LEFTMETA",
+}
+
+
 class UinputPointer:
     """Absolute mouse + named-key input over ``/dev/uinput`` (X11 and Wayland).
 
@@ -231,11 +250,28 @@ class UinputPointer:
         self._ui.write(self._ecodes.EV_REL, self._ecodes.REL_WHEEL, clicks)
         self._ui.syn()
 
+    def _key_code(self, token: str) -> int:
+        """evdev code for a key token: a modifier name (ctrl/shift/alt/super) maps to its LEFT_*
+        code, else KEY_<UPPER> (or a literal KEY_ name)."""
+        name = _UINPUT_MODIFIERS.get(token.lower()) or (
+            token if token.startswith("KEY_") else f"KEY_{token.upper()}"
+        )
+        return getattr(self._ecodes, name)
+
     def key(self, name: str) -> None:
-        code = getattr(self._ecodes, name if name.startswith("KEY_") else f"KEY_{name.upper()}")
-        self._kbd.write(self._ecodes.EV_KEY, code, 1)
+        # Hold modifiers, tap the final key, release modifiers — so a chord like "ctrl+a" works,
+        # not just a single key (previously getattr(ecodes, "KEY_CTRL+A") raised). Shared chord
+        # split with the portable backend via _parse_chord.
+        mods, final = _parse_chord(name)
+        held = [self._key_code(m) for m in mods]
+        target = self._key_code(final)
+        for code in held:
+            self._kbd.write(self._ecodes.EV_KEY, code, 1)
+        self._kbd.write(self._ecodes.EV_KEY, target, 1)
         self._kbd.syn()
-        self._kbd.write(self._ecodes.EV_KEY, code, 0)
+        self._kbd.write(self._ecodes.EV_KEY, target, 0)
+        for code in reversed(held):
+            self._kbd.write(self._ecodes.EV_KEY, code, 0)
         self._kbd.syn()
 
     def _char_spec(self, ch: str) -> tuple[str, bool] | None:
@@ -533,7 +569,7 @@ class PortableBackend(DesktopBackend):
         return getattr(self._Key, self._KEYS.get(token.lower(), token.lower()), token)
 
     def key(self, name: str) -> None:
-        *mods, final = name.split("+")
+        mods, final = _parse_chord(name)
         held = [self._resolve_key(m) for m in mods]
         target = self._resolve_key(final)
         for k in held:
@@ -740,14 +776,16 @@ class NestedBackend(DesktopBackend):
 
     def capture(self) -> bytes:
         self._reap()  # drop apps that exited since the last spawn so zombies don't accumulate (#11)
-        return subprocess.run(["maim"], env=self.env, capture_output=True, check=True).stdout
+        return subprocess.run(["maim", "--hidecursor"], env=self.env, capture_output=True, check=True).stdout
 
     def _maim_window(self, wid: str) -> bytes:
-        return subprocess.run(["maim", "-i", wid], env=self.env, capture_output=True, check=True).stdout
+        return subprocess.run(["maim", "--hidecursor", "-i", wid], env=self.env, capture_output=True, check=True).stdout
 
     def _maim_region(self, x: int, y: int, w: int, h: int) -> bytes:
+        # --hidecursor: a region grab reads the live root framebuffer, into which maim otherwise
+        # superimposes the X pointer sprite — it would land mid-screenshot (parked at screen centre).
         return subprocess.run(
-            ["maim", "-g", f"{w}x{h}+{x}+{y}"], env=self.env, capture_output=True, check=True
+            ["maim", "--hidecursor", "-g", f"{w}x{h}+{x}+{y}"], env=self.env, capture_output=True, check=True
         ).stdout
 
     def _overlay_rects(self) -> list[tuple[int, int, int, int]]:
@@ -793,7 +831,13 @@ class NestedBackend(DesktopBackend):
         wx, wy, ww, wh = geo
         overlays = [r for r in self._overlay_rects() if _rects_overlap(r, geo)]
         if not overlays:
-            return self._maim_window(wid)
+            # Grab the window's screen REGION (live front buffer), not `maim -i <wid>` (the window's
+            # backing pixmap). Under software GL a Flutter surface leaves a STALE pixmap after an
+            # in-app navigation — valid pixels of the PREVIOUS screen, so the black-frame nudge never
+            # fires — and a by-id grab returns it, lagging screenshot one frame behind the live
+            # element scan (#40/#41). The root region always reflects what's actually displayed.
+            x0, y0 = max(0, wx), max(0, wy)
+            return self._maim_region(x0, y0, min(self.screen_w - x0, ww), min(self.screen_h - y0, wh))
         right = max([wx + ww] + [r[0] + r[2] for r in overlays])
         bottom = max([wy + wh] + [r[1] + r[3] for r in overlays])
         x0, y0 = max(0, wx), max(0, wy)
@@ -871,6 +915,17 @@ class NestedBackend(DesktopBackend):
                 os.unlink(out)
             except OSError:
                 pass
+
+    def fit_window(self, name: str) -> bool:
+        """Move + size the named window to fill the nested display (origin 0,0, full screen WxH), so
+        a mobile/phone app on a phone-shaped display fills it instead of floating as a small
+        rectangle in a corner. Best-effort: an app that pins its own size just ignores the resize."""
+        wid = self._window_id(name)
+        if wid is None:
+            return False
+        self._xdotool_ok("windowmove", wid, "0", "0")
+        self._xdotool_ok("windowsize", wid, str(self.screen_w), str(self.screen_h))
+        return True
 
     def force_repaint(self, name: str) -> bool:
         """Force a full repaint by nudging the window's size (shrink, restore); returns True if it

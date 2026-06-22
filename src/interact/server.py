@@ -3,6 +3,7 @@ import base64
 from contextlib import asynccontextmanager, suppress
 import json
 import os
+import re
 import logging
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -246,22 +247,55 @@ async def _media_response(
 _sandbox: "object | None" = None  # the headless NestedBackend, created on first launch_app
 
 
-def _get_sandbox():
+# Named display shapes for launch_app(device=...). A phone/tablet app laid out for portrait looks
+# wrong in the default 1280x800 desktop display; these give it a correctly-shaped screen so it
+# renders as it would on the device. Values are common Flutter logical sizes.
+_DEVICE_SIZES = {
+    "phone": "412x915",
+    "tablet": "820x1180",
+    "desktop": "1280x800",
+}
+_SIZE_RE = re.compile(r"^\d{2,5}x\d{2,5}$")
+
+
+def _resolve_nested_size(size: str | None, device: str | None) -> tuple[str | None, str | None]:
+    """Pick the nested display size for a launch: explicit ``size`` ("WxH") wins, then a ``device``
+    profile, else None → the caller keeps the configured default. Returns (size_or_None, error)."""
+    if size:
+        norm = size.strip().lower()
+        if not _SIZE_RE.match(norm):
+            return None, f"ERROR: size must be WxH (e.g. 412x915), got {size!r}"
+        return norm, None
+    if device:
+        key = device.strip().lower()
+        if key not in _DEVICE_SIZES:
+            opts = ", ".join(_DEVICE_SIZES)
+            return None, f"ERROR: unknown device {device!r} — use one of: {opts}, or pass size=WxH"
+        return _DEVICE_SIZES[key], None
+    return None, None
+
+
+def _get_sandbox(size: str | None = None):
     """The server-owned isolated display (Xephyr if a display is present, else headless Xvfb).
     Created on first use so a window the user moved/buried — or a GPU app that won't screen-grab on
     the real desktop — can be driven in a clean, occlusion-proof, non-intrusive sandbox.
+
+    ``size`` ("WxH") picks the display resolution: a phone app needs a phone-shaped screen, not the
+    1280x800 default. The sandbox is a singleton, so a launch that asks for a different size than the
+    running one transparently respawns it at that size (the first app's size no longer wins forever).
 
     A long session can exhaust or kill the nested X server (e.g. dozens of leaked GPU apps); the
     cached backend would then reject every launch until restarted. So a dead sandbox is torn down
     and respawned transparently here — the agent never has to manually reset it (#10)."""
     global _sandbox
-    if _sandbox is not None and not _sandbox.is_alive():
-        _close_sandbox()  # dead/hung X server → tear it down so a fresh one can take the display
+    want = size or config.nested_size
+    if _sandbox is not None and (not _sandbox.is_alive() or _sandbox.size != want):
+        _close_sandbox()  # dead/hung X server, or a new size requested → respawn at `want`
     if _sandbox is None:
         from interact.desktop_backend import NestedBackend
 
         _sandbox = NestedBackend(
-            config.nested_display, config.nested_size, headless=config.nested_headless
+            config.nested_display, want, headless=config.nested_headless
         )
     return _sandbox
 
@@ -1240,7 +1274,9 @@ def _flutter_software_render(argv: list[str]) -> tuple[list[str], str]:
 
 
 @mcp.tool()
-async def launch_app(command: str, wait: float = 6.0) -> str:
+async def launch_app(
+    command: str, wait: float = 6.0, size: str | None = None, device: str | None = None
+) -> str:
     """Launch an app in interact's isolated sandbox display and drive it there.
 
     The sandbox is a clean, WM-less X display the agent owns — non-intrusive (it never touches the
@@ -1248,6 +1284,11 @@ async def launch_app(command: str, wait: float = 6.0) -> str:
     reliably regardless of what the user is doing, or when a GPU/desktop app won't screen-grab on
     the real desktop. After launching, drive it with the normal tools using target="nested:<title>"
     (one window) or target="nested" (the whole sandbox screen): screenshot, run_actions, etc.
+
+    Sizing the display: the default is 1280x800 (desktop-shaped). A MOBILE/phone app laid out for
+    portrait looks wrong there — pass device="phone" (or "tablet"/"desktop") for a correctly-shaped
+    screen, or size="WxH" (e.g. "412x915") for an exact resolution. The launched window is fitted to
+    fill the display. Changing the size respawns the shared sandbox (any other app in it is dropped).
 
     Transient popups — menus, Qt/QComboBox drop-downs, tooltips — open as SEPARATE override-redirect
     windows that a single-window capture (target="nested:<title>") doesn't include; capture the whole
@@ -1257,6 +1298,8 @@ async def launch_app(command: str, wait: float = 6.0) -> str:
 
     command: the shell command to run (e.g. "xterm", "flutter run -d linux", a built binary's path).
     wait: seconds to wait for a window to appear before returning.
+    size: nested display resolution as "WxH" (overrides device + the default).
+    device: a display shape — "phone" (412x915), "tablet" (820x1180), or "desktop" (1280x800).
     """
     import asyncio
     import shlex
@@ -1264,8 +1307,11 @@ async def launch_app(command: str, wait: float = 6.0) -> str:
     if unsupported := _desktop_unsupported():
         return unsupported
     config.refresh()
+    resolved_size, size_err = _resolve_nested_size(size, device)
+    if size_err:
+        return size_err
     try:
-        backend = _get_sandbox()
+        backend = _get_sandbox(resolved_size)
     except RuntimeError as e:  # Xephyr/Xvfb not installed
         return f"ERROR: sandbox unavailable — {e}"
     try:
@@ -1296,13 +1342,17 @@ async def launch_app(command: str, wait: float = 6.0) -> str:
         health = f" {health}" if health else ""
         return (f"Launched `{command}` in the sandbox but no window appeared within {wait:.0f}s.{flutter_note}{health} "
                 f"It may still be starting — retry list_desktop_windows, or raise `wait`.")
-    # A software-GL app (Flutter/Electron) presents a stale black buffer to X until a configure
-    # event makes it repaint; nudge each new window once so it starts rendered (the repaint then
-    # persists for later captures). Best-effort — capture self-heals the same way if it recurs.
+    # Fit each new window to fill the (now correctly-shaped) display so a mobile app isn't a small
+    # rectangle floating in a big screen — then nudge a software-GL app (Flutter/Electron) once so
+    # it starts rendered (a stale black buffer otherwise persists until a configure event makes it
+    # repaint). Both best-effort — capture self-heals the repaint the same way if it recurs.
+    await asyncio.sleep(0.6)  # let the window reach its real size first
+    fit = getattr(backend, "fit_window", None)
     repaint = getattr(backend, "force_repaint", None)
-    if repaint is not None:
-        await asyncio.sleep(0.6)  # let the window reach its real size before resizing it
-        for _, name in windows:
+    for _, name in windows:
+        if fit is not None:
+            await asyncio.to_thread(fit, name)
+        if repaint is not None:
             await asyncio.to_thread(repaint, name)
     targets = "\n".join(f'  target="nested:{name}"' for _, name in windows)
     return f"Launched `{command}` in the sandbox.{flutter_note} Drive it with:\n{targets}"

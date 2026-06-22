@@ -68,6 +68,8 @@ class _FakeNested:
     def __init__(self, *a, alive=True, **k):
         self.alive = alive
         self.closed = False
+        # mirror NestedBackend.size (2nd positional arg) so _get_sandbox's size-change check works
+        self.size = a[1] if len(a) > 1 else srv.config.nested_size
         _FakeNested.instances.append(self)
 
     def is_alive(self):

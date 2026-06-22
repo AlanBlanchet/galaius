@@ -6,7 +6,26 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ## [Unreleased]
 
-## [0.5.0] — 2026-06-20
+## [0.6.0] — 2026-06-22
+
+### Added
+
+- **Phone/tablet-shaped sandbox displays** (#37/#42 cluster). `launch_app` takes `device="phone"`
+  (412x915) / `"tablet"` / `"desktop"`, or `size="WxH"`, so a mobile app gets a correctly-shaped
+  nested display instead of the 1280x800 desktop default it looked wrong in. The launched window is
+  fitted to fill the display (a Flutter app otherwise mapped as a 10x10 speck in the corner), and
+  asking for a new size transparently respawns the shared sandbox. Verified driving the real app at
+  phone size — renders portrait, filling the frame.
+- **Key chords on the Linux uinput backend.** `key("ctrl+a")` now holds modifiers and taps the final
+  key (previously the local backend only handled a single key and raised on a chord); the chord
+  grammar is shared with the macOS/Windows backend.
+
+### Fixed
+
+- **Nested capture is no longer a frame stale** (#40/#41). A nested window is grabbed by its live
+  screen region (`maim -g`) instead of its backing pixmap (`maim -i <wid>`), which under software GL
+  kept the PREVIOUS screen's pixels after an in-app navigation — so `screenshot` lagged a frame
+  behind `get_interactive_elements`. Both now reflect what's actually on screen.
 
 ### Added
 

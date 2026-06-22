@@ -60,7 +60,28 @@ class ObservationAction(Action):
     mutates: ClassVar[bool] = False
 
 
-class TargetedAction(Action):
+def _require_name_for_role(action) -> None:
+    """``role`` is a qualifier on ``name`` (get_by_role(role, name=...)) — it's meaningless alone.
+    The same check was copied across click/type/drag; one helper now (works for any action with
+    ``role``/``name`` fields, regardless of how else it targets)."""
+    if action.role and not action.name:
+        raise ValueError("role requires name")
+
+
+class _RefSelectorLocator:
+    """Shared by every browser action that targets by ``ref``/``selector``: ref → its
+    data-interact-ref locator, else the raw CSS selector. The body was copied verbatim across the
+    targeting actions; defined once here (a plain mixin — no fields — so pydantic leaves it alone)."""
+
+    def _locator(self, page: Page):
+        return (
+            page.locator(ref_locator(self.ref))
+            if self.ref
+            else page.locator(self.selector)
+        )
+
+
+class TargetedAction(_RefSelectorLocator, Action):
     ref: str | None = None
     selector: str | None = None
 
@@ -69,13 +90,6 @@ class TargetedAction(Action):
         if not self.ref and not self.selector:
             raise ValueError("Provide ref or selector")
         return self
-
-    def _locator(self, page: Page):
-        return (
-            page.locator(ref_locator(self.ref))
-            if self.ref
-            else page.locator(self.selector)
-        )
 
 
 class _CoordinateTargetMixin(TargetedAction):
@@ -95,8 +109,7 @@ class _CoordinateTargetMixin(TargetedAction):
         )
 
     def _validate_targeting(self):
-        if self.role and not self.name:
-            raise ValueError("role requires name")
+        _require_name_for_role(self)
         if (self.x is not None) != (self.y is not None):
             raise ValueError("Provide both x and y, or neither")
         if self._targeting_groups() > 1:
@@ -160,7 +173,7 @@ class HoverAction(_CoordinateTargetMixin):
             await page.mouse.move(self.x, self.y)
 
 
-class TypeTextAction(Action):
+class TypeTextAction(_RefSelectorLocator, Action):
     type: Literal["type_text"] = "type_text"
     ref: str | None = None
     selector: str | None = None
@@ -171,16 +184,8 @@ class TypeTextAction(Action):
 
     @model_validator(mode="after")
     def _validate_targeting(self):
-        if self.role and not self.name:
-            raise ValueError("role requires name")
+        _require_name_for_role(self)
         return self
-
-    def _locator(self, page: Page):
-        return (
-            page.locator(ref_locator(self.ref))
-            if self.ref
-            else page.locator(self.selector)
-        )
 
     async def execute(self, page: Page):
         if not self.ref and not self.selector:
@@ -255,8 +260,7 @@ class DragAction(Action):
 
     @model_validator(mode="after")
     def _require_targets(self):
-        if self.role and not self.name:
-            raise ValueError("role requires name")
+        _require_name_for_role(self)
         has_from = self.from_ref or (
             self.from_x is not None and self.from_y is not None
         )
