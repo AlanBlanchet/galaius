@@ -199,10 +199,27 @@ _VIDEO_MME_FALLBACK = PublishedTable(
 )
 
 
+# MMAU (audio understanding) — single-pass test-mini accuracy from the MMAU paper/leaderboard,
+# web-verified 2026-06-24. Single-pass numbers only (agentic chain-of-thought results like
+# Step-Audio-R1 are not comparable and excluded). Offline fallback until a live source is wired.
+_MMAU_FALLBACK = PublishedTable(
+    source_url="https://sakshi113.github.io/mmau_homepage/",
+    retrieved="2026-06-24",
+    lib_recommendation="Gemini 1.5 Pro",
+    entries=[
+        PublishedEntry(model_name="Gemini 1.5 Pro", score=0.6615),
+        PublishedEntry(model_name="Qwen2.5-Omni-7B", score=0.656),
+        PublishedEntry(model_name="GPT-4o-audio", score=0.625),
+        PublishedEntry(model_name="Qwen2-Audio-7B-Instruct", score=0.554),
+    ],
+)
+
+
 _FALLBACKS: dict[str, PublishedTable] = {
     "screenspot_pro": _SCREENSPOT_PRO_FALLBACK,
     "screenspot": _SCREENSPOT_V2_FALLBACK,
     "mmmu": _MMMU_FALLBACK,
     "video_mme": _VIDEO_MME_FALLBACK,
+    "mmau": _MMAU_FALLBACK,
 }
 

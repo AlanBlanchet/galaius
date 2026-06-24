@@ -6,6 +6,31 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-06-24
+
+### Added
+
+- **`transcribe` — audio understanding + speech-to-text.** Point it at a local audio/media file
+  (mp3/wav/m4a/webm/ogg/flac, or the audio track of mp4/mov — e.g. a clip from `download_asset` or a
+  `record(path=…)`) and get the transcript back; with a `query` it answers about the audio instead.
+  Understanding is *acoustic* (it hears tone/speakers/music) when the audio model can take audio in
+  chat (Gemini, gpt-4o-audio), and transcript-based with a transcription-only model (Whisper,
+  gpt-4o-transcribe). Routes through litellm's transcription endpoint (`litellm.atranscription`).
+- **`audio` model role + `MMAU` benchmark.** New `audio.model` setting / `INTERACT_AUDIO_MODEL`
+  (auto-resolves to the best available audio model, Whisper as the transcription fallback). MMAU is
+  the headline audio-understanding benchmark (the audio analogue of MMMU/Video-MME); transcription
+  quality is ranked by Word Error Rate on the HF Open ASR Leaderboard.
+- **`MLVU` benchmark** — long-form (3 min–2 hr) video understanding, the complement to Video-MME.
+
+### Fixed
+
+- **The `video` role no longer mirrors the image list.** It used to offer *every* vision model
+  (Claude, GPT) even though those don't take video; litellm's `supports_video_input` flag never
+  populates, so native-video capability is now a curated family table (Gemini / Qwen-VL / InternVL /
+  Amazon Nova) — the video picker, recommendations and default are genuinely video-capable. interact
+  still drives a non-native model for a recording by sampling frames, so nothing regresses (the video
+  chain falls back to a frame-sampled VLM when no native-video model is keyed).
+
 ## [0.7.0] — 2026-06-24
 
 ### Added

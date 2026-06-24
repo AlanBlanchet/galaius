@@ -59,14 +59,14 @@ class VLMResult(BaseModel):
 
 class MediaItem(BaseModel):
     data: str
-    media_type: Literal["image", "video"] = "image"
+    media_type: Literal["image", "video", "audio"] = "image"
     mime_type: str = "image/png"
 
     @classmethod
     def from_bytes(
         cls,
         raw: bytes,
-        media_type: Literal["image", "video"] = "image",
+        media_type: Literal["image", "video", "audio"] = "image",
         mime_type: str = "image/png",
     ):
         return cls(data=bytes_to_b64(raw), media_type=media_type, mime_type=mime_type)
@@ -77,6 +77,44 @@ def _image_content(item: MediaItem) -> dict:
         "type": "image_url",
         "image_url": {"url": f"data:{item.mime_type};base64,{item.data}"},
     }
+
+
+def _audio_ext(mime_type: str) -> str:
+    """File extension for an audio/media MIME — so a transcription temp file is named in a way
+    the provider can sniff (whisper accepts mp3/mp4/m4a/wav/webm/ogg/flac directly)."""
+    m = mime_type.lower()
+    for ext in ("wav", "mp3", "m4a", "webm", "ogg", "flac", "mp4"):
+        if ext in m:
+            return ext
+    if "mpeg" in m:
+        return "mp3"
+    return "mp3"
+
+
+def _audio_payload(audio_b64: str, mime_type: str) -> tuple[str, str]:
+    """``(base64, format)`` for a chat ``input_audio`` part. The chat audio API only takes wav/mp3,
+    so wav/mp3 pass through and anything else (webm/mp4/m4a/ogg from a recording or download) is
+    transcoded to mp3 with ffmpeg — ``-vn`` drops any video track, leaving just the audio."""
+    m = mime_type.lower()
+    if "wav" in m:
+        return audio_b64, "wav"
+    if "mp3" in m or "mpeg" in m:
+        return audio_b64, "mp3"
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = f"{tmpdir}/in.{_audio_ext(mime_type)}"
+        out = f"{tmpdir}/out.mp3"
+        Path(src).write_bytes(base64.b64decode(audio_b64))
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", src, "-vn", "-acodec", "libmp3lame", out],
+            check=True,
+            capture_output=True,
+        )
+        return bytes_to_b64(Path(out).read_bytes()), "mp3"
+
+
+def _audio_content(item: MediaItem) -> dict:
+    data, fmt = _audio_payload(item.data, item.mime_type)
+    return {"type": "input_audio", "input_audio": {"data": data, "format": fmt}}
 
 
 def evenly_sampled(items: list, k: int) -> list:
@@ -188,6 +226,8 @@ async def analyze_media(
     for item in media:
         if item.media_type == "image":
             content.append(_image_content(item))
+        elif item.media_type == "audio":
+            content.append(_audio_content(item))
         else:
             content.extend(
                 _video_content(item, fps=config.video_fps, max_frames=config.video_max_frames)
@@ -200,6 +240,33 @@ async def analyze_media(
         max_tokens=tok,
         response_format=response_format,
     )
+
+
+async def transcribe_audio(
+    audio_bytes: bytes,
+    *,
+    model: str,
+    mime_type: str = "audio/mpeg",
+) -> VLMResult:
+    """Speech-to-text for an audio (or audio-bearing) clip via litellm's transcription endpoint
+    (``litellm.atranscription`` — a DIFFERENT API from chat ``acompletion``: it routes to Whisper /
+    gpt-4o-transcribe / Gemini / Groq / Deepgram). ``model`` is already resolved. Returns the
+    transcript as ``VLMResult.text``; a missing key degrades to a friendly note, never a crash."""
+    if not litellm.validate_environment(model)["keys_in_environment"]:
+        return VLMResult(
+            text=f"[Transcription unavailable — {model} API key not configured]", elapsed=0
+        )
+    t0 = time.monotonic()
+    with tempfile.NamedTemporaryFile(suffix=f".{_audio_ext(mime_type)}") as tf:
+        tf.write(audio_bytes)
+        tf.flush()
+        with open(tf.name, "rb") as fh:
+            response = await litellm.atranscription(model=model, file=fh)
+    elapsed = time.monotonic() - t0
+    text = getattr(response, "text", None)
+    if text is None and isinstance(response, dict):
+        text = response.get("text")
+    return VLMResult(text=text or "", elapsed=elapsed, model=model)
 
 
 async def analyze_screenshot(

@@ -88,7 +88,7 @@ launches the server. API keys are read from the usual provider env vars
 
 ### Which model should I use?
 
-interact uses a model for three distinct jobs. Set each, or leave it on **auto** (the safe
+interact uses a model for four distinct jobs. Set each, or leave it on **auto** (the safe
 default — it resolves to the best available model among the providers you have keys for, cheapest
 capable first, and falls back automatically if one errors):
 
@@ -96,7 +96,13 @@ capable first, and falls back automatically if one errors):
 | --- | --- | --- | --- |
 | **image** | reads a screenshot to answer a `query`; the default for most vision calls | general image understanding | **Image** (e.g. MMMU) |
 | **component** | detects the clickable UI elements / grounds _where_ to click | **GUI grounding** | **GUI grounding** (ScreenSpot-Pro) |
-| **video** | reads a recorded interaction's frames to explain what happened | temporal / sequence understanding | **Video** (Video-MME) |
+| **video** | reads a recorded interaction to explain what happened | temporal / sequence understanding | **Video** (Video-MME, MLVU) |
+| **audio** | transcribes / understands an audio clip (the `transcribe` tool) | speech-to-text + audio understanding | **Audio** (MMAU) |
+
+> The **video** picker lists genuine native-video models (Gemini, Qwen-VL, Nova); interact still
+> drives a non-native model by sampling frames from the recording, so any vision model works as a
+> fallback. The **audio** role uses litellm's transcription endpoint (Whisper / gpt-4o-transcribe /
+> Gemini) — see the `transcribe` tool below.
 
 How to choose, in order of effort:
 
@@ -128,6 +134,11 @@ the VS Code **Configuration → Models** panel, or the CLI (`interact config set
   broken/empty states, occluded regions, off-theme colors) so the agent gets a defect critique
   without hand-writing a vision prompt. Pass a `reference` image to judge how a build DIVERGES from
   a target (wrong accent, missing nav) instead of against a generic ideal. Works on any `target`.
+- **`transcribe`** — _hear_ media, not just see it: point it at an audio or media file (a clip from
+  `download_asset`, or a `record(path=…)` recording) and get the transcript back; pass a `query` to
+  ask about the audio instead (how many speakers, what's said, the tone). Understanding is acoustic
+  when the audio model can take audio in chat (Gemini, gpt-4o-audio), transcript-based with a
+  transcription-only model (Whisper).
 - **Desktop** — `list_desktop_windows`, and the same actions/screenshot against a window (by title
   or `wid:<id>`) or the whole screen. A moved or backgrounded window is raised before capture, so
   it's always interactable.

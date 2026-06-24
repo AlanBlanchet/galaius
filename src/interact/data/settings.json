@@ -28,12 +28,24 @@
       "key": "video.model",
       "field": "video_model",
       "label": "Video model",
-      "description": "Video understanding (needs a model with native video support).",
+      "description": "Video understanding. Native-video models (Gemini, Qwen-VL) are listed; interact samples frames from a recording, so a non-native model still works as a fallback.",
       "group": "Models",
       "kind": "model",
       "role": "video",
       "options": null,
       "env": "INTERACT_VIDEO_MODEL",
+      "default": ""
+    },
+    {
+      "key": "audio.model",
+      "field": "audio_model",
+      "label": "Audio model",
+      "description": "Speech-to-text + audio understanding for the transcribe tool (Whisper / gpt-4o-transcribe / Gemini).",
+      "group": "Models",
+      "kind": "model",
+      "role": "audio",
+      "options": null,
+      "env": "INTERACT_AUDIO_MODEL",
       "default": ""
     },
     {

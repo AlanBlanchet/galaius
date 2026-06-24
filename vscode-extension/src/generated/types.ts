@@ -7,7 +7,7 @@
 /* Do not modify it by hand - just update the pydantic models and then re-run the script
 */
 
-export type ModelCapability = "llm" | "vlm" | "gui_grounding" | "computer_use" | "video";
+export type ModelCapability = "llm" | "vlm" | "gui_grounding" | "computer_use" | "video" | "audio";
 /**
  * How bounding box values are sequenced in model output.
  */
@@ -24,7 +24,7 @@ export interface Benchmark {
   id: string;
   name: string;
   description: string;
-  category?: "image" | "gui_grounding" | "video";
+  category?: "image" | "gui_grounding" | "video" | "audio";
   source?: string;
   source_auth?: string;
   metric?: string;

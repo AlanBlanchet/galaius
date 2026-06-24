@@ -32,12 +32,23 @@ def _block_real_vlm_calls(request):
     async def _ablocked(*_a, **_k):
         _blocked()
 
-    saved = litellm.acompletion, litellm.completion
+    saved = (
+        litellm.acompletion,
+        litellm.completion,
+        litellm.atranscription,
+        litellm.transcription,
+    )
     litellm.acompletion, litellm.completion = _ablocked, _blocked
+    litellm.atranscription, litellm.transcription = _ablocked, _blocked
     try:
         yield
     finally:
-        litellm.acompletion, litellm.completion = saved
+        (
+            litellm.acompletion,
+            litellm.completion,
+            litellm.atranscription,
+            litellm.transcription,
+        ) = saved
 
 
 def pytest_collection_modifyitems(config, items):

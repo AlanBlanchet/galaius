@@ -18,11 +18,13 @@ class Config(BaseSettings):
     image_model: str = ""
     video_model: str = ""
     component_model: str = ""
+    audio_model: str = ""
     # Fallback model chains (comma-separated litellm ids) tried, in order, when the primary
     # model errors. Empty → the bundled per-role recommendations are used as the defaults.
     image_fallbacks: str = ""
     component_fallbacks: str = ""
     video_fallbacks: str = ""
+    audio_fallbacks: str = ""
     headless: bool = True
     slow_mo: int = 0
     browser_type: Literal["chromium", "firefox", "webkit"] = "chromium"
@@ -78,6 +80,8 @@ class Config(BaseSettings):
             return self.video_model
         if role == "component":
             return self.component_model
+        if role == "audio":
+            return self.audio_model
         return self.image_model
 
     def resolve_model(

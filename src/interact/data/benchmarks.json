@@ -683,6 +683,65 @@
       "lib_recommendation_model_id": null,
       "measured": {},
       "recommendations": []
+    },
+    {
+      "id": "mlvu",
+      "name": "MLVU",
+      "description": "Multi-task LONG-video understanding: 3-minute-to-2-hour videos across 9 tasks (holistic + single-detail + multi-detail) \u2014 the long-form complement to Video-MME.",
+      "category": "video",
+      "source": "OpenCompass video leaderboard",
+      "source_auth": "",
+      "url": "https://github.com/JUNJIE99/MLVU",
+      "metric": "accuracy",
+      "published": null,
+      "lib_recommendation_model_id": null,
+      "measured": {},
+      "recommendations": []
+    },
+    {
+      "id": "mmau",
+      "name": "MMAU",
+      "description": "Massive Multi-task Audio Understanding: 10,000 clips across speech, environmental sound and music with expert QA (27 skills) \u2014 the headline audio benchmark, the audio analogue of MMMU (image) and Video-MME (video). Transcription quality is ranked separately by Word Error Rate on the HF Open ASR Leaderboard.",
+      "category": "audio",
+      "source": "MMAU leaderboard",
+      "source_auth": "",
+      "url": "https://sakshi113.github.io/mmau_homepage/",
+      "metric": "accuracy",
+      "published": {
+        "source_url": "https://sakshi113.github.io/mmau_homepage/",
+        "retrieved": "2026-06-24",
+        "lib_recommendation": "Gemini 1.5 Pro",
+        "entries": [
+          {
+            "model_name": "Gemini 1.5 Pro",
+            "score": 0.6615
+          },
+          {
+            "model_name": "Qwen2.5-Omni-7B",
+            "score": 0.656
+          },
+          {
+            "model_name": "GPT-4o-audio",
+            "score": 0.625
+          },
+          {
+            "model_name": "Qwen2-Audio-7B-Instruct",
+            "score": 0.554
+          }
+        ]
+      },
+      "lib_recommendation_model_id": null,
+      "measured": {},
+      "recommendations": [
+        {
+          "model_id": "azure/gpt-4o",
+          "score": 0.625,
+          "source": "published",
+          "rank": 1,
+          "cost_per_million": 12.5,
+          "quality_per_dollar": 0.05
+        }
+      ]
     }
   ]
 }

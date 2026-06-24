@@ -28,7 +28,7 @@ def _litellm():
     except ImportError:  # pragma: no cover
         return None
 
-ModelRole = Literal["image", "component", "video"]
+ModelRole = Literal["image", "component", "video", "audio"]
 
 
 class ModelSpec(BaseModel):
@@ -66,7 +66,71 @@ class ModelCapability(StrEnum):
     # Native computer-use: the model emits click coordinates directly (Anthropic/OpenAI
     # computer-use tool). Sourced from litellm's `supports_computer_use` — not hardcoded.
     COMPUTER_USE = "computer_use"
-    VIDEO = "video"  # native video input — from litellm's `supports_video_input`
+    VIDEO = "video"  # native video input — see is_native_video_model
+    AUDIO = "audio"  # audio understanding / transcription — see is_audio_model
+
+
+# Native video INPUT and audio understanding are per-FAMILY facts that litellm's
+# `supports_video_input` / `supports_audio_input` flags do NOT reliably populate (they
+# currently return nothing for every current model), so — exactly like CoordFormat's grounding
+# table — they are curated substring tables grounded in each provider's own docs (web-verified
+# 2026-06-24):
+#   • Native video input: Gemini (all 2.x/3.x, incl. YouTube URLs), Qwen-VL / Qwen3-VL,
+#     InternVL, LLaVA-Video, Amazon Nova Lite/Pro/Premier. OpenAI + Anthropic are FRAMES-ONLY
+#     (no native video media type) — interact still drives them by ffmpeg-sampling a recording
+#     to images, but they are not "video models".
+#   • Audio understanding / transcription: Gemini, GPT-4o-audio / -transcribe, Whisper,
+#     Qwen-Omni. (Anthropic has no audio input.)
+# Substring match against the litellm id (provider prefix included), case-insensitive.
+_VIDEO_FAMILIES: tuple[str, ...] = (
+    "gemini",
+    "qwen2-vl", "qwen2.5-vl", "qwen3-vl", "qwen-vl", "qwenvl",
+    "internvl",
+    "llava-video", "llava-next-video",
+    "nova-lite", "nova-pro", "nova-premier",  # Nova Micro is text-only — match the video tiers
+)
+_AUDIO_FAMILIES: tuple[str, ...] = (
+    "gemini",
+    "gpt-4o-audio", "gpt-4o-mini-audio", "gpt-audio",
+    "gpt-4o-transcribe", "gpt-4o-mini-transcribe", "whisper",
+    "qwen-omni", "qwen2.5-omni", "qwen3-omni", "qwen2-audio",
+)
+
+# Generation / TTS / embedding variants of a family (e.g. gemini-*-image-preview, *-tts,
+# imagen, veo) OUTPUT media or vectors — they don't UNDERSTAND a video/audio input, so they're
+# excluded from the video/audio capability even though their name carries the family substring.
+_NOT_UNDERSTANDING: tuple[str, ...] = (
+    "-image", "image-preview", "image-generation", "-tts", "-embedding",
+    "embedding", "imagen", "veo",
+)
+
+
+def _is_understanding(model_id: str) -> bool:
+    lid = model_id.lower()
+    return not any(x in lid for x in _NOT_UNDERSTANDING)
+
+
+def is_native_video_model(model_id: str) -> bool:
+    """Whether a model accepts NATIVE video input (a clip), per the curated family table."""
+    lid = model_id.lower()
+    return _is_understanding(lid) and any(fam in lid for fam in _VIDEO_FAMILIES)
+
+
+def is_audio_model(model_id: str) -> bool:
+    """Whether a model can understand or transcribe AUDIO, per the curated family table."""
+    lid = model_id.lower()
+    return _is_understanding(lid) and any(fam in lid for fam in _AUDIO_FAMILIES)
+
+
+# Pure speech-to-text models — they transcribe but can't take audio in a chat completion. The
+# transcribe tool answers a `query` about one of these over its TRANSCRIPT (via the image model)
+# rather than routing the audio into an acoustic chat call it can't serve.
+_TRANSCRIBE_ONLY: tuple[str, ...] = ("whisper", "-transcribe")
+
+
+def is_transcription_only_model(model_id: str) -> bool:
+    lid = model_id.lower()
+    return any(t in lid for t in _TRANSCRIBE_ONLY)
 
 
 class RegistryMixin:
@@ -209,8 +273,10 @@ class Model(RegistryMixin, BaseModel):
             caps.add(ModelCapability.VLM)
         if cost_entry.get("supports_computer_use"):  # litellm flag → native coordinate output
             caps.add(ModelCapability.COMPUTER_USE)
-        if cost_entry.get("supports_video_input"):
+        if cost_entry.get("supports_video_input") or is_native_video_model(model_id):
             caps.add(ModelCapability.VIDEO)
+        if cost_entry.get("supports_audio_input") or is_audio_model(model_id):
+            caps.add(ModelCapability.AUDIO)
         fmt = CoordFormat.for_model(model_id)
         if fmt != CoordFormat():
             caps.add(ModelCapability.GUI_GROUNDING)
@@ -277,6 +343,13 @@ class Model(RegistryMixin, BaseModel):
                         caps.add(ModelCapability(tag))
                     except ValueError:
                         pass
+                # Belt-and-suspenders: derive native-video / audio from the family table too, so
+                # the registry is correct even against an un-regenerated catalog whose JSON tags
+                # predate these capabilities (litellm's own flags don't populate them).
+                if is_native_video_model(model_id):
+                    caps.add(ModelCapability.VIDEO)
+                if is_audio_model(model_id):
+                    caps.add(ModelCapability.AUDIO)
                 cls._register(
                     cls(
                         id=model_id,
@@ -442,7 +515,7 @@ class Benchmark(RegistryMixin, BaseModel):
     name: str
     description: str
     # Which capability the benchmark measures, so the UI can group + explain by task.
-    category: Literal["image", "gui_grounding", "video"] = "gui_grounding"
+    category: Literal["image", "gui_grounding", "video", "audio"] = "gui_grounding"
     # Where its live scores come from, and the env key that source needs ("" = keyless / auto).
     # Surfaced in the config so the user can supply an optional key per source — no CLI needed.
     source: str = ""
@@ -721,6 +794,39 @@ Benchmark._register(
         ),
         url="https://github.com/OpenGVLab/Ask-Anything",
         published=PublishedTable.load("mvbench"),
+    )
+)
+Benchmark._register(
+    Benchmark(
+        id="mlvu",
+        name="MLVU",
+        category="video",
+        source="OpenCompass video leaderboard",
+        source_auth="",
+        description=(
+            "Multi-task LONG-video understanding: 3-minute-to-2-hour videos across 9 tasks "
+            "(holistic + single-detail + multi-detail) — the long-form complement to Video-MME."
+        ),
+        url="https://github.com/JUNJIE99/MLVU",
+        published=PublishedTable.load("mlvu"),
+    )
+)
+# Audio understanding — "can the model reason over speech, sound and music?"
+Benchmark._register(
+    Benchmark(
+        id="mmau",
+        name="MMAU",
+        category="audio",
+        source="MMAU leaderboard",
+        source_auth="",
+        description=(
+            "Massive Multi-task Audio Understanding: 10,000 clips across speech, environmental "
+            "sound and music with expert QA (27 skills) — the headline audio benchmark, the audio "
+            "analogue of MMMU (image) and Video-MME (video). Transcription quality is ranked "
+            "separately by Word Error Rate on the HF Open ASR Leaderboard."
+        ),
+        url="https://sakshi113.github.io/mmau_homepage/",
+        published=PublishedTable.load("mmau"),
     )
 )
 

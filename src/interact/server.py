@@ -40,6 +40,7 @@ from interact.state import (
     annotate_screenshot,
     format_element_list,
 )
+from interact.models import is_audio_model, is_transcription_only_model
 from interact.vision import (
     MediaItem,
     VLMResult,
@@ -47,6 +48,7 @@ from interact.vision import (
     _Unset,
     analyze_media,
     analyze_screenshot,
+    transcribe_audio,
 )
 
 _log.info(
@@ -423,6 +425,18 @@ def _save_to_path(path: str, data: bytes):
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_bytes(data)
+
+
+_AUDIO_MIME = {
+    ".mp3": "audio/mpeg", ".wav": "audio/wav", ".m4a": "audio/mp4", ".aac": "audio/aac",
+    ".webm": "audio/webm", ".ogg": "audio/ogg", ".oga": "audio/ogg", ".flac": "audio/flac",
+    ".mp4": "video/mp4", ".mov": "video/quicktime", ".mpeg": "audio/mpeg", ".mpga": "audio/mpeg",
+}
+
+
+def _audio_mime(path: str) -> str:
+    """MIME for an audio/media file, by extension (default mp3)."""
+    return _AUDIO_MIME.get(Path(path).suffix.lower(), "audio/mpeg")
 
 
 def _session_response(session: str, body: str) -> str:
@@ -1248,6 +1262,60 @@ async def download_asset(url: str, path: str, session: str = _DEFAULT_SESSION) -
     data = await response.body()
     _save_to_path(path, data)
     return _session_response(session, f"Downloaded {len(data)} bytes to {path}")
+
+
+@mcp.tool()
+async def transcribe(
+    path: str,
+    query: str | None = None,
+    model: str | None = None,
+) -> str:
+    """Transcribe an audio (or audio-bearing) file to text, and optionally answer a question about it.
+
+    Point it at a local file `path` — a clip you grabbed with download_asset, or a recording you
+    saved with record(path=...). Accepts mp3/wav/m4a/webm/ogg/flac and mp4/mov (the audio track is
+    used). Returns the transcript; with `query`, returns an answer about the audio instead.
+
+    Audio understanding is acoustic (it HEARS the clip — tone, speakers, music, sound events) when the
+    audio model can take audio in chat (Gemini, gpt-4o-audio); with a transcription-only model
+    (Whisper, gpt-4o-transcribe) the query is answered over the transcript. Set the model with the
+    `audio.model` setting / INTERACT_AUDIO_MODEL, or override per-call with `model`.
+
+    path: local audio/media file to read.
+    query: optional question about the audio (omit for a plain transcript).
+    model: override the configured audio model for this call.
+    """
+    config.refresh()
+    try:
+        data = Path(path).read_bytes()
+    except OSError as e:
+        return f"ERROR: could not read audio file {path!r} — {e}"
+    mime = _audio_mime(path)
+    audio_model = config.resolve_model("audio", model or "")
+    name = Path(path).name
+
+    # Acoustic understanding when the model can hear the clip directly; otherwise fall through to
+    # transcript-based answering below (so Whisper-style transcription-only models still serve a query).
+    if query and is_audio_model(audio_model) and not is_transcription_only_model(audio_model):
+        try:
+            r = await _vlm(data, f"Audio file: {name}", query, "audio", mime, model_override=audio_model)
+            return _fmt_timing(r)
+        except Exception as e:
+            return f"ERROR: audio understanding failed on {audio_model} — {e}"
+
+    try:
+        r = await transcribe_audio(data, model=audio_model, mime_type=mime)
+    except Exception as e:
+        return f"ERROR: transcription failed on {audio_model} — {e}"
+    transcript = r.text
+    if not query:
+        return f"{transcript}\n(transcribed:{(' ' + r.model) if r.model else ''} {r.elapsed:.1f}s)"
+
+    answer = await analyze_media(
+        [], f"Transcript of {name}:\n{transcript}", config, query,
+        model=config.resolve_model("image"),
+    )
+    return f"{answer.text}\n\n--- transcript ---\n{transcript}\n(VLM: {answer.model} {answer.elapsed:.1f}s)"
 
 
 @mcp.tool()

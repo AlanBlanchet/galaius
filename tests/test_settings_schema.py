@@ -8,7 +8,7 @@ import pytest
 
 from interact.config import Config
 from interact.data import PackageData
-from interact.settings_schema import SETTINGS, by_key, groups, to_json_dict
+from interact.settings_schema import _ROLE_CAP, SETTINGS, by_key, groups, to_json_dict
 
 
 def test_every_setting_maps_to_a_real_config_field():
@@ -37,7 +37,7 @@ def test_keys_are_unique():
 @pytest.mark.parametrize("setting", SETTINGS, ids=lambda s: s.key)
 def test_kind_specific_shape(setting):
     if setting.kind == "model":
-        assert setting.role in {"image", "component", "video"}
+        assert setting.role in _ROLE_CAP  # every model role declares a capability filter
     if setting.kind == "enum":
         assert setting.options, f"{setting.key} is an enum with no options"
     if setting.kind != "enum":

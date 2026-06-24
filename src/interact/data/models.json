@@ -9,7 +9,8 @@
           "output_cost_per_million": 0.24,
           "intelligence_score": 12.7,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video"
           ]
         },
         "amazon-nova/nova-premier-v1": {
@@ -18,7 +19,8 @@
           "output_cost_per_million": 12.5,
           "intelligence_score": 19.0,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video"
           ]
         },
         "amazon-nova/nova-pro-v1": {
@@ -27,7 +29,8 @@
           "output_cost_per_million": 3.2,
           "intelligence_score": 13.5,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video"
           ]
         }
       }
@@ -1573,7 +1576,8 @@
           "output_cost_per_million": 3.84,
           "intelligence_score": 13.5,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video"
           ]
         },
         "bedrock/us-gov-east-1/anthropic.claude-3-5-sonnet-20240620-v1:0": {
@@ -1623,7 +1627,8 @@
           "output_cost_per_million": 3.84,
           "intelligence_score": 13.5,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video"
           ]
         },
         "bedrock/us-gov-west-1/anthropic.claude-3-5-sonnet-20240620-v1:0": {
@@ -1850,7 +1855,8 @@
           "output_cost_per_million": 0.24,
           "intelligence_score": 12.7,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video"
           ]
         },
         "amazon.nova-pro-v1:0": {
@@ -1859,7 +1865,8 @@
           "output_cost_per_million": 3.2,
           "intelligence_score": 13.5,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video"
           ]
         },
         "anthropic.claude-3-7-sonnet-20250219-v1:0": {
@@ -1977,7 +1984,8 @@
           "output_cost_per_million": 0.252,
           "intelligence_score": 12.7,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video"
           ]
         },
         "apac.amazon.nova-pro-v1:0": {
@@ -1986,7 +1994,8 @@
           "output_cost_per_million": 3.36,
           "intelligence_score": 13.5,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video"
           ]
         },
         "apac.anthropic.claude-haiku-4-5-20251001-v1:0": {
@@ -2070,7 +2079,8 @@
           "output_cost_per_million": 0.312,
           "intelligence_score": 12.7,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video"
           ]
         },
         "eu.amazon.nova-pro-v1:0": {
@@ -2079,7 +2089,8 @@
           "output_cost_per_million": 4.2,
           "intelligence_score": 13.5,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video"
           ]
         },
         "eu.anthropic.claude-haiku-4-5-20251001-v1:0": {
@@ -2301,7 +2312,8 @@
           "input_cost_per_million": 0.53,
           "output_cost_per_million": 2.66,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video"
           ]
         },
         "us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0": {
@@ -2334,7 +2346,8 @@
           "output_cost_per_million": 0.24,
           "intelligence_score": 12.7,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video"
           ]
         },
         "us.amazon.nova-premier-v1:0": {
@@ -2343,7 +2356,8 @@
           "output_cost_per_million": 12.5,
           "intelligence_score": 19.0,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video"
           ]
         },
         "us.amazon.nova-pro-v1:0": {
@@ -2352,7 +2366,8 @@
           "output_cost_per_million": 3.2,
           "intelligence_score": 13.5,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video"
           ]
         },
         "us.anthropic.claude-3-7-sonnet-20250219-v1:0": {
@@ -2547,7 +2562,8 @@
           "output_cost_per_million": 1.6,
           "intelligence_score": 20.8,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video"
           ]
         },
         "dashscope/qwen3-vl-235b-a22b-thinking": {
@@ -2555,7 +2571,8 @@
           "input_cost_per_million": 0.4,
           "output_cost_per_million": 4.0,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video"
           ]
         },
         "dashscope/qwen3-vl-32b-instruct": {
@@ -2564,7 +2581,8 @@
           "output_cost_per_million": 0.64,
           "intelligence_score": 17.2,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video"
           ]
         },
         "dashscope/qwen3-vl-32b-thinking": {
@@ -2572,13 +2590,15 @@
           "input_cost_per_million": 0.16,
           "output_cost_per_million": 2.87,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video"
           ]
         },
         "dashscope/qwen3-vl-plus": {
           "supports_response_schema": false,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video"
           ]
         },
         "dashscope/qwen3.5-plus": {
@@ -2599,7 +2619,8 @@
           "input_cost_per_million": 0.2,
           "output_cost_per_million": 0.6,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video"
           ]
         }
       }
@@ -2646,7 +2667,9 @@
           "input_cost_per_million": 0.75,
           "output_cost_per_million": 4.5,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "gemini-exp-1206": {
@@ -2654,7 +2677,9 @@
           "input_cost_per_million": 0.3,
           "output_cost_per_million": 2.5,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "gemini-flash-latest": {
@@ -2662,7 +2687,9 @@
           "input_cost_per_million": 0.3,
           "output_cost_per_million": 2.5,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "gemini-flash-lite-latest": {
@@ -2670,7 +2697,9 @@
           "input_cost_per_million": 0.1,
           "output_cost_per_million": 0.4,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "gemini-pro-latest": {
@@ -2678,7 +2707,9 @@
           "input_cost_per_million": 1.25,
           "output_cost_per_million": 10.0,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "gemini/deep-research-pro-preview-12-2025": {
@@ -2687,7 +2718,9 @@
           "output_cost_per_million": 12.0,
           "capabilities": [
             "vlm",
-            "gui_grounding"
+            "gui_grounding",
+            "video",
+            "audio"
           ]
         },
         "gemini/gemini-2.0-flash": {
@@ -2697,7 +2730,9 @@
           "intelligence_score": 18.5,
           "capabilities": [
             "vlm",
-            "gui_grounding"
+            "gui_grounding",
+            "video",
+            "audio"
           ]
         },
         "gemini/gemini-2.0-flash-001": {
@@ -2707,7 +2742,9 @@
           "intelligence_score": 18.5,
           "capabilities": [
             "vlm",
-            "gui_grounding"
+            "gui_grounding",
+            "video",
+            "audio"
           ]
         },
         "gemini/gemini-2.0-flash-exp-image-generation": {
@@ -2727,7 +2764,9 @@
           "intelligence_score": 14.5,
           "capabilities": [
             "vlm",
-            "gui_grounding"
+            "gui_grounding",
+            "video",
+            "audio"
           ]
         },
         "gemini/gemini-2.0-flash-lite-001": {
@@ -2737,7 +2776,9 @@
           "intelligence_score": 14.7,
           "capabilities": [
             "vlm",
-            "gui_grounding"
+            "gui_grounding",
+            "video",
+            "audio"
           ]
         },
         "gemini/gemini-2.5-computer-use-preview-10-2025": {
@@ -2746,7 +2787,9 @@
           "output_cost_per_million": 10.0,
           "capabilities": [
             "vlm",
-            "gui_grounding"
+            "gui_grounding",
+            "video",
+            "audio"
           ]
         },
         "gemini/gemini-2.5-flash": {
@@ -2756,7 +2799,9 @@
           "intelligence_score": 20.6,
           "capabilities": [
             "vlm",
-            "gui_grounding"
+            "gui_grounding",
+            "video",
+            "audio"
           ]
         },
         "gemini/gemini-2.5-flash-image": {
@@ -2776,7 +2821,9 @@
           "intelligence_score": 12.7,
           "capabilities": [
             "vlm",
-            "gui_grounding"
+            "gui_grounding",
+            "video",
+            "audio"
           ]
         },
         "gemini/gemini-2.5-flash-lite-preview-06-17": {
@@ -2786,7 +2833,9 @@
           "intelligence_score": 12.7,
           "capabilities": [
             "vlm",
-            "gui_grounding"
+            "gui_grounding",
+            "video",
+            "audio"
           ]
         },
         "gemini/gemini-2.5-flash-lite-preview-09-2025": {
@@ -2796,7 +2845,9 @@
           "intelligence_score": 19.4,
           "capabilities": [
             "vlm",
-            "gui_grounding"
+            "gui_grounding",
+            "video",
+            "audio"
           ]
         },
         "gemini/gemini-2.5-flash-preview-09-2025": {
@@ -2806,7 +2857,9 @@
           "intelligence_score": 25.7,
           "capabilities": [
             "vlm",
-            "gui_grounding"
+            "gui_grounding",
+            "video",
+            "audio"
           ]
         },
         "gemini/gemini-2.5-pro": {
@@ -2816,7 +2869,9 @@
           "intelligence_score": 34.6,
           "capabilities": [
             "vlm",
-            "gui_grounding"
+            "gui_grounding",
+            "video",
+            "audio"
           ]
         },
         "gemini/gemini-2.5-pro-preview-tts": {
@@ -2836,7 +2891,9 @@
           "intelligence_score": 35.0,
           "capabilities": [
             "vlm",
-            "gui_grounding"
+            "gui_grounding",
+            "video",
+            "audio"
           ]
         },
         "gemini/gemini-3-pro-image-preview": {
@@ -2856,7 +2913,9 @@
           "intelligence_score": 48.4,
           "capabilities": [
             "vlm",
-            "gui_grounding"
+            "gui_grounding",
+            "video",
+            "audio"
           ]
         },
         "gemini/gemini-3.1-flash-image-preview": {
@@ -2875,7 +2934,9 @@
           "intelligence_score": 33.5,
           "capabilities": [
             "vlm",
-            "gui_grounding"
+            "gui_grounding",
+            "video",
+            "audio"
           ]
         },
         "gemini/gemini-3.1-flash-live-preview": {
@@ -2884,7 +2945,9 @@
           "output_cost_per_million": 4.5,
           "capabilities": [
             "vlm",
-            "gui_grounding"
+            "gui_grounding",
+            "video",
+            "audio"
           ]
         },
         "gemini/gemini-3.1-pro-preview": {
@@ -2894,7 +2957,9 @@
           "intelligence_score": 57.2,
           "capabilities": [
             "vlm",
-            "gui_grounding"
+            "gui_grounding",
+            "video",
+            "audio"
           ]
         },
         "gemini/gemini-3.1-pro-preview-customtools": {
@@ -2904,7 +2969,9 @@
           "intelligence_score": 57.2,
           "capabilities": [
             "vlm",
-            "gui_grounding"
+            "gui_grounding",
+            "video",
+            "audio"
           ]
         },
         "gemini/gemini-3.5-flash": {
@@ -2914,7 +2981,9 @@
           "intelligence_score": 55.3,
           "capabilities": [
             "vlm",
-            "gui_grounding"
+            "gui_grounding",
+            "video",
+            "audio"
           ]
         },
         "gemini/gemini-exp-1114": {
@@ -2923,7 +2992,9 @@
           "output_cost_per_million": 0.0,
           "capabilities": [
             "vlm",
-            "gui_grounding"
+            "gui_grounding",
+            "video",
+            "audio"
           ]
         },
         "gemini/gemini-exp-1206": {
@@ -2932,7 +3003,9 @@
           "output_cost_per_million": 0.0,
           "capabilities": [
             "vlm",
-            "gui_grounding"
+            "gui_grounding",
+            "video",
+            "audio"
           ]
         },
         "gemini/gemini-flash-latest": {
@@ -2941,7 +3014,9 @@
           "output_cost_per_million": 2.5,
           "capabilities": [
             "vlm",
-            "gui_grounding"
+            "gui_grounding",
+            "video",
+            "audio"
           ]
         },
         "gemini/gemini-flash-lite-latest": {
@@ -2950,7 +3025,9 @@
           "output_cost_per_million": 0.4,
           "capabilities": [
             "vlm",
-            "gui_grounding"
+            "gui_grounding",
+            "video",
+            "audio"
           ]
         },
         "gemini/gemini-gemma-2-27b-it": {
@@ -2959,7 +3036,9 @@
           "output_cost_per_million": 1.05,
           "capabilities": [
             "vlm",
-            "gui_grounding"
+            "gui_grounding",
+            "video",
+            "audio"
           ]
         },
         "gemini/gemini-gemma-2-9b-it": {
@@ -2968,7 +3047,9 @@
           "output_cost_per_million": 1.05,
           "capabilities": [
             "vlm",
-            "gui_grounding"
+            "gui_grounding",
+            "video",
+            "audio"
           ]
         },
         "gemini/gemini-live-2.5-flash-preview-native-audio-09-2025": {
@@ -2977,7 +3058,9 @@
           "output_cost_per_million": 2.0,
           "capabilities": [
             "vlm",
-            "gui_grounding"
+            "gui_grounding",
+            "video",
+            "audio"
           ]
         },
         "gemini/gemini-pro-latest": {
@@ -2986,7 +3069,9 @@
           "output_cost_per_million": 10.0,
           "capabilities": [
             "vlm",
-            "gui_grounding"
+            "gui_grounding",
+            "video",
+            "audio"
           ]
         },
         "gemini/gemini-robotics-er-1.5-preview": {
@@ -2996,7 +3081,9 @@
           "intelligence_score": 12.0,
           "capabilities": [
             "vlm",
-            "gui_grounding"
+            "gui_grounding",
+            "video",
+            "audio"
           ]
         },
         "gemini/gemma-3-27b-it": {
@@ -3006,7 +3093,9 @@
           "intelligence_score": 10.3,
           "capabilities": [
             "vlm",
-            "gui_grounding"
+            "gui_grounding",
+            "video",
+            "audio"
           ]
         },
         "gemini/learnlm-1.5-pro-experimental": {
@@ -3015,7 +3104,9 @@
           "output_cost_per_million": 0.0,
           "capabilities": [
             "vlm",
-            "gui_grounding"
+            "gui_grounding",
+            "video",
+            "audio"
           ]
         }
       }
@@ -3089,14 +3180,18 @@
           "supports_response_schema": false,
           "intelligence_score": 34.6,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "github_copilot/gemini-3-pro-preview": {
           "supports_response_schema": false,
           "intelligence_score": 48.4,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "github_copilot/gpt-4.1": {
@@ -3187,7 +3282,8 @@
           "output_cost_per_million": 1.4,
           "intelligence_score": 20.8,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video"
           ]
         },
         "gmi/anthropic/claude-opus-4": {
@@ -3232,7 +3328,9 @@
           "output_cost_per_million": 3.0,
           "intelligence_score": 35.0,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "gmi/google/gemini-3-pro-preview": {
@@ -3241,7 +3339,9 @@
           "output_cost_per_million": 12.0,
           "intelligence_score": 48.4,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "gmi/openai/gpt-4o": {
@@ -3328,7 +3428,8 @@
           "output_cost_per_million": 0.55,
           "intelligence_score": 16.7,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video"
           ]
         }
       }
@@ -3555,7 +3656,8 @@
           "input_cost_per_million": 0.13,
           "output_cost_per_million": 0.4,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video"
           ]
         },
         "nebius/Qwen/Qwen2-VL-7B-Instruct": {
@@ -3563,7 +3665,8 @@
           "input_cost_per_million": 0.02,
           "output_cost_per_million": 0.06,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video"
           ]
         },
         "nebius/Qwen/Qwen2.5-VL-72B-Instruct": {
@@ -3571,7 +3674,8 @@
           "input_cost_per_million": 0.13,
           "output_cost_per_million": 0.4,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video"
           ]
         },
         "nebius/google/gemma-3-27b-it": {
@@ -3689,7 +3793,8 @@
           "input_cost_per_million": 0.8,
           "output_cost_per_million": 0.8,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video"
           ]
         },
         "novita/qwen/qwen3-omni-30b-a3b-instruct": {
@@ -3698,7 +3803,8 @@
           "output_cost_per_million": 0.97,
           "intelligence_score": 10.7,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "audio"
           ]
         },
         "novita/qwen/qwen3-omni-30b-a3b-thinking": {
@@ -3706,7 +3812,8 @@
           "input_cost_per_million": 0.25,
           "output_cost_per_million": 0.97,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "audio"
           ]
         },
         "novita/qwen/qwen3-vl-235b-a22b-instruct": {
@@ -3715,7 +3822,8 @@
           "output_cost_per_million": 1.5,
           "intelligence_score": 20.8,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video"
           ]
         },
         "novita/qwen/qwen3-vl-235b-a22b-thinking": {
@@ -3723,7 +3831,8 @@
           "input_cost_per_million": 0.98,
           "output_cost_per_million": 3.95,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video"
           ]
         },
         "novita/qwen/qwen3-vl-30b-a3b-instruct": {
@@ -3732,7 +3841,8 @@
           "output_cost_per_million": 0.7,
           "intelligence_score": 16.0,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video"
           ]
         },
         "novita/qwen/qwen3-vl-30b-a3b-thinking": {
@@ -3740,7 +3850,8 @@
           "input_cost_per_million": 0.2,
           "output_cost_per_million": 1.0,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video"
           ]
         },
         "novita/qwen/qwen3-vl-8b-instruct": {
@@ -3749,7 +3860,8 @@
           "output_cost_per_million": 0.5,
           "intelligence_score": 14.3,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video"
           ]
         },
         "novita/skywork/r1v4-lite": {
@@ -3807,7 +3919,9 @@
           "output_cost_per_million": 0.6,
           "intelligence_score": 20.6,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "oci/google.gemini-2.5-flash-lite": {
@@ -3816,7 +3930,9 @@
           "output_cost_per_million": 0.3,
           "intelligence_score": 12.7,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "oci/google.gemini-2.5-pro": {
@@ -3825,7 +3941,9 @@
           "output_cost_per_million": 10.0,
           "intelligence_score": 34.6,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "oci/meta.llama-3.2-11b-vision-instruct": {
@@ -3853,317 +3971,411 @@
       "models": {
         "ollama/deepseek-ocr": {
           "supports_response_schema": false,
-          "vision": true
+          "vision": true,
+          "capabilities": []
         },
         "ollama/deepseek-ocr:3b": {
           "supports_response_schema": false,
-          "vision": true
+          "vision": true,
+          "capabilities": []
         },
         "ollama/devstral-small-2": {
           "supports_response_schema": false,
           "vision": true,
-          "intelligence_score": 19.5
+          "intelligence_score": 19.5,
+          "capabilities": []
         },
         "ollama/devstral-small-2:24b": {
           "supports_response_schema": false,
           "vision": true,
-          "intelligence_score": 19.5
+          "intelligence_score": 19.5,
+          "capabilities": []
         },
         "ollama/devstral-small-2:24b-cloud": {
           "supports_response_schema": false,
           "vision": true,
           "cloud": true,
-          "intelligence_score": 19.5
+          "intelligence_score": 19.5,
+          "capabilities": []
         },
         "ollama/gemini-3-flash-preview": {
           "supports_response_schema": false,
           "vision": true,
-          "intelligence_score": 35.0
+          "intelligence_score": 35.0,
+          "capabilities": [
+            "video",
+            "audio"
+          ]
         },
         "ollama/gemini-3-flash-preview:cloud": {
           "supports_response_schema": false,
           "vision": true,
           "cloud": true,
-          "intelligence_score": 35.0
+          "intelligence_score": 35.0,
+          "capabilities": [
+            "video",
+            "audio"
+          ]
         },
         "ollama/gemma3": {
           "supports_response_schema": false,
           "vision": true,
-          "intelligence_score": 10.1
+          "intelligence_score": 10.1,
+          "capabilities": []
         },
         "ollama/gemma3:12b": {
           "supports_response_schema": false,
-          "vision": true
+          "vision": true,
+          "capabilities": []
         },
         "ollama/gemma3:12b-cloud": {
           "supports_response_schema": false,
           "vision": true,
-          "cloud": true
+          "cloud": true,
+          "capabilities": []
         },
         "ollama/gemma3:1b": {
           "supports_response_schema": false,
-          "vision": true
+          "vision": true,
+          "capabilities": []
         },
         "ollama/gemma3:270m": {
           "supports_response_schema": false,
-          "vision": true
+          "vision": true,
+          "capabilities": []
         },
         "ollama/gemma3:27b": {
           "supports_response_schema": false,
-          "vision": true
+          "vision": true,
+          "capabilities": []
         },
         "ollama/gemma3:27b-cloud": {
           "supports_response_schema": false,
           "vision": true,
-          "cloud": true
+          "cloud": true,
+          "capabilities": []
         },
         "ollama/gemma3:4b": {
           "supports_response_schema": false,
-          "vision": true
+          "vision": true,
+          "capabilities": []
         },
         "ollama/gemma3:4b-cloud": {
           "supports_response_schema": false,
           "vision": true,
-          "cloud": true
+          "cloud": true,
+          "capabilities": []
         },
         "ollama/gemma4": {
           "supports_response_schema": false,
           "vision": true,
-          "intelligence_score": 27.1
+          "intelligence_score": 27.1,
+          "capabilities": []
         },
         "ollama/gemma4:26b": {
           "supports_response_schema": false,
-          "vision": true
+          "vision": true,
+          "capabilities": []
         },
         "ollama/gemma4:31b": {
           "supports_response_schema": false,
-          "vision": true
+          "vision": true,
+          "capabilities": []
         },
         "ollama/gemma4:31b-cloud": {
           "supports_response_schema": false,
           "vision": true,
-          "cloud": true
+          "cloud": true,
+          "capabilities": []
         },
         "ollama/glm-ocr": {
           "supports_response_schema": false,
-          "vision": true
+          "vision": true,
+          "capabilities": []
         },
         "ollama/kimi-k2.5:cloud": {
           "supports_response_schema": false,
           "vision": true,
           "cloud": true,
-          "intelligence_score": 46.8
+          "intelligence_score": 46.8,
+          "capabilities": []
         },
         "ollama/kimi-k2.6:cloud": {
           "supports_response_schema": false,
           "vision": true,
           "cloud": true,
-          "intelligence_score": 53.9
+          "intelligence_score": 53.9,
+          "capabilities": []
         },
         "ollama/llava": {
           "supports_response_schema": false,
-          "vision": true
+          "vision": true,
+          "capabilities": []
         },
         "ollama/llava:13b": {
           "supports_response_schema": false,
-          "vision": true
+          "vision": true,
+          "capabilities": []
         },
         "ollama/llava:34b": {
           "supports_response_schema": false,
-          "vision": true
+          "vision": true,
+          "capabilities": []
         },
         "ollama/llava:7b": {
           "supports_response_schema": false,
-          "vision": true
+          "vision": true,
+          "capabilities": []
         },
         "ollama/medgemma": {
           "supports_response_schema": false,
-          "vision": true
+          "vision": true,
+          "capabilities": []
         },
         "ollama/medgemma1.5": {
           "supports_response_schema": false,
-          "vision": true
+          "vision": true,
+          "capabilities": []
         },
         "ollama/medgemma1.5:4b": {
           "supports_response_schema": false,
-          "vision": true
+          "vision": true,
+          "capabilities": []
         },
         "ollama/medgemma:27b": {
           "supports_response_schema": false,
-          "vision": true
+          "vision": true,
+          "capabilities": []
         },
         "ollama/medgemma:4b": {
           "supports_response_schema": false,
-          "vision": true
+          "vision": true,
+          "capabilities": []
         },
         "ollama/ministral-3": {
           "supports_response_schema": false,
           "vision": true,
-          "intelligence_score": 16.0
+          "intelligence_score": 16.0,
+          "capabilities": []
         },
         "ollama/ministral-3:14b": {
           "supports_response_schema": false,
-          "vision": true
+          "vision": true,
+          "capabilities": []
         },
         "ollama/ministral-3:14b-cloud": {
           "supports_response_schema": false,
           "vision": true,
-          "cloud": true
+          "cloud": true,
+          "capabilities": []
         },
         "ollama/ministral-3:3b": {
           "supports_response_schema": false,
-          "vision": true
+          "vision": true,
+          "capabilities": []
         },
         "ollama/ministral-3:3b-cloud": {
           "supports_response_schema": false,
           "vision": true,
-          "cloud": true
+          "cloud": true,
+          "capabilities": []
         },
         "ollama/ministral-3:8b": {
           "supports_response_schema": false,
-          "vision": true
+          "vision": true,
+          "capabilities": []
         },
         "ollama/ministral-3:8b-cloud": {
           "supports_response_schema": false,
           "vision": true,
-          "cloud": true
+          "cloud": true,
+          "capabilities": []
         },
         "ollama/mistral-large-3:675b-cloud": {
           "supports_response_schema": false,
           "vision": true,
           "cloud": true,
-          "intelligence_score": 22.8
+          "intelligence_score": 22.8,
+          "capabilities": []
         },
         "ollama/mistral-medium-3.5": {
           "supports_response_schema": false,
           "vision": true,
-          "intelligence_score": 39.2
+          "intelligence_score": 39.2,
+          "capabilities": []
         },
         "ollama/mistral-medium-3.5:128b": {
           "supports_response_schema": false,
           "vision": true,
-          "intelligence_score": 39.2
+          "intelligence_score": 39.2,
+          "capabilities": []
         },
         "ollama/mistral-small3.2": {
           "supports_response_schema": false,
           "vision": true,
-          "intelligence_score": 15.1
+          "intelligence_score": 15.1,
+          "capabilities": []
         },
         "ollama/mistral-small3.2:24b": {
           "supports_response_schema": false,
           "vision": true,
-          "intelligence_score": 15.1
+          "intelligence_score": 15.1,
+          "capabilities": []
         },
         "ollama/nemotron3:33b": {
           "supports_response_schema": false,
-          "vision": true
+          "vision": true,
+          "capabilities": []
         },
         "ollama/qwen3-vl": {
           "supports_response_schema": false,
           "vision": true,
-          "intelligence_score": 27.6
+          "intelligence_score": 27.6,
+          "capabilities": [
+            "video"
+          ]
         },
         "ollama/qwen3-vl:235b": {
           "supports_response_schema": false,
-          "vision": true
+          "vision": true,
+          "capabilities": [
+            "video"
+          ]
         },
         "ollama/qwen3-vl:235b-cloud": {
           "supports_response_schema": false,
           "vision": true,
-          "cloud": true
+          "cloud": true,
+          "capabilities": [
+            "video"
+          ]
         },
         "ollama/qwen3-vl:235b-instruct-cloud": {
           "supports_response_schema": false,
           "vision": true,
-          "cloud": true
+          "cloud": true,
+          "capabilities": [
+            "video"
+          ]
         },
         "ollama/qwen3-vl:2b": {
           "supports_response_schema": false,
-          "vision": true
+          "vision": true,
+          "capabilities": [
+            "video"
+          ]
         },
         "ollama/qwen3-vl:30b": {
           "supports_response_schema": false,
-          "vision": true
+          "vision": true,
+          "capabilities": [
+            "video"
+          ]
         },
         "ollama/qwen3-vl:32b": {
           "supports_response_schema": false,
-          "vision": true
+          "vision": true,
+          "capabilities": [
+            "video"
+          ]
         },
         "ollama/qwen3-vl:4b": {
           "supports_response_schema": false,
-          "vision": true
+          "vision": true,
+          "capabilities": [
+            "video"
+          ]
         },
         "ollama/qwen3-vl:8b": {
           "supports_response_schema": false,
-          "vision": true
+          "vision": true,
+          "capabilities": [
+            "video"
+          ]
         },
         "ollama/qwen3.5": {
           "supports_response_schema": false,
           "vision": true,
-          "intelligence_score": 40.1
+          "intelligence_score": 40.1,
+          "capabilities": []
         },
         "ollama/qwen3.5:122b": {
           "supports_response_schema": false,
-          "vision": true
+          "vision": true,
+          "capabilities": []
         },
         "ollama/qwen3.5:27b": {
           "supports_response_schema": false,
-          "vision": true
+          "vision": true,
+          "capabilities": []
         },
         "ollama/qwen3.5:2b": {
           "supports_response_schema": false,
-          "vision": true
+          "vision": true,
+          "capabilities": []
         },
         "ollama/qwen3.5:35b": {
           "supports_response_schema": false,
-          "vision": true
+          "vision": true,
+          "capabilities": []
         },
         "ollama/qwen3.5:397b-cloud": {
           "supports_response_schema": false,
           "vision": true,
-          "cloud": true
+          "cloud": true,
+          "capabilities": []
         },
         "ollama/qwen3.5:4b": {
           "supports_response_schema": false,
-          "vision": true
+          "vision": true,
+          "capabilities": []
         },
         "ollama/qwen3.5:9b": {
           "supports_response_schema": false,
-          "vision": true
+          "vision": true,
+          "capabilities": []
         },
         "ollama/qwen3.5:cloud": {
           "supports_response_schema": false,
           "vision": true,
-          "cloud": true
+          "cloud": true,
+          "capabilities": []
         },
         "ollama/qwen3.6": {
           "supports_response_schema": false,
           "vision": true,
-          "intelligence_score": 31.5
+          "intelligence_score": 31.5,
+          "capabilities": []
         },
         "ollama/qwen3.6:27b": {
           "supports_response_schema": false,
-          "vision": true
+          "vision": true,
+          "capabilities": []
         },
         "ollama/qwen3.6:35b": {
           "supports_response_schema": false,
-          "vision": true
+          "vision": true,
+          "capabilities": []
         },
         "ollama/translategemma": {
           "supports_response_schema": false,
-          "vision": true
+          "vision": true,
+          "capabilities": []
         },
         "ollama/translategemma:12b": {
           "supports_response_schema": false,
-          "vision": true
+          "vision": true,
+          "capabilities": []
         },
         "ollama/translategemma:27b": {
           "supports_response_schema": false,
-          "vision": true
+          "vision": true,
+          "capabilities": []
         },
         "ollama/translategemma:4b": {
           "supports_response_schema": false,
-          "vision": true
+          "vision": true,
+          "capabilities": []
         }
       }
     },
@@ -5170,7 +5382,9 @@
           "output_cost_per_million": 0.4,
           "intelligence_score": 18.5,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "openrouter/google/gemini-2.5-flash": {
@@ -5179,7 +5393,9 @@
           "output_cost_per_million": 2.5,
           "intelligence_score": 20.6,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "openrouter/google/gemini-2.5-pro": {
@@ -5188,7 +5404,9 @@
           "output_cost_per_million": 10.0,
           "intelligence_score": 34.6,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "openrouter/google/gemini-3-flash-preview": {
@@ -5197,7 +5415,9 @@
           "output_cost_per_million": 3.0,
           "intelligence_score": 35.0,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "openrouter/google/gemini-3-pro-preview": {
@@ -5206,7 +5426,9 @@
           "output_cost_per_million": 12.0,
           "intelligence_score": 48.4,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "openrouter/google/gemini-3.1-flash-lite-preview": {
@@ -5215,7 +5437,9 @@
           "output_cost_per_million": 1.5,
           "intelligence_score": 33.5,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "openrouter/google/gemini-3.1-pro-preview": {
@@ -5224,7 +5448,9 @@
           "output_cost_per_million": 12.0,
           "intelligence_score": 57.2,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "openrouter/minimax/minimax-m2.1": {
@@ -5389,7 +5615,8 @@
           "input_cost_per_million": 0.21,
           "output_cost_per_million": 0.63,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video"
           ]
         },
         "openrouter/qwen/qwen3.5-122b-a10b": {
@@ -5486,7 +5713,8 @@
           "input_cost_per_million": 0.91,
           "output_cost_per_million": 0.91,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video"
           ]
         },
         "ovhcloud/llava-v1.6-mistral-7b-hf": {
@@ -5563,7 +5791,9 @@
           "output_cost_per_million": 2.5,
           "intelligence_score": 20.6,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "replicate/google/gemini-3-pro": {
@@ -5572,7 +5802,9 @@
           "output_cost_per_million": 12.0,
           "intelligence_score": 48.4,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "replicate/openai/gpt-4.1": {
@@ -5672,7 +5904,8 @@
           "output_cost_per_million": 0.24,
           "intelligence_score": 12.7,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video"
           ]
         },
         "vercel_ai_gateway/amazon/nova-pro": {
@@ -5681,7 +5914,8 @@
           "output_cost_per_million": 3.2,
           "intelligence_score": 13.5,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video"
           ]
         },
         "vercel_ai_gateway/anthropic/claude-3-5-sonnet": {
@@ -5831,7 +6065,9 @@
           "output_cost_per_million": 0.6,
           "intelligence_score": 18.5,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "vercel_ai_gateway/google/gemini-2.0-flash-lite": {
@@ -5840,7 +6076,9 @@
           "output_cost_per_million": 0.3,
           "intelligence_score": 14.5,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "vercel_ai_gateway/google/gemini-2.5-flash": {
@@ -5849,7 +6087,9 @@
           "output_cost_per_million": 2.5,
           "intelligence_score": 20.6,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "vercel_ai_gateway/google/gemini-2.5-pro": {
@@ -5858,7 +6098,9 @@
           "output_cost_per_million": 10.0,
           "intelligence_score": 34.6,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "vercel_ai_gateway/google/gemma-2-9b": {
@@ -6039,7 +6281,9 @@
           "output_cost_per_million": 3.0,
           "intelligence_score": 35.0,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "vertex_ai/gemini-3-pro-preview": {
@@ -6048,7 +6292,9 @@
           "output_cost_per_million": 12.0,
           "intelligence_score": 48.4,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "vertex_ai/gemini-3.1-pro-preview": {
@@ -6057,7 +6303,9 @@
           "output_cost_per_million": 12.0,
           "intelligence_score": 57.2,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "vertex_ai/gemini-3.1-pro-preview-customtools": {
@@ -6066,7 +6314,9 @@
           "output_cost_per_million": 12.0,
           "intelligence_score": 57.2,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "vertex_ai/gemini-3.5-flash": {
@@ -6075,7 +6325,9 @@
           "output_cost_per_million": 9.0,
           "intelligence_score": 55.3,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "vertex_ai/xai/grok-4.1-fast-non-reasoning": {
@@ -6380,7 +6632,9 @@
           "output_cost_per_million": 0.4,
           "intelligence_score": 18.5,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "gemini-2.0-flash-001": {
@@ -6389,7 +6643,9 @@
           "output_cost_per_million": 0.6,
           "intelligence_score": 18.5,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "gemini-2.0-flash-lite": {
@@ -6398,7 +6654,9 @@
           "output_cost_per_million": 0.3,
           "intelligence_score": 14.5,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "gemini-2.0-flash-lite-001": {
@@ -6407,7 +6665,9 @@
           "output_cost_per_million": 0.3,
           "intelligence_score": 14.7,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "gemini-2.5-computer-use-preview-10-2025": {
@@ -6415,7 +6675,9 @@
           "input_cost_per_million": 1.25,
           "output_cost_per_million": 10.0,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "gemini-2.5-flash": {
@@ -6424,7 +6686,9 @@
           "output_cost_per_million": 2.5,
           "intelligence_score": 20.6,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "gemini-2.5-flash-image": {
@@ -6442,7 +6706,9 @@
           "output_cost_per_million": 0.4,
           "intelligence_score": 12.7,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "gemini-2.5-flash-lite-preview-06-17": {
@@ -6451,7 +6717,9 @@
           "output_cost_per_million": 0.4,
           "intelligence_score": 12.7,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "gemini-2.5-flash-lite-preview-09-2025": {
@@ -6460,7 +6728,9 @@
           "output_cost_per_million": 0.4,
           "intelligence_score": 19.4,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "gemini-2.5-flash-preview-09-2025": {
@@ -6469,7 +6739,9 @@
           "output_cost_per_million": 2.5,
           "intelligence_score": 25.7,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "gemini-2.5-pro": {
@@ -6478,7 +6750,9 @@
           "output_cost_per_million": 10.0,
           "intelligence_score": 34.6,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "gemini-2.5-pro-preview-tts": {
@@ -6496,7 +6770,9 @@
           "output_cost_per_million": 3.0,
           "intelligence_score": 35.0,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "gemini-3-pro-image-preview": {
@@ -6514,7 +6790,9 @@
           "output_cost_per_million": 12.0,
           "intelligence_score": 48.4,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "gemini-3.1-flash-image-preview": {
@@ -6531,7 +6809,9 @@
           "output_cost_per_million": 1.5,
           "intelligence_score": 33.5,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "gemini-3.1-pro-preview": {
@@ -6540,7 +6820,9 @@
           "output_cost_per_million": 12.0,
           "intelligence_score": 57.2,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "gemini-3.1-pro-preview-customtools": {
@@ -6549,7 +6831,9 @@
           "output_cost_per_million": 12.0,
           "intelligence_score": 57.2,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "gemini-3.5-flash": {
@@ -6558,7 +6842,9 @@
           "output_cost_per_million": 9.0,
           "intelligence_score": 55.3,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "gemini-live-2.5-flash-preview-native-audio-09-2025": {
@@ -6566,7 +6852,9 @@
           "input_cost_per_million": 0.3,
           "output_cost_per_million": 2.0,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "gemini-robotics-er-1.5-preview": {
@@ -6575,7 +6863,9 @@
           "output_cost_per_million": 2.5,
           "intelligence_score": 12.0,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         },
         "vertex_ai/gemini-2.5-flash-image": {
@@ -6593,7 +6883,9 @@
           "output_cost_per_million": 1.5,
           "intelligence_score": 33.5,
           "capabilities": [
-            "vlm"
+            "vlm",
+            "video",
+            "audio"
           ]
         }
       }
@@ -6945,22 +7237,37 @@
       "xai/grok-4.3-latest"
     ],
     "video": [
-      "gpt-5.5",
       "gemini/gemini-3.1-pro-preview",
-      "chatgpt/gpt-5.4",
-      "chatgpt/gpt-5.4-pro",
-      "claude-opus-4-7",
       "gemini/gemini-3.5-flash",
-      "chatgpt/gpt-5.3-codex",
-      "chatgpt/gpt-5.3-codex-spark",
-      "xai/grok-4.3",
-      "xai/grok-4.3-latest"
+      "gemini/gemini-3-pro-preview",
+      "ollama/gemini-3-flash-preview",
+      "gemini/gemini-2.5-pro",
+      "oci/google.gemini-2.5-pro",
+      "gemini/gemini-3.1-flash-lite-preview",
+      "ollama/qwen3-vl",
+      "gemini/gemini-2.5-flash-preview-09-2025",
+      "novita/qwen/qwen3-vl-235b-a22b-instruct"
     ],
     "screenspot": [
       "nebius/Qwen/Qwen2-VL-72B-Instruct"
     ],
     "screenspot_pro": [
       "llamagate/qwen3-vl-8b"
+    ],
+    "audio": [
+      "gemini/gemini-3.1-pro-preview",
+      "gemini/gemini-3.5-flash",
+      "gemini/gemini-3-pro-preview",
+      "ollama/gemini-3-flash-preview",
+      "gemini/gemini-2.5-pro",
+      "oci/google.gemini-2.5-pro",
+      "gemini/gemini-3.1-flash-lite-preview",
+      "gemini/gemini-2.5-flash-preview-09-2025",
+      "oci/google.gemini-2.5-flash",
+      "gemini/gemini-2.5-flash",
+      "whisper-1",
+      "gpt-4o-transcribe",
+      "gpt-4o-mini-transcribe"
     ]
   },
   "taskDescriptions": {
@@ -6971,7 +7278,8 @@
   "defaults": {
     "component.model": "gemini/gemini-3.5-flash",
     "image.model": "gemini/gemini-3.5-flash",
-    "video.model": "gpt-5.5"
+    "video.model": "gemini/gemini-3.1-pro-preview",
+    "audio.model": "gemini/gemini-3.1-pro-preview"
   },
   "keyAliases": {
     "GOOGLE_API_KEY": "GEMINI_API_KEY",

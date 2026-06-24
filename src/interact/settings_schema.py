@@ -25,9 +25,17 @@ from interact.config import Config
 SettingKind = Literal["model", "enum", "bool", "int", "str", "path"]
 SettingGroup = Literal["Models", "Desktop", "Browser", "Advanced"]
 
-# Capability a model must have to appear in a role's dropdown (image/component ground UI elements;
-# video lists any vision model — the registry has no separate video capability flag).
-_ROLE_CAP = {"image": "gui_grounding", "component": "gui_grounding", "video": "vlm"}
+# Capability a model must have to appear in a role's dropdown. image/component need GUI grounding;
+# video needs NATIVE video input (Gemini / Qwen-VL / Nova — not every VLM, which was the old bug:
+# the list mirrored the image list); audio needs audio understanding / transcription. interact can
+# still drive a non-native model for video (it ffmpeg-samples frames) or audio, but the picker shows
+# only genuinely capable models so the choice is honest.
+_ROLE_CAP = {
+    "image": "gui_grounding",
+    "component": "gui_grounding",
+    "video": "video",
+    "audio": "audio",
+}
 
 
 class Option(BaseModel):
@@ -111,7 +119,14 @@ SETTINGS: list[Setting] = [
     Setting(
         key="video.model", field="video_model", group="Models", kind="model", role="video",
         label="Video model",
-        description="Video understanding (needs a model with native video support).",
+        description="Video understanding. Native-video models (Gemini, Qwen-VL) are listed; interact "
+        "samples frames from a recording, so a non-native model still works as a fallback.",
+    ),
+    Setting(
+        key="audio.model", field="audio_model", group="Models", kind="model", role="audio",
+        label="Audio model",
+        description="Speech-to-text + audio understanding for the transcribe tool "
+        "(Whisper / gpt-4o-transcribe / Gemini).",
     ),
     # ── Desktop ──────────────────────────────────────────────────────────────
     Setting(

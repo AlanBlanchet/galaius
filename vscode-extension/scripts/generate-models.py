@@ -20,6 +20,7 @@ from pathlib import Path
 
 from interact.data import PackageData
 from interact.dotenv_loader import load_dotenv_for_cli
+from interact.models import is_audio_model, is_native_video_model
 
 load_dotenv_for_cli()
 
@@ -55,12 +56,18 @@ _TASK_DESCRIPTIONS: dict[str, str] = {
     "component": "UI element detection (bounding boxes)",
     "image": "Screenshot/image analysis",
     "video": "Video analysis",
+    "audio": "Audio transcription + understanding",
 }
 
-# Vision capability tags per task — models with these litellm flags score higher
-_TASK_VISION_FLAGS: dict[str, list[str]] = {
-    "video": ["supports_video"],
-}
+# A modality task only recommends models that actually have the capability (sourced from the
+# curated family tables in interact.models, since litellm's supports_video_input/_audio_input
+# flags don't populate). Other tasks (image/component) consider every vision model.
+_TASK_REQUIRED_CAP: dict[str, str] = {"video": "video", "audio": "audio"}
+
+# Transcription-only models (no chat audio) aren't vision models, so they're absent from the
+# catalog candidate pool — appended as the audio chain's tail so auto-audio can still transcribe
+# when no audio-chat model (Gemini) is keyed.
+_AUDIO_TAIL: list[str] = ["whisper-1", "gpt-4o-transcribe", "gpt-4o-mini-transcribe"]
 
 # Coordinate format by model family — a per-MODEL fact, keyed by model prefix and
 # carried with the model (into models.json `coordFormats`). It describes the model's
@@ -403,12 +410,20 @@ def _compute_recommendations(
         "component": (0.35, 0.15, 0.50),
         "image": (0.15, 0.6, 0.25),
         "video": (0.15, 0.6, 0.25),
+        "audio": (0.15, 0.6, 0.25),
     }
 
     recommendations: dict[str, list[str]] = {}
     for task in _TASK_DESCRIPTIONS:
         w_struct, w_intel, w_cost = task_weights.get(task, (0.15, 0.6, 0.25))
-        candidates = raw
+        # A modality task ranks ONLY models with its capability (video/audio); image/component
+        # rank every vision model. This is what stops the video list mirroring the image list.
+        cap_required = _TASK_REQUIRED_CAP.get(task)
+        candidates = (
+            [r for r in raw if cap_required in (r[4].get("capabilities") or [])]
+            if cap_required
+            else raw
+        )
 
         scored: list[tuple[float, str]] = []
         for model_name, intelligence, cost, has_structured, model_meta in candidates:
@@ -416,11 +431,7 @@ def _compute_recommendations(
             cost_norm = 1.0 - (cost - min_cost) / cost_range
             struct_norm = 1.0 if has_structured else 0.0
 
-            # Vision flag bonus (e.g. supports_video for video task)
             flag_bonus = 0.0
-            for flag in _TASK_VISION_FLAGS.get(task, []):
-                if model_meta.get(flag):
-                    flag_bonus += 0.1
 
             # Penalize wrapper/regional providers — prefer direct API
             llm_provider = model_meta.get("_litellm_provider", "")
@@ -474,6 +485,12 @@ def _compute_recommendations(
         print(f"\nTop-5 {task}:")
         for rank, (score, name) in enumerate(deduped[:5], 1):
             print(f"  {rank}. {name} ({score:.3f})")
+
+    # Transcription-only models aren't vision models (absent from the candidate pool) — append
+    # them so auto-audio can still transcribe when no audio-chat model (Gemini) is available.
+    for mid in _AUDIO_TAIL:
+        if mid not in recommendations.setdefault("audio", []):
+            recommendations["audio"].append(mid)
 
     return recommendations
 
@@ -530,8 +547,13 @@ for model, info in litellm.model_cost.items():
             break
     if info.get("supports_computer_use"):  # native click-coordinate output (Anthropic/OpenAI CU)
         caps.append("computer_use")
-    if info.get("supports_video_input"):
+    # video/audio: litellm's supports_*_input flags are unreliable (return nothing), so OR them
+    # with the curated family tables in interact.models (Gemini/Qwen-VL/Nova = video; Gemini/
+    # gpt-4o-audio/Whisper/Qwen-Omni = audio).
+    if info.get("supports_video_input") or is_native_video_model(model):
         caps.append("video")
+    if info.get("supports_audio_input") or is_audio_model(model):
+        caps.append("audio")
     model_entry["capabilities"] = caps
 
     # Internal score for recommendation computation (not written to JSON)
@@ -624,6 +646,7 @@ defaults = {
     "component.model": _component_default,
     "image.model": (recommendations.get("image") or [""])[0],
     "video.model": (recommendations.get("video") or [""])[0],
+    "audio.model": (recommendations.get("audio") or [""])[0],
 }
 
 key_aliases_bidir = {}
