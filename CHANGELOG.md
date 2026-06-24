@@ -6,7 +6,20 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ## [Unreleased]
 
-## [0.6.0] — 2026-06-22
+## [0.7.0] — 2026-06-24
+
+### Added
+
+- **`review_ui` — a first-class UI critique.** Captures any target (browser / desktop window /
+  screen / nested sandbox) and returns a STRUCTURED, severity-ranked list of what's *wrong* — low
+  contrast/unreadable text, overflow/clipping, truncation, misalignment, broken/empty/error states,
+  occluded (black) regions, tiny tap targets, off-theme colors — so an agent can JUDGE a UI without
+  hand-writing a vision prompt (real usage showed agents re-typing the same elaborate "flag every
+  low-contrast / overflow element" query dozens of times, and most never judging at all). Findings
+  are machine-readable (`severity/category` + location + fix). A `reference` image switches it to a
+  divergence review (build vs. target — wrong accent, missing nav), which judges against the actual
+  reference instead of a generic ideal — the failure mode behind confident-but-wrong "looks good"
+  verdicts. The rubric deliberately scores intrinsic, observable defects, not subjective taste.
 
 ### Added
 

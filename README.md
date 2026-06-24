@@ -123,6 +123,11 @@ the VS Code **Configuration → Models** panel, or the CLI (`interact config set
   value (JSON, for reading geometry/computed-style off the live DOM); `emulate_device` sets a phone
   viewport (`"iPhone 13"`, or explicit width/height + DPR/touch) to check responsive layouts.
 - **`screenshot`**, **`get_interactive_elements`**, **`get_page_state`** — see and inspect.
+- **`review_ui`** — _judge_ a UI, not just see it: returns a structured, severity-ranked list of
+  what's WRONG (low-contrast/unreadable text, overflow/clipping, truncation, misalignment,
+  broken/empty states, occluded regions, off-theme colors) so the agent gets a defect critique
+  without hand-writing a vision prompt. Pass a `reference` image to judge how a build DIVERGES from
+  a target (wrong accent, missing nav) instead of against a generic ideal. Works on any `target`.
 - **Desktop** — `list_desktop_windows`, and the same actions/screenshot against a window (by title
   or `wid:<id>`) or the whole screen. A moved or backgrounded window is raised before capture, so
   it's always interactable.

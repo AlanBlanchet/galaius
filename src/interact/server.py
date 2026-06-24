@@ -21,6 +21,7 @@ from interact.atspi import AtSpi
 from interact.actions import AnyAction
 from interact.browser import BrowserManager, SessionRegistry
 from interact.config import DEFAULT_LIMIT
+from interact.critique import UIReview, build_review_prompt, format_review, parse_review
 from interact.debug_utils import Debug
 from interact.desktop import DesktopElement, DesktopWindow
 from interact.detect import (
@@ -111,11 +112,17 @@ async def _vlm(
     max_tokens: int | None | _Unset = _UNSET,
     response_format: type | dict | None = None,
     model_override: str | None = None,
+    extra_images: list[bytes] | None = None,
 ) -> VLMResult:
     import asyncio
 
     item_type = "video" if media_type == "video" else "image"
     routing = media_type or "image"
+    # extra_images ride alongside the primary frame in ONE call (e.g. a reference + the build, for a
+    # divergence review) — judging two images together is what stops the isolation-against-a-generic-
+    # ideal false PASSes seen in real usage.
+    media = [MediaItem.from_bytes(data, item_type, mime)]
+    media += [MediaItem.from_bytes(b, "image", mime) for b in (extra_images or [])]
     # Resolve ONCE, at this boundary, to a concrete id — then both the primary call and the
     # fallback chain run against real models. The old code resolved only for the fallback path
     # and handed the raw (often None) override to the primary call, so auto-mode vision always
@@ -124,7 +131,7 @@ async def _vlm(
 
     async def _call(model_id: str) -> VLMResult:
         return await analyze_media(
-            [MediaItem.from_bytes(data, item_type, mime)],
+            media,
             context,
             config,
             query,
@@ -1018,6 +1025,79 @@ async def screenshot(
     result = [text, Image(data=img_bytes, format="png")] if (return_image and img_bytes is not None) else text
     Debug.dump_output(inv, result)
     return result
+
+
+async def _capture_target_png(win: DesktopWindow | None, mgr, scope: str | None) -> bytes:
+    """PNG bytes for a resolved target — a desktop window/screen (its own capture) or the browser page."""
+    if win:
+        return win.capture()
+    state = await _capture(mgr, scope)
+    return base64.b64decode(state.screenshot_base64)
+
+
+@mcp.tool()
+async def review_ui(
+    focus: str | None = None,
+    reference: str | None = None,
+    target: str | None = None,
+    session: str = _DEFAULT_SESSION,
+    scope: str | None = None,
+    path: str | None = None,
+    model: str | None = None,
+) -> str:
+    """Capture the UI and return a STRUCTURED critique of what's WRONG with it — low-contrast or
+    unreadable text, overflow/clipping, truncation, misalignment, broken/empty/error states, black or
+    occluded regions, tiny tap targets, off-theme colors — so you can JUDGE a UI's quality without
+    hand-writing a vision prompt. Use it after a change to confirm the result looks right, or to hunt
+    defects on any screen.
+
+    Findings come back severity-sorted, one per line as `[critical|major|minor]/<category> location:
+    issue → fix`; a clean screen reports no defects. Works on any target like screenshot: unset/
+    "browser" = the browser session, a window title = a desktop window, "screen"/"nested[:title]" =
+    the sandbox or whole desktop.
+
+    focus: optional extra emphasis (e.g. "the background should be warm sand, not purple"; "check the
+        bottom nav isn't black/occluded") — narrows the review WITHOUT replacing the built-in rubric.
+    reference: path to a reference/target image (a design or a prior good build). When set, the review
+        judges how the capture DIVERGES from this reference (wrong accent, missing nav, layout drift),
+        instead of against a generic ideal — the reliable way to catch a build that's subtly off.
+    path: save the reviewed PNG here. Requires a configured vision model (same as screenshot's query).
+    """
+    config.refresh()
+    inv = Debug.new_invocation_dir(None, "review_ui")
+    Debug.dump_input(inv, {"tool": "review_ui", "focus": focus, "reference": reference,
+                           "target": target, "session": session, "model": model},
+                     _resolved_config(model, "image"))
+    win, mgr, err = _resolve_target(target, session)
+    if err:
+        Debug.dump_output(inv, err)
+        return err
+    img = await _capture_target_png(win, mgr, scope)
+    if path:
+        _save_to_path(path, img)
+    Debug.save("capture", img, ext="png", invocation_id=inv)
+    context = _desktop_label(win) if win else "Browser page"
+    ref_bytes = None
+    if reference:
+        try:
+            ref_bytes = Path(reference).read_bytes()
+        except OSError as e:
+            return f"ERROR: could not read reference image {reference!r} — {e}"
+    try:
+        if ref_bytes is not None:  # reference first, build second — matches the compare rubric
+            r = await _vlm(ref_bytes, context, build_review_prompt(focus, compare=True),
+                           response_format=UIReview, model_override=model, extra_images=[img])
+        else:
+            r = await _vlm(img, context, build_review_prompt(focus),
+                           response_format=UIReview, model_override=model)
+    except Exception as e:  # never crash the agent's flow on a vision hiccup
+        return f"ERROR: review_ui vision call failed — {e}"
+    review = parse_review(r.text)
+    body = format_review(review) if review else r.text  # graceful: raw VLM text if the schema didn't parse
+    model_tag = f" {r.model}" if r.model else ""
+    out = f"{context}\n{body}\n(VLM:{model_tag} {r.elapsed:.1f}s)"
+    Debug.dump_output(inv, out)
+    return out
 
 
 @mcp.tool()
