@@ -6,6 +6,24 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-06-26
+
+### Changed
+
+- **Stable refs within a session (#35).** A DOM `ref` (`eN`) no longer renumbers on every scan: a
+  node that survives a re-render KEEPS its ref, and only genuinely new nodes get the next number from
+  a session-monotonic counter (reset only when the session closes). So a ref captured before an SPA
+  re-render still points at the same node — and because a number is never reused, refs stay unique
+  without the old clear-every-scan (this also subsumes the #29 collision fix).
+
+### Fixed
+
+- **`hover` settles CSS transitions before returning (#49).** A `:hover` effect already latches into
+  a capture (verified live — the state applies and persists across calls); the reported "no visual
+  change" was a screenshot taken MID-transition (a `duration-500` read at t≈0 → `transform: none`).
+  `hover` now waits (bounded) for finite CSS transitions/animations to finish, so an immediate
+  screenshot shows the final hovered state — without blocking on infinite (spinner) animations.
+
 ## [0.10.0] — 2026-06-26
 
 ### Added

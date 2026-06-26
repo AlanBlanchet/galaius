@@ -1,12 +1,11 @@
-({ scope, limit }) => {
-  // Clear every ref from a prior scan FIRST (whole document, not just this scope). An SPA can keep
-  // a node alive across re-renders/navigations with its old data-interact-ref still on it; if this
-  // scan then hands the same eN to a new node, `[data-interact-ref="eN"]` would match BOTH and a
-  // click-by-ref hits Playwright's strict-mode "resolved to 2 elements". Clearing guarantees each
-  // ref is unique to the current snapshot (#29).
-  document
-    .querySelectorAll("[data-interact-ref]")
-    .forEach((el) => el.removeAttribute("data-interact-ref"));
+({ scope, limit, nextRef }) => {
+  // Refs are STABLE within a session: a node that already carries a data-interact-ref KEEPS it
+  // across scans and re-renders, and only a genuinely NEW node gets a fresh ref from a monotonic
+  // counter (nextRef — owned by the BrowserManager, reset only when the session closes). Because a
+  // number is never reused, two nodes can never collide on one ref, so we no longer clear prior refs
+  // — the clearing is exactly what made `e18` point at a different node after an SPA re-render (#35).
+  // This also subsumes the #29 uniqueness fix the old clear-every-scan provided.
+  let counter = nextRef || 0;
 
   const root = (scope ? document.querySelector(scope) : document.body) || document.body;
   const tags =
@@ -69,9 +68,12 @@
   // can actually reach, not whatever happened to come first in document order.
   candidates.sort((a, b) => a.tier - b.tier || a.r.top - b.r.top || a.r.left - b.r.left);
 
-  return candidates.slice(0, limit || 50).map(({ el, r }, i) => {
-    const ref = "e" + (i + 1); // assigned in FINAL order: ref eN === returned index N
-    el.setAttribute("data-interact-ref", ref);
+  const elements = candidates.slice(0, limit || 50).map(({ el, r }) => {
+    let ref = el.getAttribute("data-interact-ref"); // surviving node → its existing ref (stable)
+    if (!ref) {
+      ref = "e" + ++counter; // a new node → the next unused ref in this session
+      el.setAttribute("data-interact-ref", ref);
+    }
     return {
       ref,
       tag: el.tagName.toLowerCase(),
@@ -82,4 +84,5 @@
       height: r.height,
     };
   });
+  return { elements, nextRef: counter };
 };

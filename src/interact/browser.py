@@ -19,6 +19,10 @@ class BrowserManager:
         self._browser: Browser | None = None
         self._context: BrowserContext | None = None
         self._element_map: dict[int, list[InteractiveElement]] = {}
+        # Monotonic ref counter for the DOM scan: a node's ref (eN) is stable across scans within a
+        # session — a NEW node gets the next number, a surviving node keeps its own — and the counter
+        # is reset only here, on a new session (#35). Never reused → no two nodes collide on a ref.
+        self._ref_counter = 0
         self._network_log: deque[dict] = deque(maxlen=LOG_MAXLEN)
         self._console_log: deque[dict] = deque(maxlen=LOG_MAXLEN)
         self._recording_dir: tempfile.TemporaryDirectory | None = None

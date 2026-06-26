@@ -19,6 +19,7 @@ from interact.actions import (
     EmulateDeviceAction,
     EvaluateJsAction,
     HoverAction,
+    settle_animations,
     HttpRequestAction,
     KeyPressAction,
     NewTabAction,
@@ -548,6 +549,7 @@ async def _run_actions_browser(
         elif isinstance(action, HoverAction) and action.name:
             locator = await _named_locator(page, action)
             await locator.hover()
+            await settle_animations(page)  # final hovered state for the next capture (#49)
             step_reports.append(_step(i, action.type, "hovered"))
 
         elif isinstance(action, TypeTextAction) and action.name:

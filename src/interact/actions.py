@@ -160,6 +160,24 @@ class ClickAction(_CoordinateTargetMixin):
             await page.mouse.click(self.x, self.y)
 
 
+async def settle_animations(page: Page, timeout: float = 1000) -> None:
+    """Wait (bounded) for FINITE CSS transitions/animations to finish, so a capture taken right after
+    a hover shows the FINAL hovered state, not a mid-transition frame — the real cause behind "hover
+    doesn't latch": the :hover state DOES apply, but an immediate screenshot caught a `duration-500`
+    transition at t≈0 (transform≈none). Infinite animations (spinners) are ignored so they can't
+    block; the whole wait is best-effort (#49)."""
+    try:
+        await page.wait_for_function(
+            "() => document.getAnimations()"
+            "  .filter(a => { try { return a.effect.getComputedTiming().iterations !== Infinity; }"
+            "                 catch (e) { return true; } })"
+            "  .every(a => a.playState !== 'running')",
+            timeout=timeout,
+        )
+    except Exception:
+        pass  # a looping/again-restarting animation, or no animations API — never block the action
+
+
 class HoverAction(_CoordinateTargetMixin):
     type: Literal["hover"] = "hover"
     mutates: ClassVar[bool] = False
@@ -171,6 +189,7 @@ class HoverAction(_CoordinateTargetMixin):
             await page.hover(self.selector)
         else:
             await page.mouse.move(self.x, self.y)
+        await settle_animations(page)  # let a :hover transition finish before the next capture (#49)
 
 
 class TypeTextAction(_RefSelectorLocator, Action):

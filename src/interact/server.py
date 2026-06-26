@@ -687,10 +687,13 @@ async def _scan_elements(
     model-agnostic (they work with any configured model, or none) and free to surface widely.
     The element map is registered so a following run_actions can act by these refs."""
     page = await mgr.get_page(tab)
-    raw_boxes = await page.evaluate(_ANNOTATE_JS, {"scope": scope, "limit": limit})
+    result = await page.evaluate(
+        _ANNOTATE_JS, {"scope": scope, "limit": limit, "nextRef": mgr._ref_counter}
+    )
+    mgr._ref_counter = result["nextRef"]  # advance the session's monotonic ref counter (#35)
     elements = [
         InteractiveElement(
-            index=i + 1,
+            index=int(raw["ref"][1:]),  # ref "eN" ↔ index N, both stable across scans in a session
             ref=raw["ref"],
             role=raw["tag"],
             name=raw["name"],
@@ -699,7 +702,7 @@ async def _scan_elements(
             width=raw["width"],
             height=raw["height"],
         )
-        for i, raw in enumerate(raw_boxes)
+        for raw in result["elements"]
     ]
     mgr.set_element_map(tab, elements)
     return elements

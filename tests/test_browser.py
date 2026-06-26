@@ -167,9 +167,9 @@ async def _scan(html: str, limit: int = 50):
             pytest.skip(f"no launchable chromium: {exc}")
         page = await browser.new_page(viewport={"width": 1280, "height": 720})
         await page.set_content(html)
-        boxes = await page.evaluate(_ANNOTATE_JS, {"scope": None, "limit": limit})
+        result = await page.evaluate(_ANNOTATE_JS, {"scope": None, "limit": limit, "nextRef": 0})
         await browser.close()
-        return boxes
+        return result["elements"]  # JS returns {elements, nextRef} for the session ref counter (#35)
 
 
 @pytest.mark.asyncio

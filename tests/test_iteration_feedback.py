@@ -169,12 +169,16 @@ async def test_non_targeting_action_gets_no_ref_nudge():
 async def test_scan_elements_builds_refs_and_registers_map_without_vlm():
     page = MagicMock()
     page.evaluate = AsyncMock(
-        return_value=[
-            {"ref": "e1", "tag": "button", "name": "OK", "x": 1.4, "y": 2.6, "width": 10.2, "height": 5.0},
-            {"ref": "e2", "tag": "a", "name": "Home", "x": 0, "y": 0, "width": 4, "height": 4},
-        ]
+        return_value={  # JS returns {elements, nextRef} — the session ref counter (#35)
+            "elements": [
+                {"ref": "e1", "tag": "button", "name": "OK", "x": 1.4, "y": 2.6, "width": 10.2, "height": 5.0},
+                {"ref": "e2", "tag": "a", "name": "Home", "x": 0, "y": 0, "width": 4, "height": 4},
+            ],
+            "nextRef": 2,
+        }
     )
     mgr = MagicMock()
+    mgr._ref_counter = 0
     mgr.get_page = AsyncMock(return_value=page)
 
     elements = await srv._scan_elements(mgr, 0, None)

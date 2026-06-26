@@ -1,6 +1,7 @@
 """Browser fixes against real Chromium (self-skip in bare CI; no VLM/key):
 
-- #29: data-interact-ref is unique per snapshot even after an SPA re-render (stale refs cleared).
+- #35/#29: data-interact-ref is STABLE across scans (a node keeps its ref; only new nodes get a
+  fresh one from a session-monotonic counter) and never collides — uniqueness without clearing.
 - #29: a selector that matches several nodes clicks the first VISIBLE one, not a hidden first.
 - #30: tab-less tool captures follow the session's active tab after new_tab / switch_tab.
 - #34: a ref from one tool call survives into the next — the element map keys on the active tab
@@ -27,7 +28,10 @@ async def _ready(mgr: BrowserManager) -> None:
 
 
 @pytest.mark.asyncio
-async def test_refs_unique_across_rerender():
+async def test_refs_stable_and_unique_across_rerender():
+    """#35: a node keeps its ref across rescans (no renumber); only NEW nodes get a fresh ref from
+    the session's monotonic counter, which never resets mid-session and never reuses a number — so
+    refs also stay unique (#29) without the old clear-every-scan."""
     from interact.server import _scan_elements
 
     mgr = _mgr()
@@ -35,21 +39,31 @@ async def test_refs_unique_across_rerender():
     try:
         page = await mgr.get_page()
         await page.set_content("<a href='#'>Companies</a><button>Scaleway</button>")
-        await _scan_elements(mgr)
+        first = {e.name: e.ref for e in await _scan_elements(mgr)}
+        assert mgr._ref_counter == 2  # e1, e2 assigned this session
+
         # SPA-style: keep the old nodes (with their refs) and prepend new ones, then rescan.
         await page.evaluate(
             "() => { const d = document.createElement('div');"
             " d.innerHTML = '<button>N1</button><button>N2</button>';"
             " document.body.prepend(...d.childNodes); }"
         )
-        await _scan_elements(mgr)
+        second = {e.name: e.ref for e in await _scan_elements(mgr)}
+
+        # Surviving nodes KEPT their refs (stable — not renumbered by the rescan).
+        assert second["Companies"] == first["Companies"]
+        assert second["Scaleway"] == first["Scaleway"]
+        # New nodes got fresh, higher refs — never reusing e1/e2.
+        assert second["N1"] not in first.values() and second["N2"] not in first.values()
+        assert mgr._ref_counter == 4
+
         duplicate_refs = await page.evaluate(
             "() => { const c = {}; let dup = 0;"
             " document.querySelectorAll('[data-interact-ref]').forEach(e => {"
             "  const r = e.getAttribute('data-interact-ref'); c[r] = (c[r]||0)+1;"
             "  if (c[r] > 1) dup++; }); return dup; }"
         )
-        assert duplicate_refs == 0
+        assert duplicate_refs == 0  # uniqueness holds via the monotonic counter
     finally:
         await mgr.close()
 
