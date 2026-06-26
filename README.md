@@ -134,6 +134,9 @@ the VS Code **Configuration → Models** panel, or the CLI (`interact config set
   broken/empty states, occluded regions, off-theme colors) so the agent gets a defect critique
   without hand-writing a vision prompt. Pass a `reference` image to judge how a build DIVERGES from
   a target (wrong accent, missing nav) instead of against a generic ideal. Works on any `target`.
+- **`measure_ui`** — _measure_ a UI deterministically (no VLM, no spend): `region="x,y,w,h"` returns
+  the exact WCAG contrast ratio (with AA/AAA pass/fail) + dominant colors + the largest empty band;
+  `point="x,y"` returns the exact hex color. The trustworthy number to back up review_ui's critique.
 - **`transcribe`** — _hear_ media, not just see it: point it at an audio or media file (a clip from
   `download_asset`, or a `record(path=…)` recording) and get the transcript back; pass a `query` to
   ask about the audio instead (how many speakers, what's said, the tone). Understanding is acoustic

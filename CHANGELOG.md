@@ -6,6 +6,30 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-06-26
+
+### Added
+
+- **`measure_ui` — deterministic pixel measurement (no VLM).** Real usage showed agents never
+  trusted the model's prose verdict — they ran their own WCAG contrast calculator on raw pixels. This
+  makes that a primitive: `region="x,y,w,h"` → the two-colour WCAG contrast ratio (with AA/AAA
+  PASS/FAIL) + dominant colours + the largest uniform "empty" band; `point="x,y"` → the exact hex
+  colour. No model call → no false confidence, fully reproducible, zero spend. Backstops `review_ui`
+  (the VLM flags a suspect, `measure_ui` confirms the number). Closes #45.
+- **`target="file:<path>"`** on `screenshot` / `review_ui` / `measure_ui` — analyze or measure an
+  EXISTING image file instead of capturing (an artifact produced out-of-band). Closes the #44
+  capability gap.
+
+### Fixed
+
+- **`screenshot(path=…)` no longer silently clobbers an existing file and mis-describes it.** `path`
+  is an output sink; capturing over an existing file now says "overwrote existing file" in the result,
+  and analyzing a file has a first-class path (`target="file:…"`) that never writes. Fixes #44.
+- **Idle session auto-close no longer logs the agent out.** A session closed by the idle reaper
+  (`INTERACT_SESSION_IDLE_TTL`) stashes its `storage_state` (cookies/localStorage + url) and restores
+  it on the next use — idle browsers still free their CPU/RAM, but a returning agent keeps its login.
+  Fixes #36.
+
 ## [0.8.0] — 2026-06-24
 
 ### Added

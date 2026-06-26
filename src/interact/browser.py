@@ -32,6 +32,9 @@ class BrowserManager:
         # Last time this session's browser was touched (monotonic). The idle reaper closes a
         # session unused past the configured TTL so idle Chromium instances don't pile up.
         self._last_active = time.monotonic()
+        # storage_state (+ url) captured when this session was idle-closed, restored lazily on the
+        # next browser use so an idle close doesn't silently log the agent out (#36).
+        self._pending_state: dict | None = None
 
     def idle_seconds(self) -> float | None:
         """Seconds since the browser was last used, or None if no browser is open (nothing to reap)."""
@@ -70,6 +73,15 @@ class BrowserManager:
     async def ensure_ready(self):
         if self._context:
             return
+        if self._pending_state is not None:
+            # Reopening after an idle close: restore cookies/localStorage (+ url) so the agent
+            # isn't silently logged out (#36). Consumed once; a failure falls back to a fresh context.
+            state, self._pending_state = self._pending_state, None
+            try:
+                await self.load_state(state)
+                return
+            except Exception:
+                pass
         await self._ensure_browser()
         await self._new_context()
 
@@ -412,13 +424,21 @@ class BrowserManager:
 
 
 class SessionRegistry:
+    # Cap on idle-close state stashes (#36): one small storage_state dict per never-returning
+    # session id; bounded so a pathological client churning ids can't grow it without limit.
+    _MAX_STASH = 64
+
     def __init__(self, config: Config):
         self._config = config
         self._sessions: dict[str, BrowserManager] = {}
+        # session_id → storage_state stashed at idle-close, handed to the next manager (#36).
+        self._stash: dict[str, dict] = {}
 
     def get(self, session_id: str) -> BrowserManager:
         if session_id not in self._sessions:
-            self._sessions[session_id] = BrowserManager(self._config)
+            mgr = BrowserManager(self._config)
+            mgr._pending_state = self._stash.pop(session_id, None)  # restore login if idle-closed
+            self._sessions[session_id] = mgr
         return self._sessions[session_id]
 
     async def close(self, session_id: str):
@@ -435,11 +455,20 @@ class SessionRegistry:
 
     async def close_idle(self, ttl: float) -> list[str]:
         """Close + drop sessions whose browser has been idle for at least ``ttl`` seconds (``ttl``
-        <= 0 disables, returning []). Each closed session re-opens lazily on the next ``get``."""
+        <= 0 disables, returning []). Each closed session re-opens lazily on the next ``get`` — and
+        its cookies/login are stashed first, so the reopen restores them instead of logging out (#36)."""
         if ttl <= 0:
             return []
         stale = [sid for sid, mgr in self._sessions.items() if mgr.is_idle(ttl)]
         for sid in stale:
+            try:
+                state = await self._sessions[sid].save_state()
+                if state:
+                    if len(self._stash) >= self._MAX_STASH:
+                        self._stash.pop(next(iter(self._stash)))  # drop oldest, stay bounded
+                    self._stash[sid] = state
+            except Exception:
+                pass  # a session with nothing worth saving just reopens fresh
             await self.close(sid)
         return stale
 

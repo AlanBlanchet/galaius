@@ -29,6 +29,7 @@ from interact.detect import (
     _desktop_context,
     _detect_desktop_elements,
 )
+from interact.measure import format_measure, measure
 from interact.dispatch import (
     _run_actions_browser,
     _run_actions_desktop,
@@ -437,6 +438,36 @@ _AUDIO_MIME = {
 def _audio_mime(path: str) -> str:
     """MIME for an audio/media file, by extension (default mp3)."""
     return _AUDIO_MIME.get(Path(path).suffix.lower(), "audio/mpeg")
+
+
+def _resolve_image_source(target: str | None) -> tuple[bytes | None, str | None]:
+    """A ``target="file:<path>"`` reads an EXISTING image file instead of capturing — so
+    screenshot/review_ui/measure_ui can judge an artifact produced out-of-band (a saved capture, a
+    script's output) without the capture clobbering it (#44). Returns ``(bytes, None)`` for a file
+    target, ``(None, "ERROR: …")`` if it can't be read, or ``(None, None)`` for a normal target."""
+    if not (target and target.strip().lower().startswith("file:")):
+        return None, None
+    p = target.strip()[5:]
+    if p.startswith("//"):  # tolerate file:// and file:/// URL forms
+        p = p[2:]
+    try:
+        return Path(p).read_bytes(), None
+    except OSError as e:
+        return None, f"ERROR: could not read image file {p!r} — {e}"
+
+
+def _parse_int_tuple(s: str | None, n: int, name: str):
+    """Parse an "a,b,…" string into an ``n``-int tuple. Returns the tuple, ``None`` if unset, or an
+    ``"ERROR: …"`` string if malformed (the caller returns that straight to the agent)."""
+    if not s:
+        return None
+    try:
+        vals = tuple(int(p.strip()) for p in s.split(",") if p.strip())
+    except ValueError:
+        return f"ERROR: {name} must be {n} integers like '{','.join(['0'] * n)}', got {s!r}"
+    if len(vals) != n:
+        return f"ERROR: {name} needs {n} integers (got {len(vals)}: {s!r})"
+    return vals
 
 
 def _session_response(session: str, body: str) -> str:
@@ -936,6 +967,8 @@ async def screenshot(
     Default (target unset): operates on browser session "default".
     target=<window title>: captures a desktop window. target="screen"/"screen:<index>": the whole
     desktop or one monitor (use list_desktop_windows to discover windows + monitor indexes).
+    target="file:<path>": ANALYZE an existing image file (with query) instead of capturing — for an
+    artifact produced out-of-band; this never writes, so it can't clobber the file.
     A desktop target and a non-default session are mutually exclusive.
 
     Returns depend on parameters:
@@ -950,7 +983,8 @@ async def screenshot(
     selector: CSS selector targeting one element (browser only).
     query: question for VLM visual analysis of the captured content.
     scope: CSS selector to restrict text extraction to a sub-tree (browser only).
-    path: save the PNG screenshot to this file path.
+    path: OUTPUT sink — saves the captured PNG here (overwrites any existing file, and says so). To
+        ANALYZE an existing image, use target="file:<path>", not path.
     return_image: when True, return the raw screenshot bytes as an MCP ImageContent alongside the text,
         so the calling agent can SEE the pixels directly (not just a VLM summary).
     model: override the configured VLM model for this call. Uses the VS Code configured model when not set.
@@ -960,10 +994,34 @@ async def screenshot(
     Debug.dump_input(inv, {"tool": "screenshot", "query": query, "scope": scope, "selector": selector,
                            "element": element, "target": target, "session": session, "model": model},
                      _resolved_config(model, "image"))
+    # target="file:<path>" analyzes an EXISTING image instead of capturing (no clobber, #44).
+    file_bytes, ferr = _resolve_image_source(target)
+    if ferr:
+        Debug.dump_output(inv, ferr)
+        return ferr
+    if file_bytes is not None:
+        src = target.strip()[5:]
+        label = f"Image file: {src}"
+        if query:
+            r = await _vlm(file_bytes, label, query, model_override=model)
+            text = f"{label}\n{_fmt_timing(r)}"
+        else:
+            import io as _io
+            from PIL import Image as _PILImage
+            w, h = _PILImage.open(_io.BytesIO(file_bytes)).size
+            text = f"{label} ({w}x{h}) — pass query=… to analyze it, or use measure_ui for exact pixels."
+        Debug.save("capture", file_bytes, ext="png", invocation_id=inv)
+        out = [text, Image(data=file_bytes, format="png")] if return_image else text
+        Debug.dump_output(inv, out)
+        return out
     win, mgr, err = _resolve_target(target, session)
     if err:
         Debug.dump_output(inv, err)
         return err
+    # If `path` already exists we're about to OVERWRITE it with this capture — surface that so the
+    # result can't be mistaken for an analysis of the prior file (#44). To analyze a file, use
+    # target="file:<path>" above; `path` is an OUTPUT sink.
+    overwrote_path = bool(path) and Path(path).exists()
     img_bytes: bytes | None = None
     if win:
         if element is not None:
@@ -1034,6 +1092,8 @@ async def screenshot(
                 else ""
             )
             text = _session_response(session, state.text_summary() + refs)
+    if overwrote_path:
+        text += f"\n(note: overwrote existing file {path} with this capture)"
     if img_bytes is not None:
         Debug.save("capture", img_bytes, ext="png", invocation_id=inv)
     result = [text, Image(data=img_bytes, format="png")] if (return_image and img_bytes is not None) else text
@@ -1082,15 +1142,24 @@ async def review_ui(
     Debug.dump_input(inv, {"tool": "review_ui", "focus": focus, "reference": reference,
                            "target": target, "session": session, "model": model},
                      _resolved_config(model, "image"))
-    win, mgr, err = _resolve_target(target, session)
-    if err:
-        Debug.dump_output(inv, err)
-        return err
-    img = await _capture_target_png(win, mgr, scope)
+    file_bytes, ferr = _resolve_image_source(target)  # target="file:<path>" → review a saved image (#44)
+    if ferr:
+        Debug.dump_output(inv, ferr)
+        return ferr
+    if file_bytes is not None:
+        win = mgr = None
+        img = file_bytes
+        context = f"Image file: {target.strip()[5:]}"
+    else:
+        win, mgr, err = _resolve_target(target, session)
+        if err:
+            Debug.dump_output(inv, err)
+            return err
+        img = await _capture_target_png(win, mgr, scope)
+        context = _desktop_label(win) if win else "Browser page"
     if path:
         _save_to_path(path, img)
     Debug.save("capture", img, ext="png", invocation_id=inv)
-    context = _desktop_label(win) if win else "Browser page"
     ref_bytes = None
     if reference:
         try:
@@ -1110,6 +1179,62 @@ async def review_ui(
     body = format_review(review) if review else r.text  # graceful: raw VLM text if the schema didn't parse
     model_tag = f" {r.model}" if r.model else ""
     out = f"{context}\n{body}\n(VLM:{model_tag} {r.elapsed:.1f}s)"
+    Debug.dump_output(inv, out)
+    return out
+
+
+@mcp.tool()
+async def measure_ui(
+    target: str | None = None,
+    region: str | None = None,
+    point: str | None = None,
+    session: str = _DEFAULT_SESSION,
+    scope: str | None = None,
+    path: str | None = None,
+) -> str:
+    """DETERMINISTIC pixel measurement of a UI — exact colors + WCAG contrast, NO VLM (no spend, fully
+    reproducible). Use it for a number you can trust instead of a model's guess: the contrast ratio of
+    text vs background, the exact color at a point, or the biggest empty band on screen.
+
+    Captures like screenshot/review_ui — target unset/"browser" = the page; a window title; "screen";
+    "nested[:title]"; or "file:<path>" to measure an existing image. Then:
+    - region="x,y,w,h": dominant colors in that box, the two-color WCAG contrast ratio (PASS/FAIL for
+      AA-normal 4.5, AA-large 3.0, AAA 7.0), and the largest uniform band inside it.
+    - point="x,y": the exact color (hex) at that pixel.
+    - neither: whole-image palette + the largest uniform (empty) band.
+
+    Pairs with review_ui: the VLM flags a suspect ("this text looks low-contrast") → measure_ui
+    confirms the actual ratio. Coordinates are image pixels (as screenshot / get_interactive_elements
+    report them).
+    """
+    config.refresh()
+    inv = Debug.new_invocation_dir(None, "measure_ui")
+    Debug.dump_input(inv, {"tool": "measure_ui", "target": target, "region": region,
+                           "point": point, "session": session})
+    reg = _parse_int_tuple(region, 4, "region")
+    if isinstance(reg, str):
+        return reg
+    pt = _parse_int_tuple(point, 2, "point")
+    if isinstance(pt, str):
+        return pt
+    file_bytes, ferr = _resolve_image_source(target)  # target="file:<path>" → measure a saved image
+    if ferr:
+        return ferr
+    if file_bytes is not None:
+        img, label = file_bytes, f"Image file: {target.strip()[5:]}"
+    else:
+        win, mgr, err = _resolve_target(target, session)
+        if err:
+            return err
+        img = await _capture_target_png(win, mgr, scope)
+        label = _desktop_label(win) if win else "Browser page"
+    if path:
+        _save_to_path(path, img)
+    try:
+        result = measure(img, region=reg, point=pt)
+    except Exception as e:
+        return f"ERROR: measure_ui failed — {e}"
+    out = f"{label}\n{format_measure(result)}"
     Debug.dump_output(inv, out)
     return out
 

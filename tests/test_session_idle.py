@@ -23,6 +23,9 @@ def _open_mgr(idle_for: float) -> BrowserManager:
     mgr._browser = AsyncMock()  # a stand-in open Chromium whose .close() is awaitable
     mgr._playwright = None
     mgr._last_active = time.monotonic() - idle_for
+    # Default to "nothing worth saving" so close_idle doesn't drive the real save_state path through
+    # the mock context (#36). Tests that exercise the stash override this with their own state.
+    mgr.save_state = AsyncMock(return_value={})
     return mgr
 
 
@@ -52,6 +55,52 @@ async def test_close_idle_is_a_noop_when_ttl_nonpositive():
     reg._sessions = {"old": _open_mgr(99999)}
     assert await reg.close_idle(0) == []
     assert reg.active() == ["old"]  # TTL<=0 disables auto-close entirely
+
+
+@pytest.mark.asyncio
+async def test_idle_close_stashes_login_and_reopen_restores_it():
+    """#36: an idle close must not log the agent out — storage_state is stashed before close and
+    handed to the next manager, which restores it lazily."""
+    reg = SessionRegistry(_cfg())
+    stale = _open_mgr(1000)
+    stash = {"cookies": [{"name": "sid", "value": "abc"}], "_url": "https://app/x"}
+    stale.save_state = AsyncMock(return_value=stash)
+    reg._sessions = {"s": stale}
+
+    await reg.close_idle(900)
+    assert reg._stash["s"] == stash  # captured before the browser closed
+    assert reg.active() == []
+
+    mgr2 = reg.get("s")  # a returning agent gets a NEW manager…
+    assert mgr2 is not stale
+    assert mgr2._pending_state == stash  # …pre-loaded with the saved login
+    assert "s" not in reg._stash  # consumed
+
+
+@pytest.mark.asyncio
+async def test_ensure_ready_restores_pending_state_instead_of_a_fresh_context():
+    mgr = BrowserManager(_cfg())
+    mgr._pending_state = {"cookies": []}
+    calls: list[str] = []
+    mgr.load_state = AsyncMock(side_effect=lambda s: calls.append("load"))
+    mgr._ensure_browser = AsyncMock(side_effect=lambda: calls.append("ensure"))
+    mgr._new_context = AsyncMock(side_effect=lambda *a, **k: calls.append("newctx"))
+
+    await mgr.ensure_ready()
+    assert calls == ["load"]  # restored login, did NOT build a fresh blank context
+    assert mgr._pending_state is None  # consumed once
+
+
+@pytest.mark.asyncio
+async def test_stash_is_bounded():
+    reg = SessionRegistry(_cfg())
+    reg._stash = {f"s{i}": {"cookies": []} for i in range(SessionRegistry._MAX_STASH)}
+    stale = _open_mgr(1000)
+    stale.save_state = AsyncMock(return_value={"cookies": [{"name": "n"}]})
+    reg._sessions = {"new": stale}
+    await reg.close_idle(900)
+    assert len(reg._stash) == SessionRegistry._MAX_STASH  # stayed bounded (oldest dropped)
+    assert "new" in reg._stash
 
 
 @pytest.mark.asyncio
