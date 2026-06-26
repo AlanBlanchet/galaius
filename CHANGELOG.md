@@ -6,6 +6,19 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-06-26
+
+### Added
+
+- **`verify_ui(requirements, …)` — requirement-anchored acceptance.** The complement to `review_ui`'s
+  open-ended discovery: hand it the literal checklist a freeform critique glosses ("the coin pill shows
+  a GOLD coin, not a flame"; "the bottom nav has exactly 4 tabs") and it returns one PASS/FAIL per
+  requirement, each naming the exact element + the observed value as evidence. Presence isn't enough —
+  the form/color/count/state must match (the presence-but-wrong-form defect freeform critique misses).
+  Captures like review_ui (incl. `target="file:<path>"` and a `reference` design to judge against).
+  Completes the judge → measure → verify trio (review_ui discovers, measure_ui quantifies, verify_ui
+  accepts). Closes #46.
+
 ## [0.9.0] — 2026-06-26
 
 ### Added

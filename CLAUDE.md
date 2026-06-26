@@ -41,15 +41,16 @@ Generic actions are ONE tool selected by a `target` param — not a tool per sur
 browser-only capabilities stay as their own clearly-named tools:
 
 - **Generic** (`run_actions`, `screenshot`, `get_interactive_elements`, `record`, `review_ui`,
-  `measure_ui`): `target` = unset/`"browser"` (default — the browser session named by `session`) |
+  `verify_ui`, `measure_ui`): `target` = unset/`"browser"` (default — the browser session named by `session`) |
   a window-title string (a native desktop window) | `"screen"` (whole virtual desktop) |
   `"screen:<index>"` or `"screen:<output>"` (one monitor, enumerated via `xrandr --listmonitors`,
   shown by `list_desktop_windows`) | `"file:<path>"` (analyze/measure an existing image instead of
   capturing — for `screenshot`/`review_ui`/`measure_ui`). A desktop `target` and a non-default
   `session` are mutually exclusive. Screen/monitor targets capture via `maim` geometry and map input
   by the region origin (so multi-monitor clicks land on the right screen). `review_ui` (VLM defect
-  critique) and `measure_ui` (deterministic WCAG contrast / colour, NO VLM) are the judge/measure
-  pair; `transcribe` (audio → text + understanding) is file-based, not `target`-keyed.
+  discovery), `verify_ui` (PASS/FAIL each literal requirement) and `measure_ui` (deterministic WCAG
+  contrast / colour, NO VLM) are the discover → verify → measure trio; `transcribe` (audio → text +
+  understanding) is file-based, not `target`-keyed.
 - **Browser-only** (no desktop meaning, stay separate): `navigate`, tab control,
   `get_page_state`, network/console logs, sessions, `download_asset`, JS eval. `get_page_state`
   and no-query `screenshot` also return the page's `ref` list (pure DOM scan, no VLM) so the

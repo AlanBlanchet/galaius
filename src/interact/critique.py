@@ -102,17 +102,97 @@ def format_review(review: UIReview) -> str:
     return "\n".join(lines)
 
 
-def parse_review(text: str) -> UIReview | None:
-    """Parse a VLM response (JSON per the UIReview schema) into a UIReview. Robust to a leading
-    fallback banner or stray prose around the JSON object; returns None if no object parses."""
+def _parse_json_model(text: str, cls: type[BaseModel]):
+    """Validate ``text`` as JSON for ``cls``, tolerating a leading fallback banner / stray prose
+    around the object (first ``{`` … last ``}``). Returns the model or None."""
     try:
-        return UIReview.model_validate_json(text)
+        return cls.model_validate_json(text)
     except ValueError:
         pass
     start, end = text.find("{"), text.rfind("}")
     if start != -1 and end > start:
         try:
-            return UIReview.model_validate_json(text[start : end + 1])
+            return cls.model_validate_json(text[start : end + 1])
         except ValueError:
             return None
     return None
+
+
+def parse_review(text: str) -> UIReview | None:
+    """Parse a VLM response (JSON per the UIReview schema) into a UIReview. Robust to a leading
+    fallback banner or stray prose around the JSON object; returns None if no object parses."""
+    return _parse_json_model(text, UIReview)
+
+
+# ── verify_ui: requirement-anchored ACCEPTANCE (the complement to review_ui's discovery) ──────────
+# Real usage showed freeform critique is satisfiable by a vague "looks good" that never tests the
+# literal form-defect ("is this icon dark or COLORED?"). verify_ui judges each of the user's exact
+# requirements PASS/FAIL on the rendered pixels, naming the element + observed value as evidence.
+ReqVerdict = Literal["pass", "fail", "unclear"]
+
+
+class RequirementCheck(BaseModel):
+    requirement: str = Field(description="the requirement being judged, echoed verbatim")
+    verdict: ReqVerdict = Field(description="pass = met to the letter; fail = not met OR not found; unclear = element genuinely occluded/ambiguous")
+    element: str = Field(description="the EXACT element judged + its position (e.g. \"the coin pill, top-right\")")
+    evidence: str = Field(description="the OBSERVED value that decided it (e.g. \"shows an orange flame icon, not a gold coin\")")
+
+
+class VerifyReport(BaseModel):
+    screen: str = Field(description="what screen/page this is")
+    all_pass: bool = Field(description="true ONLY if every requirement is PASS")
+    checks: list[RequirementCheck] = Field(default_factory=list, description="one per requirement, in order")
+
+
+_VERIFY_RUBRIC = """You are a STRICT acceptance reviewer. You are shown a screenshot and a numbered \
+list of REQUIREMENTS the screen must meet. Judge EACH requirement PASS or FAIL on the rendered pixels — \
+exactly as written, to the letter. Rules:
+
+- Judge the LITERAL words. "a GOLD coin, not a flame" is FAIL if you see an orange flame, even though \
+an icon IS present — presence is not enough, the FORM must match (color, shape, count, position, state, \
+text). This presence-but-wrong-form case is the one freeform critique misses; catch it.
+- Name the EXACT element you judged and the OBSERVED value as evidence ("the coin pill, top-right: an \
+orange flame icon").
+- A requirement you cannot find or confirm on screen is FAIL. Use "unclear" ONLY when the element is \
+genuinely occluded/ambiguous — never as a soft pass.
+- Do NOT pass a requirement because the screen looks good overall; each requirement stands alone, and \
+do not be reassuring.
+- Judge only what is visible. Set all_pass=true ONLY when every requirement is PASS."""
+
+_VERIFY_COMPARE_RUBRIC = """You are a STRICT acceptance reviewer. IMAGE 1 is the REFERENCE (the target \
+to match); IMAGE 2 is the BUILD. Judge EACH numbered REQUIREMENT below PASS or FAIL on the BUILD, using \
+the REFERENCE as the source of truth for intent. Same rules: judge the literal words; presence is not \
+enough (the form/color/count must match); name the element + observed value as evidence; not-found or \
+not-matching is FAIL; "unclear" only for genuine occlusion. all_pass=true only if every requirement \
+passes on the build."""
+
+
+def build_verify_prompt(
+    requirements: list[str], focus: str | None = None, *, compare: bool = False
+) -> str:
+    """The acceptance rubric with the user's requirements embedded as a numbered checklist. With
+    ``compare=True`` it judges the build against a supplied reference image."""
+    base = _VERIFY_COMPARE_RUBRIC if compare else _VERIFY_RUBRIC
+    reqs = "\n".join(f"{i}. {r}" for i, r in enumerate(requirements, 1))
+    out = f"{base}\n\nREQUIREMENTS:\n{reqs}"
+    return f"{out}\n\nPay particular attention to: {focus}" if focus else out
+
+
+_VERDICT_MARK = {"pass": "PASS", "fail": "FAIL", "unclear": "UNCLEAR"}
+
+
+def format_verify(report: VerifyReport) -> str:
+    """Render a VerifyReport as a compact PASS/FAIL checklist for the calling agent."""
+    n_pass = sum(1 for c in report.checks if c.verdict == "pass")
+    head = f"verify_ui — {report.screen}: {n_pass}/{len(report.checks)} PASS"
+    if report.all_pass and report.checks:
+        head += "  ✓ all pass"
+    lines = [head]
+    for c in report.checks:
+        lines.append(f"- [{_VERDICT_MARK.get(c.verdict, c.verdict)}] {c.requirement} — {c.element}: {c.evidence}")
+    return "\n".join(lines)
+
+
+def parse_verify(text: str) -> VerifyReport | None:
+    """Parse a VLM response (JSON per VerifyReport) — robust to a fallback banner / stray prose."""
+    return _parse_json_model(text, VerifyReport)

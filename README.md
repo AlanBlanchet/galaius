@@ -134,6 +134,9 @@ the VS Code **Configuration → Models** panel, or the CLI (`interact config set
   broken/empty states, occluded regions, off-theme colors) so the agent gets a defect critique
   without hand-writing a vision prompt. Pass a `reference` image to judge how a build DIVERGES from
   a target (wrong accent, missing nav) instead of against a generic ideal. Works on any `target`.
+- **`verify_ui`** — _accept_ a UI against your requirements: hand it a checklist ("coin pill is a GOLD
+  coin, not a flame"; "nav has 4 tabs") and it returns one PASS/FAIL per requirement, each naming the
+  element + observed value — catching the presence-but-wrong-form defects a freeform critique glosses.
 - **`measure_ui`** — _measure_ a UI deterministically (no VLM, no spend): `region="x,y,w,h"` returns
   the exact WCAG contrast ratio (with AA/AAA pass/fail) + dominant colors + the largest empty band;
   `point="x,y"` returns the exact hex color. The trustworthy number to back up review_ui's critique.

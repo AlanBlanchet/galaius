@@ -21,7 +21,16 @@ from interact.atspi import AtSpi
 from interact.actions import AnyAction
 from interact.browser import BrowserManager, SessionRegistry
 from interact.config import DEFAULT_LIMIT
-from interact.critique import UIReview, build_review_prompt, format_review, parse_review
+from interact.critique import (
+    UIReview,
+    VerifyReport,
+    build_review_prompt,
+    build_verify_prompt,
+    format_review,
+    format_verify,
+    parse_review,
+    parse_verify,
+)
 from interact.debug_utils import Debug
 from interact.desktop import DesktopElement, DesktopWindow
 from interact.detect import (
@@ -1109,6 +1118,33 @@ async def _capture_target_png(win: DesktopWindow | None, mgr, scope: str | None)
     return base64.b64decode(state.screenshot_base64)
 
 
+async def _resolve_capture(target, session, scope, path, reference, inv):
+    """Shared capture path for review_ui / verify_ui: a ``file:<path>`` target or a live capture,
+    saved to ``path`` if given, plus an optional ``reference`` image. Returns
+    ``(img_bytes, context, ref_bytes, err_or_None)`` — on error the caller returns the string."""
+    file_bytes, ferr = _resolve_image_source(target)  # target="file:<path>" → judge a saved image (#44)
+    if ferr:
+        return None, None, None, ferr
+    if file_bytes is not None:
+        img, context = file_bytes, f"Image file: {target.strip()[5:]}"
+    else:
+        win, mgr, err = _resolve_target(target, session)
+        if err:
+            return None, None, None, err
+        img = await _capture_target_png(win, mgr, scope)
+        context = _desktop_label(win) if win else "Browser page"
+    if path:
+        _save_to_path(path, img)
+    Debug.save("capture", img, ext="png", invocation_id=inv)
+    ref_bytes = None
+    if reference:
+        try:
+            ref_bytes = Path(reference).read_bytes()
+        except OSError as e:
+            return None, None, None, f"ERROR: could not read reference image {reference!r} — {e}"
+    return img, context, ref_bytes, None
+
+
 @mcp.tool()
 async def review_ui(
     focus: str | None = None,
@@ -1142,30 +1178,10 @@ async def review_ui(
     Debug.dump_input(inv, {"tool": "review_ui", "focus": focus, "reference": reference,
                            "target": target, "session": session, "model": model},
                      _resolved_config(model, "image"))
-    file_bytes, ferr = _resolve_image_source(target)  # target="file:<path>" → review a saved image (#44)
-    if ferr:
-        Debug.dump_output(inv, ferr)
-        return ferr
-    if file_bytes is not None:
-        win = mgr = None
-        img = file_bytes
-        context = f"Image file: {target.strip()[5:]}"
-    else:
-        win, mgr, err = _resolve_target(target, session)
-        if err:
-            Debug.dump_output(inv, err)
-            return err
-        img = await _capture_target_png(win, mgr, scope)
-        context = _desktop_label(win) if win else "Browser page"
-    if path:
-        _save_to_path(path, img)
-    Debug.save("capture", img, ext="png", invocation_id=inv)
-    ref_bytes = None
-    if reference:
-        try:
-            ref_bytes = Path(reference).read_bytes()
-        except OSError as e:
-            return f"ERROR: could not read reference image {reference!r} — {e}"
+    img, context, ref_bytes, err = await _resolve_capture(target, session, scope, path, reference, inv)
+    if err:
+        Debug.dump_output(inv, err)
+        return err
     try:
         if ref_bytes is not None:  # reference first, build second — matches the compare rubric
             r = await _vlm(ref_bytes, context, build_review_prompt(focus, compare=True),
@@ -1177,6 +1193,58 @@ async def review_ui(
         return f"ERROR: review_ui vision call failed — {e}"
     review = parse_review(r.text)
     body = format_review(review) if review else r.text  # graceful: raw VLM text if the schema didn't parse
+    model_tag = f" {r.model}" if r.model else ""
+    out = f"{context}\n{body}\n(VLM:{model_tag} {r.elapsed:.1f}s)"
+    Debug.dump_output(inv, out)
+    return out
+
+
+@mcp.tool()
+async def verify_ui(
+    requirements: list[str],
+    target: str | None = None,
+    reference: str | None = None,
+    focus: str | None = None,
+    session: str = _DEFAULT_SESSION,
+    scope: str | None = None,
+    path: str | None = None,
+    model: str | None = None,
+) -> str:
+    """Judge a UI against your LITERAL requirements — one PASS/FAIL per requirement, each anchored to
+    the exact element it judged. The acceptance complement to review_ui (which DISCOVERS defects): hand
+    it the checklist a freeform critique glosses ("the coin pill shows a GOLD coin, not a flame"; "the
+    bottom nav has exactly 4 tabs"; "the FAB does not overlap the tab bar") and it tests each to the
+    letter — presence is not enough, the form/color/count/state must match.
+
+    Captures like review_ui — target unset/"browser" = the page; a window title; "screen";
+    "nested[:title]"; or "file:<path>" to verify a saved image. Pass a reference image to judge each
+    requirement against a target design. For a hard form-defect, confirm the number with measure_ui.
+
+    requirements: the literal requirements to check, each judged PASS / FAIL / UNCLEAR with evidence.
+    focus: optional extra emphasis layered onto the rubric.
+    reference: a target/design image to judge the build against.
+    """
+    config.refresh()
+    if not requirements:
+        return "ERROR: verify_ui needs at least one requirement to check."
+    inv = Debug.new_invocation_dir(None, "verify_ui")
+    Debug.dump_input(inv, {"tool": "verify_ui", "requirements": requirements, "target": target,
+                           "reference": reference, "model": model}, _resolved_config(model, "image"))
+    img, context, ref_bytes, err = await _resolve_capture(target, session, scope, path, reference, inv)
+    if err:
+        Debug.dump_output(inv, err)
+        return err
+    try:
+        if ref_bytes is not None:  # reference first, build second
+            r = await _vlm(ref_bytes, context, build_verify_prompt(requirements, focus, compare=True),
+                           response_format=VerifyReport, model_override=model, extra_images=[img])
+        else:
+            r = await _vlm(img, context, build_verify_prompt(requirements, focus),
+                           response_format=VerifyReport, model_override=model)
+    except Exception as e:
+        return f"ERROR: verify_ui vision call failed — {e}"
+    report = parse_verify(r.text)
+    body = format_verify(report) if report else r.text  # graceful: raw VLM text if schema didn't parse
     model_tag = f" {r.model}" if r.model else ""
     out = f"{context}\n{body}\n(VLM:{model_tag} {r.elapsed:.1f}s)"
     Debug.dump_output(inv, out)
