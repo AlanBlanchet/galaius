@@ -158,6 +158,33 @@ def _video_content(item: MediaItem, fps: int = 1, max_frames: int = 0) -> list[d
     ]
 
 
+def _supports_response_schema(model: str) -> bool:
+    """Whether the provider accepts a native ``response_format`` schema. Some (e.g. zai/GLM) raise
+    ``litellm.UnsupportedParamsError`` on it — for those we ask for JSON in the prompt instead, so the
+    structured tools run on the model rather than erroring into a frontier fallback (the bug where the
+    sovereign tier silently dropped to gemini). Unknown model → False: prompt-JSON works everywhere,
+    native is just cleaner where supported."""
+    try:
+        return bool(litellm.supports_response_schema(model=model))
+    except Exception:
+        return False
+
+
+def _schema_instruction(response_format: type[BaseModel] | dict) -> str:
+    """A prompt fragment asking for one bare JSON object matching the schema — the fallback for models
+    without native ``response_format``. The caller's ``_parse_json_model`` tolerates fences/prose, but
+    we still ask for none, and embed the schema so the shape matches what review_ui/verify_ui expect."""
+    schema = (
+        response_format.model_json_schema()
+        if isinstance(response_format, type) and issubclass(response_format, BaseModel)
+        else response_format
+    )
+    return (
+        "Respond with ONLY a single JSON object conforming to this JSON Schema — no prose, no markdown "
+        "fences, nothing before or after the object:\n" + json.dumps(schema)
+    )
+
+
 async def _vision_completion(
     messages: list[dict],
     model: str,
@@ -171,7 +198,21 @@ async def _vision_completion(
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
     if response_format is not None:
-        kwargs["response_format"] = response_format
+        if _supports_response_schema(model):
+            kwargs["response_format"] = response_format
+        else:
+            # Provider rejects a native schema → ask for JSON in the prompt instead (append to the last
+            # user message) so THIS model produces the structured output, not a frontier fallback.
+            msgs = [dict(m) for m in messages]
+            tail = msgs[-1]
+            instr = _schema_instruction(response_format)
+            content = tail.get("content")
+            tail["content"] = (
+                content + [{"type": "text", "text": instr}]
+                if isinstance(content, list)
+                else f"{content}\n\n{instr}"
+            )
+            kwargs["messages"] = msgs
 
     t0 = time.monotonic()
     response = await litellm.acompletion(**kwargs)
