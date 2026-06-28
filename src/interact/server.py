@@ -300,21 +300,28 @@ def _get_sandbox(size: str | None = None):
     the real desktop — can be driven in a clean, occlusion-proof, non-intrusive sandbox.
 
     ``size`` ("WxH") picks the display resolution: a phone app needs a phone-shaped screen, not the
-    1280x800 default. The sandbox is a singleton, so a launch that asks for a different size than the
-    running one transparently respawns it at that size (the first app's size no longer wins forever).
+    1280x800 default. The sandbox is a singleton, so a launch that asks for a *different explicit*
+    size than the running one transparently respawns it at that size (the first app's size no longer
+    wins forever). ``size=None`` means "attach to whatever is already running" — every capture/attach
+    tool (screenshot, run_actions, get_interactive_elements, …) passes None, and must NEVER resize a
+    live sandbox: collapsing None to the default once respawned a phone (412x915) sandbox at the
+    1280x800 default on the first screenshot, so the launched window opened portrait, closed, and
+    reopened landscape (empty). None only picks the default when creating a sandbox from cold.
 
     A long session can exhaust or kill the nested X server (e.g. dozens of leaked GPU apps); the
     cached backend would then reject every launch until restarted. So a dead sandbox is torn down
     and respawned transparently here — the agent never has to manually reset it (#10)."""
     global _sandbox
-    want = size or config.nested_size
-    if _sandbox is not None and (not _sandbox.is_alive() or _sandbox.size != want):
-        _close_sandbox()  # dead/hung X server, or a new size requested → respawn at `want`
+    if _sandbox is not None:
+        if not _sandbox.is_alive():
+            _close_sandbox()  # dead/hung X server → respawn (size-independent self-heal, #10)
+        elif size is not None and _sandbox.size != size:
+            _close_sandbox()  # an EXPLICIT new size (launch_app) → respawn at it
     if _sandbox is None:
         from interact.desktop_backend import NestedBackend
 
         _sandbox = NestedBackend(
-            config.nested_display, want, headless=config.nested_headless
+            config.nested_display, size or config.nested_size, headless=config.nested_headless
         )
     return _sandbox
 
