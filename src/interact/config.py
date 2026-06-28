@@ -11,6 +11,16 @@ from interact.models import CircuitBreaker, ModelChain, ModelRole
 DEFAULT_LIMIT = 50
 LOG_MAXLEN = 1000
 
+# The "sovereign" model the low/medium quality tiers prefer by default: GLM-4.5V (MIT, open-weight,
+# self-hostable). Strong open VLM, cheap/private — the right default when peak frontier accuracy
+# isn't needed. Self-hosters point INTERACT_TIER_SOVEREIGN_MODEL at their own endpoint id.
+_DEFAULT_SOVEREIGN_MODEL = "novita/zai-org/glm-4.5v"
+
+# Quality tiers for the UI tools (review_ui/verify_ui quality=...): the agent picks by STAKES, not
+# by model name — low = quick glance, critical = final pre-ship sign-off. interact maps the tier to
+# a model (sovereign for low/medium, best-available frontier for high/critical) + extra rigor.
+QUALITY_TIERS = ("low", "medium", "high", "critical")
+
 
 class Config(BaseSettings):
     model_config = {"env_prefix": "INTERACT_"}
@@ -25,6 +35,9 @@ class Config(BaseSettings):
     component_fallbacks: str = ""
     video_fallbacks: str = ""
     audio_fallbacks: str = ""
+    # The model the low/medium quality tiers prefer (see QUALITY_TIERS). Empty → GLM-4.5V default
+    # (_DEFAULT_SOVEREIGN_MODEL). Override with INTERACT_TIER_SOVEREIGN_MODEL (e.g. a local id).
+    tier_sovereign_model: str = ""
     headless: bool = True
     slow_mo: int = 0
     browser_type: Literal["chromium", "firefox", "webkit"] = "chromium"
@@ -122,6 +135,20 @@ class Config(BaseSettings):
         if chain.preferences:
             return chain.preferences[0].id
         raise RuntimeError(f"no model available for role {role!r}: empty model catalog")
+
+    def resolve_quality_model(self, quality: str) -> str:
+        """Map a quality tier to a model PREFERENCE (the "choose the model for me" literal). low/medium
+        prefer the sovereign self-host model (private, cheap); high/critical fall through to the normal
+        best-available resolution. Returns "" when the tier implies normal resolution OR the sovereign
+        model isn't available — a graceful preference layered on resolve_model, never a hard pin that
+        errors on a missing key. Pass the result as the per-call override."""
+        if quality in ("low", "medium"):
+            from interact.models import Model
+
+            sovereign = self.tier_sovereign_model or _DEFAULT_SOVEREIGN_MODEL
+            if Model.from_litellm_id(sovereign).is_available():
+                return sovereign
+        return ""
 
     @functools.cached_property
     def _recommendations(self) -> dict[str, list[str]]:

@@ -20,7 +20,7 @@ from interact import desktop
 from interact.atspi import AtSpi
 from interact.actions import AnyAction
 from interact.browser import BrowserManager, SessionRegistry
-from interact.config import DEFAULT_LIMIT
+from interact.config import DEFAULT_LIMIT, QUALITY_TIERS
 from interact.critique import (
     UIReview,
     VerifyReport,
@@ -1178,6 +1178,18 @@ async def _resolve_capture(target, session, scope, path, reference, inv):
     return img, context, ref_bytes, elements, None
 
 
+def _quality_plan(quality: str | None, model: str | None) -> tuple[str | None, bool, str | None]:
+    """Resolve a quality tier to ``(effective_model, strict, error)``. An explicit ``model`` wins over
+    the tier's model. ``strict`` (critical only) drops a finding citing a ref the scan never detected —
+    a deterministic precision boost for a pre-ship sign-off. ``error`` is set on an unknown tier."""
+    if quality is None:
+        return model or None, False, None
+    q = quality.strip().lower()
+    if q not in QUALITY_TIERS:
+        return None, False, f"ERROR: quality must be one of {', '.join(QUALITY_TIERS)} (got {quality!r})"
+    return (model or config.resolve_quality_model(q) or None), q == "critical", None
+
+
 @mcp.tool()
 async def review_ui(
     focus: str | None = None,
@@ -1187,6 +1199,7 @@ async def review_ui(
     scope: str | None = None,
     path: str | None = None,
     model: str | None = None,
+    quality: str | None = None,
 ) -> str:
     """Capture the UI and return a STRUCTURED critique of what's WRONG with it — low-contrast or
     unreadable text, overflow/clipping, truncation, misalignment, broken/empty/error states, black or
@@ -1205,12 +1218,19 @@ async def review_ui(
         judges how the capture DIVERGES from this reference (wrong accent, missing nav, layout drift),
         instead of against a generic ideal — the reliable way to catch a build that's subtly off.
     path: save the reviewed PNG here. Requires a configured vision model (same as screenshot's query).
+    quality: pick the model by STAKES, not by name — "low"/"medium" use a cheap sovereign self-host
+        model, "high"/"critical" the best frontier model; "critical" also drops findings whose element
+        interact can't confirm (highest precision, for a pre-ship sign-off). Unset = the configured/
+        auto model. An explicit model= still overrides this.
     """
     config.refresh()
+    eff_model, strict, qerr = _quality_plan(quality, model)
+    if qerr:
+        return qerr
     inv = Debug.new_invocation_dir(None, "review_ui")
     Debug.dump_input(inv, {"tool": "review_ui", "focus": focus, "reference": reference,
-                           "target": target, "session": session, "model": model},
-                     _resolved_config(model, "image"))
+                           "target": target, "session": session, "model": model, "quality": quality},
+                     _resolved_config(eff_model, "image"))
     img, context, ref_bytes, elements, err = await _resolve_capture(target, session, scope, path, reference, inv)
     if err:
         Debug.dump_output(inv, err)
@@ -1220,13 +1240,15 @@ async def review_ui(
     try:
         if ref_bytes is not None:  # reference first, build second — matches the compare rubric
             r = await _vlm(ref_bytes, context, build_review_prompt(focus, compare=True, grounding=grounding),
-                           response_format=UIReview, model_override=model, extra_images=[img])
+                           response_format=UIReview, model_override=eff_model, extra_images=[img])
         else:
             r = await _vlm(img, context, build_review_prompt(focus, grounding=grounding),
-                           response_format=UIReview, model_override=model)
+                           response_format=UIReview, model_override=eff_model)
     except Exception as e:  # never crash the agent's flow on a vision hiccup
         return f"ERROR: review_ui vision call failed — {e}"
     review = parse_review(r.text)
+    if review and strict and valid_refs is not None:  # critical: drop a finding citing a phantom ref
+        review.findings = [f for f in review.findings if not (f.ref and f.ref not in valid_refs)]
     body = format_review(review, valid_refs) if review else r.text  # graceful: raw VLM text if the schema didn't parse
     model_tag = f" {r.model}" if r.model else ""
     out = f"{context}\n{body}\n(VLM:{model_tag} {r.elapsed:.1f}s)"
@@ -1244,6 +1266,7 @@ async def verify_ui(
     scope: str | None = None,
     path: str | None = None,
     model: str | None = None,
+    quality: str | None = None,
 ) -> str:
     """Judge a UI against your LITERAL requirements — one PASS/FAIL per requirement, each anchored to
     the exact element it judged. The acceptance complement to review_ui (which DISCOVERS defects): hand
@@ -1258,13 +1281,20 @@ async def verify_ui(
     requirements: the literal requirements to check, each judged PASS / FAIL / UNCLEAR with evidence.
     focus: optional extra emphasis layered onto the rubric.
     reference: a target/design image to judge the build against.
+    quality: pick the model by STAKES — "low"/"medium" use a cheap sovereign model, "high"/"critical"
+        the best frontier; "critical" downgrades any PASS resting on an element interact can't confirm.
+        Unset = configured/auto. An explicit model= overrides this.
     """
     config.refresh()
     if not requirements:
         return "ERROR: verify_ui needs at least one requirement to check."
+    eff_model, strict, qerr = _quality_plan(quality, model)
+    if qerr:
+        return qerr
     inv = Debug.new_invocation_dir(None, "verify_ui")
     Debug.dump_input(inv, {"tool": "verify_ui", "requirements": requirements, "target": target,
-                           "reference": reference, "model": model}, _resolved_config(model, "image"))
+                           "reference": reference, "model": model, "quality": quality},
+                     _resolved_config(eff_model, "image"))
     img, context, ref_bytes, elements, err = await _resolve_capture(target, session, scope, path, reference, inv)
     if err:
         Debug.dump_output(inv, err)
@@ -1274,13 +1304,18 @@ async def verify_ui(
     try:
         if ref_bytes is not None:  # reference first, build second
             r = await _vlm(ref_bytes, context, build_verify_prompt(requirements, focus, compare=True, grounding=grounding),
-                           response_format=VerifyReport, model_override=model, extra_images=[img])
+                           response_format=VerifyReport, model_override=eff_model, extra_images=[img])
         else:
             r = await _vlm(img, context, build_verify_prompt(requirements, focus, grounding=grounding),
-                           response_format=VerifyReport, model_override=model)
+                           response_format=VerifyReport, model_override=eff_model)
     except Exception as e:
         return f"ERROR: verify_ui vision call failed — {e}"
     report = parse_verify(r.text)
+    if report and strict and valid_refs is not None:  # critical: a PASS citing a phantom ref can't stand
+        for c in report.checks:
+            if c.ref and c.ref not in valid_refs and c.verdict == "pass":
+                c.verdict = "unclear"
+        report.all_pass = all(c.verdict == "pass" for c in report.checks)
     body = format_verify(report, valid_refs) if report else r.text  # graceful: raw VLM text if schema didn't parse
     model_tag = f" {r.model}" if r.model else ""
     out = f"{context}\n{body}\n(VLM:{model_tag} {r.elapsed:.1f}s)"
