@@ -30,6 +30,13 @@ class Config(BaseSettings):
     browser_type: Literal["chromium", "firefox", "webkit"] = "chromium"
     viewport_width: int = 1280
     viewport_height: int = 720
+    # When set, browser sessions persist their profile (cookies, localStorage, login) on disk under
+    # <browser_profile_dir>/<session> instead of the default ephemeral context that starts logged
+    # out every launch. Lets an authenticated flow run through the reliable DOM-ref path (log in
+    # once, stay logged in across restarts) rather than the flaky desktop-window VLM path (#43).
+    # Each session gets its own subdir — Playwright locks a user-data-dir to one running context.
+    # Override with INTERACT_BROWSER_PROFILE_DIR.
+    browser_profile_dir: Path | None = None
     screenshot_dump_dir: Path | None = None  # explicit per-run override of the dump base
     # Base dir for interact's local output: the usage log (debug_dir/logs/usage.jsonl) and
     # tool debug artifacts. Default ~/.interact for everyone; override with INTERACT_DEBUG_DIR

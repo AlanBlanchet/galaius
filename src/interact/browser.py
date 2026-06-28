@@ -13,11 +13,17 @@ from interact.state import InteractiveElement
 
 
 class BrowserManager:
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, session_id: str = "default"):
         self._config = config
+        self._session_id = session_id
         self._playwright = None
         self._browser: Browser | None = None
         self._context: BrowserContext | None = None
+        # Persistent profile dir for this session (#43): when browser_profile_dir is configured the
+        # context is launched from <base>/<session_id> so cookies/login survive a restart. Each
+        # session gets its own subdir because Playwright locks a user-data-dir to one live context.
+        base = config.browser_profile_dir
+        self._profile_dir: Path | None = (Path(base) / session_id) if base else None
         self._element_map: dict[int, list[InteractiveElement]] = {}
         # Monotonic ref counter for the DOM scan: a node's ref (eN) is stable across scans within a
         # session — a NEW node gets the next number, a surviving node keeps its own — and the counter
@@ -39,6 +45,12 @@ class BrowserManager:
         # storage_state (+ url) captured when this session was idle-closed, restored lazily on the
         # next browser use so an idle close doesn't silently log the agent out (#36).
         self._pending_state: dict | None = None
+
+    @property
+    def _persistent(self) -> bool:
+        """True when this session keeps an on-disk profile (#43): the context is launched from a
+        user-data-dir, so it persists cookies/login and has no separate Browser handle."""
+        return self._profile_dir is not None
 
     def idle_seconds(self) -> float | None:
         """Seconds since the browser was last used, or None if no browser is open (nothing to reap)."""
@@ -200,7 +212,10 @@ class BrowserManager:
         return video_bytes
 
     async def close(self):
-        if self._browser:
+        if self._persistent and self._context:
+            await self._context.close()  # a persistent context owns its browser — closes both
+            self._context = None
+        elif self._browser:
             await self._browser.close()
             self._browser = None
             self._context = None
@@ -340,6 +355,12 @@ class BrowserManager:
         )
 
     async def _ensure_browser(self):
+        # Persistent sessions have no standalone Browser — the context is launched from the profile
+        # dir in _new_context; here we only need the Playwright driver up (#43).
+        if self._persistent:
+            if self._playwright is None:
+                self._playwright = await async_playwright().start()
+            return
         if self._browser:
             return
         self._playwright = await async_playwright().start()
@@ -359,10 +380,28 @@ class BrowserManager:
 
     async def _new_context(self, storage_state: dict | None = None, record_video_dir: str | None = None):
         kwargs = self._context_kwargs(record_video_dir)
-        if storage_state is not None:
-            kwargs["storage_state"] = storage_state
-        self._context = await self._browser.new_context(**kwargs)
-        self._active_tab = 0  # a fresh context has exactly one page
+        if self._persistent:
+            # The on-disk profile is the source of truth for cookies/login, so a persistent context
+            # both launches the browser AND is the context (no new_context). storage_state — the
+            # idle-close stash (#36) — doesn't apply: persistence is already durable on disk.
+            self._profile_dir.mkdir(parents=True, exist_ok=True)
+            launcher = getattr(self._playwright, self._config.browser_type)
+            try:
+                self._context = await launcher.launch_persistent_context(
+                    str(self._profile_dir),
+                    headless=self._config.headless, slow_mo=self._config.slow_mo, **kwargs,
+                )
+            except Exception:
+                self._install_browser()
+                self._context = await launcher.launch_persistent_context(
+                    str(self._profile_dir),
+                    headless=self._config.headless, slow_mo=self._config.slow_mo, **kwargs,
+                )
+        else:
+            if storage_state is not None:
+                kwargs["storage_state"] = storage_state
+            self._context = await self._browser.new_context(**kwargs)
+        self._active_tab = 0  # a fresh context starts on its first page
         # Fail fast on a missing/non-actionable selector: Playwright's 30s default makes a bad
         # selector hang the agent for half a minute before erroring. config.wait_timeout (10s) is
         # the one knob; a dead selector then surfaces as an actionable nudge (see dispatch) in ~10s.
@@ -370,7 +409,8 @@ class BrowserManager:
 
         self._context.set_default_timeout(config.wait_timeout)
         await self._context.grant_permissions(["clipboard-read", "clipboard-write"])
-        page = await self._context.new_page()
+        # A persistent context opens with one page already; an ephemeral new_context has none.
+        page = self._context.pages[0] if self._context.pages else await self._context.new_page()
         self._attach_page_listeners(page)
 
     def _attach_page_listeners(self, page: Page):
@@ -440,7 +480,7 @@ class SessionRegistry:
 
     def get(self, session_id: str) -> BrowserManager:
         if session_id not in self._sessions:
-            mgr = BrowserManager(self._config)
+            mgr = BrowserManager(self._config, session_id)  # session_id → its own persistent profile (#43)
             mgr._pending_state = self._stash.pop(session_id, None)  # restore login if idle-closed
             self._sessions[session_id] = mgr
         return self._sessions[session_id]
