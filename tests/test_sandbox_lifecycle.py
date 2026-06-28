@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import types
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -224,3 +225,36 @@ def test_sandbox_respects_explicit_gl_override(monkeypatch):
     _construct_without_xserver(monkeypatch)
     nb = NestedBackend(display=77)
     assert nb.env["LIBGL_ALWAYS_SOFTWARE"] == "0", "an explicit global setting still wins"
+
+
+# --- empty-sandbox guidance: never let the agent bail to the real desktop ---
+# A real session hit this: launch_app(device="phone") then screenshot(nested:aino) found an empty
+# sandbox (the pre-#50/#53 respawn dropped the app); the message said "(none — launch_app first)" —
+# which misled the agent (it HAD just launched) into driving the real desktop with DISPLAY=:0
+# xdotool/import. The message must steer recovery INSIDE the sandbox and forbid the real desktop.
+
+
+def _nested_backend_with(windows):
+    backend = MagicMock()
+    backend.list_windows.return_value = windows
+    backend.screen_w, backend.screen_h = 412, 915
+    return backend
+
+
+def test_empty_sandbox_message_steers_recovery_and_forbids_the_real_desktop(monkeypatch):
+    monkeypatch.setattr(srv, "_get_sandbox", lambda *a, **k: _nested_backend_with([]))
+    monkeypatch.setattr(srv.DesktopWindow, "find_in", classmethod(lambda cls, b, t: None))
+    win, _, err = srv._resolve_nested_target("nested:aino")
+    assert win is None
+    low = err.lower()
+    assert "launch_app" in err and "reset_sandbox" in err  # how to recover in-sandbox
+    assert "do not" in low and ("real desktop" in low or "xdotool" in low or "display=:0" in low)
+    assert "(none — launch_app first)" not in err  # the misleading bare line is gone
+
+
+def test_nested_target_still_lists_windows_that_exist(monkeypatch):
+    monkeypatch.setattr(srv, "_get_sandbox", lambda *a, **k: _nested_backend_with([(1, "aino")]))
+    monkeypatch.setattr(srv.DesktopWindow, "find_in", classmethod(lambda cls, b, t: None))
+    _, _, err = srv._resolve_nested_target("nested:other")
+    assert 'target="nested:aino"' in err  # a wrong title still shows what IS available
+    assert "Do NOT" not in err  # the recovery warning is only for a genuinely empty sandbox

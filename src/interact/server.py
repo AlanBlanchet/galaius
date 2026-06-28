@@ -375,8 +375,20 @@ def _resolve_nested_target(spec: str) -> tuple[DesktopWindow | None, None, str |
     win = DesktopWindow.find_in(backend, title)
     if win is None:
         windows = backend.list_windows()
-        avail = "\n".join(f'  target="nested:{n}"' for _, n in windows) or "  (none — launch_app first)"
-        return None, None, f"No sandbox window titled '{title}'. In the sandbox:\n{avail}"
+        if windows:
+            avail = "\n".join(f'  target="nested:{n}"' for _, n in windows)
+            return None, None, f"No sandbox window titled '{title}'. In the sandbox:\n{avail}"
+        # Empty sandbox. The old "(none — launch_app first)" misled an agent that had JUST launched —
+        # the real cause is the display being respawned (a size change pre-#50/#53, or exhaustion
+        # after many GPU launches) and dropping the app. Steer recovery INSIDE the sandbox and forbid
+        # the real-desktop fallback: a real session bailed to DISPLAY=:0 xdotool/import on the user's
+        # actual desktop, which is exactly what the isolated sandbox exists to avoid.
+        return None, None, (
+            f"No sandbox window titled '{title}' — the sandbox has no windows right now. "
+            f"If you just called launch_app, the display was respawned and dropped the app: call "
+            f"launch_app again (or reset_sandbox for a clean display), then retry. Do NOT drive the "
+            f"real desktop (xdotool / import / DISPLAY=:0) — keep everything in the isolated sandbox."
+        )
     return win, None, None
 
 
