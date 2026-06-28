@@ -66,10 +66,14 @@ def caller_session_name() -> str:
         str(Path.home()),
     )
 
-# The "sovereign" model the low/medium quality tiers prefer by default: GLM-4.5V (MIT, open-weight,
-# self-hostable). Strong open VLM, cheap/private — the right default when peak frontier accuracy
-# isn't needed. Self-hosters point INTERACT_TIER_SOVEREIGN_MODEL at their own endpoint id.
-_DEFAULT_SOVEREIGN_MODEL = "novita/zai-org/glm-4.5v"
+# The "sovereign" GLM-4.5V models the low/medium quality tiers prefer (MIT, open-weight,
+# self-hostable) — a strong open VLM, cheap/private, the right default when peak frontier accuracy
+# isn't needed. Tried in order; the FIRST whose API key is present wins, so EITHER a z.ai key
+# (ZAI_API_KEY → first-party `zai/`) or a Novita key (NOVITA_API_KEY → reseller `novita/`) lights up
+# GLM with zero config. An explicit INTERACT_TIER_SOVEREIGN_MODEL overrides the whole list (e.g. a
+# self-hosted endpoint id). z.ai is preferred — it's GLM's first-party API.
+_SOVEREIGN_MODELS = ("zai/glm-4.5v", "novita/zai-org/glm-4.5v")
+_DEFAULT_SOVEREIGN_MODEL = _SOVEREIGN_MODELS[0]  # preferred default (also a back-compat alias)
 
 # Quality tiers for the UI tools (review_ui/verify_ui quality=...): the agent picks by STAKES, not
 # by model name — low = quick glance, critical = final pre-ship sign-off. interact maps the tier to
@@ -200,16 +204,22 @@ class Config(BaseSettings):
 
     def resolve_quality_model(self, quality: str) -> str:
         """Map a quality tier to a model PREFERENCE (the "choose the model for me" literal). low/medium
-        prefer the sovereign self-host model (private, cheap); high/critical fall through to the normal
-        best-available resolution. Returns "" when the tier implies normal resolution OR the sovereign
-        model isn't available — a graceful preference layered on resolve_model, never a hard pin that
-        errors on a missing key. Pass the result as the per-call override."""
-        if quality in ("low", "medium"):
-            from interact.models import Model
+        prefer a sovereign self-host GLM (private, cheap); high/critical fall through to the normal
+        best-available resolution. Returns "" when the tier implies normal resolution OR no sovereign
+        candidate is reachable — a graceful preference layered on resolve_model, never a hard pin that
+        errors on a missing key. Pass the result as the per-call override.
 
-            sovereign = self.tier_sovereign_model or _DEFAULT_SOVEREIGN_MODEL
-            if Model.from_litellm_id(sovereign).is_available():
-                return sovereign
+        An explicit tier_sovereign_model is the only candidate (honour the user's pin); otherwise each
+        _SOVEREIGN_MODELS id is tried in order and the FIRST whose key is present wins — so a z.ai key
+        (`zai/`) and a Novita key (`novita/`) both light up GLM with no configuration."""
+        if quality not in ("low", "medium"):
+            return ""
+        from interact.models import Model
+
+        candidates = (self.tier_sovereign_model,) if self.tier_sovereign_model else _SOVEREIGN_MODELS
+        for candidate in candidates:
+            if candidate and Model.from_litellm_id(candidate).is_available():
+                return candidate
         return ""
 
     @functools.cached_property

@@ -7222,7 +7222,8 @@
       "gpt-5.5",
       "xai/grok-4.3",
       "xai/grok-4.3-latest",
-      "chatgpt/gpt-5.2"
+      "chatgpt/gpt-5.2",
+      "zai/glm-4.5v"
     ],
     "image": [
       "gemini/gemini-3.5-flash",
@@ -7234,7 +7235,9 @@
       "chatgpt/gpt-5.3-codex",
       "chatgpt/gpt-5.3-codex-spark",
       "xai/grok-4.3",
-      "xai/grok-4.3-latest"
+      "xai/grok-4.3-latest",
+      "zai/glm-4.5v",
+      "novita/zai-org/glm-4.5v"
     ],
     "video": [
       "gemini/gemini-3.1-pro-preview",

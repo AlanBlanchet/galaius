@@ -39,6 +39,20 @@ def test_resolve_quality_model_honors_a_configured_sovereign(monkeypatch):
     assert Config(tier_sovereign_model="ollama/glm-local").resolve_quality_model("low") == "ollama/glm-local"
 
 
+def test_resolve_quality_model_prefers_the_first_available_sovereign(monkeypatch):
+    # A z.ai-key user (no Novita key) must get the z.ai GLM id from low/medium — NOT "" that falls
+    # through to a frontier model. The tier tries each sovereign candidate; first available wins.
+    monkeypatch.setattr("interact.models.Model.is_available", lambda self: self.id == "zai/glm-4.5v")
+    assert Config().resolve_quality_model("low") == "zai/glm-4.5v"
+    assert Config().resolve_quality_model("medium") == "zai/glm-4.5v"
+
+
+def test_resolve_quality_model_falls_to_novita_when_thats_the_reachable_glm(monkeypatch):
+    # A Novita-key user (no z.ai key) still lights up GLM via the other sovereign candidate.
+    monkeypatch.setattr("interact.models.Model.is_available", lambda self: self.id == "novita/zai-org/glm-4.5v")
+    assert Config().resolve_quality_model("low") == "novita/zai-org/glm-4.5v"
+
+
 # --- _quality_plan: explicit model wins, unknown tier errors, None passes through ---
 
 
