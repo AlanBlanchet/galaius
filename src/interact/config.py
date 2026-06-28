@@ -1,4 +1,9 @@
 import functools
+import glob
+import json
+import os
+import re
+from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
@@ -10,6 +15,56 @@ from interact.models import CircuitBreaker, ModelChain, ModelRole
 
 DEFAULT_LIMIT = 50
 LOG_MAXLEN = 1000
+
+
+def _safe_dir_name(name: str) -> str:
+    """A filesystem-safe directory name (collapse anything outside [A-Za-z0-9._-] to '_')."""
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("_-. ") or "default"
+
+
+def _session_custom_title(session_id: str, home: str) -> str | None:
+    """The user-set title of a Claude Code session, read from its transcript under
+    ``~/.claude/projects`` — the same store ``scan_client_errors.py`` reads. The session id is
+    unique, so a glob finds the file regardless of how Claude slugs the project dir. Only the small
+    ``custom-title`` lines are parsed (cheap string pre-filter), and the LAST one wins (renames)."""
+    matches = glob.glob(str(Path(home) / ".claude" / "projects" / "*" / f"{session_id}.jsonl"))
+    if not matches:
+        return None
+    custom = None
+    try:
+        with open(matches[0], encoding="utf-8") as f:
+            for line in f:
+                if '"custom-title"' in line:
+                    try:
+                        custom = json.loads(line).get("customTitle") or custom
+                    except ValueError:
+                        pass
+    except OSError:
+        return None
+    return custom
+
+
+@functools.lru_cache(maxsize=16)
+def _resolve_session_name(session_id: str, project_dir: str, cwd: str, home: str) -> str:
+    """Resolve the calling session's log-folder name (pure function of its inputs, so lru_cache is
+    safe + keyed by env): the Claude session's custom-title, else the project/cwd dir basename, else
+    'default'. Cached because the title means re-reading a (large) transcript."""
+    title = _session_custom_title(session_id, home) if session_id else None
+    base = Path(project_dir or cwd).name if (project_dir or cwd) else ""
+    return _safe_dir_name(title or base or "default")
+
+
+def caller_session_name() -> str:
+    """The name of the Claude Code session driving interact, for separating logs per session: its
+    user-set custom-title (e.g. 'Aino') when resolvable, else the CLAUDE_PROJECT_DIR / cwd basename,
+    else 'default'. The dir basename and the session title can differ — the title is the authoritative
+    one the user sees (and set), so it wins."""
+    return _resolve_session_name(
+        os.environ.get("CLAUDE_CODE_SESSION_ID", ""),
+        os.environ.get("CLAUDE_PROJECT_DIR", ""),
+        os.getcwd(),
+        str(Path.home()),
+    )
 
 # The "sovereign" model the low/medium quality tiers prefer by default: GLM-4.5V (MIT, open-weight,
 # self-hostable). Strong open VLM, cheap/private — the right default when peak frontier accuracy
@@ -94,6 +149,13 @@ class Config(BaseSettings):
     def usage_log(self) -> Path:
         """Where VLM usage is recorded (under debug_dir, so it relocates with it)."""
         return self.debug_dir / "logs" / "usage.jsonl"
+
+    def session_log_dir(self) -> Path:
+        """Per-caller log root: ``<debug_dir>/logs/<session>/<date>``. ``<session>`` is the calling
+        Claude Code session's name (its custom-title, e.g. 'Aino', else the project/cwd basename);
+        ``<date>`` is today. Everything interact logs for a run lands here — consolidated under
+        ~/.interact (no /tmp scatter) and separated by which session produced it."""
+        return self.debug_dir / "logs" / caller_session_name() / datetime.now().strftime("%Y-%m-%d")
 
     def model_for(self, role: ModelRole) -> str:
         if role == "video":

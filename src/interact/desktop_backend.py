@@ -686,7 +686,13 @@ class NestedBackend(DesktopBackend):
 
     @staticmethod
     def _open_log(label: str) -> str:
-        fd, path = tempfile.mkstemp(prefix=f"interact-{label}-", suffix=".log")
+        # Under ~/.interact/logs/<session>/<date> (not /tmp) so every sandbox log is consolidated
+        # with the rest of interact's output and separated by the calling Claude session.
+        from interact.runtime import config
+
+        d = config.session_log_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        fd, path = tempfile.mkstemp(prefix=f"{label}-", suffix=".log", dir=str(d))
         os.close(fd)
         return path
 

@@ -38,7 +38,13 @@ class Debug:
                 "debug_dir must be a subdirectory of out/, not out/ itself; "
                 "use 'out/vscode' or 'out/tests'"
             )
-        session_dir = d / cls.SESSION_TS
+        # Default (no override) → organize under logs/<session>/<date> so artifacts land in
+        # ~/.interact, separated by the calling Claude session and dated. An explicit debug_dir or
+        # screenshot_dump_dir keeps the flat <base>/<session_ts> layout (out/vscode, dump dirs, tests).
+        if debug_dir is None and config.screenshot_dump_dir is None:
+            session_dir = config.session_log_dir()
+        else:
+            session_dir = d / cls.SESSION_TS
         ts = _dt.now().strftime("%H%M%S")
         base = session_dir / f"{ts}_{tool}"
         candidate = base

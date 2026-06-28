@@ -51,6 +51,21 @@ def _block_real_vlm_calls(request):
         ) = saved
 
 
+@pytest.fixture(autouse=True)
+def _isolate_interact_logs(tmp_path):
+    """Keep test artifacts out of the user's real ~/.interact/logs: route Debug dumps to a per-test
+    tmp via the screenshot_dump_dir override, which survives config.refresh() (unlike a plain field
+    set, which review_ui's refresh would reset). A test that needs the real dump path overrides it."""
+    from interact.runtime import config
+
+    saved = config.screenshot_dump_dir
+    config.screenshot_dump_dir = tmp_path / "interact-debug"
+    try:
+        yield
+    finally:
+        config.screenshot_dump_dir = saved
+
+
 def pytest_collection_modifyitems(config, items):
     # integration → needs API keys + a real browser; desktop → needs a live Linux display.
     # Skipping these keeps the suite green on macOS/Windows (and headless CI), so the
