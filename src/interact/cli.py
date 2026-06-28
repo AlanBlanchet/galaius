@@ -142,10 +142,29 @@ def install(
 def providers() -> None:
     """List providers and grounding models available in the current environment."""
     from interact.models import Model, ModelCapability
+    from interact.runtime import config
 
     Model.load_registry()
     available = Model.available_providers()
     print(f"Available providers ({len(available)}): {', '.join(available) or 'none — no API keys found'}")
+
+    # What each tool will ACTUALLY use, given the current keys — the answer to "why is my default X?".
+    # Default selection is frontier-first (the first recommendation whose key is present); a ⚠ flags a
+    # pick whose key is missing (it'll error at call time → pin one or add the key). The sovereign line
+    # shows the GLM the low/medium quality tiers map to (lit up by a z.ai or Novita key).
+    print("\nResolved selection (what each tool uses, given your keys):")
+    for role in ("image", "component", "video", "audio"):
+        try:
+            mid = config.resolve_model(role)
+        except RuntimeError:
+            mid = ""
+        ok = bool(mid) and Model.from_litellm_id(mid).is_available()
+        flag = "" if ok else "   ⚠ key missing — will error; add the key or pin a model"
+        print(f"  {role:<10} → {mid or '—'}{flag}")
+    sovereign = config.resolve_quality_model("low")
+    print(f"  {'quality':<10} → {sovereign or 'no sovereign key (z.ai/Novita) — low/medium fall back to frontier'}"
+          + ("   (low/medium use this GLM)" if sovereign else ""))
+
     grounding = Model.available_by_capability(ModelCapability.GUI_GROUNDING)
     print(f"\nGrounding models ready ({len(grounding)}):")
     for model in grounding:
