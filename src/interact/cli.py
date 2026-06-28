@@ -20,8 +20,38 @@ from interact.userconfig import UserConfig
 app = App(
     name="interact",
     version=installed_version(),
+    version_flags=["--version", "-v"],  # `-v` too — the obvious alias users reach for
     help="Browser + desktop automation MCP server, plus tools to install and configure it.",
 )
+
+
+def _print_resolved_models(indent: str = "  ") -> None:
+    """Print what each role's tool ACTUALLY resolves to, given the current keys — the answer to
+    "why is my default X?". Shows the pinned model or the auto-picked one (frontier-first,
+    first-available), flags a pick whose key is missing, and names the GLM the low/medium quality
+    tiers map to. Shared by `status`, `providers` and `doctor` so every surface tells one story."""
+    from interact.models import Model
+    from interact.runtime import config
+
+    Model.load_registry()
+    for role in ("image", "component", "video", "audio"):
+        pinned = getattr(config, f"{role}_model", "")
+        try:
+            mid = config.resolve_model(role)
+        except RuntimeError:
+            mid = ""
+        ok = bool(mid) and Model.from_litellm_id(mid).is_available()
+        flag = "" if ok else "   ⚠ key missing — add it or pin a model"
+        print(f"{indent}{role:<10} → {mid or '—'} ({'pinned' if pinned else 'auto'}){flag}")
+    sovereign = config.resolve_quality_model("low")
+    tail = "low/medium tier" if sovereign else "no z.ai/Novita key — low/medium fall back to frontier"
+    print(f"{indent}{'quality':<10} → {sovereign or 'frontier'} ({tail})")
+
+
+@app.command
+def version() -> None:
+    """Print the installed interact version (same as `interact --version`/`-v`)."""
+    print(installed_version())
 
 
 @app.command
@@ -64,9 +94,8 @@ def status(
     if not bound:
         print("  (none yet)")
 
-    print("\nModels:")
-    for role in ("image", "component", "video"):
-        print(f"  {role:<10} {getattr(config, f'{role}_model') or '(auto — best available)'}")
+    print("\nModels (what your keys resolve to — pin via `interact config set`):")
+    _print_resolved_models()
     from interact.desktop_backend import desktop_supported
 
     if not desktop_supported():
@@ -142,28 +171,13 @@ def install(
 def providers() -> None:
     """List providers and grounding models available in the current environment."""
     from interact.models import Model, ModelCapability
-    from interact.runtime import config
 
     Model.load_registry()
     available = Model.available_providers()
     print(f"Available providers ({len(available)}): {', '.join(available) or 'none — no API keys found'}")
 
-    # What each tool will ACTUALLY use, given the current keys — the answer to "why is my default X?".
-    # Default selection is frontier-first (the first recommendation whose key is present); a ⚠ flags a
-    # pick whose key is missing (it'll error at call time → pin one or add the key). The sovereign line
-    # shows the GLM the low/medium quality tiers map to (lit up by a z.ai or Novita key).
     print("\nResolved selection (what each tool uses, given your keys):")
-    for role in ("image", "component", "video", "audio"):
-        try:
-            mid = config.resolve_model(role)
-        except RuntimeError:
-            mid = ""
-        ok = bool(mid) and Model.from_litellm_id(mid).is_available()
-        flag = "" if ok else "   ⚠ key missing — will error; add the key or pin a model"
-        print(f"  {role:<10} → {mid or '—'}{flag}")
-    sovereign = config.resolve_quality_model("low")
-    print(f"  {'quality':<10} → {sovereign or 'no sovereign key (z.ai/Novita) — low/medium fall back to frontier'}"
-          + ("   (low/medium use this GLM)" if sovereign else ""))
+    _print_resolved_models()
 
     grounding = Model.available_by_capability(ModelCapability.GUI_GROUNDING)
     print(f"\nGrounding models ready ({len(grounding)}):")
@@ -335,6 +349,8 @@ def doctor() -> None:
     grounding = Model.available_by_capability(ModelCapability.GUI_GROUNDING)
     print(f"  providers     : {', '.join(available) or 'none — set a provider API key'}")
     print(f"  grounding     : {len(grounding)} model(s) ready")
+    print("  selection     : (what each tool resolves to — answers 'why is my default X?')")
+    _print_resolved_models(indent="    ")
 
 
 config_app = App(name="config", help="Persist model/key settings to ~/.interact/config.env.")
