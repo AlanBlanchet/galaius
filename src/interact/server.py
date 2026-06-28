@@ -26,6 +26,7 @@ from interact.critique import (
     VerifyReport,
     build_review_prompt,
     build_verify_prompt,
+    format_grounding,
     format_review,
     format_verify,
     parse_review,
@@ -1131,18 +1132,28 @@ async def _capture_target_png(win: DesktopWindow | None, mgr, scope: str | None)
 async def _resolve_capture(target, session, scope, path, reference, inv):
     """Shared capture path for review_ui / verify_ui: a ``file:<path>`` target or a live capture,
     saved to ``path`` if given, plus an optional ``reference`` image. Returns
-    ``(img_bytes, context, ref_bytes, err_or_None)`` — on error the caller returns the string."""
+    ``(img_bytes, context, ref_bytes, elements, err_or_None)`` — on error the caller returns the string.
+
+    ``elements`` is interact's detected element list for a BROWSER target (the reliable, no-VLM DOM-ref
+    scan), used to GROUND the critique and flag a hallucinated ref. Empty for a desktop/file target,
+    where no equally-reliable list exists."""
     file_bytes, ferr = _resolve_image_source(target)  # target="file:<path>" → judge a saved image (#44)
     if ferr:
-        return None, None, None, ferr
+        return None, None, None, [], ferr
+    elements: list = []
     if file_bytes is not None:
         img, context = file_bytes, f"Image file: {target.strip()[5:]}"
     else:
         win, mgr, err = _resolve_target(target, session)
         if err:
-            return None, None, None, err
+            return None, None, None, [], err
         img = await _capture_target_png(win, mgr, scope)
         context = _desktop_label(win) if win else "Browser page"
+        if win is None and mgr is not None:  # browser target → DOM ref list to anchor the critique on
+            try:
+                elements = await _scan_elements(mgr, scope=scope)
+            except Exception:
+                elements = []  # never fail a capture because the grounding scan hiccuped
     if path:
         _save_to_path(path, img)
     Debug.save("capture", img, ext="png", invocation_id=inv)
@@ -1151,8 +1162,8 @@ async def _resolve_capture(target, session, scope, path, reference, inv):
         try:
             ref_bytes = Path(reference).read_bytes()
         except OSError as e:
-            return None, None, None, f"ERROR: could not read reference image {reference!r} — {e}"
-    return img, context, ref_bytes, None
+            return None, None, None, [], f"ERROR: could not read reference image {reference!r} — {e}"
+    return img, context, ref_bytes, elements, None
 
 
 @mcp.tool()
@@ -1188,21 +1199,23 @@ async def review_ui(
     Debug.dump_input(inv, {"tool": "review_ui", "focus": focus, "reference": reference,
                            "target": target, "session": session, "model": model},
                      _resolved_config(model, "image"))
-    img, context, ref_bytes, err = await _resolve_capture(target, session, scope, path, reference, inv)
+    img, context, ref_bytes, elements, err = await _resolve_capture(target, session, scope, path, reference, inv)
     if err:
         Debug.dump_output(inv, err)
         return err
+    grounding = format_grounding(elements) if elements else None  # anchor findings to the real elements
+    valid_refs = {e.ref for e in elements if getattr(e, "ref", None)} or None
     try:
         if ref_bytes is not None:  # reference first, build second — matches the compare rubric
-            r = await _vlm(ref_bytes, context, build_review_prompt(focus, compare=True),
+            r = await _vlm(ref_bytes, context, build_review_prompt(focus, compare=True, grounding=grounding),
                            response_format=UIReview, model_override=model, extra_images=[img])
         else:
-            r = await _vlm(img, context, build_review_prompt(focus),
+            r = await _vlm(img, context, build_review_prompt(focus, grounding=grounding),
                            response_format=UIReview, model_override=model)
     except Exception as e:  # never crash the agent's flow on a vision hiccup
         return f"ERROR: review_ui vision call failed — {e}"
     review = parse_review(r.text)
-    body = format_review(review) if review else r.text  # graceful: raw VLM text if the schema didn't parse
+    body = format_review(review, valid_refs) if review else r.text  # graceful: raw VLM text if the schema didn't parse
     model_tag = f" {r.model}" if r.model else ""
     out = f"{context}\n{body}\n(VLM:{model_tag} {r.elapsed:.1f}s)"
     Debug.dump_output(inv, out)
@@ -1240,21 +1253,23 @@ async def verify_ui(
     inv = Debug.new_invocation_dir(None, "verify_ui")
     Debug.dump_input(inv, {"tool": "verify_ui", "requirements": requirements, "target": target,
                            "reference": reference, "model": model}, _resolved_config(model, "image"))
-    img, context, ref_bytes, err = await _resolve_capture(target, session, scope, path, reference, inv)
+    img, context, ref_bytes, elements, err = await _resolve_capture(target, session, scope, path, reference, inv)
     if err:
         Debug.dump_output(inv, err)
         return err
+    grounding = format_grounding(elements) if elements else None  # anchor each check to the real elements
+    valid_refs = {e.ref for e in elements if getattr(e, "ref", None)} or None
     try:
         if ref_bytes is not None:  # reference first, build second
-            r = await _vlm(ref_bytes, context, build_verify_prompt(requirements, focus, compare=True),
+            r = await _vlm(ref_bytes, context, build_verify_prompt(requirements, focus, compare=True, grounding=grounding),
                            response_format=VerifyReport, model_override=model, extra_images=[img])
         else:
-            r = await _vlm(img, context, build_verify_prompt(requirements, focus),
+            r = await _vlm(img, context, build_verify_prompt(requirements, focus, grounding=grounding),
                            response_format=VerifyReport, model_override=model)
     except Exception as e:
         return f"ERROR: verify_ui vision call failed — {e}"
     report = parse_verify(r.text)
-    body = format_verify(report) if report else r.text  # graceful: raw VLM text if schema didn't parse
+    body = format_verify(report, valid_refs) if report else r.text  # graceful: raw VLM text if schema didn't parse
     model_tag = f" {r.model}" if r.model else ""
     out = f"{context}\n{body}\n(VLM:{model_tag} {r.elapsed:.1f}s)"
     Debug.dump_output(inv, out)

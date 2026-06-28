@@ -55,6 +55,26 @@ def test_format_verify_flags_all_pass():
     assert "✓ all pass" in format_verify(rep)
 
 
+def test_build_verify_prompt_embeds_detected_elements_for_grounding():
+    from interact.critique import format_grounding
+    from interact.state import InteractiveElement
+
+    grounding = format_grounding([InteractiveElement(ref="e3", role="link", name="Home", x=0, y=0, w=40, h=12, index=1)])
+    p = build_verify_prompt(["nav has Home"], grounding=grounding)
+    assert "DETECTED ELEMENTS" in p and "e3: link" in p
+    assert "DETECTED ELEMENTS" not in build_verify_prompt(["nav has Home"])  # absent without grounding
+
+
+def test_format_verify_flags_a_check_citing_an_undetected_ref():
+    rep = _report(checks=[
+        RequirementCheck(requirement="Home tab present", verdict="pass", ref="e3", element="nav", evidence="present"),
+        RequirementCheck(requirement="Cart present", verdict="fail", ref="e99", element="ghost", evidence="not found"),
+    ])
+    out = format_verify(rep, valid_refs={"e3"})
+    assert "[e3]" in out and "e3 ?unverified" not in out
+    assert "e99 ?unverified" in out  # a cited ref the scan never produced → flagged
+
+
 def test_parse_verify_handles_a_fallback_banner_and_no_json():
     payload = _report(all_pass=True, checks=[_check("x", "pass")]).model_dump_json()
     assert parse_verify(payload).all_pass is True
