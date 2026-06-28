@@ -647,6 +647,9 @@ async def _idle_session_reaper(ttl: int) -> None:
 
 @asynccontextmanager
 async def _lifespan(_: FastMCP) -> AsyncIterator[None]:
+    from interact.server_registry import register_server, unregister_server
+
+    reg = register_server()  # record pid+version so `interact doctor` can flag a stale long-lived server
     reaper = asyncio.create_task(_idle_session_reaper(config.session_idle_ttl))
     try:
         yield
@@ -656,6 +659,7 @@ async def _lifespan(_: FastMCP) -> AsyncIterator[None]:
             await reaper
         await _sessions.close_all()
         _close_sandbox()
+        unregister_server(reg)
 
 
 def _instructions() -> str:

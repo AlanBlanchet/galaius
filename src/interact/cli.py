@@ -54,6 +54,22 @@ def version() -> None:
     print(installed_version())
 
 
+def _print_stale_servers(indent: str = "  ") -> None:
+    """Flag any RUNNING MCP server that loaded an OLDER version than is now available — the silent
+    stale-server trap (a long-lived `interact mcp` keeps serving the code it imported at startup, so
+    a shipped fix never reaches it until reconnected). Names the pid so the user knows which editor
+    window's interact MCP server to reconnect. Nothing printed when every server is current."""
+    from interact.server_registry import latest_version, stale_servers
+
+    stale = stale_servers()
+    if not stale:
+        return
+    latest = latest_version()
+    print(f"{indent}⚠ stale MCP server(s) — running older code than v{latest}; reconnect to load fixes:")
+    for s in stale:
+        print(f"{indent}    pid {s['pid']}: v{s.get('version')}")
+
+
 @app.command
 def mcp() -> None:
     """Run the MCP server over stdio. Clients launch this; register it with `interact install`."""
@@ -83,6 +99,7 @@ def status(
 
     root = project.resolve()
     print("interact status\n")
+    _print_stale_servers()
 
     print("Registered with (interact install <client> to add):")
     bound = False
@@ -303,6 +320,7 @@ def doctor() -> None:
     from interact.models import Model, ModelCapability
 
     print("interact doctor\n")
+    _print_stale_servers()
     print(f"  command       : {shutil.which('interact') or 'NOT on PATH'}")
     print(f"  config file   : {UserConfig.PATH} ({'present' if UserConfig.PATH.exists() else 'absent'})")
 
