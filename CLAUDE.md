@@ -51,10 +51,12 @@ browser-only capabilities stay as their own clearly-named tools:
   discovery), `verify_ui` (PASS/FAIL each literal requirement) and `measure_ui` (deterministic WCAG
   contrast / colour, NO VLM) are the discover → verify → measure trio; `transcribe` (audio → text +
   understanding) is file-based, not `target`-keyed.
-- **Browser-only** (no desktop meaning, stay separate): `navigate`, tab control,
-  `get_page_state`, network/console logs, sessions, `download_asset`, JS eval. `get_page_state`
-  and no-query `screenshot` also return the page's `ref` list (pure DOM scan, no VLM) so the
-  agent can act by `ref` without a separate `get_interactive_elements` call.
+- **Browser-only** (no desktop meaning, stay separate): `navigate`, tab control, `get_page_state`,
+  `get_logs(source="network"|"console")`, `session(action="list"|"save"|"load"|"close")`,
+  `download_asset`, `list_providers`, JS eval. `get_page_state` and no-query `screenshot` also return
+  the page's `ref` list (pure DOM scan, no VLM) so the agent can act by `ref` without a separate
+  `get_interactive_elements` call. Browser logs + the session lifecycle are each ONE action-param
+  tool (not a tool-per-verb) — harmonised in v0.19; `list_providers` was `configured_providers`.
 - **Returns**: a short prose summary first, optional structured trailer; errors prefixed
   `ERROR:` so an agent can branch.
 

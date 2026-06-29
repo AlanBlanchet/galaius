@@ -7,6 +7,7 @@ import re
 import logging
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Literal
 
 import litellm as _litellm
 
@@ -1482,44 +1483,46 @@ async def get_page_state(
 
 
 @mcp.tool()
-async def list_sessions() -> str:
-    """List active browser sessions and how long each has been idle."""
-    sessions = _sessions.active()
-    if not sessions:
-        return "No active sessions."
-    lines = []
-    for s in sessions:
-        idle = _sessions.idle_seconds(s)
-        lines.append(f"  {s}" + (f" — idle {idle:.0f}s" if idle is not None else " — no browser open"))
-    ttl = config.session_idle_ttl
-    if ttl > 0:
-        lines.append(f"(idle sessions auto-close after {ttl}s; set INTERACT_SESSION_IDLE_TTL=0 to disable)")
-    return "\n".join(lines)
+async def session(
+    action: Literal["list", "save", "load", "close"],
+    name: str = _DEFAULT_SESSION,
+    path: str | None = None,
+) -> str:
+    """Manage browser sessions — one tool for the whole lifecycle.
 
+    action:
+      - "list"  — active sessions + how long each has been idle (ignores name/path).
+      - "save"  — export `name`'s cookies + localStorage to `path` (path required).
+      - "load"  — restore `name` from a previously saved `path` (path required).
+      - "close" — close `name` and free its browser/resources.
 
-@mcp.tool()
-async def close_session(session: str = _DEFAULT_SESSION) -> str:
-    """Close a browser session and free its resources."""
-    await _sessions.close(session)
-    return _session_response(session, f"Session '{session}' closed.")
-
-
-@mcp.tool()
-async def save_session(path: str, session: str = _DEFAULT_SESSION) -> str:
-    """Export cookies and localStorage to a file for later restoration."""
-    mgr = _sessions.get(session)
-    state = await mgr.save_state()
-    Path(path).write_text(json.dumps(state))
-    return _session_response(session, f"Session '{session}' saved to {path}.")
-
-
-@mcp.tool()
-async def load_session(path: str, session: str = _DEFAULT_SESSION) -> str:
-    """Restore cookies and localStorage from a previously saved session file."""
+    name: the session to act on (default "default"). path: the session-state file for save/load.
+    """
+    if action == "list":
+        sessions = _sessions.active()
+        if not sessions:
+            return "No active sessions."
+        lines = []
+        for s in sessions:
+            idle = _sessions.idle_seconds(s)
+            lines.append(f"  {s}" + (f" — idle {idle:.0f}s" if idle is not None else " — no browser open"))
+        ttl = config.session_idle_ttl
+        if ttl > 0:
+            lines.append(f"(idle sessions auto-close after {ttl}s; set INTERACT_SESSION_IDLE_TTL=0 to disable)")
+        return "\n".join(lines)
+    if action == "close":
+        await _sessions.close(name)
+        return _session_response(name, f"Session '{name}' closed.")
+    if not path:
+        return f"ERROR: action={action!r} requires `path` (the session-state file)"
+    mgr = _sessions.get(name)
+    if action == "save":
+        state = await mgr.save_state()
+        Path(path).write_text(json.dumps(state))
+        return _session_response(name, f"Session '{name}' saved to {path}.")
     state = json.loads(Path(path).read_text())
-    mgr = _sessions.get(session)
     await mgr.load_state(state)
-    return _session_response(session, f"Session '{session}' restored from {path}.")
+    return _session_response(name, f"Session '{name}' restored from {path}.")
 
 
 @mcp.tool()
@@ -1588,33 +1591,26 @@ async def transcribe(
 
 
 @mcp.tool()
-async def get_network_log(
-    clear: bool = False, limit: int = DEFAULT_LIMIT, session: str = _DEFAULT_SESSION
+async def get_logs(
+    source: Literal["network", "console"],
+    clear: bool = False,
+    limit: int = DEFAULT_LIMIT,
+    session: str = _DEFAULT_SESSION,
 ) -> str:
-    """Return captured network requests (last `limit` entries). Set clear=True to flush the log after reading."""
+    """Return captured browser logs (last `limit` entries). source="network" → requests
+    (method/status/url), source="console" → console messages + errors. clear=True flushes after reading."""
     mgr = _sessions.get(session)
-    entries = mgr.drain_network_log(clear)
-    entries = entries[-limit:]
-    if not entries:
-        return _session_response(session, "No network requests captured.")
-    lines = []
-    for e in entries:
-        status = e.get("status", "pending")
-        ctype = e.get("content_type", "")
-        lines.append(
-            f"{e['method']} {status} {e['url']}" + (f" ({ctype})" if ctype else "")
-        )
-    return _session_response(session, "\n".join(lines))
-
-
-@mcp.tool()
-async def get_console_log(
-    clear: bool = False, limit: int = DEFAULT_LIMIT, session: str = _DEFAULT_SESSION
-) -> str:
-    """Return captured browser console messages and errors (last `limit` entries). Set clear=True to flush after reading."""
-    mgr = _sessions.get(session)
-    entries = mgr.drain_console_log(clear)
-    entries = entries[-limit:]
+    if source == "network":
+        entries = mgr.drain_network_log(clear)[-limit:]
+        if not entries:
+            return _session_response(session, "No network requests captured.")
+        lines = []
+        for e in entries:
+            status = e.get("status", "pending")
+            ctype = e.get("content_type", "")
+            lines.append(f"{e['method']} {status} {e['url']}" + (f" ({ctype})" if ctype else ""))
+        return _session_response(session, "\n".join(lines))
+    entries = mgr.drain_console_log(clear)[-limit:]
     if not entries:
         return _session_response(session, "No console messages captured.")
     lines = [f"[{e['level']}] {e['text']}" for e in entries]
@@ -1906,7 +1902,7 @@ async def _record_browser(
 
 
 @mcp.tool()
-async def configured_providers() -> str:
+async def list_providers() -> str:
     """Return available VLM providers, models, and current configuration.
 
     Use this to discover what models can be passed as the 'model' override
