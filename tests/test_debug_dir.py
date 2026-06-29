@@ -9,14 +9,14 @@ from interact.config import Config
 def test_debug_dir_default_is_home_interact_out():
     # Output lives under ~/.interact/out so the ~/.interact root stays clean (config.env + out/).
     assert Config().debug_dir == Path.home() / ".interact" / "out"
-    assert Config().usage_log == Path.home() / ".interact" / "out" / "logs" / "usage.jsonl"
+    assert Config().usage_log == Path.home() / ".interact" / "out" / "usage.jsonl"
 
 
 def test_debug_dir_env_override(monkeypatch, tmp_path):
     monkeypatch.setenv("INTERACT_DEBUG_DIR", str(tmp_path))
     config = Config()
     assert config.debug_dir == tmp_path
-    assert config.usage_log == tmp_path / "logs" / "usage.jsonl"
+    assert config.usage_log == tmp_path / "usage.jsonl"
 
 
 def test_dump_dir_precedence(monkeypatch, tmp_path):
@@ -34,4 +34,4 @@ def test_usage_default_log_follows_debug_dir(monkeypatch, tmp_path):
     from interact.runtime import config as runtime_config
 
     monkeypatch.setattr(runtime_config, "debug_dir", tmp_path)
-    assert usage.default_log_path() == tmp_path / "logs" / "usage.jsonl"
+    assert usage.default_log_path() == tmp_path / "usage.jsonl"

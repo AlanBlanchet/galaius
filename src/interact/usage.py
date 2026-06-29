@@ -1,6 +1,6 @@
 """Read and aggregate the local VLM usage log.
 
-``vision.py`` appends one JSON line per VLM call to ``~/.interact/logs/usage.jsonl``
+``vision.py`` appends one JSON line per VLM call to ``~/.interact/out/usage.jsonl``
 (timestamp, model, input/output tokens, cost). The VS Code dashboard charts that file;
 this module gives the CLI parity — spend, tokens and call counts grouped by model and by
 provider, optionally restricted to a recent window. No network, no VLM: pure local

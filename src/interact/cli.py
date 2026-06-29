@@ -222,7 +222,7 @@ def usage(
 ) -> None:
     """Summarise local VLM spend, tokens and calls by model and provider.
 
-    Reads ~/.interact/logs/usage.jsonl (the same log the VS Code dashboard charts) —
+    Reads ~/.interact/out/usage.jsonl (the same log the VS Code dashboard charts) —
     no network, no API calls. This is the CLI's usage analysis.
 
     Parameters

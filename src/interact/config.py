@@ -110,8 +110,8 @@ class Config(BaseSettings):
     # Override with INTERACT_BROWSER_PROFILE_DIR.
     browser_profile_dir: Path | None = None
     screenshot_dump_dir: Path | None = None  # explicit per-run override of the dump base
-    # Base dir for interact's local output: the usage log (debug_dir/logs/usage.jsonl) and tool debug
-    # artifacts. Default ~/.interact/out — kept in an `out/` folder so the ~/.interact root stays clean
+    # Base dir for interact's local output: the usage log (debug_dir/usage.jsonl) and per-session debug
+    # dumps (debug_dir/sessions/…). Default ~/.interact/out — kept in an `out/` folder so the root stays clean
     # (just config.env + out/) instead of being scattered with timestamped dump dirs. Override with
     # INTERACT_DEBUG_DIR (e.g. a project's out/ when working locally). screenshot_dump_dir wins if set.
     debug_dir: Path = Path.home() / ".interact" / "out"
@@ -152,15 +152,15 @@ class Config(BaseSettings):
 
     @property
     def usage_log(self) -> Path:
-        """Where VLM usage is recorded (under debug_dir, so it relocates with it)."""
-        return self.debug_dir / "logs" / "usage.jsonl"
+        """The one global VLM-usage log, at ``<debug_dir>/usage.jsonl`` (relocates with debug_dir)."""
+        return self.debug_dir / "usage.jsonl"
 
     def session_log_dir(self) -> Path:
-        """Per-caller log root: ``<debug_dir>/logs/<session>/<date>``. ``<session>`` is the calling
-        Claude Code session's name (its custom-title, e.g. 'Aino', else the project/cwd basename);
-        ``<date>`` is today. Everything interact logs for a run lands here — consolidated under
-        ~/.interact (no /tmp scatter) and separated by which session produced it."""
-        return self.debug_dir / "logs" / caller_session_name() / datetime.now().strftime("%Y-%m-%d")
+        """Per-caller output root: ``<debug_dir>/sessions/<session>/<date>``. The dir is organised BY
+        SESSION (not a flat 'logs' pile): ``<session>`` is the calling client's name — a Claude Code
+        session's custom-title (e.g. 'Aino'), else the VS Code / project / cwd basename, else 'default'
+        — and ``<date>`` is today. Every dump interact writes for a run lands here, dated."""
+        return self.debug_dir / "sessions" / caller_session_name() / datetime.now().strftime("%Y-%m-%d")
 
     def model_for(self, role: ModelRole) -> str:
         if role == "video":

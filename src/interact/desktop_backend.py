@@ -686,8 +686,8 @@ class NestedBackend(DesktopBackend):
 
     @staticmethod
     def _open_log(label: str) -> str:
-        # Under ~/.interact/logs/<session>/<date> (not /tmp) so every sandbox log is consolidated
-        # with the rest of interact's output and separated by the calling Claude session.
+        # Under ~/.interact/out/sessions/<session>/<date> (not /tmp) so every sandbox log is
+        # consolidated with the rest of interact's output and separated by the calling session.
         from interact.runtime import config
 
         d = config.session_log_dir()

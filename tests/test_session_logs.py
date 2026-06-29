@@ -63,18 +63,18 @@ def test_session_name_is_sanitised(monkeypatch, tmp_path):
     assert "/" not in name and " " not in name and name  # safe for a directory
 
 
-def test_session_log_dir_is_logs_session_date(monkeypatch, tmp_path):
+def test_session_log_dir_is_sessions_name_date(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sid-4")
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", "/work/interact")
     _fake_session(tmp_path, "proj-interact", "sid-4", "Interact")
     d = Config(debug_dir=tmp_path / ".interact").session_log_dir()
     rel = d.relative_to(tmp_path / ".interact")
-    assert rel.parts[0] == "logs" and rel.parts[1] == "Interact"
+    assert rel.parts[0] == "sessions" and rel.parts[1] == "Interact"  # organised BY SESSION, not a flat 'logs'
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", rel.parts[2])  # dated dir inside
 
 
-def test_new_invocation_dir_default_nests_under_logs_session_date(monkeypatch, tmp_path):
+def test_new_invocation_dir_default_nests_under_sessions_name_date(monkeypatch, tmp_path):
     from interact.debug_utils import Debug
     from interact.runtime import config as rc
 
@@ -85,7 +85,7 @@ def test_new_invocation_dir_default_nests_under_logs_session_date(monkeypatch, t
     monkeypatch.setattr(rc, "screenshot_dump_dir", None)
     out = Debug.new_invocation_dir(None, "review_ui")
     rel = Path(out).relative_to(tmp_path / ".interact")
-    assert rel.parts[:2] == ("logs", "aino")
+    assert rel.parts[:2] == ("sessions", "aino")
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", rel.parts[2]) and rel.parts[3].endswith("_review_ui")
 
 
@@ -99,8 +99,8 @@ def test_open_log_writes_under_interact_not_tmp(monkeypatch, tmp_path):
     monkeypatch.setattr(rc, "debug_dir", tmp_path / ".interact")
     p = NestedBackend._open_log("xephyr:99")
     try:
-        # Under <debug_dir>/logs/<session>/<date>/ — not a bare system-temp mkstemp (the old /tmp path).
-        rel = Path(p).relative_to(tmp_path / ".interact" / "logs" / "interact")
+        # Under <debug_dir>/sessions/<session>/<date>/ — not a bare system-temp mkstemp (the old /tmp path).
+        rel = Path(p).relative_to(tmp_path / ".interact" / "sessions" / "interact")
         assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", rel.parts[0])  # dated dir
         assert rel.parts[1].startswith("xephyr:99-")  # the log file inside it
     finally:
