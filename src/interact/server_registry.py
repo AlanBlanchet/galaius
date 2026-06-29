@@ -19,11 +19,11 @@ from interact import installed_version
 
 
 def _runtime_dir() -> Path:
-    """A FIXED well-known path (``~/.interact/runtime``), NOT ``debug_dir``-relative. This is
+    """A FIXED well-known path (``~/.interact/out/runtime``), NOT ``debug_dir``-relative. This is
     cross-process IPC — servers announce here, the CLI reads here — so every interact process must
     agree on the path regardless of an ``INTERACT_DEBUG_DIR`` override (that relocates debug OUTPUT,
     not runtime state; ``config.env`` likewise always lives at the fixed ``~/.interact``)."""
-    return Path.home() / ".interact" / "runtime"
+    return Path.home() / ".interact" / "out" / "runtime"
 
 
 def _source_version() -> str | None:

@@ -204,8 +204,8 @@ SETTINGS: list[Setting] = [
     Setting(
         key="debug.dir", field="debug_dir", group="Advanced", kind="path",
         label="Debug / output dir",
-        description="Where interact writes logs + debug artifacts (blank = ~/.interact; point at a "
-        "project's out/ when working locally).",
+        description="Where interact writes logs + debug artifacts (blank = ~/.interact/out; point at "
+        "a project's out/ when working locally).",
     ),
 ]
 

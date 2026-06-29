@@ -18,7 +18,7 @@ from pathlib import Path
 
 REPO = "AlanBlanchet/interact"
 KINDS = ("bug", "limitation", "feedback")
-FEEDBACK_DIR = Path.home() / ".interact" / "feedback"
+FEEDBACK_DIR = Path.home() / ".interact" / "out" / "feedback"
 
 
 def _footer() -> str:

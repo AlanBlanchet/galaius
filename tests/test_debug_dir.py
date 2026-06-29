@@ -6,9 +6,10 @@ from interact import debug_utils, usage
 from interact.config import Config
 
 
-def test_debug_dir_default_is_home_interact():
-    assert Config().debug_dir == Path.home() / ".interact"
-    assert Config().usage_log == Path.home() / ".interact" / "logs" / "usage.jsonl"
+def test_debug_dir_default_is_home_interact_out():
+    # Output lives under ~/.interact/out so the ~/.interact root stays clean (config.env + out/).
+    assert Config().debug_dir == Path.home() / ".interact" / "out"
+    assert Config().usage_log == Path.home() / ".interact" / "out" / "logs" / "usage.jsonl"
 
 
 def test_debug_dir_env_override(monkeypatch, tmp_path):

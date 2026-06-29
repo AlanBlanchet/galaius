@@ -110,10 +110,11 @@ class Config(BaseSettings):
     # Override with INTERACT_BROWSER_PROFILE_DIR.
     browser_profile_dir: Path | None = None
     screenshot_dump_dir: Path | None = None  # explicit per-run override of the dump base
-    # Base dir for interact's local output: the usage log (debug_dir/logs/usage.jsonl) and
-    # tool debug artifacts. Default ~/.interact for everyone; override with INTERACT_DEBUG_DIR
-    # (e.g. point it at a project's out/ when working locally). screenshot_dump_dir wins if set.
-    debug_dir: Path = Path.home() / ".interact"
+    # Base dir for interact's local output: the usage log (debug_dir/logs/usage.jsonl) and tool debug
+    # artifacts. Default ~/.interact/out — kept in an `out/` folder so the ~/.interact root stays clean
+    # (just config.env + out/) instead of being scattered with timestamped dump dirs. Override with
+    # INTERACT_DEBUG_DIR (e.g. a project's out/ when working locally). screenshot_dump_dir wins if set.
+    debug_dir: Path = Path.home() / ".interact" / "out"
     video_fps: int = 5
     video_duration: float = 3.0
     # Cost cap for video understanding: a recording is sampled down to at most this many frames

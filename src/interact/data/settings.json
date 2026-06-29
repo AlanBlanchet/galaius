@@ -230,13 +230,13 @@
       "key": "debug.dir",
       "field": "debug_dir",
       "label": "Debug / output dir",
-      "description": "Where interact writes logs + debug artifacts (blank = ~/.interact; point at a project's out/ when working locally).",
+      "description": "Where interact writes logs + debug artifacts (blank = ~/.interact/out; point at a project's out/ when working locally).",
       "group": "Advanced",
       "kind": "path",
       "role": null,
       "options": null,
       "env": "INTERACT_DEBUG_DIR",
-      "default": "~/.interact"
+      "default": "~/.interact/out"
     }
   ]
 }
