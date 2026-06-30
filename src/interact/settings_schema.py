@@ -119,8 +119,9 @@ SETTINGS: list[Setting] = [
     Setting(
         key="video.model", field="video_model", group="Models", kind="model", role="video",
         label="Video model",
-        description="Video understanding. Native-video models (Gemini, Qwen-VL) are listed; interact "
-        "samples frames from a recording, so a non-native model still works as a fallback.",
+        description="Video understanding. A Gemini model gets the clip natively (inline video); "
+        "other models — and clips too large to send inline — fall back to sampled frames, so any "
+        "listed model works.",
     ),
     Setting(
         key="audio.model", field="audio_model", group="Models", kind="model", role="audio",

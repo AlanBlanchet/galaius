@@ -122,6 +122,21 @@ def is_audio_model(model_id: str) -> bool:
     return _is_understanding(lid) and any(fam in lid for fam in _AUDIO_FAMILIES)
 
 
+# Families litellm sends NATIVE inline video to (a Gemini `inline_data` part) — matched as a
+# substring so a bare `gemini-2.5-pro`, a `gemini/…` and a `vertex_ai/gemini-…` all qualify. Other
+# providers have no inline-video transform in litellm and SILENTLY DROP a video content part (HTTP
+# 200 + a hallucinated answer, never an error) — so this MUST be a positive allowlist, not exception
+# catching. Qwen/DashScope is URL-only through litellm and stays on frame sampling (#48).
+_NATIVE_VIDEO_INLINE_FAMILIES: tuple[str, ...] = ("gemini", "vertex_ai")
+
+
+def supports_native_video_inline(model_id: str) -> bool:
+    """Whether litellm will send this model native inline video rather than us ffmpeg-sampling
+    frames — a Gemini/Vertex understanding model only, today (#48)."""
+    lid = model_id.lower()
+    return is_native_video_model(lid) and any(fam in lid for fam in _NATIVE_VIDEO_INLINE_FAMILIES)
+
+
 # Pure speech-to-text models — they transcribe but can't take audio in a chat completion. The
 # transcribe tool answers a `query` about one of these over its TRANSCRIPT (via the image model)
 # rather than routing the audio into an acoustic chat call it can't serve.

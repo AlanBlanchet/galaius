@@ -12,6 +12,7 @@ import litellm
 from pydantic import BaseModel
 
 from interact.config import Config
+from interact.models import supports_native_video_inline
 from interact.state import PageState, bytes_to_b64
 
 _log = logging.getLogger(__name__)
@@ -158,6 +159,50 @@ def _video_content(item: MediaItem, fps: int = 1, max_frames: int = 0) -> list[d
     ]
 
 
+# Raw-bytes ceiling for sending a clip as inline base64 to Gemini: its API caps the WHOLE request
+# at 20 MB and base64 inflates ~33%, so keep the raw clip well under that (leaving headroom for the
+# prompt). A larger clip falls back to frame sampling rather than a guaranteed 400 (#48).
+_NATIVE_VIDEO_MAX_BYTES = 15_000_000
+
+
+def _native_video_part(item: MediaItem) -> dict:
+    """litellm's documented native-video content part — an inline base64 `data:` URI under `file`.
+    NOT `video_url` (litellm ignores it) and NOT the legacy `image_url` path (#48)."""
+    return {"type": "file", "file": {"file_data": f"data:{item.mime_type};base64,{item.data}"}}
+
+
+def _b64_decoded_size(b64: str) -> int:
+    """Decoded byte size of a base64 string without allocating the decoded bytes."""
+    return len(b64) * 3 // 4
+
+
+def _build_media_content(
+    media: list[MediaItem], model: str, config: Config, *, force_sampled: bool = False
+) -> tuple[list[dict], bool]:
+    """Build the message media parts, sending native inline video to a Gemini-family model under
+    the size cap (#48) and ffmpeg-sampling frames for everything else (or when ``force_sampled``,
+    the rejection-fallback path). Returns ``(parts, sent_native_video)``."""
+    parts: list[dict] = []
+    sent_native_video = False
+    for item in media:
+        if item.media_type == "image":
+            parts.append(_image_content(item))
+        elif item.media_type == "audio":
+            parts.append(_audio_content(item))
+        elif (
+            not force_sampled
+            and supports_native_video_inline(model)
+            and _b64_decoded_size(item.data) < _NATIVE_VIDEO_MAX_BYTES
+        ):
+            parts.append(_native_video_part(item))
+            sent_native_video = True
+        else:
+            parts.extend(
+                _video_content(item, fps=config.video_fps, max_frames=config.video_max_frames)
+            )
+    return parts, sent_native_video
+
+
 def _supports_response_schema(model: str) -> bool:
     """Whether the provider accepts a native ``response_format`` schema. Some (e.g. zai/GLM) raise
     ``litellm.UnsupportedParamsError`` on it — for those we ask for JSON in the prompt instead, so the
@@ -263,24 +308,28 @@ async def analyze_media(
             text=f"[Vision unavailable — {model} API key not configured] {context}",
             elapsed=0,
         )
-    content: list[dict] = [{"type": "text", "text": context}]
-    for item in media:
-        if item.media_type == "image":
-            content.append(_image_content(item))
-        elif item.media_type == "audio":
-            content.append(_audio_content(item))
-        else:
-            content.extend(
-                _video_content(item, fps=config.video_fps, max_frames=config.video_max_frames)
-            )
     tok = max_tokens if max_tokens is not _UNSET else config.max_tokens
-    messages = _build_messages(content, prompt)
-    return await _vision_completion(
-        messages,
-        model,
-        max_tokens=tok,
-        response_format=response_format,
-    )
+    media_parts, sent_native_video = _build_media_content(media, model, config)
+    messages = _build_messages([{"type": "text", "text": context}, *media_parts], prompt)
+    try:
+        return await _vision_completion(
+            messages, model, max_tokens=tok, response_format=response_format
+        )
+    except (
+        litellm.exceptions.BadRequestError,
+        litellm.exceptions.UnsupportedParamsError,
+        litellm.exceptions.APIError,
+    ):
+        # A native inline-video send can be rejected (provider 400, unsupported, oversized). Retry
+        # once with ffmpeg-sampled frames so video analysis is never worse than before #48. For any
+        # other call (no native video sent) the error is genuine — re-raise.
+        if not sent_native_video:
+            raise
+        media_parts, _ = _build_media_content(media, model, config, force_sampled=True)
+        messages = _build_messages([{"type": "text", "text": context}, *media_parts], prompt)
+        return await _vision_completion(
+            messages, model, max_tokens=tok, response_format=response_format
+        )
 
 
 async def transcribe_audio(

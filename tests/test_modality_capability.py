@@ -15,8 +15,32 @@ from interact.models import (
     is_audio_model,
     is_native_video_model,
     is_transcription_only_model,
+    supports_native_video_inline,
 )
 from interact.settings_schema import by_key
+
+
+@pytest.mark.parametrize(
+    "model_id, native_inline",
+    [
+        # Gemini / Vertex family — litellm sends inline_data video natively
+        ("gemini/gemini-3.5-flash", True),
+        ("gemini-2.5-pro", True),
+        ("vertex_ai/gemini-2.5-flash", True),
+        # Native-video models on OTHER providers: litellm has no inline-video transform → would
+        # silently DROP the part, so we must keep them on frame sampling (#48).
+        ("nebius/Qwen/Qwen2.5-VL-72B-Instruct", False),
+        ("ollama/qwen3-vl", False),
+        # Not video-capable at all
+        ("claude-opus-4-7", False),
+        ("gpt-5.5", False),
+        # Gemini non-understanding variants never qualify
+        ("gemini/gemini-3-pro-image-preview", False),
+        ("gemini/imagen-3", False),
+    ],
+)
+def test_supports_native_video_inline_is_a_gemini_allowlist(model_id, native_inline):
+    assert supports_native_video_inline(model_id) is native_inline
 
 
 @pytest.mark.parametrize(
