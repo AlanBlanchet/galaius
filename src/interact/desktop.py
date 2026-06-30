@@ -13,9 +13,15 @@ from typing import Self
 from PIL import Image, ImageChops
 from pydantic import BaseModel, PrivateAttr, computed_field
 
+from interact.desktop_backend import _ffmpeg_grab_args, _VideoSession
 from interact.geometry import Box as _GeoBox, BoxArray
 from interact.parsing import Parse
 from interact.state import Element, InteractiveElement
+
+# Live record sessions for real-display (`:0`) window targets, keyed by wid — the DesktopWindow is
+# re-resolved per tool call, so the session must outlive it here (the nested path keeps its own on
+# the persistent backend instead). See start_video/stop_video (#61/#62).
+_LOCAL_VIDEO_SESSIONS: dict[int, _VideoSession] = {}
 
 _log = logging.getLogger("interact")
 _MIN_AREA = 500
@@ -561,6 +567,31 @@ class DesktopWindow(BaseModel):
             return output_path.read_bytes()
         finally:
             output_path.unlink(missing_ok=True)
+
+    def start_video(self, fps: int = 10) -> None:
+        """Begin a non-blocking recording of this window — returns at once so the agent can drive
+        actions during capture, then :meth:`stop_video` to export (#61/#62). Routes to the bound
+        backend for a nested window, else records the real-display (``:0``) window region."""
+        if self._backend is not None:
+            self._backend.start_video(self.name, fps)
+            return
+        if self.wid in _LOCAL_VIDEO_SESSIONS:
+            return  # idempotent — a second start while one is live is a no-op
+        self._raise_window()
+        grab_w, grab_h, grab_x, grab_y = self._grab_region()
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
+            out = f.name
+        _LOCAL_VIDEO_SESSIONS[self.wid] = _VideoSession(
+            _ffmpeg_grab_args(":0", grab_x, grab_y, grab_w, grab_h, fps, out, duration=None), out
+        )
+
+    def stop_video(self) -> bytes | None:
+        """Stop the session started by :meth:`start_video` and return its mp4 bytes, or None if none
+        is open for this target."""
+        if self._backend is not None:
+            return self._backend.stop_video(self.name)
+        session = _LOCAL_VIDEO_SESSIONS.pop(self.wid, None)
+        return session.stop() if session else None
 
     def _to_xdotool(self, x: int, y: int) -> tuple[int, int]:
         return CoordTransform.get(self.wid).screenshot_to_xdotool(x, y)

@@ -691,3 +691,74 @@ async def test_vlm_falls_back_on_error(srv, make_error):
     assert call_count == 2
     assert result.text.startswith("[Fallback: used fallback/model")
     assert "recovered" in result.text
+
+
+# --- #61/#62: desktop record sessions (start/stop, not a forced 3s clip) --------------------
+
+
+def _rec_win():
+    """A mock desktop window with the record-session surface (#61)."""
+    from unittest.mock import MagicMock
+    from interact.desktop import DesktopWindow
+
+    win = MagicMock(spec=DesktopWindow)
+    win.name = "aino"
+    win.w, win.h = 412, 780
+    return win
+
+
+@pytest.mark.asyncio
+async def test_record_desktop_start_opens_a_session_not_a_fixed_clip(srv):
+    """#61: record(start=True) on a desktop/nested target begins a NON-blocking session and
+    returns at once — never the old blocking fixed-duration capture_video (the 3s-clip bug)."""
+    win = _rec_win()
+    out = await srv._record_desktop(win, query=None, start=True, duration=None, fps=12, path=None)
+    win.start_video.assert_called_once_with(12)
+    win.capture_video.assert_not_called()           # not the old forced clip
+    low = out.lower()
+    assert "start=false" in low and "record" in low  # tells the agent how to stop
+
+
+@pytest.mark.asyncio
+async def test_record_desktop_stop_analyzes_the_session_clip(srv, monkeypatch):
+    """#61: record(start=False) stops the open session, then analyzes its clip like any video."""
+    import interact.desktop as dt
+
+    win = _rec_win()
+    win.stop_video.return_value = b"MP4DATA"
+    monkeypatch.setattr(dt.Motion, "is_blank", staticmethod(lambda b: False))
+    monkeypatch.setattr(dt.Motion, "detect", staticmethod(lambda b: True))
+
+    async def fake_vlm(media, context, query, role, mime):
+        return VLMResult(text="a token slides in", elapsed=0.1, model="m")
+
+    monkeypatch.setattr(srv, "_vlm", fake_vlm)
+    out = await srv._record_desktop(win, query="what animates?", start=False, duration=None, fps=None, path=None)
+    win.stop_video.assert_called_once()
+    assert "slides in" in out
+
+
+@pytest.mark.asyncio
+async def test_record_desktop_stop_without_a_session_explains(srv):
+    """#61: stopping with no session open says so + names both ways forward, never crashes."""
+    win = _rec_win()
+    win.stop_video.return_value = None
+    out = await srv._record_desktop(win, query=None, start=False, duration=None, fps=None, path=None)
+    low = out.lower()
+    assert "no recording" in low and "start=true" in low and "duration" in low
+
+
+@pytest.mark.asyncio
+async def test_record_desktop_explicit_duration_stays_a_one_shot_clip(srv, monkeypatch):
+    """Backward compat (#62): an explicit duration= is still a blocking one-shot clip — never a
+    session — so existing duration-based callers are unaffected."""
+    import interact.desktop as dt
+
+    win = _rec_win()
+    win.capture_video.return_value = b"MP4"
+    monkeypatch.setattr(dt.Motion, "is_blank", staticmethod(lambda b: False))
+    monkeypatch.setattr(dt.Motion, "detect", staticmethod(lambda b: False))
+    out = await srv._record_desktop(win, query=None, start=True, duration=2.0, fps=None, path=None)
+    win.capture_video.assert_called_once()
+    win.start_video.assert_not_called()
+    assert "no motion" in out.lower()

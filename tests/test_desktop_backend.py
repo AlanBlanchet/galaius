@@ -43,3 +43,44 @@ class TestScreenToAbs:
 
     def test_zero_screen_is_safe(self):
         assert screen_to_abs(10, 10, 0, 0) == (0, 0)
+
+
+# --- #61/#62: non-blocking desktop record sessions ------------------------------------------
+
+
+def test_ffmpeg_grab_args_omit_t_for_a_session_and_include_it_for_a_clip():
+    """A session (duration=None) records open-ended (no ``-t``) so it runs until stopped; an
+    explicit duration keeps the blocking one-shot clip's ``-t`` for backward compat (#61/#62)."""
+    from interact.desktop_backend import _ffmpeg_grab_args
+
+    session = _ffmpeg_grab_args(":99", 0, 0, 412, 780, 12, "/tmp/x.mp4", duration=None)
+    assert "-t" not in session
+    assert session[-1] == "/tmp/x.mp4" and "x11grab" in session
+
+    clip = _ffmpeg_grab_args(":99", 0, 0, 412, 780, 12, "/tmp/x.mp4", duration=3.0)
+    assert clip[clip.index("-t") + 1] == "3.0"
+
+
+def test_video_session_stop_finalizes_then_reads_and_cleans_up(tmp_path, monkeypatch):
+    """stop() sends 'q' on stdin so ffmpeg writes a valid moov atom (a seekable mp4), then reads
+    the file and unlinks it. A SIGTERM-only stop would truncate the moov and corrupt the clip."""
+    from interact import desktop_backend as db
+
+    out = tmp_path / "rec.mp4"
+    out.write_bytes(b"VIDEO")
+
+    class FakeProc:
+        def __init__(self):
+            self.sent = None
+
+        def communicate(self, input=None, timeout=None):
+            self.sent = input
+            return (b"", b"")
+
+    fake = FakeProc()
+    monkeypatch.setattr(db.subprocess, "Popen", lambda *a, **k: fake)
+    s = db._VideoSession(["ffmpeg", "-y"], str(out))
+    data = s.stop()
+    assert data == b"VIDEO"
+    assert fake.sent == b"q"          # graceful finalize, not a kill
+    assert not out.exists()           # temp file cleaned up

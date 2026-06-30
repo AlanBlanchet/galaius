@@ -1819,12 +1819,15 @@ async def record(
     """Record actions as video and optionally analyze with vision.
 
     Browser (target unset): Two-step — record(start=True), perform actions, then record(start=False).
-    Desktop (target=<window title>): records for duration seconds, then returns.
+    Desktop (target=<window title> / nested): same two-step by default — record(start=True) begins a
+    NON-blocking session and returns at once (so you can drive actions, e.g. tap a control to trigger
+    an animation, while it captures), then record(start=False) stops and analyzes. Pass duration= for
+    a blocking one-shot clip of fixed length instead (no interleaved actions).
     A desktop target and a non-default session are mutually exclusive (list_desktop_windows lists them).
 
-    start: True to begin recording, False to stop and export (browser only).
+    start: True to begin recording, False to stop and export.
     query: question for VLM visual analysis of the recording.
-    duration: recording length in seconds (desktop target, default from config).
+    duration: fixed clip length in seconds (desktop one-shot mode); omit for a start/stop session.
     fps: frames per second (desktop target, default from config).
     path: save the video file to this path.
     """
@@ -1832,20 +1835,42 @@ async def record(
     if err:
         return err
     if win:
-        return await _record_desktop(win, query, duration, fps, path)
+        return await _record_desktop(win, query, start, duration, fps, path)
     return await _record_browser(mgr, start, query, path, session)
 
 
 async def _record_desktop(
     win: DesktopWindow,
     query: str | None,
+    start: bool,
     duration: float | None,
     fps: int | None,
     path: str | None,
 ) -> str:
-    dur = duration or config.video_duration
+    """Desktop/nested recording. An explicit ``duration`` is a blocking one-shot clip (backward
+    compatible). Otherwise it's the browser-style two-step session: ``start=True`` begins capture and
+    returns at once so actions can run during it; ``start=False`` stops and analyzes (#61/#62)."""
     actual_fps = fps or config.video_fps
-    video_bytes = win.capture_video(dur, actual_fps)
+
+    if duration is None:
+        if start:
+            win.start_video(actual_fps)
+            return (
+                f"Desktop recording started for '{win.name}'. Drive your actions now, then call "
+                f"record(start=False, target=...) to stop and analyze. (For a fixed clip with no "
+                f"interleaved actions, pass duration= instead.)"
+            )
+        video_bytes = win.stop_video()
+        if video_bytes is None:
+            return (
+                f"No recording in progress for '{win.name}'. Call record(start=True, target=...) "
+                f"first to begin a session, or pass duration= for a one-shot clip."
+            )
+        dur_label = "session"
+    else:
+        video_bytes = win.capture_video(duration, actual_fps)
+        dur_label = f"{duration}s"
+
     if desktop.Motion.is_blank(video_bytes):
         # x11grab read a uniform-black surface — same GPU-surface wall as still capture.
         raise desktop.gpu_surface_error(win.name)
@@ -1856,10 +1881,10 @@ async def _record_desktop(
     if is_static and not query:
         return (
             f"Recording captured but no motion detected — frames are identical. "
-            f"The window content did not change during the {dur}s recording."
+            f"The window content did not change during the {dur_label} recording."
         )
 
-    context = f"Desktop window recording: {win.name} ({win.w}x{win.h}, {dur}s)"
+    context = f"Desktop window recording: {win.name} ({win.w}x{win.h}, {dur_label})"
     if is_static:
         context = (
             "WARNING: Recording appears static — no significant motion was detected "
