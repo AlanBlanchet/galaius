@@ -42,6 +42,45 @@ def _footer() -> str:
     )
 
 
+def _version_lt(a: str, b: str) -> bool:
+    """True if version string ``a`` is numerically older than ``b`` — by component, so 0.19.9 < 0.19.10
+    (a plain string compare gets that backwards). Unparseable input → False, so a non-semver never
+    triggers a warning."""
+
+    def parts(v: str) -> tuple[int, ...]:
+        try:
+            return tuple(int(x) for x in v.split("."))
+        except ValueError:
+            return ()
+
+    pa, pb = parts(a), parts(b)
+    return bool(pa) and bool(pb) and pa < pb
+
+
+def _stale_warning() -> str:
+    """A banner prepended to a report when the REPORTING process is running an interact OLDER than
+    what's installed on this machine right now. A long-lived MCP server keeps the code it imported at
+    startup (``__version__`` is frozen then), so a bug filed from a stale one is the single biggest
+    source of already-fixed reports — flag it up front, for the filer and the maintainer, with the
+    one-line fix. Compares the frozen startup version against the live installed metadata (what a
+    restart would load), so it never false-fires on a fresh process. Best-effort: any trouble → no
+    banner (a report must never be blocked by its own staleness check)."""
+    try:
+        from interact import __version__, installed_version
+
+        current = installed_version()
+        if _version_lt(__version__, current):
+            return (
+                f"> ⚠️ **Filed from interact {__version__}, but {current} is installed here** — this "
+                f"may already be fixed. A running interact MCP server keeps the code it loaded at "
+                f"startup; reconnect/restart it (or `uv tool install --force --editable .`) to load "
+                f"current code, then re-check before filing.\n\n"
+            )
+    except Exception:
+        pass
+    return ""
+
+
 def _slug(text: str) -> str:
     keep = "".join(c if c.isalnum() else "-" for c in text.lower())
     return "-".join(p for p in keep.split("-") if p)[:50] or "report"
@@ -121,7 +160,7 @@ def report(title: str, body: str, kind: str = "bug") -> str:
     itself blow up."""
     kind = kind if kind in KINDS else "feedback"
     title = f"[{kind}] {title.strip()}" if not title.lower().startswith(f"[{kind}]") else title.strip()
-    full = body.strip() + _footer()
+    full = _stale_warning() + body.strip() + _footer()
 
     url, reason = _gh_create(title, full)
     if url:

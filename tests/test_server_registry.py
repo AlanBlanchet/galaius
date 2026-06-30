@@ -46,3 +46,28 @@ def test_unregister_removes_the_file():
     assert path and path.exists()
     sr.unregister_server(path)
     assert not path.exists()
+
+
+def test_is_interact_mcp_false_for_a_missing_pid():
+    # The safety gate before killing: an unknown pid can't be confirmed as interact → never signalled.
+    assert sr._is_interact_mcp(2_147_483_000) is False
+
+
+def test_kill_stale_servers_only_signals_confirmed_interact_pids(monkeypatch):
+    """`doctor --fix` must restart stale interact servers but NEVER a recycled pid an unrelated
+    process now owns — so it only signals a pid whose cmdline still says interact, and prunes only
+    that one's registry file."""
+    monkeypatch.setattr(sr, "stale_servers", lambda: [{"pid": 111}, {"pid": 222}])
+    monkeypatch.setattr(sr, "_is_interact_mcp", lambda pid: pid == 111)  # 222 = a recycled pid
+    signalled: list[int] = []
+    monkeypatch.setattr(sr.os, "kill", lambda pid, sig: signalled.append(pid))
+    d = sr._runtime_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "111.json").write_text("{}")
+    (d / "222.json").write_text("{}")
+
+    killed = sr.kill_stale_servers()
+
+    assert killed == [111] and signalled == [111]   # the recycled pid is left untouched
+    assert not (d / "111.json").exists()             # restarted server's registry file pruned
+    assert (d / "222.json").exists()                 # recycled pid's file left alone

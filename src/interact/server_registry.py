@@ -77,6 +77,40 @@ def _alive(pid: int) -> bool:
     return True
 
 
+def _is_interact_mcp(pid: int) -> bool:
+    """Confirm a pid is genuinely an ``interact mcp`` process before we'd signal it. A registry pid
+    can be recycled by an unrelated process after the server died but before its file was pruned —
+    killing that would be a serious bug, so we only ever act on a pid whose cmdline still says
+    interact. Reads ``/proc`` (Linux); anywhere without it, returns False → nothing is killed."""
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return False
+    cmdline = raw.replace(b"\0", b" ").decode("utf-8", "replace")
+    return "interact" in cmdline and "mcp" in cmdline
+
+
+def kill_stale_servers() -> list[int]:
+    """SIGTERM every stale MCP server so its editor respawns it on current code — the opt-in
+    ``interact doctor --fix``. Only signals a pid whose cmdline still confirms it's ``interact mcp``
+    (a recycled pid is left untouched), prunes its registry file, and returns the pids signalled.
+    Best-effort: a pid that's gone or unsignalable is skipped, never raised."""
+    import signal
+
+    killed: list[int] = []
+    for info in stale_servers():
+        pid = info.get("pid")
+        if not isinstance(pid, int) or not _is_interact_mcp(pid):
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            continue
+        killed.append(pid)
+        (_runtime_dir() / f"{pid}.json").unlink(missing_ok=True)
+    return killed
+
+
 def stale_servers() -> list[dict]:
     """Live MCP servers whose loaded version is behind :func:`latest_version` (→ serving old code;
     reconnect them). Prunes registry files for dead pids as a side effect, so a crashed server

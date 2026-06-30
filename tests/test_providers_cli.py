@@ -14,12 +14,16 @@ def _only_zai(monkeypatch):
     monkeypatch.setattr("interact.models.Model.is_available", lambda self: self.id == "zai/glm-4.5v")
 
 
-def test_resolved_models_helper_names_every_role_and_the_sovereign_tier(_only_zai, capsys):
+def test_resolved_models_helper_names_every_task_with_its_role_knob(_only_zai, capsys):
     cli._print_resolved_models()
     out = capsys.readouterr().out
-    for label in ("image", "component", "video", "audio", "quality"):
-        assert label in out
-    # the low/medium sovereign tier names the GLM the z.ai key lights up (independent of any role pin)
+    # the view is TASK-centric — each thing a user does is named...
+    for task in ("screenshot", "get_interactive_elements", "transcribe", "review_ui", "measure_ui"):
+        assert task in out
+    # ...with the config knob (role) in brackets so it's clear what to pin
+    for role in ("[image]", "[component]", "[video]", "[audio]"):
+        assert role in out
+    # review_ui/verify_ui resolve by STAKES to the sovereign GLM the z.ai key lights up at low/medium
     assert "zai/glm-4.5v" in out and "low/medium tier" in out
 
 

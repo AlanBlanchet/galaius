@@ -26,26 +26,47 @@ app = App(
 
 
 def _print_resolved_models(indent: str = "  ") -> None:
-    """Print what each role's tool ACTUALLY resolves to, given the current keys — the answer to
-    "why is my default X?". Shows the pinned model or the auto-picked one (frontier-first,
-    first-available), flags a pick whose key is missing, and names the GLM the low/medium quality
-    tiers map to. Shared by `status`, `providers` and `doctor` so every surface tells one story."""
+    """Print which model each VLM TASK resolves to with the current keys — the answer to "what runs
+    when I do X, and why that default?". Organised BY TASK (what a user actually picks) with the
+    config knob (the role) named in brackets, so it's clear different jobs can have different defaults
+    — without a separate model setting per task (they'd all resolve to the same best VLM). The real
+    axes are MODALITY (image/component/video/audio) and STAKES: review_ui/verify_ui layer a quality
+    tier on the image model — a cheap private sovereign GLM at low/medium, the frontier image model at
+    high/critical. Shared by status / providers / doctor / version so every surface tells one story."""
     from interact.models import Model
     from interact.runtime import config
 
     Model.load_registry()
-    for role in ("image", "component", "video", "audio"):
+
+    def _resolved(role: str) -> tuple[str, str]:
+        """(display string, bare model id) for a role given the current keys."""
         pinned = getattr(config, f"{role}_model", "")
         try:
             mid = config.resolve_model(role)
         except RuntimeError:
             mid = ""
         ok = bool(mid) and Model.from_litellm_id(mid).is_available()
-        flag = "" if ok else "   ⚠ key missing — add it or pin a model"
-        print(f"{indent}{role:<10} → {mid or '—'} ({'pinned' if pinned else 'auto'}){flag}")
+        flag = "" if ok else "  ⚠ key missing — add it or pin a model"
+        return f"{mid or '—'} ({'pinned' if pinned else 'auto'}){flag}", mid
+
+    def _line(task: str, role: str) -> None:
+        print(f"{indent}{task:<33}→ {_resolved(role)[0]}  [{role}]")
+
+    _line("screenshot(query) · describe", "image")
+    _line("get_interactive_elements", "component")
+    _line("transcribe", "audio")
+    _line("record · video understanding", "video")
+
+    # review_ui / verify_ui pick by STAKES, not role: a cheap private sovereign GLM for a quick look
+    # (low/medium), the frontier image model for a final sign-off (high/critical).
+    frontier = _resolved("image")[1] or "—"
     sovereign = config.resolve_quality_model("low")
-    tail = "low/medium tier" if sovereign else "no z.ai/Novita key — low/medium fall back to frontier"
-    print(f"{indent}{'quality':<10} → {sovereign or 'frontier'} ({tail})")
+    if sovereign:
+        critique = f"{sovereign} (low/medium tier) · {frontier} (high/critical)"
+    else:
+        critique = f"{frontier} (all tiers — no z.ai/Novita key, so low/medium fall back to frontier)"
+    print(f"{indent}{'review_ui · verify_ui (critique)':<33}→ {critique}")
+    print(f"{indent}{'measure_ui (contrast)':<33}→ deterministic — no model")
 
 
 @app.command
@@ -54,18 +75,33 @@ def version() -> None:
     print(installed_version())
 
 
-def _print_stale_servers(indent: str = "  ") -> None:
+def _print_stale_servers(indent: str = "  ", fix: bool = False) -> None:
     """Flag any RUNNING MCP server that loaded an OLDER version than is now available — the silent
     stale-server trap (a long-lived `interact mcp` keeps serving the code it imported at startup, so
     a shipped fix never reaches it until reconnected). Names the pid so the user knows which editor
-    window's interact MCP server to reconnect. Nothing printed when every server is current."""
+    window's interact MCP server to reconnect. With ``fix=True`` (``interact doctor --fix``) it
+    restarts them itself (SIGTERM → the editor respawns interact on current code). Nothing printed
+    when every server is current."""
     from interact.server_registry import latest_version, stale_servers
 
     stale = stale_servers()
     if not stale:
         return
     latest = latest_version()
-    print(f"{indent}⚠ stale MCP server(s) — running older code than v{latest}; reconnect to load fixes:")
+    if fix:
+        from interact.server_registry import kill_stale_servers
+
+        killed = kill_stale_servers()
+        if killed:
+            pids = ", ".join(str(p) for p in killed)
+            print(f"{indent}✓ restarted {len(killed)} stale MCP server(s) (pid {pids}) — each editor "
+                  f"respawns interact on current code (v{latest}) on its next tool call.")
+        else:
+            print(f"{indent}⚠ stale server(s) found but none could be restarted (not interact mcp, or "
+                  f"no permission) — reconnect them from your editor.")
+        return
+    print(f"{indent}⚠ stale MCP server(s) — running older code than v{latest}; reconnect to load fixes")
+    print(f"{indent}   (or run `interact doctor --fix` to restart them):")
     for s in stale:
         print(f"{indent}    pid {s['pid']}: v{s.get('version')}")
 
@@ -312,15 +348,22 @@ def report(
 
 
 @app.command
-def doctor() -> None:
-    """Diagnose the environment: command, providers, Playwright, desktop capture."""
+def doctor(*, fix: bool = False) -> None:
+    """Diagnose the environment: command, providers, Playwright, desktop capture.
+
+    Parameters
+    ----------
+    fix
+        Restart any stale `interact mcp` server (it respawns on current code from your editor) —
+        the one-step cure for "I shipped the fix but the bug persists".
+    """
     import os
     import shutil
 
     from interact.models import Model, ModelCapability
 
     print("interact doctor\n")
-    _print_stale_servers()
+    _print_stale_servers(fix=fix)
     print(f"  command       : {shutil.which('interact') or 'NOT on PATH'}")
     print(f"  config file   : {UserConfig.PATH} ({'present' if UserConfig.PATH.exists() else 'absent'})")
 

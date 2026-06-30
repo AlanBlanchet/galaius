@@ -209,3 +209,49 @@ def test_footer_survives_platform_platform_raising(monkeypatch):
     monkeypatch.setattr(_pl, "platform", lambda *a, **k: (_ for _ in ()).throw(AttributeError("boom")))
     footer = fb._footer()
     assert "reported via report_issue" in footer and "interact" in footer
+
+
+@pytest.mark.parametrize(
+    "a, b, expected",
+    [
+        ("0.19.2", "0.19.3", True),
+        ("0.19.3", "0.19.3", False),
+        ("0.19.3", "0.19.2", False),
+        ("0.19.9", "0.19.10", True),   # numeric, not lexicographic ('9' > '1' as strings)
+        ("0.2.5", "0.19.0", True),
+        ("nonsense", "0.19.0", False),  # unparseable → never warns
+    ],
+)
+def test_version_lt_compares_numerically(a, b, expected):
+    assert fb._version_lt(a, b) is expected
+
+
+def test_stale_warning_fires_when_the_reporting_process_is_behind(monkeypatch):
+    # A long-lived MCP server froze __version__ at an older startup; the install has since advanced.
+    monkeypatch.setattr("interact.__version__", "0.19.0")
+    monkeypatch.setattr("interact.installed_version", lambda: "0.19.3")
+    banner = fb._stale_warning()
+    assert "0.19.0" in banner and "0.19.3" in banner and "may already be fixed" in banner
+
+
+def test_stale_warning_silent_on_a_current_process(monkeypatch):
+    # A fresh process: __version__ == the live installed metadata → no false banner.
+    monkeypatch.setattr("interact.__version__", "0.19.3")
+    monkeypatch.setattr("interact.installed_version", lambda: "0.19.3")
+    assert fb._stale_warning() == ""
+
+
+def test_report_prepends_the_stale_banner(monkeypatch):
+    monkeypatch.setattr("interact.__version__", "0.19.0")
+    monkeypatch.setattr("interact.installed_version", lambda: "0.19.3")
+    captured: dict = {}
+
+    def fake_run(cmd, **k):
+        captured["cmd"] = cmd
+        return _Ok()
+
+    monkeypatch.setattr(fb.shutil, "which", lambda c: "/usr/bin/gh")
+    monkeypatch.setattr(fb.subprocess, "run", fake_run)
+    fb.report("clicks dropped after N actions", "repro steps", "bug")
+    body = captured["cmd"][captured["cmd"].index("--body") + 1]
+    assert body.lstrip().startswith(">") and "may already be fixed" in body  # banner leads the body
