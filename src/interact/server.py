@@ -1396,6 +1396,7 @@ async def get_interactive_elements(
     session: str = _DEFAULT_SESSION,
     method: str = "default",
     model: str | None = None,
+    fresh: bool = False,
 ) -> str:
     """List the interactive elements with numbered badges + their details; act on them by the
     returned `ref`/`element` in run_actions.
@@ -1416,6 +1417,9 @@ async def get_interactive_elements(
     debug_dir: when set, dump inputs/outputs/screenshots to this directory for debugging.
     method: detection strategy — "default" (AT-SPI with VLM fallback) or "vlm" (force VLM only). Applies to desktop windows.
     model: override the configured VLM model for this call. Uses the VS Code configured model when not set.
+    fresh: desktop/nested only — force-clear this window's accumulated element cache before detecting,
+        so the returned refs reflect ONLY the current frame. Use it to recover if clicks stop landing
+        or the ref list looks stale/duplicated after many interactions (#57).
     """
     config.refresh()  # source of truth before we snapshot the resolved config
     inv = Debug.new_invocation_dir(debug_dir, _DBG_ELEMENTS)
@@ -1428,6 +1432,8 @@ async def get_interactive_elements(
         Debug.dump_output(inv, err)
         return err
     if win:
+        if fresh:
+            DesktopElement.invalidate(win.wid)  # #57: start from the live frame, drop stale refs
         crop = None
         if element is not None:
             el = _resolve_desktop_el(win.wid, win.name, element=element)

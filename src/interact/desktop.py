@@ -877,6 +877,14 @@ class DesktopElement(Box):
         _element_cache[wid] = elements
 
     @classmethod
+    def invalidate(cls, wid: int) -> None:
+        """Drop all cached refs + the page signature for a window, so the next detection starts empty
+        and returns only the live frame's elements. The recovery path when a cache has gone stale or
+        accumulated jittery duplicates across many detects (#57). Idempotent."""
+        _element_cache.pop(wid, None)
+        _page_sig.pop(wid, None)
+
+    @classmethod
     def merge_into(cls, wid: int, elements: list[Self], signature: str) -> list[Self]:
         """Accumulate detections for a window across detect calls, keyed by a page
         ``signature`` (a content fingerprint of the screenshot — NOT the title, which is

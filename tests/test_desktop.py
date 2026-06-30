@@ -871,3 +871,20 @@ def test_merge_into_accumulates_within_page_and_clears_on_change():
 
     _element_cache.pop(wid, None)
     _page_sig.pop(wid, None)
+
+
+# --- #57: force-invalidate the desktop element cache ----------------------------------------
+
+
+def test_desktop_element_cache_invalidate_clears_refs_and_signature():
+    """#57: a stale/accumulated cache for a nested window must be force-clearable, so the next
+    detection starts empty and returns ONLY the live frame's refs."""
+    from interact.desktop import DesktopElement, _element_cache, _page_sig
+
+    wid = 4242
+    _element_cache[wid] = ["stale-ref"]
+    _page_sig[wid] = "old-signature"
+    DesktopElement.invalidate(wid)
+    assert wid not in _element_cache and wid not in _page_sig
+    assert DesktopElement.cached(wid) is None
+    DesktopElement.invalidate(wid)  # idempotent — clearing an empty cache never raises

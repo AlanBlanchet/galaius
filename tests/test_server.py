@@ -762,3 +762,46 @@ async def test_record_desktop_explicit_duration_stays_a_one_shot_clip(srv, monke
     win.capture_video.assert_called_once()
     win.start_video.assert_not_called()
     assert "no motion" in out.lower()
+
+
+# --- #57: get_interactive_elements(fresh=True) force-invalidates before detecting -----------
+
+
+@pytest.mark.asyncio
+async def test_get_interactive_elements_fresh_invalidates_the_cache_first(srv):
+    """#57: fresh=True clears the window's accumulated element cache BEFORE detecting, so the
+    returned refs reflect only the current frame — the recovery path for a stale cache."""
+    from unittest.mock import AsyncMock, MagicMock
+    from interact.desktop import DesktopElement, DesktopWindow
+
+    win = MagicMock(spec=DesktopWindow)
+    win.wid = 4242
+    win.name = "aino"
+    order: list[str] = []
+    with (
+        patch.object(srv, "_resolve_target", return_value=(win, None, None)),
+        patch.object(DesktopElement, "invalidate", side_effect=lambda wid: order.append(f"invalidate:{wid}")),
+        patch.object(srv, "_annotate_desktop", new=AsyncMock(side_effect=lambda *a, **k: order.append("detect") or ([], "report"))),
+        patch.object(srv, "_desktop_label", return_value="aino"),
+    ):
+        await srv.get_interactive_elements(target="aino", fresh=True)
+    assert order == ["invalidate:4242", "detect"]  # cleared, THEN detected
+
+
+@pytest.mark.asyncio
+async def test_get_interactive_elements_default_keeps_the_cache(srv):
+    """Without fresh, the accumulating cache (the #19 same-screen union) is left intact."""
+    from unittest.mock import AsyncMock, MagicMock
+    from interact.desktop import DesktopElement, DesktopWindow
+
+    win = MagicMock(spec=DesktopWindow)
+    win.wid = 4242
+    win.name = "aino"
+    with (
+        patch.object(srv, "_resolve_target", return_value=(win, None, None)),
+        patch.object(DesktopElement, "invalidate") as inval,
+        patch.object(srv, "_annotate_desktop", new=AsyncMock(return_value=([], "report"))),
+        patch.object(srv, "_desktop_label", return_value="aino"),
+    ):
+        await srv.get_interactive_elements(target="aino")
+    inval.assert_not_called()
