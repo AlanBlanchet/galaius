@@ -179,6 +179,18 @@
       "default": "0"
     },
     {
+      "key": "browser.profileDir",
+      "field": "browser_profile_dir",
+      "label": "Persistent profile dir",
+      "description": "When set, browser sessions keep their cookies/login on disk here (under <dir>/<session>) so you log in once and stay authenticated across restarts \u2014 run authenticated flows through the reliable DOM-ref path instead of driving a logged-in desktop browser window. Blank = ephemeral (logged out every launch).",
+      "group": "Browser",
+      "kind": "path",
+      "role": null,
+      "options": null,
+      "env": "INTERACT_BROWSER_PROFILE_DIR",
+      "default": ""
+    },
+    {
       "key": "vlm.maxTokens",
       "field": "max_tokens",
       "label": "VLM max tokens",

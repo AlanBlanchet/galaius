@@ -182,6 +182,14 @@ SETTINGS: list[Setting] = [
         label="Slow-mo (ms)",
         description="Delay added between browser actions, in ms (0 = full speed; useful when watching).",
     ),
+    Setting(
+        key="browser.profileDir", field="browser_profile_dir", group="Browser", kind="path",
+        label="Persistent profile dir",
+        description="When set, browser sessions keep their cookies/login on disk here (under "
+        "<dir>/<session>) so you log in once and stay authenticated across restarts — run "
+        "authenticated flows through the reliable DOM-ref path instead of driving a logged-in "
+        "desktop browser window. Blank = ephemeral (logged out every launch).",
+    ),
     # ── Advanced ─────────────────────────────────────────────────────────────
     Setting(
         key="vlm.maxTokens", field="max_tokens", group="Advanced", kind="int",
