@@ -37,6 +37,66 @@ from interact.state import DesktopState, PageState, StateChange, ref_locator
 
 _log = logging.getLogger("interact")
 
+# Typing into a toolkit field after the focusing click: Flutter (GTK) under XTEST doesn't have its
+# text-input connection wired up the instant a field focuses, and keystrokes sent into that window
+# are silently dropped until it is — non-deterministically, worse under software GL / debug builds.
+# The field shows its focus ring (the click landed) yet stays empty (#59). So: settle after the
+# focusing click, then verify the keystrokes registered (a band-scoped pixel diff at the focus
+# point) and re-type if they didn't.
+_TYPE_FOCUS_SETTLE = 0.5   # seconds to let the toolkit wire up text input before the first keys
+_TYPE_RENDER = 0.6         # seconds to let the field repaint before judging whether text appeared
+_TYPE_RETRIES = 2          # extra type attempts when the keystrokes didn't register
+_TYPE_BAND = (230, 30)     # half-(width, height) of the field band the diff inspects, in px
+_TYPE_CHANGE_FRAC = 0.012  # min changed fraction of that band that counts as "text appeared"
+
+
+def _field_changed(before: bytes, after: bytes, cx: int, cy: int) -> bool:
+    """Did the field band around the focus point (cx, cy) gain glyphs between two window captures?
+    Scoping the diff to the field makes even short typed text a large fraction of the band while a
+    caret blink stays tiny — so this reliably tells "text landed" from "nothing happened" without
+    ever mistaking a caret for input (which would double-type). Any error → True (assume it
+    registered, so the retry loop can't spin forever)."""
+    try:
+        import io  # noqa: PLC0415
+
+        from PIL import Image, ImageChops  # noqa: PLC0415
+
+        a = Image.open(io.BytesIO(before)).convert("L")
+        b = Image.open(io.BytesIO(after)).convert("L")
+        if a.size != b.size:
+            return True
+        hw, hh = _TYPE_BAND
+        box = (max(0, cx - hw), max(0, cy - hh), min(a.size[0], cx + hw), min(a.size[1], cy + hh))
+        a, b = a.crop(box), b.crop(box)
+        diff = ImageChops.difference(a, b)
+        changed = sum(c for v, c in enumerate(diff.histogram()) if v > 20)
+        return changed > a.size[0] * a.size[1] * _TYPE_CHANGE_FRAC
+    except Exception:
+        return True
+
+
+async def _type_desktop(win: "DesktopWindow", text: str, fx: int | None, fy: int | None) -> None:
+    """Type ``text`` into a desktop field, re-typing if the keystrokes were dropped during the
+    toolkit's post-focus input-connection setup (#59). Only the sandbox/desktop backend path with a
+    known focus point (fx, fy) is verified-and-retried — the diff needs both. Safe against
+    double-typing: a real type changes the field band far past the threshold, so a landed type is
+    detected on the first check and never re-sent; before each retry the field is cleared so a
+    partial never accumulates."""
+    backend = win._backend
+    if not text.strip() or fx is None or fy is None or backend is None:
+        await win.type_text(text)
+        return
+    before = win.capture()
+    await win.type_text(text)
+    for _ in range(_TYPE_RETRIES):
+        await asyncio.sleep(_TYPE_RENDER)
+        if _field_changed(before, win.capture(), fx, fy):
+            return
+        await win.press_key("ctrl+a")
+        await win.press_key("Delete")
+        await asyncio.sleep(_TYPE_FOCUS_SETTLE)
+        await win.type_text(text)
+
 
 def _element_at(wid: int, x: int, y: int):
     """The smallest already-detected element whose box contains (x, y), or None. Smallest-area
@@ -318,17 +378,20 @@ async def _run_actions_desktop(
             step_reports.append(_step(i, action.type, report))
 
         elif isinstance(action, TypeTextAction):
+            fx = fy = None
             if action.name or action.ref or action.selector:
                 x, y, _, err = _resolve_action_coords(action, wid, win)
                 if err:
                     step_reports.append(_step(i, action.type, f"SKIPPED: {err}"))
                     continue
                 await win.click(x, y)
+                await asyncio.sleep(_TYPE_FOCUS_SETTLE)  # let the toolkit wire up text input (#59)
+                fx, fy = x, y
             before_state = DesktopState.capture(win.name)
             if action.clear_first:
                 await win.press_key("ctrl+a")
                 await win.press_key("Delete")
-            await win.type_text(action.text)
+            await _type_desktop(win, action.text, fx, fy)
             report = f"typed {len(action.text)} chars"
             report = _report_with_change(win.name, before_state, report)
             step_reports.append(_step(i, action.type, report))
