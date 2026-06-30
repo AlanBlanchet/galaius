@@ -666,11 +666,16 @@ class DesktopWindow(BaseModel):
         if self._backend is not None:
             await self._backend_focus()  # focus first so the toolkit accepts the wheel (#12/#13)
             sx, sy = self.to_screen(x, y)
-            clicks = amount if direction == "up" else -amount
+            # Pick the axis, not just the sign: a left/right scroll must reach the backend as a
+            # HORIZONTAL wheel (X buttons 6/7), not collapse into a vertical button — that silent
+            # collapse left a Flutter horizontal carousel unable to advance (#54).
+            horizontal = direction in ("left", "right")
+            positive = direction in ("up", "right")  # up / right are the +clicks directions
+            clicks = amount if positive else -amount
 
             def _do():
                 self._backend.move(sx, sy)
-                self._backend.scroll(clicks)
+                self._backend.scroll(clicks, horizontal=horizontal)
 
             await asyncio.to_thread(_do)
             return

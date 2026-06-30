@@ -201,7 +201,7 @@ class UinputPointer:
                 (ecodes.ABS_X, AbsInfo(0, 0, abs_max, 0, 0, 0)),
                 (ecodes.ABS_Y, AbsInfo(0, 0, abs_max, 0, 0, 0)),
             ],
-            ecodes.EV_REL: [ecodes.REL_WHEEL],
+            ecodes.EV_REL: [ecodes.REL_WHEEL, ecodes.REL_HWHEEL],
         }
         try:
             self._ui = UInput(
@@ -246,8 +246,9 @@ class UinputPointer:
         time.sleep(0.02)
         self.release(button)
 
-    def scroll(self, clicks: int) -> None:
-        self._ui.write(self._ecodes.EV_REL, self._ecodes.REL_WHEEL, clicks)
+    def scroll(self, clicks: int, horizontal: bool = False) -> None:
+        axis = self._ecodes.REL_HWHEEL if horizontal else self._ecodes.REL_WHEEL
+        self._ui.write(self._ecodes.EV_REL, axis, clicks)
         self._ui.syn()
 
     def _key_code(self, token: str) -> int:
@@ -398,8 +399,9 @@ class DesktopBackend(ABC):
         """Type a literal string into whatever currently has focus."""
         raise NotImplementedError(f"{type(self).__name__} cannot type text")
 
-    def scroll(self, clicks: int) -> None:
-        """Scroll the wheel; positive is up, negative is down."""
+    def scroll(self, clicks: int, horizontal: bool = False) -> None:
+        """Scroll the wheel along one axis. Vertical (default): positive up, negative down.
+        Horizontal (``horizontal=True``): positive right, negative left."""
         raise NotImplementedError(f"{type(self).__name__} cannot scroll")
 
     def key(self, name: str) -> None:
@@ -462,8 +464,8 @@ class LocalBackend(DesktopBackend):
     def mouse_up(self, button: str = "left") -> None:
         self._pointer.release(button)
 
-    def scroll(self, clicks: int) -> None:
-        self._pointer.scroll(clicks)
+    def scroll(self, clicks: int, horizontal: bool = False) -> None:
+        self._pointer.scroll(clicks, horizontal=horizontal)
 
     def key(self, name: str) -> None:
         self._pointer.key(name)
@@ -557,8 +559,9 @@ class PortableBackend(DesktopBackend):
     def mouse_up(self, button: str = "left") -> None:
         self._mouse.release(self._button(button))
 
-    def scroll(self, clicks: int) -> None:
-        self._mouse.scroll(0, clicks)  # pynput: positive dy scrolls up
+    def scroll(self, clicks: int, horizontal: bool = False) -> None:
+        # pynput scroll(dx, dy): positive dy scrolls up, positive dx scrolls right.
+        self._mouse.scroll(clicks, 0) if horizontal else self._mouse.scroll(0, clicks)
 
     def type_text(self, text: str) -> None:
         self._kbd.type(text)
@@ -990,8 +993,14 @@ class NestedBackend(DesktopBackend):
     def type_text(self, text: str) -> None:
         self._xdotool("type", "--delay", "20", text)
 
-    def scroll(self, clicks: int) -> None:
-        button = "4" if clicks > 0 else "5"  # X11 wheel: 4=up, 5=down
+    def scroll(self, clicks: int, horizontal: bool = False) -> None:
+        # X11 wheel buttons: 4=up, 5=down, 6=left, 7=right. Horizontal scroll has to use 6/7 — a
+        # left/right request used to fall through to a vertical button, so a Flutter horizontal
+        # ListView/carousel never moved (#54).
+        if horizontal:
+            button = "7" if clicks > 0 else "6"
+        else:
+            button = "4" if clicks > 0 else "5"
         for _ in range(abs(clicks)):
             self._xdotool("click", button)
 

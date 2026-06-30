@@ -227,8 +227,8 @@ async def test_desktop_key_combo(mock_run, _win):
 
 @pytest.mark.parametrize(
     "direction, clicks, button",
-    [("down", 3, "5"), ("up", 2, "4")],
-    ids=["down", "up"],
+    [("down", 3, "5"), ("up", 2, "4"), ("left", 2, "6"), ("right", 2, "7")],
+    ids=["down", "up", "left", "right"],
 )
 @pytest.mark.asyncio
 async def test_desktop_scroll(mock_run, _win, direction, clicks, button):
@@ -238,6 +238,39 @@ async def test_desktop_scroll(mock_run, _win, direction, clicks, button):
     assert len(scroll_calls) == clicks
     for c in scroll_calls:
         assert c.args == ("xdotool", "click", "--window", "123", button)
+
+
+@pytest.mark.parametrize(
+    "direction, amount, expected",
+    [
+        ("up", 3, (3, False)),
+        ("down", 2, (-2, False)),
+        ("right", 4, (4, True)),     # horizontal must NOT collapse to a vertical button (#54)
+        ("left", 1, (-1, True)),
+    ],
+    ids=["up", "down", "right", "left"],
+)
+@pytest.mark.asyncio
+async def test_backend_scroll_threads_axis(direction, amount, expected):
+    """A scroll on a sandbox-bound window must reach the backend with the right axis + sign. Before
+    the fix, left/right fell into the vertical branch (clicks=-amount, no axis), so a Flutter
+    horizontal carousel never advanced (#54)."""
+    win = DesktopWindow(name="aino", wid=7, w=412, h=915, x=0, y=0)
+    calls: list[tuple] = []
+
+    class FakeBackend:
+        def move(self, x, y):
+            pass
+
+        def focus_wid(self, wid):
+            pass
+
+        def scroll(self, clicks, horizontal=False):
+            calls.append((clicks, horizontal))
+
+    win._backend = FakeBackend()
+    await win.scroll(100, 200, direction, amount)
+    assert calls == [expected]
 
 
 @pytest.mark.asyncio
