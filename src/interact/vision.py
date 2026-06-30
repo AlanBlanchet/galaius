@@ -176,25 +176,64 @@ def _b64_decoded_size(b64: str) -> int:
     return len(b64) * 3 // 4
 
 
-def _build_media_content(
+def _video_ext(mime_type: str) -> str:
+    """File extension for a video MIME, matching _extract_frames' container sniffing."""
+    return "mp4" if "mp4" in mime_type else "webm"
+
+
+def _can_upload_to_files_api(model: str) -> bool:
+    """Whether an over-cap clip can be uploaded to a Files API and referenced — Gemini AI Studio
+    only. Vertex's Files API needs a GCS bucket interact doesn't configure, so a Vertex over-cap
+    clip samples instead (#48)."""
+    lid = model.lower()
+    return "gemini" in lid and "vertex" not in lid
+
+
+async def _upload_video_ref(item: MediaItem, mime_ext: str) -> dict | None:
+    """Upload a clip to the Gemini Files API and return a reference content part (`file_id` = the
+    returned file URI), or None if the upload fails — so the caller falls back to frame sampling.
+    Lets a clip too large for the ~20 MB inline request cap still be analyzed natively (#48)."""
+    try:
+        raw = base64.b64decode(item.data)
+        uploaded = await litellm.acreate_file(
+            file=(f"clip.{mime_ext}", raw, item.mime_type),
+            purpose="assistants",  # Gemini's files transform ignores purpose; any valid value works
+            custom_llm_provider="gemini",
+        )
+        uri = getattr(uploaded, "id", None)
+        if not uri:
+            return None
+        return {"type": "file", "file": {"file_id": uri, "format": item.mime_type}}
+    except Exception:  # network / key / quota / unexpected shape → sample frames instead
+        _log.warning("native video upload failed; falling back to frame sampling", exc_info=True)
+        return None
+
+
+async def _build_media_content(
     media: list[MediaItem], model: str, config: Config, *, force_sampled: bool = False
 ) -> tuple[list[dict], bool]:
-    """Build the message media parts, sending native inline video to a Gemini-family model under
-    the size cap (#48) and ffmpeg-sampling frames for everything else (or when ``force_sampled``,
-    the rejection-fallback path). Returns ``(parts, sent_native_video)``."""
+    """Build the message media parts, sending video natively to a Gemini model — inline under the
+    size cap, else uploaded to the Files API and referenced — and ffmpeg-sampling frames for
+    everything else (non-Gemini providers, an upload failure, or ``force_sampled`` after a native
+    send was rejected). Returns ``(parts, sent_native_video)`` (#48)."""
     parts: list[dict] = []
     sent_native_video = False
     for item in media:
         if item.media_type == "image":
             parts.append(_image_content(item))
-        elif item.media_type == "audio":
+            continue
+        if item.media_type == "audio":
             parts.append(_audio_content(item))
-        elif (
-            not force_sampled
-            and supports_native_video_inline(model)
-            and _b64_decoded_size(item.data) < _NATIVE_VIDEO_MAX_BYTES
-        ):
-            parts.append(_native_video_part(item))
+            continue
+        # video
+        native_part: dict | None = None
+        if not force_sampled and supports_native_video_inline(model):
+            if _b64_decoded_size(item.data) < _NATIVE_VIDEO_MAX_BYTES:
+                native_part = _native_video_part(item)
+            elif _can_upload_to_files_api(model):
+                native_part = await _upload_video_ref(item, _video_ext(item.mime_type))
+        if native_part is not None:
+            parts.append(native_part)
             sent_native_video = True
         else:
             parts.extend(
@@ -309,7 +348,7 @@ async def analyze_media(
             elapsed=0,
         )
     tok = max_tokens if max_tokens is not _UNSET else config.max_tokens
-    media_parts, sent_native_video = _build_media_content(media, model, config)
+    media_parts, sent_native_video = await _build_media_content(media, model, config)
     messages = _build_messages([{"type": "text", "text": context}, *media_parts], prompt)
     try:
         return await _vision_completion(
@@ -320,12 +359,12 @@ async def analyze_media(
         litellm.exceptions.UnsupportedParamsError,
         litellm.exceptions.APIError,
     ):
-        # A native inline-video send can be rejected (provider 400, unsupported, oversized). Retry
-        # once with ffmpeg-sampled frames so video analysis is never worse than before #48. For any
+        # A native video send can be rejected (provider 400, unsupported, oversized). Retry once
+        # with ffmpeg-sampled frames so video analysis is never worse than before #48. For any
         # other call (no native video sent) the error is genuine — re-raise.
         if not sent_native_video:
             raise
-        media_parts, _ = _build_media_content(media, model, config, force_sampled=True)
+        media_parts, _ = await _build_media_content(media, model, config, force_sampled=True)
         messages = _build_messages([{"type": "text", "text": context}, *media_parts], prompt)
         return await _vision_completion(
             messages, model, max_tokens=tok, response_format=response_format
