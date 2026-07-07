@@ -74,7 +74,7 @@ def test_interactive_element_rounds_fractional_coords(raw, expected):
         ("1 + 1", False),
         ("const r = await fetch('/x'); return r.status", True),  # mid-script return + await
         ("return document.querySelectorAll('a').length", True),  # leading return
-        ("const x = 2; x * 2", False),  # statements, no return/await — expression form
+        ("const x = 2; x * 2", True),   # statement body — bare page.evaluate would SyntaxError
     ],
 )
 def test_wrap_js_wraps_only_when_return_or_await_present(script, wrapped):
@@ -135,6 +135,11 @@ def _page_with_match_count(n: int) -> MagicMock:
     page = MagicMock()
     locator = MagicMock()
     locator.count = AsyncMock(return_value=n)
+    nth = MagicMock()
+    nth.is_visible = AsyncMock(return_value=True)  # every match visible → genuinely ambiguous
+    nth.evaluate = AsyncMock(return_value="button")
+    nth.inner_text = AsyncMock(return_value="Access")
+    locator.nth = MagicMock(return_value=nth)
     page.get_by_role = MagicMock(return_value=locator)
     page.get_by_text = MagicMock(return_value=locator)
     return page
