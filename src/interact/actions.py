@@ -22,11 +22,19 @@ _JS_NEEDS_ASYNC = re.compile(r"\b(return|await)\b")
 # script (e.g. `() => { const r = el.getBoundingClientRect(); return r.width }`).
 _JS_IS_FUNCTION = re.compile(
     r"""^\s*(async\s+)?(
-        function\b              # function () { … } / async function () { … }
+        function\s*\(           # function () { … } — ANONYMOUS only: `function walk(...)` is a
+                                # declaration inside a larger script body, not a callable value
       | \([^)]*\)\s*=>          # (args) => …
       | [A-Za-z_$][\w$]*\s*=>   # arg => …   (single param, no parens)
     )""",
     re.VERBOSE,
+)
+
+# A script that OPENS with a statement keyword (or a named function declaration) is a statement
+# body, not an expression — passing it bare to page.evaluate throws SyntaxError ("Unexpected token
+# 'const'", seen 10x+ in client logs). It must run inside an IIFE even when it never `return`s.
+_JS_IS_STATEMENT = re.compile(
+    r"^\s*(const|let|var|if|for|while|do|try|switch|class|throw|function\s+[A-Za-z_$])\b"
 )
 
 
@@ -45,7 +53,7 @@ def _wrap_js(script: str, has_args: bool = False) -> str:
         return src
     if has_args:
         return f"async (args) => {{ {src} }}"
-    if _JS_NEEDS_ASYNC.search(src):
+    if _JS_NEEDS_ASYNC.search(src) or _JS_IS_STATEMENT.match(src):
         return f"(async () => {{ {src} }})()"
     return src
 
@@ -320,12 +328,25 @@ class NavigateAction(Action):
 
 
 class EvaluateJsAction(Action):
-    type: Literal["evaluate_js"] = "evaluate_js"
+    # "eval_js" is an accepted alias tag: agents guessed it (with a `code` field) 81 times in the
+    # client logs, each a hard validation error. Both are normalized to the canonical shape below.
+    type: Literal["evaluate_js", "eval_js"] = "evaluate_js"
     script: str
     # Optional JSON-serialisable value passed to the script as `args` (Playwright serialises it
     # across to the page). Lets a script be parameterised by data instead of string-building it
     # into the source — e.g. {"type":"evaluate_js","script":"return args.ids.length","args":{...}}.
     args: object | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_aliases(cls, data):
+        if isinstance(data, dict):
+            if data.get("type") == "eval_js":
+                data = {**data, "type": "evaluate_js"}
+            if "script" not in data and "code" in data:
+                data = {**data, "script": data["code"]}
+                data.pop("code", None)
+        return data
 
     async def execute(self, page: Page):
         if self.args is not None:

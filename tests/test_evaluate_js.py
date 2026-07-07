@@ -101,3 +101,60 @@ async def test_evaluate_js_returns_value_live():
         assert await EvaluateJsAction(script="() => 'hello'").execute(page) == "hello"
         assert await EvaluateJsAction(script="return args.n*2", args={"n": 21}).execute(page) == 42
         await browser.close()
+
+
+# --- statement bodies without `return`, and scripts that DECLARE functions (client-log errors) ---
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        # 10x in the wild: statement list, no return → passed bare → SyntaxError 'Unexpected token const'
+        "const body = document.body; const h1 = document.querySelector('h1');",
+        "let n = 0; n += 1",
+        "var x = 1; x",
+        "if (window.done) { window.done() }",
+        "for (const el of document.querySelectorAll('a')) el.remove()",
+    ],
+    ids=["const", "let", "var", "if", "for"],
+)
+def test_wrap_js_wraps_statement_bodies_without_return(script):
+    """A statement list isn't an expression — bare `page.evaluate` throws SyntaxError. Wrap it in
+    an async IIFE so it executes (returning undefined is correct for a script with no return)."""
+    assert _wrap_js(script) == f"(async () => {{ {script} }})()"
+
+
+def test_wrap_js_treats_a_named_function_declaration_as_a_script_body():
+    """9x in the wild: `function walk(r){…} walk(document); return out` — a DECLARATION inside a
+    larger script. Passing it through makes Playwright call `walk` alone (or throw); the whole
+    script must run as a body. Only ANONYMOUS functions/arrows are Playwright-callable values."""
+    script = "function walk(r){ r.remove() } walk(document.body); return 1"
+    assert _wrap_js(script) == f"(async () => {{ {script} }})()"
+
+
+def test_wrap_js_still_passes_anonymous_functions_untouched():
+    assert _wrap_js("function () { return 1 }") == "function () { return 1 }"
+    assert _wrap_js("async function (x) { return x }") == "async function (x) { return x }"
+
+
+# --- alias tolerance: agents sent {"type":"eval_js","code":…} 81x before erroring ---------------
+
+
+def test_eval_js_type_and_code_field_alias():
+    from pydantic import TypeAdapter
+
+    from interact.actions import AnyAction
+
+    a = TypeAdapter(AnyAction).validate_python({"type": "eval_js", "code": "document.title"})
+    assert isinstance(a, EvaluateJsAction)
+    assert a.script == "document.title"
+    assert a.type == "evaluate_js"  # normalized so BROWSER_ONLY_ACTIONS routing still works
+
+
+def test_canonical_evaluate_js_shape_unchanged():
+    from pydantic import TypeAdapter
+
+    from interact.actions import AnyAction
+
+    a = TypeAdapter(AnyAction).validate_python({"type": "evaluate_js", "script": "1+1"})
+    assert isinstance(a, EvaluateJsAction) and a.script == "1+1"
