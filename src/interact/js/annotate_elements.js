@@ -7,6 +7,18 @@
   // This also subsumes the #29 uniqueness fix the old clear-every-scan provided.
   let counter = nextRef || 0;
 
+  // Heal duplicated refs before annotating: a framework that CLONES an annotated node
+  // (cloneNode/template stamping/portal duplication) copies data-interact-ref, and from then on
+  // that ref resolves to several nodes — every click on it throws a strict-mode violation, and
+  // without this pass a re-scan kept both copies forever. First in document order keeps the ref;
+  // clones are stripped and re-annotated as new nodes below.
+  const seen = new Set();
+  for (const el of document.querySelectorAll("[data-interact-ref]")) {
+    const ref = el.getAttribute("data-interact-ref");
+    if (seen.has(ref)) el.removeAttribute("data-interact-ref");
+    else seen.add(ref);
+  }
+
   const root = (scope ? document.querySelector(scope) : document.body) || document.body;
   const tags =
     "a,button,input,select,textarea,[role=button],[role=link],[role=checkbox],[role=radio],[role=tab],[role=menuitem],[role=combobox],[role=textbox],[draggable=true],[role=listitem][aria-grabbed],[role=option]";

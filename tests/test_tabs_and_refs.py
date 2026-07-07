@@ -154,3 +154,34 @@ async def test_ref_clicks_via_live_dom_when_element_map_lost():
         assert await page.evaluate("() => window.__hit") == 1
     finally:
         await mgr.close()
+
+
+@pytest.mark.asyncio
+async def test_a_cloned_annotated_node_is_healed_to_a_unique_ref():
+    """A framework that clones an annotated node (cloneNode/template stamping/portal duplication)
+    copies its data-interact-ref — from then on clicks by that ref throw a strict-mode violation
+    ('resolved to N elements', 9x in client logs), and re-scanning never healed it because both
+    nodes kept the ref. The scan now strips duplicates (first in document order wins), so a
+    re-scan returns unique refs again."""
+    import interact.server as srv
+
+    mgr = _mgr()
+    await _ready(mgr)
+    try:
+        page = await mgr.get_page()
+        await page.set_content("<div id='root'><button id='orig'>Buy</button></div>")
+        await srv._scan_elements(mgr)
+        # an SPA clones the annotated button (attribute and all)
+        await page.evaluate(
+            "() => { const b = document.getElementById('orig');"
+            " const c = b.cloneNode(true); c.id = 'clone'; b.parentNode.appendChild(c); }"
+        )
+        elements = await srv._scan_elements(mgr)
+        for el in elements:
+            n = await page.evaluate(
+                "(ref) => document.querySelectorAll(`[data-interact-ref='${ref}']`).length",
+                el.ref,
+            )
+            assert n == 1, f"{el.ref} still resolves to {n} nodes"
+    finally:
+        await mgr.close()
