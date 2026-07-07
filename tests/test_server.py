@@ -805,3 +805,38 @@ async def test_get_interactive_elements_default_keeps_the_cache(srv):
     ):
         await srv.get_interactive_elements(target="aino")
     inval.assert_not_called()
+
+
+# --- #63: a numeric `wait` means seconds, not a CSS selector -----------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value, secs", [("3", 3.0), ("0.5", 0.5), ("2s", 2.0)])
+async def test_numeric_wait_sleeps_instead_of_selector_matching(srv, monkeypatch, value, secs):
+    """#63: agents keep passing wait="3" meaning 3 seconds; parsing it as a CSS selector throws
+    'Error while parsing css selector "3"' (37+ times in the client logs). A bare number (or "Ns")
+    now sleeps that many seconds."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    slept: list[float] = []
+
+    async def fake_sleep(s):
+        slept.append(s)
+
+    monkeypatch.setattr(srv.asyncio, "sleep", fake_sleep)
+    page = MagicMock()
+    page.wait_for_selector = AsyncMock()
+    page.wait_for_load_state = AsyncMock()
+    await srv._wait(page, value)
+    assert slept == [secs]
+    page.wait_for_selector.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_selector_wait_still_waits_for_visibility(srv):
+    from unittest.mock import AsyncMock, MagicMock
+
+    page = MagicMock()
+    page.wait_for_selector = AsyncMock()
+    await srv._wait(page, "#status")
+    page.wait_for_selector.assert_called_once()

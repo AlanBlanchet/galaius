@@ -819,14 +819,22 @@ async def _element_screenshot(
 
 
 async def _wait(page: Page, condition: str | None):
+    """A load state waits for it; a bare number (or "Ns") sleeps that many seconds — agents keep
+    passing wait="3" meaning seconds, and parsing it as a CSS selector throws (#63); anything else
+    is a CSS selector waited to visibility."""
     if condition is None:
         return
     if condition in ("networkidle", "domcontentloaded", "load"):
         await page.wait_for_load_state(condition)
-    else:
-        await page.wait_for_selector(
-            condition, state="visible", timeout=config.wait_timeout
-        )
+        return
+    try:
+        await asyncio.sleep(float(condition.strip().rstrip("s")))
+        return
+    except ValueError:
+        pass
+    await page.wait_for_selector(
+        condition, state="visible", timeout=config.wait_timeout
+    )
 
 
 @mcp.tool()
@@ -842,7 +850,8 @@ async def navigate(
     """Navigate to a URL and return page content. Browser-only — requires a session, not a window.
 
     scope: CSS selector to restrict to a page sub-tree.
-    wait: "networkidle", "load", "domcontentloaded", or a CSS selector (waits for visibility, 10s timeout).
+    wait: "networkidle", "load", "domcontentloaded", a number of seconds (e.g. "3"), or a CSS
+        selector (waits for visibility, 10s timeout). Also accepted per-action in run_actions.
     timeout: max milliseconds to wait for navigation. Default uses the 10s context default; raise it
         for slow dev servers that compile routes on first hit (e.g. 60000 for a cold Next.js route).
     query: when set, returns vision analysis instead of text summary.
