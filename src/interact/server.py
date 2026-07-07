@@ -1692,6 +1692,48 @@ def _flutter_software_render(argv: list[str]) -> tuple[list[str], str]:
     )
 
 
+# Browser executables whose default launch joins an ALREADY-RUNNING instance via a profile
+# singleton (Chrome's SingletonLock, Firefox's remoting). Inside the sandbox that's fatal: the URL
+# opens on the user's REAL desktop browser, the sandboxed process exits, and the agent (and user)
+# is left with an empty Xephyr window. Matched on the executable basename.
+_CHROMIUM_BROWSERS = ("chrome", "chromium", "brave", "edge", "vivaldi", "opera")
+_FIREFOX_BROWSERS = ("firefox", "librewolf", "waterfox")
+
+
+def _browser_isolate(argv: list[str], display: str) -> tuple[list[str], str]:
+    """Give a known browser command a sandbox-local profile so it starts a REAL instance inside the
+    sandbox instead of delegating to the user's running browser (the singleton escape above).
+    The profile dir is stable per (display, browser): a relaunch reuses it and may join the
+    in-sandbox instance — which is isolated, so that's correct. A caller who already picked a
+    profile (--user-data-dir / --profile / -P) is left alone. Returns (argv, note-for-the-result)."""
+    import re
+
+    exe = next((t for t in argv if t != "env" and not re.match(r"^\w+=", t)), None)
+    if not exe:
+        return argv, ""
+    base = Path(exe).name.lower()
+    is_chromium = any(b in base for b in _CHROMIUM_BROWSERS)
+    is_firefox = any(b in base for b in _FIREFOX_BROWSERS)
+    if not (is_chromium or is_firefox):
+        return argv, ""
+    if any(a.startswith("--user-data-dir") or a in ("--profile", "-P", "--no-remote") for a in argv):
+        return argv, ""  # caller chose its own isolation
+    profile = (
+        Path.home() / ".interact" / "out" / "sandbox-profiles" / f"{display.lstrip(':')}-{base}"
+    )
+    profile.mkdir(parents=True, exist_ok=True)
+    exe_i = argv.index(exe)
+    if is_chromium:
+        inject = [f"--user-data-dir={profile}", "--no-first-run", "--no-default-browser-check"]
+    else:
+        inject = ["--no-remote", "--profile", str(profile)]
+    note = (
+        " (added an isolated profile: without it the browser just signals the user's RUNNING "
+        "instance — the page opens on the real desktop and nothing appears in the sandbox)"
+    )
+    return [*argv[: exe_i + 1], *inject, *argv[exe_i + 1:]], note
+
+
 @mcp.tool()
 async def launch_app(
     command: str, wait: float = 6.0, size: str | None = None, device: str | None = None
@@ -1741,6 +1783,8 @@ async def launch_app(
         return "ERROR: empty command"
 
     argv, flutter_note = _flutter_software_render(argv)
+    argv, browser_note = _browser_isolate(argv, getattr(backend, "display", ":?"))
+    flutter_note += browser_note
     proc = await asyncio.to_thread(backend.spawn, argv)
     deadline = asyncio.get_event_loop().time() + wait
     windows: list[tuple[int, str]] = []
