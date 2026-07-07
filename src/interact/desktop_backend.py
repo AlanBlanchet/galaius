@@ -354,16 +354,22 @@ def _x11_root_size(env: dict | None = None) -> tuple[int, int]:
 
 def _ffmpeg_grab_args(
     display_spec: str, x: int, y: int, w: int, h: int, fps: int, out: str,
-    duration: float | None = None,
+    duration: float | None = None, audio_source: str | None = None,
 ) -> list[str]:
     """ffmpeg x11grab argv for one region of ``display_spec`` (``:N`` or ``:N.0``). ``duration=None``
     records open-ended until stopped (a non-blocking session, #61/#62); a number adds ``-t`` for the
-    blocking one-shot clip. Shared by the still-clip and session paths so both encode identically."""
+    blocking one-shot clip. ``audio_source`` (a PulseAudio/PipeWire source, e.g. a null sink's
+    ``.monitor``) muxes the app's audio into the mp4 (#47) — video-only when None. Shared by the
+    still-clip and session paths so both encode identically."""
     args = [
         "ffmpeg", "-y", "-f", "x11grab", "-video_size", f"{w}x{h}",
         "-framerate", str(fps), "-i", f"{display_spec}+{max(0, x)},{max(0, y)}",
-        "-c:v", "libx264", "-preset", "ultrafast",
     ]
+    if audio_source:
+        args += ["-f", "pulse", "-i", audio_source]
+    args += ["-c:v", "libx264", "-preset", "ultrafast"]
+    if audio_source:
+        args += ["-c:a", "aac"]
     if duration is not None:
         args += ["-t", str(duration)]
     args += ["-pix_fmt", "yuv420p", "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", out]
@@ -673,6 +679,11 @@ class NestedBackend(DesktopBackend):
     suite. Needs ``xdotool`` + ``maim`` plus the chosen server (``apt install
     xserver-xephyr`` / ``xvfb``)."""
 
+    # The sandbox's private audio sink (#47) — class-level defaults so a partially-constructed
+    # backend (tests build via __new__) still degrades to video-only instead of AttributeError.
+    _audio_sink: str | None = None
+    _audio_module: str | None = None
+
     def __init__(self, display: int = 99, size: str = "1280x800", *,
                  headless: bool = False, ready_timeout: float = 5.0):
         self.size = size
@@ -825,9 +836,42 @@ class NestedBackend(DesktopBackend):
                         pass
         self._procs = alive
 
+    def _ensure_audio_sink(self) -> str | None:
+        """The sandbox's private PulseAudio/PipeWire null sink, created on first use. Spawned apps
+        get ``PULSE_SINK`` pointing here, so their audio is isolated BOTH ways: it never plays on
+        the user's speakers, and a recording of ``<sink>.monitor`` carries the APP's sound only —
+        never the user's system audio (#47). Best-effort: no pulse server / no pactl → None, and
+        recordings stay video-only."""
+        if self._audio_sink is not None:
+            return self._audio_sink
+        display = getattr(self, "display", None)
+        if not display:  # partially-constructed backend (tests) → video-only
+            return None
+        sink = f"interact_sandbox_{display.lstrip(':')}"
+        try:
+            done = subprocess.run(
+                ["pactl", "load-module", "module-null-sink", f"sink_name={sink}",
+                 f"sink_properties=device.description={sink}"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if done.returncode != 0:
+                return None
+            self._audio_module = done.stdout.strip()
+            self._audio_sink = sink
+            self.env["PULSE_SINK"] = sink  # every spawn from now on routes audio here
+            return sink
+        except (OSError, subprocess.SubprocessError):
+            return None
+
+    def audio_monitor(self) -> str | None:
+        """The pulse source a recording reads the sandbox's audio from, or None (video-only)."""
+        sink = self._ensure_audio_sink()
+        return f"{sink}.monitor" if sink else None
+
     def spawn(self, argv: list[str]) -> subprocess.Popen:
         """Launch a process inside the nested display (tracked for teardown), capturing its
         stdout/stderr so a crash can be explained. Reaps previously-exited apps first."""
+        self._ensure_audio_sink()  # route the app's audio into the sandbox sink from birth (#47)
         self._reap()
         path = self._open_log("app")
         with open(path, "wb") as f:
@@ -980,7 +1024,8 @@ class NestedBackend(DesktopBackend):
         os.close(fd)
         try:
             subprocess.run(
-                _ffmpeg_grab_args(self.env["DISPLAY"], x, y, w, h, fps, out, duration=duration),
+                _ffmpeg_grab_args(self.env["DISPLAY"], x, y, w, h, fps, out,
+                                  duration=duration, audio_source=self.audio_monitor()),
                 env=self.env, check=True, capture_output=True, timeout=duration + 10,
             )
             with open(out, "rb") as fh:
@@ -1003,7 +1048,8 @@ class NestedBackend(DesktopBackend):
         fd, out = tempfile.mkstemp(suffix=".mp4")
         os.close(fd)
         self._video_sessions[name] = _VideoSession(
-            _ffmpeg_grab_args(self.env["DISPLAY"], x, y, w, h, fps, out, duration=None),
+            _ffmpeg_grab_args(self.env["DISPLAY"], x, y, w, h, fps, out,
+                              duration=None, audio_source=self.audio_monitor()),
             out, env=self.env,
         )
 
@@ -1175,6 +1221,10 @@ class NestedBackend(DesktopBackend):
         for session in self._video_sessions.values():
             session.stop()  # finalize + reap any live recording before tearing the display down
         self._video_sessions.clear()
+        if self._audio_module:  # remove the sandbox's null sink with the sandbox (#47)
+            subprocess.run(["pactl", "unload-module", self._audio_module],
+                           capture_output=True, timeout=5, check=False)
+            self._audio_module = self._audio_sink = None
         for proc in (*self._procs, self._xserver):
             if proc.poll() is None:
                 proc.terminate()

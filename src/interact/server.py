@@ -1916,6 +1916,11 @@ async def record(
     a blocking one-shot clip of fixed length instead (no interleaved actions).
     A desktop target and a non-default session are mutually exclusive (list_desktop_windows lists them).
 
+    Sandbox (nested) recordings include the APP'S AUDIO: launched apps play into the sandbox's
+    private sink (never the user's speakers), and its monitor is muxed into the mp4 — so
+    record(path=...) then transcribe(path=...) hears what the app said. Real-desktop/browser
+    recordings stay video-only.
+
     start: True to begin recording, False to stop and export.
     query: question for VLM visual analysis of the recording.
     duration: fixed clip length in seconds (desktop one-shot mode); omit for a start/stop session.
