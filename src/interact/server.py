@@ -393,6 +393,20 @@ def _resolve_nested_target(spec: str) -> tuple[DesktopWindow | None, None, str |
     return win, None, None
 
 
+# Title suffixes of developer tools whose window titles embed project/file names — a partial match
+# on one of these is almost always an accident (the query names the APP, whose window lives in the
+# sandbox or elsewhere), and driving it types into the user's editor.
+_EDITOR_TITLE_MARKERS = (
+    "visual studio code", "vs code", "intellij", "pycharm", "webstorm", "goland", "clion",
+    "rider", "android studio", "sublime text", "neovim", "gnome-terminal", "konsole", "alacritty",
+)
+
+
+def _looks_like_editor(name: str) -> bool:
+    low = name.lower()
+    return any(m in low for m in _EDITOR_TITLE_MARKERS)
+
+
 def _find_desktop_window(title: str) -> DesktopWindow | str:
     windows = DesktopWindow.all()
     if not windows:
@@ -412,7 +426,20 @@ def _find_desktop_window(title: str) -> DesktopWindow | str:
     # An exact title (sorted first by matching()) or a sole partial match is unambiguous; several
     # partial matches with no exact one would be a silent guess — make the agent pick (#1.3).
     hint = title.strip().lower()
-    if len(matches) == 1 or any(w.name.lower() == hint for w in matches):
+    if any(w.name.lower() == hint for w in matches):
+        return matches[0]
+    if len(matches) == 1:
+        # A lone PARTIAL match that looks like an editor/terminal window (its title merely CONTAINS
+        # the query — "shared.rs - aino - Visual Studio Code") is the user's IDE, not the app: the
+        # app is usually running in the sandbox instead. Driving it silently typed into the user's
+        # editor (10x in client logs) — require explicit targeting.
+        if _looks_like_editor(matches[0].name):
+            return (
+                f"'{title}' only matches the editor/terminal window "
+                f"'{matches[0].name}' (wid:{matches[0].wid}) — refusing to drive it on a partial "
+                f"match. If the app runs in the sandbox, use target=\"nested:{title}\"; to really "
+                f"drive this window, pass its exact title or target=\"wid:{matches[0].wid}\"."
+            )
         return matches[0]
     return (
         f"'{title}' matches {len(matches)} windows — pass a more specific or the exact title:\n"

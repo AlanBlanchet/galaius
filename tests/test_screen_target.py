@@ -275,9 +275,28 @@ def test_ambiguous_partial_matches_error_lists_candidates(monkeypatch):
 
 
 def test_single_partial_match_is_returned(monkeypatch):
-    only = DesktopWindow(name="aino - Visual Studio Code", wid=1, x=0, y=0, w=100, h=100)
+    only = DesktopWindow(name="aino - Quiz", wid=1, x=0, y=0, w=100, h=100)
     monkeypatch.setattr(DesktopWindow, "all", _all(only))
     assert srv._find_desktop_window("aino") is only
+
+
+def test_sole_editor_window_partial_match_is_not_silently_driven(monkeypatch):
+    """10x in client logs: target='aino' matched ONLY the IDE window ('shared.rs - aino - Visual
+    Studio Code') because the app itself ran in the sandbox — and the agent then typed into the
+    user's editor. A lone PARTIAL match with an editor/terminal-pattern title needs explicit
+    targeting (exact title or wid:), never a silent guess."""
+    ide = DesktopWindow(name="shared.rs - aino - Visual Studio Code", wid=7, x=0, y=0, w=2000, h=1200)
+    monkeypatch.setattr(DesktopWindow, "all", _all(ide))
+    out = srv._find_desktop_window("aino")
+    assert isinstance(out, str) and "wid:7" in out
+    assert "nested" in out  # hints the app may be in the sandbox instead
+
+
+def test_exact_editor_title_still_resolves(monkeypatch):
+    """Explicitly naming the editor window (exact title) is intentional — never blocked."""
+    ide = DesktopWindow(name="shared.rs - aino - Visual Studio Code", wid=7, x=0, y=0, w=2000, h=1200)
+    monkeypatch.setattr(DesktopWindow, "all", _all(ide))
+    assert srv._find_desktop_window("shared.rs - aino - Visual Studio Code") is ide
 
 
 # --- #5 part 2: when no title is unique (an app titled "aino" is a substring of the IDE's
