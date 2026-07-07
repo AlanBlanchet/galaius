@@ -11,6 +11,7 @@
 import pytest
 
 from interact.actions import ClickAction
+from interact.dispatch import _named_locator
 from interact.browser import BrowserManager
 from interact.config import Config
 from interact.state import InteractiveElement
@@ -183,5 +184,62 @@ async def test_a_cloned_annotated_node_is_healed_to_a_unique_ref():
                 el.ref,
             )
             assert n == 1, f"{el.ref} still resolves to {n} nodes"
+    finally:
+        await mgr.close()
+
+
+@pytest.mark.asyncio
+async def test_name_click_resolves_to_the_only_visible_match():
+    """Agents name what they SEE: 'N elements match name=…' fired 11x+ in client logs when the
+    same label existed hidden elsewhere (closed menu, template). One visible match → click it."""
+    mgr = _mgr()
+    await _ready(mgr)
+    try:
+        page = await mgr.get_page()
+        await page.set_content(
+            "<button style='display:none' onclick=\"window.h='HIDDEN'\">Connexion</button>"
+            "<button onclick=\"window.h='VISIBLE'\">Connexion</button>"
+        )
+        locator = await _named_locator(page, ClickAction(name="Connexion"))
+        await locator.click()
+        assert await page.evaluate("() => window.h") == "VISIBLE"
+    finally:
+        await mgr.close()
+
+
+@pytest.mark.asyncio
+async def test_name_click_prefers_the_exact_text_match():
+    """name='Connexion' matching both 'Connexion' and 'Connexion aide' (substring) picks the
+    exact one instead of erroring ambiguous."""
+    mgr = _mgr()
+    await _ready(mgr)
+    try:
+        page = await mgr.get_page()
+        await page.set_content(
+            "<button onclick=\"window.h='EXACT'\">Connexion</button>"
+            "<button onclick=\"window.h='LONGER'\">Connexion aide</button>"
+        )
+        locator = await _named_locator(page, ClickAction(name="Connexion"))
+        await locator.click()
+        assert await page.evaluate("() => window.h") == "EXACT"
+    finally:
+        await mgr.close()
+
+
+@pytest.mark.asyncio
+async def test_truly_ambiguous_name_error_lists_the_matches():
+    """Two identical visible buttons stay ambiguous — but the error now DESCRIBES the matches so
+    the agent can refine without a scan round-trip."""
+    mgr = _mgr()
+    await _ready(mgr)
+    try:
+        page = await mgr.get_page()
+        await page.set_content(
+            "<nav><button>Valider</button></nav><footer><button>Valider</button></footer>"
+        )
+        with pytest.raises(ValueError) as e:
+            await _named_locator(page, ClickAction(name="Valider"))
+        msg = str(e.value)
+        assert "ambiguous" in msg and "button" in msg  # candidates described, not just counted
     finally:
         await mgr.close()

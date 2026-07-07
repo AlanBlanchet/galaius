@@ -2,6 +2,7 @@ import asyncio
 import base64
 import json
 import logging
+import re
 
 from playwright.async_api import Error as PlaywrightError, TimeoutError as PlaywrightTimeout
 
@@ -211,11 +212,14 @@ async def _named_locator(page, action):
     real run hit 17). interact pre-checks the count and instead tells the agent how to recover —
     the stable fix is a unique ``ref`` from ``get_interactive_elements``, which can't be
     ambiguous by construction (raw text/role can)."""
-    locator = (
-        page.get_by_role(action.role, name=action.name)
-        if action.role
-        else page.get_by_text(action.name, exact=False)
-    )
+    def _by_name(exact: bool):
+        return (
+            page.get_by_role(action.role, name=action.name, exact=exact)
+            if action.role
+            else page.get_by_text(action.name, exact=exact)
+        )
+
+    locator = _by_name(exact=False)
     target = f"name={action.name!r}" + (f" role={action.role!r}" if action.role else "")
     count = await locator.count()
     if count == 0:
@@ -223,12 +227,33 @@ async def _named_locator(page, action):
             f"No element matches {target}. Check the name/role, or use a `ref` from "
             "get_interactive_elements."
         )
-    if count > 1:
-        raise ValueError(
-            f"{count} elements match {target} — ambiguous. Use a `ref` from "
-            "get_interactive_elements, or a more specific `name`/`selector`."
-        )
-    return locator
+    if count == 1:
+        return locator
+    # Several substring matches. Agents name what they SEE, so resolve the common cases before
+    # giving up: (1) exactly one EXACT-text match ('Connexion' vs 'Connexion aide'); (2) exactly
+    # one VISIBLE match (the same label hidden in a closed menu/template elsewhere).
+    exact = _by_name(exact=True)
+    if await exact.count() == 1:
+        return exact
+    visible_idx = [i for i in range(count) if await locator.nth(i).is_visible()]
+    if len(visible_idx) == 1:
+        return locator.nth(visible_idx[0])
+    # Genuinely ambiguous — describe the matches so the agent can refine without a scan round-trip.
+    lines = []
+    for i in range(min(count, 5)):
+        nth = locator.nth(i)
+        try:
+            tag = await nth.evaluate("e => e.tagName.toLowerCase()")
+            text = re.sub(r"\s+", " ", (await nth.inner_text(timeout=500)).strip())[:50]
+            shown = "" if i in visible_idx else " (hidden)"
+            lines.append(f"  [{i}] <{tag}> {text!r}{shown}")
+        except Exception:
+            lines.append(f"  [{i}] (could not inspect)")
+    more = f"\n  … and {count - 5} more" if count > 5 else ""
+    raise ValueError(
+        f"{count} elements match {target} — ambiguous. Matches:\n" + "\n".join(lines) + more +
+        "\nUse a `ref` from get_interactive_elements, or a more specific `name`/`selector`."
+    )
 
 
 async def _click_element(page, mgr, element: int, tab: int) -> bool:
