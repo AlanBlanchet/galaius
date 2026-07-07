@@ -746,13 +746,12 @@ async def _run_actions_browser(
             )
             step_reports[-1] += f"\n  observation: {obs_result}"
 
-    if final is None:
-        final = await _capture(mgr, scope, current_tab)
-    elif wait:
+    if wait:
         await _wait_fn(page, wait)
-        final = await _capture(mgr, scope, current_tab)
-    elif scope:
-        final = await _capture(mgr, scope, current_tab)
+    # Always recapture at the END of the batch: a `final` kept from a mid-batch action's
+    # before/after diff misses everything later actions changed (a login redirect, an evaluate_js
+    # mutation, a render settling) — the "Final state" summary lagged reality (#65).
+    final = await _capture(mgr, scope, current_tab)
     if query:
         final_summary = await _analyze(final, query)
     else:

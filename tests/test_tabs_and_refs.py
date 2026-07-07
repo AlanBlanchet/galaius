@@ -243,3 +243,30 @@ async def test_truly_ambiguous_name_error_lists_the_matches():
         assert "ambiguous" in msg and "button" in msg  # candidates described, not just counted
     finally:
         await mgr.close()
+
+
+@pytest.mark.asyncio
+async def test_final_state_reflects_the_last_action_in_the_batch():
+    """#65 (minor): 'Final state' was captured right after a mid-batch click and never refreshed,
+    so a later action's effect (a login redirect, an evaluate_js mutation) was missing — the
+    summary showed the page as it was mid-batch. It must reflect the state AFTER the whole batch."""
+    from interact.actions import EvaluateJsAction
+    from interact.dispatch import _run_actions_browser
+
+    mgr = _mgr()
+    await _ready(mgr)
+    try:
+        page = await mgr.get_page()
+        await page.set_content("<title>BEFORE</title><button onclick=\"1\">Go</button>")
+        out = await _run_actions_browser(
+            mgr,
+            [
+                ClickAction(selector="button"),  # sets `final` mid-batch (title BEFORE)
+                EvaluateJsAction(script="document.title = 'AFTER'"),
+            ],
+            None, None, None, "default",
+        )
+        final = out.split("Final state:")[1]
+        assert "AFTER" in final and "BEFORE" not in final
+    finally:
+        await mgr.close()
