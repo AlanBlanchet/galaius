@@ -325,6 +325,7 @@ def _get_sandbox(size: str | None = None):
         _sandbox = NestedBackend(
             config.nested_display, size or config.nested_size, headless=config.nested_headless
         )
+    _sandbox.touch()  # every attach/launch resets idleness — the reaper only closes ABANDONED ones
     return _sandbox
 
 
@@ -648,10 +649,19 @@ def _desktop_label(win: DesktopWindow) -> str:
     return f"[window: {win.name}]"
 
 
-def _reap_sandbox() -> None:
-    """Drop a nested sandbox whose X server has died (``is_alive`` polls it, reaping the zombie),
-    so no ``<defunct>`` Xephyr lingers and the display frees up for a clean respawn on next use."""
-    if _sandbox is not None and not _sandbox.is_alive():
+def _reap_sandbox(ttl: int = 0) -> None:
+    """Drop a nested sandbox whose X server has died (``is_alive`` polls it, reaping the zombie) —
+    and, with ``ttl`` > 0, one the agent has ABANDONED: agents open the visible Xephyr, finish
+    their task, and leave the window on the user's desktop to close by hand. Idle-past-ttl closes
+    it exactly like an idle browser session (#36's sibling); the next launch_app respawns fresh.
+    A live recording session blocks reaping — the agent is mid-capture."""
+    if _sandbox is None:
+        return
+    if not _sandbox.is_alive():
+        _close_sandbox()
+        return
+    if ttl > 0 and _sandbox.idle_seconds() > ttl and not _sandbox.is_recording_any():
+        _log.info("auto-closing sandbox idle for %.0fs", _sandbox.idle_seconds())
         _close_sandbox()
 
 
@@ -668,7 +678,7 @@ async def _idle_session_reaper(ttl: int) -> None:
             closed = await _sessions.close_idle(ttl)
             if closed:
                 _log.info("auto-closed idle browser session(s): %s", ", ".join(closed))
-            _reap_sandbox()
+            _reap_sandbox(ttl)
         except Exception:  # a transient error must never kill the reaper
             _log.exception("idle session reaper error")
 

@@ -123,11 +123,11 @@ class Config(BaseSettings):
     video_max_frames: int = 12
     max_tokens: int | None = None
     wait_timeout: int = 10000
-    # Auto-close a browser session whose browser has sat idle (no tool call) this many seconds,
-    # freeing its Chromium + driver; it re-opens lazily on next use (a non-default session starts
-    # fresh — cookies/login are not preserved across the close). 0 disables. Stops a long-lived MCP
-    # server (one per open editor window) from piling up idle browsers that spin CPU on a left-open
-    # page. Override with INTERACT_SESSION_IDLE_TTL.
+    # Auto-close an idle agent-owned surface — a browser session AND the (visible) nested sandbox —
+    # after this many seconds without a tool call. Frees the Chromium + driver (it re-opens lazily;
+    # a non-default session starts fresh — cookies/login not preserved) and closes an abandoned
+    # Xephyr window instead of leaving it on the user's desktop; the next launch_app respawns one.
+    # 0 disables. Override with INTERACT_SESSION_IDLE_TTL.
     session_idle_ttl: int = 900
     vlm_max_dim: int = 1280
     vlm_min_dim: int = 768

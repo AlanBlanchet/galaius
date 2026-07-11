@@ -683,6 +683,7 @@ class NestedBackend(DesktopBackend):
     # backend (tests build via __new__) still degrades to video-only instead of AttributeError.
     _audio_sink: str | None = None
     _audio_module: str | None = None
+    _last_used: float = 0.0  # monotonic timestamp of the last attach/launch (idle reaping)
 
     def __init__(self, display: int = 99, size: str = "1280x800", *,
                  headless: bool = False, ready_timeout: float = 5.0):
@@ -1059,6 +1060,17 @@ class NestedBackend(DesktopBackend):
 
     def is_recording(self, name: str) -> bool:
         return name in self._video_sessions
+
+    def is_recording_any(self) -> bool:
+        return bool(self._video_sessions)
+
+    def touch(self) -> None:
+        """Mark the sandbox as just-used — every attach/launch calls this, so idleness measures
+        time since the AGENT last cared, and the idle reaper never closes an actively-driven one."""
+        self._last_used = time.monotonic()
+
+    def idle_seconds(self) -> float:
+        return time.monotonic() - self._last_used
 
     def fit_window(self, name: str) -> bool:
         """Move + size the named window to fill the nested display (origin 0,0, full screen WxH), so

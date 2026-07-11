@@ -76,6 +76,15 @@ class _FakeNested:
     def is_alive(self):
         return self.alive
 
+    def touch(self):
+        self.touched = True
+
+    def idle_seconds(self):
+        return 0.0
+
+    def is_recording_any(self):
+        return False
+
     def close(self):
         self.closed = True
 
@@ -258,3 +267,58 @@ def test_nested_target_still_lists_windows_that_exist(monkeypatch):
     _, _, err = srv._resolve_nested_target("nested:other")
     assert 'target="nested:aino"' in err  # a wrong title still shows what IS available
     assert "Do NOT" not in err  # the recovery warning is only for a genuinely empty sandbox
+
+
+# --- the lingering-Xephyr fix: an IDLE sandbox is reaped like an idle browser session ----------
+
+
+def _fake_sandbox(idle: float, recording: bool = False):
+    class FakeSandbox:
+        def is_alive(self):
+            return True
+
+        def idle_seconds(self):
+            return idle
+
+        def is_recording_any(self):
+            return recording
+
+    return FakeSandbox()
+
+
+def test_idle_sandbox_is_reaped(monkeypatch):
+    """The user kept finding agent-left Xephyr windows on his desktop: agents open the sandbox and
+    never close it. Browser sessions already idle-reap (#36); the sandbox now does too — same TTL."""
+    import interact.server as srv
+
+    closed = []
+    monkeypatch.setattr(srv, "_sandbox", _fake_sandbox(idle=901.0))
+    monkeypatch.setattr(srv, "_close_sandbox", lambda: closed.append(True))
+    srv._reap_sandbox(ttl=900)
+    assert closed == [True]
+
+
+def test_active_or_recording_sandbox_survives(monkeypatch):
+    import interact.server as srv
+
+    closed = []
+    monkeypatch.setattr(srv, "_close_sandbox", lambda: closed.append(True))
+    monkeypatch.setattr(srv, "_sandbox", _fake_sandbox(idle=10.0))
+    srv._reap_sandbox(ttl=900)                     # recently used → kept
+    monkeypatch.setattr(srv, "_sandbox", _fake_sandbox(idle=99999.0, recording=True))
+    srv._reap_sandbox(ttl=900)                     # mid-recording → NEVER reaped under the agent
+    assert closed == []
+
+
+def test_sandbox_touch_marks_use(monkeypatch):
+    """Every _get_sandbox() attach/launch refreshes idleness, so an actively-driven sandbox
+    never hits the TTL."""
+    import time as _time
+
+    from interact.desktop_backend import NestedBackend
+
+    nb = NestedBackend.__new__(NestedBackend)
+    nb.touch()
+    assert nb.idle_seconds() < 1.0
+    nb._last_used = _time.monotonic() - 500
+    assert nb.idle_seconds() > 499
