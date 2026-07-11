@@ -3,7 +3,6 @@ import base64
 from contextlib import asynccontextmanager, suppress
 import json
 import os
-import re
 import logging
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -39,6 +38,12 @@ from interact.detect import (
     _crop_image,
     _desktop_context,
     _detect_desktop_elements,
+)
+from interact.launch import (  # noqa: F401 — re-exported for tests importing via interact.server
+    _browser_isolate,
+    _flutter_software_render,
+    _resolve_nested_size,
+    apply_launch_rewrites,
 )
 from interact.measure import format_measure, measure
 from interact.dispatch import (
@@ -271,29 +276,6 @@ _sandbox: "object | None" = None  # the headless NestedBackend, created on first
 # Named display shapes for launch_app(device=...). A phone/tablet app laid out for portrait looks
 # wrong in the default 1280x800 desktop display; these give it a correctly-shaped screen so it
 # renders as it would on the device. Values are common Flutter logical sizes.
-_DEVICE_SIZES = {
-    "phone": "412x915",
-    "tablet": "820x1180",
-    "desktop": "1280x800",
-}
-_SIZE_RE = re.compile(r"^\d{2,5}x\d{2,5}$")
-
-
-def _resolve_nested_size(size: str | None, device: str | None) -> tuple[str | None, str | None]:
-    """Pick the nested display size for a launch: explicit ``size`` ("WxH") wins, then a ``device``
-    profile, else None → the caller keeps the configured default. Returns (size_or_None, error)."""
-    if size:
-        norm = size.strip().lower()
-        if not _SIZE_RE.match(norm):
-            return None, f"ERROR: size must be WxH (e.g. 412x915), got {size!r}"
-        return norm, None
-    if device:
-        key = device.strip().lower()
-        if key not in _DEVICE_SIZES:
-            opts = ", ".join(_DEVICE_SIZES)
-            return None, f"ERROR: unknown device {device!r} — use one of: {opts}, or pass size=WxH"
-        return _DEVICE_SIZES[key], None
-    return None, None
 
 
 def _get_sandbox(size: str | None = None):
@@ -1743,77 +1725,6 @@ async def list_desktop_windows() -> str:
     return "\n\n".join(parts)
 
 
-def _flutter_software_render(argv: list[str]) -> tuple[list[str], str]:
-    """A Flutter Linux bundle's GPU compositing — notably a `BackdropFilter`/blur (a `ConvexAppBar`
-    blurred bottom bar) — renders as a solid black strip under the sandbox's software GL (llvmpipe),
-    so the nav is invisible and untappable (#28). Flutter's Skia CPU rasteriser bypasses GL entirely
-    and renders it correctly, so add `--enable-software-rendering` for a detected Flutter bundle.
-    Idempotent; a no-op for non-Flutter commands. Returns (argv, note-for-the-result)."""
-    import re
-
-    if "--enable-software-rendering" in argv:
-        return argv, ""
-    exe = next((t for t in argv if t != "env" and not re.match(r"^\w+=", t)), None)
-    if not exe:
-        return argv, ""
-    try:
-        bundle = Path(exe).resolve().parent
-    except (OSError, RuntimeError):
-        return argv, ""
-    is_flutter = (bundle / "data" / "flutter_assets").is_dir() or (
-        bundle / "lib" / "libflutter_linux_gtk.so"
-    ).exists()
-    if not is_flutter:
-        return argv, ""
-    return (
-        [*argv, "--enable-software-rendering"],
-        " (added --enable-software-rendering: a Flutter bundle's blur renders black under the "
-        "sandbox's software GL, so its Skia CPU rasteriser is used instead)",
-    )
-
-
-# Browser executables whose default launch joins an ALREADY-RUNNING instance via a profile
-# singleton (Chrome's SingletonLock, Firefox's remoting). Inside the sandbox that's fatal: the URL
-# opens on the user's REAL desktop browser, the sandboxed process exits, and the agent (and user)
-# is left with an empty Xephyr window. Matched on the executable basename.
-_CHROMIUM_BROWSERS = ("chrome", "chromium", "brave", "edge", "vivaldi", "opera")
-_FIREFOX_BROWSERS = ("firefox", "librewolf", "waterfox")
-
-
-def _browser_isolate(argv: list[str], display: str) -> tuple[list[str], str]:
-    """Give a known browser command a sandbox-local profile so it starts a REAL instance inside the
-    sandbox instead of delegating to the user's running browser (the singleton escape above).
-    The profile dir is stable per (display, browser): a relaunch reuses it and may join the
-    in-sandbox instance — which is isolated, so that's correct. A caller who already picked a
-    profile (--user-data-dir / --profile / -P) is left alone. Returns (argv, note-for-the-result)."""
-    import re
-
-    exe = next((t for t in argv if t != "env" and not re.match(r"^\w+=", t)), None)
-    if not exe:
-        return argv, ""
-    base = Path(exe).name.lower()
-    is_chromium = any(b in base for b in _CHROMIUM_BROWSERS)
-    is_firefox = any(b in base for b in _FIREFOX_BROWSERS)
-    if not (is_chromium or is_firefox):
-        return argv, ""
-    if any(a.startswith("--user-data-dir") or a in ("--profile", "-P", "--no-remote") for a in argv):
-        return argv, ""  # caller chose its own isolation
-    profile = (
-        Path.home() / ".interact" / "out" / "sandbox-profiles" / f"{display.lstrip(':')}-{base}"
-    )
-    profile.mkdir(parents=True, exist_ok=True)
-    exe_i = argv.index(exe)
-    if is_chromium:
-        inject = [f"--user-data-dir={profile}", "--no-first-run", "--no-default-browser-check"]
-    else:
-        inject = ["--no-remote", "--profile", str(profile)]
-    note = (
-        " (added an isolated profile: without it the browser just signals the user's RUNNING "
-        "instance — the page opens on the real desktop and nothing appears in the sandbox)"
-    )
-    return [*argv[: exe_i + 1], *inject, *argv[exe_i + 1:]], note
-
-
 @mcp.tool()
 async def launch_app(
     command: str, wait: float = 6.0, size: str | None = None, device: str | None = None
@@ -1862,9 +1773,7 @@ async def launch_app(
     if not argv:
         return "ERROR: empty command"
 
-    argv, flutter_note = _flutter_software_render(argv)
-    argv, browser_note = _browser_isolate(argv, getattr(backend, "display", ":?"))
-    flutter_note += browser_note
+    argv, flutter_note = apply_launch_rewrites(argv, getattr(backend, "display", ":?"))
     proc = await asyncio.to_thread(backend.spawn, argv)
     deadline = asyncio.get_event_loop().time() + wait
     windows: list[tuple[int, str]] = []
