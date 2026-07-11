@@ -10,7 +10,7 @@ from playwright.async_api import Page
 from interact.config import DEFAULT_LIMIT
 from interact.state import ref_locator
 
-_DND_DISPATCH_JS = (Path(__file__).parent / "js" / "dnd_dispatch.js").read_text()
+_DND_DISPATCH_JS = (Path(__file__).parent.parent / "js" / "dnd_dispatch.js").read_text()
 
 _JS_NEEDS_ASYNC = re.compile(r"\b(return|await)\b")
 

@@ -11,7 +11,7 @@
 import pytest
 
 from interact.actions import ClickAction
-from interact.dispatch import _named_locator
+from interact.actions.dispatch import _named_locator
 from interact.browser import BrowserManager
 from interact.config import Config
 from interact.state import InteractiveElement
@@ -121,7 +121,7 @@ def test_element_map_shared_between_tabless_scan_and_active_tab_lookup():
 async def test_ref_from_prior_scan_clicks_in_a_later_run_actions():
     """#34 end-to-end: a ref handed out by a tab-less scan clicks in a SEPARATE later run_actions
     call, through the real dispatch + Chromium (the exact two-call sequence agents reported)."""
-    from interact.dispatch import _run_actions_browser
+    from interact.actions.dispatch import _run_actions_browser
     from interact.server import _scan_elements
 
     mgr = _mgr()
@@ -141,7 +141,7 @@ async def test_ref_from_prior_scan_clicks_in_a_later_run_actions():
 async def test_ref_clicks_via_live_dom_when_element_map_lost():
     """#34 resilience: even with the server-side element map gone, a ref still clicks via the live
     data-interact-ref attribute — it survives across calls until the next scan."""
-    from interact.dispatch import _run_actions_browser
+    from interact.actions.dispatch import _run_actions_browser
     from interact.server import _scan_elements
 
     mgr = _mgr()
@@ -251,7 +251,7 @@ async def test_final_state_reflects_the_last_action_in_the_batch():
     so a later action's effect (a login redirect, an evaluate_js mutation) was missing — the
     summary showed the page as it was mid-batch. It must reflect the state AFTER the whole batch."""
     from interact.actions import EvaluateJsAction
-    from interact.dispatch import _run_actions_browser
+    from interact.actions.dispatch import _run_actions_browser
 
     mgr = _mgr()
     await _ready(mgr)

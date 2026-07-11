@@ -19,7 +19,7 @@ import pytest
 
 from interact.actions import ClickAction, EvaluateJsAction, HoverAction, _wrap_js
 from interact.config import Config
-from interact.dispatch import _named_locator
+from interact.actions.dispatch import _named_locator
 from interact.state import InteractiveElement
 
 

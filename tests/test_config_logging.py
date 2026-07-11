@@ -24,7 +24,7 @@ def test_dump_input_writes_both_files(tmp_path):
 
 
 def test_el_report_never_leaks_coordinates(monkeypatch):
-    import interact.dispatch as dispatch
+    import interact.actions.dispatch as dispatch
 
     monkeypatch.setattr(dispatch, "_fmt_cursor", lambda: "default")
 
@@ -39,7 +39,7 @@ def test_el_report_never_leaks_coordinates(monkeypatch):
 def test_xy_report_is_factual_and_never_leaks_pixels(monkeypatch):
     """A coordinate action is reported factually — no prescriptive 'use refs instead' nudge (it
     fights coordinate-capable agents), but still never echoes the raw pixels back."""
-    import interact.dispatch as dispatch
+    import interact.actions.dispatch as dispatch
 
     monkeypatch.setattr(dispatch, "_fmt_cursor", lambda: "default")
     report = dispatch._xy_report("clicked", 137, 451)
@@ -50,7 +50,7 @@ def test_xy_report_is_factual_and_never_leaks_pixels(monkeypatch):
 def test_raw_xy_snaps_to_detected_element_ref():
     # When a detection exists for the window, a raw x,y inside an element's box resolves to that
     # element (stable ref) instead of staying a blind pixel hit. Smallest box wins (button > panel).
-    import interact.dispatch as dispatch
+    import interact.actions.dispatch as dispatch
     from interact.desktop import DesktopElement, _element_cache
 
     wid = 4242

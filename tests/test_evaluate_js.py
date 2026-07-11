@@ -12,7 +12,7 @@ the real page round-trip.
 import pytest
 
 from interact.actions import EvaluateJsAction, _wrap_js
-from interact.dispatch import _render_js_result
+from interact.actions.dispatch import _render_js_result
 
 
 @pytest.mark.parametrize(

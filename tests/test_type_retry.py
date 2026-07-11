@@ -6,7 +6,7 @@ import io
 import pytest
 from PIL import Image
 
-from interact.dispatch import _field_changed, _type_desktop
+from interact.actions.dispatch import _field_changed, _type_desktop
 
 
 def _png(size=(500, 400), block=None) -> bytes:
@@ -68,12 +68,12 @@ def _no_sleep(monkeypatch):
     async def _noop(_):
         return None
 
-    monkeypatch.setattr("interact.dispatch.asyncio.sleep", _noop)
+    monkeypatch.setattr("interact.actions.dispatch.asyncio.sleep", _noop)
 
 
 @pytest.mark.asyncio
 async def test_type_desktop_single_shot_when_registered(monkeypatch, _no_sleep):
-    monkeypatch.setattr("interact.dispatch._field_changed", lambda *a: True)  # landed first try
+    monkeypatch.setattr("interact.actions.dispatch._field_changed", lambda *a: True)  # landed first try
     win = _FakeWin()
     await _type_desktop(win, "hello", 150, 92)
     assert win.typed == ["hello"]  # no retry
@@ -83,7 +83,7 @@ async def test_type_desktop_single_shot_when_registered(monkeypatch, _no_sleep):
 @pytest.mark.asyncio
 async def test_type_desktop_retries_when_dropped(monkeypatch, _no_sleep):
     seq = iter([False, True])  # dropped once, then lands
-    monkeypatch.setattr("interact.dispatch._field_changed", lambda *a: next(seq))
+    monkeypatch.setattr("interact.actions.dispatch._field_changed", lambda *a: next(seq))
     win = _FakeWin()
     await _type_desktop(win, "hello", 150, 92)
     assert win.typed == ["hello", "hello"]  # exactly one retry
@@ -92,7 +92,7 @@ async def test_type_desktop_retries_when_dropped(monkeypatch, _no_sleep):
 
 @pytest.mark.asyncio
 async def test_type_desktop_gives_up_after_max_retries(monkeypatch, _no_sleep):
-    monkeypatch.setattr("interact.dispatch._field_changed", lambda *a: False)  # never registers
+    monkeypatch.setattr("interact.actions.dispatch._field_changed", lambda *a: False)  # never registers
     win = _FakeWin()
     await _type_desktop(win, "hi", 150, 92)
     assert win.typed == ["hi", "hi", "hi"]  # initial + 2 retries, then stops (no infinite loop)

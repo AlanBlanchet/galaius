@@ -8,7 +8,7 @@ from playwright.async_api import Error as PlaywrightError, TimeoutError as Playw
 
 from interact import desktop
 from interact.desktop.atspi import AtSpi
-from interact.actions import (
+from interact.actions.models import (
     AnyAction,
     AnnotateAction,
     BROWSER_ONLY_ACTIONS,

@@ -11,7 +11,7 @@ from interact.actions import AnyAction
 from interact.browser import BrowserManager
 from interact.config import DEFAULT_LIMIT
 from interact.debug_utils import Debug
-from interact.dispatch import _run_actions_browser, _run_actions_desktop
+from interact.actions.dispatch import _run_actions_browser, _run_actions_desktop
 from interact.server import capture, core, targets, vlm
 from interact.server.core import _DBG_ACTIONS, _DEFAULT_SESSION, _session_response, config, mcp
 from interact.state import format_element_list

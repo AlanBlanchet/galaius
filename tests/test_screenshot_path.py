@@ -19,7 +19,7 @@ def test_screenshot_action_accepts_path():
 async def test_inline_screenshot_writes_file(tmp_path):
     from interact.browser import BrowserManager
     from interact.config import Config
-    from interact.dispatch import _run_actions_browser
+    from interact.actions.dispatch import _run_actions_browser
 
     mgr = BrowserManager(Config(headless=True, browser_type="chromium"))
     try:

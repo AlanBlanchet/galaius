@@ -14,7 +14,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeout
 
 from interact import server as srv
 from interact.actions import WaitForAction
-from interact.dispatch import _execute_browser_action
+from interact.actions.dispatch import _execute_browser_action
 
 
 @pytest.fixture(autouse=True)
