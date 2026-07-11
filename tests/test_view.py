@@ -4,7 +4,7 @@ import pytest
 
 from interact.config import Config
 from interact.models import Model
-from interact.view import View
+from interact.cli.view import View
 
 SAMPLE = json.dumps(
     {

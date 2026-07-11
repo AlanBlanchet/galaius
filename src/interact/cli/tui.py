@@ -34,7 +34,7 @@ from textual.widgets import (
     TabPane,
 )
 
-from interact.clients import ClientTarget
+from interact.cli.clients import ClientTarget
 from interact.config import SETTINGS, Setting, groups
 from interact.config import UserConfig
 
@@ -249,7 +249,7 @@ class InteractTUI(App):
 
     # ── Status (fast: no model-registry load) ──────────────────────────────────
     def _status_text(self) -> str:
-        from interact.usage import UsageReport
+        from interact.cli.usage import UsageReport
 
         cwd = Path(".").resolve()
         bound = [t.label for t in ClientTarget.all() if t.registrations(cwd)]
@@ -271,7 +271,7 @@ class InteractTUI(App):
     def _load_registry_info(self) -> None:
         """Worker: load the registry off the UI thread, resolve providers + auto models +
         the by-provider usage breakdown, then update the panels. Fails soft."""
-        from interact.usage import UsageReport
+        from interact.cli.usage import UsageReport
 
         provider_rows: list[tuple[str, int, float]] = []
         try:
@@ -343,7 +343,7 @@ class InteractTUI(App):
             )
 
     def _install_connector(self, client_id: str) -> None:
-        from interact.clients import MCPServer, Scope
+        from interact.cli.clients import MCPServer, Scope
 
         target = ClientTarget.by_id(client_id)
         if target is None:
@@ -419,7 +419,7 @@ class InteractTUI(App):
 
     # ── Usage ────────────────────────────────────────────────────────────────
     def _refresh_usage_basic(self) -> None:
-        from interact.usage import UsageReport
+        from interact.cli.usage import UsageReport
 
         report = UsageReport.build()
         self.query_one("#usage-summary", Static).update(
@@ -435,7 +435,7 @@ class InteractTUI(App):
 
     # ── Update banner ────────────────────────────────────────────────────────────
     def _check_update(self) -> None:
-        from interact.update import available_update
+        from interact.cli.update import available_update
 
         newer = available_update()
         if not newer:

@@ -14,7 +14,7 @@ from typing import Annotated
 from cyclopts import App, Parameter
 
 from interact import installed_version
-from interact.clients import ClientTarget, MCPServer, Scope
+from interact.cli.clients import ClientTarget, MCPServer, Scope
 from interact.config import UserConfig
 
 app = App(
@@ -128,10 +128,10 @@ def status(
     project
         Project root to check for project-scoped client registrations (default: cwd).
     """
-    from interact.clients import ClientTarget
+    from interact.cli.clients import ClientTarget
     from interact.models import Model, ModelCapability
     from interact.runtime import config
-    from interact.usage import UsageReport
+    from interact.cli.usage import UsageReport
 
     root = project.resolve()
     print("interact status\n")
@@ -245,9 +245,9 @@ def dashboard() -> None:
     Renders the same declarative `View` an HTTP endpoint will serve to the browser
     and the VS Code webview — defined once, shown on every surface. No VLM calls.
     """
-    from interact.render import CliRenderer
+    from interact.cli.render import CliRenderer
     from interact.runtime import config
-    from interact.view import View
+    from interact.cli.view import View
 
     CliRenderer.render(View.dashboard(config))
 
@@ -266,7 +266,7 @@ def usage(
     days
         Only count calls from the last N days (default: all time).
     """
-    from interact.usage import UsageReport, default_log_path
+    from interact.cli.usage import UsageReport, default_log_path
 
     log_path = default_log_path()
     report = UsageReport.build(since_days=days)
@@ -300,7 +300,7 @@ def update(check: Annotated[bool, Parameter(name=["--check", "-c"])] = False) ->
     import shutil
     import subprocess
 
-    from interact.update import REPO, available_update, installed_version
+    from interact.cli.update import REPO, available_update, installed_version
 
     current = installed_version()
     newer = available_update()
@@ -479,7 +479,7 @@ def main() -> None:
     import sys
 
     if len(sys.argv) == 1 and sys.stdout.isatty():
-        from interact.tui import run as run_tui
+        from interact.cli.tui import run as run_tui
 
         run_tui()
         return

@@ -4,7 +4,7 @@ import pytest
 from textual.widgets import Input, Select, Static, Switch, TabbedContent
 
 from interact.config import by_key
-from interact.tui import InteractTUI, _field_id, _mask
+from interact.cli.tui import InteractTUI, _field_id, _mask
 from interact.config import UserConfig
 
 
@@ -50,7 +50,7 @@ async def test_tui_saves_config(temp_config):
 
 
 async def test_tui_reset_to_defaults(temp_config):
-    from interact.tui import _AUTO
+    from interact.cli.tui import _AUTO
 
     UserConfig.set("image.model", _PICK)
     UserConfig.set("desktop.target", "nested")
@@ -68,7 +68,7 @@ async def test_tui_reset_to_defaults(temp_config):
 
 async def test_tui_save_auto_unsets_model(temp_config):
     # Selecting "(auto)" must remove the persisted model (the clear-doesn't-save bug fix).
-    from interact.tui import _AUTO
+    from interact.cli.tui import _AUTO
 
     UserConfig.set("image.model", _PICK)
     app = InteractTUI()
@@ -80,7 +80,7 @@ async def test_tui_save_auto_unsets_model(temp_config):
 
 def test_known_key_names_from_registry_sorted():
     """Key names come from the bundled registry data (not hardcoded) and are alphabetical."""
-    from interact.tui import _known_key_names
+    from interact.cli.tui import _known_key_names
 
     names = _known_key_names()
     assert names == sorted(names)
@@ -138,7 +138,7 @@ async def test_tui_lists_all_connectors_with_install_buttons(temp_config):
     can add VS Code, Cursor, Codex, … not just whatever happens to be registered."""
     from textual.widgets import Button
 
-    from interact.clients import ClientTarget
+    from interact.cli.clients import ClientTarget
 
     app = InteractTUI()
     async with app.run_test():
@@ -148,7 +148,7 @@ async def test_tui_lists_all_connectors_with_install_buttons(temp_config):
 
 
 async def test_tui_shows_update_banner_when_newer_release(temp_config, monkeypatch):
-    from interact import update as update_mod
+    from interact.cli import update as update_mod
 
     monkeypatch.setattr(update_mod, "available_update", lambda *a, **k: "9.9.9")
     app = InteractTUI()

@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from interact.usage import UsageReport
+from interact.cli.usage import UsageReport
 
 
 def _write_log(path: Path, rows: list[dict]) -> None:

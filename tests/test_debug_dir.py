@@ -2,7 +2,8 @@
 
 from pathlib import Path
 
-from interact import debug_utils, usage
+from interact import debug_utils
+from interact.cli import usage
 from interact.config import Config
 
 

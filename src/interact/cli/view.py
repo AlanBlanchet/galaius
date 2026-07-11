@@ -7,7 +7,7 @@ surface (CLI text, a browser page, the VS Code webview) renders it however fits.
 No widgets or HTML live in the core; renderers are thin per-surface adapters.
 
 Build a view from domain state with :meth:`View.dashboard`; render it with a
-surface adapter (e.g. ``interact.render.CliRenderer``, or an HTTP endpoint that
+surface adapter (e.g. ``interact.cli.render.CliRenderer``, or an HTTP endpoint that
 returns ``view.model_dump_json()`` for a web renderer).
 """
 

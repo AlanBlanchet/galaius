@@ -1,4 +1,4 @@
-"""Surface adapters that render a :class:`interact.view.View`.
+"""Surface adapters that render a :class:`interact.cli.view.View`.
 
 A renderer is the only place UI lives. ``CliRenderer`` turns a View into terminal
 output; a web renderer (phase 2) turns the same View JSON into HTML for the browser
@@ -8,7 +8,7 @@ and the VS Code webview. The View itself stays widget-free.
 from rich.console import Console
 from rich.table import Table as RichTable
 
-from interact.view import View
+from interact.cli.view import View
 
 
 class CliRenderer:

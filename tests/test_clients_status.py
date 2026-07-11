@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from interact.clients import ClientTarget, JsonClient, TomlClient
+from interact.cli.clients import ClientTarget, JsonClient, TomlClient
 
 
 @pytest.mark.parametrize("alias", ["github", "copilot"])
@@ -36,8 +36,8 @@ def test_json_client_handles_missing_and_malformed(tmp_path):
 
 
 def test_vscode_user_scope_prefers_code_cli(monkeypatch, tmp_path):
-    import interact.clients as clients
-    from interact.clients import ClientTarget, MCPServer, Scope
+    import interact.cli.clients as clients
+    from interact.cli.clients import ClientTarget, MCPServer, Scope
 
     monkeypatch.setattr(clients.shutil, "which", lambda c: "/usr/bin/code" if c == "code" else None)
     result = ClientTarget.by_id("vscode").install(MCPServer.resolve(), Scope.user, tmp_path, dry_run=True)
@@ -45,7 +45,7 @@ def test_vscode_user_scope_prefers_code_cli(monkeypatch, tmp_path):
 
 
 def test_vscode_project_scope_writes_and_detects(tmp_path):
-    from interact.clients import ClientTarget, MCPServer, Scope
+    from interact.cli.clients import ClientTarget, MCPServer, Scope
 
     vscode = ClientTarget.by_id("vscode")
     vscode.install(MCPServer.resolve(), Scope.project, tmp_path, dry_run=False)

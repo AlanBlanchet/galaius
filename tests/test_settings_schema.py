@@ -67,7 +67,7 @@ async def test_tui_renders_a_widget_for_every_setting(tmp_path, monkeypatch):
     from interact.config import UserConfig
 
     monkeypatch.setattr(UserConfig, "PATH", tmp_path / "config.env")  # never touch the real file
-    from interact.tui import InteractTUI, _field_id
+    from interact.cli.tui import InteractTUI, _field_id
 
     app = InteractTUI()
     async with app.run_test() as pilot:

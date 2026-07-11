@@ -3,7 +3,7 @@
 import io
 import json
 
-from interact import update
+from interact.cli import update
 
 
 def test_available_update_when_remote_newer(monkeypatch):
