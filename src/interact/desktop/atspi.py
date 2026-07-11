@@ -11,11 +11,9 @@ so that additional ARIA labels appear in the accessibility tree.
 import logging
 from typing import ClassVar
 
-from interact.desktop.window import (
-    CoordTransform,
-    DesktopElement,
-    DesktopWindow,
-)
+from interact.desktop.coords import CoordTransform
+from interact.desktop.element import DesktopElement
+from interact.desktop.window import DesktopWindow
 
 _log = logging.getLogger("interact")
 

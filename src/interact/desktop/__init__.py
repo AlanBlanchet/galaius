@@ -37,23 +37,24 @@ from interact.desktop.backend import (  # noqa: F401
     select_desktop_backend,
 )
 from interact.desktop.nested import NestedBackend  # noqa: F401
-from interact.desktop.window import (  # noqa: F401
+from interact.desktop.cursor import Cursor, _XFixesCursorImage  # noqa: F401
+from interact.desktop.coords import CoordTransform  # noqa: F401
+from interact.desktop.motion import Motion  # noqa: F401
+from interact.desktop.element import (  # noqa: F401
     Box,
-    CaptureError,
-    CoordTransform,
-    Cursor,
     DesktopElement,
-    DesktopWindow,
-    Motion,
-    _DRAG_STEPS,
     _IOU_OVERLAP_THRESHOLD,
-    _SCREEN_WID,
     _TITLEBAR_Y,
     _WM_BUTTON_NAMES,
-    _XFixesCursorImage,
     _element_cache,
-    _is_blank_png,
     _page_sig,
+)
+from interact.desktop.window import (  # noqa: F401
+    CaptureError,
+    DesktopWindow,
+    _DRAG_STEPS,
+    _SCREEN_WID,
+    _is_blank_png,
     gpu_surface_error,
 )
 from interact.desktop.atspi import AtSpi  # noqa: F401
