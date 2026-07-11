@@ -35,7 +35,7 @@ def _audio_file(tmp_path, name="clip.mp3", data=b"ID3audio"):
 # ── transcribe_audio (the litellm transcription endpoint) ───────────────────────────────────
 @pytest.mark.asyncio
 async def test_transcribe_audio_calls_the_transcription_endpoint(monkeypatch):
-    import interact.vision as vis
+    import interact.vision.core as vis
 
     captured: dict = {}
 
@@ -56,7 +56,7 @@ async def test_transcribe_audio_calls_the_transcription_endpoint(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_transcribe_audio_missing_key_is_friendly_not_a_crash(monkeypatch):
-    import interact.vision as vis
+    import interact.vision.core as vis
 
     monkeypatch.setattr(vis.litellm, "validate_environment", lambda m: {"keys_in_environment": False})
     r = await transcribe_audio(b"x", model="whisper-1")

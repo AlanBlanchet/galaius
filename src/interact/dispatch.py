@@ -33,7 +33,7 @@ from interact.actions import (
 from interact.browser import BrowserManager
 from interact.debug_utils import Debug
 from interact.desktop import DesktopWindow
-from interact.detect import _desktop_context
+from interact.vision.detect import _desktop_context
 from interact.state import DesktopState, PageState, StateChange, ref_locator
 
 _log = logging.getLogger("interact")

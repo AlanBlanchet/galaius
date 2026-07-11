@@ -6,10 +6,10 @@ import base64
 import logging
 
 from interact.config import DEFAULT_LIMIT, QUALITY_TIERS
-from interact.critique import format_grounding
+from interact.vision.critique import format_grounding
 from interact.debug_utils import Debug
 from interact.desktop import DesktopElement, DesktopWindow
-from interact.detect import _desktop_context, _detect_desktop_elements
+from interact.vision.detect import _desktop_context, _detect_desktop_elements
 from interact.server import core, targets, vlm
 from interact.server.core import config
 from interact.state import (

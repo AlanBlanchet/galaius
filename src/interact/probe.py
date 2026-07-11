@@ -25,7 +25,7 @@ from pydantic import BaseModel
 
 from interact.desktop import atspi
 from interact.desktop import DesktopElement, DesktopWindow
-from interact.detect import _vlm_detect_elements, judge_missing_elements
+from interact.vision.detect import _vlm_detect_elements, judge_missing_elements
 from interact.models import Model, ModelCapability
 from interact.state import annotate_screenshot
 

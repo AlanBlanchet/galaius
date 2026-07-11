@@ -10,7 +10,7 @@ import pytest
 from PIL import Image
 
 import interact.server as srv
-from interact.measure import contrast_ratio, format_measure, measure
+from interact.vision.measure import contrast_ratio, format_measure, measure
 
 
 def _png(arr: np.ndarray) -> bytes:

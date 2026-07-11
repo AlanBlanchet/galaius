@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import interact.vision as vision
+import interact.vision.core as vision
 from interact.config import Config
 from interact.vision import MediaItem, VLMResult, _build_media_content
 

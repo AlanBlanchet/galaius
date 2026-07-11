@@ -8,7 +8,7 @@ import pytest
 
 from interact import server as srv
 from interact.config import _DEFAULT_SOVEREIGN_MODEL, Config
-from interact.critique import RequirementCheck, UIFinding, UIReview, VerifyReport
+from interact.vision.critique import RequirementCheck, UIFinding, UIReview, VerifyReport
 from interact.state import InteractiveElement
 from interact.vision import VLMResult
 

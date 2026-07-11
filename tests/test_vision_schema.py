@@ -9,7 +9,7 @@ from types import SimpleNamespace as NS
 import pytest
 from pydantic import BaseModel
 
-import interact.vision as v
+import interact.vision.core as v
 
 
 class _Tiny(BaseModel):

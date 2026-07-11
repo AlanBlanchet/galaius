@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from PIL import Image as PILImage
 
-import interact.detect as det
+import interact.vision.detect as det
 from interact.vision import VLMResult
 
 _DESKTOP_CTX = "Desktop window: Test (800x600)"
@@ -207,9 +207,9 @@ async def test_unset_sentinel_uses_config_max_tokens():
     # model is now resolved at the boundary and passed in; analyze_media no longer reads
     # config.model_for. It still validates the key, so patch that True.
     with (
-        patch("interact.vision._vision_completion", mock_completion),
+        patch("interact.vision.core._vision_completion", mock_completion),
         patch(
-            "interact.vision.litellm.validate_environment",
+            "interact.vision.core.litellm.validate_environment",
             return_value={"keys_in_environment": True},
         ),
     ):
@@ -220,9 +220,9 @@ async def test_unset_sentinel_uses_config_max_tokens():
 
     # Now pass explicit value -- should override
     with (
-        patch("interact.vision._vision_completion", mock_completion),
+        patch("interact.vision.core._vision_completion", mock_completion),
         patch(
-            "interact.vision.litellm.validate_environment",
+            "interact.vision.core.litellm.validate_environment",
             return_value={"keys_in_environment": True},
         ),
     ):

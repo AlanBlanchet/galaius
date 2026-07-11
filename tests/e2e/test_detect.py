@@ -19,7 +19,7 @@ from PIL import Image
 from interact.desktop import atspi
 from interact.browser import BrowserManager
 from interact.desktop import DesktopElement, DesktopWindow
-from interact.detect import _vlm_detect_elements
+from interact.vision.detect import _vlm_detect_elements
 from interact.models import Model
 from interact.runtime import config
 from interact.state import annotate_screenshot

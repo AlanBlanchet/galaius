@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from interact import server as srv
-from interact.critique import (
+from interact.vision.critique import (
     UIFinding,
     UIReview,
     build_review_prompt,

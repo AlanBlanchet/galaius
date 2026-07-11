@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from interact import server as srv
-from interact.critique import (
+from interact.vision.critique import (
     RequirementCheck,
     VerifyReport,
     build_verify_prompt,
@@ -56,7 +56,7 @@ def test_format_verify_flags_all_pass():
 
 
 def test_build_verify_prompt_embeds_detected_elements_for_grounding():
-    from interact.critique import format_grounding
+    from interact.vision.critique import format_grounding
     from interact.state import InteractiveElement
 
     grounding = format_grounding([InteractiveElement(ref="e3", role="link", name="Home", x=0, y=0, w=40, h=12, index=1)])

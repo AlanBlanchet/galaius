@@ -23,7 +23,7 @@ from interact.desktop import (
 from interact.formats import CoordFormat
 from interact.runtime import breaker, config
 from interact.state import annotate_screenshot
-from interact.vision import MediaItem, analyze_media
+from interact.vision.core import MediaItem, analyze_media
 
 _log = logging.getLogger("interact")
 

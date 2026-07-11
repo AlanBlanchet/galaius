@@ -8,7 +8,7 @@ import logging
 from mcp.server.fastmcp.utilities.types import Image
 
 from interact.config import DEFAULT_LIMIT
-from interact.critique import (
+from interact.vision.critique import (
     UIReview,
     VerifyReport,
     build_review_prompt,
@@ -20,8 +20,8 @@ from interact.critique import (
 )
 from interact.debug_utils import Debug
 from interact.desktop import DesktopElement
-from interact.detect import _crop_image, _desktop_context
-from interact.measure import format_measure, measure
+from interact.vision.detect import _crop_image, _desktop_context
+from interact.vision.measure import format_measure, measure
 from interact.models import is_audio_model, is_transcription_only_model
 from interact.server import capture, core, targets, vlm
 from interact.server.core import _DEFAULT_SESSION, _audio_mime, _session_response, config, mcp
@@ -131,7 +131,7 @@ async def screenshot(
             # Surface cached refs ONLY if they belong to the frame just captured — after a navigation
             # the live frame's signature differs, so we don't list a prior screen's refs on a screen
             # that's no longer shown (the screenshot↔elements desync, #19).
-            from interact.detect import _page_signature
+            from interact.vision.detect import _page_signature
             cached = DesktopElement.cached_for(win.wid, _page_signature(img_bytes))
             if cached:
                 text = f"{core._desktop_label(win)}\n{DesktopElement.format_list(cached)}"

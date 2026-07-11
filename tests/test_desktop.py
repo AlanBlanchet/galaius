@@ -21,7 +21,7 @@ async def test_detection_discards_prior_screen_when_content_changes(monkeypatch)
     Regression: home-screen refs (1..8) piled onto the quiz screen because the cache keyed off the
     (unchanging) window title."""
     import interact.desktop as desktop
-    import interact.detect as detect
+    import interact.vision.detect as detect
 
     def png(color):
         b = io.BytesIO()
@@ -53,7 +53,7 @@ async def test_detection_discards_prior_screen_when_content_changes(monkeypatch)
 def test_page_signature_tracks_content_not_identity():
     """The page key must be deterministic, change with screen CONTENT, and never raise — it errs
     toward resetting (a new key) rather than ever keeping stale refs."""
-    import interact.detect as detect
+    import interact.vision.detect as detect
 
     def png(color):
         b = io.BytesIO()

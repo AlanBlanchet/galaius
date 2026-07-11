@@ -126,7 +126,7 @@ from interact.server.tools_meta import list_providers, report_issue  # noqa: F40
 # --- Names other modules define but tests reach through interact.server (back-compat) ---
 from interact.debug_utils import Debug  # noqa: F401
 from interact.desktop import DesktopElement, DesktopWindow  # noqa: F401
-from interact.detect import _crop_image, _desktop_context, _detect_desktop_elements  # noqa: F401
+from interact.vision.detect import _crop_image, _desktop_context, _detect_desktop_elements  # noqa: F401
 from interact.dispatch import _run_actions_browser, _run_actions_desktop  # noqa: F401
 from interact.launch import (  # noqa: F401
     _browser_isolate,
