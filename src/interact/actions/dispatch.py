@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import inspect
 import json
 import logging
 import re
@@ -37,6 +38,32 @@ from interact.vision.detect import _desktop_context
 from interact.state import DesktopState, PageState, StateChange, ref_locator
 
 _log = logging.getLogger("interact")
+
+
+async def _finalize_step(
+    action, i, step_idx, invocation_id, step_reports, record_frames, snapshots,
+    *, capture_fn, context,
+):
+    """The per-step tail shared by the desktop and browser runners: save the step report, capture a
+    record frame if recording, and run an `observe` VLM query if the action asked for one. Only the
+    per-surface capture (`win.capture()` sync vs `page.screenshot()` async) and the observe context
+    string differ, so both are injected; ``capture_fn`` may return bytes or an awaitable."""
+    from interact.server import _run_observe  # noqa: PLC0415 — circular: server imports dispatch
+
+    async def _grab() -> bytes:
+        frame = capture_fn()
+        return await frame if inspect.isawaitable(frame) else frame
+
+    if step_reports:
+        Debug.step_save(invocation_id, i, action.type, "report", step_reports[-1])
+    if record_frames is not None:  # one frame per step → captures every action's result
+        record_frames.append(await _grab())
+    if action.observe:
+        obs_bytes = await _grab()
+        snapshots[step_idx] = obs_bytes
+        Debug.step_save(invocation_id, i, action.type, "observe", obs_bytes, ext="png")
+        obs_result = await _run_observe(obs_bytes, action.observe, context)
+        step_reports[-1] += f"\n  observation: {obs_result}"
 
 # Typing into a toolkit field after the focusing click: Flutter (GTK) under XTEST doesn't have its
 # text-input connection wired up the instant a field focuses, and keystrokes sent into that window
@@ -347,7 +374,6 @@ async def _run_actions_desktop(
         _desktop_label,
         _resolve_desktop_el,
         _run_compare,
-        _run_observe,
     )
 
     wid = win.wid
@@ -504,27 +530,10 @@ async def _run_actions_desktop(
 
         await asyncio.sleep(0.1)
 
-        if step_reports:
-            Debug.step_save(invocation_id, i, action.type, "report", step_reports[-1])
-
-        if record_frames is not None:  # one frame per step → captures every action's result
-            record_frames.append(win.capture())
-
-        if action.observe:
-            obs_bytes = win.capture()
-            snapshots[step_idx] = obs_bytes
-            Debug.step_save(
-                invocation_id,
-                i,
-                action.type,
-                "observe",
-                obs_bytes,
-                ext="png",
-            )
-            obs_result = await _run_observe(
-                obs_bytes, action.observe, _desktop_context(win)
-            )
-            step_reports[-1] += f"\n  observation: {obs_result}"
+        await _finalize_step(
+            action, i, step_idx, invocation_id, step_reports, record_frames, snapshots,
+            capture_fn=win.capture, context=_desktop_context(win),
+        )
 
     if query:
         _, final_summary = await _capture_desktop(win, query)
@@ -557,7 +566,6 @@ async def _run_actions_browser(
         _capture,
         _element_screenshot,
         _run_compare,
-        _run_observe,
         _save_to_path,
         _session_response,
         _wait as _wait_fn,
@@ -724,27 +732,10 @@ async def _run_actions_browser(
                 entry += f"\n  result: {result}"
             step_reports.append(entry)
 
-        if step_reports:
-            Debug.step_save(invocation_id, i, action.type, "report", step_reports[-1])
-
-        if record_frames is not None:  # one frame per step → captures every action's result
-            record_frames.append(await page.screenshot(type="png"))
-
-        if action.observe:
-            obs_bytes = await page.screenshot(type="png")
-            snapshots[step_idx] = obs_bytes
-            Debug.step_save(
-                invocation_id,
-                i,
-                action.type,
-                "observe",
-                obs_bytes,
-                ext="png",
-            )
-            obs_result = await _run_observe(
-                obs_bytes, action.observe, f"Browser step {step_idx}"
-            )
-            step_reports[-1] += f"\n  observation: {obs_result}"
+        await _finalize_step(
+            action, i, step_idx, invocation_id, step_reports, record_frames, snapshots,
+            capture_fn=lambda: page.screenshot(type="png"), context=f"Browser step {step_idx}",
+        )
 
     if wait:
         await _wait_fn(page, wait)
