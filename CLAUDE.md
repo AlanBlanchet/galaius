@@ -21,9 +21,11 @@ Zed / Claude Desktop). One Python core in `src/interact/` drives three surfaces:
 - `server/` — the MCP server, a package split by cohesion (not one 2000-line file): `core.py`
   (the `FastMCP` instance + lifespan + instructions + session registry), `vlm.py` / `sandbox.py`
   / `targets.py` / `capture.py` (private helpers by concern), `tools_web.py` / `tools_vision.py`
-  / `tools_desktop.py` / `tools_meta.py` (the `@mcp.tool` surfaces). `__init__` re-exports the
-  whole surface, so `import interact.server as srv; srv._vlm` still resolves. A helper is
-  monkeypatched on its OWN submodule (`srv.vlm._vlm`, `srv.targets._resolve_target`).
+  / `tools_desktop.py` / `tools_meta.py` (the `@mcp.tool` surfaces). `core.py` also holds
+  `@instrumented` — the per-tool scaffolding decorator (config-refresh + open the invocation
+  dump dir + dump the return once, so a body reaches its dir via `Debug.inv()`). `__init__`
+  re-exports the whole surface, so `import interact.server as srv; srv._vlm` still resolves. A
+  helper is monkeypatched on its OWN submodule (`srv.vlm._vlm`, `srv.targets._resolve_target`).
 - `desktop/` — the desktop subsystem, also a package: `backend.py` (`DesktopBackend` ABC +
   `LocalBackend` real session, uinput **absolute pointer** `INPUT_PROP_DIRECT` + `maim` capture,
   and `PortableBackend`, picked via `select_desktop_backend`), `nested.py` (`NestedBackend` — an
@@ -31,15 +33,22 @@ Zed / Claude Desktop). One Python core in `src/interact/` drives three surfaces:
   `video.py` (`_VideoSession` + ffmpeg), `window.py` (`DesktopWindow` — routes input/capture
   through a bound backend when set, else the real-display **xdotool** path), `cursor.py`
   (XFixes cursor shape), `coords.py` (`CoordTransform`), `element.py` (`DesktopElement`),
-  `motion.py`, plus `atspi.py`, `frames.py` (coordinate spaces), `geometry.py`. `__init__`
-  re-exports the surface (`from interact.desktop import DesktopWindow`).
-- `cli.py` is for the user: bare `interact` → the config TUI; `install`/`status` (connectors),
-  `config`, `usage`, `providers`, `doctor`, `update`, `mcp`. **Not** scenarios.
+  `motion.py`, plus `atspi.py`, `frames.py` (coordinate spaces), `geometry.py` (the `BBox` scalar
+  and `BoxArray` SoA primitives). `__init__` re-exports the surface (`from interact.desktop import
+  DesktopWindow`).
+- `cli/` — the user-facing `interact` command surface (a package, NOT the MCP tools): `app.py`
+  (the cyclopts app + every command + `main`, i.e. the `interact.cli:main` entry point), `tui.py`
+  (bare-`interact` config TUI), `clients.py` (MCP-client connectors for `install`/`status`),
+  `usage.py`, `view.py` / `render.py` (renderer-agnostic dashboard), `update.py`. `__init__`
+  re-exports `main` + the commands/helpers tests reach.
+- `config/` — the configuration subsystem (a package): `settings.py` (`Config`), `user.py`
+  (`UserConfig`, the `~/.interact/config.env` store the CLI reads + the extension mirrors),
+  `schema.py` (the one declarative `SETTINGS` list every front end renders from; regen with
+  `python -m interact.config.schema`), `dotenv.py`. `__init__` re-exports the surface, so
+  `from interact.config import Config` (and `UserConfig` / `SETTINGS` / `load_dotenv_for_cli`)
+  resolve. The live `config` singleton stays in `runtime.py` (imported widely; depends on this).
 - `probe.py` (`DetectionProbe` / `Scenario` / `DesktopScenario`) is **test infrastructure**,
   driven from `tests/`, never a user CLI command.
-- `tui.py` — the bare-`interact` config TUI; persists via `UserConfig` to
-  `~/.interact/config.env`, the same store the CLI reads and the extension mirrors through
-  `SETTING_ENV_MAP`.
 - Data sources of truth: `PackageData` (bundled `models.json` / `benchmarks.json` /
   `published_scores.json`) and `~/.interact/logs/usage.jsonl` (VLM usage).
 
