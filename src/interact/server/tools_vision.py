@@ -24,7 +24,7 @@ from interact.vision.detect import _crop_image, _desktop_context
 from interact.vision.measure import format_measure, measure
 from interact.models import is_audio_model, is_transcription_only_model
 from interact.server import capture, core, targets, vlm
-from interact.server.core import _DEFAULT_SESSION, _audio_mime, _session_response, config, mcp
+from interact.server.core import _DEFAULT_SESSION, _audio_mime, _session_response, config, instrumented, mcp
 from interact.state import format_element_list
 from interact.vision import analyze_media, transcribe_audio
 
@@ -32,6 +32,7 @@ _log = logging.getLogger("interact")
 
 
 @mcp.tool()
+@instrumented
 async def screenshot(
     query: str | None = None,
     scope: str | None = None,
@@ -71,15 +72,13 @@ async def screenshot(
         so the calling agent can SEE the pixels directly (not just a VLM summary).
     model: override the configured VLM model for this call. Uses the VS Code configured model when not set.
     """
-    config.refresh()  # source of truth before we snapshot the resolved config
-    inv = Debug.new_invocation_dir(debug_dir, "screenshot")
+    inv = Debug.inv()
     Debug.dump_input(inv, {"tool": "screenshot", "query": query, "scope": scope, "selector": selector,
                            "element": element, "target": target, "session": session, "model": model},
                      vlm._resolved_config(model, "image"))
     # target="file:<path>" analyzes an EXISTING image instead of capturing (no clobber, #44).
     file_bytes, ferr = targets._resolve_image_source(target)
     if ferr:
-        Debug.dump_output(inv, ferr)
         return ferr
     if file_bytes is not None:
         src = target.strip()[5:]
@@ -94,11 +93,9 @@ async def screenshot(
             text = f"{label} ({w}x{h}) — pass query=… to analyze it, or use measure_ui for exact pixels."
         Debug.save("capture", file_bytes, ext="png", invocation_id=inv)
         out = [text, Image(data=file_bytes, format="png")] if return_image else text
-        Debug.dump_output(inv, out)
         return out
     win, mgr, err = targets._resolve_target(target, session)
     if err:
-        Debug.dump_output(inv, err)
         return err
     # If `path` already exists we're about to OVERWRITE it with this capture — surface that so the
     # result can't be mistaken for an analysis of the prior file (#44). To analyze a file, use
@@ -110,7 +107,6 @@ async def screenshot(
             el = targets._resolve_desktop_el(win.wid, win.name, element=element)
             if el is None:
                 nf = core._not_found(f"Element {element}")
-                Debug.dump_output(inv, nf)
                 return nf
             raw = win.capture()
             img_bytes = _crop_image(raw, el.x, el.y, el.w, el.h)
@@ -167,11 +163,11 @@ async def screenshot(
     if img_bytes is not None:
         Debug.save("capture", img_bytes, ext="png", invocation_id=inv)
     result = [text, Image(data=img_bytes, format="png")] if (return_image and img_bytes is not None) else text
-    Debug.dump_output(inv, result)
     return result
 
 
 @mcp.tool()
+@instrumented
 async def get_interactive_elements(
     scope: str | None = None,
     query: str | None = None,
@@ -208,15 +204,13 @@ async def get_interactive_elements(
         so the returned refs reflect ONLY the current frame. Use it to recover if clicks stop landing
         or the ref list looks stale/duplicated after many interactions (#57).
     """
-    config.refresh()  # source of truth before we snapshot the resolved config
-    inv = Debug.new_invocation_dir(debug_dir, core._DBG_ELEMENTS)
+    inv = Debug.inv()
     Debug.dump_input(inv, {"tool": "get_interactive_elements", "query": query, "scope": scope,
                            "element": element, "limit": limit, "tab": tab, "target": target,
                            "session": session, "method": method, "model": model},
                      vlm._resolved_config(model, "component"))
     win, mgr, err = targets._resolve_target(target, session)
     if err:
-        Debug.dump_output(inv, err)
         return err
     if win:
         if fresh:
@@ -226,7 +220,6 @@ async def get_interactive_elements(
             el = targets._resolve_desktop_el(win.wid, win.name, element=element)
             if el is None:
                 nf = core._not_found(f"Element {element}")
-                Debug.dump_output(inv, nf)
                 return nf
             crop = (el.x, el.y, el.w, el.h)
         _, report = await capture._annotate_desktop(
@@ -237,7 +230,6 @@ async def get_interactive_elements(
         result = _session_response(
             session, await capture._annotate_and_describe(mgr, tab, scope, query, limit)
         )
-    Debug.dump_output(inv, result)
     _log.info("get_interactive_elements: %s", "desktop" if win else "browser")
     return result
 
@@ -333,6 +325,7 @@ async def verify_ui(
 
 
 @mcp.tool()
+@instrumented
 async def measure_ui(
     target: str | None = None,
     region: str | None = None,
@@ -356,8 +349,7 @@ async def measure_ui(
     confirms the actual ratio. Coordinates are image pixels (as screenshot / get_interactive_elements
     report them).
     """
-    config.refresh()
-    inv = Debug.new_invocation_dir(None, "measure_ui")
+    inv = Debug.inv()
     Debug.dump_input(inv, {"tool": "measure_ui", "target": target, "region": region,
                            "point": point, "session": session})
     reg = core._parse_int_tuple(region, 4, "region")
@@ -384,7 +376,6 @@ async def measure_ui(
     except Exception as e:
         return f"ERROR: measure_ui failed — {e}"
     out = f"{label}\n{format_measure(result)}"
-    Debug.dump_output(inv, out)
     return out
 
 

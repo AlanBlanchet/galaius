@@ -7,6 +7,7 @@ identifies the per-tool output directory.
 
 import logging
 import re as _re
+from contextvars import ContextVar
 from datetime import datetime as _dt
 from pathlib import Path
 
@@ -15,11 +16,21 @@ from interact.state import _SLUG_MAX
 
 _log = logging.getLogger("interact")
 
+# The dump dir of the tool call currently running. The @instrumented decorator (interact.server.core)
+# sets it per call, so a tool body reaches its invocation dir via Debug.inv() instead of threading an
+# `inv` argument through every helper. A ContextVar keeps concurrent tool calls isolated.
+_CURRENT_INV: ContextVar[str | None] = ContextVar("interact_current_inv", default=None)
+
 
 class Debug:
     """Namespace for debug-dump helpers (all staticmethod / classmethod)."""
 
     SESSION_TS: str = _dt.now().strftime("%Y%m%d_%H%M%S")
+
+    @classmethod
+    def inv(cls) -> str | None:
+        """The dump dir of the tool call currently running (set by @instrumented), or None."""
+        return _CURRENT_INV.get()
 
     @staticmethod
     def dump_dir(debug_dir: str | None) -> Path | None:

@@ -13,11 +13,12 @@ from interact.config import DEFAULT_LIMIT
 from interact.debug_utils import Debug
 from interact.actions.dispatch import _run_actions_browser, _run_actions_desktop
 from interact.server import capture, core, targets, vlm
-from interact.server.core import _DBG_ACTIONS, _DEFAULT_SESSION, _session_response, config, mcp
+from interact.server.core import _DBG_ACTIONS, _DEFAULT_SESSION, _session_response, config, instrumented, mcp
 from interact.state import format_element_list
 
 
 @mcp.tool()
+@instrumented
 async def navigate(
     url: str,
     query: str | None = None,
@@ -41,8 +42,7 @@ async def navigate(
         typed into reliably). Persists for the session; pass again to change it.
     debug_dir: when set, dump inputs/outputs/screenshots to this directory for debugging.
     """
-    config.refresh()  # ~/.interact/config.env is the source of truth: pick up live edits per call
-    inv = Debug.new_invocation_dir(debug_dir, "navigate")
+    inv = Debug.inv()
     Debug.dump_input(inv, {"tool": "navigate", "url": url, "query": query, "scope": scope,
                            "wait": wait, "timeout": timeout, "session": session},
                      vlm._resolved_config(None, "image"))
@@ -59,11 +59,11 @@ async def navigate(
         result = _session_response(session, await vlm._analyze(state, query))
     else:
         result = _session_response(session, state.text_summary())
-    Debug.dump_output(inv, result)
     return result
 
 
 @mcp.tool()
+@instrumented
 async def run_actions(
     actions: list[AnyAction],
     query: str | None = None,
@@ -125,14 +125,12 @@ async def run_actions(
         a long one is evenly down-sampled.
     debug_dir: when set, dump inputs/outputs/screenshots to this directory for debugging.
     """
-    config.refresh()  # source of truth before we snapshot the resolved config
-    inv = Debug.new_invocation_dir(debug_dir, _DBG_ACTIONS)
+    inv = Debug.inv()
     Debug.dump_input(inv, {"tool": "run_actions", "actions": [a.model_dump() for a in actions],
                            "query": query, "scope": scope, "wait": wait, "target": target,
                            "session": session}, vlm._resolved_config(None, "component"))
     win, mgr, err = targets._resolve_target(target, session)
     if err:
-        Debug.dump_output(inv, err)
         return err
     # When recording, capture a frame per step and let the video model read the sequence; the
     # action run itself returns its normal step report (so the query goes to the frames, not the
@@ -149,7 +147,6 @@ async def run_actions(
         )
     if frames:
         result += await vlm._analyze_interaction_frames(frames, query)
-    Debug.dump_output(inv, result)
     return result
 
 

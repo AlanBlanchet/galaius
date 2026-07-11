@@ -2,7 +2,27 @@
 
 import json
 
+import pytest
+
 from interact.config import Config
+
+
+@pytest.mark.asyncio
+async def test_tool_dumps_early_error_returns(tmp_path, monkeypatch):
+    """A tool's malformed-input early return must still be logged. measure_ui used to dump only its
+    happy-path result, so an error return (bad region/point) was silently dropped from the audit
+    trail; the @instrumented decorator now dumps EVERY return path once. Dumps route to tmp_path via
+    the autouse log-isolation fixture; refresh is stubbed so the decorator never reads (or leaks into
+    os.environ) the developer's real ~/.interact/config.env."""
+    from interact.runtime import _LiveConfig
+    from interact.server.tools_vision import measure_ui
+
+    monkeypatch.setattr(_LiveConfig, "refresh", lambda self: self)
+    out = await measure_ui(region="not,valid,ints")  # bad region → early error return (no capture)
+    assert out.startswith("ERROR")
+    dumped = list(tmp_path.glob("**/output.txt"))
+    assert dumped, "the tool's early error return was not written to output.txt"
+    assert "ERROR" in dumped[0].read_text()
 
 
 def test_configurable_fallbacks(monkeypatch):

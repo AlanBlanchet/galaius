@@ -38,6 +38,7 @@ from interact.server.core import (  # noqa: F401
     _sessions,
     breaker,
     config,
+    instrumented,
     main,
     mcp,
 )

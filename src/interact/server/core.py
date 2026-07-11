@@ -13,6 +13,7 @@ module is seen at the call site; same-module calls stay bare.
 """
 
 import asyncio
+import functools
 import json
 import logging
 from collections.abc import AsyncIterator
@@ -22,6 +23,7 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
 from interact.browser import SessionRegistry
+from interact.debug_utils import Debug, _CURRENT_INV
 from interact.runtime import breaker, config  # noqa: F401 — breaker re-exported for tests/vlm
 
 _log = logging.getLogger("interact")
@@ -150,6 +152,29 @@ def _instructions() -> str:
 
 
 mcp = FastMCP("interact", lifespan=_lifespan, instructions=_instructions())
+
+
+def instrumented(fn):
+    """Per-call scaffolding shared by every dumping ``@mcp.tool``: refresh the live config, open the
+    invocation dump dir (reachable in the body via ``Debug.inv()``), and dump the tool's return value
+    ONCE. So no tool repeats ``config.refresh()`` / ``new_invocation_dir()``, and EVERY return path
+    — early error returns included — is logged, not just the happy path (measure_ui used to drop its
+    error returns). Applied UNDER ``@mcp.tool()`` (``functools.wraps`` preserves the signature FastMCP
+    introspects for the tool schema); the tool body keeps its own tool-specific ``dump_input``."""
+
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        config.refresh()  # ~/.interact/config.env is source of truth: pick up live edits per call
+        inv = Debug.new_invocation_dir(kwargs.get("debug_dir"), fn.__name__)
+        token = _CURRENT_INV.set(inv)
+        try:
+            result = await fn(*args, **kwargs)
+            Debug.dump_output(inv, result)
+            return result
+        finally:
+            _CURRENT_INV.reset(token)
+
+    return wrapper
 
 
 def main():
