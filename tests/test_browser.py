@@ -192,3 +192,43 @@ async def test_scan_limit_keeps_highest_ranked():
     # limit=1 must keep the clickable-now control, not whatever came first in document order.
     boxes = await _scan(_SCAN_PAGE, limit=1)
     assert [b["name"] for b in boxes] == ["Visible"]
+
+
+# --- #70: HTTP Basic-auth via Playwright httpCredentials (no native dialog to type into) --------
+
+
+def test_http_credentials_fold_into_context_kwargs():
+    """#70: a native Basic-auth 'Sign in' dialog can't be typed into reliably (keystrokes leak as
+    browser accelerators). Setting credentials on the session makes Playwright authenticate at the
+    context level — the dialog never appears."""
+    mgr = BrowserManager(Config())
+    assert "http_credentials" not in mgr._context_kwargs()  # off by default
+    mgr.set_http_credentials("alice", "s3cret")
+    kw = mgr._context_kwargs()
+    assert kw["http_credentials"] == {"username": "alice", "password": "s3cret"}
+
+
+def test_http_credentials_parse_user_colon_pass():
+    mgr = BrowserManager(Config())
+    mgr.set_http_credentials_spec("bob:hunter2")
+    assert mgr._context_kwargs()["http_credentials"] == {"username": "bob", "password": "hunter2"}
+    mgr.set_http_credentials_spec(None)  # clearing removes it
+    assert "http_credentials" not in mgr._context_kwargs()
+
+
+# --- #69: reduce automation fingerprint so ordinary bot-checks don't flag the QA browser ---------
+
+
+def test_chromium_launch_hides_automation_signals():
+    """#69: Cloudflare & friends fingerprint the default automation flags. A chromium launch now
+    drops --enable-automation and disables the AutomationControlled blink feature (navigator.webdriver)
+    so a legitimate QA browse is less likely to be flagged. Non-chromium engines are untouched."""
+    from interact.browser import chromium_launch_kwargs
+
+    kw = chromium_launch_kwargs("chromium", headless=True, slow_mo=0)
+    assert "--disable-blink-features=AutomationControlled" in kw["args"]
+    assert kw["ignore_default_args"] == ["--enable-automation"]
+
+    assert chromium_launch_kwargs("firefox", headless=True, slow_mo=0) == {
+        "headless": True, "slow_mo": 0
+    }

@@ -882,6 +882,7 @@ async def navigate(
     timeout: float | None = None,
     debug_dir: str | None = None,
     session: str = _DEFAULT_SESSION,
+    http_credentials: str | None = None,
 ) -> str:
     """Navigate to a URL and return page content. Browser-only — requires a session, not a window.
 
@@ -891,6 +892,9 @@ async def navigate(
     timeout: max milliseconds to wait for navigation. Default uses the 10s context default; raise it
         for slow dev servers that compile routes on first hit (e.g. 60000 for a cold Next.js route).
     query: when set, returns vision analysis instead of text summary.
+    http_credentials: "user:password" for an HTTP Basic-auth site — Playwright authenticates at the
+        context level so the browser's native Sign-in dialog never appears (that dialog can't be
+        typed into reliably). Persists for the session; pass again to change it.
     debug_dir: when set, dump inputs/outputs/screenshots to this directory for debugging.
     """
     config.refresh()  # ~/.interact/config.env is the source of truth: pick up live edits per call
@@ -899,6 +903,8 @@ async def navigate(
                            "wait": wait, "timeout": timeout, "session": session},
                      _resolved_config(None, "image"))
     mgr = _sessions.get(session)
+    if http_credentials is not None:
+        await mgr.apply_http_credentials(http_credentials)  # (#70) auth before the goto
     page = await mgr.get_page()
     await page.goto(url, **({"timeout": timeout} if timeout is not None else {}))
     await _wait(page, wait)

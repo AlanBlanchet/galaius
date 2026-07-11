@@ -12,6 +12,20 @@ from interact.config import LOG_MAXLEN, Config
 from interact.state import InteractiveElement
 
 
+def chromium_launch_kwargs(browser_type: str, headless: bool, slow_mo: int) -> dict:
+    """Launch kwargs for the automation browser. For Chromium, hide the default automation signals
+    that ordinary bot-checks (Cloudflare et al.) fingerprint — drop the ``--enable-automation`` flag
+    and the ``AutomationControlled`` blink feature (which sets ``navigator.webdriver``) — so a
+    legitimate QA browse is less likely to be flagged (#69). Not a full stealth mode: an advanced
+    challenge can still block; pair with a persistent authenticated profile (browser_profile_dir).
+    Non-Chromium engines take only headless/slow_mo (they reject Chromium args)."""
+    kw: dict = {"headless": headless, "slow_mo": slow_mo}
+    if browser_type == "chromium":
+        kw["args"] = ["--disable-blink-features=AutomationControlled"]
+        kw["ignore_default_args"] = ["--enable-automation"]
+    return kw
+
+
 class BrowserManager:
     def __init__(self, config: Config, session_id: str = "default"):
         self._config = config
@@ -45,6 +59,7 @@ class BrowserManager:
         # storage_state (+ url) captured when this session was idle-closed, restored lazily on the
         # next browser use so an idle close doesn't silently log the agent out (#36).
         self._pending_state: dict | None = None
+        self._http_credentials: dict | None = None  # Basic-auth creds folded into each context (#70)
 
     @property
     def _persistent(self) -> bool:
@@ -312,6 +327,35 @@ class BrowserManager:
         if url:
             await self._context.pages[0].goto(url)
 
+    def set_http_credentials(self, username: str, password: str) -> None:
+        """Provide HTTP Basic-auth credentials for this session so Playwright authenticates at the
+        context level — the native browser 'Sign in' dialog (which can't be typed into reliably,
+        #70) never appears. Applied to every context this session creates from now on."""
+        self._http_credentials = {"username": username, "password": password}
+
+    def set_http_credentials_spec(self, spec: str | None) -> None:
+        """Set (``"user:password"``) or clear (``None``) the session's Basic-auth credentials."""
+        if not spec:
+            self._http_credentials = None
+            return
+        username, _, password = spec.partition(":")
+        self.set_http_credentials(username, password)
+
+    async def apply_http_credentials(self, spec: str | None) -> None:
+        """Set/clear Basic-auth creds and refresh the live context so they take effect on the next
+        navigation — httpCredentials is a context-creation option, so an existing context is rebuilt
+        (cookies preserved via storage_state for a non-persistent session, #70)."""
+        self.set_http_credentials_spec(spec)
+        if self._context is None:
+            return  # no live context yet → the next _new_context folds the creds in
+        state = None
+        if not self._persistent:
+            try:
+                state = await self._context.storage_state()
+            except Exception:
+                pass
+        await self._new_context(state)
+
     def _context_kwargs(self, record_video_dir: str | None = None) -> dict:
         dev = self._device_override or {}
         chromium = self._config.browser_type == "chromium"
@@ -342,6 +386,8 @@ class BrowserManager:
                 "width": self._config.viewport_width,
                 "height": self._config.viewport_height,
             }
+        if self._http_credentials:  # authenticate Basic-auth sites without the native dialog (#70)
+            kw["http_credentials"] = self._http_credentials
         return kw
 
     def _install_browser(self):
@@ -365,18 +411,17 @@ class BrowserManager:
             return
         self._playwright = await async_playwright().start()
         launcher = getattr(self._playwright, self._config.browser_type)
+        launch_kw = chromium_launch_kwargs(
+            self._config.browser_type, self._config.headless, self._config.slow_mo
+        )
         try:
             # Launch straight away — when the browser is already installed (the common case)
             # this skips the slow per-launch `playwright install` subprocess entirely.
-            self._browser = await launcher.launch(
-                headless=self._config.headless, slow_mo=self._config.slow_mo
-            )
+            self._browser = await launcher.launch(**launch_kw)
         except Exception:
             # First run / missing browser → install once, then retry.
             self._install_browser()
-            self._browser = await launcher.launch(
-                headless=self._config.headless, slow_mo=self._config.slow_mo
-            )
+            self._browser = await launcher.launch(**launch_kw)
 
     async def _new_context(self, storage_state: dict | None = None, record_video_dir: str | None = None):
         kwargs = self._context_kwargs(record_video_dir)
