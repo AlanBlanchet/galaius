@@ -73,7 +73,7 @@ async def test_record_analyzes_per_step_frames_capped_with_query():
         captured["prompt"] = prompt
         return srv.VLMResult(text="logged in, then opened settings", elapsed=0.1)
 
-    with patch.object(srv, "analyze_media", fake_analyze):
+    with patch.object(srv.vlm, "analyze_media", fake_analyze):
         out = await srv._analyze_interaction_frames(frames, "what happened?")
 
     assert captured["n"] == 12  # capped to config.video_max_frames (default)
@@ -92,6 +92,6 @@ async def test_record_keeps_every_frame_for_short_interactions():
         captured["n"] = len(media)
         return srv.VLMResult(text="ok", elapsed=0.1)
 
-    with patch.object(srv, "analyze_media", fake_analyze):
+    with patch.object(srv.vlm, "analyze_media", fake_analyze):
         await srv._analyze_interaction_frames([b"a", b"b", b"c"], None)
     assert captured["n"] == 3  # every step kept

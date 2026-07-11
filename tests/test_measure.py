@@ -88,8 +88,8 @@ def test_format_measure_is_compact_and_carries_the_numbers():
 async def test_measure_ui_on_a_captured_target(monkeypatch):
     arr = np.full((50, 80, 3), 255)
     arr[:, :30] = 0
-    monkeypatch.setattr(srv, "_resolve_target", lambda target, session: (None, object(), None))
-    monkeypatch.setattr(srv, "_capture_target_png", _ascapture(_png(arr)))
+    monkeypatch.setattr(srv.targets, "_resolve_target", lambda target, session: (None, object(), None))
+    monkeypatch.setattr(srv.capture, "_capture_target_png", _ascapture(_png(arr)))
     out = await srv.measure_ui(region="0,0,80,50")
     assert "contrast:" in out and "21.0:1" in out
 

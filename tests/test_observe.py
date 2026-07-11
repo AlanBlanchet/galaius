@@ -55,7 +55,7 @@ def browser_mocks():
     with (
         patch("interact.server._capture", AsyncMock(return_value=state)) as cap,
         patch("interact.state.StateChange.compute", return_value=change),
-        patch("interact.server.analyze_media", AsyncMock(return_value=_VLM)) as vlm,
+        patch("interact.server.vlm.analyze_media", AsyncMock(return_value=_VLM)) as vlm,
         patch(
             "interact.server.analyze_screenshot", AsyncMock(return_value=_ANALYZED)
         ),
@@ -194,7 +194,7 @@ async def test_screenshot_stores_snapshot(browser_mocks):
 def desktop_mocks():
     with (
         patch("interact.desktop.DesktopWindow.capture", return_value=_PNG),
-        patch("interact.server.analyze_media", AsyncMock(return_value=_VLM)) as vlm,
+        patch("interact.server.vlm.analyze_media", AsyncMock(return_value=_VLM)) as vlm,
     ):
         yield {"vlm": vlm}
 

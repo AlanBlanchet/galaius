@@ -72,14 +72,14 @@ def test_audio_content_builds_an_input_audio_part_passthrough_wav():
 # ── the transcribe tool ─────────────────────────────────────────────────────────────────────
 @pytest.mark.asyncio
 async def test_transcribe_no_query_returns_the_transcript(monkeypatch, tmp_path):
-    monkeypatch.setattr(srv, "config", _FakeConfig(audio="whisper-1"))
+    monkeypatch.setattr(srv.tools_vision, "config", _FakeConfig(audio="whisper-1"))
     captured: dict = {}
 
     async def fake_transcribe(data, *, model, mime_type="audio/mpeg"):
         captured.update(model=model, mime=mime_type)
         return VLMResult(text="hello world", elapsed=0.4, model=model)
 
-    monkeypatch.setattr(srv, "transcribe_audio", fake_transcribe)
+    monkeypatch.setattr(srv.tools_vision, "transcribe_audio", fake_transcribe)
     out = await srv.transcribe(_audio_file(tmp_path))
     assert "hello world" in out
     assert captured["model"] == "whisper-1" and captured["mime"] == "audio/mpeg"
@@ -89,14 +89,14 @@ async def test_transcribe_no_query_returns_the_transcript(monkeypatch, tmp_path)
 async def test_transcribe_query_with_audio_chat_model_hears_the_clip(monkeypatch, tmp_path):
     """A Gemini-class model takes the audio directly (acoustic understanding) — media_type='audio',
     no transcription round-trip."""
-    monkeypatch.setattr(srv, "config", _FakeConfig(audio="gemini/gemini-2.5-flash"))
+    monkeypatch.setattr(srv.tools_vision, "config", _FakeConfig(audio="gemini/gemini-2.5-flash"))
     captured: dict = {}
 
     async def fake_vlm(data, context, query=None, media_type="image", mime="image/png", **kw):
         captured.update(media_type=media_type, query=query, mime=mime)
         return VLMResult(text="two speakers, calm tone", elapsed=1.0, model="gemini")
 
-    monkeypatch.setattr(srv, "_vlm", fake_vlm)
+    monkeypatch.setattr(srv.vlm, "_vlm", fake_vlm)
     out = await srv.transcribe(_audio_file(tmp_path, "v.webm", b"WEBM"), query="how many speakers?")
     assert "two speakers" in out
     assert captured["media_type"] == "audio" and captured["query"] == "how many speakers?"
@@ -107,7 +107,7 @@ async def test_transcribe_query_with_audio_chat_model_hears_the_clip(monkeypatch
 async def test_transcribe_query_with_transcription_only_model_answers_over_transcript(monkeypatch, tmp_path):
     """Whisper can't take audio in chat, so the query is answered over its transcript by the image
     model — and the transcript itself is still surfaced."""
-    monkeypatch.setattr(srv, "config", _FakeConfig(audio="whisper-1", image="gemini/img"))
+    monkeypatch.setattr(srv.tools_vision, "config", _FakeConfig(audio="whisper-1", image="gemini/img"))
     captured: dict = {}
 
     async def fake_transcribe(data, *, model, mime_type="audio/mpeg"):
@@ -117,8 +117,8 @@ async def test_transcribe_query_with_transcription_only_model_answers_over_trans
         captured.update(media=media, context=context, prompt=prompt)
         return VLMResult(text="Revenue +12%.", elapsed=0.2, model="gemini/img")
 
-    monkeypatch.setattr(srv, "transcribe_audio", fake_transcribe)
-    monkeypatch.setattr(srv, "analyze_media", fake_analyze)
+    monkeypatch.setattr(srv.tools_vision, "transcribe_audio", fake_transcribe)
+    monkeypatch.setattr(srv.tools_vision, "analyze_media", fake_analyze)
     out = await srv.transcribe(_audio_file(tmp_path), query="summarize the numbers")
     assert "Revenue +12%." in out and "quarterly revenue grew 12 percent" in out  # answer + transcript
     assert captured["media"] == [] and captured["prompt"] == "summarize the numbers"  # text-only over transcript
@@ -127,6 +127,6 @@ async def test_transcribe_query_with_transcription_only_model_answers_over_trans
 
 @pytest.mark.asyncio
 async def test_transcribe_missing_file_is_a_clean_error(monkeypatch):
-    monkeypatch.setattr(srv, "config", _FakeConfig(audio="whisper-1"))
+    monkeypatch.setattr(srv.tools_vision, "config", _FakeConfig(audio="whisper-1"))
     out = await srv.transcribe("/no/such/audio.mp3")
     assert out.startswith("ERROR") and "could not read" in out

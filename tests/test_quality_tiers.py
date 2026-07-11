@@ -82,9 +82,9 @@ def _el(ref: str) -> InteractiveElement:
 
 
 def _stub_browser_capture(monkeypatch, elements):
-    monkeypatch.setattr(srv, "_resolve_target", lambda target, session: (None, MagicMock(), None))
-    monkeypatch.setattr(srv, "_capture_target_png", AsyncMock(return_value=b"PNG"))
-    monkeypatch.setattr(srv, "_scan_elements", AsyncMock(return_value=elements))
+    monkeypatch.setattr(srv.targets, "_resolve_target", lambda target, session: (None, MagicMock(), None))
+    monkeypatch.setattr(srv.capture, "_capture_target_png", AsyncMock(return_value=b"PNG"))
+    monkeypatch.setattr(srv.capture, "_scan_elements", AsyncMock(return_value=elements))
 
 
 @pytest.mark.asyncio
@@ -97,7 +97,7 @@ async def test_review_ui_quality_low_picks_the_sovereign_model(monkeypatch):
         captured["model_override"] = model_override
         return VLMResult(text=UIReview(screen="X", looks_ok=True, findings=[]).model_dump_json(), elapsed=1, model="m")
 
-    monkeypatch.setattr(srv, "_vlm", fake_vlm)
+    monkeypatch.setattr(srv.vlm, "_vlm", fake_vlm)
     await srv.review_ui(quality="low")
     assert captured["model_override"] == _DEFAULT_SOVEREIGN_MODEL  # the tier chose the model for the agent
 
@@ -121,7 +121,7 @@ async def test_review_ui_critical_drops_a_finding_with_a_phantom_ref(monkeypatch
         ]).model_dump_json()
         return VLMResult(text=review, elapsed=1, model="m")
 
-    monkeypatch.setattr(srv, "_vlm", fake_vlm)
+    monkeypatch.setattr(srv.vlm, "_vlm", fake_vlm)
     out = await srv.review_ui(quality="critical")
     assert "1 issue(s)" in out and "Go" in out  # the real-ref finding survives
     assert "ghost" not in out  # the phantom-ref finding was dropped (strict critical)
@@ -137,7 +137,7 @@ async def test_verify_ui_critical_downgrades_a_pass_on_a_phantom_ref(monkeypatch
         ]).model_dump_json()
         return VLMResult(text=rep, elapsed=1, model="m")
 
-    monkeypatch.setattr(srv, "_vlm", fake_vlm)
+    monkeypatch.setattr(srv.vlm, "_vlm", fake_vlm)
     out = await srv.verify_ui(["r"], quality="critical")
     assert "UNCLEAR" in out and "0/1 PASS" in out  # a PASS resting on a phantom ref can't stand
     assert "✓ all pass" not in out  # all_pass recomputed after the downgrade

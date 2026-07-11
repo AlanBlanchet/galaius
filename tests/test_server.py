@@ -36,7 +36,7 @@ def srv():
 async def test_vlm_detect_elements_component_failure_returns_none(srv):
     """When component model is available but fails, no fallback to image — returns None."""
     fail = AsyncMock(side_effect=RuntimeError("missing API key"))
-    with patch.object(srv, "_vlm", fail):
+    with patch.object(srv.vlm, "_vlm", fail):
         elements, elapsed, raw, _ = await det._vlm_detect_elements(
             _PNG, _DESKTOP_CTX, 800, 600
         )
@@ -49,7 +49,7 @@ async def test_vlm_detect_elements_component_failure_returns_none(srv):
 @pytest.mark.asyncio
 async def test_vlm_detect_elements_uses_only_component_model(srv):
     succeed = AsyncMock(return_value=VLMResult(text=_VLM_JSON, elapsed=0.5))
-    with patch.object(srv, "_vlm", succeed):
+    with patch.object(srv.vlm, "_vlm", succeed):
         elements, elapsed, raw, _ = await det._vlm_detect_elements(
             _PNG, _DESKTOP_CTX, 800, 600
         )
@@ -71,7 +71,7 @@ async def test_vlm_detect_elements_soft_failure_no_fallback(srv, soft_fail_msg):
     """Component soft-fails → no fallback to image, returns None."""
     soft_fail = VLMResult(text=soft_fail_msg, elapsed=0.1)
     mock_vlm = AsyncMock(return_value=soft_fail)
-    with patch.object(srv, "_vlm", mock_vlm):
+    with patch.object(srv.vlm, "_vlm", mock_vlm):
         elements, elapsed, raw, _ = await det._vlm_detect_elements(
             _PNG, _DESKTOP_CTX, 800, 600
         )
@@ -115,8 +115,8 @@ async def test_vlm_detect_elements_fallback_uses_generic_prompt(srv):
         }
     )
     with (
-        patch.object(srv, "_vlm", fail),
-        patch.object(srv, "config") as mock_config,
+        patch.object(srv.vlm, "_vlm", fail),
+        patch.object(srv.core, "config") as mock_config,
     ):
         mock_config.resolve_model.side_effect = lambda role, *a, **k: (
             "gemini/gemini-2.0-flash" if role == "component" else "openai/gpt-4.1"
@@ -135,13 +135,13 @@ async def test_vlm_detect_elements_fallback_uses_generic_prompt(srv):
 async def test_circuit_breaker_skips_after_failure(srv):
     # First call: component fails, trips breaker
     fail = AsyncMock(side_effect=RuntimeError("key error"))
-    with patch.object(srv, "_vlm", fail):
+    with patch.object(srv.vlm, "_vlm", fail):
         await det._vlm_detect_elements(_PNG, "ctx", 800, 600)
     assert fail.call_count == 1
 
     # Second call: circuit tripped, only image model called (1 call)
     image_only = AsyncMock(return_value=VLMResult(text=_VLM_JSON, elapsed=0.3))
-    with patch.object(srv, "_vlm", image_only):
+    with patch.object(srv.vlm, "_vlm", image_only):
         await det._vlm_detect_elements(_PNG, "ctx", 800, 600)
     assert image_only.call_count == 1
     assert image_only.call_args.kwargs.get("media_type") == "image"
@@ -157,7 +157,7 @@ async def test_circuit_breaker_resets_after_ttl(srv):
     breaker._trips[component_model] = time.monotonic() - breaker._ttl - 1
 
     mock_vlm = AsyncMock(return_value=VLMResult(text=_VLM_JSON, elapsed=0.5))
-    with patch.object(srv, "_vlm", mock_vlm):
+    with patch.object(srv.vlm, "_vlm", mock_vlm):
         await det._vlm_detect_elements(_PNG, "ctx", 800, 600)
 
     # Should have tried component model (breaker reset) — only component runs
@@ -169,7 +169,7 @@ async def test_circuit_breaker_resets_after_ttl(srv):
 async def test_low_element_count_warning(srv, caplog):
     few_elements = '[{"role":"button","name":"OK","x":100,"y":200,"w":80,"h":30}]'
     mock_vlm = AsyncMock(return_value=VLMResult(text=few_elements, elapsed=0.5))
-    with patch.object(srv, "_vlm", mock_vlm):
+    with patch.object(srv.vlm, "_vlm", mock_vlm):
         import logging
 
         with caplog.at_level(logging.WARNING, logger="interact"):
@@ -356,7 +356,7 @@ async def test_structured_fallback_on_invalid_json(
 
     mock_vlm = AsyncMock(return_value=VLMResult(text=vlm_text, elapsed=0.5))
     with (
-        patch.object(srv, "_vlm", mock_vlm),
+        patch.object(srv.vlm, "_vlm", mock_vlm),
         patch.object(det, "_model_supports_structured", return_value=True),
     ):
         with caplog.at_level(logging.WARNING, logger="interact"):
@@ -394,7 +394,7 @@ async def test_structured_output_happy_path(srv, elements_json, expected_names):
     """Structured output parsed via Pydantic, not text fallback."""
     mock_vlm = AsyncMock(return_value=VLMResult(text=elements_json, elapsed=0.5))
     with (
-        patch.object(srv, "_vlm", mock_vlm),
+        patch.object(srv.vlm, "_vlm", mock_vlm),
         patch.object(det, "_model_supports_structured", return_value=True),
     ):
         elements, elapsed, raw, _ = await det._vlm_detect_elements(
@@ -415,7 +415,7 @@ async def test_enqueue_no_structured_passes_none_format(srv):
     """_enqueue passes response_format=None when model does not support structured output."""
     mock_vlm = AsyncMock(return_value=VLMResult(text=_VLM_JSON, elapsed=0.5))
     with (
-        patch.object(srv, "_vlm", mock_vlm),
+        patch.object(srv.vlm, "_vlm", mock_vlm),
         patch.object(det, "_model_supports_structured", return_value=False),
     ):
         elements, elapsed, raw, _ = await det._vlm_detect_elements(
@@ -520,7 +520,7 @@ async def test_vlm_detect_elements_rescales_for_large_images(srv):
     # VLM returns coords in 1280x720 space
     vlm_json = '[{"role":"button","name":"OK","x":640,"y":360,"w":100,"h":50}]'
     mock_vlm = AsyncMock(return_value=VLMResult(text=vlm_json, elapsed=0.5))
-    with patch.object(srv, "_vlm", mock_vlm):
+    with patch.object(srv.vlm, "_vlm", mock_vlm):
         elements, _, _, _ = await det._vlm_detect_elements(png, "ctx", 1920, 1080)
 
     assert elements is not None
@@ -539,7 +539,7 @@ async def test_vlm_detect_elements_rescales_for_large_images(srv):
 async def test_vlm_detect_elements_model_override_bypasses_component(srv):
     """model_override skips component model and uses the override directly."""
     succeed = AsyncMock(return_value=VLMResult(text=_VLM_JSON, elapsed=0.3))
-    with patch.object(srv, "_vlm", succeed):
+    with patch.object(srv.vlm, "_vlm", succeed):
         elements, elapsed, raw, label = await det._vlm_detect_elements(
             _PNG,
             _DESKTOP_CTX,
@@ -636,7 +636,7 @@ async def test_vlm_rate_limit_triggers_fallback(srv):
     chain = ModelChain(role="image", preferences=[primary, fallback])
 
     with (
-        patch("interact.server.analyze_media", _mock_analyze),
+        patch("interact.server.vlm.analyze_media", _mock_analyze),
         patch.object(Config, "chain_for", return_value=chain),
         patch.object(Model, "is_available", return_value=True),
     ):
@@ -682,7 +682,7 @@ async def test_vlm_falls_back_on_error(srv, make_error):
     chain = ModelChain(role="image", preferences=[primary, fallback])
 
     with (
-        patch("interact.server.analyze_media", _mock),
+        patch("interact.server.vlm.analyze_media", _mock),
         patch.object(Config, "chain_for", return_value=chain),
         patch.object(Model, "is_available", return_value=True),
     ):
@@ -732,7 +732,7 @@ async def test_record_desktop_stop_analyzes_the_session_clip(srv, monkeypatch):
     async def fake_vlm(media, context, query, role, mime):
         return VLMResult(text="a token slides in", elapsed=0.1, model="m")
 
-    monkeypatch.setattr(srv, "_vlm", fake_vlm)
+    monkeypatch.setattr(srv.vlm, "_vlm", fake_vlm)
     out = await srv._record_desktop(win, query="what animates?", start=False, duration=None, fps=None, path=None)
     win.stop_video.assert_called_once()
     assert "slides in" in out
@@ -779,10 +779,10 @@ async def test_get_interactive_elements_fresh_invalidates_the_cache_first(srv):
     win.name = "aino"
     order: list[str] = []
     with (
-        patch.object(srv, "_resolve_target", return_value=(win, None, None)),
+        patch.object(srv.targets, "_resolve_target", return_value=(win, None, None)),
         patch.object(DesktopElement, "invalidate", side_effect=lambda wid: order.append(f"invalidate:{wid}")),
-        patch.object(srv, "_annotate_desktop", new=AsyncMock(side_effect=lambda *a, **k: order.append("detect") or ([], "report"))),
-        patch.object(srv, "_desktop_label", return_value="aino"),
+        patch.object(srv.capture, "_annotate_desktop", new=AsyncMock(side_effect=lambda *a, **k: order.append("detect") or ([], "report"))),
+        patch.object(srv.core, "_desktop_label", return_value="aino"),
     ):
         await srv.get_interactive_elements(target="aino", fresh=True)
     assert order == ["invalidate:4242", "detect"]  # cleared, THEN detected
@@ -798,10 +798,10 @@ async def test_get_interactive_elements_default_keeps_the_cache(srv):
     win.wid = 4242
     win.name = "aino"
     with (
-        patch.object(srv, "_resolve_target", return_value=(win, None, None)),
+        patch.object(srv.targets, "_resolve_target", return_value=(win, None, None)),
         patch.object(DesktopElement, "invalidate") as inval,
-        patch.object(srv, "_annotate_desktop", new=AsyncMock(return_value=([], "report"))),
-        patch.object(srv, "_desktop_label", return_value="aino"),
+        patch.object(srv.capture, "_annotate_desktop", new=AsyncMock(return_value=([], "report"))),
+        patch.object(srv.core, "_desktop_label", return_value="aino"),
     ):
         await srv.get_interactive_elements(target="aino")
     inval.assert_not_called()

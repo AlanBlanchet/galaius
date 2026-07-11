@@ -20,7 +20,7 @@ def _desktop_gate_open(monkeypatch):
     # _resolve_target doesn't take the macOS/Windows portable-screen branch on a mac/win runner) and
     # open the unsupported gate. The off-Linux behaviour is covered in test_cross_platform.py.
     monkeypatch.setattr("interact.desktop_backend.desktop_supported", lambda: True)
-    monkeypatch.setattr(srv, "_desktop_unsupported", lambda *a, **k: None)
+    monkeypatch.setattr(srv.targets, "_desktop_unsupported", lambda *a, **k: None)
 
 
 _XRANDR = """Monitors: 2
@@ -335,7 +335,7 @@ class _FakeSandbox:
 
 
 def test_resolve_nested_whole_screen_binds_the_sandbox(monkeypatch):
-    monkeypatch.setattr(srv, "_get_sandbox", lambda: _FakeSandbox())
+    monkeypatch.setattr(srv.sandbox, "_get_sandbox", lambda: _FakeSandbox())
     win, mgr, err = srv._resolve_target("nested", "default")
     assert err is None and mgr is None
     assert win.name == "sandbox" and (win.w, win.h) == (640, 480)
@@ -344,7 +344,7 @@ def test_resolve_nested_whole_screen_binds_the_sandbox(monkeypatch):
 
 def test_resolve_nested_titled_window(monkeypatch):
     sentinel = DesktopWindow(name="xclock", wid=5, x=0, y=0, w=164, h=164)
-    monkeypatch.setattr(srv, "_get_sandbox", lambda: _FakeSandbox())
+    monkeypatch.setattr(srv.sandbox, "_get_sandbox", lambda: _FakeSandbox())
     monkeypatch.setattr(
         DesktopWindow, "find_in",
         classmethod(lambda cls, be, title: sentinel if title == "xclock" else None),
@@ -354,7 +354,7 @@ def test_resolve_nested_titled_window(monkeypatch):
 
 
 def test_resolve_nested_unknown_title_lists_sandbox_windows(monkeypatch):
-    monkeypatch.setattr(srv, "_get_sandbox", lambda: _FakeSandbox())
+    monkeypatch.setattr(srv.sandbox, "_get_sandbox", lambda: _FakeSandbox())
     monkeypatch.setattr(DesktopWindow, "find_in", classmethod(lambda cls, be, title: None))
     win, mgr, err = srv._resolve_target("nested:missing", "default")
     assert win is None and isinstance(err, str) and "xclock" in err

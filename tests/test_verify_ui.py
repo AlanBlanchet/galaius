@@ -84,8 +84,8 @@ def test_parse_verify_handles_a_fallback_banner_and_no_json():
 
 @pytest.mark.asyncio
 async def test_verify_ui_returns_per_requirement_verdicts(monkeypatch):
-    monkeypatch.setattr(srv, "_resolve_target", lambda target, session: (None, MagicMock(), None))
-    monkeypatch.setattr(srv, "_capture_target_png", AsyncMock(return_value=b"PNG"))
+    monkeypatch.setattr(srv.targets, "_resolve_target", lambda target, session: (None, MagicMock(), None))
+    monkeypatch.setattr(srv.capture, "_capture_target_png", AsyncMock(return_value=b"PNG"))
     captured: dict = {}
 
     async def fake_vlm(data, context, prompt, *, response_format=None, model_override=None, **kw):
@@ -93,7 +93,7 @@ async def test_verify_ui_returns_per_requirement_verdicts(monkeypatch):
         rep = _report(checks=[_check("coin is gold", "fail", "coin pill", "orange flame")]).model_dump_json()
         return VLMResult(text=rep, elapsed=1.0, model="m")
 
-    monkeypatch.setattr(srv, "_vlm", fake_vlm)
+    monkeypatch.setattr(srv.vlm, "_vlm", fake_vlm)
     out = await srv.verify_ui(requirements=["coin is gold, not a flame"])
     assert "0/1 PASS" in out and "[FAIL] coin is gold" in out and "orange flame" in out
     assert "1. coin is gold, not a flame" in captured["prompt"]  # requirement reached the rubric
@@ -104,8 +104,8 @@ async def test_verify_ui_returns_per_requirement_verdicts(monkeypatch):
 async def test_verify_ui_reference_comparison_passes_both_images(monkeypatch, tmp_path):
     ref = tmp_path / "ref.png"
     ref.write_bytes(b"REFPNG")
-    monkeypatch.setattr(srv, "_resolve_target", lambda target, session: (None, MagicMock(), None))
-    monkeypatch.setattr(srv, "_capture_target_png", AsyncMock(return_value=b"BUILDPNG"))
+    monkeypatch.setattr(srv.targets, "_resolve_target", lambda target, session: (None, MagicMock(), None))
+    monkeypatch.setattr(srv.capture, "_capture_target_png", AsyncMock(return_value=b"BUILDPNG"))
     captured: dict = {}
 
     async def fake_vlm(data, context, prompt, *, response_format=None, extra_images=None, **kw):
@@ -113,7 +113,7 @@ async def test_verify_ui_reference_comparison_passes_both_images(monkeypatch, tm
         return VLMResult(text=_report(all_pass=True, checks=[_check("accent teal", "pass")]).model_dump_json(),
                          elapsed=1.0, model="m")
 
-    monkeypatch.setattr(srv, "_vlm", fake_vlm)
+    monkeypatch.setattr(srv.vlm, "_vlm", fake_vlm)
     out = await srv.verify_ui(requirements=["accent is teal"], reference=str(ref))
     assert "1/1 PASS" in out
     assert captured["data"] == b"REFPNG" and captured["extra"] == [b"BUILDPNG"]  # ref first, build second
@@ -130,7 +130,7 @@ async def test_verify_ui_requires_at_least_one_requirement():
 async def test_verify_ui_on_a_file_target_does_not_capture(monkeypatch, tmp_path):
     img = tmp_path / "shot.png"
     img.write_bytes(b"FILEPNG")
-    monkeypatch.setattr(srv, "_resolve_target", lambda *a, **k: pytest.fail("must not capture a file: target"))
+    monkeypatch.setattr(srv.targets, "_resolve_target", lambda *a, **k: pytest.fail("must not capture a file: target"))
     captured: dict = {}
 
     async def fake_vlm(data, context, prompt, **kw):
@@ -138,16 +138,16 @@ async def test_verify_ui_on_a_file_target_does_not_capture(monkeypatch, tmp_path
         return VLMResult(text=_report(all_pass=True, checks=[_check("x", "pass")]).model_dump_json(),
                          elapsed=0.5, model="m")
 
-    monkeypatch.setattr(srv, "_vlm", fake_vlm)
+    monkeypatch.setattr(srv.vlm, "_vlm", fake_vlm)
     out = await srv.verify_ui(requirements=["x present"], target=f"file:{img}")
     assert "1/1 PASS" in out and captured["data"] == b"FILEPNG" and "Image file:" in captured["context"]
 
 
 @pytest.mark.asyncio
 async def test_verify_ui_degrades_to_raw_text_when_schema_unparsable(monkeypatch):
-    monkeypatch.setattr(srv, "_resolve_target", lambda target, session: (None, MagicMock(), None))
-    monkeypatch.setattr(srv, "_capture_target_png", AsyncMock(return_value=b"PNG"))
-    monkeypatch.setattr(srv, "_vlm", AsyncMock(return_value=VLMResult(
+    monkeypatch.setattr(srv.targets, "_resolve_target", lambda target, session: (None, MagicMock(), None))
+    monkeypatch.setattr(srv.capture, "_capture_target_png", AsyncMock(return_value=b"PNG"))
+    monkeypatch.setattr(srv.vlm, "_vlm", AsyncMock(return_value=VLMResult(
         text="[Vision unavailable — key not configured]", elapsed=0, model="m")))
     out = await srv.verify_ui(requirements=["x"])
     assert "Vision unavailable" in out

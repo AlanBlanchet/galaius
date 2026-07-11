@@ -91,28 +91,28 @@ class _FakeNested:
 
 @pytest.fixture(autouse=True)
 def _reset_sandbox_global():
-    srv._sandbox = None
+    srv.sandbox._sandbox = None
     _FakeNested.instances = []
     yield
-    srv._sandbox = None
+    srv.sandbox._sandbox = None
 
 
 def test_get_sandbox_respawns_a_dead_display(monkeypatch):
     monkeypatch.setattr("interact.desktop_backend.NestedBackend", _FakeNested)
     dead = _FakeNested(alive=False)
-    srv._sandbox = dead
+    srv.sandbox._sandbox = dead
 
     fresh = srv._get_sandbox()
 
     assert dead.closed is True, "the dead sandbox must be torn down"
     assert fresh is not dead and fresh.alive, "a fresh sandbox replaces it"
-    assert srv._sandbox is fresh
+    assert srv.sandbox._sandbox is fresh
 
 
 def test_get_sandbox_reuses_a_live_display(monkeypatch):
     monkeypatch.setattr("interact.desktop_backend.NestedBackend", _FakeNested)
     live = _FakeNested(alive=True)
-    srv._sandbox = live
+    srv.sandbox._sandbox = live
     assert srv._get_sandbox() is live
     assert len(_FakeNested.instances) == 1, "no needless respawn of a healthy sandbox"
 
@@ -193,15 +193,15 @@ async def test_reset_sandbox_tears_down_and_clears_global():
         def close(self):
             closed["v"] = True
 
-    srv._sandbox = S()
+    srv.sandbox._sandbox = S()
     msg = await srv.reset_sandbox()
-    assert closed["v"] is True and srv._sandbox is None
+    assert closed["v"] is True and srv.sandbox._sandbox is None
     assert "2 app" in msg
 
 
 @pytest.mark.asyncio
 async def test_reset_sandbox_when_none():
-    srv._sandbox = None
+    srv.sandbox._sandbox = None
     msg = await srv.reset_sandbox()
     assert "No sandbox" in msg
 
@@ -251,7 +251,7 @@ def _nested_backend_with(windows):
 
 
 def test_empty_sandbox_message_steers_recovery_and_forbids_the_real_desktop(monkeypatch):
-    monkeypatch.setattr(srv, "_get_sandbox", lambda *a, **k: _nested_backend_with([]))
+    monkeypatch.setattr(srv.sandbox, "_get_sandbox", lambda *a, **k: _nested_backend_with([]))
     monkeypatch.setattr(srv.DesktopWindow, "find_in", classmethod(lambda cls, b, t: None))
     win, _, err = srv._resolve_nested_target("nested:aino")
     assert win is None
@@ -262,7 +262,7 @@ def test_empty_sandbox_message_steers_recovery_and_forbids_the_real_desktop(monk
 
 
 def test_nested_target_still_lists_windows_that_exist(monkeypatch):
-    monkeypatch.setattr(srv, "_get_sandbox", lambda *a, **k: _nested_backend_with([(1, "aino")]))
+    monkeypatch.setattr(srv.sandbox, "_get_sandbox", lambda *a, **k: _nested_backend_with([(1, "aino")]))
     monkeypatch.setattr(srv.DesktopWindow, "find_in", classmethod(lambda cls, b, t: None))
     _, _, err = srv._resolve_nested_target("nested:other")
     assert 'target="nested:aino"' in err  # a wrong title still shows what IS available
@@ -292,8 +292,8 @@ def test_idle_sandbox_is_reaped(monkeypatch):
     import interact.server as srv
 
     closed = []
-    monkeypatch.setattr(srv, "_sandbox", _fake_sandbox(idle=901.0))
-    monkeypatch.setattr(srv, "_close_sandbox", lambda: closed.append(True))
+    monkeypatch.setattr(srv.sandbox, "_sandbox", _fake_sandbox(idle=901.0))
+    monkeypatch.setattr(srv.sandbox, "_close_sandbox", lambda: closed.append(True))
     srv._reap_sandbox(ttl=900)
     assert closed == [True]
 
@@ -302,10 +302,10 @@ def test_active_or_recording_sandbox_survives(monkeypatch):
     import interact.server as srv
 
     closed = []
-    monkeypatch.setattr(srv, "_close_sandbox", lambda: closed.append(True))
-    monkeypatch.setattr(srv, "_sandbox", _fake_sandbox(idle=10.0))
+    monkeypatch.setattr(srv.sandbox, "_close_sandbox", lambda: closed.append(True))
+    monkeypatch.setattr(srv.sandbox, "_sandbox", _fake_sandbox(idle=10.0))
     srv._reap_sandbox(ttl=900)                     # recently used → kept
-    monkeypatch.setattr(srv, "_sandbox", _fake_sandbox(idle=99999.0, recording=True))
+    monkeypatch.setattr(srv.sandbox, "_sandbox", _fake_sandbox(idle=99999.0, recording=True))
     srv._reap_sandbox(ttl=900)                     # mid-recording → NEVER reaped under the agent
     assert closed == []
 
@@ -333,7 +333,7 @@ def test_sandbox_reaping_runs_even_with_browser_ttl_disabled(monkeypatch):
 
     monkeypatch.setattr(srv.config, "sandbox_idle_ttl", 300)
     reaped = []
-    monkeypatch.setattr(srv, "_reap_sandbox", lambda ttl: reaped.append(ttl))
+    monkeypatch.setattr(srv.sandbox, "_reap_sandbox", lambda ttl: reaped.append(ttl))
 
     async def fast(run_secs):
         orig_sleep = asyncio.sleep

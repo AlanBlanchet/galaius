@@ -73,10 +73,12 @@ async def _vlm_detect_elements(
     simple: bool = False,
     model_override: str | None = None,
 ) -> tuple[list[DesktopElement] | None, float, str, str]:
-    import interact.server as _srv  # noqa: PLC0415 — circular: server imports detect
+    # Sourced from the split server submodules so a test patching srv.vlm._vlm / srv.core.config
+    # is seen here (the server package imports detect, so this stays a lazy in-body import).
+    from interact.server import core as _srv_core, vlm as _srv_vlm  # noqa: PLC0415
 
-    _vlm = _srv._vlm
-    config = _srv.config
+    _vlm = _srv_vlm._vlm
+    config = _srv_core.config
 
     transform = CoordTransform.for_resize(
         img_w, img_h, config.vlm_max_dim, config.vlm_min_dim

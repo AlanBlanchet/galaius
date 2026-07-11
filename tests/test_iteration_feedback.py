@@ -23,7 +23,7 @@ def _desktop_gate_open(monkeypatch):
     # every CI OS. Pin the Linux path (force desktop_supported() True so a mac/win runner doesn't
     # take the portable-screen branch) and open the unsupported gate; harmless for the browser tests.
     monkeypatch.setattr("interact.desktop_backend.desktop_supported", lambda: True)
-    monkeypatch.setattr(srv, "_desktop_unsupported", lambda *a, **k: None)
+    monkeypatch.setattr(srv.targets, "_desktop_unsupported", lambda *a, **k: None)
 
 
 # --- target: one param, browser default or a desktop window ---
@@ -32,7 +32,7 @@ def _desktop_gate_open(monkeypatch):
 def test_resolve_target_browser_is_the_default(monkeypatch):
     sessions = MagicMock()
     sessions.get.return_value = "MGR"
-    monkeypatch.setattr(srv, "_sessions", sessions)
+    monkeypatch.setattr(srv.core, "_sessions", sessions)
     for target in (None, "browser", "  Browser  "):
         win, mgr, err = srv._resolve_target(target, "default")
         assert (win, mgr, err) == (None, "MGR", None)
@@ -40,13 +40,13 @@ def test_resolve_target_browser_is_the_default(monkeypatch):
 
 def test_resolve_target_string_is_a_desktop_window(monkeypatch):
     sentinel = object()
-    monkeypatch.setattr(srv, "_find_desktop_window", lambda title: sentinel)
+    monkeypatch.setattr(srv.targets, "_find_desktop_window", lambda title: sentinel)
     win, mgr, err = srv._resolve_target("Firefox", "default")
     assert win is sentinel and mgr is None and err is None
 
 
 def test_resolve_target_desktop_and_named_session_conflict(monkeypatch):
-    monkeypatch.setattr(srv, "_find_desktop_window", lambda title: object())
+    monkeypatch.setattr(srv.targets, "_find_desktop_window", lambda title: object())
     win, mgr, err = srv._resolve_target("Firefox", "work")
     assert win is None and mgr is None and "Cannot combine" in err
 
@@ -65,10 +65,10 @@ def _fake_navigate_env(monkeypatch):
     state = MagicMock()
     state.screenshot_base64 = None
     state.text_summary.return_value = "ok"
-    monkeypatch.setattr(srv, "_sessions", sessions)
-    monkeypatch.setattr(srv, "Debug", MagicMock())
-    monkeypatch.setattr(srv, "_wait", AsyncMock())
-    monkeypatch.setattr(srv, "_capture", AsyncMock(return_value=state))
+    monkeypatch.setattr(srv.core, "_sessions", sessions)
+    monkeypatch.setattr(srv.tools_web, "Debug", MagicMock())
+    monkeypatch.setattr(srv.capture, "_wait", AsyncMock())
+    monkeypatch.setattr(srv.capture, "_capture", AsyncMock(return_value=state))
     return page
 
 

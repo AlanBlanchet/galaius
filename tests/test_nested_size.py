@@ -36,10 +36,10 @@ def test_resolve_nested_size_rejects_bad_input(size, device):
 
 @pytest.fixture
 def _restore_sandbox():
-    saved = srv._sandbox
-    srv._sandbox = None
+    saved = srv.sandbox._sandbox
+    srv.sandbox._sandbox = None
     yield
-    srv._sandbox = saved
+    srv.sandbox._sandbox = saved
 
 
 def test_get_sandbox_respawns_only_on_size_change(monkeypatch, _restore_sandbox):

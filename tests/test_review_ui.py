@@ -58,8 +58,8 @@ def test_parse_review_handles_a_fallback_banner_and_stray_prose():
 
 @pytest.mark.asyncio
 async def test_review_ui_returns_structured_findings(monkeypatch):
-    monkeypatch.setattr(srv, "_resolve_target", lambda target, session: (None, MagicMock(), None))
-    monkeypatch.setattr(srv, "_capture_target_png", AsyncMock(return_value=b"PNG"))
+    monkeypatch.setattr(srv.targets, "_resolve_target", lambda target, session: (None, MagicMock(), None))
+    monkeypatch.setattr(srv.capture, "_capture_target_png", AsyncMock(return_value=b"PNG"))
     captured: dict = {}
 
     async def fake_vlm(data, context, prompt, *, response_format=None, model_override=None, **kw):
@@ -69,7 +69,7 @@ async def test_review_ui_returns_structured_findings(monkeypatch):
         ]).model_dump_json()
         return VLMResult(text=review, elapsed=1.1, model="test-model")
 
-    monkeypatch.setattr(srv, "_vlm", fake_vlm)
+    monkeypatch.setattr(srv.vlm, "_vlm", fake_vlm)
     out = await srv.review_ui(focus="check the title contrast")
     assert "1 issue(s)" in out and "white on white" in out
     assert "check the title contrast" in captured["prompt"]  # focus reached the rubric
@@ -85,8 +85,8 @@ def test_build_review_prompt_compare_mode_judges_against_the_reference():
 async def test_review_ui_reference_comparison_passes_both_images(monkeypatch, tmp_path):
     ref = tmp_path / "ref.png"
     ref.write_bytes(b"REFPNG")
-    monkeypatch.setattr(srv, "_resolve_target", lambda target, session: (None, MagicMock(), None))
-    monkeypatch.setattr(srv, "_capture_target_png", AsyncMock(return_value=b"BUILDPNG"))
+    monkeypatch.setattr(srv.targets, "_resolve_target", lambda target, session: (None, MagicMock(), None))
+    monkeypatch.setattr(srv.capture, "_capture_target_png", AsyncMock(return_value=b"BUILDPNG"))
     captured: dict = {}
 
     async def fake_vlm(data, context, prompt, *, response_format=None, model_override=None, extra_images=None, **kw):
@@ -96,7 +96,7 @@ async def test_review_ui_reference_comparison_passes_both_images(monkeypatch, tm
         ]).model_dump_json()
         return VLMResult(text=review, elapsed=1.0, model="m")
 
-    monkeypatch.setattr(srv, "_vlm", fake_vlm)
+    monkeypatch.setattr(srv.vlm, "_vlm", fake_vlm)
     out = await srv.review_ui(reference=str(ref))
     assert "reference is teal, build is lime" in out
     assert captured["data"] == b"REFPNG" and captured["extra"] == [b"BUILDPNG"]  # ref first, build second
@@ -105,17 +105,17 @@ async def test_review_ui_reference_comparison_passes_both_images(monkeypatch, tm
 
 @pytest.mark.asyncio
 async def test_review_ui_missing_reference_is_a_clean_error(monkeypatch):
-    monkeypatch.setattr(srv, "_resolve_target", lambda target, session: (None, MagicMock(), None))
-    monkeypatch.setattr(srv, "_capture_target_png", AsyncMock(return_value=b"P"))
+    monkeypatch.setattr(srv.targets, "_resolve_target", lambda target, session: (None, MagicMock(), None))
+    monkeypatch.setattr(srv.capture, "_capture_target_png", AsyncMock(return_value=b"P"))
     out = await srv.review_ui(reference="/no/such/ref.png")
     assert out.startswith("ERROR") and "reference" in out
 
 
 @pytest.mark.asyncio
 async def test_review_ui_degrades_to_raw_text_when_schema_unparsable(monkeypatch):
-    monkeypatch.setattr(srv, "_resolve_target", lambda target, session: (None, MagicMock(), None))
-    monkeypatch.setattr(srv, "_capture_target_png", AsyncMock(return_value=b"PNG"))
-    monkeypatch.setattr(srv, "_vlm", AsyncMock(return_value=VLMResult(
+    monkeypatch.setattr(srv.targets, "_resolve_target", lambda target, session: (None, MagicMock(), None))
+    monkeypatch.setattr(srv.capture, "_capture_target_png", AsyncMock(return_value=b"PNG"))
+    monkeypatch.setattr(srv.vlm, "_vlm", AsyncMock(return_value=VLMResult(
         text="[Vision unavailable — key not configured]", elapsed=0, model="m")))
     out = await srv.review_ui()
     assert "Vision unavailable" in out  # graceful: the raw VLM text, not a crash
@@ -155,9 +155,9 @@ def test_format_review_flags_a_ref_the_scan_never_detected():
 
 @pytest.mark.asyncio
 async def test_review_ui_grounds_the_prompt_and_flags_a_hallucinated_ref(monkeypatch):
-    monkeypatch.setattr(srv, "_resolve_target", lambda target, session: (None, MagicMock(), None))
-    monkeypatch.setattr(srv, "_capture_target_png", AsyncMock(return_value=b"PNG"))
-    monkeypatch.setattr(srv, "_scan_elements", AsyncMock(return_value=[_el("e1", "Save")]))
+    monkeypatch.setattr(srv.targets, "_resolve_target", lambda target, session: (None, MagicMock(), None))
+    monkeypatch.setattr(srv.capture, "_capture_target_png", AsyncMock(return_value=b"PNG"))
+    monkeypatch.setattr(srv.capture, "_scan_elements", AsyncMock(return_value=[_el("e1", "Save")]))
     captured: dict = {}
 
     async def fake_vlm(data, context, prompt, *, response_format=None, model_override=None, **kw):
@@ -168,7 +168,7 @@ async def test_review_ui_grounds_the_prompt_and_flags_a_hallucinated_ref(monkeyp
         ]).model_dump_json()
         return VLMResult(text=review, elapsed=1.0, model="m")
 
-    monkeypatch.setattr(srv, "_vlm", fake_vlm)
+    monkeypatch.setattr(srv.vlm, "_vlm", fake_vlm)
     out = await srv.review_ui()
     assert "DETECTED ELEMENTS" in captured["prompt"] and "e1: button" in captured["prompt"]  # grounded
     assert "[e1]" in out  # real ref surfaced as the finding's anchor

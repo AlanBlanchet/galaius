@@ -33,12 +33,12 @@ async def test_media_response_saves_file_even_when_vlm_errors(monkeypatch, tmp_p
     import interact.server as srv
 
     saved = {}
-    monkeypatch.setattr(srv, "_save_to_path", lambda p, d: saved.update(path=p, data=d))
+    monkeypatch.setattr(srv.core, "_save_to_path", lambda p, d: saved.update(path=p, data=d))
 
     async def boom(*a, **k):
         raise RuntimeError("vlm down")
 
-    monkeypatch.setattr(srv, "_vlm", boom)
+    monkeypatch.setattr(srv.vlm, "_vlm", boom)
     out = str(tmp_path / "shot.png")
     with pytest.raises(RuntimeError):
         await srv._media_response(b"FRAMEBYTES", "ctx", query="what is this?", path=out)

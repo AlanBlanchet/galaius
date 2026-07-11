@@ -39,9 +39,9 @@ async def test_screenshot_file_target_analyzes_without_capturing(monkeypatch, tm
         seen["data"] = data
         return VLMResult(text="a blue rectangle", elapsed=0.1, model="m")
 
-    monkeypatch.setattr(srv, "_vlm", fake_vlm)
+    monkeypatch.setattr(srv.vlm, "_vlm", fake_vlm)
     # If it tried to capture, this would raise — proving no capture path is taken.
-    monkeypatch.setattr(srv, "_resolve_target", lambda *a, **k: pytest.fail("must not capture a file: target"))
+    monkeypatch.setattr(srv.targets, "_resolve_target", lambda *a, **k: pytest.fail("must not capture a file: target"))
     out = await srv.screenshot(query="what shape?", target=target.format(p=p))
     assert "a blue rectangle" in out and seen["data"] == img
     assert p.read_bytes() == img  # untouched — no clobber
@@ -67,8 +67,8 @@ async def test_screenshot_notes_when_path_overwrites_an_existing_file(monkeypatc
         def text_summary(self):
             return "page"
 
-    monkeypatch.setattr(srv, "_resolve_target", lambda *a, **k: (None, object(), None))
-    monkeypatch.setattr(srv, "_capture", _ascapture(_State()))
-    monkeypatch.setattr(srv, "_scan_elements", _ascapture([]))
+    monkeypatch.setattr(srv.targets, "_resolve_target", lambda *a, **k: (None, object(), None))
+    monkeypatch.setattr(srv.capture, "_capture", _ascapture(_State()))
+    monkeypatch.setattr(srv.capture, "_scan_elements", _ascapture([]))
     out = await srv.screenshot(target="browser", path=str(existing))
     assert "overwrote existing file" in out and str(existing) in out
