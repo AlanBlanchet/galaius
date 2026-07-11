@@ -11,7 +11,7 @@ so that additional ARIA labels appear in the accessibility tree.
 import logging
 from typing import ClassVar
 
-from interact.desktop import (
+from interact.desktop.window import (
     CoordTransform,
     DesktopElement,
     DesktopWindow,

@@ -386,7 +386,7 @@ def test_cursor_label(cursor_type, expected):
 
 
 def test_get_cursor_type_no_libs():
-    with patch("interact.desktop._libx11", None):
+    with patch("interact.desktop.window._libx11", None):
         assert Cursor.current_type() == "unknown"
 
 
@@ -421,8 +421,8 @@ def test_get_cursor_type_named_cursor():
     )()
 
     with (
-        patch("interact.desktop._libx11", mock_x11),
-        patch("interact.desktop._libxfixes", mock_xfixes),
+        patch("interact.desktop.window._libx11", mock_x11),
+        patch("interact.desktop.window._libxfixes", mock_xfixes),
     ):
         assert Cursor.current_type() == "pointer"
 
@@ -458,8 +458,8 @@ def test_get_cursor_type_dimension_heuristic():
     )()
 
     with (
-        patch("interact.desktop._libx11", mock_x11),
-        patch("interact.desktop._libxfixes", mock_xfixes),
+        patch("interact.desktop.window._libx11", mock_x11),
+        patch("interact.desktop.window._libxfixes", mock_xfixes),
     ):
         assert Cursor.current_type() == "text"
 
@@ -474,7 +474,7 @@ def test_get_cursor_type_exception_fallback():
             ),
         },
     )()
-    with patch("interact.desktop._libx11", mock_x11):
+    with patch("interact.desktop.window._libx11", mock_x11):
         assert Cursor.current_type() == "unknown"
 
 

@@ -170,10 +170,10 @@ def test_desktop_compute_change(before_kw, after_kw, expected_fragments):
 def test_desktop_capture_calls_atspi():
     with (
         patch(
-            "interact.atspi.AtSpi.window_text", return_value="Menu Bar\nContent area"
+            "interact.desktop.atspi.AtSpi.window_text", return_value="Menu Bar\nContent area"
         ) as mock_text,
         patch(
-            "interact.atspi.AtSpi.focused_element", return_value="entry: URL bar"
+            "interact.desktop.atspi.AtSpi.focused_element", return_value="entry: URL bar"
         ) as mock_focus,
     ):
         state = DesktopState.capture("Firefox")

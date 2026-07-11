@@ -7,7 +7,7 @@ import importlib
 
 import pytest
 
-from interact import desktop_backend as db
+from interact.desktop import backend as db
 from interact.browser import BrowserManager
 from interact.config import Config
 
@@ -72,7 +72,7 @@ def test_doctor_diagnostics_are_clean_off_linux(monkeypatch, capsys):
     # automation is actually ready. Report N/A cleanly instead.
     import interact.cli as cli
 
-    monkeypatch.setattr("interact.desktop_backend.desktop_supported", lambda: False)
+    monkeypatch.setattr("interact.desktop.backend.desktop_supported", lambda: False)
     cli.doctor()
     out = capsys.readouterr().out
     assert "not available on" in out
@@ -83,7 +83,7 @@ def test_doctor_diagnostics_are_clean_off_linux(monkeypatch, capsys):
 def test_status_desktop_line_clean_off_linux(monkeypatch, capsys):
     import interact.cli as cli
 
-    monkeypatch.setattr("interact.desktop_backend.desktop_supported", lambda: False)
+    monkeypatch.setattr("interact.desktop.backend.desktop_supported", lambda: False)
     cli.status()
     out = capsys.readouterr().out
     assert "desktop" in out and "not available on this OS" in out

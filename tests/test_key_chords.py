@@ -4,7 +4,7 @@ uinput path now actually supports them — previously UinputPointer.key did geta
 
 import pytest
 
-from interact.desktop_backend import UinputPointer, _parse_chord
+from interact.desktop.backend import UinputPointer, _parse_chord
 
 
 @pytest.mark.parametrize(

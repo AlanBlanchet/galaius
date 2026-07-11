@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pytest
 
-from interact.desktop_backend import DesktopBackend, NestedBackend
+from interact.desktop.backend import DesktopBackend, NestedBackend
 
 FIXTURE = Path(__file__).parent / "fixtures" / "drag_window.py"
 PANEL = Path(__file__).parent / "fixtures" / "panel.py"
@@ -286,7 +286,7 @@ def test_local_backend_creates_pointer_and_keyboard() -> None:
     up BOTH a uinput pointer and a keyboard — the separate keyboard is the structural fix
     for the dropped-keystrokes bug — and maps the absolute pointer over the FULL X root,
     the fix for the multi-monitor coordinate-scaling bug. Injects nothing."""
-    from interact.desktop_backend import LocalBackend, _x11_root_size, _x11_screen_size
+    from interact.desktop.backend import LocalBackend, _x11_root_size, _x11_screen_size
 
     backend = LocalBackend()
     try:
@@ -309,7 +309,7 @@ def test_local_backend_drives_real_panel(tmp_path: Path) -> None:
     """The real-PC path: LocalBackend (system-wide uinput) clicks and types into a panel
     on the REAL display, verified against the panel's recorded state. Opt-in
     (INTERACT_LOCAL_E2E=1) because it moves the real cursor and needs /dev/uinput."""
-    from interact.desktop_backend import LocalBackend
+    from interact.desktop.backend import LocalBackend
 
     state_path = tmp_path / "state.json"
     state_path.write_text("{}")
@@ -358,7 +358,7 @@ def test_local_backend_drives_real_panel(tmp_path: Path) -> None:
 
 
 def test_nested_server_command() -> None:
-    from interact.desktop_backend import nested_server_command
+    from interact.desktop.backend import nested_server_command
 
     visible = nested_server_command(":99", "800x600", headless=False)
     assert visible[0] == "Xephyr" and "800x600" in visible

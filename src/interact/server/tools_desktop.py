@@ -18,7 +18,7 @@ async def list_desktop_windows() -> str:
     the whole desktop, target="screen:<name>" e.g. screen:DP-1, or target="screen:<index>") and
     each open window. Target a window by its title, or — when a title isn't unique — by its id
     shown here as target="wid:<id>" (the unambiguous selector)."""
-    from interact.desktop_backend import desktop_supported
+    from interact.desktop.backend import desktop_supported
 
     if not desktop_supported():
         # macOS/Windows: the portable backend drives the whole screen; per-window enum is Linux-only.

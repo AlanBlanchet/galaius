@@ -18,7 +18,7 @@ pytestmark = pytest.mark.timeout(60)  # never let a stuck GUI call hang the matr
 def _backend():
     if sys.platform.startswith("linux"):
         pytest.skip("Linux uses LocalBackend; PortableBackend is the macOS/Windows path")
-    from interact.desktop_backend import PortableBackend
+    from interact.desktop.backend import PortableBackend
 
     try:
         return PortableBackend()

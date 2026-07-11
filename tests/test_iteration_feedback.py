@@ -22,7 +22,7 @@ def _desktop_gate_open(monkeypatch):
     # The desktop-target tests below verify Linux resolution logic with mocked backends and run on
     # every CI OS. Pin the Linux path (force desktop_supported() True so a mac/win runner doesn't
     # take the portable-screen branch) and open the unsupported gate; harmless for the browser tests.
-    monkeypatch.setattr("interact.desktop_backend.desktop_supported", lambda: True)
+    monkeypatch.setattr("interact.desktop.backend.desktop_supported", lambda: True)
     monkeypatch.setattr(srv.targets, "_desktop_unsupported", lambda *a, **k: None)
 
 

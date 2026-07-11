@@ -23,7 +23,7 @@ from typing import Self
 from PIL import Image
 from pydantic import BaseModel
 
-from interact import atspi
+from interact.desktop import atspi
 from interact.desktop import DesktopElement, DesktopWindow
 from interact.detect import _vlm_detect_elements, judge_missing_elements
 from interact.models import Model, ModelCapability
@@ -548,7 +548,7 @@ class DesktopScenario(ArtifactRun):
         )
 
     async def run(self) -> None:
-        from interact.desktop_backend import LocalBackend, NestedBackend
+        from interact.desktop.backend import LocalBackend, NestedBackend
         from interact.runtime import config
 
         if self.target == "nested":

@@ -90,7 +90,7 @@ def test_new_invocation_dir_default_nests_under_sessions_name_date(monkeypatch, 
 
 
 def test_open_log_writes_under_interact_not_tmp(monkeypatch, tmp_path):
-    from interact.desktop_backend import NestedBackend
+    from interact.desktop.backend import NestedBackend
     from interact.runtime import config as rc
 
     monkeypatch.setenv("HOME", str(tmp_path))

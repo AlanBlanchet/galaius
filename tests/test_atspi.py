@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from interact.atspi import AtSpi
+from interact.desktop.atspi import AtSpi
 from interact.desktop import DesktopElement, DesktopWindow
 
 
@@ -67,12 +67,12 @@ def test_atspi_available_returns_bool():
 
 
 def test_detect_elements_returns_none_when_unavailable():
-    with patch("interact.atspi._Atspi", None):
+    with patch("interact.desktop.atspi._Atspi", None):
         assert AtSpi.detect_elements("test window") is None
 
 
 def test_find_element_by_name_returns_none_when_unavailable():
-    with patch("interact.atspi._Atspi", None):
+    with patch("interact.desktop.atspi._Atspi", None):
         assert AtSpi.find_element_by_name("test window", "OK") is None
 
 
@@ -104,7 +104,7 @@ def test_element_filtering(name, role, component, expected_included):
     mock_atspi.get_desktop.return_value = desktop_obj
 
     with (
-        patch("interact.atspi._Atspi", mock_atspi),
+        patch("interact.desktop.atspi._Atspi", mock_atspi),
         patch("interact.desktop.DesktopWindow.find", return_value=None),
     ):
         result = AtSpi.detect_elements("Test Window")
@@ -135,7 +135,7 @@ def test_multiple_elements_indexed():
     mock_atspi.get_desktop.return_value = desktop_obj
 
     with (
-        patch("interact.atspi._Atspi", mock_atspi),
+        patch("interact.desktop.atspi._Atspi", mock_atspi),
         patch("interact.desktop.DesktopWindow.find", return_value=None),
     ):
         result = AtSpi.detect_elements("Test Window")
@@ -163,7 +163,7 @@ def test_find_element_by_name_exact_match():
     mock_atspi.get_desktop.return_value = desktop_obj
 
     with (
-        patch("interact.atspi._Atspi", mock_atspi),
+        patch("interact.desktop.atspi._Atspi", mock_atspi),
         patch("interact.desktop.DesktopWindow.find", return_value=None),
     ):
         result = AtSpi.find_element_by_name("Test Window", "Submit")
@@ -186,7 +186,7 @@ def test_find_element_by_name_substring_fallback():
     mock_atspi.get_desktop.return_value = desktop_obj
 
     with (
-        patch("interact.atspi._Atspi", mock_atspi),
+        patch("interact.desktop.atspi._Atspi", mock_atspi),
         patch("interact.desktop.DesktopWindow.find", return_value=None),
     ):
         result = AtSpi.find_element_by_name("Test Window", "search")
@@ -207,7 +207,7 @@ def test_find_element_by_name_no_match():
     mock_atspi.get_desktop.return_value = desktop_obj
 
     with (
-        patch("interact.atspi._Atspi", mock_atspi),
+        patch("interact.desktop.atspi._Atspi", mock_atspi),
         patch("interact.desktop.DesktopWindow.find", return_value=None),
     ):
         assert AtSpi.find_element_by_name("Test Window", "nonexistent") is None
@@ -233,7 +233,7 @@ def test_detect_elements_no_matching_window():
     mock_atspi.CoordType.WINDOW = 0
     mock_atspi.get_desktop.return_value = desktop_obj
 
-    with patch("interact.atspi._Atspi", mock_atspi):
+    with patch("interact.desktop.atspi._Atspi", mock_atspi):
         assert AtSpi.detect_elements("Nonexistent Window") is None
 
 
@@ -249,7 +249,7 @@ def test_negative_coords_clamped_to_zero():
     mock_atspi.get_desktop.return_value = desktop_obj
 
     with (
-        patch("interact.atspi._Atspi", mock_atspi),
+        patch("interact.desktop.atspi._Atspi", mock_atspi),
         patch("interact.desktop.DesktopWindow.find", return_value=None),
     ):
         result = AtSpi.detect_elements("Test Window")
@@ -278,7 +278,7 @@ def test_filler_with_action_detected():
     mock_atspi.get_desktop.return_value = desktop_obj
 
     with (
-        patch("interact.atspi._Atspi", mock_atspi),
+        patch("interact.desktop.atspi._Atspi", mock_atspi),
         patch("interact.desktop.DesktopWindow.find", return_value=None),
     ):
         result = AtSpi.detect_elements("Test Window")
@@ -305,7 +305,7 @@ def test_panel_with_child_label_uses_label_name():
     mock_atspi.get_desktop.return_value = desktop_obj
 
     with (
-        patch("interact.atspi._Atspi", mock_atspi),
+        patch("interact.desktop.atspi._Atspi", mock_atspi),
         patch("interact.desktop.DesktopWindow.find", return_value=None),
     ):
         result = AtSpi.detect_elements("Test Window")
@@ -330,7 +330,7 @@ def test_filler_no_actions_no_label_excluded():
     mock_atspi.get_desktop.return_value = desktop_obj
 
     with (
-        patch("interact.atspi._Atspi", mock_atspi),
+        patch("interact.desktop.atspi._Atspi", mock_atspi),
         patch("interact.desktop.DesktopWindow.find", return_value=None),
     ):
         result = AtSpi.detect_elements("Test Window")
@@ -342,7 +342,7 @@ def test_filler_no_actions_no_label_excluded():
 
 
 def test_get_window_text_no_atspi():
-    with patch("interact.atspi._Atspi", None):
+    with patch("interact.desktop.atspi._Atspi", None):
         assert AtSpi.window_text("Text Editor") == ""
 
 
@@ -350,7 +350,7 @@ def test_get_window_text_no_app():
     desktop_obj = _MockAccessible("desktop", "desktop", children=[])
     mock_atspi = MagicMock()
     mock_atspi.get_desktop.return_value = desktop_obj
-    with patch("interact.atspi._Atspi", mock_atspi):
+    with patch("interact.desktop.atspi._Atspi", mock_atspi):
         assert AtSpi.window_text("Nonexistent") == ""
 
 
@@ -440,7 +440,7 @@ def test_get_window_text_collects_names_and_text():
 
     mock_atspi = MagicMock()
     mock_atspi.get_desktop.return_value = desktop_obj
-    with patch("interact.atspi._Atspi", mock_atspi):
+    with patch("interact.desktop.atspi._Atspi", mock_atspi):
         result = AtSpi.window_text("Text Editor")
 
     assert "File" in result
@@ -454,7 +454,7 @@ def test_get_window_text_collects_names_and_text():
 
 
 def test_get_focused_element_no_atspi():
-    with patch("interact.atspi._Atspi", None):
+    with patch("interact.desktop.atspi._Atspi", None):
         assert AtSpi.focused_element("Text Editor") is None
 
 
@@ -478,7 +478,7 @@ def test_get_focused_element_finds_focused():
     desktop_obj = _MockAccessible("desktop", "desktop", children=[app])
 
     mock_atspi.get_desktop.return_value = desktop_obj
-    with patch("interact.atspi._Atspi", mock_atspi):
+    with patch("interact.desktop.atspi._Atspi", mock_atspi):
         result = AtSpi.focused_element("Text Editor")
 
     assert result == "entry: Search query"
@@ -503,7 +503,7 @@ def test_get_focused_element_none_focused():
     desktop_obj = _MockAccessible("desktop", "desktop", children=[app])
 
     mock_atspi.get_desktop.return_value = desktop_obj
-    with patch("interact.atspi._Atspi", mock_atspi):
+    with patch("interact.desktop.atspi._Atspi", mock_atspi):
         result = AtSpi.focused_element("Text Editor")
 
     assert result is None
@@ -581,7 +581,7 @@ def test_find_element_cache_miss_falls_back():
         patch("interact.desktop.DesktopWindow.find", return_value=_MOCK_WINDOW),
         patch("interact.desktop.DesktopElement.cached", return_value=None),
         patch(
-            "interact.atspi.AtSpi.detect_elements", return_value=_FIND_ELEMENTS
+            "interact.desktop.atspi.AtSpi.detect_elements", return_value=_FIND_ELEMENTS
         ) as mock_detect,
     ):
         result = AtSpi.find_element("Test Window", name="Cancel")

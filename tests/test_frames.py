@@ -1,6 +1,6 @@
 import pytest
 
-from interact.frames import Frame
+from interact.desktop.frames import Frame
 
 
 @pytest.fixture

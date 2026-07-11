@@ -13,8 +13,8 @@ from typing import Self
 from PIL import Image, ImageChops
 from pydantic import BaseModel, PrivateAttr, computed_field
 
-from interact.desktop_backend import _ffmpeg_grab_args, _VideoSession
-from interact.geometry import Box as _GeoBox, BoxArray
+from interact.desktop.backend import _ffmpeg_grab_args, _VideoSession
+from interact.desktop.geometry import Box as _GeoBox, BoxArray
 from interact.parsing import Parse
 from interact.state import Element, InteractiveElement
 

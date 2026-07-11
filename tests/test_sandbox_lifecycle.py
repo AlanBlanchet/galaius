@@ -13,7 +13,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from interact import server as srv
-from interact.desktop_backend import NestedBackend
+from interact.desktop.backend import NestedBackend
 
 # Spawn real short-lived processes the cross-platform way — `sh`/`sleep` don't exist on Windows
 # (the CI matrix runs macOS + Windows too), but the Python interpreter always does.
@@ -40,7 +40,7 @@ def _bare_backend() -> NestedBackend:
 def test_is_alive_false_when_server_exited(monkeypatch):
     nb = _bare_backend()
     nb._xserver = type("P", (), {"poll": lambda self: 1})()  # exited
-    monkeypatch.setattr("interact.desktop_backend._x11_screen_size", lambda env: (400, 400))
+    monkeypatch.setattr("interact.desktop.backend._x11_screen_size", lambda env: (400, 400))
     assert nb.is_alive() is False
 
 
@@ -49,14 +49,14 @@ def test_is_alive_false_when_display_unresponsive(monkeypatch):
     nb._xserver = type("P", (), {"poll": lambda self: None})()  # running...
     def boom(env):
         raise subprocess.CalledProcessError(1, "xdotool")
-    monkeypatch.setattr("interact.desktop_backend._x11_screen_size", boom)  # ...but not answering
+    monkeypatch.setattr("interact.desktop.backend._x11_screen_size", boom)  # ...but not answering
     assert nb.is_alive() is False
 
 
 def test_is_alive_true_when_running_and_answering(monkeypatch):
     nb = _bare_backend()
     nb._xserver = type("P", (), {"poll": lambda self: None})()
-    monkeypatch.setattr("interact.desktop_backend._x11_screen_size", lambda env: (400, 400))
+    monkeypatch.setattr("interact.desktop.backend._x11_screen_size", lambda env: (400, 400))
     assert nb.is_alive() is True
 
 
@@ -98,7 +98,7 @@ def _reset_sandbox_global():
 
 
 def test_get_sandbox_respawns_a_dead_display(monkeypatch):
-    monkeypatch.setattr("interact.desktop_backend.NestedBackend", _FakeNested)
+    monkeypatch.setattr("interact.desktop.backend.NestedBackend", _FakeNested)
     dead = _FakeNested(alive=False)
     srv.sandbox._sandbox = dead
 
@@ -110,7 +110,7 @@ def test_get_sandbox_respawns_a_dead_display(monkeypatch):
 
 
 def test_get_sandbox_reuses_a_live_display(monkeypatch):
-    monkeypatch.setattr("interact.desktop_backend.NestedBackend", _FakeNested)
+    monkeypatch.setattr("interact.desktop.backend.NestedBackend", _FakeNested)
     live = _FakeNested(alive=True)
     srv.sandbox._sandbox = live
     assert srv._get_sandbox() is live
@@ -135,7 +135,7 @@ def test_capture_reaps_exited_apps(monkeypatch):
     proc = nb.spawn(_EXIT0)
     proc.wait(timeout=5)
     monkeypatch.setattr(
-        "interact.desktop_backend.subprocess.run",
+        "interact.desktop.backend.subprocess.run",
         lambda *a, **k: types.SimpleNamespace(stdout=b"PNG"),
     )
     nb.capture()
@@ -157,7 +157,7 @@ def test_capture_video_grabs_nested_display_not_zero(monkeypatch):
             fh.write(b"\x00\x00FAKEMP4")
         return types.SimpleNamespace(returncode=0)
 
-    monkeypatch.setattr("interact.desktop_backend.subprocess.run", fake_run)
+    monkeypatch.setattr("interact.desktop.backend.subprocess.run", fake_run)
     data = nb.capture_video("aino", duration=1, fps=5)
     cmd = captured["cmd"]
     grab = cmd[cmd.index("-i") + 1]
@@ -216,8 +216,8 @@ class _DummyProc:
 
 def _construct_without_xserver(monkeypatch):
     """Run NestedBackend.__init__ without actually starting an X server."""
-    monkeypatch.setattr("interact.desktop_backend.shutil.which", lambda _: "/usr/bin/Xephyr")
-    monkeypatch.setattr("interact.desktop_backend.subprocess.Popen", lambda *a, **k: _DummyProc())
+    monkeypatch.setattr("interact.desktop.backend.shutil.which", lambda _: "/usr/bin/Xephyr")
+    monkeypatch.setattr("interact.desktop.backend.subprocess.Popen", lambda *a, **k: _DummyProc())
     monkeypatch.setattr(NestedBackend, "_open_log", staticmethod(lambda label: os.devnull))
     monkeypatch.setattr(NestedBackend, "_await_ready", lambda self, timeout: None)
 
@@ -315,7 +315,7 @@ def test_sandbox_touch_marks_use(monkeypatch):
     never hits the TTL."""
     import time as _time
 
-    from interact.desktop_backend import NestedBackend
+    from interact.desktop.backend import NestedBackend
 
     nb = NestedBackend.__new__(NestedBackend)
     nb.touch()

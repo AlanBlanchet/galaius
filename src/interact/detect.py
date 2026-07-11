@@ -10,7 +10,7 @@ import litellm as _litellm
 from PIL import Image as PILImage
 from pydantic import BaseModel
 
-from interact.atspi import AtSpi
+from interact.desktop.atspi import AtSpi
 from interact.debug_utils import Debug
 from interact.desktop import (
     CoordTransform,

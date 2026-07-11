@@ -1,11 +1,11 @@
-"""Parametrized tests for :mod:`interact.geometry`."""
+"""Parametrized tests for :mod:`interact.desktop.geometry`."""
 
 from __future__ import annotations
 
 import numpy as np
 import pytest
 
-from interact.geometry import Box, BoxArray
+from interact.desktop.geometry import Box, BoxArray
 
 
 # Single mega-parametrize covers every scalar Box op.

@@ -19,7 +19,7 @@ def _desktop_gate_open(monkeypatch):
     # CI OS (no display needed). Pin the Linux resolution path: force desktop_supported() True (so
     # _resolve_target doesn't take the macOS/Windows portable-screen branch on a mac/win runner) and
     # open the unsupported gate. The off-Linux behaviour is covered in test_cross_platform.py.
-    monkeypatch.setattr("interact.desktop_backend.desktop_supported", lambda: True)
+    monkeypatch.setattr("interact.desktop.backend.desktop_supported", lambda: True)
     monkeypatch.setattr(srv.targets, "_desktop_unsupported", lambda *a, **k: None)
 
 

@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from interact import atspi
+from interact.desktop import atspi
 from interact.browser import BrowserManager
 from interact.desktop import DesktopElement, DesktopWindow
 from interact.detect import _vlm_detect_elements

@@ -44,7 +44,7 @@ def test_qt_combo_popup_is_captured(tmp_path):
     from PIL import Image
 
     from interact.desktop import DesktopWindow
-    from interact.desktop_backend import NestedBackend
+    from interact.desktop.backend import NestedBackend
 
     app = tmp_path / "qtcombo.py"
     app.write_text(
@@ -95,7 +95,7 @@ def test_flutter_bundle_navbar_not_black():
     from PIL import Image
 
     from interact.desktop import DesktopWindow
-    from interact.desktop_backend import NestedBackend
+    from interact.desktop.backend import NestedBackend
     from interact.server import _flutter_software_render
 
     argv, note = _flutter_software_render([bundle])

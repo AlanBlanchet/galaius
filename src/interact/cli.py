@@ -149,7 +149,7 @@ def status(
 
     print("\nModels (what your keys resolve to — pin via `interact config set`):")
     _print_resolved_models()
-    from interact.desktop_backend import desktop_supported
+    from interact.desktop.backend import desktop_supported
 
     if not desktop_supported():
         print("  desktop    not available on this OS (Linux/X11 only) — browser automation works here")
@@ -374,7 +374,7 @@ def doctor(*, fix: bool = False) -> None:
     except ImportError:
         print("  playwright    : MISSING — run `uv run playwright install`")
 
-    from interact.desktop_backend import desktop_supported
+    from interact.desktop.backend import desktop_supported
     from interact.runtime import config
 
     # Desktop diagnostics are Linux/X11-specific (maim, /dev/uinput, Xephyr). On macOS/Windows

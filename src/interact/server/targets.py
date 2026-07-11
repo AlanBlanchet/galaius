@@ -4,7 +4,7 @@
 
 from pathlib import Path
 
-from interact.atspi import AtSpi
+from interact.desktop.atspi import AtSpi
 from interact.browser import BrowserManager
 from interact.desktop import DesktopElement, DesktopWindow
 from interact.server import core, sandbox
@@ -17,7 +17,7 @@ def _desktop_unsupported(is_screen: bool = False) -> str | None:
     drives the whole screen, so a ``screen`` target works — but window-title targets (no window
     enumeration yet) and the nested Xephyr sandbox (Linux-only) don't, so those get one clear
     actionable message steering to ``target="screen"`` or the browser tools (#24)."""
-    from interact.desktop_backend import desktop_supported
+    from interact.desktop.backend import desktop_supported
 
     if desktop_supported() or is_screen:
         return None
@@ -133,7 +133,7 @@ def _resolve_target(
         is_screen = t.lower() == "screen" or t.lower().startswith("screen:")
         if unsupported := _desktop_unsupported(is_screen):
             return None, None, unsupported
-        from interact.desktop_backend import desktop_supported
+        from interact.desktop.backend import desktop_supported
 
         if is_screen and not desktop_supported():
             return sandbox._resolve_portable_screen(), None, None  # macOS/Windows whole-screen

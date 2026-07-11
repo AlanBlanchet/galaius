@@ -3,7 +3,7 @@ import io
 import pytest
 from PIL import Image
 
-from interact import atspi
+from interact.desktop import atspi
 from interact.desktop import CoordTransform, DesktopWindow
 
 pytestmark = pytest.mark.desktop
