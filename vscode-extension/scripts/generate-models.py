@@ -19,7 +19,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from interact.data import PackageData
-from interact.dotenv_loader import load_dotenv_for_cli
+from interact.config import load_dotenv_for_cli
 from interact.models import is_audio_model, is_native_video_model
 
 load_dotenv_for_cli()

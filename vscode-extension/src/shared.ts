@@ -107,7 +107,7 @@ export type ModelsData = ModelsConfig & {
   keyAliases?: Record<string, string>;
 };
 
-/** One user setting — mirrors interact.settings_schema.Setting (bundled as settings.json). */
+/** One user setting — mirrors interact.config.schema.Setting (bundled as settings.json). */
 export interface Setting {
   key: string;
   field: string;
