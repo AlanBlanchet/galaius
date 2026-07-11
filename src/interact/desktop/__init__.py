@@ -14,27 +14,29 @@ import subprocess  # noqa: F401
 
 from interact.desktop.geometry import BoxArray  # noqa: F401 (geometry's Box is at .geometry.Box)
 from interact.desktop.frames import Frame  # noqa: F401
-from interact.desktop.backend import (  # noqa: F401
+from interact.desktop.input import (  # noqa: F401
     ABS_MAX,
+    UinputPointer,
+    _BUTTONS,
+    _parse_chord,
+    screen_to_abs,
+)
+from interact.desktop.video import _VideoSession, _ffmpeg_grab_args  # noqa: F401
+from interact.desktop.backend import (  # noqa: F401
     DesktopBackend,
     DesktopUnsupportedError,
     LocalBackend,
-    NestedBackend,
     PortableBackend,
-    UinputPointer,
-    _VideoSession,
-    _ffmpeg_grab_args,
     _gl_unrendered,
-    _parse_chord,
     _rects_overlap,
     _x11_root_size,
     _x11_screen_size,
     desktop_supported,
     desktop_unsupported_message,
     nested_server_command,
-    screen_to_abs,
     select_desktop_backend,
 )
+from interact.desktop.nested import NestedBackend  # noqa: F401
 from interact.desktop.window import (  # noqa: F401
     Box,
     CaptureError,

@@ -38,7 +38,7 @@ def _get_sandbox(size: str | None = None):
         elif size is not None and _sandbox.size != size:
             _close_sandbox()  # an EXPLICIT new size (launch_app) → respawn at it
     if _sandbox is None:
-        from interact.desktop.backend import NestedBackend
+        from interact.desktop import NestedBackend
 
         _sandbox = NestedBackend(
             config.nested_display, size or config.nested_size, headless=config.nested_headless

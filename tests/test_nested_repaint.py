@@ -13,7 +13,7 @@ import subprocess
 import pytest
 from PIL import Image
 
-from interact.desktop.backend import NestedBackend, _gl_unrendered
+from interact.desktop import NestedBackend, _gl_unrendered
 
 
 def _png(fill=(0, 0, 0), size=(412, 915), bottom=None, bottom_frac=0.12) -> bytes:
@@ -162,10 +162,10 @@ def test_force_repaint_shrinks_then_restores(monkeypatch):
     nb = _backend_no_server()
     monkeypatch.setattr(nb, "_window_id", lambda name: "0x1")
     monkeypatch.setattr(nb, "window_geometry", lambda name: (0, 0, 412, 915))
-    monkeypatch.setattr("interact.desktop.backend.time.sleep", lambda *_: None)
+    monkeypatch.setattr("interact.desktop.nested.time.sleep", lambda *_: None)
     sizes: list[tuple[str, str]] = []
     monkeypatch.setattr(
-        "interact.desktop.backend.subprocess.run",
+        "interact.desktop.nested.subprocess.run",
         lambda cmd, **k: sizes.append((cmd[3], cmd[4])) if cmd[1] == "windowsize" else None,
     )
 
@@ -183,7 +183,7 @@ def test_force_repaint_noop_without_window(monkeypatch):
 def test_free_displays_skips_taken(monkeypatch):
     """A display is taken if its X lock or socket exists; _free_displays returns free ones from the
     preferred number up, so concurrent sandboxes don't collide on :99 (#33)."""
-    import interact.desktop.backend as db
+    import interact.desktop.nested as db
 
     taken = {"/tmp/.X99-lock", "/tmp/.X11-unix/X100", "/tmp/.X101-lock"}
     monkeypatch.setattr(db.os.path, "exists", lambda p: p in taken)
@@ -249,7 +249,7 @@ def test_nested_captures_hide_the_cursor(monkeypatch):
         stdout = b"PNG"
 
     monkeypatch.setattr(
-        "interact.desktop.backend.subprocess.run", lambda cmd, **k: cmds.append(cmd) or _R()
+        "interact.desktop.nested.subprocess.run", lambda cmd, **k: cmds.append(cmd) or _R()
     )
     nb.capture()
     nb._maim_window("0x1")
@@ -266,7 +266,7 @@ def test_focus_uses_windowfocus_sync_not_activate(monkeypatch):
     monkeypatch.setattr(nb, "_window_id", lambda name: "0x1")
     cmds: list[list[str]] = []
     monkeypatch.setattr(
-        "interact.desktop.backend.subprocess.run",
+        "interact.desktop.nested.subprocess.run",
         lambda cmd, **k: cmds.append(cmd),
     )
     nb.focus("aino")
@@ -280,7 +280,7 @@ def test_focus_wid_targets_exact_window_and_skips_empty(monkeypatch):
     nb = _backend_no_server()
     cmds: list[list[str]] = []
     monkeypatch.setattr(
-        "interact.desktop.backend.subprocess.run", lambda cmd, **k: cmds.append(cmd)
+        "interact.desktop.nested.subprocess.run", lambda cmd, **k: cmds.append(cmd)
     )
     nb.focus_wid("0x7")
     assert cmds == [["xdotool", "windowfocus", "--sync", "0x7"]]

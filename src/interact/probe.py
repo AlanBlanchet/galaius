@@ -548,7 +548,7 @@ class DesktopScenario(ArtifactRun):
         )
 
     async def run(self) -> None:
-        from interact.desktop.backend import LocalBackend, NestedBackend
+        from interact.desktop import LocalBackend, NestedBackend
         from interact.runtime import config
 
         if self.target == "nested":

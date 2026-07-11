@@ -1,6 +1,6 @@
 import pytest
 
-from interact.desktop.backend import ABS_MAX, NestedBackend, screen_to_abs
+from interact.desktop import ABS_MAX, NestedBackend, screen_to_abs
 
 
 @pytest.mark.parametrize(
@@ -51,7 +51,7 @@ class TestScreenToAbs:
 def test_ffmpeg_grab_args_omit_t_for_a_session_and_include_it_for_a_clip():
     """A session (duration=None) records open-ended (no ``-t``) so it runs until stopped; an
     explicit duration keeps the blocking one-shot clip's ``-t`` for backward compat (#61/#62)."""
-    from interact.desktop.backend import _ffmpeg_grab_args
+    from interact.desktop import _ffmpeg_grab_args
 
     session = _ffmpeg_grab_args(":99", 0, 0, 412, 780, 12, "/tmp/x.mp4", duration=None)
     assert "-t" not in session
@@ -64,7 +64,7 @@ def test_ffmpeg_grab_args_omit_t_for_a_session_and_include_it_for_a_clip():
 def test_video_session_stop_finalizes_then_reads_and_cleans_up(tmp_path, monkeypatch):
     """stop() sends 'q' on stdin so ffmpeg writes a valid moov atom (a seekable mp4), then reads
     the file and unlinks it. A SIGTERM-only stop would truncate the moov and corrupt the clip."""
-    from interact.desktop import backend as db
+    from interact.desktop import video as db
 
     out = tmp_path / "rec.mp4"
     out.write_bytes(b"VIDEO")
@@ -90,7 +90,7 @@ def test_video_session_stop_finalizes_then_reads_and_cleans_up(tmp_path, monkeyp
 
 
 def test_ffmpeg_grab_args_mux_audio_when_a_source_is_given():
-    from interact.desktop.backend import _ffmpeg_grab_args
+    from interact.desktop import _ffmpeg_grab_args
 
     args = _ffmpeg_grab_args(":99", 0, 0, 412, 780, 12, "/tmp/x.mp4",
                              duration=None, audio_source="interact_99.monitor")
@@ -105,7 +105,7 @@ def test_ffmpeg_grab_args_mux_audio_when_a_source_is_given():
 def test_sandbox_audio_sink_is_created_once_and_spawn_routes_apps_into_it(monkeypatch):
     """The sandbox owns a private null sink: launched apps get PULSE_SINK so their audio lands
     there (inaudible, isolated from the user's audio), and recordings read its .monitor (#47)."""
-    from interact.desktop import backend as db
+    from interact.desktop import nested as db
 
     nb = db.NestedBackend.__new__(db.NestedBackend)
     nb.display = ":99"
@@ -130,7 +130,7 @@ def test_sandbox_audio_sink_is_created_once_and_spawn_routes_apps_into_it(monkey
 
 
 def test_audio_sink_failure_degrades_to_video_only(monkeypatch):
-    from interact.desktop import backend as db
+    from interact.desktop import nested as db
 
     nb = db.NestedBackend.__new__(db.NestedBackend)
     nb.display = ":99"

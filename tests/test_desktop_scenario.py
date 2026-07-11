@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pytest
 
-from interact.desktop.backend import DesktopBackend, NestedBackend
+from interact.desktop import DesktopBackend, NestedBackend
 
 FIXTURE = Path(__file__).parent / "fixtures" / "drag_window.py"
 PANEL = Path(__file__).parent / "fixtures" / "panel.py"
