@@ -322,3 +322,34 @@ def test_sandbox_touch_marks_use(monkeypatch):
     assert nb.idle_seconds() < 1.0
     nb._last_used = _time.monotonic() - 500
     assert nb.idle_seconds() > 499
+
+
+def test_sandbox_reaping_runs_even_with_browser_ttl_disabled(monkeypatch):
+    """session_idle_ttl=0 (browser reaping off) must NOT silently disable sandbox reaping — each
+    ttl gates only its own half."""
+    import asyncio
+
+    import interact.server as srv
+
+    monkeypatch.setattr(srv.config, "sandbox_idle_ttl", 300)
+    reaped = []
+    monkeypatch.setattr(srv, "_reap_sandbox", lambda ttl: reaped.append(ttl))
+
+    async def fast(run_secs):
+        orig_sleep = asyncio.sleep
+
+        async def instant(_):
+            await orig_sleep(0)
+
+        monkeypatch.setattr(srv.asyncio, "sleep", instant)
+        task = asyncio.ensure_future(srv._idle_session_reaper(0))
+        for _ in range(10):
+            await orig_sleep(0)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(fast(0))
+    assert reaped and all(t == 300 for t in reaped)

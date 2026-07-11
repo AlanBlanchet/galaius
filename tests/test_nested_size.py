@@ -54,6 +54,9 @@ def test_get_sandbox_respawns_only_on_size_change(monkeypatch, _restore_sandbox)
         def is_alive(self):
             return self._alive
 
+        def touch(self):
+            pass
+
         def close(self):
             self._alive = False
 
@@ -85,6 +88,9 @@ def test_get_sandbox_without_size_never_resizes_a_running_sandbox(monkeypatch, _
         def is_alive(self):
             return self._alive
 
+        def touch(self):
+            pass
+
         def close(self):
             self._alive = False
 
@@ -112,6 +118,9 @@ def test_get_sandbox_without_size_creates_at_default_when_none_running(monkeypat
 
         def is_alive(self):
             return self._alive
+
+        def touch(self):
+            pass
 
         def close(self):
             self._alive = False

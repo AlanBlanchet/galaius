@@ -123,12 +123,16 @@ class Config(BaseSettings):
     video_max_frames: int = 12
     max_tokens: int | None = None
     wait_timeout: int = 10000
-    # Auto-close an idle agent-owned surface — a browser session AND the (visible) nested sandbox —
-    # after this many seconds without a tool call. Frees the Chromium + driver (it re-opens lazily;
-    # a non-default session starts fresh — cookies/login not preserved) and closes an abandoned
-    # Xephyr window instead of leaving it on the user's desktop; the next launch_app respawns one.
-    # 0 disables. Override with INTERACT_SESSION_IDLE_TTL.
+    # Auto-close a browser session whose browser has sat idle (no tool call) this many seconds,
+    # freeing its Chromium + driver; it re-opens lazily on next use (a non-default session starts
+    # fresh — cookies/login are not preserved across the close). 0 disables. Override with
+    # INTERACT_SESSION_IDLE_TTL.
     session_idle_ttl: int = 900
+    # Same idea for the nested sandbox — but its Xephyr is a VISIBLE window on the user's desktop,
+    # which annoys per idle-minute in a way an invisible headless browser doesn't, so it defaults
+    # shorter. An abandoned sandbox auto-closes (the next launch_app respawns one); a live recording
+    # blocks reaping. 0 disables. Override with INTERACT_SANDBOX_IDLE_TTL.
+    sandbox_idle_ttl: int = 300
     vlm_max_dim: int = 1280
     vlm_min_dim: int = 768
     detection_max_retries: int = 3  # judge-driven re-detection passes to recover missed elements

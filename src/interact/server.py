@@ -666,19 +666,22 @@ def _reap_sandbox(ttl: int = 0) -> None:
 
 
 async def _idle_session_reaper(ttl: int) -> None:
-    """Periodically auto-close browser sessions idle beyond ``ttl`` so a long-lived MCP server (one
-    per open editor window) doesn't accumulate idle Chromium instances — a left-open page can spin
-    CPU for hours. Also reaps a dead sandbox. ``ttl`` <= 0 disables the loop entirely."""
-    if ttl <= 0:
+    """Periodically auto-close agent-owned surfaces the agent abandoned: browser sessions idle
+    beyond ``ttl`` (an idle Chromium can spin CPU on a left-open page for hours) and a sandbox idle
+    beyond ``config.sandbox_idle_ttl`` (its Xephyr is a VISIBLE window the user otherwise has to
+    close by hand). Each ttl <= 0 disables its own half; the loop runs while either is enabled."""
+    ttls = [t for t in (ttl, config.sandbox_idle_ttl) if t > 0]
+    if not ttls:
         return
-    interval = min(60, ttl)
+    interval = min(60, *ttls)
     while True:
         await asyncio.sleep(interval)
         try:
-            closed = await _sessions.close_idle(ttl)
-            if closed:
-                _log.info("auto-closed idle browser session(s): %s", ", ".join(closed))
-            _reap_sandbox(ttl)
+            if ttl > 0:
+                closed = await _sessions.close_idle(ttl)
+                if closed:
+                    _log.info("auto-closed idle browser session(s): %s", ", ".join(closed))
+            _reap_sandbox(config.sandbox_idle_ttl)
         except Exception:  # a transient error must never kill the reaper
             _log.exception("idle session reaper error")
 
