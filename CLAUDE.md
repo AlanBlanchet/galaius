@@ -18,13 +18,21 @@ Zed / Claude Desktop). One Python core in `src/interact/` drives three surfaces:
 
 ## Architecture (where things live)
 
-- `desktop_backend.py` — `DesktopBackend` ABC. `LocalBackend` = the real session: a uinput
-  **absolute pointer** (`INPUT_PROP_DIRECT`, maps over the full X root across all monitors)
-  plus a separate uinput keyboard, `maim` capture. `NestedBackend` = an isolated display the
-  agent owns — **Xephyr** (visible) or **Xvfb** (headless). Pick via `select_desktop_backend`.
-- `desktop.py::DesktopWindow` — routes input/capture through a bound `DesktopBackend` when set
-  (the nested sandbox), else the real-display **xdotool** path. `frames.py` converts
-  coordinate spaces (screen ↔ monitor ↔ window ↔ image).
+- `server/` — the MCP server, a package split by cohesion (not one 2000-line file): `core.py`
+  (the `FastMCP` instance + lifespan + instructions + session registry), `vlm.py` / `sandbox.py`
+  / `targets.py` / `capture.py` (private helpers by concern), `tools_web.py` / `tools_vision.py`
+  / `tools_desktop.py` / `tools_meta.py` (the `@mcp.tool` surfaces). `__init__` re-exports the
+  whole surface, so `import interact.server as srv; srv._vlm` still resolves. A helper is
+  monkeypatched on its OWN submodule (`srv.vlm._vlm`, `srv.targets._resolve_target`).
+- `desktop/` — the desktop subsystem, also a package: `backend.py` (`DesktopBackend` ABC +
+  `LocalBackend` real session, uinput **absolute pointer** `INPUT_PROP_DIRECT` + `maim` capture,
+  and `PortableBackend`, picked via `select_desktop_backend`), `nested.py` (`NestedBackend` — an
+  isolated **Xephyr**/**Xvfb** display the agent owns), `input.py` (uinput pointer + key chords),
+  `video.py` (`_VideoSession` + ffmpeg), `window.py` (`DesktopWindow` — routes input/capture
+  through a bound backend when set, else the real-display **xdotool** path), `cursor.py`
+  (XFixes cursor shape), `coords.py` (`CoordTransform`), `element.py` (`DesktopElement`),
+  `motion.py`, plus `atspi.py`, `frames.py` (coordinate spaces), `geometry.py`. `__init__`
+  re-exports the surface (`from interact.desktop import DesktopWindow`).
 - `cli.py` is for the user: bare `interact` → the config TUI; `install`/`status` (connectors),
   `config`, `usage`, `providers`, `doctor`, `update`, `mcp`. **Not** scenarios.
 - `probe.py` (`DetectionProbe` / `Scenario` / `DesktopScenario`) is **test infrastructure**,
