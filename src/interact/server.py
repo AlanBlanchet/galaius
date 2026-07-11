@@ -1258,6 +1258,62 @@ def _quality_plan(quality: str | None, model: str | None) -> tuple[str | None, b
     return (model or config.resolve_quality_model(q) or None), q == "critical", None
 
 
+def _review_drop_phantom_findings(review, valid_refs) -> None:
+    """critical mode: drop a finding that cites an element interact can't confirm (a phantom ref)."""
+    review.findings = [f for f in review.findings if not (f.ref and f.ref not in valid_refs)]
+
+
+def _verify_downgrade_phantom_pass(report, valid_refs) -> None:
+    """critical mode: a PASS resting on a phantom ref can't stand → downgrade it to unclear."""
+    for c in report.checks:
+        if c.ref and c.ref not in valid_refs and c.verdict == "pass":
+            c.verdict = "unclear"
+    report.all_pass = all(c.verdict == "pass" for c in report.checks)
+
+
+async def _run_ui_critique(
+    *, tool: str, dump_extra: dict, build_prompt, schema, parse, apply_strict, format_body,
+    target, session, scope, path, reference, model, quality,
+) -> str:
+    """The shared review_ui / verify_ui flow — capture → ground → VLM (reference-first when a
+    reference is given) → parse → strict-filter → format. The two tools differ only in the prompt
+    builder, the response schema, the parser/formatter, and the strict-mode filter, all injected
+    here; everything else was byte-identical between them."""
+    config.refresh()
+    eff_model, strict, qerr = _quality_plan(quality, model)
+    if qerr:
+        return qerr
+    inv = Debug.new_invocation_dir(None, tool)
+    Debug.dump_input(inv, {"tool": tool, "target": target, "reference": reference,
+                           "model": model, "quality": quality, **dump_extra},
+                     _resolved_config(eff_model, "image"))
+    img, context, ref_bytes, elements, err = await _resolve_capture(
+        target, session, scope, path, reference, inv
+    )
+    if err:
+        Debug.dump_output(inv, err)
+        return err
+    grounding = format_grounding(elements) if elements else None  # anchor findings to real elements
+    valid_refs = {e.ref for e in elements if getattr(e, "ref", None)} or None
+    try:
+        if ref_bytes is not None:  # reference first, build second — matches the compare rubric
+            r = await _vlm(ref_bytes, context, build_prompt(True, grounding),
+                           response_format=schema, model_override=eff_model, extra_images=[img])
+        else:
+            r = await _vlm(img, context, build_prompt(False, grounding),
+                           response_format=schema, model_override=eff_model)
+    except Exception as e:  # never crash the agent's flow on a vision hiccup
+        return f"ERROR: {tool} vision call failed — {e}"
+    parsed = parse(r.text)
+    if parsed and strict and valid_refs is not None:
+        apply_strict(parsed, valid_refs)
+    body = format_body(parsed, valid_refs) if parsed else r.text  # graceful: raw VLM text on parse miss
+    model_tag = f" {r.model}" if r.model else ""
+    out = f"{context}\n{body}\n(VLM:{model_tag} {r.elapsed:.1f}s)"
+    Debug.dump_output(inv, out)
+    return out
+
+
 @mcp.tool()
 async def review_ui(
     focus: str | None = None,
@@ -1291,37 +1347,19 @@ async def review_ui(
         interact can't confirm (highest precision, for a pre-ship sign-off). Unset = the configured/
         auto model. An explicit model= still overrides this.
     """
-    config.refresh()
-    eff_model, strict, qerr = _quality_plan(quality, model)
-    if qerr:
-        return qerr
-    inv = Debug.new_invocation_dir(None, "review_ui")
-    Debug.dump_input(inv, {"tool": "review_ui", "focus": focus, "reference": reference,
-                           "target": target, "session": session, "model": model, "quality": quality},
-                     _resolved_config(eff_model, "image"))
-    img, context, ref_bytes, elements, err = await _resolve_capture(target, session, scope, path, reference, inv)
-    if err:
-        Debug.dump_output(inv, err)
-        return err
-    grounding = format_grounding(elements) if elements else None  # anchor findings to the real elements
-    valid_refs = {e.ref for e in elements if getattr(e, "ref", None)} or None
-    try:
-        if ref_bytes is not None:  # reference first, build second — matches the compare rubric
-            r = await _vlm(ref_bytes, context, build_review_prompt(focus, compare=True, grounding=grounding),
-                           response_format=UIReview, model_override=eff_model, extra_images=[img])
-        else:
-            r = await _vlm(img, context, build_review_prompt(focus, grounding=grounding),
-                           response_format=UIReview, model_override=eff_model)
-    except Exception as e:  # never crash the agent's flow on a vision hiccup
-        return f"ERROR: review_ui vision call failed — {e}"
-    review = parse_review(r.text)
-    if review and strict and valid_refs is not None:  # critical: drop a finding citing a phantom ref
-        review.findings = [f for f in review.findings if not (f.ref and f.ref not in valid_refs)]
-    body = format_review(review, valid_refs) if review else r.text  # graceful: raw VLM text if the schema didn't parse
-    model_tag = f" {r.model}" if r.model else ""
-    out = f"{context}\n{body}\n(VLM:{model_tag} {r.elapsed:.1f}s)"
-    Debug.dump_output(inv, out)
-    return out
+    return await _run_ui_critique(
+        tool="review_ui",
+        dump_extra={"focus": focus, "session": session},
+        build_prompt=lambda compare, grounding: build_review_prompt(
+            focus, compare=compare, grounding=grounding
+        ),
+        schema=UIReview,
+        parse=parse_review,
+        apply_strict=_review_drop_phantom_findings,
+        format_body=format_review,
+        target=target, session=session, scope=scope, path=path,
+        reference=reference, model=model, quality=quality,
+    )
 
 
 @mcp.tool()
@@ -1353,42 +1391,21 @@ async def verify_ui(
         the best frontier; "critical" downgrades any PASS resting on an element interact can't confirm.
         Unset = configured/auto. An explicit model= overrides this.
     """
-    config.refresh()
     if not requirements:
         return "ERROR: verify_ui needs at least one requirement to check."
-    eff_model, strict, qerr = _quality_plan(quality, model)
-    if qerr:
-        return qerr
-    inv = Debug.new_invocation_dir(None, "verify_ui")
-    Debug.dump_input(inv, {"tool": "verify_ui", "requirements": requirements, "target": target,
-                           "reference": reference, "model": model, "quality": quality},
-                     _resolved_config(eff_model, "image"))
-    img, context, ref_bytes, elements, err = await _resolve_capture(target, session, scope, path, reference, inv)
-    if err:
-        Debug.dump_output(inv, err)
-        return err
-    grounding = format_grounding(elements) if elements else None  # anchor each check to the real elements
-    valid_refs = {e.ref for e in elements if getattr(e, "ref", None)} or None
-    try:
-        if ref_bytes is not None:  # reference first, build second
-            r = await _vlm(ref_bytes, context, build_verify_prompt(requirements, focus, compare=True, grounding=grounding),
-                           response_format=VerifyReport, model_override=eff_model, extra_images=[img])
-        else:
-            r = await _vlm(img, context, build_verify_prompt(requirements, focus, grounding=grounding),
-                           response_format=VerifyReport, model_override=eff_model)
-    except Exception as e:
-        return f"ERROR: verify_ui vision call failed — {e}"
-    report = parse_verify(r.text)
-    if report and strict and valid_refs is not None:  # critical: a PASS citing a phantom ref can't stand
-        for c in report.checks:
-            if c.ref and c.ref not in valid_refs and c.verdict == "pass":
-                c.verdict = "unclear"
-        report.all_pass = all(c.verdict == "pass" for c in report.checks)
-    body = format_verify(report, valid_refs) if report else r.text  # graceful: raw VLM text if schema didn't parse
-    model_tag = f" {r.model}" if r.model else ""
-    out = f"{context}\n{body}\n(VLM:{model_tag} {r.elapsed:.1f}s)"
-    Debug.dump_output(inv, out)
-    return out
+    return await _run_ui_critique(
+        tool="verify_ui",
+        dump_extra={"requirements": requirements, "focus": focus},
+        build_prompt=lambda compare, grounding: build_verify_prompt(
+            requirements, focus, compare=compare, grounding=grounding
+        ),
+        schema=VerifyReport,
+        parse=parse_verify,
+        apply_strict=_verify_downgrade_phantom_pass,
+        format_body=format_verify,
+        target=target, session=session, scope=scope, path=path,
+        reference=reference, model=model, quality=quality,
+    )
 
 
 @mcp.tool()
