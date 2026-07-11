@@ -1,8 +1,8 @@
-"""Box / point primitives in xyxy convention.
+"""BBox / point primitives in xyxy convention.
 
-:class:`Box` is the scalar owner — every scalar operation (area, center,
+:class:`BBox` is the scalar owner — every scalar operation (area, center,
 iou, containment, scaling, clamping) is a method on it. :class:`BoxArray`
-is the vectorised SoA wrapper backed by numpy; scalar methods on ``Box``
+is the vectorised SoA wrapper backed by numpy; scalar methods on ``BBox``
 delegate to a one-row ``BoxArray`` so there is exactly one implementation
 of each algorithm.
 """
@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, PrivateAttr
 Point = tuple[float, float]
 
 
-class Box(BaseModel):
+class BBox(BaseModel):
     """Immutable xyxy box with scalar geometry methods."""
 
     model_config = ConfigDict(frozen=True)
@@ -28,7 +28,7 @@ class Box(BaseModel):
     y2: float
 
     @classmethod
-    def from_xyxy(cls, t: tuple[float, float, float, float]) -> Box:
+    def from_xyxy(cls, t: tuple[float, float, float, float]) -> BBox:
         x1, y1, x2, y2 = t
         return cls(x1=x1, y1=y1, x2=x2, y2=y2)
 
@@ -43,7 +43,7 @@ class Box(BaseModel):
     def center(self) -> Point:
         return ((self.x1 + self.x2) / 2.0, (self.y1 + self.y2) / 2.0)
 
-    def iou(self, other: Box) -> float:
+    def iou(self, other: BBox) -> float:
         return float(
             BoxArray([self.as_xyxy()]).iou_matrix(BoxArray([other.as_xyxy()]))[0, 0]
         )
@@ -55,15 +55,15 @@ class Box(BaseModel):
             BoxArray([self.as_xyxy()]).contains_points(np.asarray([pt]))[0, 0]
         )
 
-    def scale(self, sx: float, sy: float) -> Box:
-        return Box(x1=self.x1 * sx, y1=self.y1 * sy, x2=self.x2 * sx, y2=self.y2 * sy)
+    def scale(self, sx: float, sy: float) -> BBox:
+        return BBox(x1=self.x1 * sx, y1=self.y1 * sy, x2=self.x2 * sx, y2=self.y2 * sy)
 
-    def clamp(self, w: float, h: float) -> Box:
-        return Box(
-            x1=Box.clamp_value(self.x1, 0.0, w),
-            y1=Box.clamp_value(self.y1, 0.0, h),
-            x2=Box.clamp_value(self.x2, 0.0, w),
-            y2=Box.clamp_value(self.y2, 0.0, h),
+    def clamp(self, w: float, h: float) -> BBox:
+        return BBox(
+            x1=BBox.clamp_value(self.x1, 0.0, w),
+            y1=BBox.clamp_value(self.y1, 0.0, h),
+            x2=BBox.clamp_value(self.x2, 0.0, w),
+            y2=BBox.clamp_value(self.y2, 0.0, h),
         )
 
     @staticmethod

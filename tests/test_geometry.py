@@ -5,10 +5,10 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from interact.desktop.geometry import Box, BoxArray
+from interact.desktop.geometry import BBox, BoxArray
 
 
-# Single mega-parametrize covers every scalar Box op.
+# Single mega-parametrize covers every scalar BBox op.
 @pytest.mark.parametrize(
     "op, args, expected",
     [
@@ -30,7 +30,7 @@ from interact.desktop.geometry import Box, BoxArray
         ("contains", ((0, 0, 10, 10), (10, 10)), True),  # opposite corner
         ("contains", ((0, 0, 10, 10), (11, 5)), False),
         ("contains", ((0, 0, 10, 10), None), False),
-        # scale -> Box
+        # scale -> BBox
         ("scale", ((10, 20, 30, 40), 2.0, 0.5), (20.0, 10.0, 60.0, 20.0)),
         # clamp_value (staticmethod)
         ("clamp_value", (5, 0, 10), 5),
@@ -41,28 +41,28 @@ from interact.desktop.geometry import Box, BoxArray
 def test_box_ops(op, args, expected):
     if op == "area":
         (xyxy,) = args
-        assert Box.from_xyxy(xyxy).area == expected
+        assert BBox.from_xyxy(xyxy).area == expected
     elif op == "center":
         (xyxy,) = args
-        assert Box.from_xyxy(xyxy).center == expected
+        assert BBox.from_xyxy(xyxy).center == expected
     elif op == "iou":
         a, b = args
-        assert Box.from_xyxy(a).iou(Box.from_xyxy(b)) == pytest.approx(expected)
+        assert BBox.from_xyxy(a).iou(BBox.from_xyxy(b)) == pytest.approx(expected)
     elif op == "contains":
         xyxy, pt = args
-        assert Box.from_xyxy(xyxy).contains(pt) is expected
+        assert BBox.from_xyxy(xyxy).contains(pt) is expected
     elif op == "scale":
         xyxy, sx, sy = args
-        assert Box.from_xyxy(xyxy).scale(sx, sy).as_xyxy() == expected
+        assert BBox.from_xyxy(xyxy).scale(sx, sy).as_xyxy() == expected
     elif op == "clamp_value":
         v, lo, hi = args
-        assert Box.clamp_value(v, lo, hi) == expected
+        assert BBox.clamp_value(v, lo, hi) == expected
     else:  # pragma: no cover — defensive
         raise AssertionError(f"unknown op {op}")
 
 
 def test_box_clamp_to_bounds():
-    out = Box.from_xyxy((-5, -5, 15, 15)).clamp(10, 10)
+    out = BBox.from_xyxy((-5, -5, 15, 15)).clamp(10, 10)
     assert out.as_xyxy() == (0.0, 0.0, 10.0, 10.0)
 
 
@@ -80,7 +80,7 @@ class TestBoxArray:
         mat = ba_a.iou_matrix(ba_b)
         for i in range(n):
             for j in range(n):
-                exp = Box.from_xyxy(tuple(a[i])).iou(Box.from_xyxy(tuple(b[j])))
+                exp = BBox.from_xyxy(tuple(a[i])).iou(BBox.from_xyxy(tuple(b[j])))
                 assert mat[i, j] == pytest.approx(exp)
 
     @pytest.mark.parametrize(

@@ -12,7 +12,7 @@ import each other by their submodule path (``interact.desktop.backend`` etc.).
 import asyncio  # noqa: F401
 import subprocess  # noqa: F401
 
-from interact.desktop.geometry import BoxArray  # noqa: F401 (geometry's Box is at .geometry.Box)
+from interact.desktop.geometry import BoxArray  # noqa: F401 (geometry's BBox is at .geometry.BBox)
 from interact.desktop.frames import Frame  # noqa: F401
 from interact.desktop.input import (  # noqa: F401
     ABS_MAX,

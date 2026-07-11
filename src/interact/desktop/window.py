@@ -18,7 +18,6 @@ from pydantic import BaseModel, PrivateAttr, computed_field
 
 from interact.desktop.coords import CoordTransform
 from interact.desktop.cursor import Cursor
-from interact.desktop.geometry import Box as _GeoBox, BoxArray
 from interact.desktop.video import _ffmpeg_grab_args, _VideoSession
 from interact.parsing import Parse
 from interact.state import Element, InteractiveElement

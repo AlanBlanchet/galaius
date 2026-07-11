@@ -9,7 +9,7 @@ from typing import Self
 from pydantic import BaseModel, computed_field
 
 from interact.desktop.coords import CoordTransform
-from interact.desktop.geometry import Box as _GeoBox, BoxArray
+from interact.desktop.geometry import BBox, BoxArray
 from interact.parsing import Parse
 from interact.state import Element, InteractiveElement
 
@@ -53,7 +53,7 @@ class Box(Element):
         )
 
     def iou(self, other: Self) -> float:
-        return _GeoBox.from_xyxy(self.as_xyxy()).iou(_GeoBox.from_xyxy(other.as_xyxy()))
+        return BBox.from_xyxy(self.as_xyxy()).iou(BBox.from_xyxy(other.as_xyxy()))
 
     def clamp(self, img_w: int, img_h: int) -> Self | None:
         x2 = min(self.x + self.w, img_w)
