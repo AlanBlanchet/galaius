@@ -358,17 +358,9 @@ async def measure_ui(
     pt = core._parse_int_tuple(point, 2, "point")
     if isinstance(pt, str):
         return pt
-    file_bytes, ferr = targets._resolve_image_source(target)  # target="file:<path>" → measure a saved image
-    if ferr:
-        return ferr
-    if file_bytes is not None:
-        img, label = file_bytes, f"Image file: {target.strip()[5:]}"
-    else:
-        win, mgr, err = targets._resolve_target(target, session)
-        if err:
-            return err
-        img = await capture._capture_target_png(win, mgr, scope)
-        label = core._desktop_label(win) if win else "Browser page"
+    img, label, _mgr, _win, err = await capture._capture_or_file(target, session, scope)
+    if err:
+        return err
     if path:
         core._save_to_path(path, img)
     try:

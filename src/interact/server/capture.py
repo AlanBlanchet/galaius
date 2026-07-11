@@ -217,9 +217,26 @@ async def _capture_target_png(win: DesktopWindow | None, mgr, scope: str | None)
     return base64.b64decode(state.screenshot_base64)
 
 
+async def _capture_or_file(target, session, scope):
+    """Resolve a capture target to ``(png_bytes, label, mgr, win, err)``: a ``target="file:<path>"``
+    reads that saved image (mgr/win None, #44); otherwise capture the resolved browser page / desktop
+    window. On error, ``err`` is the message and the rest are None. The single home of the
+    file-vs-live branch + its label, shared by ``measure_ui`` and the review/verify capture path."""
+    file_bytes, ferr = targets._resolve_image_source(target)
+    if ferr:
+        return None, None, None, None, ferr
+    if file_bytes is not None:
+        return file_bytes, f"Image file: {target.strip()[5:]}", None, None, None
+    win, mgr, err = targets._resolve_target(target, session)
+    if err:
+        return None, None, None, None, err
+    img = await _capture_target_png(win, mgr, scope)
+    return img, core._desktop_label(win) if win else "Browser page", mgr, win, None
+
+
 async def _resolve_capture(target, session, scope, path, reference, inv):
-    """Shared capture path for review_ui / verify_ui: a ``file:<path>`` target or a live capture,
-    saved to ``path`` if given, plus an optional ``reference`` image. Returns
+    """Shared capture path for review_ui / verify_ui: resolve the target (via ``_capture_or_file``),
+    save to ``path`` if given, and read an optional ``reference`` image. Returns
     ``(img_bytes, context, ref_bytes, elements, err_or_None)`` — on error the caller returns the string.
 
     ``elements`` is interact's detected element list for a BROWSER target (the reliable, no-VLM DOM-ref
@@ -227,23 +244,15 @@ async def _resolve_capture(target, session, scope, path, reference, inv):
     where no equally-reliable list exists."""
     from pathlib import Path
 
-    file_bytes, ferr = targets._resolve_image_source(target)  # target="file:<path>" → judge a saved image (#44)
-    if ferr:
-        return None, None, None, [], ferr
+    img, context, mgr, win, err = await _capture_or_file(target, session, scope)
+    if err:
+        return None, None, None, [], err
     elements: list = []
-    if file_bytes is not None:
-        img, context = file_bytes, f"Image file: {target.strip()[5:]}"
-    else:
-        win, mgr, err = targets._resolve_target(target, session)
-        if err:
-            return None, None, None, [], err
-        img = await _capture_target_png(win, mgr, scope)
-        context = core._desktop_label(win) if win else "Browser page"
-        if win is None and mgr is not None:  # browser target → DOM ref list to anchor the critique on
-            try:
-                elements = await _scan_elements(mgr, scope=scope)
-            except Exception:
-                elements = []  # never fail a capture because the grounding scan hiccuped
+    if win is None and mgr is not None:  # browser target → DOM ref list to anchor the critique on
+        try:
+            elements = await _scan_elements(mgr, scope=scope)
+        except Exception:
+            elements = []  # never fail a capture because the grounding scan hiccuped
     if path:
         core._save_to_path(path, img)
     Debug.save("capture", img, ext="png", invocation_id=inv)

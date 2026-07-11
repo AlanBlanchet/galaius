@@ -86,6 +86,7 @@ from interact.server.capture import (  # noqa: F401
     _annotate_page,
     _capture,
     _capture_desktop,
+    _capture_or_file,
     _capture_target_png,
     _element_screenshot,
     _quality_plan,
