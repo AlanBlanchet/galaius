@@ -3,9 +3,9 @@
 import pytest
 from textual.widgets import Input, Select, Static, Switch, TabbedContent
 
-from interact.settings_schema import by_key
+from interact.config import by_key
 from interact.tui import InteractTUI, _field_id, _mask
-from interact.userconfig import UserConfig
+from interact.config import UserConfig
 
 
 def _sid(key: str) -> str:

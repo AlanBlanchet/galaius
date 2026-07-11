@@ -28,7 +28,7 @@ from pydantic import BaseModel, ConfigDict
 
 from interact.benchmarks.published import PublishedEntry, PublishedTable
 from interact.data import PackageData
-from interact.dotenv_loader import load_dotenv_for_cli
+from interact.config import load_dotenv_for_cli
 from interact.models import RegistryMixin
 
 _log = logging.getLogger(__name__)

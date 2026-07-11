@@ -17,7 +17,7 @@ from interact.models import (
     is_transcription_only_model,
     supports_native_video_inline,
 )
-from interact.settings_schema import by_key
+from interact.config import by_key
 
 
 @pytest.mark.parametrize(

@@ -5,7 +5,7 @@ already-running MCP server."""
 
 import pytest
 
-from interact.userconfig import UserConfig
+from interact.config import UserConfig
 
 
 @pytest.fixture

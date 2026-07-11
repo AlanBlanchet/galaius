@@ -8,7 +8,7 @@ import pytest
 
 from interact.config import Config
 from interact.data import PackageData
-from interact.settings_schema import _ROLE_CAP, SETTINGS, by_key, groups, to_json_dict
+from interact.config import _ROLE_CAP, SETTINGS, by_key, groups, to_json_dict
 
 
 def test_every_setting_maps_to_a_real_config_field():
@@ -52,7 +52,7 @@ def test_default_collapses_home_so_export_is_portable():
 
 def test_bundled_settings_json_is_in_lockstep_with_the_schema():
     """The extension reads the bundled settings.json; if SETTINGS changed without regenerating
-    (`python -m interact.settings_schema`), this fails — the same staleness guard as models.json."""
+    (`python -m interact.config.schema`), this fails — the same staleness guard as models.json."""
     assert PackageData.settings_data() == to_json_dict()
 
 
@@ -64,7 +64,7 @@ def test_groups_cover_every_setting_in_order():
 @pytest.mark.asyncio
 async def test_tui_renders_a_widget_for_every_setting(tmp_path, monkeypatch):
     """The TUI's Config tab is generated from the schema — every setting must yield a control."""
-    from interact.userconfig import UserConfig
+    from interact.config import UserConfig
 
     monkeypatch.setattr(UserConfig, "PATH", tmp_path / "config.env")  # never touch the real file
     from interact.tui import InteractTUI, _field_id

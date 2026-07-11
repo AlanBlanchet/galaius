@@ -59,7 +59,7 @@ class PackageData:
     @classmethod
     def settings_data(cls) -> dict:
         """Parsed ``settings.json`` — the shared user-settings schema the TUI and the VS Code
-        extension both render from. Regenerate with ``python -m interact.settings_schema``."""
+        extension both render from. Regenerate with ``python -m interact.config.schema``."""
         raw = cls.read(cls.SETTINGS)
         if not raw:
             return {}

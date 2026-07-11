@@ -7,7 +7,7 @@ import pytest
 @pytest.fixture(scope="session", autouse=True)
 def _load_repo_dotenv() -> None:
     """Load nearest `.env` via the shared CLI loader (override=False)."""
-    from interact.dotenv_loader import load_dotenv_for_cli
+    from interact.config import load_dotenv_for_cli
 
     load_dotenv_for_cli()
 

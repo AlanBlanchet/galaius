@@ -35,8 +35,8 @@ from textual.widgets import (
 )
 
 from interact.clients import ClientTarget
-from interact.settings_schema import SETTINGS, Setting, groups
-from interact.userconfig import UserConfig
+from interact.config import SETTINGS, Setting, groups
+from interact.config import UserConfig
 
 # The three model roles (image/component/video) come from the shared schema — the Status tab
 # shows the model resolved for each; the Config tab renders every setting from the same schema.

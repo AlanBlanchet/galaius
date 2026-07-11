@@ -20,7 +20,7 @@ from typing import Literal
 
 from pydantic import BaseModel, computed_field
 
-from interact.config import Config
+from interact.config.settings import Config
 
 SettingKind = Literal["model", "enum", "bool", "int", "str", "path"]
 SettingGroup = Literal["Models", "Desktop", "Browser", "Advanced"]
@@ -248,11 +248,12 @@ def to_json_dict() -> dict:
 
 def _write_bundled() -> Path:
     """Regenerate the bundled ``interact/data/settings.json`` from this schema (the extension
-    build copies it in). Run ``python -m interact.settings_schema`` after editing SETTINGS."""
+    build copies it in). Run ``python -m interact.config.schema`` after editing SETTINGS."""
     import json
     from pathlib import Path
 
-    target = Path(__file__).parent / "data" / "settings.json"
+    # __file__ is interact/config/schema.py → data/ is two levels up (the package root).
+    target = Path(__file__).parent.parent / "data" / "settings.json"
     target.write_text(json.dumps(to_json_dict(), indent=2) + "\n")
     return target
 

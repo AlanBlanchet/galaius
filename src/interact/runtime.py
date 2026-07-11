@@ -8,7 +8,7 @@ from interact.config import Config
 from interact.data import PackageData
 from interact.formats import CoordFormat
 from interact.models import CircuitBreaker, Model
-from interact.userconfig import UserConfig
+from interact.config import UserConfig
 
 
 class _LiveConfig:

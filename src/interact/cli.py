@@ -15,7 +15,7 @@ from cyclopts import App, Parameter
 
 from interact import installed_version
 from interact.clients import ClientTarget, MCPServer, Scope
-from interact.userconfig import UserConfig
+from interact.config import UserConfig
 
 app = App(
     name="interact",
@@ -470,7 +470,7 @@ def main() -> None:
     # see the same keys — previously only `mcp` loaded .env, so `interact providers`
     # reported none inside a checkout that had a .env.
     UserConfig.apply()
-    from interact.dotenv_loader import load_dotenv_for_cli
+    from interact.config import load_dotenv_for_cli
 
     load_dotenv_for_cli()
     # Bare `interact` in a terminal opens the configuration TUI (configure models/keys,
