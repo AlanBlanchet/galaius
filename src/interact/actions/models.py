@@ -328,6 +328,15 @@ class NavigateAction(Action):
 
 
 class EvaluateJsAction(Action):
+    """Run a JS PROGRAM against the live page and get its value back — interact's batch primitive.
+
+    Prefer this for any iterate-over-elements flow (query → filter → loop → read/act) over many
+    get_interactive_elements→act round-trips: it runs in ONE call, inside the browser's own isolate
+    (no access to interact's host/filesystem), takes `args` for data, and surfaces the return value
+    JSON-serialised. E.g. read every row's price, or click each element matching a selector, in a
+    single step — `document.querySelectorAll(...)` + a loop, returning the collected result.
+    """
+
     # "eval_js" is an accepted alias tag: agents guessed it (with a `code` field) 81 times in the
     # client logs, each a hard validation error. Both are normalized to the canonical shape below.
     type: Literal["evaluate_js", "eval_js"] = "evaluate_js"
