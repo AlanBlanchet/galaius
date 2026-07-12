@@ -12,7 +12,12 @@ file is chmod ``600`` because it may hold ``*_API_KEY`` secrets.
 """
 
 import os
+import re
 from pathlib import Path
+
+# An already-environment-shaped name: all-caps, digits/underscores, no dots or dashes. A friendly
+# setting key is always dotted (group.field), so this only matches real env vars.
+_ENV_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]*")
 
 
 class UserConfig:
@@ -24,9 +29,16 @@ class UserConfig:
     def normalize_key(cls, key: str) -> str:
         """Map a friendly key to its environment-variable name.
 
-        ``image.model`` / ``image-model`` → ``INTERACT_IMAGE_MODEL``;
-        ``OPENAI_API_KEY`` and any explicit ``INTERACT_*`` are kept verbatim.
+        ``image.model`` / ``image-model`` → ``INTERACT_IMAGE_MODEL``; a key already in env form —
+        ``OPENAI_API_KEY``, ``AWS_ACCESS_KEY_ID``, ``AZURE_API_BASE``, any ``INTERACT_*`` — is kept
+        verbatim. The env-shape guard runs on the RAW key: after ``.replace(".", "_")`` a friendly
+        key like ``image.model`` becomes ``IMAGE_MODEL`` and would be indistinguishable from a real
+        env var, so a provider cred whose name doesn't end in ``_API_KEY`` (AWS / Azure / Vertex)
+        must be recognised BEFORE that rewrite — else it is stored under a dead ``INTERACT_*`` alias
+        that no SDK reads and the provider silently never authenticates.
         """
+        if _ENV_NAME_RE.fullmatch(key):
+            return key
         env = key.replace(".", "_").replace("-", "_").upper()
         if env.startswith("INTERACT_") or env.endswith("_API_KEY"):
             return env

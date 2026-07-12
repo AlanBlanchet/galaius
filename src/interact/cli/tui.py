@@ -18,6 +18,7 @@ from pathlib import Path
 
 from textual import events
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.css.query import NoMatches
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import (
@@ -69,23 +70,70 @@ def _select_options(setting: Setting) -> list[tuple[str, str]]:
     return [(opt.label, opt.value) for opt in (setting.options or [])]
 
 
+def _available_model_ids() -> set[str] | None:
+    """Model ids whose provider has a key set (config file or live env), from the bundled
+    registry data — no litellm, no network. ``None`` means *no* provider has a key yet, the
+    signal for the caller to show the whole catalogue so a first-run user can still browse."""
+    from interact.data import PackageData
+
+    providers = PackageData.models_data().get("providers", {})
+    ids: set[str] = set()
+    have_any = False
+    for spec in providers.values():
+        if any(UserConfig.get(k) or os.environ.get(k) for k in (spec.get("envKeys") or [])):
+            have_any = True
+            ids |= set((spec.get("models") or {}).keys())
+    return ids if have_any else None
+
+
+def _model_options(setting: Setting, configured: str) -> list[tuple[str, str]]:
+    """Dropdown choices for a model setting: ``(auto)`` plus the models you can actually use
+    (providers you have keys for), so the picker is short and relevant instead of a 45–128-item
+    wall. With no keys yet, show the full catalogue to browse. A ``configured`` value that isn't
+    in that set — a renamed/removed model, or a self-hosted/custom id — is ALWAYS appended so the
+    Select can hold it without raising (the crash that made a stale config.env unopenable)."""
+    full = _select_options(setting)
+    available = _available_model_ids()
+    options = list(full) if available is None else [
+        (label, value) for label, value in full if value == _AUTO or value in available
+    ]
+    if configured and configured not in {value for _, value in options}:
+        options.append((f"{configured}  ·  custom", configured))
+    return options
+
+
+def _select_value(setting: Setting, configured: str) -> str:
+    """The value to show in a model/enum Select — GUARANTEED to be one of that widget's options,
+    so assigning it (whether building the widget OR resetting it) can NEVER raise
+    InvalidSelectValueError. A model keeps its configured id (``_model_options`` always offers it)
+    or falls to ``(auto)``; an enum keeps a valid configured value, else its default, else the
+    first option. One resolver for both build and reset, so the two can't drift apart."""
+    if setting.kind == "model":
+        return configured or _AUTO
+    valid = [value for _, value in _select_options(setting)]  # enum: closed, ordered set
+    if configured in valid:
+        return configured
+    return setting.default if setting.default in valid else (valid[0] if valid else _AUTO)
+
+
 def _build_widget(setting: Setting):
     """Render the right Textual control for a setting's kind, pre-filled from the live config.
     Reads/writes by ``setting.env`` (the canonical INTERACT_* var) so the friendly key naming is
-    free to match the VS Code extension's keys without affecting what's stored."""
-    configured = UserConfig.get(setting.env)
+    free to match the VS Code extension's keys without affecting what's stored. Every Select's
+    initial value comes from :func:`_select_value` — always one of its options — so a stale/custom
+    persisted value can never raise InvalidSelectValueError and make the whole TUI fail to open."""
+    configured = UserConfig.get(setting.env) or ""
     wid = _field_id(setting)
-    if setting.kind in ("model", "enum"):
-        if setting.kind == "model":
-            value = configured if configured else _AUTO
-        else:
-            value = configured or setting.default
-        return Select(_select_options(setting), value=value, allow_blank=False, id=wid)
+    if setting.kind == "model":
+        return Select(_model_options(setting, configured), value=_select_value(setting, configured),
+                      allow_blank=False, id=wid)
+    if setting.kind == "enum":
+        return Select(_select_options(setting), value=_select_value(setting, configured),
+                      allow_blank=False, id=wid)
     if setting.kind == "bool":
-        on = (configured if configured is not None else setting.default).lower() == "true"
-        return Switch(value=on, id=wid)
+        return Switch(value=(configured or setting.default).lower() == "true", id=wid)
     # int / str / path → text input; show the default as a placeholder, not a forced value.
-    return Input(value=configured or "", placeholder=setting.default or "", id=wid)
+    return Input(value=configured, placeholder=setting.default or "", id=wid)
 
 
 def _known_key_names() -> list[str]:
@@ -144,8 +192,10 @@ class InteractTUI(App):
     """
     BINDINGS = [
         ("ctrl+s", "save_config", "Save config"),
-        ("ctrl+right", "next_tab", "Next tab"),
-        ("ctrl+left", "prev_tab", "Prev tab"),
+        # priority=True so the tab chords fire even when a focused Input/Select would otherwise
+        # swallow ctrl+arrow (word-nav) — the footer advertised these but they were dead in-terminal.
+        Binding("ctrl+right", "next_tab", "Next tab", priority=True),
+        Binding("ctrl+left", "prev_tab", "Prev tab", priority=True),
         ("r", "refresh", "Refresh"),
         ("q", "quit", "Quit"),
     ]
@@ -176,6 +226,11 @@ class InteractTUI(App):
 
             with TabPane("Config", id="tab-config"):
                 with VerticalScroll():
+                    yield Static(
+                        "Model menus list the providers you have keys for (add keys in API Keys) "
+                        "— leave one on (auto) to let interact pick. Enter or Ctrl+S saves.",
+                        classes="hint",
+                    )
                     # Every field comes from the shared settings schema — the same spec the VS Code
                     # extension renders — so the two front ends never drift.
                     for group_name, settings in groups():
@@ -219,7 +274,7 @@ class InteractTUI(App):
         self._refresh_connectors()
         self._refresh_usage_basic()
         self.query_one("#status-body", Static).update(self._status_text())
-        self.run_worker(self._load_registry_info, thread=True)  # heavy bits, off-thread
+        self.run_worker(self._load_registry_info, thread=True, exclusive=True, group="registry")  # heavy bits, off-thread
         self.run_worker(self._check_update, thread=True)
         self._ensure_focus()  # so the keyboard works immediately, before any click
 
@@ -246,6 +301,14 @@ class InteractTUI(App):
 
     def action_prev_tab(self) -> None:
         self._switch_tab(-1)
+
+    def check_action(self, action: str, parameters):
+        """Disable the bare ``q``/``r`` bindings while a form control is focused, so a fat-finger
+        mid-config doesn't quit (losing unsaved edits) or refresh. Ctrl+C still quits from
+        anywhere, and the tab chords (Ctrl+←/→) stay live so you can always reach a plain tab."""
+        if action in ("quit", "refresh") and isinstance(self.focused, (Input, Select, Switch)):
+            return False
+        return True
 
     # ── Status (fast: no model-registry load) ──────────────────────────────────
     def _status_text(self) -> str:
@@ -382,24 +445,41 @@ class InteractTUI(App):
         for setting in SETTINGS:
             self._persist(setting, self._widget_value(setting))
         self.query_one("#save-status", Static).update("✓ saved to ~/.interact/config.env")
+        # A toast too: the inline #save-status sits at the bottom of a scrolling pane and is easily
+        # off-screen, so Ctrl+S / Save looked like it did nothing (it saved silently). Match the keys.
+        self.notify("✓ Saved to ~/.interact/config.env")
         self.query_one("#status-body", Static).update(self._status_text())
-        self.run_worker(self._load_registry_info, thread=True)  # auto-resolution may change
+        self.run_worker(self._load_registry_info, thread=True, exclusive=True, group="registry")  # auto-resolution may change
 
     def _reset_config(self) -> None:
         """Clear all persisted config settings and restore the on-screen defaults."""
         for setting in SETTINGS:
             UserConfig.unset(setting.env)
             wid = f"#{_field_id(setting)}"
-            if setting.kind == "model":
-                self.query_one(wid, Select).value = _AUTO
-            elif setting.kind == "enum":
-                self.query_one(wid, Select).value = setting.default
+            if setting.kind in ("model", "enum"):
+                # via _select_value so a future enum whose default isn't a listed option can't
+                # crash reset (the build path is guarded the same way).
+                self.query_one(wid, Select).value = _select_value(setting, "")
             elif setting.kind == "bool":
                 self.query_one(wid, Switch).value = setting.default.lower() == "true"
             else:
                 self.query_one(wid, Input).value = ""
         self.query_one("#save-status", Static).update("✓ reset to defaults")
+        self.notify("✓ Reset to defaults")
         self.query_one("#status-body", Static).update(self._status_text())
+
+    def _rebuild_model_options(self) -> None:
+        """Re-trim the model dropdowns after a key is set/cleared, so a newly-usable provider's
+        models appear (and a de-keyed provider's drop) without restarting the TUI — the Config-tab
+        hint promises exactly this. Each dropdown's current selection is preserved."""
+        for setting in _MODEL_SETTINGS:
+            try:
+                select = self.query_one(f"#{_field_id(setting)}", Select)
+            except NoMatches:
+                continue
+            current = str(select.value)
+            select.set_options(_model_options(setting, "" if current == _AUTO else current))
+            select.value = current  # always present: _model_options keeps (auto) + the current id
 
     # ── API keys (per-row set/clear of the known provider keys) ─────────────────
     def _set_key(self, name: str) -> None:
@@ -408,13 +488,22 @@ class InteractTUI(App):
             self.notify(f"paste a value for {name} first", severity="warning")
             return
         UserConfig.set(name, value)
+        os.environ[name] = value  # live in THIS process now — config.env only seeds os.environ at
+        # startup, so without this the status + model menus wouldn't reflect the key until restart
         self.query_one(f"#in-{name}", Input).value = ""
         self.query_one(f"#state-{name}", Static).update(_key_state(name))
+        self._rebuild_model_options()  # this provider's models are now usable → show them
         self.notify(f"✓ set {name}")
 
     def _clear_key(self, name: str) -> None:
         removed = UserConfig.unset(name)
+        if removed:
+            # drop the copy apply() seeded into os.environ at startup, so the provider really
+            # disappears from the status + menus — not just from config.env. A key that came from
+            # the real shell env (removed=False) isn't ours to unset, so it's left untouched.
+            os.environ.pop(name, None)
         self.query_one(f"#state-{name}", Static).update(_key_state(name))
+        self._rebuild_model_options()  # provider no longer keyed → drop its models from the menus
         self.notify(f"cleared {name}" if removed else f"{name} was not in the config file")
 
     # ── Usage ────────────────────────────────────────────────────────────────
@@ -457,8 +546,17 @@ class InteractTUI(App):
         self._refresh_connectors()
         self._refresh_usage_basic()
         self.query_one("#status-body", Static).update(self._status_text())
-        self.run_worker(self._load_registry_info, thread=True)
+        self.run_worker(self._load_registry_info, thread=True, exclusive=True, group="registry")
         self.notify("refreshed")
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Enter in a text field acts, so keyboard users needn't tab to a button: an API-key
+        row (``in-<NAME>``) saves that key; a Config field (``set-…``) saves the whole config."""
+        input_id = event.input.id or ""
+        if input_id.startswith("in-"):
+            self._set_key(input_id.removeprefix("in-"))
+        elif input_id.startswith("set-"):
+            self._save_config()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         button_id = event.button.id or ""
@@ -475,10 +573,11 @@ class InteractTUI(App):
 
 
 def _field(label: str, description: str, widget) -> ComposeResult:
-    """A labelled control with a dim one-line description (keyboard users can't hover)."""
+    """A labelled control with a dim description (keyboard users can't hover). The description is
+    a Static so it WRAPS instead of truncating on a narrow terminal (a Label clips at one line)."""
     with Vertical(classes="field"):
         yield Label(f"[b]{label}[/b]")
-        yield Label(f"[dim]{description}[/dim]", classes="desc")
+        yield Static(f"[dim]{description}[/dim]", classes="desc")
         yield widget
 
 

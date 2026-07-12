@@ -41,3 +41,57 @@ def test_in_process_override_survives_refresh(live_config):
     UserConfig.set("component.model", "zai/glm-4.5v")
     live_config.refresh()
     assert live_config.model_for("component") == "test/override"  # override still wins
+
+
+def test_cleared_provider_key_is_dropped_from_env_not_leaked(live_config, monkeypatch):
+    """A provider *_API_KEY the FILE defines is applied to os.environ, and when cleared from the
+    file it is DROPPED from os.environ too — else a long-lived server keeps using it and it leaks
+    into sandbox child processes. A key from the real shell env (never file-defined) is untouched."""
+    import os
+
+    monkeypatch.delenv("NOVITA_API_KEY", raising=False)
+    UserConfig.set("NOVITA_API_KEY", "file-owned-value")
+    live_config.refresh()
+    assert os.environ.get("NOVITA_API_KEY") == "file-owned-value"
+
+    UserConfig.unset("NOVITA_API_KEY")
+    live_config.refresh()
+    assert "NOVITA_API_KEY" not in os.environ  # cleared in the file → gone from env, no leak
+
+    monkeypatch.setenv("COHERE_API_KEY", "from-the-shell")  # never file-defined
+    live_config.refresh()
+    assert os.environ.get("COHERE_API_KEY") == "from-the-shell"  # not file-owned → left alone
+
+
+@pytest.fixture
+def temp_cfg(tmp_path, monkeypatch):
+    monkeypatch.setattr(UserConfig, "PATH", tmp_path / "config.env")
+    return UserConfig.PATH
+
+
+@pytest.mark.parametrize(
+    "env_name",
+    ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AZURE_API_BASE", "AZURE_API_VERSION",
+     "VERTEXAI_LOCATION", "VERTEXAI_PROJECT", "OPENAI_API_KEY"],
+)
+def test_env_shaped_key_stored_verbatim(temp_cfg, env_name):
+    """A provider cred whose env name doesn't end in _API_KEY (AWS / Azure / Vertex) must be
+    stored under its REAL env name, not a dead ``INTERACT_*`` alias nothing reads — the API-Keys
+    tab bug where a set key still read 'unset' and the provider never authenticated."""
+    assert UserConfig.normalize_key(env_name) == env_name
+    UserConfig.set(env_name, "secret-val")
+    assert UserConfig.read()[env_name] == "secret-val"
+    assert f"INTERACT_{env_name}" not in UserConfig.read()
+
+
+@pytest.mark.parametrize(
+    "friendly,expected",
+    [("image.model", "INTERACT_IMAGE_MODEL"),
+     ("desktop.target", "INTERACT_DESKTOP_TARGET"),
+     ("desktop-target", "INTERACT_DESKTOP_TARGET"),
+     ("desktop.nestedHeadless", "INTERACT_DESKTOP_NESTEDHEADLESS"),
+     ("INTERACT_DEBUG_DIR", "INTERACT_DEBUG_DIR")],
+)
+def test_friendly_keys_still_map_to_interact_env(friendly, expected):
+    """The verbatim guard must NOT regress the friendly dotted/dashed setting keys."""
+    assert UserConfig.normalize_key(friendly) == expected

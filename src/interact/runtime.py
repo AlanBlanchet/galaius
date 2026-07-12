@@ -24,6 +24,7 @@ class _LiveConfig:
 
     def __init__(self) -> None:
         object.__setattr__(self, "_overrides", {})
+        object.__setattr__(self, "_file_owned", set())  # non-INTERACT_ keys we applied from the file
         object.__setattr__(self, "_inner", Config())
 
     def refresh(self) -> "_LiveConfig":
@@ -34,10 +35,17 @@ class _LiveConfig:
         file_vars = UserConfig.read()
         # The file is authoritative for INTERACT_* settings: drop any INTERACT_* env var that the
         # file no longer defines, so clearing a setting in the file (e.g. a model) actually takes
-        # effect on a running server — not left stale in the environment. Provider *_API_KEY vars
-        # set in the real environment are left untouched (the file only seeds, never owns those).
+        # effect on a running server — not left stale in the environment.
         for name in [k for k in os.environ if k.startswith("INTERACT_") and k not in file_vars]:
             del os.environ[name]
+        # Provider *_API_KEY vars: the file also OWNS the ones it defines (it overrides them below),
+        # so when one is cleared from the file it must be dropped from the environment too — else a
+        # long-lived server keeps authenticating with it and it LEAKS into sandbox child processes.
+        # Track which we applied so a key from the real shell env (never file-defined) stays.
+        file_owned = {k for k in file_vars if not k.startswith("INTERACT_")}
+        for name in object.__getattribute__(self, "_file_owned") - file_owned:
+            os.environ.pop(name, None)
+        object.__setattr__(self, "_file_owned", file_owned)
         for name, value in file_vars.items():
             os.environ[name] = value  # file is source of truth → override, not setdefault
         inner = Config()
