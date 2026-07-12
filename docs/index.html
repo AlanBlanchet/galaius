@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>interact — give your agent eyes and hands</title>
+<meta name="description" content="Browser and desktop automation for AI agents, over MCP. Vision-grounded control that reports what changed — not a screenshot. Works with Claude Code, Cursor, VS Code, Codex, Windsurf, Zed.">
+<meta name="theme-color" content="#0B0E14">
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<meta property="og:type" content="website">
+<meta property="og:title" content="interact — give your agent eyes and hands">
+<meta property="og:description" content="Browser + desktop automation for AI agents, over MCP. Vision-grounded control that reports what changed, not a screenshot.">
+<meta property="og:url" content="https://alanblanchet.github.io/interact/">
+<meta property="og:image" content="https://alanblanchet.github.io/interact/assets/banner.png">
+<meta name="twitter:card" content="summary_large_image">
+<style>
+  :root{
+    --bg:#0B0E14; --bg2:#10141D; --bg3:#151A24;
+    --violet:#8B5CF6; --violet-l:#A78BFA; --cyan:#22D3EE;
+    --text:#E6EAF2; --muted:#8B96A8; --dim:#737F93;
+    --border:rgba(255,255,255,.08); --border-h:rgba(167,139,250,.45);
+    --grad:linear-gradient(120deg,#A78BFA 0%,#8B5CF6 42%,#22D3EE 100%);
+    --mono:ui-monospace,"SF Mono","Cascadia Code",Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);
+    line-height:1.6;-webkit-font-smoothing:antialiased;overflow-x:hidden;
+    background-image:
+      radial-gradient(60rem 40rem at 12% -8%,rgba(139,92,246,.16),transparent 60%),
+      radial-gradient(55rem 40rem at 100% 108%,rgba(34,211,238,.12),transparent 55%),
+      radial-gradient(rgba(255,255,255,.028) 1px,transparent 1px);
+    background-size:auto,auto,26px 26px;background-attachment:fixed;
+  }
+  a{color:inherit;text-decoration:none}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 24px}
+  .grad{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .eyebrow{font:700 12px/1 var(--sans);letter-spacing:.18em;text-transform:uppercase}
+  .chip{display:inline-block;font:600 12.5px/1 var(--mono);color:var(--violet-l);
+    background:rgba(139,92,246,.12);border:1px solid rgba(139,92,246,.28);
+    padding:5px 9px;border-radius:7px}
+
+  /* nav */
+  nav{position:sticky;top:0;z-index:50;backdrop-filter:blur(12px);
+    background:rgba(11,14,20,.72);border-bottom:1px solid var(--border)}
+  nav .wrap{display:flex;align-items:center;gap:20px;height:62px}
+  nav .brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:19px;letter-spacing:-.5px}
+  nav .brand svg{width:28px;height:28px}
+  nav .links{margin-left:auto;display:flex;align-items:center;gap:26px}
+  nav .links a{color:var(--muted);font-size:14.5px;font-weight:500}
+  nav .links a:visited{color:var(--muted)}
+  nav .links a:hover{color:var(--text)}
+  .btn{display:inline-flex;align-items:center;gap:8px;font-weight:650;font-size:14.5px;
+    padding:10px 18px;border-radius:10px;border:1px solid var(--border);transition:.18s;cursor:pointer}
+  .btn.primary{background:var(--grad);color:#0B0E14;border:none;font-weight:750}
+  .btn.primary:hover{filter:brightness(1.08);transform:translateY(-1px)}
+  .btn.ghost{background:rgba(255,255,255,.03);color:var(--text)}
+  .btn.ghost:hover{border-color:var(--border-h);background:rgba(139,92,246,.08)}
+  @media(max-width:720px){nav .links a.hideable{display:none}}
+
+  /* hero */
+  header{padding:52px 0 30px;text-align:center;position:relative}
+  .mark{width:90px;height:90px;margin:0 auto 16px;display:block;filter:drop-shadow(0 6px 26px rgba(139,92,246,.4))}
+  .mark .pupil{transform-origin:32px 32px;animation:breathe 4.2s ease-in-out infinite}
+  .mark .ring{transform-origin:32px 32px;animation:scan 9s linear infinite}
+  @keyframes breathe{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(.82);opacity:.85}}
+  @keyframes scan{to{transform:rotate(360deg)}}
+  @media(prefers-reduced-motion:reduce){.mark .pupil,.mark .ring{animation:none}}
+  h1{font-size:clamp(40px,7vw,74px);line-height:1.02;letter-spacing:-2.5px;font-weight:850;margin:0 0 18px}
+  .sub{font-size:clamp(16px,2.3vw,20px);color:var(--muted);max-width:640px;margin:0 auto 14px}
+  .sub b{color:var(--text);font-weight:650}
+  .mcpline{font:600 13.5px/1 var(--mono);color:var(--cyan);margin-bottom:22px;letter-spacing:.02em}
+  .cta{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-bottom:20px}
+  .install{max-width:560px;margin:0 auto;display:flex;align-items:center;gap:10px;
+    background:#0D1117;border:1px solid var(--border);border-radius:12px;padding:13px 15px;
+    font:500 13.5px/1.4 var(--mono);text-align:left;color:#C9D3E3}
+  .install .dollar{color:var(--violet-l);user-select:none}
+  .install code{flex:1;overflow-x:auto;white-space:nowrap}
+  .copy{background:rgba(255,255,255,.05);border:1px solid var(--border);color:var(--muted);
+    border-radius:7px;padding:6px 9px;font:600 11px var(--mono);cursor:pointer;transition:.15s;flex:none}
+  .copy:hover{color:var(--text);border-color:var(--border-h)}
+
+  /* client row */
+  .clients{margin:26px auto 0;max-width:900px}
+  .clients p{text-align:center;color:var(--dim);font-size:12.5px;letter-spacing:.14em;
+    text-transform:uppercase;font-weight:650;margin:0 0 16px}
+  .clients .row{display:flex;flex-wrap:wrap;justify-content:center;gap:10px}
+  .clients .row span{font:600 13.5px/1 var(--sans);color:var(--muted);
+    border:1px solid var(--border);border-radius:999px;padding:8px 15px;background:rgba(255,255,255,.02)}
+
+  section{padding:56px 0}
+  .shead{max-width:640px;margin:0 auto 40px;text-align:center}
+  .shead .eyebrow{color:transparent;background:var(--grad);-webkit-background-clip:text;background-clip:text}
+  .shead h2{font-size:clamp(27px,4vw,38px);letter-spacing:-1px;margin:12px 0 10px;font-weight:800}
+  .shead p{color:var(--muted);margin:0;font-size:16px}
+
+  /* metric strip */
+  .metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:8px}
+  .metric{background:var(--bg2);border:1px solid var(--border);border-radius:16px;padding:24px 22px;text-align:center}
+  .metric .n{font-size:34px;font-weight:850;letter-spacing:-1px}
+  .metric .l{color:var(--muted);font-size:14px;margin-top:4px}
+  @media(max-width:720px){.metrics{grid-template-columns:1fr}}
+
+  /* capability grid */
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(268px,1fr));gap:16px}
+  .card{background:var(--bg2);border:1px solid var(--border);border-radius:16px;padding:24px;transition:.2s}
+  .card:hover{transform:translateY(-4px);border-color:var(--border-h);box-shadow:0 12px 40px -12px rgba(139,92,246,.35)}
+  .card .ic{width:42px;height:42px;border-radius:11px;display:grid;place-items:center;margin-bottom:15px;
+    background:rgba(139,92,246,.1);border:1px solid rgba(139,92,246,.24)}
+  .card .ic svg{width:22px;height:22px;stroke:url(#g);fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
+  .card h3{margin:0 0 7px;font-size:17.5px;font-weight:750;letter-spacing:-.3px}
+  .card p{margin:0 0 14px;color:var(--muted);font-size:14.5px}
+  .card .tools{display:flex;flex-wrap:wrap;gap:6px}
+
+  /* demo terminal */
+  .term{max-width:820px;margin:0 auto;background:#0C1017;border:1px solid var(--border);
+    border-radius:16px;overflow:hidden;box-shadow:0 24px 70px -30px rgba(0,0,0,.8)}
+  .term .bar{display:flex;align-items:center;gap:8px;padding:13px 16px;border-bottom:1px solid var(--border);background:rgba(255,255,255,.02)}
+  .term .bar i{width:11px;height:11px;border-radius:50%;display:block}
+  .term .bar .t{margin-left:10px;color:var(--dim);font:600 12.5px var(--mono)}
+  .term .body{padding:20px 22px;font:500 13.5px/1.85 var(--mono);overflow-x:auto}
+  .term .call{color:#E6EAF2;white-space:pre}
+  .term .call .fn{color:var(--violet-l);font-weight:700}
+  .term .call .str{color:#7DE0C8}
+  .term .call .key{color:var(--cyan)}
+  .term .out{color:var(--muted);white-space:pre-wrap;display:block;margin:2px 0 20px;padding-left:18px;border-left:2px solid rgba(139,92,246,.3)}
+  .term .out b{color:#CFE3D8;font-weight:600}
+  .term .out:last-child{margin-bottom:0}
+
+  /* quickstart */
+  .steps{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;counter-reset:s}
+  .step{background:var(--bg2);border:1px solid var(--border);border-radius:16px;padding:24px;position:relative;min-width:0}
+  .step::before{counter-increment:s;content:counter(s);position:absolute;top:18px;right:20px;
+    font:850 30px var(--sans);background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;opacity:.5}
+  .step h3{margin:0 0 10px;font-size:16px;font-weight:750}
+  .step code,.step pre{font-family:var(--mono);font-size:12.7px}
+  .step pre{margin:0;background:#0D1117;border:1px solid var(--border);border-radius:9px;
+    padding:11px 13px;color:#C9D3E3;overflow-x:auto;white-space:pre-wrap;word-break:break-word}
+  .step p{color:var(--muted);font-size:14px;margin:10px 0 0}
+  .step p code{background:rgba(255,255,255,.06);padding:2px 6px;border-radius:5px;color:var(--violet-l)}
+  @media(max-width:820px){.steps{grid-template-columns:1fr}}
+
+  /* platform table */
+  .ptable{max-width:640px;margin:0 auto;border:1px solid var(--border);border-radius:14px;overflow:hidden}
+  .ptable table{width:100%;border-collapse:collapse;font-size:14.5px}
+  .ptable th,.ptable td{padding:14px 16px;text-align:center;border-bottom:1px solid var(--border)}
+  .ptable th:first-child,.ptable td:first-child{text-align:left;color:var(--text)}
+  .ptable thead th{background:rgba(255,255,255,.03);color:var(--muted);font-weight:700}
+  .ptable tbody tr:last-child td{border-bottom:none}
+  .ptable td{color:var(--muted)}
+  .ok{color:#34D399;font-weight:700}.soon{color:var(--dim)}
+
+  @media(max-width:600px){
+    .ptable{overflow-x:auto}
+    .ptable table{min-width:440px}
+    .term .body{font-size:12px;line-height:1.7}
+    .copy{padding:12px 13px}
+    h1{letter-spacing:-1.5px}
+  }
+
+  footer{border-top:1px solid var(--border);padding:44px 0 60px;margin-top:30px}
+  footer .wrap{display:flex;flex-wrap:wrap;align-items:center;gap:18px;justify-content:space-between}
+  footer .brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:17px}
+  footer .brand svg{width:24px;height:24px}
+  footer .fl{display:flex;gap:22px;flex-wrap:wrap}
+  footer a{color:var(--muted);font-size:14px}footer a:visited{color:var(--muted)}footer a:hover{color:var(--text)}
+  footer .cr{width:100%;color:var(--dim);font-size:13px;border-top:1px solid var(--border);padding-top:20px}
+</style>
+</head>
+<body>
+
+<!-- shared gradient for stroke icons -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#A78BFA"/><stop offset="1" stop-color="#22D3EE"/>
+  </linearGradient>
+</defs></svg>
+
+<nav><div class="wrap">
+  <a class="brand" href="#top">
+    <svg viewBox="0 0 64 64" aria-hidden="true"><g fill="none"><circle cx="32" cy="32" r="21" stroke="url(#g)" stroke-width="5"/><g stroke="url(#g)" stroke-width="5" stroke-linecap="round"><line x1="32" y1="3" x2="32" y2="12"/><line x1="32" y1="52" x2="32" y2="61"/><line x1="3" y1="32" x2="12" y2="32"/><line x1="52" y1="32" x2="61" y2="32"/></g><circle cx="32" cy="32" r="8.5" fill="url(#g)"/></g></svg>
+    interact
+  </a>
+  <div class="links">
+    <a class="hideable" href="#capabilities">Capabilities</a>
+    <a class="hideable" href="#demo">Demo</a>
+    <a class="hideable" href="#quickstart">Quickstart</a>
+    <a class="btn ghost" href="https://github.com/AlanBlanchet/interact" target="_blank" rel="noopener">GitHub ↗</a>
+  </div>
+</div></nav>
+
+<header id="top"><div class="wrap">
+  <svg class="mark" viewBox="0 0 64 64" aria-label="interact">
+    <g fill="none">
+      <circle class="ring" cx="32" cy="32" r="21" stroke="url(#g)" stroke-width="5"/>
+      <g stroke="url(#g)" stroke-width="5" stroke-linecap="round">
+        <line x1="32" y1="2.5" x2="32" y2="12"/><line x1="32" y1="52" x2="32" y2="61.5"/>
+        <line x1="2.5" y1="32" x2="12" y2="32"/><line x1="52" y1="32" x2="61.5" y2="32"/>
+      </g>
+      <circle class="pupil" cx="32" cy="32" r="8.5" fill="url(#g)"/>
+      <circle cx="28.8" cy="28.8" r="2.4" fill="#F8FAFC" opacity=".9"/>
+    </g>
+  </svg>
+  <h1>Give your agent<br><span class="grad">eyes and hands.</span></h1>
+  <p class="sub">Browser <b>and</b> desktop automation for AI agents. Vision-grounded control that
+     reports <b>what changed</b> — not a screenshot.</p>
+  <p class="mcpline">// runs as an MCP server · plugs into any MCP client</p>
+  <div class="cta">
+    <a class="btn primary" href="#quickstart">Get started →</a>
+    <a class="btn ghost" href="https://github.com/AlanBlanchet/interact" target="_blank" rel="noopener">⭐ Star on GitHub</a>
+  </div>
+  <div class="install">
+    <span class="dollar">$</span>
+    <code id="ic">curl -LsSf https://raw.githubusercontent.com/AlanBlanchet/interact/main/install.sh | sh</code>
+    <button class="copy" data-copy="#ic">Copy</button>
+  </div>
+
+  <div class="clients">
+    <p>works inside</p>
+    <div class="row">
+      <span>Claude Code</span><span>Cursor</span><span>VS Code · Copilot</span><span>Codex</span>
+      <span>Windsurf</span><span>Zed</span><span>Claude Desktop</span>
+    </div>
+  </div>
+</div></header>
+
+<section id="why"><div class="wrap">
+  <div class="metrics">
+    <div class="metric"><div class="n grad">2</div><div class="l">surfaces — a headless browser <i>and</i> real OS windows, one API</div></div>
+    <div class="metric"><div class="n grad">~50</div><div class="l">tokens per step: a text diff, where a screenshot costs 1,000+</div></div>
+    <div class="metric"><div class="n grad">7+</div><div class="l">MCP clients supported out of the box</div></div>
+  </div>
+</div></section>
+
+<section id="capabilities"><div class="wrap">
+  <div class="shead">
+    <span class="eyebrow">The tool surface</span>
+    <h2>Everything an agent needs to drive a UI</h2>
+    <p>Real MCP tools, named so the model knows exactly what it's reaching for.</p>
+  </div>
+  <div class="grid">
+    <div class="card">
+      <div class="ic"><svg viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg></div>
+      <h3>See</h3>
+      <p>Grab pixels or read the DOM. Facts come back as text; how it <i>looks</i> comes back as a shot — vision only when you ask.</p>
+      <div class="tools"><span class="chip">screenshot</span><span class="chip">get_page_state</span></div>
+    </div>
+    <div class="card">
+      <div class="ic"><svg viewBox="0 0 24 24"><path d="M5 3l14 8-6 2-2 6z"/></svg></div>
+      <h3>Act</h3>
+      <p>The workhorse — click, type, scroll, drag, key-press, batched in one call, each step reporting what changed.</p>
+      <div class="tools"><span class="chip">run_actions</span></div>
+    </div>
+    <div class="card">
+      <div class="ic"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><line x1="12" y1="1" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="1" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="23" y2="12"/></svg></div>
+      <h3>Ground by vision</h3>
+      <p>Click <i>what's visible</i> — "the Submit button" — instead of brittle CSS selectors that break on every redesign.</p>
+      <div class="tools"><span class="chip">component model</span></div>
+    </div>
+    <div class="card">
+      <div class="ic"><svg viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></div>
+      <h3>Judge UIs</h3>
+      <p>Not just see — <i>critique</i>. Find defects, PASS/FAIL your requirements, and measure exact WCAG contrast with no VLM spend.</p>
+      <div class="tools"><span class="chip">review_ui</span><span class="chip">verify_ui</span><span class="chip">measure_ui</span></div>
+    </div>
+    <div class="card">
+      <div class="ic"><svg viewBox="0 0 24 24"><path d="M3 12h3l2-6 4 14 3-9 2 4h4"/></svg></div>
+      <h3>Hear &amp; watch</h3>
+      <p>Understand <i>sound and motion</i>, not only stills — transcribe any audio or video, or ask what was said and what happened over time.</p>
+      <div class="tools"><span class="chip">transcribe</span><span class="chip">record</span></div>
+    </div>
+    <div class="card">
+      <div class="ic"><svg viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><line x1="2" y1="9" x2="22" y2="9"/><circle cx="5.5" cy="6.5" r=".6" fill="url(#g)"/></svg></div>
+      <h3>Desktop + sandbox</h3>
+      <p>Drive real OS windows — or launch an app into an isolated display the agent owns: non-intrusive, occlusion-proof, GPU-app safe.</p>
+      <div class="tools"><span class="chip">launch_app</span><span class="chip">target="nested"</span></div>
+    </div>
+    <div class="card">
+      <div class="ic"><svg viewBox="0 0 24 24"><path d="M9 2v6M15 2v6M7 8h10v4a5 5 0 0 1-10 0z"/><path d="M12 17v5"/></svg></div>
+      <h3>Any MCP client</h3>
+      <p>One <code style="font-family:var(--mono);font-size:13px">interact install</code> registers the server with Claude Code, Cursor, VS Code, Codex, Windsurf, Zed, Claude Desktop.</p>
+      <div class="tools"><span class="chip">interact install</span></div>
+    </div>
+    <div class="card">
+      <div class="ic"><svg viewBox="0 0 24 24"><path d="M13 2L3 14h7l-1 8 10-12h-7z"/></svg></div>
+      <h3>Text diffs, not screenshots</h3>
+      <p>Every call returns what changed as compact text, so context stays tiny and cheap. Pixels are opt-in via <code style="font-family:var(--mono);font-size:13px">query</code>.</p>
+      <div class="tools"><span class="chip">fast · cheap · legible</span></div>
+    </div>
+  </div>
+</div></section>
+
+<section id="demo"><div class="wrap">
+  <div class="shead">
+    <span class="eyebrow">The code block is the demo</span>
+    <h2>A call goes in. A text diff comes back.</h2>
+    <p>No screenshot round-trips to burn your context — just what happened, in words.</p>
+  </div>
+  <div class="term">
+    <div class="bar"><i style="background:#FF5F57"></i><i style="background:#FEBC2E"></i><i style="background:#28C840"></i><span class="t">agent ▸ interact (MCP)</span></div>
+    <div class="body">
+<span class="call"><span class="fn">navigate</span>(<span class="str">"https://news.ycombinator.com"</span>)</span>
+<span class="out"><b>Hacker News</b> — 30 stories loaded. Top: "Show HN: a from-scratch autograd engine". 30 refs ready.</span>
+<span class="call"><span class="fn">run_actions</span>([{<span class="key">click</span>: <span class="str">"the top story link"</span>},
+             {<span class="key">observe</span>: <span class="str">"page title"</span>}])</span>
+<span class="out">✓ clicked ref#7 · navigated · <b>title now "from-scratch autograd · GitHub"</b></span>
+<span class="call"><span class="fn">verify_ui</span>([<span class="str">"header has a search box"</span>, <span class="str">"nav shows 4 tabs"</span>])</span>
+<span class="out">PASS — search box present (top-right)
+FAIL — nav shows 3 tabs, not 4</span>
+<span class="call"><span class="fn">record</span>(<span class="key">query</span>=<span class="str">"did the menu slide in smoothly?"</span>)</span>
+<span class="out"><b>Yes</b> — 220 ms ease-out, no dropped frames.</span>
+<span class="call"><span class="fn">transcribe</span>(<span class="str">"clip.mp4"</span>, <span class="key">query</span>=<span class="str">"how many speakers?"</span>)</span>
+<span class="out">Two speakers; a short intro jingle at 0:03.</span>
+    </div>
+  </div>
+</div></section>
+
+<section id="quickstart"><div class="wrap">
+  <div class="shead">
+    <span class="eyebrow">Three commands</span>
+    <h2>Up and running in a minute</h2>
+    <p>Installs the global <code style="font-family:var(--mono)">interact</code> CLI, config TUI, and MCP server in one.</p>
+  </div>
+  <div class="steps">
+    <div class="step">
+      <h3>Install</h3>
+      <pre>curl -LsSf https://raw\
+.githubusercontent.com/AlanBlanchet\
+/interact/main/install.sh | sh</pre>
+      <p>Or any platform: <code>uv tool install git+https://github.com/AlanBlanchet/interact</code></p>
+    </div>
+    <div class="step">
+      <h3>Connect your agent</h3>
+      <pre>interact install claude
+# cursor · vscode · codex
+# windsurf · zed · claude-desktop</pre>
+      <p>Registers the MCP server with the client. <code>interact doctor</code> checks keys &amp; providers.</p>
+    </div>
+    <div class="step">
+      <h3>Configure</h3>
+      <pre>interact          # config TUI
+interact status   # what's bound
+interact usage    # spend &amp; tokens</pre>
+      <p>Set models &amp; keys in a terminal UI. Or leave models on <code>auto</code> — it picks a capable, cheaper-first model per job.</p>
+    </div>
+  </div>
+</div></section>
+
+<section id="platform"><div class="wrap">
+  <div class="shead">
+    <span class="eyebrow">Platform support</span>
+    <h2>Browser everywhere. Desktop on Linux today.</h2>
+    <p>Native macOS / Windows desktop backends are on the roadmap (issue #24).</p>
+  </div>
+  <div class="ptable"><table>
+    <thead><tr><th>Capability</th><th>Linux</th><th>macOS</th><th>Windows</th></tr></thead>
+    <tbody>
+      <tr><td>Browser · MCP server · CLI · TUI</td><td class="ok">✓</td><td class="ok">✓</td><td class="ok">✓</td></tr>
+      <tr><td>Desktop control (real windows)</td><td class="ok">✓</td><td class="soon">soon</td><td class="soon">soon</td></tr>
+      <tr><td>Isolated sandbox (Xephyr/Xvfb)</td><td class="ok">✓</td><td class="soon">—</td><td class="soon">—</td></tr>
+    </tbody>
+  </table></div>
+</div></section>
+
+<footer><div class="wrap">
+  <a class="brand" href="#top">
+    <svg viewBox="0 0 64 64" aria-hidden="true"><g fill="none"><circle cx="32" cy="32" r="21" stroke="url(#g)" stroke-width="5"/><circle cx="32" cy="32" r="8.5" fill="url(#g)"/></g></svg>
+    interact
+  </a>
+  <div class="fl">
+    <a href="https://github.com/AlanBlanchet/interact" target="_blank" rel="noopener">GitHub</a>
+    <a href="https://github.com/AlanBlanchet/interact#readme" target="_blank" rel="noopener">Docs</a>
+    <a href="https://marketplace.visualstudio.com/items?itemName=AlanBlanchet.interact" target="_blank" rel="noopener">VS Code</a>
+    <a href="https://github.com/AlanBlanchet/interact/issues" target="_blank" rel="noopener">Report an issue</a>
+    <a href="https://modelcontextprotocol.io/" target="_blank" rel="noopener">MCP</a>
+  </div>
+  <div class="cr">MIT © Alan Blanchet · built to give agents eyes and hands.</div>
+</div></footer>
+
+<script>
+  document.querySelectorAll('.copy').forEach(b=>{
+    b.addEventListener('click',()=>{
+      const t=document.querySelector(b.dataset.copy).textContent.trim();
+      navigator.clipboard.writeText(t).then(()=>{const o=b.textContent;b.textContent='Copied ✓';setTimeout(()=>b.textContent=o,1400)});
+    });
+  });
+</script>
+</body>
+</html>

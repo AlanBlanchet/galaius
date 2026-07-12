@@ -1,0 +1,56 @@
+<svg viewBox="0 0 1200 360" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="interact — give your agent eyes and hands">
+  <defs>
+    <linearGradient id="grad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#A78BFA"/>
+      <stop offset="0.5" stop-color="#8B5CF6"/>
+      <stop offset="1" stop-color="#22D3EE"/>
+    </linearGradient>
+    <radialGradient id="glowV" cx="0.18" cy="0.12" r="0.6">
+      <stop offset="0" stop-color="#8B5CF6" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#8B5CF6" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowC" cx="0.9" cy="0.95" r="0.7">
+      <stop offset="0" stop-color="#22D3EE" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#22D3EE" stop-opacity="0"/>
+    </radialGradient>
+    <style>
+      .wm { font: 800 96px system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; letter-spacing: -3px; }
+      .tag { font: 600 36px system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; }
+      .sub { font: 500 25px system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; letter-spacing: 0.3px; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="360" rx="28" fill="#0B0E14"/>
+  <rect width="1200" height="360" rx="28" fill="url(#glowV)"/>
+  <rect width="1200" height="360" rx="28" fill="url(#glowC)"/>
+  <rect x="1" y="1" width="1198" height="358" rx="27" fill="none" stroke="#ffffff" stroke-opacity="0.06"/>
+
+  <!-- faint reticle motif, echoing the mark -->
+  <g opacity="0.06" stroke="#ffffff" fill="none" stroke-width="2">
+    <circle cx="1040" cy="180" r="150"/>
+    <circle cx="1040" cy="180" r="96"/>
+    <line x1="1040" y1="6" x2="1040" y2="60"/>
+    <line x1="1040" y1="300" x2="1040" y2="354"/>
+    <line x1="866" y1="180" x2="920" y2="180"/>
+    <line x1="1160" y1="180" x2="1214" y2="180"/>
+  </g>
+
+  <!-- the reticle-eye mark -->
+  <g transform="translate(96,92) scale(2.75)">
+    <circle cx="32" cy="32" r="21" fill="none" stroke="url(#grad)" stroke-width="5"/>
+    <g stroke="url(#grad)" stroke-width="5" stroke-linecap="round">
+      <line x1="32" y1="2.5" x2="32" y2="12"/>
+      <line x1="32" y1="52" x2="32" y2="61.5"/>
+      <line x1="2.5" y1="32" x2="12" y2="32"/>
+      <line x1="52" y1="32" x2="61.5" y2="32"/>
+    </g>
+    <circle cx="32" cy="32" r="8.5" fill="url(#grad)"/>
+    <circle cx="28.8" cy="28.8" r="2.4" fill="#F8FAFC" opacity="0.9"/>
+  </g>
+
+  <!-- wordmark + tagline -->
+  <text x="356" y="168" class="wm" fill="#F8FAFC">interact</text>
+  <rect x="360" y="196" width="150" height="6" rx="3" fill="url(#grad)"/>
+  <text x="358" y="248" class="tag" fill="#E2E8F0">Give your agent eyes and hands.</text>
+  <text x="358" y="292" class="sub" fill="#8B96A8">Browser + desktop automation · vision-grounded · over MCP</text>
+</svg>

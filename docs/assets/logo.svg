@@ -1,0 +1,21 @@
+<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="interact logo">
+  <defs>
+    <linearGradient id="ix" x1="8" y1="8" x2="56" y2="56" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#A78BFA"/>
+      <stop offset="0.5" stop-color="#8B5CF6"/>
+      <stop offset="1" stop-color="#22D3EE"/>
+    </linearGradient>
+  </defs>
+  <!-- reticle ring = camera focus / targeting; also the eye's outline -->
+  <circle cx="32" cy="32" r="21" fill="none" stroke="url(#ix)" stroke-width="5"/>
+  <!-- crosshair ticks = vision grounding / "where to click" -->
+  <g stroke="url(#ix)" stroke-width="5" stroke-linecap="round">
+    <line x1="32" y1="2.5" x2="32" y2="12"/>
+    <line x1="32" y1="52" x2="32" y2="61.5"/>
+    <line x1="2.5" y1="32" x2="12" y2="32"/>
+    <line x1="52" y1="32" x2="61.5" y2="32"/>
+  </g>
+  <!-- pupil = the eye + the click point -->
+  <circle cx="32" cy="32" r="8.5" fill="url(#ix)"/>
+  <circle cx="28.8" cy="28.8" r="2.4" fill="#F8FAFC" opacity="0.9"/>
+</svg>

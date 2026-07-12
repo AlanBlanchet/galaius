@@ -1,33 +1,56 @@
-# interact
+<p align="center">
+  <a href="https://alanblanchet.github.io/interact/">
+    <img src="docs/assets/banner.png" alt="interact — give your agent eyes and hands" width="820">
+  </a>
+</p>
 
-**Browser _and_ desktop automation for AI agents — over MCP.**
+<p align="center">
+  <b>Browser <i>and</i> desktop automation for AI agents — over MCP.</b><br>
+  Vision-grounded control that reports <b>what changed</b>, not a screenshot.
+</p>
 
-[![CI](https://github.com/AlanBlanchet/interact/actions/workflows/ci.yml/badge.svg)](https://github.com/AlanBlanchet/interact/actions/workflows/ci.yml)
-[![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/AlanBlanchet.interact?label=VS%20Code)](https://marketplace.visualstudio.com/items?itemName=AlanBlanchet.interact)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/)
-[![MCP](https://img.shields.io/badge/MCP-server-black.svg)](https://modelcontextprotocol.io/)
+<p align="center">
+  <a href="https://alanblanchet.github.io/interact/"><b>🌐 Website</b></a> ·
+  <a href="https://marketplace.visualstudio.com/items?itemName=AlanBlanchet.interact">VS Code</a> ·
+  <a href="#connect-it-to-your-agent">Quickstart</a> ·
+  <a href="#what-your-agent-can-do">Capabilities</a>
+</p>
 
-Like Playwright — but your agent acts on **what's on screen** (vision grounding), drives
-**real desktop windows** as well as a headless browser, plugs into **any MCP client**, and
-gets back a **text summary of what changed** instead of raw screenshots (so it stays fast and
-cheap).
+<p align="center">
+  <a href="https://github.com/AlanBlanchet/interact/actions/workflows/ci.yml"><img src="https://github.com/AlanBlanchet/interact/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://marketplace.visualstudio.com/items?itemName=AlanBlanchet.interact"><img src="https://img.shields.io/visual-studio-marketplace/v/AlanBlanchet.interact?label=VS%20Code" alt="VS Code Marketplace"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.11+-blue.svg" alt="Python 3.11+"></a>
+  <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-server-black.svg" alt="MCP"></a>
+</p>
+
+---
+
+Like Playwright — but your agent acts on **what's on screen** (vision grounding), drives **real
+desktop windows** as well as a headless browser, plugs into **any MCP client**, and gets back a
+**text summary of what changed** instead of raw screenshots (so it stays fast and cheap).
 
 ```bash
 curl -LsSf https://raw.githubusercontent.com/AlanBlanchet/interact/main/install.sh | sh
 interact install claude     # or: cursor | vscode | codex | windsurf | zed | claude-desktop
 ```
 
-That's it — your agent can now navigate, click, type, scroll, drag, and read back what
-happened.
+That's it — your agent can now navigate, click, type, scroll, drag, **see, hear, and watch**, and
+read back what happened.
 
 ## Why interact
 
 - **Vision grounding** — act by what's visible ("click Submit"), not just CSS selectors.
 - **Browser + desktop** — a headless browser _and_ real OS windows, one API.
+- **See, hear, and watch** — screenshots, but also **transcribe** audio/video and **record** +
+  explain motion. Your agent isn't limited to stills.
 - **Any MCP client** — Claude Code, Cursor, VS Code/Copilot, Codex, Windsurf, Zed, Claude Desktop.
-- **Text diffs, not screenshots** — each call returns what changed; vision analysis is opt-in via `query`.
+- **Text diffs, not screenshots** — each call returns what changed; a screenshot handed to your
+  model is ~1,000+ tokens every step, a text diff is a few dozen. Vision is opt-in via `query`.
 - **One command** — CLI + config TUI + MCP server in a single `interact`.
+
+> **[See it all on the website →](https://alanblanchet.github.io/interact/)** — the capability tour,
+> a live tool-call demo, and quickstart.
 
 ## Install
 
@@ -140,11 +163,14 @@ the VS Code **Configuration → Models** panel, or the CLI (`interact config set
 - **`measure_ui`** — _measure_ a UI deterministically (no VLM, no spend): `region="x,y,w,h"` returns
   the exact WCAG contrast ratio (with AA/AAA pass/fail) + dominant colors + the largest empty band;
   `point="x,y"` returns the exact hex color. The trustworthy number to back up review_ui's critique.
-- **`transcribe`** — _hear_ media, not just see it: point it at an audio or media file (a clip from
-  `download_asset`, or a `record(path=…)` recording) and get the transcript back; pass a `query` to
-  ask about the audio instead (how many speakers, what's said, the tone). Understanding is acoustic
-  when the audio model can take audio in chat (Gemini, gpt-4o-audio), transcript-based with a
-  transcription-only model (Whisper).
+- **`transcribe`** — _hear_ media, not just see it: point it at any audio **or video** file (a clip
+  from `download_asset`, or a `record(path=…)` recording) and get the transcript back; pass a `query`
+  to ask about the sound instead (how many speakers, what's said, the tone, the music). Understanding
+  is acoustic when the audio model can take audio in chat (Gemini, gpt-4o-audio), transcript-based
+  with a transcription-only model (Whisper).
+- **`record`** — _watch_ motion, not just stills: capture a browser or desktop interaction to video,
+  then pass `query` to have the video model explain the **sequence** — "did the menu slide in
+  smoothly?", "what happened after the click?". Sandbox recordings even carry the app's own audio.
 - **Desktop** — `list_desktop_windows`, and the same actions/screenshot against a window (by title
   or `wid:<id>`) or the whole screen. A moved or backgrounded window is raised before capture, so
   it's always interactable.
