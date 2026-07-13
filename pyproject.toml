@@ -72,6 +72,11 @@ norecursedirs = ["tests/fixtures", "tests/e2e"]
 # blocking the whole job forever. "thread" method works on Windows (signal/SIGALRM is Unix-only).
 timeout = 90
 timeout_method = "thread"
+# Dump every thread's traceback to the REAL stderr if a test runs >75s — before the 90s
+# pytest-timeout fires. On Windows the thread-method timeout crashes pytest's capture manager
+# (assert _global_capturing), eating the captured output, so a hang currently shows no test name.
+# faulthandler writes to the true fd and survives that crash, NAMING the hanging test (#73).
+faulthandler_timeout = 75
 markers = [
     "integration: tests that require external API calls and a real browser",
     "desktop: tests that require a live X11 display and AT-SPI",
