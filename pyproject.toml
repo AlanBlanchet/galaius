@@ -72,11 +72,6 @@ norecursedirs = ["tests/fixtures", "tests/e2e"]
 # blocking the whole job forever. "thread" method works on Windows (signal/SIGALRM is Unix-only).
 timeout = 90
 timeout_method = "thread"
-# Dump every thread's traceback to the REAL stderr if a test runs >75s. On Linux/macOS this fires
-# just before the 90s pytest-timeout; on Windows pytest-timeout is suppressed (its thread timer
-# crashes pytest 9's capture manager at teardown — see tests/conftest.py, #73), so faulthandler is
-# the Windows hang-surface (the CI job's timeout-minutes bounds a real hang).
-faulthandler_timeout = 75
 markers = [
     "integration: tests that require external API calls and a real browser",
     "desktop: tests that require a live X11 display and AT-SPI",
