@@ -66,6 +66,18 @@ def _isolate_interact_logs(tmp_path):
         config.screenshot_dump_dir = saved
 
 
+@pytest.hookimpl(tryfirst=True)
+def pytest_timeout_set_timer(item, settings):
+    # pytest-timeout's thread-method timer crashes pytest 9's capture manager during teardown on
+    # Windows: read_global_capture() asserts `_global_capturing is not None` even when NOTHING hangs
+    # (all tests pass in ~40s), failing CI with exit 1 and blocking the release. Suppress its timer on
+    # Windows only — this firstresult hook wins with a truthy return so pytest-timeout sets no timer
+    # (its cancel is a safe no-op when none was set). Linux + macOS keep full hang-protection. See #73.
+    if sys.platform == "win32":
+        return True
+    return None
+
+
 def pytest_collection_modifyitems(config, items):
     # integration → needs API keys + a real browser; desktop → needs a live Linux display.
     # Skipping these keeps the suite green on macOS/Windows (and headless CI), so the
