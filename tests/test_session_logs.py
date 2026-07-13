@@ -32,6 +32,7 @@ def _fake_session(home: Path, slug: str, sid: str, custom_title: str | None):
 
 def test_session_name_uses_the_custom_title_over_the_dir(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Path.home() reads USERPROFILE on Windows, not HOME
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sid-1")
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", "/work/aino")  # dir basename "aino"
     _fake_session(tmp_path, "proj-aino", "sid-1", "Aino")  # title "Aino"
@@ -65,6 +66,7 @@ def test_session_name_is_sanitised(monkeypatch, tmp_path):
 
 def test_session_log_dir_is_sessions_name_date(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Path.home() reads USERPROFILE on Windows, not HOME
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sid-4")
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", "/work/interact")
     _fake_session(tmp_path, "proj-interact", "sid-4", "Interact")
