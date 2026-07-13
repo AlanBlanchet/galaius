@@ -11,8 +11,10 @@ doctor``/``status`` read these, prune dead pids, and flag any LIVE server whose 
 the latest — naming the pid so the user knows exactly which editor connection to reconnect.
 """
 
+import ctypes
 import json
 import os
+import sys
 from pathlib import Path
 
 from interact import installed_version
@@ -68,6 +70,12 @@ def unregister_server(path: Path | None) -> None:
 
 
 def _alive(pid: int) -> bool:
+    # os.kill(pid, 0) is the POSIX liveness probe, but on Windows signal 0 IS CTRL_C_EVENT: os.kill
+    # would GenerateConsoleCtrlEvent, sending Ctrl-C to the pid's console group and interrupting US
+    # — the KeyboardInterrupt that broke Windows CI (every test passed, yet exit 1, #73). Query the
+    # process handle there instead; it sends no signal.
+    if sys.platform == "win32":
+        return _alive_windows(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -75,6 +83,26 @@ def _alive(pid: int) -> bool:
     except PermissionError:
         return True  # exists, owned by another user — still running
     return True
+
+
+def _alive_windows(pid: int) -> bool:
+    """Liveness via OpenProcess — no signal sent. A pid we can open whose exit code is STILL_ACTIVE
+    is running; one we cannot open (or that has exited) is dead, so its registry file is pruned."""
+    STILL_ACTIVE = 259
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    kernel32 = ctypes.windll.kernel32
+    kernel32.OpenProcess.restype = ctypes.c_void_p  # HANDLE is pointer-sized — don't truncate on 64-bit
+    kernel32.OpenProcess.argtypes = (ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong)
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return False
+    try:
+        code = ctypes.c_ulong()
+        if kernel32.GetExitCodeProcess(ctypes.c_void_p(handle), ctypes.byref(code)):
+            return code.value == STILL_ACTIVE
+        return True
+    finally:
+        kernel32.CloseHandle(ctypes.c_void_p(handle))
 
 
 def _is_interact_mcp(pid: int) -> bool:

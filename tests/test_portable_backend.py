@@ -7,7 +7,6 @@ cursor), and skips — rather than fails — when a host denies Screen-Recording
 known GitHub macOS-runner limitation), printing what access is needed so it's actionable.
 """
 
-import os
 import sys
 import time
 
@@ -16,19 +15,9 @@ import pytest
 pytestmark = pytest.mark.timeout(60)  # never let a stuck GUI call hang the matrix
 
 
-def _skip_if_windows_ci():
-    # windows-latest has no usable interactive GUI session, so mss capture / pynput input return
-    # blank or miscoordinated results and these asserts FAIL there — masked until now by the
-    # pytest-timeout teardown crash (#73). Skip on Windows CI; macOS CI still exercises the
-    # PortableBackend, and a local Windows dev box still runs it. See #73.
-    if sys.platform == "win32" and os.environ.get("CI"):
-        pytest.skip("no usable interactive GUI on the windows-latest CI runner; see #73")
-
-
 def _backend():
     if sys.platform.startswith("linux"):
         pytest.skip("Linux uses LocalBackend; PortableBackend is the macOS/Windows path")
-    _skip_if_windows_ci()
     from interact.desktop.backend import PortableBackend
 
     try:
@@ -77,7 +66,6 @@ def test_screen_target_resolves_and_captures_through_the_tool_path():
     backend and captures the real desktop — the MCP tool path agents actually use (#24)."""
     if sys.platform.startswith("linux"):
         pytest.skip("Linux uses LocalBackend; PortableBackend is the macOS/Windows path")
-    _skip_if_windows_ci()
     import interact.server as server
 
     win, mgr, err = server._resolve_target("screen", "default")

@@ -24,12 +24,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20  # pytest-timeout is disabled on Windows (#73) — bound any real hang here
-    env:
-      # pytest-timeout's thread timer raises a spurious KeyboardInterrupt at teardown on Windows
-      # under pytest 9 (every test passes, but exit 1 blocks the release). Disable the plugin on
-      # Windows; --full-trace names the source if anything else ever interrupts. Linux/macOS keep it.
-      PYTEST_ADDOPTS: ${{ matrix.os == 'windows-latest' && '-p no:timeout --full-trace' || '' }}
+    timeout-minutes: 20  # backstop: bound any real hang (pytest-timeout catches most first, at 90s)
     steps:
       - uses: actions/checkout@v4
 

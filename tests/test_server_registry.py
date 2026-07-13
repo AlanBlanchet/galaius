@@ -41,6 +41,20 @@ def test_dead_pid_registry_file_is_pruned():
     assert not dead.exists()  # pruned, so a crashed server never lingers as a false positive
 
 
+def test_alive_never_signals_the_process_on_windows(monkeypatch):
+    """os.kill(pid, 0) is the POSIX liveness probe, but on Windows signal 0 == CTRL_C_EVENT — it
+    sends Ctrl-C to the pid's console group and interrupts the caller. That KeyboardInterrupt broke
+    Windows CI via test_dead_pid_registry_file_is_pruned (all tests passed, yet exit 1). On Windows
+    _alive must use a non-signaling liveness check and must NEVER call os.kill (#73)."""
+    monkeypatch.setattr(sr.sys, "platform", "win32")
+    monkeypatch.setattr(sr, "_alive_windows", lambda pid: pid != 999999)  # stub the OpenProcess path
+    signalled: list = []
+    monkeypatch.setattr(sr.os, "kill", lambda *a, **k: signalled.append(a))
+    assert sr._alive(999999) is False          # dead → its registry file is pruned
+    assert sr._alive(4321) is True             # alive
+    assert signalled == []                     # os.kill(pid, 0) would fire CTRL_C_EVENT — never call it
+
+
 def test_unregister_removes_the_file():
     path = sr.register_server()
     assert path and path.exists()
