@@ -66,18 +66,6 @@ def _isolate_interact_logs(tmp_path):
         config.screenshot_dump_dir = saved
 
 
-def pytest_configure(config):
-    # pytest-timeout's thread-method timer fires spuriously at session teardown on Windows and raises
-    # KeyboardInterrupt under pytest 9 — every test passes (762 passed) yet the process exits 1,
-    # skipping the release. Zero the timeout on Windows so the timer is never armed for the regular
-    # tests that run here (the option overrides the ini; the marker-timeout tests are skipped on
-    # Windows CI anyway). Linux/macOS keep timeout=90 for real hang-protection. A conftest
-    # pytest_timeout_set_timer hook didn't hold on the runner (plugin load-order never wired it to
-    # pytest-timeout's hookspec), so gate at the option in pytest_configure, a core hook. See #73.
-    if sys.platform == "win32":
-        config.option.timeout = 0
-
-
 def pytest_collection_modifyitems(config, items):
     # integration → needs API keys + a real browser; desktop → needs a live Linux display.
     # Skipping these keeps the suite green on macOS/Windows (and headless CI), so the
