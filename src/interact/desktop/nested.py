@@ -559,26 +559,55 @@ class NestedBackend(DesktopBackend):
         vals = dict(line.split("=", 1) for line in info.splitlines() if "=" in line)
         return int(vals["X"]), int(vals["Y"]), int(vals["WIDTH"]), int(vals["HEIGHT"])
 
-    def list_windows(self) -> list[tuple[int, str]]:
-        """``(wid, title)`` of named windows on the nested display, one per distinct title. There's
-        no WM here, so query X directly. Falls back to non-visible matches: a window that's mapped
-        but not yet marked viewable (an app mid-startup) must still be reported, or launch_app's
-        poll would say nothing appeared when it did."""
-        ids = subprocess.run(
+    def _search_ids(self) -> list[str]:
+        """Window ids on the nested display, preferring visible ones. Falls back to non-visible
+        matches: a window that's mapped but not yet marked viewable (an app mid-startup) must
+        still be reported, or launch_app's poll would say nothing appeared when it did."""
+        return subprocess.run(
             ["xdotool", "search", "--onlyvisible", "--name", ".+"],
             env=self.env, capture_output=True, text=True,
         ).stdout.split() or subprocess.run(
             ["xdotool", "search", "--name", ".+"], env=self.env, capture_output=True, text=True
         ).stdout.split()
+
+    def _window_name(self, wid: str) -> str:
+        return subprocess.run(
+            ["xdotool", "getwindowname", wid], env=self.env, capture_output=True, text=True
+        ).stdout.strip()
+
+    def _window_size(self, wid: str) -> tuple[int, int]:
+        """(w, h) of a window; (0, 0) when the query fails — unknown, never treated as tiny."""
+        out = subprocess.run(
+            ["xdotool", "getwindowgeometry", "--shell", wid],
+            env=self.env, capture_output=True, text=True,
+        ).stdout
+        dims = {}
+        for line in out.splitlines():
+            key, _, val = line.partition("=")
+            if key in ("WIDTH", "HEIGHT") and val.isdigit():
+                dims[key] = int(val)
+        return dims.get("WIDTH", 0), dims.get("HEIGHT", 0)
+
+    # Below this, a window is a utility artifact (Qt's 1x1 "Qt Selection Owner for <app>"), never
+    # a drive/capture target. During a slow startup (a JIT warm) these are the ONLY windows for
+    # tens of seconds — reporting them made launch_app advertise them as the app.
+    _MIN_APP_WINDOW_PX = 20
+
+    def list_windows(self) -> list[tuple[int, str]]:
+        """``(wid, title)`` of the DRIVABLE named windows on the nested display, one per distinct
+        title. There's no WM here, so query X directly. Tiny utility windows (selection owners,
+        1x1 placeholders) are excluded; a window whose geometry can't be read is kept."""
         out: list[tuple[int, str]] = []
         seen: set[str] = set()
-        for wid in ids:
-            name = subprocess.run(
-                ["xdotool", "getwindowname", wid], env=self.env, capture_output=True, text=True
-            ).stdout.strip()
-            if name and name not in seen:
-                seen.add(name)
-                out.append((int(wid), name))
+        for wid in self._search_ids():
+            name = self._window_name(wid)
+            if not name or name in seen:
+                continue
+            w, h = self._window_size(wid)
+            if 0 < w < self._MIN_APP_WINDOW_PX or 0 < h < self._MIN_APP_WINDOW_PX:
+                continue
+            seen.add(name)
+            out.append((int(wid), name))
         return out
 
     def close(self) -> None:
