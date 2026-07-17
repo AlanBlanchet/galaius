@@ -260,9 +260,9 @@ class LocalBackend(DesktopBackend):
     def capture(self) -> bytes:
         return subprocess.run(["maim"], capture_output=True, check=True).stdout
 
-    def spawn(self, argv: list[str]) -> subprocess.Popen:
+    def spawn(self, argv: list[str], cwd: str | None = None) -> subprocess.Popen:
         """Launch a process on the real session (caller manages its lifetime)."""
-        return subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return subprocess.Popen(argv, cwd=cwd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def move(self, x: float, y: float) -> None:
         self._pointer.move(x, y)

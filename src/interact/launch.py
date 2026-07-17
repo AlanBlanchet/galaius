@@ -24,6 +24,18 @@ _CHROMIUM_BROWSERS = ("chrome", "chromium", "brave", "edge", "vivaldi", "opera")
 _FIREFOX_BROWSERS = ("firefox", "librewolf", "waterfox")
 
 
+# Shell syntax raw exec can't honor: agents naturally write `cd <repo> && uv run app`, which
+# exec'd verbatim fails with the cryptic `[Errno 2] No such file or directory: 'cd'`.
+_SHELL_MARKERS = ("&&", "||", ";", "|", ">", "<", "$(", "`")
+
+
+def needs_shell(command: str) -> bool:
+    """True when a launch command uses shell syntax (`cd X && app`, pipes, redirects, command
+    substitution) that must run via ``bash -c`` rather than raw exec. A quoted argument that merely
+    CONTAINS a marker also routes through bash — harmless, bash parses the quotes identically."""
+    return command.lstrip().startswith("cd ") or any(m in command for m in _SHELL_MARKERS)
+
+
 def _resolve_nested_size(size: str | None, device: str | None) -> tuple[str | None, str | None]:
     """Pick the nested display size for a launch: explicit ``size`` ("WxH") wins, then a ``device``
     profile, else None → the caller keeps the configured default. Returns (size_or_None, error)."""

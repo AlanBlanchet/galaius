@@ -7,7 +7,7 @@ import asyncio
 from interact import desktop
 from interact.browser import BrowserManager
 from interact.desktop import DesktopWindow
-from interact.launch import _resolve_nested_size, apply_launch_rewrites
+from interact.launch import _resolve_nested_size, apply_launch_rewrites, needs_shell
 from interact.server import core, sandbox, targets, vlm
 from interact.server.core import _DEFAULT_SESSION, _NO_WINDOWS_MSG, _session_response, config, mcp
 
@@ -54,7 +54,11 @@ async def list_desktop_windows() -> str:
 
 @mcp.tool()
 async def launch_app(
-    command: str, wait: float = 6.0, size: str | None = None, device: str | None = None
+    command: str,
+    wait: float = 6.0,
+    size: str | None = None,
+    device: str | None = None,
+    cwd: str | None = None,
 ) -> str:
     """Launch an app in interact's isolated sandbox display and drive it there.
 
@@ -75,12 +79,17 @@ async def launch_app(
     Enter). A blurred bar (Flutter BackdropFilter) can render as a black strip under software GL —
     reach its controls via in-app routing or run on a real GPU.
 
-    command: the shell command to run (e.g. "xterm", "flutter run -d linux", a built binary's path).
+    command: the command to run (e.g. "xterm", "flutter run -d linux", a built binary's path).
+        Shell syntax works too — "cd /my/proj && uv run app" runs via bash — but prefer `cwd=`
+        for a project directory (a plain command keeps the launch rewrites, e.g. Flutter's
+        software-GL flag, which shell commands bypass).
     wait: seconds to wait for a window to appear before returning.
     size: nested display resolution as "WxH" (overrides device + the default).
     device: a display shape — "phone" (412x915), "tablet" (820x1180), or "desktop" (1280x800).
+    cwd: working directory to launch in (so "uv run app" finds the project without a cd).
     """
     import shlex
+    from pathlib import Path
 
     if unsupported := targets._desktop_unsupported():
         return unsupported
@@ -88,19 +97,26 @@ async def launch_app(
     resolved_size, size_err = _resolve_nested_size(size, device)
     if size_err:
         return size_err
+    if cwd is not None:
+        cwd_path = Path(cwd).expanduser()
+        if not cwd_path.is_dir():
+            return f"ERROR: cwd {cwd!r} is not a directory"
+        cwd = str(cwd_path)
     try:
         backend = sandbox._get_sandbox(resolved_size)
     except RuntimeError as e:  # Xephyr/Xvfb not installed
         return f"ERROR: sandbox unavailable — {e}"
-    try:
-        argv = shlex.split(command)
-    except ValueError as e:
-        return f"ERROR: could not parse command ({e})"
-    if not argv:
-        return "ERROR: empty command"
-
-    argv, flutter_note = apply_launch_rewrites(argv, getattr(backend, "display", ":?"))
-    proc = await asyncio.to_thread(backend.spawn, argv)
+    if needs_shell(command):
+        argv, flutter_note = ["bash", "-c", command], ""
+    else:
+        try:
+            argv = shlex.split(command)
+        except ValueError as e:
+            return f"ERROR: could not parse command ({e})"
+        if not argv:
+            return "ERROR: empty command"
+        argv, flutter_note = apply_launch_rewrites(argv, getattr(backend, "display", ":?"))
+    proc = await asyncio.to_thread(backend.spawn, argv, cwd)
     deadline = asyncio.get_event_loop().time() + wait
     windows: list[tuple[int, str]] = []
     while asyncio.get_event_loop().time() < deadline:

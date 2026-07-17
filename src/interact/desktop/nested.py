@@ -221,14 +221,14 @@ class NestedBackend(DesktopBackend):
         sink = self._ensure_audio_sink()
         return f"{sink}.monitor" if sink else None
 
-    def spawn(self, argv: list[str]) -> subprocess.Popen:
+    def spawn(self, argv: list[str], cwd: str | None = None) -> subprocess.Popen:
         """Launch a process inside the nested display (tracked for teardown), capturing its
         stdout/stderr so a crash can be explained. Reaps previously-exited apps first."""
         self._ensure_audio_sink()  # route the app's audio into the sandbox sink from birth (#47)
         self._reap()
         path = self._open_log("app")
         with open(path, "wb") as f:
-            proc = subprocess.Popen(argv, env=self.env, stdout=f, stderr=subprocess.STDOUT)
+            proc = subprocess.Popen(argv, env=self.env, cwd=cwd, stdout=f, stderr=subprocess.STDOUT)
         self._procs.append(proc)
         self._logs[proc.pid] = path
         return proc
