@@ -386,11 +386,16 @@ async def transcribe_audio(
             text=f"[Transcription unavailable — {model} API key not configured]", elapsed=0
         )
     t0 = time.monotonic()
-    with tempfile.NamedTemporaryFile(suffix=f".{_audio_ext(mime_type)}") as tf:
+    # delete=False + close BEFORE the reopen: Windows can't reopen a NamedTemporaryFile by path
+    # while its handle is open (PermissionError) — litellm needs a real file with a suffix (#73).
+    tf = tempfile.NamedTemporaryFile(suffix=f".{_audio_ext(mime_type)}", delete=False)
+    try:
         tf.write(audio_bytes)
-        tf.flush()
+        tf.close()
         with open(tf.name, "rb") as fh:
             response = await litellm.atranscription(model=model, file=fh)
+    finally:
+        Path(tf.name).unlink(missing_ok=True)
     elapsed = time.monotonic() - t0
     text = getattr(response, "text", None)
     if text is None and isinstance(response, dict):
