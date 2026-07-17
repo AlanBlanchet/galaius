@@ -151,15 +151,18 @@ async def run_actions(
 
 
 @mcp.tool()
-async def get_page_state(scope: str | None = None, session: str = _DEFAULT_SESSION) -> str:
+async def get_page_state(
+    scope: str | None = None, tab: int | None = None, session: str = _DEFAULT_SESSION
+) -> str:
     """Get current page URL, title, accessibility tree, focused element, visible text, and the
     page's interactive elements as a numbered `ref` list — so you can act by `ref` in run_actions
     immediately, no separate get_interactive_elements call needed. Refs come from a pure DOM scan
-    (no VLM, works with any model). scope: CSS selector to restrict to a page sub-tree."""
+    (no VLM, works with any model). scope: CSS selector to restrict to a page sub-tree.
+    tab: read a specific tab by index (like get_interactive_elements); unset = the active tab (#74)."""
     config.refresh()
     mgr = core._sessions.get(session)
-    state = await capture._capture(mgr, scope)
-    elements = await capture._scan_elements(mgr, scope=scope)
+    state = await capture._capture(mgr, scope, tab)
+    elements = await capture._scan_elements(mgr, tab, scope=scope)
     refs = (
         f"Interactive elements (act by ref in run_actions):\n{format_element_list(elements)}"
         if elements
