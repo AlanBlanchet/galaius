@@ -101,6 +101,10 @@ async def run_actions(
       - select_text (browser): make a real DOM text selection in an element — for a selection-gated
         control like a Lexical inline toolbar (drag dispatches drag-and-drop, not a selection).
     Observations: screenshot, wait_for, http_request, hover, annotate
+    Dialogs: handle_dialog — arm how the NEXT native JS dialog (confirm/alert/prompt) is answered:
+      {"type":"handle_dialog","action":"accept"|"dismiss","prompt_text":"..."} placed BEFORE the
+      step that triggers it (one-shot). Unarmed dialogs are dismissed (a confirm()-gated click
+      then no-ops) — every dialog is reported in the step output with its message.
     Tab control: new_tab, switch_tab, close_tab
     Viewport: emulate_device — set the session to a device profile (a Playwright `device` name like
       "iPhone 13", or explicit width+height (+ device_scale_factor/is_mobile/has_touch), or

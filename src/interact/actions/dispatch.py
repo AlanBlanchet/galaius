@@ -20,6 +20,7 @@ from interact.actions.models import (
     DragAction,
     EmulateDeviceAction,
     EvaluateJsAction,
+    HandleDialogAction,
     HoverAction,
     settle_animations,
     HttpRequestAction,
@@ -602,6 +603,14 @@ async def _run_actions_browser(
             step_reports.append(_step(i, action.type, result))
             continue
 
+        if isinstance(action, HandleDialogAction):
+            mgr.arm_dialog(action.action, action.prompt_text)
+            answer = f" answering {action.prompt_text!r}" if action.prompt_text else ""
+            step_reports.append(
+                _step(i, action.type, f"armed: the next dialog will be {action.action}ed{answer}")
+            )
+            continue
+
         if isinstance(action, NewTabAction):
             idx = await mgr.new_tab(action.url)
             current_tab = idx
@@ -746,6 +755,11 @@ async def _run_actions_browser(
             if result is not None:
                 entry += f"\n  result: {result}"
             step_reports.append(entry)
+
+        # Surface any native dialog this step triggered — an auto-dismissed confirm() used to
+        # no-op a click with zero trace, the worst default for admin UIs (#77).
+        for msg in mgr.drain_dialog_log():
+            step_reports.append(_step(i, "dialog", msg))
 
         await _finalize_step(
             action, i, step_idx, invocation_id, step_reports, record_frames, snapshots,

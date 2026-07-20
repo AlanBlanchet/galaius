@@ -53,6 +53,13 @@ class BrowserManager:
         # act on. new_tab / switch_tab move it, so a standalone capture after a switch sees the tab
         # the agent switched to, not tab 0 (#30).
         self._active_tab = 0
+        # Native JS dialogs (#77): Playwright would auto-dismiss an unhandled confirm()/prompt()
+        # SILENTLY, so a dialog-gated click no-ops with no trace. We handle every dialog
+        # ourselves: `_dialog_next` holds a one-shot directive armed by a handle_dialog action
+        # (consumed by the next dialog; default = dismiss, the old behavior), and `_dialog_log`
+        # records each dialog's type + message + outcome for the step report.
+        self._dialog_next: dict | None = None
+        self._dialog_log: list[str] = []
         # Last time this session's browser was touched (monotonic). The idle reaper closes a
         # session unused past the configured TTL so idle Chromium instances don't pile up.
         self._last_active = time.monotonic()
@@ -458,7 +465,33 @@ class BrowserManager:
         page = self._context.pages[0] if self._context.pages else await self._context.new_page()
         self._attach_page_listeners(page)
 
+    def arm_dialog(self, action: str, prompt_text: str | None = None) -> None:
+        """Arm how the NEXT dialog is answered (one-shot) — the handle_dialog action (#77)."""
+        self._dialog_next = {"action": action, "prompt_text": prompt_text}
+
+    def drain_dialog_log(self) -> list[str]:
+        """The dialogs handled since the last drain, for the step report."""
+        out, self._dialog_log = self._dialog_log, []
+        return out
+
+    async def _on_dialog(self, dialog) -> None:
+        directive, self._dialog_next = self._dialog_next, None
+        try:
+            if directive and directive["action"] == "accept":
+                await dialog.accept(directive.get("prompt_text") or "")
+                outcome = "accepted (armed)"
+            elif directive:
+                await dialog.dismiss()
+                outcome = "dismissed (armed)"
+            else:
+                await dialog.dismiss()
+                outcome = "dismissed (default — arm with a handle_dialog step to accept)"
+        except Exception:  # the page may be gone mid-dialog; never crash the listener
+            return
+        self._dialog_log.append(f"{dialog.type}({dialog.message!r}) → {outcome}")
+
     def _attach_page_listeners(self, page: Page):
+        page.on("dialog", self._on_dialog)
         page.on(
             "request",
             lambda req: self._network_log.append(

@@ -589,6 +589,21 @@ class EmulateDeviceAction(ObservationAction):
         return self
 
 
+class HandleDialogAction(Action):
+    """Arm how the NEXT native JS dialog (alert/confirm/prompt) is answered — browser only.
+
+    Playwright dismisses an unhandled dialog, so a confirm()-gated button click silently no-ops
+    (#77). Place this step BEFORE the action that triggers the dialog: the next dialog is
+    accepted or dismissed as asked (one-shot; later dialogs revert to dismiss-and-report), and
+    ``prompt_text`` is the answer typed into a prompt(). Every dialog — armed or not — is
+    reported in the step output with its message."""
+
+    type: Literal["handle_dialog"] = "handle_dialog"
+    action: Literal["accept", "dismiss"] = "accept"
+    prompt_text: str | None = None
+    mutates: ClassVar[bool] = False
+
+
 AnyAction = Annotated[
     ClickAction
     | HoverAction
@@ -611,7 +626,8 @@ AnyAction = Annotated[
     | SelectTextAction
     | EmulateDeviceAction
     | SleepAction
-    | CompareAction,
+    | CompareAction
+    | HandleDialogAction,
     Field(discriminator="type"),
 ]
 
@@ -627,5 +643,6 @@ BROWSER_ONLY_ACTIONS = frozenset(
         "emulate_device",
         "double_click",
         "select_text",
+        "handle_dialog",
     }
 )

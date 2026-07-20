@@ -18,6 +18,7 @@ from interact.actions.models import (  # noqa: F401
     DragAction,
     EmulateDeviceAction,
     EvaluateJsAction,
+    HandleDialogAction,
     HoverAction,
     HttpRequestAction,
     KeyPressAction,
