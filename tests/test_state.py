@@ -183,3 +183,13 @@ def test_desktop_capture_calls_atspi():
     assert state.window_name == "Firefox"
     assert state.visible_text == "Menu Bar\nContent area"
     assert state.focused_element == "entry: URL bar"
+
+
+def test_format_element_list_shows_the_tooltip_description():
+    # An icon-only toolbar is unreadable without its tooltips; the popup can't render in a nested
+    # capture, so the listing carries the AT-SPI description (Qt's toolTip) instead (#75).
+    el = _make_element(1, ref="e1")
+    el.description = "Run the reconstruction"
+    text = format_element_list([el])
+    assert "Run the reconstruction" in text
+    assert "tip" in text

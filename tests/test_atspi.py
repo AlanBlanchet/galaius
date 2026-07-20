@@ -587,3 +587,23 @@ def test_find_element_cache_miss_falls_back():
         result = AtSpi.find_element("Test Window", name="Cancel")
     assert result.name == "Cancel"
     mock_detect.assert_called_once_with("Test Window")
+
+
+def test_tooltip_description_is_captured(monkeypatch):
+    """Qt mirrors setToolTip() into the AT-SPI description; a QToolTip popup never renders in a
+    WM-less nested capture, so the description is the only reachable form of the tooltip (#75)."""
+    child = _MockAccessible("Run", "push button", component=_MockComponent(10, 20, 80, 30))
+    child.get_description = lambda: "Run the reconstruction"
+    desktop_obj = _build_tree([child])
+
+    mock_atspi = MagicMock()
+    mock_atspi.CoordType.WINDOW = 0
+    mock_atspi.get_desktop.return_value = desktop_obj
+
+    with (
+        patch("interact.desktop.atspi._Atspi", mock_atspi),
+        patch("interact.desktop.DesktopWindow.find", return_value=None),
+    ):
+        result = AtSpi.detect_elements("Test Window")
+
+    assert result is not None and result[0].description == "Run the reconstruction"

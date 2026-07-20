@@ -25,6 +25,9 @@ class Element(BaseModel):
     h: int
     role: str = "element"
     name: str = ""
+    # The accessible description — Qt mirrors setToolTip() here. Tooltip popups can't render in a
+    # WM-less nested capture, so this is how an icon-only control's purpose reaches the agent (#75).
+    description: str = ""
     index: int = 0
 
     @property
@@ -119,6 +122,7 @@ def annotate_screenshot(
 def format_element_list(elements: list[Element]) -> str:
     return "\n".join(
         f"  [{el.index}] {el.role}: {el.name!r}  ref={getattr(el, 'ref', None)}"
+        + (f"  tip: {el.description!r}" if el.description and el.description != el.name else "")
         for el in elements
     )
 

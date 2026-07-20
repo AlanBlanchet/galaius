@@ -127,6 +127,12 @@ class AtSpi:
                 name = node.get_name() or ""
             except Exception:
                 continue
+            try:
+                # Qt mirrors setToolTip() into the accessible description — the only form of a
+                # tooltip reachable here, since QToolTip popups don't render in nested captures (#75).
+                description = node.get_description() or ""
+            except Exception:
+                description = ""
             include = False
             if role_name in cls._INTERACTIVE_ROLE_NAMES:
                 include = True
@@ -175,6 +181,7 @@ class AtSpi:
                                 h=h,
                                 role=role_name,
                                 name=name,
+                                description=description,
                             )
                         )
             try:
