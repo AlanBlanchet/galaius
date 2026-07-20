@@ -281,6 +281,11 @@ def _local_skip_reason() -> str | None:
     not os.access("/dev/uinput", os.W_OK) or not os.environ.get("DISPLAY") or not shutil.which("xinput"),
     reason="needs writable /dev/uinput + an X display + xinput",
 )
+@pytest.mark.skipif(
+    os.environ.get("XDG_SESSION_TYPE") == "wayland",
+    reason="Wayland session: uinput devices route to the compositor and never appear in "
+    "XWayland's xinput list, so device creation can't be verified this way (#79)",
+)
 def test_local_backend_creates_pointer_and_keyboard() -> None:
     """Deterministic local-path check (no clicking the live desktop): LocalBackend brings
     up BOTH a uinput pointer and a keyboard — the separate keyboard is the structural fix
