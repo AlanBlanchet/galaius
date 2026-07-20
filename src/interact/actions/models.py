@@ -224,7 +224,7 @@ class TypeTextAction(_RefSelectorLocator, Action):
             await target.type(self.text)
 
 
-class ScrollAction(Action):
+class ScrollAction(_CoordinateTargetMixin):
     DELTA: ClassVar[dict[str, tuple[int, int]]] = {
         "down": (0, 300),
         "up": (0, -300),
@@ -243,6 +243,16 @@ class ScrollAction(Action):
         return v
 
     async def execute(self, page: Page):
+        # Anchor the pointer first when a target is given: the wheel is delivered to whatever
+        # sits UNDER the pointer, so position IS the scroll target — an unanchored wheel next to
+        # a zoomable canvas scrolls (or zooms) the wrong widget (#76). No target keeps the old
+        # scroll-at-current-position behavior.
+        if self.ref:
+            await self._locator(page).hover()
+        elif self.selector:
+            await page.hover(self.selector)
+        elif self.x is not None and self.y is not None:
+            await page.mouse.move(self.x, self.y)
         dx, dy = self.DELTA[self.direction]
         for _ in range(self.amount):
             await page.mouse.wheel(dx, dy)

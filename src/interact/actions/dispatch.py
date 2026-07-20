@@ -456,10 +456,25 @@ async def _run_actions_desktop(
             step_reports.append(_step(i, action.type, report))
 
         elif isinstance(action, ScrollAction):
+            # The wheel goes to the widget UNDER the pointer, so position IS the target: honor
+            # the action's anchor (x,y / ref / selector / name) like click does — the hardcoded
+            # window center used to zoom an app's canvas instead of scrolling the dock the
+            # caller aimed at (#76). Unanchored keeps the center default.
+            if any(
+                getattr(action, a, None) is not None
+                for a in ("x", "ref", "selector", "name")
+            ):
+                sx, sy, el, err = _resolve_action_coords(action, wid, win)
+                if err:
+                    step_reports.append(_step(i, action.type, f"SKIPPED: {err}"))
+                    continue
+            else:
+                sx, sy, el = win.w // 2, win.h // 2, None
             before_state = DesktopState.capture(win.name)
-            await win.scroll(win.w // 2, win.h // 2, action.direction, action.amount)
+            await win.scroll(sx, sy, action.direction, action.amount)
+            at = f" at {el.name!r}" if el is not None and el.name else f" at ({sx},{sy})"
             report = _report_with_change(
-                win.name, before_state, f"scrolled {action.direction} x{action.amount}"
+                win.name, before_state, f"scrolled {action.direction} x{action.amount}{at}"
             )
             step_reports.append(_step(i, action.type, report))
 

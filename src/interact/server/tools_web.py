@@ -86,10 +86,13 @@ async def run_actions(
     A desktop `target` and a non-default `session` are mutually exclusive. For a website, leave
     `target` unset.
 
-    TARGETING a click/type_text/hover/drag — any of: `ref` (browser, from get_interactive_elements
-    / get_page_state / screenshot — unique, survives re-renders), `element` index (desktop),
-    `selector` (CSS), `name`(+`role`) (accessible name), or `x`,`y` coordinates. Use whichever
-    fits; a `ref` avoids the "N elements match" ambiguity a bare name/selector can hit.
+    TARGETING a click/type_text/hover/drag/scroll — any of: `ref` (browser, from
+    get_interactive_elements / get_page_state / screenshot — unique, survives re-renders),
+    `element` index (desktop), `selector` (CSS), `name`(+`role`) (accessible name), or `x`,`y`
+    coordinates. Use whichever fits; a `ref` avoids the "N elements match" ambiguity a bare
+    name/selector can hit. A scroll's anchor picks WHICH widget receives the wheel (the one
+    under the pointer) — anchor it on the scrollable area (unanchored = window center on
+    desktop, current pointer in the browser).
 
     Each action needs a 'type' key to select the action model.
 

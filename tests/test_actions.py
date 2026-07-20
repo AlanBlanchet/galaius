@@ -315,3 +315,37 @@ def test_key_press_mutates():
 def test_drag_steps_custom():
     action = DragAction(from_x=0, from_y=0, to_x=100, to_y=100, steps=10)
     assert action.steps == 10
+
+
+# ── scroll anchoring (#76): the wheel goes to the widget under the pointer, so a scroll can be
+# targeted like a click; the browser path moves/hovers to the anchor before wheeling ─────────
+
+
+def test_scroll_accepts_an_anchor():
+    a = ScrollAction(x=700, y=750, direction="down", amount=5)
+    assert (a.x, a.y) == (700, 750)
+    assert ScrollAction(ref="e3").ref == "e3"
+    assert ScrollAction().x is None  # unanchored stays valid (center / current-pointer default)
+
+
+def test_scroll_partial_coordinates_rejected():
+    with pytest.raises(ValidationError):
+        ScrollAction(x=100)
+
+
+@pytest.mark.asyncio
+async def test_browser_scroll_moves_to_the_anchor_before_wheeling():
+    calls: list = []
+
+    class _Mouse:
+        async def move(self, x, y):
+            calls.append(("move", x, y))
+
+        async def wheel(self, dx, dy):
+            calls.append(("wheel", dx, dy))
+
+    class _Page:
+        mouse = _Mouse()
+
+    await ScrollAction(x=120, y=340, direction="down", amount=2).execute(_Page())
+    assert calls == [("move", 120, 340), ("wheel", 0, 300), ("wheel", 0, 300)]
