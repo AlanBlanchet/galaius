@@ -16,7 +16,7 @@ from interact.desktop.backend import (
     _x11_screen_size,
     nested_server_command,
     sandbox_child_env,
-    write_sandbox_browser_handler,
+    write_sandbox_url_shims,
 )
 from interact.desktop.input import _BUTTONS
 from interact.desktop.video import _VideoSession, _ffmpeg_grab_args
@@ -74,7 +74,7 @@ class NestedBackend(DesktopBackend):
             # the nested DISPLAY + X11 toolkit pins (so a Qt/GTK app can't escape onto the host's
             # Wayland compositor, #85), the contained $BROWSER handler (so xdg-open can't hijack
             # the user's real browser window, #83), and forced software GL.
-            self.env = sandbox_child_env(dict(os.environ), self.display, self._browser_handler())
+            self.env = sandbox_child_env(dict(os.environ), self.display, self._url_shim_dir())
             try:
                 self._start_server(ready_timeout)
                 return
@@ -125,20 +125,20 @@ class NestedBackend(DesktopBackend):
             except OSError:
                 pass
 
-    def _browser_handler(self) -> str:
-        """Path to this sandbox's ``$BROWSER`` script — the containment for URL opening (#83). The
-        URLs it records are surfaced by :meth:`opened_urls`, so a menu item that "did nothing" can
-        be explained. Best-effort: if the directory can't be written, fall back to ``true`` (still
-        contained, just no record)."""
+    def _url_shim_dir(self) -> str:
+        """Directory of this sandbox's URL-opener shims — the containment for URL opening (#83),
+        prepended to the child's PATH. The URLs it records are surfaced by :meth:`opened_urls`, so
+        a menu item that "did nothing" can be explained. Best-effort: if the directory can't be
+        written, fall back to a path that simply does not exist (no shims, no record)."""
         from interact.runtime import config
 
         try:
-            d = config.session_log_dir()
-            self._opened_urls = str(d / f"opened-urls{self.display.lstrip(':')}.log")
-            return write_sandbox_browser_handler(d, self._opened_urls)
+            d = config.session_log_dir() / f"url-shims{self.display.lstrip(':')}"
+            self._opened_urls = str(d / "opened-urls.log")
+            return write_sandbox_url_shims(d, self._opened_urls)
         except OSError:
             self._opened_urls = None
-            return "/bin/true"
+            return "/nonexistent/interact-url-shims"
 
     def opened_urls(self) -> list[str]:
         """URLs a sandboxed app asked to open (and which were CONTAINED, never sent to the user's

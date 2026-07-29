@@ -458,23 +458,30 @@ _X11_PINS = {
 }
 
 
-def sandbox_child_env(base: dict[str, str], display: str, browser_handler: str) -> dict[str, str]:
+def sandbox_child_env(base: dict[str, str], display: str, shim_dir: str) -> dict[str, str]:
     """The environment every sandboxed child gets: the host's, with the escapes closed.
 
     Pure so the containment guarantees are testable without an X server. Three jobs: point the
-    child at the nested DISPLAY and pin the toolkits to X11 (#85), route URL opening to the
-    sandbox's own handler so it cannot reach the user's browser (#83), and force software GL
-    (a nested display has no usable hardware GL, so a GPU app renders black).
+    child at the nested DISPLAY and pin the toolkits to X11 (#85), contain URL opening so it
+    cannot reach the user's browser (#83), and force software GL (a nested display has no usable
+    hardware GL, so a GPU app renders black).
 
-    Note the deliberate limit: `DBUS_SESSION_BUS_ADDRESS` is left ALONE. Clearing it would also
-    close the xdg-desktop-portal escape, but interact's own AT-SPI element detection rides that
-    same bus — so a portal-based `gio open` can still escape. $BROWSER covers `webbrowser.open()`
-    and `xdg-open`, which is the reported path.
+    URL containment is done TWICE over, because ``$BROWSER`` alone is not enough — verified live:
+    ``xdg-open`` resolves the ``x-scheme-handler/https`` desktop association first and only
+    consults ``$BROWSER`` if that finds nothing, so it still reached the host's Chrome. So the
+    shim directory is also prepended to ``PATH``, which intercepts the ``xdg-open`` binary itself
+    no matter what the mime database says. ``$BROWSER`` still matters: Python's
+    ``webbrowser.open()`` reads it before trying anything else.
+
+    Note the deliberate limit: ``DBUS_SESSION_BUS_ADDRESS`` is left ALONE. Clearing it would close
+    the xdg-desktop-portal route too, but interact's own AT-SPI element detection rides that same
+    bus, so a direct portal D-Bus call can still escape.
     """
     env = {k: v for k, v in base.items() if k not in _WAYLAND_ESCAPE_VARS | _DESKTOP_DETECT_VARS}
     env.update(_X11_PINS)
     env["DISPLAY"] = display
-    env["BROWSER"] = browser_handler
+    env["BROWSER"] = f"{shim_dir}/sandbox-open"
+    env["PATH"] = f"{shim_dir}:{base.get('PATH', '/usr/bin:/bin')}"
     env.setdefault("LIBGL_ALWAYS_SOFTWARE", "1")  # an explicit global override still wins
     return env
 
@@ -482,25 +489,52 @@ def sandbox_child_env(base: dict[str, str], display: str, browser_handler: str) 
 # Written as a script rather than a `true`/no-op so the URL is not merely blocked but RECORDED:
 # an agent clicking a "Report an issue" menu item then learns what the app tried to open instead
 # of seeing nothing happen (#83).
-_BROWSER_HANDLER = """#!/bin/sh
+_URL_RECORDER = """#!/bin/sh
 # interact sandbox URL handler — records what a sandboxed app tried to open instead of letting it
 # reach the user's real browser (#83). Never launches anything on the host.
 printf '%s\\n' "$@" >> @LOG@
 exit 0
 """
 
+# `gio` is a general-purpose tool, so it cannot be swallowed wholesale — only its `open`
+# subcommand is a URL escape. Everything else is forwarded to the real binary, found by dropping
+# the shim directory from PATH so the lookup cannot recurse into this script.
+_GIO_SHIM = """#!/bin/sh
+if [ "$1" = "open" ]; then
+    shift
+    printf '%s\\n' "$@" >> @LOG@
+    exit 0
+fi
+PATH=$(printf '%s' "$PATH" | sed -e 's|^@DIR@:||') exec gio "$@"
+"""
 
-def write_sandbox_browser_handler(directory, log_path) -> str:
-    """Create the executable ``$BROWSER`` handler for a sandbox and return its path. Every URL a
-    sandboxed app opens is appended to ``log_path`` (surfaced by the launch/target tools)."""
+# Every well-known "open this URL/file on the desktop" entry point. A sandboxed app reaches the
+# host through whichever of these its toolkit happens to call, so they are shimmed as a CLASS.
+_URL_OPENER_NAMES = (
+    "sandbox-open", "xdg-open", "sensible-browser", "x-www-browser", "www-browser",
+    "gnome-open", "kde-open", "kde-open5", "exo-open",
+)
+
+
+def write_sandbox_url_shims(directory, log_path) -> str:
+    """Create the sandbox's URL-opener shims and return the directory to prepend to ``PATH``.
+
+    Every URL a sandboxed app tries to open is appended to ``log_path`` instead of reaching the
+    user's desktop (surfaced by the launch/target tools)."""
     from pathlib import Path
 
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
-    handler = directory / "sandbox-open"
-    handler.write_text(_BROWSER_HANDLER.replace("@LOG@", shlex.quote(str(log_path))))
-    handler.chmod(0o755)
-    return str(handler)
+    quoted_log = shlex.quote(str(log_path))
+    recorder = _URL_RECORDER.replace("@LOG@", quoted_log)
+    for name in _URL_OPENER_NAMES:
+        shim = directory / name
+        shim.write_text(recorder)
+        shim.chmod(0o755)
+    gio = directory / "gio"
+    gio.write_text(_GIO_SHIM.replace("@LOG@", quoted_log).replace("@DIR@", str(directory)))
+    gio.chmod(0o755)
+    return str(directory)
 
 
 def nested_server_command(display: str, size: str, headless: bool) -> list[str]:
