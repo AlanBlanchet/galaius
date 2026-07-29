@@ -95,11 +95,14 @@ async def test_navigate_without_timeout_uses_the_context_default(monkeypatch):
     [
         ({"selector": "#x"}, True),
         ({"text": "Loaded"}, True),
-        ({}, False),  # neither — ambiguous wait
-        ({"selector": "#x", "text": "Loaded"}, False),  # both
+        # Neither is NOT ambiguous — it means "pause for `timeout` ms", which is what agents
+        # actually sent (`{"type":"wait_for","timeout":2000,"selector":null}`, twice in 24h of
+        # client logs) and used to get a hard validation error for.
+        ({}, True),
+        ({"selector": "#x", "text": "Loaded"}, False),  # both — wait for WHICH?
     ],
 )
-def test_wait_for_requires_exactly_one_condition(kwargs, ok):
+def test_wait_for_rejects_only_an_ambiguous_condition(kwargs, ok):
     if ok:
         WaitForAction(**kwargs)
     else:

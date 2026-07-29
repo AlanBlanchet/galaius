@@ -12,6 +12,37 @@ from interact.server import core, sandbox, targets, vlm
 from interact.server.core import _DEFAULT_SESSION, _NO_WINDOWS_MSG, _session_response, config, mcp
 
 
+def _video_model() -> str:
+    """The model a recording will actually be judged by, or "" if it can't be resolved — the
+    caveat below is diagnostics and must never be the thing that breaks a record call."""
+    try:
+        return config.resolve_model("video")
+    except Exception:
+        return ""
+
+
+def _sampling_caveat(model: str | None = None) -> str:
+    """The resolution floor of a video verdict, stated as part of the verdict itself.
+
+    A recording judged by a non-native-video model is ffmpeg-sampled at ``video.fps`` and capped at
+    ``video.max_frames``, so an effect finer than one sampling interval CANNOT appear — a real
+    100ms-per-element stagger ladder was reported flatly absent twice, contradicted by the page's
+    own ``document.getAnimations()`` (#86). The model was not wrong about its frames; the answer was
+    presented without the floor that produced it. Naming the floor turns a false negative into an
+    honest "below what this can resolve"."""
+    from interact.vision.core import supports_native_video_inline
+
+    if model and supports_native_video_inline(model):
+        return ""
+    interval_ms = round(1000 / max(1, config.video_fps))
+    return (
+        f"\n\n[sampling floor: frames taken at {config.video_fps}/s, so anything shorter than "
+        f"~{interval_ms}ms between steps cannot be resolved here and will read as simultaneous. "
+        f"For CSS timing (stagger, delay, duration) use evaluate_js with document.getAnimations() "
+        f"— deterministic and exact — rather than a recording.]"
+    )
+
+
 @mcp.tool()
 async def list_desktop_windows() -> str:
     """List desktop targets for the `target` param: each connected monitor (target="screen" for
@@ -47,8 +78,20 @@ async def list_desktop_windows() -> str:
     if windows:
         parts.append(f"Windows (target=<title>):\n{DesktopWindow.listing(windows)}")
     if sandbox._sandbox is not None:
-        nested = "\n".join(f'  target="nested:{n}"' for _, n in sandbox._sandbox.list_windows())
+        nested = "\n".join(
+            f'  target="nested:{n}" (or target="nested:wid:{w}")'
+            for w, n in sandbox._sandbox.list_windows()
+        )
         parts.append(f"Sandbox windows (isolated display; launch_app to add):\n{nested or '  (empty)'}")
+        # A URL a sandboxed app opened was CONTAINED rather than sent to the user's real browser
+        # (#83). Say so — otherwise the control looks broken, since nothing visibly happens.
+        opened = getattr(sandbox._sandbox, "opened_urls", None)
+        if opened is not None and (urls := opened()):
+            listed = "\n".join(f"  {u}" for u in urls[-5:])
+            parts.append(
+                "URLs a sandboxed app asked to open (contained — NOT sent to your real browser):\n"
+                f"{listed}"
+            )
     return "\n\n".join(parts)
 
 
@@ -59,6 +102,7 @@ async def launch_app(
     size: str | None = None,
     device: str | None = None,
     cwd: str | None = None,
+    replace: bool = True,
 ) -> str:
     """Launch an app in interact's isolated sandbox display and drive it there.
 
@@ -87,6 +131,11 @@ async def launch_app(
     size: nested display resolution as "WxH" (overrides device + the default).
     device: a display shape — "phone" (412x915), "tablet" (820x1180), or "desktop" (1280x800).
     cwd: working directory to launch in (so "uv run app" finds the project without a cd).
+    replace: stop whatever was launched into the sandbox before starting this app (the default).
+        The sandbox is shared, so relaunching used to ADD an instance rather than replace one:
+        several live copies of the same app accumulated and captures composited a stray widget
+        from an older instance over the current window. Pass replace=False to run two apps side
+        by side on one display.
     """
     import shlex
     from pathlib import Path
@@ -116,6 +165,25 @@ async def launch_app(
         if not argv:
             return "ERROR: empty command"
         argv, flutter_note = apply_launch_rewrites(argv, getattr(backend, "display", ":?"))
+    # An identical command already running is almost never a second app the caller wants: it is a
+    # retried tool call. Spawning anyway produced two same-titled windows, and target="nested:<title>"
+    # then silently alternated between them — ~20 actions landed on the invisible one (#87). Point
+    # the caller at what is already there instead.
+    running = getattr(backend, "running_command", None)
+    if running is not None and running(argv) is not None:
+        windows = await asyncio.to_thread(backend.list_windows)
+        existing = "\n".join(f'  target="nested:{n}" (or target="nested:wid:{w}")' for w, n in windows)
+        return (
+            f"`{command}` is ALREADY running in the sandbox — not launching a second copy (two "
+            f"same-titled windows make target=\"nested:<title>\" ambiguous, so actions can land on "
+            f"the wrong one). Drive the running app with:\n{existing}\n"
+            f"To restart it, call reset_sandbox first, or launch a genuinely different command."
+        )
+    replaced = 0
+    if replace:
+        kill_apps = getattr(backend, "kill_apps", None)
+        if kill_apps is not None:
+            replaced = await asyncio.to_thread(kill_apps)
     proc = await asyncio.to_thread(backend.spawn, argv, cwd)
     deadline = asyncio.get_event_loop().time() + wait
     windows: list[tuple[int, str]] = []
@@ -148,8 +216,17 @@ async def launch_app(
             await asyncio.to_thread(fit, name)
         if repaint is not None:
             await asyncio.to_thread(repaint, name)
-    targets_out = "\n".join(f'  target="nested:{name}"' for _, name in windows)
-    return f"Launched `{command}` in the sandbox.{flutter_note} Drive it with:\n{targets_out}"
+    # Offer the window ID alongside the title: an app that sets no per-instance title makes
+    # target="nested:<title>" ambiguous the moment a second window exists, and wid: cannot drift (#87).
+    targets_out = "\n".join(
+        f'  target="nested:{name}"  (unambiguous: target="nested:wid:{wid}")' for wid, name in windows
+    )
+    replaced_note = (
+        f" Replaced {replaced} app(s) already in the sandbox." if replaced else ""
+    )
+    return (
+        f"Launched `{command}` in the sandbox.{flutter_note}{replaced_note} Drive it with:\n{targets_out}"
+    )
 
 
 @mcp.tool()
@@ -197,6 +274,17 @@ async def record(
     duration: fixed clip length in seconds (desktop one-shot mode); omit for a start/stop session.
     fps: frames per second (desktop target, default from config).
     path: save the video file to this path.
+
+    SAMPLING LIMIT — read before asking about a FAST animation. Unless the model watches video
+    natively, the clip is sampled into still frames at `video.fps` (default 5/s) and capped at
+    `video.max_frames`, so anything shorter than one sampling interval (~200ms at the default) is
+    invisible to the analysis and comes back as "it happened all at once". That is a limit of the
+    sampling, NOT evidence the animation is missing (#86). For CSS timing claims — a staggered
+    reveal, a transition duration, an animation-delay ladder — do not use record at all: ask the
+    page directly with evaluate_js and `document.getAnimations()`, reading each animation's
+    `effect.getComputedTiming()` (delay/duration) and its keyframes. That is deterministic, free,
+    and exact. Use record for WHAT HAPPENED over time at human speed; use getAnimations for
+    sub-second timing.
     """
     win, mgr, err = targets._resolve_target(target, session)
     if err:
@@ -258,7 +346,7 @@ async def _record_desktop(
             "between frames. Describe only what you actually observe.\n" + context
         )
     r = await vlm._vlm(video_bytes, context, query, "video", "video/mp4")
-    return vlm._fmt_timing(r)
+    return vlm._fmt_timing(r) + _sampling_caveat(_video_model())
 
 
 async def _record_browser(
@@ -276,7 +364,7 @@ async def _record_browser(
         return _session_response(session, "Recording stopped but no video data captured.")
     result = await vlm._media_response(video_bytes, "Browser recording", query, path, "video", "video/webm")
     if result:
-        return _session_response(session, result)
+        return _session_response(session, result + _sampling_caveat(_video_model()))
     size = len(video_bytes)
     msg = f"Recording stopped. Video captured ({size} bytes)."
     if path:

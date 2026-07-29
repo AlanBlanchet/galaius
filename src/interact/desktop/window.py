@@ -475,6 +475,47 @@ class DesktopWindow(BaseModel):
         await asyncio.sleep(_FOCUS_DELAY)
         await self._run("xdotool", "key", "--clearmodifiers", "--", self.map_key(key))
 
+    async def resize(self, w: int, h: int) -> bool:
+        """Set this window's size exactly. Returns False when the target has no window to resize
+        (a screen/monitor target) or the backend cannot find it.
+
+        Exists because there was no in-tool way to check a layout at a narrower width after launch,
+        so callers shelled out to ``xdotool windowsize`` on the nested DISPLAY — an undocumented
+        workaround outside the MCP surface (#84)."""
+        if self.is_screen:
+            return False
+        w, h = int(w), int(h)
+        if w <= 0 or h <= 0:
+            return False
+        if self._backend is not None:
+            resize_window = getattr(self._backend, "resize_window", None)
+            if resize_window is None:
+                return False
+            ok = await asyncio.to_thread(resize_window, self.name, w, h)
+        else:
+            try:
+                await self._run("xdotool", "windowsize", str(self.wid), str(w), str(h))
+                ok = True
+            except (RuntimeError, FileNotFoundError):
+                return False
+        if ok:
+            self.w, self.h = w, h
+        return bool(ok)
+
+    def _backend_geometry(self) -> tuple[int, int, int, int] | None:
+        """This window's geometry as the bound backend currently sees it, or None if it is gone.
+        Only meaningful when :meth:`_tracks_geometry` — otherwise None means "cannot tell", which
+        the scroll guard must not read as "the window died"."""
+        try:
+            return self._backend.window_geometry(self.name)
+        except (subprocess.SubprocessError, OSError, ValueError, KeyError):
+            return None
+
+    def _tracks_geometry(self) -> bool:
+        """Whether the bound backend can report window geometry at all. A backend without it (the
+        portable/whole-screen ones) simply goes unguarded rather than blocking the scroll."""
+        return getattr(self._backend, "window_geometry", None) is not None
+
     async def scroll(self, x: int, y: int, direction: str, amount: int = 3):
         if self._backend is not None:
             await self._backend_focus()  # focus first so the toolkit accepts the wheel (#12/#13)
@@ -485,12 +526,40 @@ class DesktopWindow(BaseModel):
             horizontal = direction in ("left", "right")
             positive = direction in ("up", "right")  # up / right are the +clicks directions
             clicks = amount if positive else -amount
+            # A wheel in a WM-less nested display does not always stay inside the widget it was
+            # aimed at: reported twice, it RESIZED the whole app window (1600x1200 -> 1600x2000,
+            # #82) and once took the window down entirely (#90). The caller asked to scroll a
+            # WIDGET, so the window's own geometry is a post-condition of this call, not something
+            # the wheel may change — snapshot it and put it back. Left un-restored, a taller window
+            # also reveals content genuinely clipped at the real size, manufacturing false layout
+            # verdicts from every later capture.
+            guarded = self._tracks_geometry()
+            before = await asyncio.to_thread(self._backend_geometry) if guarded else None
 
             def _do():
                 self._backend.move(sx, sy)
                 self._backend.scroll(clicks, horizontal=horizontal)
 
             await asyncio.to_thread(_do)
+            if not guarded:
+                return
+            after = await asyncio.to_thread(self._backend_geometry)
+            if after is None:
+                # #90: the window died under the wheel. Name the cause here, with the app's own
+                # output, instead of letting the NEXT unrelated call report a mystery empty sandbox.
+                tail = ""
+                last_output = getattr(self._backend, "last_app_output", None)
+                if last_output is not None:
+                    tail = await asyncio.to_thread(last_output)
+                raise CaptureError(
+                    f"The window {self.name!r} disappeared during a scroll — the app exited or its "
+                    f"window was destroyed by the wheel event (#90)."
+                    + (f" Its last output: {tail}" if tail else "")
+                    + " Relaunch it with launch_app; prefer keyboard scrolling (Page_Down / arrow "
+                      "keys after a click to focus) on this app."
+                )
+            if before is not None and after[2:] != before[2:]:
+                await self.resize(before[2], before[3])
             return
         xdo_x, xdo_y = self._input_xy(x, y)
         # A wheel event is delivered to the window under the pointer that also holds focus — so

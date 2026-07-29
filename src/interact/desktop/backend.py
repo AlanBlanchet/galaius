@@ -8,7 +8,9 @@ import io
 import math
 import os
 import platform
+import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -51,6 +53,33 @@ def desktop_unsupported_message() -> str:
         "the default browser target (omit `target`). Track native macOS/Windows desktop support: "
         "https://github.com/AlanBlanchet/interact/issues/24"
     )
+
+
+# A process killed by the host (OOM) versus one that failed on its own terms look identical as a
+# bare `rc=` number, and that ambiguity is exactly what a caller could not resolve when the sandbox
+# X server died three times in one session with zero diagnostics (#84).
+_SIGNAL_CAUSE = {
+    signal.SIGKILL: "SIGKILL — killed from outside; on a loaded host this is usually the "
+                    "OOM-killer, not an interact fault",
+    signal.SIGSEGV: "SIGSEGV — it crashed",
+    signal.SIGABRT: "SIGABRT — it aborted",
+    signal.SIGTERM: "SIGTERM — something asked it to stop",
+    signal.SIGHUP: "SIGHUP — its controlling terminal went away",
+}
+
+
+def _exit_reason(returncode: int | None) -> str:
+    """Human cause for a dead child: ``None`` (still running / never started), a decoded SIGNAL for
+    a negative returncode, else the exit status. Shared by the sandbox health report."""
+    if returncode is None:
+        return "no exit status recorded"
+    if returncode < 0:
+        try:
+            sig = signal.Signals(-returncode)
+        except ValueError:
+            return f"killed by signal {-returncode}"
+        return _SIGNAL_CAUSE.get(sig, f"killed by {sig.name}")
+    return f"exited rc={returncode}"
 
 
 def _tail_file(path: str | None, limit: int) -> str:
@@ -390,6 +419,88 @@ class PortableBackend(DesktopBackend):
         self._kbd.release(target)
         for k in reversed(held):
             self._kbd.release(k)
+
+
+# Environment variables that let a toolkit auto-detect the HOST session and render THERE instead
+# of on the sandbox's nested X display (#85). Qt prefers its wayland platform plugin whenever
+# WAYLAND_DISPLAY is set, GTK follows GDK_BACKEND — so a Qt/GTK app inherited the user's compositor,
+# ran perfectly, and NEVER appeared in the sandbox: no error, no window, indistinguishable from a
+# slow first-run compile. Scrubbed as a CLASS, so a new toolkit's variable is one entry here.
+_WAYLAND_ESCAPE_VARS = frozenset({
+    "WAYLAND_DISPLAY",
+    "WAYLAND_SOCKET",
+    "QT_WAYLAND_SHELL_INTEGRATION",
+    "MOZ_ENABLE_WAYLAND",
+    "MOZ_DBUS_REMOTE",
+    "ELECTRON_OZONE_PLATFORM_HINT",
+    "CLUTTER_BACKEND",
+    "OZONE_PLATFORM",
+})
+
+# Variables `xdg-open` reads to pick a DESKTOP-SPECIFIC opener (gio / kde-open / exo-open). While
+# any of them is set it takes that branch and ignores $BROWSER entirely — so a sandboxed app's
+# `webbrowser.open()` reached the user's REAL Chrome window and navigated it away (#83). Cleared so
+# xdg-open falls to its generic branch, which honours the contained handler below.
+_DESKTOP_DETECT_VARS = frozenset({
+    "XDG_CURRENT_DESKTOP",
+    "DESKTOP_SESSION",
+    "KDE_FULL_SESSION",
+    "GNOME_DESKTOP_SESSION_ID",
+})
+
+# Toolkit platform pins. Scrubbing alone leaves the choice to auto-detection; naming X11 explicitly
+# makes "render on the sandbox display" the only reachable outcome.
+_X11_PINS = {
+    "QT_QPA_PLATFORM": "xcb",
+    "GDK_BACKEND": "x11",
+    "SDL_VIDEODRIVER": "x11",
+    "XDG_SESSION_TYPE": "x11",
+}
+
+
+def sandbox_child_env(base: dict[str, str], display: str, browser_handler: str) -> dict[str, str]:
+    """The environment every sandboxed child gets: the host's, with the escapes closed.
+
+    Pure so the containment guarantees are testable without an X server. Three jobs: point the
+    child at the nested DISPLAY and pin the toolkits to X11 (#85), route URL opening to the
+    sandbox's own handler so it cannot reach the user's browser (#83), and force software GL
+    (a nested display has no usable hardware GL, so a GPU app renders black).
+
+    Note the deliberate limit: `DBUS_SESSION_BUS_ADDRESS` is left ALONE. Clearing it would also
+    close the xdg-desktop-portal escape, but interact's own AT-SPI element detection rides that
+    same bus — so a portal-based `gio open` can still escape. $BROWSER covers `webbrowser.open()`
+    and `xdg-open`, which is the reported path.
+    """
+    env = {k: v for k, v in base.items() if k not in _WAYLAND_ESCAPE_VARS | _DESKTOP_DETECT_VARS}
+    env.update(_X11_PINS)
+    env["DISPLAY"] = display
+    env["BROWSER"] = browser_handler
+    env.setdefault("LIBGL_ALWAYS_SOFTWARE", "1")  # an explicit global override still wins
+    return env
+
+
+# Written as a script rather than a `true`/no-op so the URL is not merely blocked but RECORDED:
+# an agent clicking a "Report an issue" menu item then learns what the app tried to open instead
+# of seeing nothing happen (#83).
+_BROWSER_HANDLER = """#!/bin/sh
+# interact sandbox URL handler — records what a sandboxed app tried to open instead of letting it
+# reach the user's real browser (#83). Never launches anything on the host.
+printf '%s\\n' "$@" >> @LOG@
+exit 0
+"""
+
+
+def write_sandbox_browser_handler(directory, log_path) -> str:
+    """Create the executable ``$BROWSER`` handler for a sandbox and return its path. Every URL a
+    sandboxed app opens is appended to ``log_path`` (surfaced by the launch/target tools)."""
+    from pathlib import Path
+
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    handler = directory / "sandbox-open"
+    handler.write_text(_BROWSER_HANDLER.replace("@LOG@", shlex.quote(str(log_path))))
+    handler.chmod(0o755)
+    return str(handler)
 
 
 def nested_server_command(display: str, size: str, headless: bool) -> list[str]:

@@ -56,20 +56,22 @@ def test_el_report_never_leaks_coordinates(monkeypatch):
     assert "137" not in report and "451" not in report  # pixel coords NOT leaked
 
 
-def test_xy_report_is_factual_and_never_leaks_pixels(monkeypatch):
+def test_xy_report_states_the_coordinates_it_acted_on(monkeypatch):
     """A coordinate action is reported factually — no prescriptive 'use refs instead' nudge (it
-    fights coordinate-capable agents), but still never echoes the raw pixels back."""
+    fights coordinate-capable agents). It DOES state the coordinates: they are the agent's own
+    literal input, and omitting them left it unable to tell where the click landed (#81)."""
     import interact.actions.dispatch as dispatch
 
     monkeypatch.setattr(dispatch, "_fmt_cursor", lambda: "default")
     report = dispatch._xy_report("clicked", 137, 451)
-    assert "137" not in report and "451" not in report  # no raw pixels echoed
+    assert "(137,451)" in report  # the pixel actually acted on
     assert "hint" not in report.lower()  # no prescriptive nudge
 
 
-def test_raw_xy_snaps_to_detected_element_ref():
-    # When a detection exists for the window, a raw x,y inside an element's box resolves to that
-    # element (stable ref) instead of staying a blind pixel hit. Smallest box wins (button > panel).
+def test_element_at_finds_the_smallest_containing_box():
+    # `_element_at` is the lookup behind the HEDGED "cached detection says: …" annotation on a
+    # coordinate action — it no longer SNAPS the click onto that element (#81/#88), so this covers
+    # the containment logic only. Smallest box wins (button > panel).
     import interact.actions.dispatch as dispatch
     from interact.desktop import DesktopElement, _element_cache
 
@@ -80,7 +82,7 @@ def test_raw_xy_snaps_to_detected_element_ref():
     try:
         assert dispatch._element_at(wid, 150, 150).index == 2  # inside both → smallest (square)
         assert dispatch._element_at(wid, 10, 10).index == 1    # only the panel
-        assert dispatch._element_at(wid, 900, 900) is None      # outside everything → no snap
+        assert dispatch._element_at(wid, 900, 900) is None      # outside everything → no annotation
     finally:
         _element_cache.pop(wid, None)
 

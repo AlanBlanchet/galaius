@@ -145,8 +145,20 @@ class _CoordinateTargetMixin(TargetedAction):
 
 
 class ClickAction(_CoordinateTargetMixin):
+    # X button codes for the desktop path (`DesktopWindow.click(x, y, button)`); Playwright takes
+    # the NAME as-is, so only the desktop side needs the mapping (#91).
+    BUTTON_CODES: ClassVar[dict[str, int]] = {"left": 1, "middle": 2, "right": 3}
+
     type: Literal["click"] = "click"
     element: int | None = None
+    # Which mouse button to press. A right-click is the ONLY way into a context menu, and a desktop
+    # app whose menu is right-click-only was simply unreachable before this (#91). Works on both
+    # surfaces: X buttons 1/2/3 on desktop, Playwright's `button=` on the browser.
+    button: Literal["left", "right", "middle"] = "left"
+
+    @property
+    def button_code(self) -> int:
+        return self.BUTTON_CODES[self.button]
 
     def _targeting_groups(self) -> int:
         return super()._targeting_groups() + (self.element is not None)
@@ -161,11 +173,11 @@ class ClickAction(_CoordinateTargetMixin):
 
     async def execute(self, page: Page):
         if self.ref:
-            await self._locator(page).click()
+            await self._locator(page).click(button=self.button)
         elif self.selector:
-            await _click_selector(page, self.selector)
+            await _click_selector(page, self.selector, button=self.button)
         else:
-            await page.mouse.click(self.x, self.y)
+            await page.mouse.click(self.x, self.y, button=self.button)
 
 
 async def settle_animations(page: Page, timeout: float = 1000) -> None:
@@ -258,7 +270,9 @@ class ScrollAction(_CoordinateTargetMixin):
             await page.mouse.wheel(dx, dy)
 
 
-async def _click_selector(page: Page, selector: str, *, double: bool = False) -> None:
+async def _click_selector(
+    page: Page, selector: str, *, double: bool = False, button: str = "left"
+) -> None:
     """Click (or double-click) a CSS selector, preferring the first VISIBLE match when several
     match. Duplicated link text (a breadcrumb mirroring the sidebar) or a generic button label
     (`:has-text('Annuler')`) makes a selector resolve to many nodes; `page.click` would target
@@ -275,7 +289,7 @@ async def _click_selector(page: Page, selector: str, *, double: bool = False) ->
                 target = loc.nth(i)
                 break
         target = target or loc.first
-    await (target.dblclick() if double else target.click())
+    await (target.dblclick() if double else target.click(button=button))
 
 
 async def _ref_center(page: Page, ref: str) -> tuple[float, float]:
@@ -446,15 +460,27 @@ class WaitForAction(ObservationAction):
             raise ValueError("timeout must be > 0")
         return v
 
+    @property
+    def is_pause(self) -> bool:
+        """A bare ``wait_for`` — a timeout and nothing else — means "pause for ``timeout`` ms".
+        No DOM is involved, so this form runs on ANY surface (see ``BROWSER_ONLY_ACTIONS``)."""
+        return self.selector is None and self.text is None
+
     @model_validator(mode="after")
     def _require_condition(self):
-        if (self.selector is None) == (self.text is None):
-            raise ValueError("Provide exactly one of `selector` or `text` to wait for")
+        # Only BOTH is ambiguous (wait for which?). Neither is the obvious "just pause" intent —
+        # agents send `{"type":"wait_for","timeout":2000,"selector":null}` and used to get a hard
+        # validation error for it (twice in 24h of client logs); it now pauses, as they meant.
+        if self.selector is not None and self.text is not None:
+            raise ValueError("Provide `selector` or `text` to wait for, not both")
         return self
 
     async def execute(self, page: Page):
         # Deterministic alternative to a guessed `sleep`: block until a concrete condition holds
         # (an element reaches a state, or text appears), then continue — no fixed duration to tune.
+        if self.is_pause:
+            await asyncio.sleep(self.timeout / 1000)
+            return f"waited {self.timeout}ms (no selector/text given)"
         if self.text is not None:
             await page.wait_for_function(
                 "t => !!document.body && document.body.innerText.includes(t)",
@@ -604,6 +630,22 @@ class HandleDialogAction(Action):
     mutates: ClassVar[bool] = False
 
 
+class ResizeAction(Action):
+    """Resize the target NATIVE window to ``width`` x ``height`` pixels — desktop/nested only.
+
+    Use it to check a layout at a different size without relaunching the app: resize, screenshot,
+    resize back. Before this the only way was to shell out to ``xdotool windowsize`` alongside
+    interact (#84). Coordinates and refs are window-relative, so re-detect after a resize — the
+    previous detection's boxes describe the OLD layout.
+
+    For a BROWSER viewport use ``emulate_device`` instead (true device metrics: CSS size, DPR,
+    touch), which this action deliberately does not duplicate."""
+
+    type: Literal["resize"] = "resize"
+    width: int = Field(gt=0)
+    height: int = Field(gt=0)
+
+
 AnyAction = Annotated[
     ClickAction
     | HoverAction
@@ -627,10 +669,14 @@ AnyAction = Annotated[
     | EmulateDeviceAction
     | SleepAction
     | CompareAction
-    | HandleDialogAction,
+    | HandleDialogAction
+    | ResizeAction,
     Field(discriminator="type"),
 ]
 
+# Actions with no meaning on a native window. `wait_for` is here for its selector/text forms only —
+# a BARE wait_for (`is_pause`) is a plain pause and runs on any surface, so the desktop runner
+# checks that flag before rejecting.
 BROWSER_ONLY_ACTIONS = frozenset(
     {
         "navigate",
@@ -646,3 +692,7 @@ BROWSER_ONLY_ACTIONS = frozenset(
         "handle_dialog",
     }
 )
+
+# The mirror image: actions that only mean something on a native window, rejected on the browser
+# surface with the browser-side equivalent named (#84).
+DESKTOP_ONLY_ACTIONS = frozenset({"resize"})

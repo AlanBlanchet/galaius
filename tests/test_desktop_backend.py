@@ -4,25 +4,40 @@ from interact.desktop import ABS_MAX, NestedBackend, screen_to_abs
 
 
 @pytest.mark.parametrize(
-    "clicks, horizontal, expected",
+    "clicks, horizontal, button, repeat",
     [
-        (2, False, ["4", "4"]),            # vertical up  → button 4 ×2
-        (-3, False, ["5", "5", "5"]),      # vertical down → button 5 ×3
-        (2, True, ["7", "7"]),             # horizontal right → button 7 ×2
-        (-1, True, ["6"]),                 # horizontal left  → button 6 ×1
+        (2, False, "4", 2),    # vertical up  → button 4 ×2
+        (-3, False, "5", 3),   # vertical down → button 5 ×3
+        (2, True, "7", 2),     # horizontal right → button 7 ×2
+        (-1, True, "6", 1),    # horizontal left  → button 6 ×1
     ],
     ids=["up", "down", "right", "left"],
 )
-def test_nested_scroll_emits_axis_button(clicks, horizontal, expected):
+def test_nested_scroll_emits_axis_button(clicks, horizontal, button, repeat):
     """The nested sandbox must emit the X wheel button for the requested AXIS — vertical 4/5,
     horizontal 6/7. Horizontal scroll silently fell through to a vertical button, so a Flutter
-    horizontal carousel never advanced (#54)."""
+    horizontal carousel never advanced (#54).
+
+    The clicks go out as ONE xdotool invocation with an explicit inter-click delay, not N racing
+    processes: an unspaced burst of press/release pairs was the shape behind the intermittent
+    wrong-event side effects of repeated scrolls (#88)."""
     nb = NestedBackend.__new__(NestedBackend)
     calls: list[tuple] = []
     nb._xdotool = lambda *a: calls.append(a)
     nb.scroll(clicks, horizontal=horizontal)
-    assert [a[1] for a in calls] == expected
-    assert all(a[0] == "click" for a in calls)
+    assert len(calls) == 1, "a wheel burst must be one ordered, delayed sequence"
+    args = calls[0]
+    assert args[0] == "click" and args[-1] == button
+    assert args[args.index("--repeat") + 1] == str(repeat)
+    assert int(args[args.index("--delay") + 1]) > 0
+
+
+def test_nested_scroll_with_no_clicks_does_nothing():
+    nb = NestedBackend.__new__(NestedBackend)
+    calls: list[tuple] = []
+    nb._xdotool = lambda *a: calls.append(a)
+    nb.scroll(0)
+    assert calls == []
 
 
 class TestScreenToAbs:

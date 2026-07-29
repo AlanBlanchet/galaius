@@ -17,6 +17,15 @@ from interact.server.core import _DBG_ACTIONS, _DEFAULT_SESSION, _session_respon
 from interact.state import format_element_list
 
 
+def _recovered(mgr: BrowserManager | None, body: str) -> str:
+    """Prefix any self-recovery note the session raised while serving this call (#89). A session
+    that lost every tab (browser crash, or a concurrent caller closing the last tab on the SHARED
+    "default" session) heals itself in BrowserManager — but the heal must never be silent, or the
+    agent keeps acting as if its page state survived. Drained here, so it rides out on the result."""
+    notes = mgr.drain_recovery_notes() if mgr else []
+    return "\n".join([*notes, body]) if notes else body
+
+
 @mcp.tool()
 @instrumented
 async def navigate(
@@ -59,7 +68,7 @@ async def navigate(
         result = _session_response(session, await vlm._analyze(state, query))
     else:
         result = _session_response(session, state.text_summary())
-    return result
+    return _recovered(mgr, result)
 
 
 @mcp.tool()
@@ -96,7 +105,12 @@ async def run_actions(
 
     Each action needs a 'type' key to select the action model.
 
-    Mutating: click, double_click, type_text, scroll, drag, navigate, evaluate_js, upload_file, key_press, click_element
+    Mutating: click, double_click, type_text, scroll, drag, navigate, evaluate_js, upload_file, key_press, click_element, resize
+      - click: `button` picks which mouse button — "left" (default), "right", or "middle". A
+        right-click is the ONLY way to open a context menu gated on Qt.RightButton / contextmenu;
+        works on both desktop and browser targets.
+      - resize (DESKTOP/nested only): set the window to an exact width+height after launch — check
+        a layout at a narrower size without relaunching. Browser targets use emulate_device instead.
       - double_click: select a word / fire a dblclick (browser; two clicks don't coalesce).
       - select_text (browser): make a real DOM text selection in an element — for a selection-gated
         control like a Lexical inline toolbar (drag dispatches drag-and-drop, not a selection).
@@ -120,6 +134,8 @@ async def run_actions(
 
     Any action can include 'wait' to wait after execution (networkidle, load, domcontentloaded, or a CSS selector — browser only).
     wait_for blocks until a `selector` reaches a state OR a `text` substring appears — prefer it over `sleep` for content/navigation.
+      With NEITHER selector nor text it is simply a pause of `timeout` ms, and that bare form works
+      on a desktop target too (the selector/text forms are browser-only).
     Any action can include 'observe' (a VLM query string) to capture a screenshot after execution and analyze it. The snapshot is stored by step index for later compare actions.
 
     scope: CSS selector to restrict the final capture to a page sub-tree (browser only).
@@ -154,7 +170,7 @@ async def run_actions(
         )
     if frames:
         result += await vlm._analyze_interaction_frames(frames, query)
-    return result
+    return _recovered(mgr, result)  # a browser session may have self-recovered mid-run (#89)
 
 
 @mcp.tool()
@@ -175,14 +191,17 @@ async def get_page_state(
         if elements
         else "Interactive elements: none detected"
     )
-    return _session_response(
-        session,
-        f"URL: {state.url}\n"
-        f"Title: {state.title}\n"
-        f"Focused: {state.focused_element}\n\n"
-        f"Accessibility Tree:\n{state.accessibility_tree}\n\n"
-        f"Visible Text:\n{state.visible_text}\n\n"
-        f"{refs}",
+    return _recovered(
+        mgr,
+        _session_response(
+            session,
+            f"URL: {state.url}\n"
+            f"Title: {state.title}\n"
+            f"Focused: {state.focused_element}\n\n"
+            f"Accessibility Tree:\n{state.accessibility_tree}\n\n"
+            f"Visible Text:\n{state.visible_text}\n\n"
+            f"{refs}",
+        ),
     )
 
 
@@ -237,7 +256,7 @@ async def download_asset(url: str, path: str, session: str = _DEFAULT_SESSION) -
     response = await page.context.request.get(url)
     data = await response.body()
     core._save_to_path(path, data)
-    return _session_response(session, f"Downloaded {len(data)} bytes to {path}")
+    return _recovered(mgr, _session_response(session, f"Downloaded {len(data)} bytes to {path}"))
 
 
 @mcp.tool()

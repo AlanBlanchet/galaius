@@ -43,11 +43,16 @@ def _resolve_nested_target(spec: str) -> tuple[DesktopWindow | None, None, str |
         win = DesktopWindow(name="sandbox", wid=0, x=0, y=0, w=backend.screen_w, h=backend.screen_h)
         win._backend = backend
         return win, None, None
+    if title.lower().startswith("wid:"):
+        # The stable per-window handle: an app that sets no per-instance title (two copies of the
+        # same Qt app) makes a title target ambiguous and it silently drifts to whichever window is
+        # topmost — a full test session landed on the wrong one (#87). A wid cannot drift.
+        return _resolve_nested_wid(backend, title[4:].strip())
     win = DesktopWindow.find_in(backend, title)
     if win is None:
         windows = backend.list_windows()
         if windows:
-            avail = "\n".join(f'  target="nested:{n}"' for _, n in windows)
+            avail = "\n".join(f'  target="nested:{n}" (or target="nested:wid:{w}")' for w, n in windows)
             return None, None, f"No sandbox window titled '{title}'. In the sandbox:\n{avail}"
         # Empty sandbox. The old "(none — launch_app first)" misled an agent that had JUST launched —
         # the real cause is the display being respawned (a size change pre-#50/#53, or exhaustion
@@ -56,11 +61,55 @@ def _resolve_nested_target(spec: str) -> tuple[DesktopWindow | None, None, str |
         # actual desktop, which is exactly what the isolated sandbox exists to avoid.
         return None, None, (
             f"No sandbox window titled '{title}' — the sandbox has no windows right now. "
-            f"If you just called launch_app, the display was respawned and dropped the app: call "
-            f"launch_app again (or reset_sandbox for a clean display), then retry. Do NOT drive the "
-            f"real desktop (xdotool / import / DISPLAY=:0) — keep everything in the isolated sandbox."
+            + _sandbox_death_diagnostics(backend)
+            + "If you just called launch_app, the display was respawned and dropped the app: call "
+            "launch_app again (or reset_sandbox for a clean display), then retry. Do NOT drive the "
+            "real desktop (xdotool / import / DISPLAY=:0) — keep everything in the isolated sandbox."
         )
     return win, None, None
+
+
+def _resolve_nested_wid(backend, raw: str) -> tuple[DesktopWindow | None, None, str | None]:
+    """Resolve ``target="nested:wid:<id>"`` — the drift-proof handle (#87)."""
+    try:
+        wid = int(raw, 0)  # decimal or 0x-hex, as the launch/listing output prints it
+    except ValueError:
+        return None, None, f"Invalid sandbox window id '{raw}' — use the wid from launch_app."
+    match = next((n for w, n in backend.list_windows() if w == wid), None)
+    if match is None:
+        avail = "\n".join(f'  target="nested:wid:{w}" ({n})' for w, n in backend.list_windows())
+        return None, None, (
+            f"No sandbox window with wid {raw}."
+            + (f" In the sandbox:\n{avail}" if avail else " The sandbox has no windows right now.")
+        )
+    win = DesktopWindow.find_in(backend, match)
+    if win is None:
+        return None, None, f"Sandbox window wid {raw} disappeared while resolving it."
+    return win, None, None
+
+
+def _sandbox_death_diagnostics(backend) -> str:
+    """Why the sandbox is empty, when it can be told: a dead nested X server (with its decoded exit
+    signal — SIGKILL points at the host OOM-killer, not interact) and the last app's own output.
+    Without this a caller could not distinguish "the app crashed" from "the host killed the whole
+    sandbox" from "interact lost track of it" (#84)."""
+    def _text(fn_name: str) -> str:
+        """A diagnostic string from the backend, or "" — never anything that could break the
+        resolution this only annotates."""
+        fn = getattr(backend, fn_name, None)
+        if fn is None:
+            return ""
+        try:
+            out = fn()
+        except Exception:
+            return ""
+        return out.strip() if isinstance(out, str) else ""
+
+    if health := _text("display_health"):
+        return health + "\n"
+    if tail := _text("last_app_output"):
+        return f"The display is UP, so the app itself exited. Its last output: {tail}\n"
+    return ""
 
 
 # Title suffixes of developer tools whose window titles embed project/file names — a partial match

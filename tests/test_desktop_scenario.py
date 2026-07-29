@@ -278,27 +278,30 @@ def _local_skip_reason() -> str | None:
 
 
 @pytest.mark.skipif(
-    not os.access("/dev/uinput", os.W_OK) or not os.environ.get("DISPLAY") or not shutil.which("xinput"),
-    reason="needs writable /dev/uinput + an X display + xinput",
-)
-@pytest.mark.skipif(
-    os.environ.get("XDG_SESSION_TYPE") == "wayland",
-    reason="Wayland session: uinput devices route to the compositor and never appear in "
-    "XWayland's xinput list, so device creation can't be verified this way (#79)",
+    not os.access("/dev/uinput", os.W_OK) or not os.environ.get("DISPLAY"),
+    reason="needs writable /dev/uinput + an X display",
 )
 def test_local_backend_creates_pointer_and_keyboard() -> None:
     """Deterministic local-path check (no clicking the live desktop): LocalBackend brings
     up BOTH a uinput pointer and a keyboard — the separate keyboard is the structural fix
     for the dropped-keystrokes bug — and maps the absolute pointer over the FULL X root,
-    the fix for the multi-monitor coordinate-scaling bug. Injects nothing."""
+    the fix for the multi-monitor coordinate-scaling bug. Injects nothing.
+
+    Device creation is asserted against the KERNEL's sysfs listing, not ``xinput list``. xinput
+    only ever enumerated XWayland's own X11 devices, so on a Wayland host this check failed on a
+    device that was in fact created and working — the environment-dependent failure of #79. Sysfs
+    is written by the kernel at UI_DEV_CREATE, identically under Xorg and Wayland, so the check is
+    now display-server-agnostic and the Wayland skip is gone. (Injection itself does reach both
+    Wayland and XWayland clients — see .github/research/wayland-uinput-injection.md.)"""
     from interact.desktop.backend import LocalBackend, _x11_root_size, _x11_screen_size
+    from interact.desktop.input import kernel_input_device_names
 
     backend = LocalBackend()
     try:
-        time.sleep(0.8)  # let libinput register the new devices
-        listing = subprocess.run(["xinput", "list"], capture_output=True, text=True).stdout
-        assert "interact-virtual-pointer" in listing, "absolute pointer device not created"
-        assert "interact-virtual-keyboard" in listing, "keyboard device not created (typing would silently no-op)"
+        time.sleep(0.8)  # let udev/libinput register the new devices
+        names = kernel_input_device_names()
+        assert "interact-virtual-pointer" in names, f"absolute pointer device not created: {names}"
+        assert "interact-virtual-keyboard" in names, "keyboard device not created (typing would silently no-op)"
 
         root_w, root_h = _x11_root_size()
         primary_w, _ = _x11_screen_size()

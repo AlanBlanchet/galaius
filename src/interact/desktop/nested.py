@@ -3,6 +3,7 @@ the sandbox backend, split out from the base/local/portable backends it extends.
 
 import os
 import shutil
+import signal
 import subprocess
 import tempfile
 import time
@@ -14,6 +15,8 @@ from interact.desktop.backend import (
     _tail_file,
     _x11_screen_size,
     nested_server_command,
+    sandbox_child_env,
+    write_sandbox_browser_handler,
 )
 from interact.desktop.input import _BUTTONS
 from interact.desktop.video import _VideoSession, _ffmpeg_grab_args
@@ -36,6 +39,7 @@ class NestedBackend(DesktopBackend):
     _audio_sink: str | None = None
     _audio_module: str | None = None
     _last_used: float = 0.0  # monotonic timestamp of the last attach/launch (idle reaping)
+    _opened_urls: str | None = None  # log of URLs a sandboxed app tried to open (#83)
 
     def __init__(self, display: int = 99, size: str = "1280x800", *,
                  headless: bool = False, ready_timeout: float = 5.0):
@@ -45,6 +49,8 @@ class NestedBackend(DesktopBackend):
         self.screen_w, self.screen_h = int(width), int(height)
         self._procs: list[subprocess.Popen] = []
         self._logs: dict[int, str] = {}  # pid -> temp logfile of a launched app's stdout/stderr
+        self._cmds: dict[int, list[str]] = {}  # pid -> the argv it was launched with (#87 dedupe)
+        self._opened_urls: str | None = None  # log of URLs a sandboxed app tried to open (#83)
         # Windows whose black frame a repaint did NOT change — an intentionally pure-black/OLED UI,
         # not an unrendered GL buffer. Don't nudge them again (a resize on every capture would reset
         # the app's scroll); see capture_window.
@@ -64,12 +70,11 @@ class NestedBackend(DesktopBackend):
         last_err: Exception | None = None
         for candidate in self._free_displays(display):
             self.display = f":{candidate}"
-            # Force software GL for everything in the sandbox. A nested Xephyr/Xvfb display has no
-            # usable hardware GL, so a GPU app (Flutter/Electron/games) that tries hardware EGL hits
-            # `DRI2: failed to create any config` and renders BLACK; Mesa's swrast always provides a
-            # config. setdefault so an explicit global override still wins.
-            self.env = {**os.environ, "DISPLAY": self.display}
-            self.env.setdefault("LIBGL_ALWAYS_SOFTWARE", "1")
+            # One builder owns every containment guarantee the sandbox makes about its children:
+            # the nested DISPLAY + X11 toolkit pins (so a Qt/GTK app can't escape onto the host's
+            # Wayland compositor, #85), the contained $BROWSER handler (so xdg-open can't hijack
+            # the user's real browser window, #83), and forced software GL.
+            self.env = sandbox_child_env(dict(os.environ), self.display, self._browser_handler())
             try:
                 self._start_server(ready_timeout)
                 return
@@ -120,6 +125,32 @@ class NestedBackend(DesktopBackend):
             except OSError:
                 pass
 
+    def _browser_handler(self) -> str:
+        """Path to this sandbox's ``$BROWSER`` script — the containment for URL opening (#83). The
+        URLs it records are surfaced by :meth:`opened_urls`, so a menu item that "did nothing" can
+        be explained. Best-effort: if the directory can't be written, fall back to ``true`` (still
+        contained, just no record)."""
+        from interact.runtime import config
+
+        try:
+            d = config.session_log_dir()
+            self._opened_urls = str(d / f"opened-urls{self.display.lstrip(':')}.log")
+            return write_sandbox_browser_handler(d, self._opened_urls)
+        except OSError:
+            self._opened_urls = None
+            return "/bin/true"
+
+    def opened_urls(self) -> list[str]:
+        """URLs a sandboxed app asked to open (and which were CONTAINED, never sent to the user's
+        browser). Empty when nothing tried (#83)."""
+        if not self._opened_urls:
+            return []
+        try:
+            with open(self._opened_urls) as f:
+                return [ln.strip() for ln in f if ln.strip()]
+        except OSError:
+            return []
+
     @staticmethod
     def _open_log(label: str) -> str:
         # Under ~/.interact/out/sessions/<session>/<date> (not /tmp) so every sandbox log is
@@ -163,14 +194,26 @@ class NestedBackend(DesktopBackend):
 
     def display_health(self) -> str:
         """One-line diagnostic for when a launch produced no window: whether the nested X server is
-        alive, and its recent output if it died — so launch_app can explain a dead display instead
-        of only listing the generic Qt-helper windows (#33)."""
+        alive, and WHY it died — so launch_app can explain a dead display instead of only listing
+        the generic Qt-helper windows (#33).
+
+        The exit status is decoded, not printed raw (#84): a negative returncode is a SIGNAL, and
+        which signal separates the two causes a caller otherwise cannot tell apart — SIGKILL means
+        something outside interact killed the whole sandbox (host OOM-killer under memory pressure,
+        which is exactly what the reporter suspected), while an ordinary non-zero exit is the X
+        server failing on its own terms."""
         if self.is_alive():
             return ""
+        rc = getattr(getattr(self, "_xserver", None), "returncode", None)
+        why = _exit_reason(rc)
         tail = _tail_file(getattr(self, "_xserver_log_path", None), 400)
-        rc = getattr(getattr(self, "_xserver", None), "returncode", "?")
-        return f"The sandbox {self.server_name} {self.display} is DOWN (rc={rc})" + (
-            f": {tail}" if tail else " — call reset_sandbox to respawn it."
+        app_tail = self.last_app_output(300)
+        detail = f": {tail}" if tail else ""
+        if app_tail:
+            detail += f"\nThe last app in it wrote: {app_tail}"
+        return (
+            f"The sandbox {self.server_name} {self.display} is DOWN ({why}){detail}"
+            + ("" if tail else " — call reset_sandbox to respawn it.")
         )
 
     def _reap(self) -> None:
@@ -181,6 +224,7 @@ class NestedBackend(DesktopBackend):
             if proc.poll() is None:
                 alive.append(proc)
             else:
+                self._commands.pop(proc.pid, None)
                 stale = self._logs.pop(proc.pid, None)
                 if stale:
                     try:
@@ -223,15 +267,80 @@ class NestedBackend(DesktopBackend):
 
     def spawn(self, argv: list[str], cwd: str | None = None) -> subprocess.Popen:
         """Launch a process inside the nested display (tracked for teardown), capturing its
-        stdout/stderr so a crash can be explained. Reaps previously-exited apps first."""
+        stdout/stderr so a crash can be explained. Reaps previously-exited apps first.
+
+        ``start_new_session`` makes the child lead its OWN process group, which is what lets
+        :meth:`kill_apps` take a whole app TREE down. A real launch is rarely one process — `uv run
+        app`, a Flutter bundle launcher, an Electron main+renderer — and terminating only the direct
+        child orphaned the rest onto the display: four live instances accumulated in one session and
+        a capture composited a stray element from an OLDER one over the current app (#92)."""
         self._ensure_audio_sink()  # route the app's audio into the sandbox sink from birth (#47)
         self._reap()
         path = self._open_log("app")
         with open(path, "wb") as f:
-            proc = subprocess.Popen(argv, env=self.env, cwd=cwd, stdout=f, stderr=subprocess.STDOUT)
+            proc = subprocess.Popen(
+                argv, env=self.env, cwd=cwd, stdout=f, stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
         self._procs.append(proc)
         self._logs[proc.pid] = path
+        self._commands[proc.pid] = list(argv)
         return proc
+
+    @property
+    def _commands(self) -> dict[int, list[str]]:
+        """argv per launched pid. Lazily materialised so a partially-constructed backend (the tests
+        build one via ``__new__``) still reaps and tears down cleanly — the same degradation the
+        audio-sink attributes already get from their class-level defaults."""
+        cmds = self.__dict__.get("_cmds")
+        if cmds is None:
+            cmds = self.__dict__["_cmds"] = {}
+        return cmds
+
+    def running_command(self, argv: list[str]) -> subprocess.Popen | None:
+        """A still-live app launched from this exact argv, or None.
+
+        The guard behind launch_app's duplicate check: one launch_app call produced TWO process
+        trees ~63s apart (an MCP client retrying a slow launch), both titled the same, after which
+        ``target="nested:<title>"`` silently swapped between the two windows and ~20 actions landed
+        on the wrong one (#87)."""
+        self._reap()
+        wanted = list(argv)
+        return next((p for p in self._procs if self._commands.get(p.pid) == wanted), None)
+
+    def _kill_tree(self, proc: subprocess.Popen) -> None:
+        """Terminate a launched app and everything it spawned, via its process GROUP. Falls back to
+        the direct child if the group is gone (already reaped, or never got its own session)."""
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            if proc.poll() is not None:
+                return
+            try:
+                os.killpg(os.getpgid(proc.pid), sig)
+            except (ProcessLookupError, PermissionError, OSError):
+                if proc.poll() is None:
+                    proc.terminate() if sig == signal.SIGTERM else proc.kill()
+            try:
+                proc.wait(timeout=2)
+                return
+            except subprocess.TimeoutExpired:
+                continue
+
+    def kill_apps(self) -> int:
+        """Stop every app launched into this sandbox, leaving the display itself up. Returns how
+        many were running. The lighter alternative to a full ``reset_sandbox`` teardown that #92
+        asked for: a relaunch replaces the previous app instead of silently adding a ghost."""
+        live = [p for p in self._procs if p.poll() is None]
+        for proc in live:
+            self._kill_tree(proc)
+        self._reap()
+        return len(live)
+
+    def last_app_output(self, limit: int = 800) -> str:
+        """Tail of the most recently launched app's own stdout/stderr — the cause line ("Segmentation
+        fault", a Python traceback) when a window disappears mid-session (#84/#90)."""
+        if not self._procs:
+            return ""
+        return _tail_file(self._logs.get(self._procs[-1].pid), limit)
 
     def proc_output(self, proc: subprocess.Popen, limit: int = 1500) -> str:
         """Tail of what a launched process wrote (stdout+stderr) — to tell an app crash from a dead
@@ -435,6 +544,16 @@ class NestedBackend(DesktopBackend):
         self._xdotool_ok("windowsize", wid, str(self.screen_w), str(self.screen_h))
         return True
 
+    def resize_window(self, name: str, w: int, h: int) -> bool:
+        """Set a nested window's size exactly. Backs the ``resize`` action (#84) — verifying a
+        layout at a narrower width used to need an out-of-band ``xdotool windowsize`` — and the
+        scroll guard's restore when a misrouted wheel resized the window (#82)."""
+        wid = self._window_id(name)
+        if wid is None:
+            return False
+        self._xdotool_ok("windowsize", wid, str(int(w)), str(int(h)))
+        return True
+
     def force_repaint(self, name: str) -> bool:
         """Force a full repaint by nudging the window's size (shrink, restore); returns True if it
         nudged. A Flutter/GL app under software GL presents a stale/uninitialised buffer to X until a
@@ -479,6 +598,35 @@ class NestedBackend(DesktopBackend):
             )
         except subprocess.TimeoutExpired:
             pass
+        self._announce_active_window(wid)
+
+    def _announce_active_window(self, wid) -> None:
+        """Publish ``_NET_ACTIVE_WINDOW`` on the root, the way a window manager would.
+
+        X input focus alone is not what a GTK toolkit consults to decide a toplevel is ACTIVE — it
+        reads the WM's ``_NET_ACTIVE_WINDOW`` hint, and the sandbox deliberately runs WM-less, so
+        nothing ever sets it. GTK then treats the window as inactive and its ``GtkIMContext`` stays
+        focused-out, which drops TEXT input while pointer events (routed purely by position) keep
+        working — the exact reported shape: the click lands, the field shows its focus ring, and
+        not one character ever appears (#93).
+
+        Best-effort by construction: python-xlib is optional, and a toolkit that ignores the hint is
+        simply unaffected. Never raises — this runs before every keyboard action."""
+        try:
+            from Xlib import X, display as _xdisplay  # lazy: Linux X11 only, optional
+        except ImportError:
+            return
+        try:
+            disp = _xdisplay.Display(self.env["DISPLAY"])
+            try:
+                root = disp.screen().root
+                atom = disp.intern_atom("_NET_ACTIVE_WINDOW")
+                root.change_property(atom, disp.intern_atom("WINDOW"), 32, [int(wid)])
+                disp.sync()
+            finally:
+                disp.close()
+        except Exception:  # any X error → the hint is simply not set; keys still go via XTEST
+            return
 
     def move(self, x: float, y: float) -> None:
         self._xdotool("mousemove", "--sync", str(round(x)), str(round(y)))
@@ -492,6 +640,14 @@ class NestedBackend(DesktopBackend):
     def type_text(self, text: str) -> None:
         self._xdotool("type", "--delay", "20", text)
 
+    # Milliseconds between synthesised wheel clicks. A wheel "click" is a press+release pair, and
+    # firing several as fast as separate processes can start them gave a toolkit interleaved or
+    # out-of-order button events — which is the shape behind the non-deterministic side effects
+    # reported for repeated scrolls over one widget: a dock tab switching, a splitter jumping, and
+    # once a context menu opening as if a different button had been pressed (#88). One xdotool
+    # process with an explicit inter-click delay makes the sequence ordered and evenly spaced.
+    _WHEEL_DELAY_MS = 25
+
     def scroll(self, clicks: int, horizontal: bool = False) -> None:
         # X11 wheel buttons: 4=up, 5=down, 6=left, 7=right. Horizontal scroll has to use 6/7 — a
         # left/right request used to fall through to a vertical button, so a Flutter horizontal
@@ -500,8 +656,12 @@ class NestedBackend(DesktopBackend):
             button = "7" if clicks > 0 else "6"
         else:
             button = "4" if clicks > 0 else "5"
-        for _ in range(abs(clicks)):
-            self._xdotool("click", button)
+        n = abs(clicks)
+        if not n:
+            return
+        self._xdotool(
+            "click", "--repeat", str(n), "--delay", str(self._WHEEL_DELAY_MS), button
+        )
 
     def key(self, name: str) -> None:
         self._xdotool("key", name)  # xdotool keysym syntax, e.g. "ctrl+a", "Return"
@@ -618,13 +778,14 @@ class NestedBackend(DesktopBackend):
             subprocess.run(["pactl", "unload-module", self._audio_module],
                            capture_output=True, timeout=5, check=False)
             self._audio_module = self._audio_sink = None
-        for proc in (*self._procs, self._xserver):
-            if proc.poll() is None:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
+        for proc in self._procs:
+            self._kill_tree(proc)  # by GROUP: a launcher's children must go too (#92)
+        if self._xserver.poll() is None:
+            self._xserver.terminate()
+            try:
+                self._xserver.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self._xserver.kill()
         for path in (*self._logs.values(), getattr(self, "_xserver_log_path", None)):
             if path:
                 try:

@@ -286,6 +286,17 @@ def _is_wm_only(elements: list[DesktopElement], titlebar_y: int = _TITLEBAR_Y) -
     )
 
 
+def _win_geometry(win: DesktopWindow) -> tuple[int, int, int, int] | None:
+    """The layout a detection's boxes were measured in — stored alongside the refs so a later
+    resolve can warn that the window has since been reshaped and the refs may name other
+    widgets (#88). None when the target can't report a geometry, in which case the staleness
+    warning is simply not offered: this is an annotation on detection, never a precondition of it."""
+    try:
+        return (int(win.x), int(win.y), int(win.w), int(win.h))
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
 def _page_signature(png_bytes: bytes) -> str:
     """Content fingerprint of the window screenshot — the key for "is this still the same screen?".
     Downscaled + grayscaled so the tiniest pixel diffs wash out; any real content change yields a
@@ -426,7 +437,7 @@ async def _detect_desktop_elements(
             )
             if vlm_elements:
                 fused = DesktopElement.fuse(vlm_elements, atspi_result)
-                fused = DesktopElement.merge_into(win.wid, fused, page_sig)
+                fused = DesktopElement.merge_into(win.wid, fused, page_sig, _win_geometry(win))
                 total_elapsed = time.monotonic() - t0
                 _log.info(
                     "detect_elements: fused %d elements (atspi=%d, vlm=%d) in %.3fs",
@@ -444,7 +455,7 @@ async def _detect_desktop_elements(
                     img_w,
                     img_h,
                 )
-        atspi_result = DesktopElement.merge_into(win.wid, atspi_result, page_sig)
+        atspi_result = DesktopElement.merge_into(win.wid, atspi_result, page_sig, _win_geometry(win))
         _log.info(
             "detect_elements: atspi %d elements in %.3fs", len(atspi_result), elapsed
         )
@@ -486,7 +497,7 @@ async def _detect_desktop_elements(
     # Single pass — one screenshot, one VLM call. The multi-pass refinement (dense strips +
     # quadrants) multiplied calls into 100s+ on large screens; recall is recovered on demand
     # instead, since a follow-up (query-focused) detect accumulates into the window's refs.
-    elements = DesktopElement.merge_into(win.wid, elements, page_sig)
+    elements = DesktopElement.merge_into(win.wid, elements, page_sig, _win_geometry(win))
     _log.info(
         "detect_elements: vlm fallback %d elements in %.3fs", len(elements), vlm_elapsed
     )

@@ -85,12 +85,43 @@ class Box(Element):
 
 _element_cache: dict[int, list] = {}
 _page_sig: dict[int, str] = {}  # last page signature (screenshot content hash) per wid → clear refs on change
+# Window geometry (x, y, w, h) when the refs for a wid were detected. A ref's box is only meaningful
+# under the layout it was measured in: after a dock resize / splitter move / window resize the same
+# box names a DIFFERENT widget, so a click by that ref lands somewhere unrelated while the log still
+# prints the old label (#88). Recorded at store time, compared at resolve time.
+_detect_geometry: dict[int, tuple[int, int, int, int]] = {}
 
 
 class DesktopElement(Box):
     @classmethod
-    def store(cls, wid: int, elements: list[Self]):
+    def store(cls, wid: int, elements: list[Self], geometry: tuple[int, int, int, int] | None = None):
         _element_cache[wid] = elements
+        if geometry is not None:
+            _detect_geometry[wid] = tuple(geometry)
+
+    @classmethod
+    def detection_stale(cls, wid: int, win) -> str | None:
+        """A short reason when this window's cached refs predate a LAYOUT CHANGE, else None.
+
+        Refs are boxes measured against one layout. When the window has since been resized — the
+        splitter moves, a dock is added, a tab bar changes the content area — every stored box may
+        now cover different content, so acting by ref silently hits the wrong widget while the step
+        report still names the old one (#88). Callers surface this as a warning rather than guessing.
+
+        Deliberately geometry-based: it is free (no capture) and catches the reshaping case that
+        actually moves boxes. An in-place change that leaves geometry identical (a tab switch) is
+        already handled by the page-signature invalidation in :meth:`merge_into`.
+        """
+        detected = _detect_geometry.get(wid)
+        if detected is None or not _element_cache.get(wid):
+            return None
+        if detected[2:] == (win.w, win.h):
+            return None
+        return (
+            f"refs were detected at {detected[2]}x{detected[3]} but the window is now "
+            f"{win.w}x{win.h} — the layout changed, so a ref may name a different widget; "
+            f"re-run get_interactive_elements(fresh=true) to re-detect"
+        )
 
     @classmethod
     def invalidate(cls, wid: int) -> None:
@@ -99,9 +130,16 @@ class DesktopElement(Box):
         accumulated jittery duplicates across many detects (#57). Idempotent."""
         _element_cache.pop(wid, None)
         _page_sig.pop(wid, None)
+        _detect_geometry.pop(wid, None)
 
     @classmethod
-    def merge_into(cls, wid: int, elements: list[Self], signature: str) -> list[Self]:
+    def merge_into(
+        cls,
+        wid: int,
+        elements: list[Self],
+        signature: str,
+        geometry: tuple[int, int, int, int] | None = None,
+    ) -> list[Self]:
         """Accumulate detections for a window across detect calls, keyed by a page
         ``signature`` (a content fingerprint of the screenshot — NOT the title, which is
         constant in single-window apps). Same screen → union with the existing refs (a
@@ -114,6 +152,8 @@ class DesktopElement(Box):
             _page_sig[wid] = signature
         merged = cls.merge_keeping(_element_cache.get(wid, []), elements)
         _element_cache[wid] = merged
+        if geometry is not None:  # the layout these boxes were measured in (#88)
+            _detect_geometry[wid] = tuple(geometry)
         return merged
 
     @classmethod

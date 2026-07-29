@@ -67,6 +67,13 @@ class BrowserManager:
         # next browser use so an idle close doesn't silently log the agent out (#36).
         self._pending_state: dict | None = None
         self._http_credentials: dict | None = None  # Basic-auth creds folded into each context (#70)
+        # Self-recovery notes (#89): a session can end up with ZERO pages mid-task — the browser
+        # died, or (the "default" session is SHARED across callers) a concurrent caller closed the
+        # last tab. Every page access then failed with "Tab 0 does not exist — 0 tab(s) open" and
+        # the session stayed wedged for the rest of the task. get_page/new_tab now heal it instead;
+        # each heal appends a note here, which the tool surface drains onto its result so the agent
+        # LEARNS its page state is gone (never a silent recovery).
+        self._recovery_notes: list[str] = []
 
     @property
     def _persistent(self) -> bool:
@@ -123,6 +130,69 @@ class BrowserManager:
         await self._ensure_browser()
         await self._new_context()
 
+    # Cap on undrained recovery notes (#89): a tool surface that never drains must not grow the
+    # list without bound over a long session — the agent only needs the recent heals anyway.
+    _MAX_RECOVERY_NOTES = 4
+
+    def _note_recovery(self, note: str) -> None:
+        """Queue a note for the next tool result (#89). De-duplicated + bounded: the same heal
+        reported twice before a drain tells the agent nothing new."""
+        if note not in self._recovery_notes:
+            self._recovery_notes.append(note)
+        del self._recovery_notes[: -self._MAX_RECOVERY_NOTES]
+
+    def drain_recovery_notes(self) -> list[str]:
+        """The self-recovery notes since the last drain, for the tool result (#89). Drained once —
+        a heal is reported on the call that performed it, not repeated on every later call."""
+        out, self._recovery_notes = self._recovery_notes, []
+        return out
+
+    @property
+    def _browser_alive(self) -> bool:
+        """False when this session's browser process is gone (crashed / killed / disconnected) —
+        cause (a) of the empty-tab-list bug (#89). A persistent session has no standalone Browser
+        handle, so read it off the context; no handle at all → nothing to disprove, treat as alive."""
+        browser = self._browser or (self._context.browser if self._context else None)
+        return browser is None or browser.is_connected()
+
+    async def _ensure_connected(self):
+        """``ensure_ready`` + heal cause (a): the browser/context DIED under the session. Playwright
+        keeps handing back the dead handles, so every later call failed on stale objects (#89) —
+        relaunch the browser and context instead, and say so."""
+        await self.ensure_ready()
+        if self._browser_alive:
+            return
+        for closer in (self._context, self._browser):  # best-effort: the corpse may refuse to close
+            if closer is not None:
+                try:
+                    await closer.close()
+                except Exception:
+                    pass
+        self._context = self._browser = None
+        self._element_map.clear()  # refs pointed at pages of the dead browser
+        await self._ensure_browser()
+        await self._new_context()
+        self._note_recovery(
+            "NOTE: this browser session had crashed or disconnected — relaunched it with a fresh "
+            "blank tab. Page state, and any cookies not on disk, from before the crash are gone."
+        )
+
+    async def _ensure_open_tab(self):
+        """``_ensure_connected`` + heal cause (b): a LIVE context with no pages, because the last
+        tab was closed — plausibly by another caller, since the "default" session is shared (#89).
+        Open a blank tab and re-base the active tab, so the session keeps working."""
+        await self._ensure_connected()
+        if self._context.pages:
+            return
+        self._attach_page_listeners(await self._context.new_page())
+        self._active_tab = 0  # it was pointing past the end — that produced the "Tab -1" error
+        self._element_map.clear()  # refs belonged to the closed tab(s)
+        self._note_recovery(
+            "NOTE: this browser session had no open tabs (the last one was closed — a shared "
+            "session can be closed by a concurrent caller) — opened a fresh blank one. The "
+            "previous page state is gone; navigate again before acting on refs."
+        )
+
     @property
     def active_tab(self) -> int:
         return self._active_tab
@@ -133,9 +203,11 @@ class BrowserManager:
 
     async def get_page(self, tab_index: int | None = None) -> Page:
         """The page for ``tab_index``; ``None`` → the session's active tab, so a standalone tool
-        call after a tab switch sees the tab the agent switched to, not tab 0 (#30)."""
+        call after a tab switch sees the tab the agent switched to, not tab 0 (#30). An EMPTY
+        session self-recovers here rather than erroring, so every caller benefits (#89); an
+        explicitly out-of-range index still errors — that's a caller bug, not a wedged session."""
         self._last_active = time.monotonic()  # every browser action funnels here → marks the session live
-        await self.ensure_ready()
+        await self._ensure_open_tab()
         pages = self._context.pages
         if tab_index is None:
             tab_index = min(self._active_tab, len(pages) - 1)  # a closed tab can leave it stale
@@ -144,7 +216,10 @@ class BrowserManager:
         raise IndexError(f"Tab {tab_index} does not exist — {len(pages)} tab(s) open")
 
     async def new_tab(self, url: str | None = None) -> int:
-        await self.ensure_ready()
+        # _ensure_connected, not _ensure_open_tab: opening the page IS this method's job, so a
+        # 0-tab session must not get a recovery tab AND a new one (#89) — but a DEAD browser still
+        # needs the relaunch, else new_page raises TargetClosedError.
+        await self._ensure_connected()
         page = await self._context.new_page()
         self._attach_page_listeners(page)
         if url:
@@ -416,7 +491,10 @@ class BrowserManager:
             return
         if self._browser:
             return
-        self._playwright = await async_playwright().start()
+        # Reuse a driver that's already up: a relaunch after a browser crash (#89) comes back
+        # through here with the node driver still alive — starting a second one would orphan it.
+        if self._playwright is None:
+            self._playwright = await async_playwright().start()
         launcher = getattr(self._playwright, self._config.browser_type)
         launch_kw = chromium_launch_kwargs(
             self._config.browser_type, self._config.headless, self._config.slow_mo

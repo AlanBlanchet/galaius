@@ -14,6 +14,7 @@ this module imports everywhere. Capture and window enumeration stay per-display-
 Coordinates are screen pixels; map other spaces in via :class:`interact.frames.Frame`.
 """
 
+import glob
 import os
 import time
 
@@ -35,6 +36,29 @@ def screen_to_abs(
     cx = min(max(x, 0.0), float(screen_w))
     cy = min(max(y, 0.0), float(screen_h))
     return round(cx / screen_w * abs_max), round(cy / screen_h * abs_max)
+
+
+def kernel_input_device_names() -> list[str]:
+    """Names of every input device the KERNEL currently exposes, read from sysfs.
+
+    The display-server-agnostic way to confirm a uinput device was created. ``xinput list`` cannot
+    do this job: under a Wayland session it enumerates only XWayland's own X11 devices, so a real,
+    working ``interact-virtual-pointer`` is invisible there and a check built on it fails on a
+    Wayland host while the device is perfectly fine (#79). Sysfs is populated by the kernel at
+    ``UI_DEV_CREATE``, identically under Xorg and Wayland, and needs no root.
+
+    (Confirming libinput has *claimed* the device is a further step — `libinput list-devices`,
+    which needs root; see .github/research/wayland-uinput-injection.md. Creation is what a test
+    can assert unprivileged.)
+    """
+    names: list[str] = []
+    for path in sorted(glob.glob("/sys/class/input/event*/device/name")):
+        try:
+            with open(path) as f:
+                names.append(f.read().strip())
+        except OSError:
+            continue  # device disappeared between glob and read — normal hotplug race
+    return names
 
 
 def _keyboard_codes(ecodes) -> list[int]:

@@ -4,6 +4,7 @@ import inspect
 import json
 import logging
 import re
+from typing import NamedTuple
 
 from playwright.async_api import Error as PlaywrightError, TimeoutError as PlaywrightTimeout
 
@@ -13,6 +14,7 @@ from interact.actions.models import (
     AnyAction,
     AnnotateAction,
     BROWSER_ONLY_ACTIONS,
+    DESKTOP_ONLY_ACTIONS,
     ClickAction,
     ClickElementAction,
     CloseTabAction,
@@ -26,11 +28,13 @@ from interact.actions.models import (
     HttpRequestAction,
     KeyPressAction,
     NewTabAction,
+    ResizeAction,
     ScreenshotAction,
     ScrollAction,
     SleepAction,
     SwitchTabAction,
     TypeTextAction,
+    WaitForAction,
 )
 from interact.browser import BrowserManager
 from interact.debug_utils import Debug
@@ -104,27 +108,46 @@ def _field_changed(before: bytes, after: bytes, cx: int, cy: int) -> bool:
         return True
 
 
-async def _type_desktop(win: "DesktopWindow", text: str, fx: int | None, fy: int | None) -> None:
+async def _type_desktop(
+    win: "DesktopWindow", text: str, fx: int | None, fy: int | None
+) -> str | None:
     """Type ``text`` into a desktop field, re-typing if the keystrokes were dropped during the
     toolkit's post-focus input-connection setup (#59). Only the sandbox/desktop backend path with a
     known focus point (fx, fy) is verified-and-retried — the diff needs both. Safe against
     double-typing: a real type changes the field band far past the threshold, so a landed type is
     detected on the first check and never re-sent; before each retry the field is cleared so a
-    partial never accumulates."""
+    partial never accumulates.
+
+    Returns a warning when every attempt was verifiably dropped, else None. Reporting the verdict
+    is the point: the retries already knew the text never appeared, but the step still read "typed
+    N chars", so a caller drove two Flutter TextFields with three different methods, believed each
+    had worked, and only found out by screenshotting after each one (#93). A verified failure is
+    worth far more than a confident success."""
     backend = win._backend
     if not text.strip() or fx is None or fy is None or backend is None:
         await win.type_text(text)
-        return
+        return None  # unverifiable (no focus point / no backend) — nothing to claim either way
     before = win.capture()
     await win.type_text(text)
     for _ in range(_TYPE_RETRIES):
         await asyncio.sleep(_TYPE_RENDER)
         if _field_changed(before, win.capture(), fx, fy):
-            return
+            return None
         await win.press_key("ctrl+a")
         await win.press_key("Delete")
         await asyncio.sleep(_TYPE_FOCUS_SETTLE)
         await win.type_text(text)
+    await asyncio.sleep(_TYPE_RENDER)
+    if _field_changed(before, win.capture(), fx, fy):
+        return None
+    return (
+        f"WARNING: the text did not appear in the field after {_TYPE_RETRIES + 1} attempts — the "
+        f"keystrokes were sent but the widget never rendered them, so treat this step as FAILED. "
+        f"Some toolkits (Flutter/GTK) only accept text input while their toplevel is ACTIVE, which "
+        f"a WM-less sandbox cannot always signal. Try: click the field first if you typed without a "
+        f"target, then key_press single characters to confirm delivery; if nothing lands, drive the "
+        f"value another way (the app's own API/deep-link) rather than trusting this step."
+    )
 
 
 def _element_at(wid: int, x: int, y: int):
@@ -138,46 +161,75 @@ def _element_at(wid: int, x: int, y: int):
     return min(hits, key=lambda el: el.w * el.h) if hits else None
 
 
-def _resolve_action_coords(action, wid: int, win: DesktopWindow):
+class _Resolved(NamedTuple):
+    """What a desktop action resolved to: where to act, the element it named (None for a literal
+    coordinate action), a fatal error, and a `note` appended to the step report — the hedged
+    cached-detection annotation or the stale-detection warning (#81, #88)."""
+
+    x: int
+    y: int
+    el: object | None
+    err: str | None
+    note: str = ""
+
+
+def _coord_note(wid: int, win: DesktopWindow, x: int, y: int) -> str:
+    """The hedged annotation for a LITERAL coordinate action. What is believed to sit at (x,y) is
+    genuinely useful context — but only as an annotation, never as a relabelling, and never at all
+    when the detection predates a layout change (a stale guess is worse than none, #88)."""
+    stale = desktop.DesktopElement.detection_stale(wid, win)
+    if stale:
+        return f" (WARNING: {stale} — cached refs may name the wrong widget)"
+    el = _element_at(wid, x, y)
+    return f" (cached detection says: {el.role} {el.name!r})" if el else ""
+
+
+def _element_note(wid: int, win: DesktopWindow) -> str:
+    """#88 item 1: an action resolved BY REF/element/selector against a detection taken under a
+    different window geometry is clicking a box that may now hold a different widget. Say so in
+    the step report instead of silently acting on it."""
+    stale = desktop.DesktopElement.detection_stale(wid, win)
+    return f" (WARNING: {stale} — re-run get_interactive_elements)" if stale else ""
+
+
+def _resolve_action_coords(action, wid: int, win: DesktopWindow) -> _Resolved:
     from interact.server import _name_not_found_msg, _not_found, _resolve_desktop_el  # noqa: PLC0415 — circular: server imports dispatch
 
     x = getattr(action, "x", None)
     y = getattr(action, "y", None)
     if x is not None and y is not None:
-        # Snap a raw x,y to an already-detected element whose box contains the point: the
-        # action then resolves by ref (stable across re-renders) and the report names the
-        # element instead of "raw coordinates". Only when a detection exists — no detection,
-        # no snap (and _xy_report nudges the agent to detect first).
-        el = _element_at(wid, x, y)
-        if el:
-            return el.center_x, el.center_y, el, None
-        return x, y, None, None
+        # A raw x,y is LITERAL — the caller asked for THAT pixel. This used to SNAP the point onto
+        # any cached element whose box contained it, replacing the coordinates with that element's
+        # centre and reporting the step as that element; once the layout had changed under a stale
+        # cache the click landed elsewhere and was labelled with an unrelated widget (#81, #88).
+        return _Resolved(x, y, None, None, _coord_note(wid, win, x, y))
     name = getattr(action, "name", None)
     if name:
         role = getattr(action, "role", None)
         el = AtSpi.find_element(win.name, name=name, role=role)
         if not el:
-            return 0, 0, None, _name_not_found_msg(win.name, name)
-        return el.center_x, el.center_y, el, None
+            return _Resolved(0, 0, None, _name_not_found_msg(win.name, name))
+        return _Resolved(el.center_x, el.center_y, el, None)  # live AT-SPI lookup: never stale
+    note = _element_note(wid, win)
     element = getattr(action, "element", None)
     if element is not None:
         el = _resolve_desktop_el(wid, win.name, element=element)
         if not el:
-            return 0, 0, None, _not_found(f"Element {element}")
-        return el.center_x, el.center_y, el, None
+            return _Resolved(0, 0, None, _not_found(f"Element {element}"))
+        return _Resolved(el.center_x, el.center_y, el, None, note)
     ref = getattr(action, "ref", None)
     if ref:
         el = _resolve_desktop_el(wid, win.name, ref=ref)
         if not el:
-            return 0, 0, None, _not_found(f"Element ref={ref!r}")
-        return el.center_x, el.center_y, el, None
+            return _Resolved(0, 0, None, _not_found(f"Element ref={ref!r}"))
+        return _Resolved(el.center_x, el.center_y, el, None, note)
     selector = getattr(action, "selector", None)
     if selector:
         el = _resolve_desktop_el(wid, win.name, selector=selector)
         if not el:
-            return 0, 0, None, f"No desktop element matching '{selector}'"
-        return el.center_x, el.center_y, el, None
-    return 0, 0, None, "Provide x,y, name, ref, selector, or element for desktop action"
+            return _Resolved(0, 0, None, f"No desktop element matching '{selector}'")
+        return _Resolved(el.center_x, el.center_y, el, None, note)
+    return _Resolved(0, 0, None, "Provide x,y, name, ref, selector, or element for desktop action")
 
 
 # Actions that target a DOM element — the ones where "use a stable ref instead" is the right
@@ -284,7 +336,7 @@ async def _named_locator(page, action):
     )
 
 
-async def _click_element(page, mgr, element: int, tab: int) -> bool:
+async def _click_element(page, mgr, element: int, tab: int, button: str = "left") -> bool:
     """Click the numbered ``element`` on ``page``. Prefers the stored element map (its ref →
     locator, or center coordinates); if the map has no entry — it was cleared, or the ref came
     from a scan in a separate call — falls back to the live ``data-interact-ref="e{N}"`` attribute,
@@ -294,13 +346,13 @@ async def _click_element(page, mgr, element: int, tab: int) -> bool:
     el = mgr.get_element(element, tab)
     if el is not None:
         if el.ref:
-            await page.locator(el.playwright_ref).click()
+            await page.locator(el.playwright_ref).click(button=button)
         else:
-            await page.mouse.click(el.center_x, el.center_y)
+            await page.mouse.click(el.center_x, el.center_y, button=button)
         return True
     locator = page.locator(ref_locator(f"e{element}"))
     if await locator.count() == 1:  # the badge is still on the live DOM — resolve it directly
-        await locator.click()
+        await locator.click(button=button)
         return True
     return False
 
@@ -342,16 +394,31 @@ def _fmt_cursor() -> str:
     return f"{ct} ({desktop.Cursor.label(ct)})"
 
 
-def _el_report(verb: str, el) -> str:
+def _click_verb(action) -> str:
+    """"clicked" / "right-clicked" / "middle-clicked" — the report must NAME a non-left button so
+    the agent can see WHICH click it made; a right-click that opened no context menu is otherwise
+    indistinguishable from a left-click in the transcript (#91)."""
+    button = getattr(action, "button", "left")
+    return "clicked" if button == "left" else f"{button}-clicked"
+
+
+def _button_prefix(action) -> str:
+    """A non-left BROWSER click, prefixed onto the step's change description: the browser reports a
+    click as a before/after state diff, which alone never reveals which button was pressed (#91)."""
+    return "" if getattr(action, "button", "left") == "left" else f"{_click_verb(action)}: "
+
+
+def _el_report(verb: str, el, note: str = "") -> str:
     # Reference elements by ref/index + role/name — never pixel coordinates. The agent
     # acts via refs; resolved coords are a dispatch implementation detail it must not see.
-    return f"{verb} [{el.index}] {el.role}: {el.name!r} cursor={_fmt_cursor()}"
+    return f"{verb} [{el.index}] {el.role}: {el.name!r} cursor={_fmt_cursor()}{note}"
 
 
-def _xy_report(verb: str, x: int, y: int) -> str:
-    # Raw-coordinate action — report it factually. No prescriptive nudge: the agent can act by
-    # coordinates if it wants; refs are available from get_interactive_elements if it prefers them.
-    return f"{verb} at coordinates cursor={_fmt_cursor()}"
+def _xy_report(verb: str, x: int, y: int, note: str = "") -> str:
+    # A raw-coordinate action reports the ACTUAL coordinates it acted on: this said only "at
+    # coordinates", which — combined with the old snap — left the agent unable to tell where the
+    # click actually landed (#81). `note` carries the hedged cached-detection annotation.
+    return f"{verb} at ({x},{y}) cursor={_fmt_cursor()}{note}"
 
 
 def _report_with_change(win_name: str, before: DesktopState, report: str) -> str:
@@ -393,13 +460,18 @@ async def _run_actions_desktop(
             step_reports.append(_step(i, action.type, result))
             continue
 
-        if action.type in BROWSER_ONLY_ACTIONS:
+        # A BARE `wait_for` (timeout only) is a plain pause, meaningful on any surface, so it is
+        # not rejected here even though `wait_for` is otherwise browser-only; its selector/text
+        # forms need a DOM and say so precisely.
+        if action.type in BROWSER_ONLY_ACTIONS and not getattr(action, "is_pause", False):
+            hint = (
+                "a selector/text wait needs a DOM — on a desktop target use a bare wait_for "
+                "(timeout only) to pause, then screenshot to check the state"
+                if isinstance(action, WaitForAction)
+                else "use a session instead of window"
+            )
             step_reports.append(
-                _step(
-                    i,
-                    action.type,
-                    f"Action '{action.type}' is browser-only — use a session instead of window",
-                )
+                _step(i, action.type, f"Action '{action.type}' is browser-only — {hint}")
             )
             continue
 
@@ -407,32 +479,61 @@ async def _run_actions_desktop(
             await asyncio.sleep(action.duration)
             step_reports.append(_step(i, action.type, f"waited {action.duration}s"))
 
+        elif isinstance(action, WaitForAction):  # bare pause — the DOM forms were rejected above
+            step_reports.append(_step(i, action.type, await action.execute(None)))
+
+        elif isinstance(action, ResizeAction):
+            # #84: resize the native window in-band, instead of the reporter's `xdotool windowsize`
+            # workaround. The window's own geometry is re-read by resize(), so before→after is the
+            # honest report — and a WM that clamps the request shows up as a mismatch.
+            before = f"{win.w}x{win.h}"
+            if not await win.resize(action.width, action.height):
+                step_reports.append(
+                    _step(
+                        i,
+                        action.type,
+                        f"SKIPPED: this target cannot be resized (still {before}) — a screen "
+                        "target has no window to resize; relaunch the app at the wanted size",
+                    )
+                )
+                continue
+            after = f"{win.w}x{win.h}"
+            report = f"resized {before} -> {after}"
+            if after != f"{action.width}x{action.height}":
+                report += f" (requested {action.width}x{action.height}; the WM adjusted it)"
+            # Every cached box describes the OLD layout now — say so rather than let the next
+            # ref-targeted step click a widget that moved (#88).
+            report += ". Element refs are now stale — re-run get_interactive_elements"
+            step_reports.append(_step(i, action.type, report))
+
         elif isinstance(action, (ClickAction, ClickElementAction)):
-            x, y, el, err = _resolve_action_coords(action, wid, win)
+            x, y, el, err, note = _resolve_action_coords(action, wid, win)
             if err:
                 step_reports.append(_step(i, action.type, f"SKIPPED: {err}"))
                 continue
             before_state = DesktopState.capture(win.name)
-            await win.click(x, y)
+            # click_element carries no `button`, so default left for it (#91).
+            await win.click(x, y, getattr(action, "button_code", 1))
             await asyncio.sleep(0.05)
-            report = _el_report("clicked", el) if el else _xy_report("clicked", x, y)
+            verb = _click_verb(action)
+            report = _el_report(verb, el, note) if el else _xy_report(verb, x, y, note)
             report = _report_with_change(win.name, before_state, report)
             step_reports.append(_step(i, action.type, report))
 
         elif isinstance(action, HoverAction):
-            x, y, el, err = _resolve_action_coords(action, wid, win)
+            x, y, el, err, note = _resolve_action_coords(action, wid, win)
             if err:
                 step_reports.append(_step(i, action.type, f"SKIPPED: {err}"))
                 continue
             await win.hover(x, y)
             await asyncio.sleep(0.05)
-            report = _el_report("hovered", el) if el else _xy_report("hovered", x, y)
+            report = _el_report("hovered", el, note) if el else _xy_report("hovered", x, y, note)
             step_reports.append(_step(i, action.type, report))
 
         elif isinstance(action, TypeTextAction):
             fx = fy = None
             if action.name or action.ref or action.selector:
-                x, y, _, err = _resolve_action_coords(action, wid, win)
+                x, y, _, err, _ = _resolve_action_coords(action, wid, win)
                 if err:
                     step_reports.append(_step(i, action.type, f"SKIPPED: {err}"))
                     continue
@@ -443,9 +544,11 @@ async def _run_actions_desktop(
             if action.clear_first:
                 await win.press_key("ctrl+a")
                 await win.press_key("Delete")
-            await _type_desktop(win, action.text, fx, fy)
+            undelivered = await _type_desktop(win, action.text, fx, fy)
             report = f"typed {len(action.text)} chars"
             report = _report_with_change(win.name, before_state, report)
+            if undelivered:  # a verified drop must not read as a success (#93)
+                report += f"\n  {undelivered}"
             step_reports.append(_step(i, action.type, report))
 
         elif isinstance(action, KeyPressAction):
@@ -465,7 +568,7 @@ async def _run_actions_desktop(
                 getattr(action, a, None) is not None
                 for a in ("x", "ref", "selector", "name")
             ):
-                sx, sy, el, err = _resolve_action_coords(action, wid, win)
+                sx, sy, el, err, _ = _resolve_action_coords(action, wid, win)
                 if err:
                     step_reports.append(_step(i, action.type, f"SKIPPED: {err}"))
                     continue
@@ -597,6 +700,20 @@ async def _run_actions_browser(
         step_idx = i + 1
         _log.info("browser action %d: %s", step_idx, action.type)
 
+        # The mirror of the desktop runner's browser-only guard: a native-window action has no
+        # browser meaning, so name the browser-side equivalent instead of failing obscurely (#84).
+        if action.type in DESKTOP_ONLY_ACTIONS:
+            step_reports.append(
+                _step(
+                    i,
+                    action.type,
+                    f"Action '{action.type}' is desktop-only (it resizes a native window) — for a "
+                    "browser viewport use emulate_device (width+height, or a device name like "
+                    "'iPhone 13'), which sets true device metrics",
+                )
+            )
+            continue
+
         if isinstance(action, CompareAction):
             ctx = f"Browser session comparison of steps {action.steps}"
             result = await _run_compare(snapshots, action.steps, action.query, ctx)
@@ -656,15 +773,19 @@ async def _run_actions_browser(
             before = await _capture(mgr, tab=current_tab)
             if action.name:
                 locator = await _named_locator(page, action)
-                await locator.click()
-            elif not await _click_element(page, mgr, action.element, current_tab):
+                await locator.click(button=action.button)
+            elif not await _click_element(
+                page, mgr, action.element, current_tab, action.button
+            ):
                 step_reports.append(_step(i, action.type, _element_miss(action.element)))
                 continue
             if action.wait:
                 await _wait_fn(page, action.wait)
             final = await _capture(mgr, tab=current_tab)
             change = StateChange.compute(before, final)
-            step_reports.append(_step(i, action.type, change.description))
+            step_reports.append(
+                _step(i, action.type, _button_prefix(action) + change.description)
+            )
 
         elif isinstance(action, HoverAction) and action.name:
             locator = await _named_locator(page, action)
@@ -751,7 +872,7 @@ async def _run_actions_browser(
                 await _wait_fn(page, action.wait)
             final = await _capture(mgr, tab=current_tab)
             change = StateChange.compute(before, final)
-            entry = _step(i, action.type, change.description)
+            entry = _step(i, action.type, _button_prefix(action) + change.description)
             if result is not None:
                 entry += f"\n  result: {result}"
             step_reports.append(entry)
