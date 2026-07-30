@@ -1,0 +1,93 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Nimbus — Store</title>
+<!--
+  The fixture the README's browser demo is recorded against (scripts/demos/record_demos.py).
+  Local and self-contained on purpose: a demo recorded against someone else's live site breaks
+  when they redesign, and bakes their branding into this repo. Nothing here is a product claim —
+  it is a stand-in page with the ordinary controls an agent has to drive: a filter, a search box,
+  a list that re-renders, and a cart count that changes.
+-->
+<style>
+  :root { --bg:#0d1117; --panel:#161b22; --line:#30363d; --fg:#e6edf3; --muted:#8b949e; --accent:#58a6ff; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:15px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }
+  header { display:flex; align-items:center; gap:16px; padding:14px 22px;
+           border-bottom:1px solid var(--line); background:var(--panel); }
+  .logo { font-weight:700; letter-spacing:-.02em; font-size:17px; }
+  .logo span { color:var(--accent); }
+  input[type=search] { flex:1; max-width:320px; padding:8px 12px; border-radius:8px;
+    border:1px solid var(--line); background:#0d1117; color:var(--fg); font-size:14px; }
+  input[type=search]:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px #58a6ff22; }
+  .cart { margin-left:auto; font-size:14px; color:var(--muted); }
+  .cart b { color:var(--fg); }
+  main { padding:20px 22px; }
+  .filters { display:flex; gap:8px; margin-bottom:18px; }
+  .filters button { padding:7px 14px; border-radius:999px; border:1px solid var(--line);
+    background:transparent; color:var(--muted); font-size:13px; cursor:pointer; transition:.15s; }
+  .filters button:hover { color:var(--fg); border-color:var(--muted); }
+  .filters button[aria-pressed=true] { background:var(--accent); border-color:var(--accent); color:#04121f; font-weight:600; }
+  .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; }
+  .card { border:1px solid var(--line); border-radius:12px; padding:14px; background:var(--panel);
+          transition:.15s; }
+  .card:hover { border-color:var(--muted); }
+  .swatch { height:78px; border-radius:8px; margin-bottom:10px;
+            background:linear-gradient(135deg,#1f6feb,#8957e5); }
+  .card:nth-child(2) .swatch { background:linear-gradient(135deg,#3fb950,#1f6feb); }
+  .card:nth-child(3) .swatch { background:linear-gradient(135deg,#db6d28,#f85149); }
+  .card:nth-child(4) .swatch { background:linear-gradient(135deg,#a371f7,#db61a2); }
+  .name { font-weight:600; font-size:14px; }
+  .price { color:var(--muted); font-size:13px; margin:2px 0 10px; }
+  .card button { width:100%; padding:7px; border-radius:7px; border:1px solid var(--accent);
+    background:transparent; color:var(--accent); font-size:13px; font-weight:600; cursor:pointer; }
+  .card button:hover { background:var(--accent); color:#04121f; }
+  .empty { color:var(--muted); padding:26px 0; }
+</style>
+
+<header>
+  <div class="logo">nimbus<span>.</span></div>
+  <input type="search" id="q" placeholder="Search products…" aria-label="Search products">
+  <div class="cart">Cart · <b id="count">0</b></div>
+</header>
+
+<main>
+  <div class="filters">
+    <button data-cat="all" aria-pressed="true">All</button>
+    <button data-cat="audio" aria-pressed="false">Audio</button>
+    <button data-cat="desk" aria-pressed="false">Desk</button>
+  </div>
+  <div class="grid" id="grid"></div>
+</main>
+
+<script>
+  const ITEMS = [
+    { name: "Halo Headphones", price: "€149", cat: "audio" },
+    { name: "Field Recorder",  price: "€229", cat: "audio" },
+    { name: "Riser Stand",     price: "€79",  cat: "desk"  },
+    { name: "Linear Keyboard", price: "€119", cat: "desk"  },
+  ];
+  let cat = "all", q = "", count = 0;
+
+  function render() {
+    const shown = ITEMS.filter(i =>
+      (cat === "all" || i.cat === cat) && i.name.toLowerCase().includes(q.toLowerCase()));
+    const grid = document.getElementById("grid");
+    grid.innerHTML = shown.length
+      ? shown.map(i => `<div class="card"><div class="swatch"></div>
+           <div class="name">${i.name}</div><div class="price">${i.price}</div>
+           <button>Add to cart</button></div>`).join("")
+      : `<div class="empty">No products match “${q}”.</div>`;
+    grid.querySelectorAll("button").forEach(b => b.onclick = () => {
+      document.getElementById("count").textContent = ++count;
+    });
+  }
+  document.querySelectorAll(".filters button").forEach(b => b.onclick = () => {
+    cat = b.dataset.cat;
+    document.querySelectorAll(".filters button")
+      .forEach(o => o.setAttribute("aria-pressed", String(o === b)));
+    render();
+  });
+  document.getElementById("q").addEventListener("input", e => { q = e.target.value; render(); });
+  render();
+</script>

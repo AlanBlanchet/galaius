@@ -6,6 +6,52 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ## [Unreleased]
 
+### Added
+
+- **`click` takes a `button`** — `"left"` (default), `"right"`, or `"middle"`, on both the browser and
+  desktop/nested surfaces. A context menu gated on `Qt.MouseButton.RightButton` was previously
+  unreachable through `run_actions` (#91).
+- **`resize` action** for desktop/nested windows — check a layout at an exact width after launch
+  instead of shelling out to `xdotool windowsize` (#84). Browser targets keep using `emulate_device`.
+- **`launch_app(replace=True)`** (the default) stops whatever was launched into the sandbox before
+  starting the new app, and refuses to launch a command that is already running. Pass `replace=False`
+  to run two apps side by side (#92, #87).
+- **`target="nested:wid:<id>"`** — a drift-proof sandbox window handle, printed next to every title.
+  A title target silently followed whichever same-titled window was topmost (#87).
+- **A bare `wait_for`** (a `timeout` with no `selector`/`text`) is now a pause rather than a validation
+  error, and works on desktop targets too. It was the single most common `run_actions` failure in real
+  client logs.
+
+### Fixed
+
+- **The sandbox actually contains what it launches.** Wayland/session variables are scrubbed and
+  Qt/GTK/SDL pinned to X11, so an app can no longer render onto the host compositor and simply never
+  appear (#85); URL openers (`xdg-open`, `sensible-browser`, `gio open`, …) are shimmed onto the
+  child's `PATH`, so a sandboxed app can no longer navigate your real browser window — `$BROWSER`
+  alone did not stop this, because `xdg-open` resolves the desktop mime association first (#83).
+- **A raw `x,y` click is literal.** It was being snapped to a cached element's centre, so after a
+  layout change the click landed somewhere other than the pixel asked for and was reported under an
+  unrelated widget's name. Coordinates are now reported as acted on, with a stale-detection warning
+  when refs predate a layout change (#81, #88).
+- **A wheel can no longer resize or kill the window it scrolls.** Window geometry is a post-condition
+  of `scroll` and is restored if the wheel changed it; a window that dies under the wheel reports a
+  named cause with the app's own output instead of a later mystery empty sandbox. Wheel clicks go out
+  as one ordered, delayed sequence rather than racing processes (#82, #88, #90).
+- **A dropped desktop `type_text` reports FAILED** instead of "typed N chars". interact already
+  verified the text never appeared and retried; it discarded that verdict (#93).
+- **Browser sessions self-recover from zero tabs**, naming whether the browser died or another caller
+  closed the last tab on the shared session (#89).
+- **Recording a window larger than the sandbox works.** x11grab cannot grab past the screen, so an app
+  whose minimum size exceeds the display (gnome-calculator) failed to record outright; the region is
+  now clipped to the screen.
+- **Sandbox failures explain themselves** — a dead nested X server decodes its exit signal (SIGKILL is
+  named as an outside kill, typically the host OOM-killer) and carries the last app's output (#84).
+- **uinput device creation is verified from sysfs, not `xinput`**, which only ever saw XWayland's own
+  devices — so the check failed on Wayland hosts where the device was fine (#79).
+- **Video verdicts state their sampling floor.** Frames are sampled at `video.fps`, so an effect
+  shorter than one interval reads as simultaneous; a real 100 ms stagger was reported flatly absent.
+  The floor is now part of the answer, pointing at `document.getAnimations()` for CSS timing (#86).
+
 ## [0.11.0] — 2026-06-26
 
 ### Changed

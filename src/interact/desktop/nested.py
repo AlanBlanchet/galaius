@@ -474,13 +474,28 @@ class NestedBackend(DesktopBackend):
                     self._repaint_attempts.pop(name, None)
         return img
 
+    def _grab_region(self, geometry: tuple[int, int, int, int] | None) -> tuple[int, int, int, int]:
+        """A window's geometry clipped to the nested screen — the region x11grab can actually read.
+
+        x11grab cannot grab past the screen and exits non-zero if asked to, so an oversized or
+        partly off-screen window made recording fail OUTRIGHT rather than capture the visible part.
+        Not an edge case: an app whose MINIMUM size exceeds the sandbox is common (gnome-calculator
+        is 622px tall in a 460px display), and the same clip is what a still capture already returns.
+        """
+        if geometry is None:
+            return 0, 0, self.screen_w, self.screen_h
+        x, y, w, h = geometry
+        x0, y0 = max(0, x), max(0, y)
+        w = min(w + min(0, x), self.screen_w - x0)  # a negative origin eats into the width
+        h = min(h + min(0, y), self.screen_h - y0)
+        return x0, y0, max(2, w), max(2, h)
+
     def capture_video(self, name: str, duration: float = 3.0, fps: int = 10) -> bytes:
         """Record one nested window via ffmpeg x11grab on THIS display (``DISPLAY=:N``), not ``:0``.
         Recording a sandbox window grabbed the real display and returned all-black frames while
         screenshot() worked (#18). Forces a repaint first so the first frame isn't a black GL
         buffer (same software-GL cause as the still-capture nudge)."""
-        geo = self.window_geometry(name)
-        x, y, w, h = geo if geo is not None else (0, 0, self.screen_w, self.screen_h)
+        x, y, w, h = self._grab_region(self.window_geometry(name))
         self.force_repaint(name)
         fd, out = tempfile.mkstemp(suffix=".mp4")
         os.close(fd)
@@ -504,8 +519,7 @@ class NestedBackend(DesktopBackend):
         isn't a black GL buffer (same software-GL cause as the still-capture nudge)."""
         if name in self._video_sessions:
             return
-        geo = self.window_geometry(name)
-        x, y, w, h = geo if geo is not None else (0, 0, self.screen_w, self.screen_h)
+        x, y, w, h = self._grab_region(self.window_geometry(name))
         self.force_repaint(name)
         fd, out = tempfile.mkstemp(suffix=".mp4")
         os.close(fd)
