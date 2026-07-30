@@ -292,7 +292,8 @@ def test_local_backend_creates_pointer_and_keyboard() -> None:
     device that was in fact created and working — the environment-dependent failure of #79. Sysfs
     is written by the kernel at UI_DEV_CREATE, identically under Xorg and Wayland, so the check is
     now display-server-agnostic and the Wayland skip is gone. (Injection itself does reach both
-    Wayland and XWayland clients — see .github/research/wayland-uinput-injection.md.)"""
+    Wayland and XWayland clients: XWayland receives them forwarded via the compositor's own
+    wl_seat, so there is no separate X11 injection path to verify.)"""
     from interact.desktop.backend import LocalBackend, _x11_root_size, _x11_screen_size
     from interact.desktop.input import kernel_input_device_names
 

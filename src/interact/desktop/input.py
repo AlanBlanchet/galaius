@@ -48,8 +48,7 @@ def kernel_input_device_names() -> list[str]:
     ``UI_DEV_CREATE``, identically under Xorg and Wayland, and needs no root.
 
     (Confirming libinput has *claimed* the device is a further step — `libinput list-devices`,
-    which needs root; see .github/research/wayland-uinput-injection.md. Creation is what a test
-    can assert unprivileged.)
+    which needs root. Creation is what a test can assert unprivileged.)
     """
     names: list[str] = []
     for path in sorted(glob.glob("/sys/class/input/event*/device/name")):
