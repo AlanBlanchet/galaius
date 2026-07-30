@@ -16,6 +16,14 @@ import pytest
 from interact.desktop.backend import _SIGNAL_CAUSE, _exit_reason
 
 
+def _needs(name: str):
+    """Skip a case whose signal this platform does not define — Windows has no SIGKILL/SIGHUP, so
+    `signal.Signals(9)` there raises and the reason degrades to 'killed by signal 9'."""
+    return pytest.mark.skipif(
+        not hasattr(signal, name), reason=f"{name} does not exist on this platform"
+    )
+
+
 def test_signal_table_is_keyed_by_name_not_by_platform_specific_objects():
     """The structural guard. A `signal.SIGKILL` key would re-break Windows collection at import,
     and no Linux run would notice."""
@@ -31,15 +39,16 @@ def test_signal_table_is_keyed_by_name_not_by_platform_specific_objects():
         (None, "no exit status recorded"),
         (0, "exited rc=0"),
         (1, "exited rc=1"),
-        (-9, "SIGKILL"),      # the OOM-killer case the sandbox diagnostics exist for
-        (-11, "SIGSEGV"),
-        (-15, "SIGTERM"),
+        pytest.param(-9, "SIGKILL", marks=_needs("SIGKILL")),  # the OOM-killer case
+        pytest.param(-11, "SIGSEGV", marks=_needs("SIGSEGV")),
+        pytest.param(-15, "SIGTERM", marks=_needs("SIGTERM")),
     ],
 )
 def test_exit_reason_reads_the_cause(returncode, expected):
     assert expected in _exit_reason(returncode)
 
 
+@_needs("SIGKILL")
 def test_the_oom_case_names_the_outside_killer():
     """A sandbox death by SIGKILL must point away from interact — that distinction was the whole
     point of decoding the status (#84)."""

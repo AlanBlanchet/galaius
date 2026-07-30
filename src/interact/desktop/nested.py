@@ -309,21 +309,37 @@ class NestedBackend(DesktopBackend):
         return next((p for p in self._procs if self._commands.get(p.pid) == wanted), None)
 
     def _kill_tree(self, proc: subprocess.Popen) -> None:
-        """Terminate a launched app and everything it spawned, via its process GROUP. Falls back to
-        the direct child if the group is gone (already reaped, or never got its own session)."""
-        for sig in (signal.SIGTERM, signal.SIGKILL):
+        """Terminate a launched app and everything it spawned, via its process GROUP — escalating
+        from a polite stop to a hard kill. Falls back to the direct child if the group is gone
+        (already reaped, or never got its own session)."""
+        for hard in (False, True):
             if proc.poll() is not None:
                 return
-            try:
-                os.killpg(os.getpgid(proc.pid), sig)
-            except (ProcessLookupError, PermissionError, OSError):
-                if proc.poll() is None:
-                    proc.terminate() if sig == signal.SIGTERM else proc.kill()
+            self._signal_tree(proc, hard)
             try:
                 proc.wait(timeout=2)
                 return
             except subprocess.TimeoutExpired:
                 continue
+
+    @staticmethod
+    def _signal_tree(proc: subprocess.Popen, hard: bool) -> None:
+        """Signal a child's whole process group, or just the child where groups don't exist.
+
+        Every POSIX name here is looked up with ``getattr``: ``SIGKILL``, ``killpg`` and ``getpgid``
+        are all absent on Windows, and referencing them directly raised AttributeError there even
+        though the sandbox itself is Linux-only — the teardown ran during collection of tests that
+        merely construct the backend."""
+        sig = getattr(signal, "SIGKILL", signal.SIGTERM) if hard else signal.SIGTERM
+        killpg, getpgid = getattr(os, "killpg", None), getattr(os, "getpgid", None)
+        if killpg is not None and getpgid is not None:
+            try:
+                killpg(getpgid(proc.pid), sig)
+                return
+            except (ProcessLookupError, PermissionError, OSError):
+                pass  # group gone or not ours → fall through to the direct child
+        if proc.poll() is None:
+            proc.kill() if hard else proc.terminate()
 
     def kill_apps(self) -> int:
         """Stop every app launched into this sandbox, leaving the display itself up. Returns how

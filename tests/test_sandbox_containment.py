@@ -15,6 +15,7 @@ env-builder — no X server needed.
 import os
 import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -25,6 +26,13 @@ from interact.desktop.backend import (
     write_sandbox_url_shims,
 )
 
+
+# The shims are POSIX shell scripts and the PATH they are prepended to is ":"-separated, so the
+# tests that EXECUTE them are Linux-only. The env-scrubbing tests above them are pure and run
+# everywhere.
+posix_only = pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="sandbox URL shims are POSIX shell scripts"
+)
 
 HOST = {
     "PATH": "/usr/bin",
@@ -75,6 +83,7 @@ def test_software_gl_is_forced_but_an_explicit_override_wins(tmp_path):
     assert kept["LIBGL_ALWAYS_SOFTWARE"] == "0"
 
 
+@posix_only
 def test_url_opening_is_routed_to_the_contained_handler(tmp_path):
     """#83: ``$BROWSER`` is what both ``webbrowser.open()`` and generic ``xdg-open`` consult
     first, so pointing it at the sandbox's own handler stops a URL reaching the user's real
@@ -89,6 +98,7 @@ def test_url_opening_is_routed_to_the_contained_handler(tmp_path):
         assert var not in env, f"{var} left set — xdg-open would bypass $BROWSER"
 
 
+@posix_only
 @pytest.mark.parametrize("opener", _URL_OPENER_NAMES)
 def test_every_url_opener_records_instead_of_opening(tmp_path, opener):
     """Each entry point must be a real executable that captures the URL (so the agent can SEE what
@@ -102,6 +112,7 @@ def test_every_url_opener_records_instead_of_opening(tmp_path, opener):
     assert f"https://example.com/{opener}" in log.read_text()
 
 
+@posix_only
 def test_gio_shim_only_swallows_open_and_forwards_the_rest(tmp_path):
     """``gio`` is general-purpose, so only its ``open`` subcommand is a URL escape — swallowing the
     whole binary would break unrelated app behaviour."""
@@ -117,6 +128,7 @@ def test_gio_shim_only_swallows_open_and_forwards_the_rest(tmp_path):
         assert done.returncode == 0 and "open" in done.stdout.lower()
 
 
+@posix_only
 @pytest.mark.skipif(not shutil.which("xdg-open"), reason="needs xdg-open")
 def test_a_real_xdg_open_cannot_reach_the_host_browser(tmp_path):
     """The regression test for the fix that ``$BROWSER`` alone did NOT provide.

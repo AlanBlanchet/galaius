@@ -19,6 +19,14 @@ import pytest
 
 from interact.desktop.nested import NestedBackend
 
+# The sandbox is Linux-only, and everything here asserts POSIX process-GROUP semantics
+# (`os.getpgid`, `killpg`, `SIGKILL`). On Windows these names do not exist, so the module has to
+# skip rather than fail — the CI leg that caught this is the only one that can (#24 tracks the
+# Windows desktop backend).
+pytestmark = pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="sandbox process-group semantics are Linux-only"
+)
+
 
 @pytest.fixture
 def backend(tmp_path, monkeypatch):
