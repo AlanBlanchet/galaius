@@ -18,7 +18,6 @@
 
 <p align="center">
   <a href="https://github.com/AlanBlanchet/interact/actions/workflows/ci.yml"><img src="https://github.com/AlanBlanchet/interact/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://marketplace.visualstudio.com/items?itemName=AlanBlanchet.interact"><img src="https://img.shields.io/visual-studio-marketplace/v/AlanBlanchet.interact?label=VS%20Code" alt="VS Code Marketplace"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.11+-blue.svg" alt="Python 3.11+"></a>
   <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-server-black.svg" alt="MCP"></a>
@@ -28,19 +27,14 @@
 
 ## See it work
 
-Your agent clicks a filter, types a search, adds to a cart — reading back what changed each step.
+Your agent clicks a filter, types a search, adds to a cart. Each caption is the tool call that ran
+and the text that came back — that text is all your model sees.
 
-<p align="center">
-  <img src="docs/assets/demo-browser.gif" alt="An agent driving a web store: clicking the Audio filter narrows the list to 2 products, typing 'field' narrows it to 1, and Add to cart takes the cart from 0 to 1" width="760">
-</p>
+<p align="center"><img src="docs/assets/demo-browser.gif" alt="An agent driving a web store: clicking the Audio filter narrows the list to 2 products, typing 'field' narrows it to 1, and Add to cart takes the cart from 0 to 1" width="760"></p>
 
 The same tools drive a **real desktop app** — `launch_app` puts it in an isolated display the agent owns.
 
-<p align="center">
-  <img src="docs/assets/demo-desktop.gif" alt="An agent launching gnome-calculator into interact's sandbox and clicking 7 x 6 = , the app showing 42" width="380">
-</p>
-
-Each caption is the tool call that ran and the text that came back — that text is all your model sees.
+<p align="center"><img src="docs/assets/demo-desktop.gif" alt="An agent launching gnome-calculator into interact's sandbox and clicking 7 x 6 = , the app showing 42" width="380"></p>
 
 ## 60-second quickstart
 
@@ -65,8 +59,8 @@ uv tool install git+https://github.com/AlanBlanchet/interact             # any p
 uvx --from git+https://github.com/AlanBlanchet/interact interact mcp     # run without installing
 ```
 
-interact isn't on PyPI — the bare `interact` name is taken there. For VS Code, `interact install vscode`
-registers the MCP server with Copilot's agent mode; no extension needed.
+interact isn't on PyPI — the bare name is taken there. `interact install vscode` registers the server
+with Copilot's agent mode; no extension needed.
 </details>
 
 ## Ask your agent
@@ -80,12 +74,11 @@ Plain English in, real actions out. Nothing to script — these are prompts you 
 > `launch_app` starts it on a display the agent owns; `run_actions` with `target="nested:Calculator"` presses the keys and reads the result back. *(This is the desktop demo above.)*
 
 > **"Review the checkout page for visual defects, then confirm the nav has 4 tabs."**
-> `review_ui` returns a severity-sorted critique, `verify_ui` answers PASS/FAIL per requirement, and
-> `measure_ui` backs it with an exact WCAG contrast ratio — no model call, no spend.
+> `review_ui` returns a severity-sorted critique, `verify_ui` answers PASS/FAIL per requirement, and `measure_ui` backs it with an exact WCAG contrast ratio — no model call, no spend.
 
 ## What your agent can do
 
-One tool per job. The generic ones take a `target`: unset for the browser, a window title, `screen`,
+One tool per job. The generic ones take a `target` — unset for the browser, a window title, `screen`,
 `nested:<title>` for the sandbox, or `file:<path>` to analyse an image you already have.
 
 | Tool | What it does |
@@ -108,9 +101,9 @@ One tool per job. The generic ones take a `target`: unset for the browser, a win
 ### Models and keys
 
 Run `interact` with no arguments for a terminal UI to set models and API keys. Models default to
-**auto** — a capable, cheaper-first pick per job from the providers you have keys for, with fallback
-if one errors. `interact status` prints what each role currently resolves to; `interact usage` shows
-what you've spent. Settings live in `~/.interact/config.env`.
+**auto** — a capable, cheaper-first pick per job from the providers you have keys for, falling back if
+one errors. `interact status` prints what each role resolves to and what you've spent; settings live
+in `~/.interact/config.env`.
 
 ## Platform support
 
@@ -120,13 +113,11 @@ what you've spent. Settings live in `~/.interact/config.env`.
 | Desktop control (real windows) | ✅ (X11; uinput input also on Wayland) | ⏳ | ⏳ |
 
 Browser automation works everywhere. Native desktop control is Linux/X11 today; off Linux the desktop
-tools return one clear message pointing you at the browser target. macOS/Windows backends are tracked
-in [#24](https://github.com/AlanBlanchet/interact/issues/24).
-
-Known X11 limits, all tracked in [#1](https://github.com/AlanBlanchet/interact/issues/1): GPU-rendered
-windows (emulators, games) grab black without a compositor — interact says so rather than handing back
-a black image; a software-GL blur can composite to a solid strip; and transient popups (menus,
-drop-downs) need `target="nested"` to capture the whole sandbox screen instead of one window.
+tools return one clear message pointing you at the browser target — macOS/Windows backends are tracked
+in [#24](https://github.com/AlanBlanchet/interact/issues/24). Known X11 limits, all under
+[#1](https://github.com/AlanBlanchet/interact/issues/1): GPU-rendered windows (emulators, games) grab
+black without a compositor — interact says so rather than handing back a black image; a software-GL blur
+can composite to a solid strip; transient popups need `target="nested"` to capture the whole sandbox.
 
 ## Development
 
