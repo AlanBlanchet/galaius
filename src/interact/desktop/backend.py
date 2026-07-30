@@ -58,13 +58,18 @@ def desktop_unsupported_message() -> str:
 # A process killed by the host (OOM) versus one that failed on its own terms look identical as a
 # bare `rc=` number, and that ambiguity is exactly what a caller could not resolve when the sandbox
 # X server died three times in one session with zero diagnostics (#84).
+# Keyed by signal NAME, never by `signal.SIGKILL` and friends: those attributes do not exist on
+# Windows, and this dict is built at import time, so naming them here made `import
+# interact.desktop.backend` raise AttributeError on Windows — taking the whole suite down at
+# collection, invisibly to any Linux or macOS run. A name that this platform lacks simply never
+# matches.
 _SIGNAL_CAUSE = {
-    signal.SIGKILL: "SIGKILL — killed from outside; on a loaded host this is usually the "
-                    "OOM-killer, not an interact fault",
-    signal.SIGSEGV: "SIGSEGV — it crashed",
-    signal.SIGABRT: "SIGABRT — it aborted",
-    signal.SIGTERM: "SIGTERM — something asked it to stop",
-    signal.SIGHUP: "SIGHUP — its controlling terminal went away",
+    "SIGKILL": "SIGKILL — killed from outside; on a loaded host this is usually the "
+               "OOM-killer, not an interact fault",
+    "SIGSEGV": "SIGSEGV — it crashed",
+    "SIGABRT": "SIGABRT — it aborted",
+    "SIGTERM": "SIGTERM — something asked it to stop",
+    "SIGHUP": "SIGHUP — its controlling terminal went away",
 }
 
 
@@ -75,10 +80,10 @@ def _exit_reason(returncode: int | None) -> str:
         return "no exit status recorded"
     if returncode < 0:
         try:
-            sig = signal.Signals(-returncode)
+            name = signal.Signals(-returncode).name
         except ValueError:
             return f"killed by signal {-returncode}"
-        return _SIGNAL_CAUSE.get(sig, f"killed by {sig.name}")
+        return _SIGNAL_CAUSE.get(name, f"killed by {name}")
     return f"exited rc={returncode}"
 
 
