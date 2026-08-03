@@ -3,6 +3,7 @@ measure_ui, transcribe. They resolve the target/quality plan and delegate to the
 helpers; the discover→verify→measure trio share the ``_run_ui_critique`` runner."""
 
 import base64
+import re
 import logging
 
 from mcp.server.fastmcp.utilities.types import Image
@@ -371,7 +372,36 @@ async def measure_ui(
     return out
 
 
+_SOUND_QUALITY_RE = re.compile(
+    r"\b(fidelity|artifacts?|artefacts?|distortion|distorted|noisy|noise|clean(?:er|est)?|"
+    r"crisp|muffled|robotic|metallic|watery|phasey|tinny|clipping|quality|prosody|"
+    r"sound(?:s|ing)? (?:good|bad|better|worse)|which .{0,20}\bbetter\b)",
+    re.IGNORECASE,
+)
+
+
+def _asks_about_sound_quality(query: str | None) -> bool:
+    """Is this query a judgement about how the audio SOUNDS (fidelity, artifacts, which is
+    cleaner) rather than what it CONTAINS (words, speakers, language, timing)?
+
+    Such answers are the ones that proved unreliable: on one clean file the same model rated
+    fidelity, then claimed it had only received a transcript, then inverted an A/B comparison
+    against an objectively measured relationship (#94). The verdict is a caption, never a
+    measurement — so these queries get told so."""
+    return bool(query) and bool(_SOUND_QUALITY_RE.search(query))
+
+
+_QUALITY_CAVEAT = (
+    "\n\nNOTE: this is a model's IMPRESSION of the sound, not a measurement. Such verdicts shift "
+    "with the wording of the question and have been observed to invert A/B comparisons against an "
+    "objectively measured relationship (#94). For a quality claim you intend to rely on, use an "
+    "objective metric against the real target (PESQ / STOI / ASR-WER vs a reference), and treat "
+    "this text as corroboration only."
+)
+
+
 @mcp.tool()
+@instrumented
 async def transcribe(path: str, query: str | None = None, model: str | None = None) -> str:
     """Transcribe an audio (or audio-bearing) file to text, and optionally answer a question about it.
 
@@ -404,7 +434,8 @@ async def transcribe(path: str, query: str | None = None, model: str | None = No
     if query and is_audio_model(audio_model) and not is_transcription_only_model(audio_model):
         try:
             r = await vlm._vlm(data, f"Audio file: {name}", query, "audio", mime, model_override=audio_model)
-            return vlm._fmt_timing(r)
+            out = f"(heard the audio: {audio_model})\n{vlm._fmt_timing(r)}"
+            return out + _QUALITY_CAVEAT if _asks_about_sound_quality(query) else out
         except Exception as e:
             return f"ERROR: audio understanding failed on {audio_model} — {e}"
 
@@ -416,7 +447,22 @@ async def transcribe(path: str, query: str | None = None, model: str | None = No
     if not query:
         return f"{transcript}\n(transcribed:{(' ' + r.model) if r.model else ''} {r.elapsed:.1f}s)"
 
+    # The model never heard the clip — it is reading the transcript. Say so, because a confident
+    # acoustic-sounding answer over text is exactly the failure reported in #94. A question about
+    # how it SOUNDS cannot be answered from a transcript at all, so refuse rather than invent one.
+    if _asks_about_sound_quality(query):
+        return (
+            f"CANNOT ANSWER: {audio_model} is transcription-only, so this query was going to be "
+            f"answered from the TRANSCRIPT — text carries no acoustic information, and an answer "
+            f"from it would be invented. Configure an audio-capable model (Gemini, gpt-4o-audio) "
+            f"to have the clip actually heard, and back any quality claim with an objective metric "
+            f"(PESQ / STOI / ASR-WER vs a reference).\n\n--- transcript ---\n{transcript}"
+        )
     answer = await analyze_media(
         [], f"Transcript of {name}:\n{transcript}", config, query, model=config.resolve_model("image")
     )
-    return f"{answer.text}\n\n--- transcript ---\n{transcript}\n(VLM: {answer.model} {answer.elapsed:.1f}s)"
+    return (
+        f"(answered from the TRANSCRIPT — {audio_model} is transcription-only and did not hear "
+        f"the audio)\n{answer.text}\n\n--- transcript ---\n{transcript}"
+        f"\n(VLM: {answer.model} {answer.elapsed:.1f}s)"
+    )
