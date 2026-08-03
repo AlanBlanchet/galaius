@@ -349,3 +349,51 @@ async def test_browser_scroll_moves_to_the_anchor_before_wheeling():
 
     await ScrollAction(x=120, y=340, direction="down", amount=2).execute(_Page())
     assert calls == [("move", 120, 340), ("wheel", 0, 300), ("wheel", 0, 300)]
+
+
+# ── fail fast instead of burning the timeout (#95) ───────────────────────────────────────────
+# A selector matching nothing, or a ref whose node the DOM replaced, waited the full 10s and then
+# reported a generic timeout. Both are knowable in one count() call, and the recovery differs.
+
+
+class _Loc:
+    def __init__(self, n):
+        self._n = n
+
+    async def count(self):
+        return self._n
+
+    async def click(self):
+        raise AssertionError("must not attempt a click when nothing matches")
+
+    async def dblclick(self):
+        raise AssertionError("must not attempt a click when nothing matches")
+
+
+class _CountPage:
+    def __init__(self, n):
+        self._n = n
+
+    def locator(self, _sel):
+        return _Loc(self._n)
+
+
+@pytest.mark.asyncio
+async def test_selector_matching_nothing_fails_fast_and_names_the_selector():
+    from interact.actions.models import _click_selector
+
+    with pytest.raises(ValueError) as exc:
+        await _click_selector(_CountPage(0), "form button[type=submit]")
+    msg = str(exc.value)
+    assert "form button[type=submit]" in msg
+    assert "0" in msg or "no element" in msg.lower()
+
+
+@pytest.mark.asyncio
+async def test_a_stale_ref_says_it_is_stale_not_just_timed_out():
+    with pytest.raises(ValueError) as exc:
+        await ClickAction(ref="x125").execute(_CountPage(0))
+    msg = str(exc.value).lower()
+    assert "x125" in str(exc.value)
+    assert "stale" in msg or "no longer" in msg
+    assert "get_interactive_elements" in msg  # the recovery, named

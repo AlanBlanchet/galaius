@@ -99,6 +99,7 @@ def _fake_page():
     page.mouse.click = AsyncMock()
     locator = MagicMock()
     locator.click = AsyncMock()
+    locator.count = AsyncMock(return_value=1)  # a ref click checks the node still exists (#95)
     page.locator.return_value = locator
     return page, locator
 

@@ -173,7 +173,17 @@ class ClickAction(_CoordinateTargetMixin):
 
     async def execute(self, page: Page):
         if self.ref:
-            await self._locator(page).click(button=self.button)
+            locator = self._locator(page)
+            if await locator.count() == 0:
+                # A ref is a data-interact-ref attribute on a live node, so a navigation or a
+                # re-render legitimately destroys it. Say THAT, rather than spending the full
+                # timeout and reporting an indistinguishable "never became actionable" (#95).
+                raise ValueError(
+                    f"ref {self.ref!r} is stale — it no longer exists in the page's DOM, which a "
+                    "navigation or a re-render does to every ref detected before it. Re-run "
+                    "get_interactive_elements (or get_page_state) to get current refs."
+                )
+            await locator.click(button=self.button)
         elif self.selector:
             await _click_selector(page, self.selector, button=self.button)
         else:
@@ -286,7 +296,16 @@ async def _click_selector(
     so a hidden-but-actionable target still works."""
     loc = page.locator(selector)
     target = None
-    if await loc.count() <= 1:
+    count = await loc.count()
+    if count == 0:
+        # Clicking anyway waits the full actionability timeout and then reports a generic
+        # "Timeout exceeded" — 10s spent to learn something one count() already knew (#95).
+        raise ValueError(
+            f"no element matches {selector!r} (0 matched) — nothing was clicked. Check the "
+            "selector against the live DOM: get_page_state / get_interactive_elements return the "
+            "page's current elements as refs."
+        )
+    if count <= 1:
         target = loc
     else:
         for i in range(await loc.count()):
