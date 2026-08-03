@@ -5,7 +5,7 @@ import inspect
 import json
 import logging
 import re
-from typing import NamedTuple
+from typing import Callable, NamedTuple
 
 from playwright.async_api import Error as PlaywrightError, TimeoutError as PlaywrightTimeout
 
@@ -20,19 +20,13 @@ from interact.actions.models import (
     ClickElementAction,
     CloseTabAction,
     CompareAction,
-    DragAction,
     EmulateDeviceAction,
     EvaluateJsAction,
     HandleDialogAction,
     HoverAction,
     settle_animations,
-    HttpRequestAction,
-    KeyPressAction,
     NewTabAction,
-    ResizeAction,
     ScreenshotAction,
-    ScrollAction,
-    SleepAction,
     SwitchTabAction,
     TypeTextAction,
     WaitForAction,
@@ -475,6 +469,198 @@ async def _mutating_step(win: DesktopWindow, i: int, action, step_reports: list[
     step_reports.append(_step(i, action.type, report))
 
 
+class _DesktopCtx(NamedTuple):
+    """Everything a desktop action handler needs. Passed instead of closing over the runner's
+    locals, so each handler is an independent function rather than a branch of one long ladder."""
+
+    win: DesktopWindow
+    wid: int
+    i: int
+    action: object
+    step_reports: list[str]
+    snapshots: dict[int, bytes]
+    step_idx: int
+    invocation_id: str | None
+
+    def say(self, report: str) -> None:
+        self.step_reports.append(_step(self.i, self.action.type, report))
+
+    def skip(self, why: str) -> None:
+        self.say(f"SKIPPED: {why}")
+
+
+# type string -> handler. Replaces the isinstance ladder the desktop runner used to be: adding an
+# action is now one registration next to its behaviour, not an edit to a 200-line chain, and each
+# handler is reachable (and testable) on its own (#71).
+_DESKTOP_HANDLERS: dict[str, "Callable"] = {}
+
+
+def _handles(*types: str):
+    def register(fn):
+        for t in types:
+            _DESKTOP_HANDLERS[t] = fn
+        return fn
+
+    return register
+
+
+@_handles("sleep")
+async def _d_sleep(c: _DesktopCtx) -> None:
+    await asyncio.sleep(c.action.duration)
+    c.say(f"waited {c.action.duration}s")
+
+
+@_handles("wait_for")
+async def _d_wait_for(c: _DesktopCtx) -> None:
+    # Bare pause only — the DOM-bearing forms are rejected by the runner's browser-only guard.
+    c.say(await c.action.execute(None))
+
+
+@_handles("resize")
+async def _d_resize(c: _DesktopCtx) -> None:
+    # #84: resize the native window in-band, instead of the reporter's `xdotool windowsize`
+    # workaround. The window's own geometry is re-read by resize(), so before→after is the
+    # honest report — and a WM that clamps the request shows up as a mismatch.
+    action, win = c.action, c.win
+    before = f"{win.w}x{win.h}"
+    if not await win.resize(action.width, action.height):
+        c.skip(
+            f"this target cannot be resized (still {before}) — a screen target has no window "
+            "to resize; relaunch the app at the wanted size"
+        )
+        return
+    after = f"{win.w}x{win.h}"
+    report = f"resized {before} -> {after}"
+    if after != f"{action.width}x{action.height}":
+        report += f" (requested {action.width}x{action.height}; the WM adjusted it)"
+    # Every cached box describes the OLD layout now — say so rather than let the next
+    # ref-targeted step click a widget that moved (#88).
+    c.say(report + ". Element refs are now stale — re-run get_interactive_elements")
+
+
+@_handles("click", "click_element")
+async def _d_click(c: _DesktopCtx) -> None:
+    x, y, el, err, note = _resolve_action_coords(c.action, c.wid, c.win)
+    if err:
+        c.skip(err)
+        return
+    async with _mutating_step(c.win, c.i, c.action, c.step_reports) as step:
+        # click_element carries no `button`, so default left for it (#91).
+        await c.win.click(x, y, getattr(c.action, "button_code", 1))
+        await asyncio.sleep(0.05)
+        verb = _click_verb(c.action)
+        step.text = _el_report(verb, el, note) if el else _xy_report(verb, x, y, note)
+
+
+@_handles("hover")
+async def _d_hover(c: _DesktopCtx) -> None:
+    x, y, el, err, note = _resolve_action_coords(c.action, c.wid, c.win)
+    if err:
+        c.skip(err)
+        return
+    await c.win.hover(x, y)
+    await asyncio.sleep(0.05)
+    c.say(_el_report("hovered", el, note) if el else _xy_report("hovered", x, y, note))
+
+
+@_handles("type_text")
+async def _d_type_text(c: _DesktopCtx) -> None:
+    action, win = c.action, c.win
+    fx = fy = None
+    if action.name or action.ref or action.selector:
+        x, y, _, err, _ = _resolve_action_coords(action, c.wid, win)
+        if err:
+            c.skip(err)
+            return
+        await win.click(x, y)
+        await asyncio.sleep(_TYPE_FOCUS_SETTLE)  # let the toolkit wire up text input (#59)
+        fx, fy = x, y
+    async with _mutating_step(win, c.i, action, c.step_reports) as step:
+        if action.clear_first:
+            await win.press_key("ctrl+a")
+            await win.press_key("Delete")
+        undelivered = await _type_desktop(win, action.text, fx, fy)
+        step.text = f"typed {len(action.text)} chars"
+        if undelivered:  # a verified drop must not read as a success (#93)
+            step.suffix = f"\n  {undelivered}"
+
+
+@_handles("key_press")
+async def _d_key_press(c: _DesktopCtx) -> None:
+    async with _mutating_step(c.win, c.i, c.action, c.step_reports) as step:
+        await c.win.press_key(c.action.key)
+        step.text = f"pressed {c.action.key}"
+
+
+@_handles("scroll")
+async def _d_scroll(c: _DesktopCtx) -> None:
+    # The wheel goes to the widget UNDER the pointer, so position IS the target: honor the
+    # action's anchor (x,y / ref / selector / name) like click does — the hardcoded window center
+    # used to zoom an app's canvas instead of scrolling the dock the caller aimed at (#76).
+    action, win = c.action, c.win
+    if any(getattr(action, a, None) is not None for a in ("x", "ref", "selector", "name")):
+        sx, sy, el, err, _ = _resolve_action_coords(action, c.wid, win)
+        if err:
+            c.skip(err)
+            return
+    else:
+        sx, sy, el = win.w // 2, win.h // 2, None
+    async with _mutating_step(win, c.i, action, c.step_reports) as step:
+        await win.scroll(sx, sy, action.direction, action.amount)
+        at = f" at {el.name!r}" if el is not None and el.name else f" at ({sx},{sy})"
+        step.text = f"scrolled {action.direction} x{action.amount}{at}"
+
+
+@_handles("drag")
+async def _d_drag(c: _DesktopCtx) -> None:
+    from interact.server import _resolve_desktop_el  # noqa: PLC0415 — circular
+
+    action, win = c.action, c.win
+    fx, fy = action.from_x, action.from_y
+    tx, ty = action.to_x, action.to_y
+    for ref_attr, label in (("from_ref", "from_ref"), ("to_ref", "to_ref")):
+        ref = getattr(action, ref_attr)
+        if not ref:
+            continue
+        el = _resolve_desktop_el(c.wid, win.name, ref=ref)
+        if el is None:
+            c.skip(f"{label} element {ref!r} not found")
+            return
+        if ref_attr == "from_ref":
+            fx, fy = el.center_x, el.center_y
+        else:
+            tx, ty = el.center_x, el.center_y
+    async with _mutating_step(win, c.i, action, c.step_reports) as step:
+        await win.drag(fx, fy, tx, ty, action.steps)
+        step.text = f"dragged ({fx},{fy})->({tx},{ty})"
+
+
+@_handles("screenshot")
+async def _d_screenshot(c: _DesktopCtx) -> None:
+    from interact.server import _capture_desktop  # noqa: PLC0415 — circular
+
+    screenshot_bytes, report = await _capture_desktop(c.win, c.action.query, c.action.path)
+    c.snapshots[c.step_idx] = screenshot_bytes
+    Debug.step_save(
+        c.invocation_id, c.i, c.action.type, "screenshot", screenshot_bytes, ext="png"
+    )
+    c.say(report)
+
+
+@_handles("annotate")
+async def _d_annotate(c: _DesktopCtx) -> None:
+    from interact.server import _annotate_desktop  # noqa: PLC0415 — circular
+
+    _, report = await _annotate_desktop(c.win, c.action.query, invocation_id=c.invocation_id)
+    c.snapshots[c.step_idx] = c.win.capture()
+    c.say(report)
+
+
+@_handles("http_request")
+async def _d_http_request(c: _DesktopCtx) -> None:
+    c.say(str(await c.action.execute(None)))
+
+
 async def _run_actions_desktop(
     win: DesktopWindow,
     actions: list[AnyAction],
@@ -521,163 +707,14 @@ async def _run_actions_desktop(
             )
             continue
 
-        if isinstance(action, SleepAction):
-            await asyncio.sleep(action.duration)
-            step_reports.append(_step(i, action.type, f"waited {action.duration}s"))
-
-        elif isinstance(action, WaitForAction):  # bare pause — the DOM forms were rejected above
-            step_reports.append(_step(i, action.type, await action.execute(None)))
-
-        elif isinstance(action, ResizeAction):
-            # #84: resize the native window in-band, instead of the reporter's `xdotool windowsize`
-            # workaround. The window's own geometry is re-read by resize(), so before→after is the
-            # honest report — and a WM that clamps the request shows up as a mismatch.
-            before = f"{win.w}x{win.h}"
-            if not await win.resize(action.width, action.height):
-                step_reports.append(
-                    _step(
-                        i,
-                        action.type,
-                        f"SKIPPED: this target cannot be resized (still {before}) — a screen "
-                        "target has no window to resize; relaunch the app at the wanted size",
-                    )
-                )
-                continue
-            after = f"{win.w}x{win.h}"
-            report = f"resized {before} -> {after}"
-            if after != f"{action.width}x{action.height}":
-                report += f" (requested {action.width}x{action.height}; the WM adjusted it)"
-            # Every cached box describes the OLD layout now — say so rather than let the next
-            # ref-targeted step click a widget that moved (#88).
-            report += ". Element refs are now stale — re-run get_interactive_elements"
-            step_reports.append(_step(i, action.type, report))
-
-        elif isinstance(action, (ClickAction, ClickElementAction)):
-            x, y, el, err, note = _resolve_action_coords(action, wid, win)
-            if err:
-                step_reports.append(_step(i, action.type, f"SKIPPED: {err}"))
-                continue
-            async with _mutating_step(win, i, action, step_reports) as step:
-                # click_element carries no `button`, so default left for it (#91).
-                await win.click(x, y, getattr(action, "button_code", 1))
-                await asyncio.sleep(0.05)
-                verb = _click_verb(action)
-                step.text = _el_report(verb, el, note) if el else _xy_report(verb, x, y, note)
-
-        elif isinstance(action, HoverAction):
-            x, y, el, err, note = _resolve_action_coords(action, wid, win)
-            if err:
-                step_reports.append(_step(i, action.type, f"SKIPPED: {err}"))
-                continue
-            await win.hover(x, y)
-            await asyncio.sleep(0.05)
-            report = _el_report("hovered", el, note) if el else _xy_report("hovered", x, y, note)
-            step_reports.append(_step(i, action.type, report))
-
-        elif isinstance(action, TypeTextAction):
-            fx = fy = None
-            if action.name or action.ref or action.selector:
-                x, y, _, err, _ = _resolve_action_coords(action, wid, win)
-                if err:
-                    step_reports.append(_step(i, action.type, f"SKIPPED: {err}"))
-                    continue
-                await win.click(x, y)
-                await asyncio.sleep(_TYPE_FOCUS_SETTLE)  # let the toolkit wire up text input (#59)
-                fx, fy = x, y
-            async with _mutating_step(win, i, action, step_reports) as step:
-                if action.clear_first:
-                    await win.press_key("ctrl+a")
-                    await win.press_key("Delete")
-                undelivered = await _type_desktop(win, action.text, fx, fy)
-                step.text = f"typed {len(action.text)} chars"
-                if undelivered:  # a verified drop must not read as a success (#93)
-                    step.suffix = f"\n  {undelivered}"
-
-        elif isinstance(action, KeyPressAction):
-            async with _mutating_step(win, i, action, step_reports) as step:
-                await win.press_key(action.key)
-                step.text = f"pressed {action.key}"
-
-        elif isinstance(action, ScrollAction):
-            # The wheel goes to the widget UNDER the pointer, so position IS the target: honor
-            # the action's anchor (x,y / ref / selector / name) like click does — the hardcoded
-            # window center used to zoom an app's canvas instead of scrolling the dock the
-            # caller aimed at (#76). Unanchored keeps the center default.
-            if any(
-                getattr(action, a, None) is not None
-                for a in ("x", "ref", "selector", "name")
-            ):
-                sx, sy, el, err, _ = _resolve_action_coords(action, wid, win)
-                if err:
-                    step_reports.append(_step(i, action.type, f"SKIPPED: {err}"))
-                    continue
-            else:
-                sx, sy, el = win.w // 2, win.h // 2, None
-            async with _mutating_step(win, i, action, step_reports) as step:
-                await win.scroll(sx, sy, action.direction, action.amount)
-                at = f" at {el.name!r}" if el is not None and el.name else f" at ({sx},{sy})"
-                step.text = f"scrolled {action.direction} x{action.amount}{at}"
-
-        elif isinstance(action, DragAction):
-            fx, fy = action.from_x, action.from_y
-            tx, ty = action.to_x, action.to_y
-            if action.from_ref:
-                el = _resolve_desktop_el(wid, win.name, ref=action.from_ref)
-                if el is None:
-                    step_reports.append(
-                        _step(
-                            i,
-                            action.type,
-                            f"SKIPPED: from_ref element {action.from_ref!r} not found",
-                        )
-                    )
-                    continue
-                fx, fy = el.center_x, el.center_y
-            if action.to_ref:
-                el = _resolve_desktop_el(wid, win.name, ref=action.to_ref)
-                if el is None:
-                    step_reports.append(
-                        _step(
-                            i,
-                            action.type,
-                            f"SKIPPED: to_ref element {action.to_ref!r} not found",
-                        )
-                    )
-                    continue
-                tx, ty = el.center_x, el.center_y
-            async with _mutating_step(win, i, action, step_reports) as step:
-                await win.drag(fx, fy, tx, ty, action.steps)
-                step.text = f"dragged ({fx},{fy})->({tx},{ty})"
-
-        elif isinstance(action, ScreenshotAction):
-            screenshot_bytes, report = await _capture_desktop(win, action.query, action.path)
-            snapshots[step_idx] = screenshot_bytes
-            Debug.step_save(
-                invocation_id,
-                i,
-                action.type,
-                "screenshot",
-                screenshot_bytes,
-                ext="png",
-            )
-            step_reports.append(_step(i, action.type, report))
-
-        elif isinstance(action, AnnotateAction):
-            _, report = await _annotate_desktop(
-                win, action.query, invocation_id=invocation_id
-            )
-            snapshots[step_idx] = win.capture()
-            step_reports.append(_step(i, action.type, report))
-
-        elif isinstance(action, HttpRequestAction):
-            result = await action.execute(None)
-            step_reports.append(_step(i, action.type, str(result)))
-
-        else:
+        handler = _DESKTOP_HANDLERS.get(action.type)
+        if handler is None:
             step_reports.append(
-                _step(
-                    i, action.type, f"Action '{action.type}' not supported on desktop"
-                )
+                _step(i, action.type, f"Action '{action.type}' not supported on desktop")
+            )
+        else:
+            await handler(
+                _DesktopCtx(win, wid, i, action, step_reports, snapshots, step_idx, invocation_id)
             )
 
         await asyncio.sleep(0.1)
