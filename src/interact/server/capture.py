@@ -3,6 +3,7 @@ desktop-window capture/detection, per-target PNG bytes, and the review_ui/verify
 live here — the machinery the vision tools compose, apart from the tools themselves."""
 
 import base64
+import re
 import logging
 
 from interact.config import DEFAULT_LIMIT, QUALITY_TIERS
@@ -190,10 +191,25 @@ async def _element_screenshot(
     return result or meta
 
 
+_DURATION_UNITS = {"ms": 0.001, "s": 1.0, "m": 60.0, "": 1.0}
+_DURATION_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(ms|s|m)?\s*$", re.IGNORECASE)
+
+
+def _parse_wait_seconds(condition: str) -> float | None:
+    """Seconds for a duration literal ("3", "8s", "1500ms", "1m"), else None — it's a selector.
+
+    `wait` carries one name across every action, so an agent batching a mixed sequence writes
+    whatever duration literal is natural. Only bare numbers and "Ns" were understood, so
+    "1500ms" fell through to wait_for_selector and threw a CSS parse error (#97)."""
+    m = _DURATION_RE.match(condition)
+    if not m:
+        return None
+    return float(m.group(1)) * _DURATION_UNITS[(m.group(2) or "").lower()]
+
+
 async def _wait(page, condition: str | None):
-    """A load state waits for it; a bare number (or "Ns") sleeps that many seconds — agents keep
-    passing wait="3" meaning seconds, and parsing it as a CSS selector throws (#63); anything else
-    is a CSS selector waited to visibility."""
+    """A load state waits for it; a duration literal sleeps that long (see
+    :func:`_parse_wait_seconds`); anything else is a CSS selector waited to visibility."""
     import asyncio
 
     if condition is None:
@@ -201,11 +217,10 @@ async def _wait(page, condition: str | None):
     if condition in ("networkidle", "domcontentloaded", "load"):
         await page.wait_for_load_state(condition)
         return
-    try:
-        await asyncio.sleep(float(condition.strip().rstrip("s")))
+    seconds = _parse_wait_seconds(condition)
+    if seconds is not None:
+        await asyncio.sleep(seconds)
         return
-    except ValueError:
-        pass
     await page.wait_for_selector(condition, state="visible", timeout=config.wait_timeout)
 
 

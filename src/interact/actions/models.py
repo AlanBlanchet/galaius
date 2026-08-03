@@ -228,7 +228,12 @@ class TypeTextAction(_RefSelectorLocator, Action):
 
     async def execute(self, page: Page):
         if not self.ref and not self.selector:
-            raise ValueError("Browser type_text requires ref or selector")
+            # No target: type into whatever is focused. After a click the field already IS
+            # focused, so repeating its selector just to type was a wasted round-trip (#97).
+            if self.clear_first:
+                await page.keyboard.press("ControlOrMeta+a")
+            await page.keyboard.type(self.text)
+            return
         target = self._locator(page)
         if self.clear_first:
             await target.fill(self.text)

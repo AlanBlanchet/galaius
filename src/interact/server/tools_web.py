@@ -106,6 +106,10 @@ async def run_actions(
     Each action needs a 'type' key to select the action model.
 
     Mutating: click, double_click, type_text, scroll, drag, navigate, evaluate_js, upload_file, key_press, click_element, resize
+      - type_text with NO ref/selector types into whatever is focused — after a click on a field,
+        just type; you don't need to name the field twice.
+      - `wait` accepts a duration on ANY action ("3", "8s", "1500ms", "1m"), a load state
+        ("networkidle"/"load"/"domcontentloaded"), or a CSS selector to wait for.
       - click: `button` picks which mouse button — "left" (default), "right", or "middle". A
         right-click is the ONLY way to open a context menu gated on Qt.RightButton / contextmenu;
         works on both desktop and browser targets.
