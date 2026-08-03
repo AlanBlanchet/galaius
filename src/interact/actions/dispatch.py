@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import asynccontextmanager
 import base64
 import inspect
 import json
@@ -429,6 +430,36 @@ def _report_with_change(win_name: str, before: DesktopState, report: str) -> str
     return report
 
 
+class _StepReport:
+    """What a mutating desktop step produces, set inside :func:`_mutating_step`: ``text`` is the
+    verb line (annotated with the window change), ``suffix`` is appended AFTER that annotation —
+    for a warning that must not read as part of the change, e.g. a verified-dropped type (#93)."""
+
+    __slots__ = ("text", "suffix")
+
+    def __init__(self) -> None:
+        self.text = ""
+        self.suffix = ""
+
+
+@asynccontextmanager
+async def _mutating_step(win: DesktopWindow, i: int, action, step_reports: list[str]):
+    """The shape EVERY mutating desktop branch repeats: snapshot the window, act, then append the
+    step's report annotated with what changed. Each branch had its own hand-written copy of the
+    four lines, so a change to how a desktop mutation reports had to be made six times and drifted
+    (#71). The branch now contributes only its own action and verb:
+
+        async with _mutating_step(win, i, action, step_reports) as step:
+            await win.press_key(action.key)
+            step.text = f"pressed {action.key}"
+    """
+    before = DesktopState.capture(win.name)
+    step = _StepReport()
+    yield step
+    report = _report_with_change(win.name, before, step.text) + step.suffix
+    step_reports.append(_step(i, action.type, report))
+
+
 async def _run_actions_desktop(
     win: DesktopWindow,
     actions: list[AnyAction],
@@ -511,14 +542,12 @@ async def _run_actions_desktop(
             if err:
                 step_reports.append(_step(i, action.type, f"SKIPPED: {err}"))
                 continue
-            before_state = DesktopState.capture(win.name)
-            # click_element carries no `button`, so default left for it (#91).
-            await win.click(x, y, getattr(action, "button_code", 1))
-            await asyncio.sleep(0.05)
-            verb = _click_verb(action)
-            report = _el_report(verb, el, note) if el else _xy_report(verb, x, y, note)
-            report = _report_with_change(win.name, before_state, report)
-            step_reports.append(_step(i, action.type, report))
+            async with _mutating_step(win, i, action, step_reports) as step:
+                # click_element carries no `button`, so default left for it (#91).
+                await win.click(x, y, getattr(action, "button_code", 1))
+                await asyncio.sleep(0.05)
+                verb = _click_verb(action)
+                step.text = _el_report(verb, el, note) if el else _xy_report(verb, x, y, note)
 
         elif isinstance(action, HoverAction):
             x, y, el, err, note = _resolve_action_coords(action, wid, win)
@@ -540,24 +569,19 @@ async def _run_actions_desktop(
                 await win.click(x, y)
                 await asyncio.sleep(_TYPE_FOCUS_SETTLE)  # let the toolkit wire up text input (#59)
                 fx, fy = x, y
-            before_state = DesktopState.capture(win.name)
-            if action.clear_first:
-                await win.press_key("ctrl+a")
-                await win.press_key("Delete")
-            undelivered = await _type_desktop(win, action.text, fx, fy)
-            report = f"typed {len(action.text)} chars"
-            report = _report_with_change(win.name, before_state, report)
-            if undelivered:  # a verified drop must not read as a success (#93)
-                report += f"\n  {undelivered}"
-            step_reports.append(_step(i, action.type, report))
+            async with _mutating_step(win, i, action, step_reports) as step:
+                if action.clear_first:
+                    await win.press_key("ctrl+a")
+                    await win.press_key("Delete")
+                undelivered = await _type_desktop(win, action.text, fx, fy)
+                step.text = f"typed {len(action.text)} chars"
+                if undelivered:  # a verified drop must not read as a success (#93)
+                    step.suffix = f"\n  {undelivered}"
 
         elif isinstance(action, KeyPressAction):
-            before_state = DesktopState.capture(win.name)
-            await win.press_key(action.key)
-            report = _report_with_change(
-                win.name, before_state, f"pressed {action.key}"
-            )
-            step_reports.append(_step(i, action.type, report))
+            async with _mutating_step(win, i, action, step_reports) as step:
+                await win.press_key(action.key)
+                step.text = f"pressed {action.key}"
 
         elif isinstance(action, ScrollAction):
             # The wheel goes to the widget UNDER the pointer, so position IS the target: honor
@@ -574,13 +598,10 @@ async def _run_actions_desktop(
                     continue
             else:
                 sx, sy, el = win.w // 2, win.h // 2, None
-            before_state = DesktopState.capture(win.name)
-            await win.scroll(sx, sy, action.direction, action.amount)
-            at = f" at {el.name!r}" if el is not None and el.name else f" at ({sx},{sy})"
-            report = _report_with_change(
-                win.name, before_state, f"scrolled {action.direction} x{action.amount}{at}"
-            )
-            step_reports.append(_step(i, action.type, report))
+            async with _mutating_step(win, i, action, step_reports) as step:
+                await win.scroll(sx, sy, action.direction, action.amount)
+                at = f" at {el.name!r}" if el is not None and el.name else f" at ({sx},{sy})"
+                step.text = f"scrolled {action.direction} x{action.amount}{at}"
 
         elif isinstance(action, DragAction):
             fx, fy = action.from_x, action.from_y
@@ -609,12 +630,9 @@ async def _run_actions_desktop(
                     )
                     continue
                 tx, ty = el.center_x, el.center_y
-            before_state = DesktopState.capture(win.name)
-            await win.drag(fx, fy, tx, ty, action.steps)
-            report = _report_with_change(
-                win.name, before_state, f"dragged ({fx},{fy})->({tx},{ty})"
-            )
-            step_reports.append(_step(i, action.type, report))
+            async with _mutating_step(win, i, action, step_reports) as step:
+                await win.drag(fx, fy, tx, ty, action.steps)
+                step.text = f"dragged ({fx},{fy})->({tx},{ty})"
 
         elif isinstance(action, ScreenshotAction):
             screenshot_bytes, report = await _capture_desktop(win, action.query, action.path)
