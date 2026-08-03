@@ -543,6 +543,18 @@ class BrowserManager:
         page = self._context.pages[0] if self._context.pages else await self._context.new_page()
         self._attach_page_listeners(page)
 
+    def peek_url(self) -> str | None:
+        """The active tab's URL without starting or touching anything — None if this session has
+        no live context/page yet. Deliberately sync + side-effect free (see SessionRegistry.peek)."""
+        ctx = self._context
+        if ctx is None or not ctx.pages:
+            return None
+        idx = min(self._active_tab, len(ctx.pages) - 1)
+        try:
+            return ctx.pages[idx].url
+        except Exception:  # a page closing under us is not worth an error here
+            return None
+
     def arm_dialog(self, action: str, prompt_text: str | None = None) -> None:
         """Arm how the NEXT dialog is answered (one-shot) — the handle_dialog action (#77)."""
         self._dialog_next = {"action": action, "prompt_text": prompt_text}
@@ -640,6 +652,11 @@ class SessionRegistry:
             mgr._pending_state = self._stash.pop(session_id, None)  # restore login if idle-closed
             self._sessions[session_id] = mgr
         return self._sessions[session_id]
+
+    def peek(self, session_id: str) -> "BrowserManager | None":
+        """The manager for a session IF it already exists — never creates one. For read-only
+        inspection (e.g. noticing a session moved) that must not start a browser."""
+        return self._sessions.get(session_id)
 
     async def close(self, session_id: str):
         mgr = self._sessions.pop(session_id, None)

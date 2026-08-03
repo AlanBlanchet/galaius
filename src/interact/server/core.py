@@ -78,8 +78,81 @@ def _parse_int_tuple(s: str | None, n: int, name: str):
     return vals
 
 
+# The shared "default" session is a shared mailbox: another caller on the same server can navigate
+# it, or close its tab, between two of YOUR calls. That used to be silent — you discovered it several
+# calls later as a stale-ref timeout or a page you never opened (#96/#98/#99/#101). We remember the
+# URL each caller left a session on, and report the difference when it moved on its own.
+_session_url_baseline: dict[str, str] = {}
+_session_drift_note: dict[str, str] = {}
+_session_shared_warned: set[str] = set()
+
+
+def _caller_key(session: str) -> str:
+    """Identify the CALLER, not just the session: the baseline has to be per-connection, or the
+    other caller's own navigate silently rebaselines it and the drift is never noticed. Two agents
+    sharing ONE connection are indistinguishable at the protocol level — that limit is real and is
+    why the note also nudges toward a uniquely-named session."""
+    try:
+        return f"{id(mcp.get_context().session)}:{session}"
+    except Exception:  # CLI / tests: no live MCP request
+        return f"local:{session}"
+
+
+def _peek_session_url(session: str) -> str | None:
+    """The session's current URL, or None when it has no live page. Side-effect free on purpose —
+    it must never start a browser just to look."""
+    mgr = _sessions.peek(session)
+    return mgr.peek_url() if mgr is not None else None
+
+
+def _observe_session_url(session: str) -> None:
+    """Remember where this call left the session — the baseline the next call is compared against."""
+    url = _peek_session_url(session)
+    if url:
+        _session_url_baseline[_caller_key(session)] = url
+
+
+def _check_session_drift(session: str) -> None:
+    """Called as a tool STARTS: did the session move since we last left it? Only another caller
+    (or the page redirecting itself) can do that, so it is worth saying out loud."""
+    was = _session_url_baseline.get(_caller_key(session))
+    now = _peek_session_url(session)
+    if was and now and was != now:
+        nudge = (
+            f" Use a unique session= name to stay isolated (e.g. session=\"{session}-1\")."
+            if session == _DEFAULT_SESSION
+            else ""
+        )
+        _session_drift_note[_caller_key(session)] = (
+            f"NOTE: this session moved on its own since your last call — you left it on {was}, "
+            f"it is now on {now}. Another caller shares this session (or the page redirected "
+            f"itself), so refs and page state from before may be stale.{nudge}"
+        )
+
+
+def _shared_session_nudge(session: str) -> str | None:
+    """Said ONCE per caller, the first time it uses the shared session. Every reporter of the
+    contention bugs had read the instructions and used "default" anyway — a warning at connect
+    time is not a reminder at the moment it matters (#96/#98)."""
+    key = _caller_key(session)
+    if session != _DEFAULT_SESSION or key in _session_shared_warned:
+        return None
+    _session_shared_warned.add(key)
+    return (
+        'NOTE: "default" is a shared browser session — a concurrent caller (a subagent, another '
+        "agent on this server) drives the same tabs, so your page can change between calls. For "
+        'anything beyond a one-shot check, pass your own session= name (e.g. session="critic-1").'
+    )
+
+
 def _session_response(session: str, body: str) -> str:
-    return f"[session: {session}]\n{body}"
+    notes = [
+        n
+        for n in (_session_drift_note.pop(_caller_key(session), None), _shared_session_nudge(session))
+        if n
+    ]
+    _observe_session_url(session)  # rebaseline: this is where this call left it
+    return "\n".join([f"[session: {session}]", *notes, body])
 
 
 def _not_found(what: str) -> str:
@@ -173,6 +246,10 @@ def instrumented(fn):
     @functools.wraps(fn)
     async def wrapper(*args, **kwargs):
         config.refresh()  # ~/.interact/config.env is source of truth: pick up live edits per call
+        # Before the body runs: did a concurrent caller move this session while we were away?
+        # Checked here so EVERY session tool reports it, not just get_page_state (#96/#98/#99/#101).
+        if not kwargs.get("target"):
+            _check_session_drift(kwargs.get("session") or _DEFAULT_SESSION)
         inv = Debug.new_invocation_dir(kwargs.get("debug_dir"), fn.__name__)
         token = _CURRENT_INV.set(inv)
         try:
