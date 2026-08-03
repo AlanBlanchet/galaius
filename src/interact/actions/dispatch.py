@@ -430,6 +430,21 @@ def _report_with_change(win_name: str, before: DesktopState, report: str) -> str
     return report
 
 
+async def _settle_and_diff(mgr, page, action, tab: int, before: PageState):
+    """The tail every mutating BROWSER branch repeats: honour the action's own ``wait``, recapture,
+    and diff against ``before``. Returns ``(final_state, description)`` — the state is handed back
+    rather than set here because the batch's closing summary reads it (#71/#65).
+
+    The desktop twin is :func:`_mutating_step`; a browser step can't use a context manager for the
+    same job because ``final`` has to reach the enclosing runner."""
+    from interact.server import _capture, _wait as _wait_fn  # noqa: PLC0415 — circular
+
+    if action.wait:
+        await _wait_fn(page, action.wait)
+    final = await _capture(mgr, tab=tab)
+    return final, StateChange.compute(before, final).description
+
+
 class _StepReport:
     """What a mutating desktop step produces, set inside :func:`_mutating_step`: ``text`` is the
     verb line (annotated with the window change), ``suffix`` is appended AFTER that annotation —
@@ -779,11 +794,8 @@ async def _run_actions_browser(
             if not await _click_element(page, mgr, action.element, current_tab):
                 step_reports.append(_step(i, action.type, _element_miss(action.element)))
                 continue
-            if action.wait:
-                await _wait_fn(page, action.wait)
-            final = await _capture(mgr, tab=current_tab)
-            change = StateChange.compute(before, final)
-            step_reports.append(_step(i, action.type, change.description))
+            final, desc = await _settle_and_diff(mgr, page, action, current_tab, before)
+            step_reports.append(_step(i, action.type, desc))
 
         elif isinstance(action, ClickAction) and (
             action.name or action.element is not None
@@ -797,13 +809,8 @@ async def _run_actions_browser(
             ):
                 step_reports.append(_step(i, action.type, _element_miss(action.element)))
                 continue
-            if action.wait:
-                await _wait_fn(page, action.wait)
-            final = await _capture(mgr, tab=current_tab)
-            change = StateChange.compute(before, final)
-            step_reports.append(
-                _step(i, action.type, _button_prefix(action) + change.description)
-            )
+            final, desc = await _settle_and_diff(mgr, page, action, current_tab, before)
+            step_reports.append(_step(i, action.type, _button_prefix(action) + desc))
 
         elif isinstance(action, HoverAction) and action.name:
             locator = await _named_locator(page, action)
@@ -819,11 +826,8 @@ async def _run_actions_browser(
                 await locator.fill(action.text)
             else:
                 await locator.type(action.text)
-            if action.wait:
-                await _wait_fn(page, action.wait)
-            final = await _capture(mgr, tab=current_tab)
-            change = StateChange.compute(before, final)
-            step_reports.append(_step(i, action.type, change.description))
+            final, desc = await _settle_and_diff(mgr, page, action, current_tab, before)
+            step_reports.append(_step(i, action.type, desc))
 
         elif isinstance(action, ScreenshotAction):
             if action.element is not None or action.selector is not None:
@@ -886,11 +890,8 @@ async def _run_actions_browser(
         else:
             before = await _capture(mgr, tab=current_tab)
             result = await _execute_browser_action(action, page)
-            if action.wait:
-                await _wait_fn(page, action.wait)
-            final = await _capture(mgr, tab=current_tab)
-            change = StateChange.compute(before, final)
-            entry = _step(i, action.type, _button_prefix(action) + change.description)
+            final, desc = await _settle_and_diff(mgr, page, action, current_tab, before)
+            entry = _step(i, action.type, _button_prefix(action) + desc)
             if result is not None:
                 entry += f"\n  result: {result}"
             step_reports.append(entry)
