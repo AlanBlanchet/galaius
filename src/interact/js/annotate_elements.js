@@ -19,9 +19,19 @@
     else seen.add(ref);
   }
 
-  const root = (scope ? document.querySelector(scope) : document.body) || document.body;
+  // A raw non-HTML document — a .svg navigated to directly, which Chromium renders in its
+  // standalone image viewer — has a NULL document.body, so every scan after the first threw
+  // "Cannot read properties of null" (#108). documentElement always exists; over an image
+  // document it simply matches nothing, which is the truthful answer.
+  const root =
+    (scope ? document.querySelector(scope) : document.body) ||
+    document.body ||
+    document.documentElement;
   const tags =
-    "a,button,input,select,textarea,[role=button],[role=link],[role=checkbox],[role=radio],[role=tab],[role=menuitem],[role=combobox],[role=textbox],[draggable=true],[role=listitem][aria-grabbed],[role=option]";
+    // `summary` is the natively-interactive trigger of a <details> disclosure — clicking it is how
+    // the panel opens. It carries no button role, so a role/tag list without it made the trigger
+    // invisible to the scan and the disclosure undrivable.
+    "a,button,input,select,textarea,summary,[role=button],[role=link],[role=checkbox],[role=radio],[role=tab],[role=menuitem],[role=combobox],[role=textbox],[draggable=true],[role=listitem][aria-grabbed],[role=option]";
   const vw = window.innerWidth;
   const vh = window.innerHeight;
 
