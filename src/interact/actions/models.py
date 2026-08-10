@@ -4,7 +4,7 @@ from typing import Annotated, ClassVar, Literal
 from pathlib import Path
 
 import httpx
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from playwright.async_api import Page
 
 from interact.config import DEFAULT_LIMIT
@@ -59,6 +59,12 @@ def _wrap_js(script: str, has_args: bool = False) -> str:
 
 
 class Action(BaseModel):
+    # An unknown field must be a LOUD error. Pydantic's default silently drops extras, so a
+    # mistyped or unsupported parameter looked accepted and simply never happened — the failure
+    # shape behind "emulate_device took reduced_motion and ignored it" (#107). An agent cannot
+    # tell "applied" from "dropped" except by the behaviour never changing, so refuse instead.
+    model_config = ConfigDict(extra="forbid")
+
     mutates: ClassVar[bool] = True
     wait: str | None = None
     observe: str | None = None
@@ -625,15 +631,34 @@ class EmulateDeviceAction(ObservationAction):
     is_mobile: bool | None = None
     has_touch: bool | None = None
     user_agent: str | None = None
+    # Media features (page.emulate_media) — unlike the viewport these need no context rebuild, so
+    # they can be set alone. reduced_motion is how a site's `@media (prefers-reduced-motion)`
+    # branch gets verified live, which was otherwise only checkable at the OS a11y setting (#107).
+    reduced_motion: Literal["reduce", "no-preference", "null"] | None = None
+    color_scheme: Literal["light", "dark", "no-preference", "null"] | None = None
+    forced_colors: Literal["active", "none", "null"] | None = None
     reset: bool = False
+
+    def _media(self) -> dict:
+        """The emulate_media kwargs this action sets, if any."""
+        return {
+            k: v
+            for k, v in (
+                ("reduced_motion", self.reduced_motion),
+                ("color_scheme", self.color_scheme),
+                ("forced_colors", self.forced_colors),
+            )
+            if v is not None
+        }
 
     @model_validator(mode="after")
     def _require_profile(self):
         if (self.width is None) != (self.height is None):
             raise ValueError("Provide both width and height, or neither.")
-        if not self.reset and not self.device and self.width is None:
+        if not self.reset and not self.device and self.width is None and not self._media():
             raise ValueError(
                 "Provide a `device` name (e.g. 'iPhone 13'), or both `width` and `height`, "
+                "a media feature (`reduced_motion` / `color_scheme` / `forced_colors`), "
                 "or `reset=true`."
             )
         return self

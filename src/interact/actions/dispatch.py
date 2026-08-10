@@ -904,6 +904,12 @@ async def _run_actions_browser(
 
         elif isinstance(action, EmulateDeviceAction):
             try:
+                # Media features alone need no context rebuild, so a bare reduced_motion call
+                # doesn't disturb the viewport or reload the page (#107).
+                media_desc = await mgr.apply_media(**action._media())
+                if not (action.device or action.width or action.reset):
+                    step_reports.append(_step(i, action.type, media_desc))
+                    continue
                 desc = await mgr.emulate_device(
                     device=action.device,
                     width=action.width,
@@ -916,6 +922,9 @@ async def _run_actions_browser(
                 )
                 current_tab = 0
                 page = await mgr.get_page(current_tab)  # context rebuilt → refresh the handle
+                await mgr.reapply_media()  # the rebuild dropped the media overrides with it
+                if media_desc:
+                    desc = f"{desc}; {media_desc}"
             except ValueError as e:
                 desc = f"SKIPPED: {e}"
             step_reports.append(_step(i, action.type, desc))

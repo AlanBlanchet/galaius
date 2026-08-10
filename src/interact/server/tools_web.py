@@ -124,6 +124,10 @@ async def run_actions(
       step that triggers it (one-shot). Unarmed dialogs are dismissed (a confirm()-gated click
       then no-ops) — every dialog is reported in the step output with its message.
     Tab control: new_tab, switch_tab, close_tab
+    Media: emulate_device also forces CSS media features — `reduced_motion:"reduce"` (verify a
+      site's `@media (prefers-reduced-motion)` branch live), `color_scheme:"dark"`,
+      `forced_colors:"active"`; `"null"` clears one. They can be set ALONE (no viewport needed,
+      no page reload) and persist across new tabs and viewport changes.
     Viewport: emulate_device — set the session to a device profile (a Playwright `device` name like
       "iPhone 13", or explicit width+height (+ device_scale_factor/is_mobile/has_touch), or
       reset=true) to verify responsive/mobile layouts at true device metrics. Run it before

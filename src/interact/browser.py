@@ -49,6 +49,10 @@ class BrowserManager:
         # An active device-emulation profile (set by emulate_device); None → the configured
         # default viewport at DPR 1. Folded into every new context via _context_kwargs.
         self._device_override: dict | None = None
+        # Forced media features (prefers-reduced-motion / color-scheme / forced-colors). Held on
+        # the session so a context rebuild or a new tab keeps them — an override that silently
+        # lapsed on the next navigation would be as useless as not having it (#107).
+        self._media_override: dict = {}
         # The tab that tab-less tool calls (screenshot / get_page_state / get_interactive_elements)
         # act on. new_tab / switch_tab move it, so a standalone capture after a switch sees the tab
         # the agent switched to, not tab 0 (#30).
@@ -222,6 +226,7 @@ class BrowserManager:
         await self._ensure_connected()
         page = await self._context.new_page()
         self._attach_page_listeners(page)
+        await self._apply_media_to(page)  # a forced media feature must hold in a new tab too (#107)
         if url:
             await page.goto(url)
         self._active_tab = len(self._context.pages) - 1  # a freshly opened tab becomes active
@@ -554,6 +559,39 @@ class BrowserManager:
             return ctx.pages[idx].url
         except Exception:  # a page closing under us is not worth an error here
             return None
+
+    async def apply_media(self, **features: str | None) -> str:
+        """Force CSS media features on every page in the session — how a site's
+        ``@media (prefers-reduced-motion: reduce)`` / dark-scheme / forced-colors branch gets
+        verified live, which otherwise needed the OS accessibility setting (#107).
+
+        Playwright's own sentinel for "stop overriding" is None, so the string ``"null"`` clears a
+        feature. Unlike the viewport this needs no context rebuild."""
+        await self.ensure_ready()
+        setting = {k: (None if v == "null" else v) for k, v in features.items() if v is not None}
+        if not setting:
+            return ""
+        self._media_override = {**self._media_override, **setting}
+        self._media_override = {k: v for k, v in self._media_override.items() if v is not None}
+        for page in self._context.pages:
+            await page.emulate_media(**setting)
+        shown = ", ".join(f"{k}={v or 'default'}" for k, v in setting.items())
+        return f"media emulation: {shown}"
+
+    async def reapply_media(self) -> None:
+        """Re-assert the forced media features after a context rebuild (emulate_device drops
+        them with the old context), so a viewport change can't silently clear reduced-motion."""
+        if self._media_override and self._context:
+            for page in self._context.pages:
+                await self._apply_media_to(page)
+
+    async def _apply_media_to(self, page: Page) -> None:
+        """Carry the session's forced media features onto a newly-opened page."""
+        if self._media_override:
+            try:
+                await page.emulate_media(**self._media_override)
+            except Exception:  # never let an override failure break opening a tab
+                pass
 
     def arm_dialog(self, action: str, prompt_text: str | None = None) -> None:
         """Arm how the NEXT dialog is answered (one-shot) — the handle_dialog action (#77)."""
