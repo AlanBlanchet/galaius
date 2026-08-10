@@ -118,15 +118,27 @@ def _check_session_drift(session: str) -> None:
     was = _session_url_baseline.get(_caller_key(session))
     now = _peek_session_url(session)
     if was and now and was != now:
-        nudge = (
-            f" Use a unique session= name to stay isolated (e.g. session=\"{session}-1\")."
-            if session == _DEFAULT_SESSION
-            else ""
-        )
+        # Name the cause that actually FITS this session. The shared "default" really is a
+        # mailbox, so another caller is the first suspect there. A uniquely-named session almost
+        # never has a second caller — blaming one sent a reporter hunting a cross-talk bug that
+        # wasn't there, re-running the audit in throwaway session names (#106). On a named
+        # session the page moving ITSELF is the overwhelmingly likelier explanation.
+        if session == _DEFAULT_SESSION:
+            cause = (
+                "Another caller shares this session (or the page redirected itself), so refs "
+                "and page state from before may be stale. Use a unique session= name to stay "
+                f"isolated (e.g. session=\"{session}-1\")."
+            )
+        else:
+            cause = (
+                "The page most likely navigated ITSELF — an auth/route redirect, a client-side "
+                "router, or a stripped #hash all do this; a named session rarely has a second "
+                "caller. Refs and page state from before may be stale. (If you deliberately "
+                "share this session name with another agent, it could also be them.)"
+            )
         _session_drift_note[_caller_key(session)] = (
             f"NOTE: this session moved on its own since your last call — you left it on {was}, "
-            f"it is now on {now}. Another caller shares this session (or the page redirected "
-            f"itself), so refs and page state from before may be stale.{nudge}"
+            f"it is now on {now}. {cause}"
         )
 
 

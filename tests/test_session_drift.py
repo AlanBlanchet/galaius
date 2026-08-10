@@ -100,3 +100,31 @@ def test_a_named_session_is_never_nudged(monkeypatch):
     core._session_shared_warned.clear()
     assert "shared" not in core._session_response("critic1", "body")
     core._session_shared_warned.clear()
+
+
+# ── who actually moved it (#106) ─────────────────────────────────────────────────────────────
+# The note accused "another caller" on ANY session. On a uniquely-named one that reads as a
+# cross-talk bug, and a reporter burned round-trips re-verifying in throwaway session names —
+# when the far likelier cause is the page navigating itself (an auth redirect, a client-side
+# router, a stripped #hash). Lead with the cause that actually fits the session's shape.
+
+
+def test_a_named_session_blames_the_page_not_a_phantom_caller(monkeypatch):
+    # The reported shape: a uniquely-named session whose #hash was stripped by the app itself.
+    _bind(monkeypatch, "http://127.0.0.1:3000/#earn")
+    core._observe_session_url("lenders-audit")
+    _bind(monkeypatch, "http://127.0.0.1:3000/")
+    core._check_session_drift("lenders-audit")
+    out = core._session_response("lenders-audit", "body").lower()
+    assert "moved" in out
+    assert "itself" in out and "hash" in out  # the cause that actually fits is named first
+    assert "another caller shares this session" not in out  # never asserted as fact
+
+
+def test_the_default_session_still_names_the_shared_mailbox(monkeypatch):
+    _bind(monkeypatch, "https://app.test/mine")
+    core._observe_session_url("default")
+    _bind(monkeypatch, "https://app.test/someone-elses")
+    core._check_session_drift("default")
+    out = core._session_response("default", "body").lower()
+    assert "another caller shares this session" in out  # the shared session genuinely has this cause
