@@ -108,6 +108,10 @@ async def run_actions(
     Mutating: click, double_click, type_text, scroll, drag, navigate, evaluate_js, upload_file, key_press, click_element, resize
       - type_text with NO ref/selector types into whatever is focused — after a click on a field,
         just type; you don't need to name the field twice.
+      - press (browser): mousedown, HOLD for `hold` seconds, mouseup — the only way to observe a
+        `:active` depth cue, since a click's down+up is instantaneous and a JS-dispatched
+        PointerEvent is untrusted so Chromium ignores it. Pair with record/screenshot to capture
+        the held frame; read the effect via computed style (`matches(':active')` under-reports).
       - `wait` accepts a duration on ANY action ("3", "8s", "1500ms", "1m"), a load state
         ("networkidle"/"load"/"domcontentloaded"), or a CSS selector to wait for.
       - click: `button` picks which mouse button — "left" (default), "right", or "middle". A

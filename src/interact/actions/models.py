@@ -664,6 +664,53 @@ class EmulateDeviceAction(ObservationAction):
         return self
 
 
+class PressAction(_CoordinateTargetMixin):
+    """Press and HOLD the pointer on a target, then release — browser only.
+
+    A plain `click` is down+up in the same instant, so a UA state that only exists while the
+    button is held (`:active`, and the depth cue a designer attaches to it) is never observable:
+    there is no frame to screenshot or record. A JS-dispatched PointerEvent cannot substitute —
+    synthetic events are untrusted, so Chromium does not apply `:active` for them (#103).
+
+    Target it like a click (`ref` / `selector` / `name` / `x`,`y`); `hold` is how long the button
+    stays down, in seconds. Pair it with `record` to capture the pressed state as motion."""
+
+    type: Literal["press"] = "press"
+    hold: float = 1.0
+    button: Literal["left", "right", "middle"] = "left"
+
+    @field_validator("hold")
+    @classmethod
+    def _sane_hold(cls, v: float):
+        # Bounded: the press blocks its batch for the whole duration, so an unbounded hold would
+        # wedge the run open with no way to tell it from a hang.
+        if not 0 < v <= 30:
+            raise ValueError("hold must be > 0 and <= 30 seconds")
+        return v
+
+    async def execute(self, page: Page):
+        if self.x is not None and self.y is not None:
+            x, y = float(self.x), float(self.y)
+        else:
+            locator = (
+                self._locator(page)
+                if (self.ref or self.selector)
+                else page.get_by_role(self.role or "button", name=self.name)
+            )
+            box = await locator.first.bounding_box()
+            if not box:
+                raise ValueError("press target has no layout box — is it visible?")
+            x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+        await page.mouse.move(x, y)
+        await page.mouse.down(button=self.button)
+        try:
+            await asyncio.sleep(self.hold)
+        finally:
+            # Release even if the wait is cancelled — a stuck mouse button would poison every
+            # later action in the session.
+            await page.mouse.up(button=self.button)
+
+
 class HandleDialogAction(Action):
     """Arm how the NEXT native JS dialog (alert/confirm/prompt) is answered — browser only.
 
@@ -739,6 +786,7 @@ BROWSER_ONLY_ACTIONS = frozenset(
         "double_click",
         "select_text",
         "handle_dialog",
+        "press",
     }
 )
 
