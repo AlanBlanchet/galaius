@@ -117,6 +117,12 @@ async def launch_app(
     screen, or size="WxH" (e.g. "412x915") for an exact resolution. The launched window is fitted to
     fill the display. Changing the size respawns the shared sandbox (any other app in it is dropped).
 
+    Scrolling a FLUTTER surface: use `scroll` (the wheel), not `drag`. Flutter's default
+    ScrollBehavior excludes the mouse from `dragDevices` on desktop, so a mouse DRAG on a
+    scrollable (a ListView, a DraggableScrollableSheet) is ignored by the framework itself — a
+    real mouse behaves the same way, so this is not something automation can work around. `drag`
+    is still right for reordering, sliders, and canvas gestures.
+
     Transient popups — menus, Qt/QComboBox drop-downs, tooltips — open as SEPARATE override-redirect
     windows that a single-window capture (target="nested:<title>") doesn't include; capture the whole
     sandbox screen (target="nested") to see/act on them, or drive the widget by keyboard (arrows +
