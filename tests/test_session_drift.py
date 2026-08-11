@@ -128,3 +128,33 @@ def test_the_default_session_still_names_the_shared_mailbox(monkeypatch):
     core._check_session_drift("default")
     out = core._session_response("default", "body").lower()
     assert "another caller shares this session" in out  # the shared session genuinely has this cause
+
+
+# ── the stale "from" after an error (#95, third part) ────────────────────────────────────────
+# The baseline was rebaselined only inside _session_response, i.e. only when a call RETURNED. A
+# call that RAISED left the baseline pointing at wherever the session was before it — so the next
+# call's note reported drift "from" a page the caller had actually left calls ago.
+
+
+@pytest.mark.asyncio
+async def test_a_call_that_raises_still_rebaselines(monkeypatch):
+    @core.instrumented
+    async def boom(session: str = "default"):
+        raise RuntimeError("tool blew up")
+
+    _bind(monkeypatch, "https://app.test/one")
+    core._observe_session_url("default")          # call 1 ended here
+
+    _bind(monkeypatch, "https://app.test/two")    # the failing call navigated, then raised
+    with pytest.raises(RuntimeError):
+        await boom(session="default")
+
+    # Call 2 starts where the session actually IS — no phantom drift from a pre-error page...
+    core._check_session_drift("default")
+    assert "moved" not in core._session_response("default", "body")
+    # ...because the baseline genuinely advanced, not because the note was merely swallowed:
+    # a REAL move after the failed call is still reported, and from the right place.
+    _bind(monkeypatch, "https://app.test/three")
+    core._check_session_drift("default")
+    out = core._session_response("default", "body")
+    assert "https://app.test/two" in out and "https://app.test/three" in out

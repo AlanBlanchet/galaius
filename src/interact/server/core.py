@@ -264,12 +264,24 @@ def instrumented(fn):
             _check_session_drift(kwargs.get("session") or _DEFAULT_SESSION)
         inv = Debug.new_invocation_dir(kwargs.get("debug_dir"), fn.__name__)
         token = _CURRENT_INV.set(inv)
+        _ok = False
         try:
             result = await fn(*args, **kwargs)
+            _ok = True
             Debug.dump_output(inv, result)
             return result
         finally:
             _CURRENT_INV.reset(token)
+            # A call that RAISED returns no response, so _session_response never ran: its baseline
+            # was never refreshed AND the drift note its own pre-check computed was never
+            # delivered. Left alone, that note surfaces in the NEXT call's response describing a
+            # move from before the failed call — the "from URL names a page I left several calls
+            # ago" report (#95). Settle both here: drop the undeliverable note and rebaseline to
+            # where the session actually is, so the next call compares against reality.
+            if not kwargs.get("target") and not _ok:
+                session_name = kwargs.get("session") or _DEFAULT_SESSION
+                _session_drift_note.pop(_caller_key(session_name), None)
+                _observe_session_url(session_name)
 
     return wrapper
 
