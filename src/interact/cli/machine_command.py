@@ -63,6 +63,31 @@ def machine_script_roots(*roots: str) -> None:
     print(json.dumps({"working_directory": str(config.working_directory), "script_roots": [root.relative_to(base).as_posix() for root in usable], "refused": list(refused)}))
 
 
+@machine_app.command(name="agent-roots")
+def machine_agent_roots(*roots: str) -> None:
+    """Owner-only, on this machine: the folders (relative to its working directory) you may start
+    agents in from the web, in any folder beneath them. Never inside or around a file or script
+    root. No argument prints them; arguments replace them; "" alone clears them."""
+    runner = MachineRunner()
+    config = runner.load()
+    if roots:
+        config = runner.update(lambda current: current.model_copy(update={"agent_roots": tuple(root for root in roots if root)}))
+    usable, refused = config.usable_agent_roots()
+    base = config.working_directory.resolve()
+    print(json.dumps({"working_directory": str(config.working_directory), "agent_roots": [root.relative_to(base).as_posix() for root in usable], "refused": list(refused),
+                      "agent_permission": config.agent_permission, "run_agents": config.run_agents}))
+
+
+@machine_app.command(name="agent-permission")
+def machine_agent_permission(scope: Literal["read_only", "workspace_write", "full_access"] | None = None) -> None:
+    """Owner-only, on this machine: what agents started from the web may do — read_only, edit
+    files (workspace_write, the default), or full_access (no permission prompts at all). No
+    argument prints it."""
+    runner = MachineRunner()
+    config = runner.update(lambda current: current.model_copy(update={"agent_permission": scope})) if scope is not None else runner.load()
+    print(json.dumps({"agent_permission": config.agent_permission}))
+
+
 @machine_app.command(name="approve-script")
 def machine_approve_script(machine_id: UUID | None = None, source_digest: str | None = None, *, pending: bool = False, yes: bool = False) -> None:
     """Owner-only: allowlist one exact script digest on `machine_id` before any workflow can

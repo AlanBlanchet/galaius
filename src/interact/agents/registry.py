@@ -1513,6 +1513,25 @@ def running_runs() -> list[AgentRun]:
     return [run for run in runs if run is not None and _status_for(run) == "running"]
 
 
+def trees(root_run_ids: frozenset[str]) -> list[AgentRun]:
+    """The runs `root_run_ids` name and every run they launched, at any depth (parent links, or a
+    provider child's recorded root), newest first, status re-checked from the record and pid alone
+    (never the stream): a poller watching a few trees pays one `stat()` per record."""
+    d = agents_dir()
+    if not d.exists() or not root_run_ids:
+        return []
+    records = [run for run in (_stat_cached_record(path) for path in d.glob("*.json")) if run is not None]
+    members, grew = set(root_run_ids), True
+    while grew:
+        grew = False
+        for run in records:
+            if run.run_id not in members and (run.parent_run_id in members or run.root_run_id in members):
+                members.add(run.run_id)
+                grew = True
+    found = (run for run in records if run.run_id in members)
+    return sorted((run.model_copy(update={"status": _status_for(run)}) for run in found), key=lambda run: run.started_at, reverse=True)
+
+
 #: path -> (mtime_ns, size, record). A settled record never changes, so a poller re-reads only
 #: the files written since its last tick.
 _RECORD_CACHE: dict[str, tuple[int, int, AgentRun | None]] = {}

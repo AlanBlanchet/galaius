@@ -29,11 +29,12 @@ from uuid import UUID, uuid4
 import websockets
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator, model_validator
 
-from interact_core import MACHINE_MODELS, AgentRevisionRef, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachineRuntime, ScriptFile, UserModelOrigin
+from interact_core import MACHINE_AGENT_ACTIONS, MACHINE_MODELS, AgentRevisionRef, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, MachineAgentAnswer, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachineRuntime, ScriptFile, UserModelOrigin
 from interact import USER_AGENT
 from interact.agents.catalog import AgentCatalog
 from interact.agents import providers as agent_providers
 from interact.file_lock import exclusive
+from interact.machine_agents import MachineAgents, WebRuns
 from interact.agents.events import AgentEvent
 from interact.agents.run import run_agent
 from interact.agents import registry as reg
@@ -64,6 +65,15 @@ class MachineConfig(BaseModel):
     #: whatever the file roots, so `interact login` adds a computer with them off; its owner turns
     #: them on here (`interact machine agents on`), never from the server.
     run_agents: bool = True
+    #: The folders the owner lets agents be STARTED in from the web (any plain folder beneath one),
+    #: relative to `working_directory` - set here (`interact machine agent-roots`), none by default.
+    #: A file root's rules, and never overlapping a file or script root: no workflow file step can
+    #: write an instruction file (CLAUDE.md, AGENTS.md) where an agent then starts. A starting
+    #: point, not a fence: an agent CLI reads whatever its user can.
+    agent_roots: tuple[str, ...] = Field(default=(), max_length=32)
+    #: What an agent started from the web may do: never unrestricted unless its owner sets it here
+    #: (`interact machine agent-permission full_access`); the server cannot raise it.
+    agent_permission: Literal["read_only", "workspace_write", "full_access"] = "workspace_write"
     #: How long a vision model stays loaded after a step used it (0: loaded per step, GPU memory
     #: freed at once). Trades held GPU memory for ~6 s saved on each next step on that model.
     model_keep_warm_seconds: int = Field(default=300, ge=0, le=86400)
@@ -80,6 +90,15 @@ class MachineConfig(BaseModel):
         usable, refused = self._usable_roots(self.script_roots)
         base = self.working_directory.resolve()
         overlapping = [root for root in usable if any(root == other or other in root.parents or root in other.parents for other in files)]
+        return tuple(root for root in usable if root not in overlapping), (*refused, *(root.relative_to(base).as_posix() for root in overlapping))
+
+    def usable_agent_roots(self) -> tuple[tuple[Path, ...], tuple[str, ...]]:
+        """(the agent roots safe to use, resolved; the names refused): a file root's rules, never
+        overlapping a usable file or script root (inside it, around it, or the same folder)."""
+        taken = (*self.usable_file_roots()[0], *self.usable_script_roots()[0])
+        usable, refused = self._usable_roots(self.agent_roots)
+        base = self.working_directory.resolve()
+        overlapping = [root for root in usable if any(root == other or other in root.parents or root in other.parents for other in taken)]
         return tuple(root for root in usable if root not in overlapping), (*refused, *(root.relative_to(base).as_posix() for root in overlapping))
 
     def _usable_roots(self, names: tuple[str, ...]) -> tuple[tuple[Path, ...], tuple[str, ...]]:
@@ -117,6 +136,9 @@ class MachineConfig(BaseModel):
         if not self.working_directory.is_absolute() or not self.working_directory.is_dir():
             raise ValueError("machine working directory must be an existing absolute directory")
         return self
+
+
+MachineAgents.model_rebuild(_types_namespace={"MachineConfig": MachineConfig})
 
 
 logger = logging.getLogger(__name__)
@@ -596,6 +618,8 @@ class MachineRunner:
         self._vision: VisionWorker | None = None
         #: File queries being answered (held so the loop does not drop them mid-answer).
         self._queries: set[asyncio.Task] = set()
+        #: Agent actions already accepted (id -> expiry): each is taken once (`_answer_agent_request`).
+        self._agent_requests: dict[UUID, datetime] = {}
 
     def _vision_worker(self, config: MachineConfig) -> VisionWorker:
         if self._vision is None or self._vision.keep_warm != config.model_keep_warm_seconds:
@@ -749,6 +773,10 @@ class MachineRunner:
                 task = asyncio.create_task(answer)
                 self._queries.add(task)
                 task.add_done_callback(self._query_finished)
+            elif response.get("type") == "agent_request":
+                task = asyncio.create_task(self._answer_agent_request(socket, config, response["request"]))
+                self._queries.add(task)
+                task.add_done_callback(self._query_finished)
             elif response.get("type") == "revoked":
                 return True
         return False
@@ -760,10 +788,10 @@ class MachineRunner:
 
     #: What this runner can do beyond the base protocol (the server's `MachineChannel.require_feature`):
     #: file queries browse the owner's script roots; a script file runs from them.
-    FEATURES: ClassVar[tuple[str, ...]] = ("file_query", "script_file", "file_read")
+    FEATURES: ClassVar[tuple[str, ...]] = ("file_query", "script_file", "file_read", "agent_control")
 
     @staticmethod
-    def _verify_signed(config: MachineConfig, message: MachineCommand | MachineFileQuery | MachineDataRequest, what: str) -> None:
+    def _verify_signed(config: MachineConfig, message: MachineCommand | MachineFileQuery | MachineDataRequest | MachineAgentRequest, what: str) -> None:
         """Not expired, and signed by the server with this machine's key: the server stores
         SHA-256(token), so both sides sign with the same derived key."""
         if message.expires_at.tzinfo is None or message.expires_at <= datetime.now(UTC):
@@ -823,6 +851,38 @@ class MachineRunner:
             reason = str(error) if isinstance(error, (PermissionError, ValueError)) else f"{request.path}: {error.strerror or type(error).__name__}"
             answer = MachineDataAnswer(request_id=request.id, error=reason[:400] or type(error).__name__)
         await socket.send(json.dumps({"type": "data_answer", "result": answer.model_dump(mode="json")}))
+
+    async def _answer_agent_request(self, socket, config: MachineConfig, payload: object) -> None:
+        """The owner driving agents here from the web (`MachineAgents`): checked like a command (this
+        machine, this workspace, signed, not expired; an action's id accepted once), answered from
+        the owner's CURRENT settings on this machine."""
+        try:
+            request = MachineAgentRequest.model_validate(payload)
+        except ValidationError:
+            logger.warning("malformed agent request dropped")
+            return
+        try:
+            if request.machine.id != config.machine_id or request.workspace_id != config.workspace_id:
+                raise PermissionError("agent request targets another machine")
+            self._verify_signed(config, request, "agent request")
+            if request.op in MACHINE_AGENT_ACTIONS:
+                now = datetime.now(UTC)
+                self._agent_requests = {key: until for key, until in self._agent_requests.items() if until > now}
+                if request.id in self._agent_requests:
+                    raise PermissionError("agent request was already used")
+                self._agent_requests[request.id] = request.expires_at
+            current = self._current_config(config)
+            agents = MachineAgents(config=current, runs=WebRuns(path=self.default_config_path().with_name("machine-agent-runs.json")), environment=self._safe_environment())
+            answer = await asyncio.to_thread(agents.answer, request)
+            logger.info("agent %s %s", request.op, answer.run_id or request.run_id or request.root or "(folders)")
+        except (PermissionError, OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
+            reason = str(error) if isinstance(error, (PermissionError, ValueError, RuntimeError)) else f"{type(error).__name__}: {error}"
+            answer = MachineAgentAnswer(request_id=request.id, error=reason[:400] or type(error).__name__)
+        if request.op in MACHINE_AGENT_ACTIONS:
+            # The whole brief / message stays HERE, in the owner's local log; the server keeps a digest.
+            self.audit("agents.log", {"op": request.op, "account": str(request.initiator_account), "root": request.root, "path": request.path, "role": request.role,
+                                      "provider": request.provider, "run_id": str(answer.run_id or request.run_id or ""), "text": request.text, "error": answer.error})
+        await socket.send(json.dumps({"type": "agent_answer", "result": answer.model_dump(mode="json")}))
 
     def _accept_command(self, config: MachineConfig, connected: MachineConfig, command: MachineCommand) -> MachineConfig:
         self._same_enrollment(config, connected)
