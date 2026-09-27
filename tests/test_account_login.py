@@ -58,25 +58,27 @@ def joining(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return home
 
 
-@pytest.mark.parametrize("tty, answers, flags, run_agents, roots, said", [
-    (True, ["y", "y", "dev, ~/work/"], {}, True, ["dev", "work"], "start them in dev, work"),          # asked: yes + folders (~ path made relative)
-    (True, ["y", ""], {}, False, [], "Agents: off here"),                                              # asked: Enter keeps the default No
-    (True, ["y", "y", ""], {}, True, [], "no folder to start them in"),                                # yes, Enter = no folder
-    (True, ["y", "y", "dev,.secret,../x", "dev,nope/../work"], {}, True, ["dev", "work"], "Refused: .secret, ../x"),  # refused, asked again once
-    (True, ["y", "y", ".secret", ".secret"], {}, True, [], "Left out: .secret"),                       # refused twice: left out
-    (True, ["y"], {"agent_folders": ("work",)}, True, ["work"], "start them in work"),                 # a flag answers ahead, never asked
-    (True, ["y"], {"agents": False}, False, [], "Agents: off here"),
-    (False, [], {"yes": True}, False, [], "Agents: off here"),                                         # no terminal: defaults, never blocks
-    (False, [], {"yes": True, "agents": True}, True, [], "no folder to start them in"),
+@pytest.mark.parametrize("tty, answers, flags, saved, said", [
+    # (run_agents, agent_roots, continue_conversations, answer_approvals)
+    (True, ["y", "y", "dev, ~/work/", "y", "n"], {}, (True, ["dev", "work"], True, False), "start them in dev, work"),  # asked; ~ path made relative
+    (True, ["y", ""], {}, (False, [], False, False), "Agents: off here"),                              # Enter keeps the default No; nothing more asked
+    (True, ["y", "y", "", "", ""], {}, (True, [], False, False), "no folder to start them in"),         # yes, Enter = no folder, opt-ins default No
+    (True, ["y", "y", "dev,.secret,../x", "dev,nope/../work", "", "y"], {}, (True, ["dev", "work"], False, True), "Refused: .secret, ../x"),  # re-asked once
+    (True, ["y", "y", ".secret", ".secret", "n", "n"], {}, (True, [], False, False), "Left out: .secret"),  # refused twice: left out
+    (True, ["y"], {"agent_folders": ("work",)}, (True, ["work"], False, False), "start them in work"),  # a flag answers ahead, never asked
+    (True, ["y"], {"agent_opt_ins": {"answer_approvals": True, "continue_conversations": None}}, (True, [], False, True), "approvals answered from the web: on"),
+    (True, ["y"], {"agents": False}, (False, [], False, False), "Agents: off here"),
+    (False, [], {"yes": True}, (False, [], False, False), "Agents: off here"),                         # no terminal: defaults, never blocks
+    (False, [], {"yes": True, "agents": True, "agent_opt_ins": {"continue_conversations": True}}, (True, [], True, False), "continued from the web: on"),
 ])
 def test_agents_asked_once_at_login(joining: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
-                                    tty: bool, answers: list[str], flags: dict, run_agents: bool, roots: list[str], said: str) -> None:
+                                    tty: bool, answers: list[str], flags: dict, saved: tuple, said: str) -> None:
     replies = iter(answers)
     monkeypatch.setattr("sys.stdin.isatty", lambda: tty)
     monkeypatch.setattr("builtins.input", lambda question: next(replies))
     account_login.login("https://interact.example.org", allow_runs=False, open_browser=False, **{"yes": False, **flags})
-    saved = MachineRunner().load()
-    assert (saved.run_agents, list(saved.agent_roots)) == (run_agents, roots)
+    machine = MachineRunner().load()
+    assert (machine.run_agents, list(machine.agent_roots), machine.continue_conversations, machine.answer_approvals) == saved
     assert next(replies, None) is None  # every scripted answer was asked for, no more
     assert said in capsys.readouterr().out
 
@@ -84,6 +86,7 @@ def test_agents_asked_once_at_login(joining: Path, monkeypatch: pytest.MonkeyPat
 @pytest.mark.parametrize("flags, error", [
     ({"agent_folders": (".secret",)}, "cannot let agents start in .secret"),
     ({"agents": False, "agent_folders": ("dev",)}, "contradict"),
+    ({"agents": False, "agent_opt_ins": {"continue_conversations": True}}, "contradict"),
 ])
 def test_bad_agent_flags_refused_before_sign_in(joining: Path, flags: dict, error: str) -> None:
     with pytest.raises(LoginError, match=error):
@@ -96,5 +99,6 @@ def test_login_flags_parse(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("interact.cli.login_command.sign_in", lambda server, **options: seen.update(options))
     from interact.cli.app import app
     with pytest.raises(SystemExit, match="0"):
-        app(["login", "--server", "x.org", "--agent-folder", "dev", "--agent-folder", "work", "--no-agents"])
-    assert (seen["agents"], seen["agent_folders"]) == (False, ("dev", "work"))
+        app(["login", "--server", "x.org", "--agent-folder", "dev", "--agent-folder", "work", "--no-agents",
+             "--continue-conversations", "--no-answer-approvals"])
+    assert (seen["agents"], seen["agent_folders"], seen["agent_opt_ins"]) == (False, ("dev", "work"), {"continue_conversations": True, "answer_approvals": False})

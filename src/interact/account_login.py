@@ -18,8 +18,9 @@ import sys
 import time
 import webbrowser
 from importlib.metadata import version
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import Path
+from types import MappingProxyType
 from typing import ClassVar, Literal
 from urllib.parse import urlsplit
 
@@ -293,11 +294,19 @@ class AccountLogin(BaseModel):
 class AgentChoice(BaseModel):
     """Whether agents may run on this computer, and the folders the web may start them in (names
     under the machine's working directory, checked by `MachineConfig.usable_agent_roots`): asked
-    once by `interact login`, or given as flags; off and none unless said."""
+    once by `interact login`, or given as flags; off and none unless said. With agents on, each
+    `opt_ins` question follows (default no); the fields share `MachineConfig`'s names."""
 
     model_config = ConfigDict(frozen=True)
     run_agents: bool = False
     folders: tuple[str, ...] = ()
+    continue_conversations: bool = False
+    answer_approvals: bool = False
+    #: The yes / no questions asked after the folders, by field (a flag answers each ahead).
+    opt_ins: ClassVar[dict[str, str]] = {
+        "continue_conversations": "Let the web continue your editor (Claude Code) conversations here? A copy continues; the editor's own is never written to. [y/N] ",
+        "answer_approvals": "Let the web answer the approvals a session asks for (run this command? apply this change?). [y/N] ",
+    }
     rules: ClassVar[str] = ("a folder must be strictly below {base}, not hidden (.name), not a symlink, not Interact's own folder, "
                             "and not inside or around a folder shared with workflows")
 
@@ -307,23 +316,25 @@ class AgentChoice(BaseModel):
         return MachineConfig.model_construct(working_directory=Path.home(), file_roots=(), script_roots=())
 
     @classmethod
-    def given(cls, agents: bool | None, folders: Iterable[str]) -> "AgentChoice | None":
-        """From `--agents/--no-agents` and `--agent-folder`, checked before any sign-in starts; None
-        when neither was given. A folder alone means agents on."""
-        if agents is None and not folders:
+    def given(cls, agents: bool | None, folders: Iterable[str], opt_ins: Mapping[str, bool | None]) -> "AgentChoice | None":
+        """From `--agents/--no-agents`, `--agent-folder` and the `opt_ins` flags, checked before any
+        sign-in starts; None when none was given (then asked). A folder or a yes alone means agents
+        on; an opt-in not given stays off."""
+        folders, opt_ins = tuple(folders), {field: answer for field, answer in opt_ins.items() if answer is not None}
+        if agents is None and not folders and not opt_ins:
             return None
-        if agents is False and folders:
-            raise LoginError("--no-agents and --agent-folder contradict each other: pick one")
+        if agents is False and (folders or any(opt_ins.values())):
+            raise LoginError("--no-agents contradicts --agent-folder, --continue-conversations and --answer-approvals: pick one")
         machine = cls.joining()
-        choice, refused = cls(run_agents=agents is not False, folders=cls.named(folders, machine.working_directory)).checked(machine)
+        choice, refused = cls(run_agents=agents is not False, folders=cls.named(folders, machine.working_directory), **opt_ins).checked(machine)
         if refused:
             raise LoginError(f"cannot let agents start in {', '.join(refused)}: {cls.rules.format(base=machine.working_directory)}")
         return choice
 
     @classmethod
     def asked(cls, machine: MachineConfig) -> "AgentChoice":
-        """Two questions in the terminal; refused folders are said with the rules and asked once more,
-        then left out."""
+        """Asked in the terminal: agents on?, then the folders (refused ones said with the rules and
+        asked once more, then left out), then each `opt_ins` question."""
         if not _confirmed("Let agents run on this computer from the web? [y/N] "):
             return cls()
         base = machine.working_directory
@@ -332,10 +343,11 @@ class AgentChoice(BaseModel):
             answer = _answered(f"Which folders may they start in? (names under {base}, comma-separated; Enter = none) ")
             choice, refused = cls(run_agents=True, folders=cls.named(answer.split(","), base)).checked(machine)
             if not refused:
-                return choice
+                break
             print(f"Refused: {', '.join(refused)} ({cls.rules.format(base=base)}).")
-        print(f"Left out: {', '.join(refused)}.")
-        return choice
+        else:
+            print(f"Left out: {', '.join(refused)}.")
+        return choice.model_copy(update={field: _confirmed(question) for field, question in cls.opt_ins.items()})
 
     @staticmethod
     def named(folders: Iterable[str], base: Path) -> tuple[str, ...]:
@@ -359,7 +371,7 @@ class AgentChoice(BaseModel):
 
     def applied(self, runner: MachineRunner) -> MachineConfig:
         """Saved on this machine, re-checked against its file under the runner's lock."""
-        return runner.update(lambda current: current.model_copy(update={"run_agents": self.run_agents, "agent_roots": self.checked(current)[0].folders}))
+        return runner.update(lambda current: current.model_copy(update={**self.model_dump(exclude={"folders"}), "agent_roots": self.checked(current)[0].folders}))
 
     @staticmethod
     def described(config: MachineConfig) -> str:
@@ -367,10 +379,12 @@ class AgentChoice(BaseModel):
         if not config.run_agents:
             return "Agents: off here. To allow them:  interact machine agents on  then  interact machine agent-roots <folder…>"
         folders = list(config.agent_roots_by_name())
+        extras = (f"\nEditor conversations continued from the web: {'on' if config.continue_conversations else 'off'}; approvals answered from the web: "
+                  f"{'on' if config.answer_approvals else 'off'}. To change:  interact machine agents on --continue on|off --approvals on|off")
         if not folders:
-            return "Agents: on here, no folder to start them in from the web yet. To add one:  interact machine agent-roots <folder…>"
+            return "Agents: on here, no folder to start them in from the web yet. To add one:  interact machine agent-roots <folder…>" + extras
         return (f"Agents: on here; the web can start them in {', '.join(folders)} (under {config.working_directory}) or any folder beneath. "
-                "To change:  interact machine agent-roots <folder…>  (\"\" clears) or  interact machine agents off")
+                "To change:  interact machine agent-roots <folder…>  (\"\" clears) or  interact machine agents off" + extras)
 
 
 def _existing_machine() -> MachineConfig | None:
@@ -405,11 +419,13 @@ def _answered(question: str) -> str:
         return ""
 
 
-def login(server: str | None, *, allow_runs: bool, yes: bool, open_browser: bool, agents: bool | None = None, agent_folders: tuple[str, ...] = ()) -> None:
-    """`agents` / `agent_folders` answer the agents question ahead (scripts, the install line); unsaid
-    and in a terminal without `yes`, it is asked; else agents stay off."""
+def login(server: str | None, *, allow_runs: bool, yes: bool, open_browser: bool, agents: bool | None = None, agent_folders: tuple[str, ...] = (),
+          agent_opt_ins: Mapping[str, bool | None] = MappingProxyType({})) -> None:
+    """`agents` / `agent_folders` / `agent_opt_ins` (by `AgentChoice.opt_ins` field) answer the
+    agents questions ahead (scripts, the install line); unsaid and in a terminal without `yes`, they
+    are asked; else agents stay off."""
     try:
-        _login(server, allow_runs=allow_runs, yes=yes, open_browser=open_browser, agents=AgentChoice.given(agents, agent_folders))
+        _login(server, allow_runs=allow_runs, yes=yes, open_browser=open_browser, agents=AgentChoice.given(agents, agent_folders, agent_opt_ins))
     except httpx.HTTPError as error:
         raise LoginError(f"cannot reach the server ({type(error).__name__}); check the address and your network, then run it again") from None
 
