@@ -1528,8 +1528,13 @@ def trees(root_run_ids: frozenset[str]) -> list[AgentRun]:
             if run.run_id not in members and (run.parent_run_id in members or run.root_run_id in members):
                 members.add(run.run_id)
                 grew = True
-    found = (run for run in records if run.run_id in members)
-    return sorted((run.model_copy(update={"status": _status_for(run)}) for run in found), key=lambda run: run.started_at, reverse=True)
+    def current(run: AgentRun) -> AgentRun:
+        status = _status_for(run)
+        # A process gone with no ending recorded is healed from its own stream (it may have
+        # finished while nothing watched it) — the only case that pays for reading the stream.
+        # `_derive` compare-and-swaps against the STORED record, so it gets that record as read.
+        return _derive(run) if status == "crashed" else run.model_copy(update={"status": status})
+    return sorted((current(run) for run in records if run.run_id in members), key=lambda run: run.started_at, reverse=True)
 
 
 #: path -> (mtime_ns, size, record). A settled record never changes, so a poller re-reads only

@@ -158,3 +158,13 @@ def test_start_answers_while_the_agent_it_launched_still_runs(base: Path, tmp_pa
     started = time.monotonic()
     assert str(agents.answer(_request("start", root="project", role="app-engineer", text="go")).run_id) == run_id
     assert time.monotonic() - started < 10
+
+
+def test_a_run_that_finished_unwatched_reads_done_not_lost(base: Path, tmp_path: Path) -> None:
+    """Its process is gone and no exit was recorded, but its own stream says it finished."""
+    agents = _agents(base, tmp_path)
+    run_id = str(uuid4())
+    reg.save_run(reg.AgentRun(run_id=run_id, provider="claude", name="r", cwd=str(base / "project"), started_at=1.0, pid=None))
+    reg.events_path(run_id).write_text('{"kind":"text","text":"ok","at":2}\n{"kind":"done","text":"ok","at":3,"final_text":true}\n')
+    agents.runs.add(WebRun(run_id=run_id, root="project"))
+    assert [run.status for run in agents.answer(_request("runs")).runs] == ["done"]
