@@ -1,0 +1,989 @@
+{
+  "benchmarks": [
+    {
+      "id": "screenspot",
+      "name": "ScreenSpot",
+      "description": "GUI grounding: given an instruction, click the right single element across iOS/Android/macOS/Windows/Web. Measures whether a model can localize where to act.",
+      "category": "gui_grounding",
+      "source": "GUI-Agent grounding leaderboard",
+      "source_auth": "",
+      "requires_auth": false,
+      "url": "https://huggingface.co/datasets/rootsautomation/ScreenSpot",
+      "score_url": "https://raw.githubusercontent.com/GUI-Agent/grounding-leaderboard/main/results/screenspot_v2.json",
+      "methodology_url": "",
+      "metric": "accuracy",
+      "score_range": null,
+      "higher_is_better": null,
+      "refresh_supported": true,
+      "published": {
+        "source_url": "https://raw.githubusercontent.com/GUI-Agent/grounding-leaderboard/main/results/screenspot_v2.json",
+        "retrieved": "2026-05-21",
+        "lib_recommendation": null,
+        "freshness": "stale",
+        "entries": [
+          {
+            "model_name": "UI-Venus-72B",
+            "model_id": null,
+            "score": 0.9528301886792453,
+            "normalized_score": 0.9528301886792453,
+            "status": "unverified"
+          },
+          {
+            "model_name": "Hcompany/Holo2-30B-A3B",
+            "model_id": null,
+            "score": 0.9488591660110149,
+            "normalized_score": 0.9488591660110149,
+            "status": "unverified"
+          },
+          {
+            "model_name": "Holo1.5-72B",
+            "model_id": null,
+            "score": 0.9441384736428009,
+            "normalized_score": 0.9441384736428009,
+            "status": "unverified"
+          },
+          {
+            "model_name": "UI-Venus-7B",
+            "model_id": null,
+            "score": 0.9410377358490566,
+            "normalized_score": 0.9410377358490566,
+            "status": "unverified"
+          },
+          {
+            "model_name": "Holo1.5-7B",
+            "model_id": null,
+            "score": 0.9331235247836349,
+            "normalized_score": 0.9331235247836349,
+            "status": "unverified"
+          },
+          {
+            "model_name": "Hcompany/Holo2-8B",
+            "model_id": null,
+            "score": 0.932336742722266,
+            "normalized_score": 0.932336742722266,
+            "status": "unverified"
+          },
+          {
+            "model_name": "Hcompany/Holo2-4B",
+            "model_id": null,
+            "score": 0.9315499606608969,
+            "normalized_score": 0.9315499606608969,
+            "status": "unverified"
+          },
+          {
+            "model_name": "GUI-ARP-7B",
+            "model_id": null,
+            "score": 0.9175,
+            "normalized_score": 0.9175,
+            "status": "unverified"
+          },
+          {
+            "model_name": "Holo1.5-3B",
+            "model_id": null,
+            "score": 0.9166011014948859,
+            "normalized_score": 0.9166011014948859,
+            "status": "unverified"
+          },
+          {
+            "model_name": "AGUVIS-7B",
+            "model_id": null,
+            "score": 0.8726415094339622,
+            "normalized_score": 0.8726415094339622,
+            "status": "unverified"
+          },
+          {
+            "model_name": "ZonUI-3B",
+            "model_id": null,
+            "score": 0.8655660377358491,
+            "normalized_score": 0.8655660377358491,
+            "status": "unverified"
+          },
+          {
+            "model_name": "Qwen2.5-VL-7B-Instruct",
+            "model_id": null,
+            "score": 0.8647798742138365,
+            "normalized_score": 0.8647798742138365,
+            "status": "unverified"
+          },
+          {
+            "model_name": "OSAtlas-7B",
+            "model_id": null,
+            "score": 0.8333333333333334,
+            "normalized_score": 0.8333333333333334,
+            "status": "unverified"
+          },
+          {
+            "model_name": "ShowUI (2B)",
+            "model_id": null,
+            "score": 0.7727987421383647,
+            "normalized_score": 0.7727987421383647,
+            "status": "unverified"
+          },
+          {
+            "model_name": "UGround (7B)",
+            "model_id": null,
+            "score": 0.7625786163522013,
+            "normalized_score": 0.7625786163522013,
+            "status": "unverified"
+          },
+          {
+            "model_name": "OSAtlas-4B",
+            "model_id": null,
+            "score": 0.684748427672956,
+            "normalized_score": 0.684748427672956,
+            "status": "unverified"
+          },
+          {
+            "model_name": "SeeClick (7B)",
+            "model_id": null,
+            "score": 0.5385220125786163,
+            "normalized_score": 0.5385220125786163,
+            "status": "unverified"
+          },
+          {
+            "model_name": "CogAgent (18B)",
+            "model_id": null,
+            "score": 0.5283018867924528,
+            "normalized_score": 0.5283018867924528,
+            "status": "unverified"
+          },
+          {
+            "model_name": "Qwen2.5-VL-3B-Instruct",
+            "model_id": null,
+            "score": 0.46855345911949686,
+            "normalized_score": 0.46855345911949686,
+            "status": "unverified"
+          },
+          {
+            "model_name": "MiniCPM-V (7B)",
+            "model_id": null,
+            "score": 0.4591194968553459,
+            "normalized_score": 0.4591194968553459,
+            "status": "unverified"
+          },
+          {
+            "model_name": "Qwen2-VL-72B",
+            "model_id": null,
+            "score": 0.4300314465408805,
+            "normalized_score": 0.4300314465408805,
+            "status": "unverified"
+          },
+          {
+            "model_name": "Qwen2-VL-7B",
+            "model_id": null,
+            "score": 0.3977987421383648,
+            "normalized_score": 0.3977987421383648,
+            "status": "unverified"
+          },
+          {
+            "model_name": "GPT-4o",
+            "model_id": null,
+            "score": 0.20125786163522014,
+            "normalized_score": 0.20125786163522014,
+            "status": "unverified"
+          },
+          {
+            "model_name": "QwenVL-7B",
+            "model_id": null,
+            "score": 0.060534591194968554,
+            "normalized_score": 0.060534591194968554,
+            "status": "unverified"
+          }
+        ]
+      },
+      "lib_recommendation_model_id": null,
+      "measured": {},
+      "recommendations": []
+    },
+    {
+      "id": "screenspot_pro",
+      "name": "ScreenSpot-Pro",
+      "description": "Hard GUI grounding on professional high-resolution apps (23 apps, 5 industries, 3 OSes) with tiny cluttered targets \u2014 the closest benchmark to real desktop automation.",
+      "category": "gui_grounding",
+      "source": "GUI-Agent grounding leaderboard",
+      "source_auth": "",
+      "requires_auth": false,
+      "url": "https://huggingface.co/datasets/TIGER-Lab/ScreenSpot-Pro",
+      "score_url": "https://raw.githubusercontent.com/GUI-Agent/grounding-leaderboard/main/results/screenspot_pro.json",
+      "methodology_url": "",
+      "metric": "accuracy",
+      "score_range": null,
+      "higher_is_better": null,
+      "refresh_supported": true,
+      "published": {
+        "source_url": "https://raw.githubusercontent.com/GUI-Agent/grounding-leaderboard/main/results/screenspot_pro.json",
+        "retrieved": "2026-05-21",
+        "lib_recommendation": null,
+        "freshness": "stale",
+        "entries": [
+          {
+            "model_name": "KV-Ground-8B + Qwen3.5-27B Consistency Router",
+            "model_id": null,
+            "score": 0.809,
+            "normalized_score": 0.809,
+            "status": "unverified"
+          },
+          {
+            "model_name": "KV-Ground-GuiOwl1.5-0315-8B-ZoomIn",
+            "model_id": null,
+            "score": 0.8051865907653384,
+            "normalized_score": 0.8051865907653384,
+            "status": "unverified"
+          },
+          {
+            "model_name": "Holo2-235B-A22B (Agentic)",
+            "model_id": null,
+            "score": 0.7849462365591398,
+            "normalized_score": 0.7849462365591398,
+            "status": "unverified"
+          },
+          {
+            "model_name": "MAI-UI-32B (MVP)",
+            "model_id": null,
+            "score": 0.7746212121212122,
+            "normalized_score": 0.7746212121212122,
+            "status": "unverified"
+          },
+          {
+            "model_name": "AdaZoom-GUI-4B (cond. zoom-in, refine w/ Qwen3.5-397B)",
+            "model_id": null,
+            "score": 0.7678684376976597,
+            "normalized_score": 0.7678684376976597,
+            "status": "unverified"
+          },
+          {
+            "model_name": "KV-Ground-GuiOwl1.5-4B-0228-ZoomIn",
+            "model_id": null,
+            "score": 0.7640733712839974,
+            "normalized_score": 0.7640733712839974,
+            "status": "unverified"
+          },
+          {
+            "model_name": "Holo2-30B-A3B (Agentic)",
+            "model_id": null,
+            "score": 0.7520556609740671,
+            "normalized_score": 0.7520556609740671,
+            "status": "unverified"
+          },
+          {
+            "model_name": "MVP_Qwen3VL-32B",
+            "model_id": null,
+            "score": 0.7414664981036663,
+            "normalized_score": 0.7414664981036663,
+            "status": "unverified"
+          },
+          {
+            "model_name": "MAI-UI-32B (Zoom In)",
+            "model_id": null,
+            "score": 0.734977862112587,
+            "normalized_score": 0.734977862112587,
+            "status": "unverified"
+          },
+          {
+            "model_name": "KV-Ground-GuiOwl1.5-0315-8B",
+            "model_id": null,
+            "score": 0.7318153067678684,
+            "normalized_score": 0.7318153067678684,
+            "status": "unverified"
+          },
+          {
+            "model_name": "MAI-UI-8B (Zoom In)",
+            "model_id": null,
+            "score": 0.7191650853889943,
+            "normalized_score": 0.7191650853889943,
+            "status": "unverified"
+          },
+          {
+            "model_name": "Holo2-8B (Agentic)",
+            "model_id": null,
+            "score": 0.7141049968374447,
+            "normalized_score": 0.7141049968374447,
+            "status": "unverified"
+          },
+          {
+            "model_name": "AdaZoom-GUI-4B (conditional zoom-in)",
+            "model_id": null,
+            "score": 0.7058823529411765,
+            "normalized_score": 0.7058823529411765,
+            "status": "unverified"
+          },
+          {
+            "model_name": "Holo2-235B-A22B",
+            "model_id": null,
+            "score": 0.7058823529411765,
+            "normalized_score": 0.7058823529411765,
+            "status": "unverified"
+          },
+          {
+            "model_name": "KV-Ground-Qwen3VL-4B-ZoomIn",
+            "model_id": null,
+            "score": 0.702719797596458,
+            "normalized_score": 0.702719797596458,
+            "status": "unverified"
+          },
+          {
+            "model_name": "UI-Venus-1-5-30B-A3B",
+            "model_id": null,
+            "score": 0.6963946869070209,
+            "normalized_score": 0.6963946869070209,
+            "status": "unverified"
+          },
+          {
+            "model_name": "Holo2-4B (Agentic)",
+            "model_id": null,
+            "score": 0.6856419987349779,
+            "normalized_score": 0.6856419987349779,
+            "status": "unverified"
+          },
+          {
+            "model_name": "UI-Venus-1-5-8B",
+            "model_id": null,
+            "score": 0.6843769765970904,
+            "normalized_score": 0.6843769765970904,
+            "status": "unverified"
+          },
+          {
+            "model_name": "MAI-UI-32B",
+            "model_id": null,
+            "score": 0.6786843769765971,
+            "normalized_score": 0.6786843769765971,
+            "status": "unverified"
+          },
+          {
+            "model_name": "KV-Ground-GuiOwl1.5-0228-4B",
+            "model_id": null,
+            "score": 0.6704617330803289,
+            "normalized_score": 0.6704617330803289,
+            "status": "unverified"
+          },
+          {
+            "model_name": "Holo2-30B-A3B",
+            "model_id": null,
+            "score": 0.6609740670461733,
+            "normalized_score": 0.6609740670461733,
+            "status": "unverified"
+          },
+          {
+            "model_name": "MAI-UI-8B",
+            "model_id": null,
+            "score": 0.6565464895635673,
+            "normalized_score": 0.6565464895635673,
+            "status": "unverified"
+          },
+          {
+            "model_name": "MVP_Qwen3VL-8B",
+            "model_id": null,
+            "score": 0.6502525252525253,
+            "normalized_score": 0.6502525252525253,
+            "status": "unverified"
+          },
+          {
+            "model_name": "GTA1-32B",
+            "model_id": null,
+            "score": 0.6363061353573688,
+            "normalized_score": 0.6363061353573688,
+            "status": "unverified"
+          },
+          {
+            "model_name": "Holo1.5-72B",
+            "model_id": null,
+            "score": 0.6325110689437066,
+            "normalized_score": 0.6325110689437066,
+            "status": "unverified"
+          },
+          {
+            "model_name": "KV-Ground-Qwen3VL-4B",
+            "model_id": null,
+            "score": 0.6318785578747628,
+            "normalized_score": 0.6318785578747628,
+            "status": "unverified"
+          },
+          {
+            "model_name": "MAI-UI-2B (Zoom In)",
+            "model_id": null,
+            "score": 0.6280834914611005,
+            "normalized_score": 0.6280834914611005,
+            "status": "unverified"
+          },
+          {
+            "model_name": "UI-Venus-72B",
+            "model_id": null,
+            "score": 0.618595825426945,
+            "normalized_score": 0.618595825426945,
+            "status": "unverified"
+          },
+          {
+            "model_name": "AdaZoom-GUI-4B",
+            "model_id": null,
+            "score": 0.6160657811511702,
+            "normalized_score": 0.6160657811511702,
+            "status": "unverified"
+          },
+          {
+            "model_name": "UI-TARS-1.5",
+            "model_id": null,
+            "score": 0.6160657811511702,
+            "normalized_score": 0.6160657811511702,
+            "status": "unverified"
+          },
+          {
+            "model_name": "Seed-1.5-VL",
+            "model_id": null,
+            "score": 0.6091081593927894,
+            "normalized_score": 0.6091081593927894,
+            "status": "unverified"
+          },
+          {
+            "model_name": "GUI-ARP-7B",
+            "model_id": null,
+            "score": 0.6078,
+            "normalized_score": 0.6078,
+            "status": "unverified"
+          },
+          {
+            "model_name": "GUI-AIMA-3B",
+            "model_id": null,
+            "score": 0.5958254269449715,
+            "normalized_score": 0.5958254269449715,
+            "status": "unverified"
+          },
+          {
+            "model_name": "Holo2-8B",
+            "model_id": null,
+            "score": 0.5888678051865908,
+            "normalized_score": 0.5888678051865908,
+            "status": "unverified"
+          },
+          {
+            "model_name": "GTA1-Qwen2.5VL-72B",
+            "model_id": null,
+            "score": 0.5844402277039848,
+            "normalized_score": 0.5844402277039848,
+            "status": "unverified"
+          },
+          {
+            "model_name": "Holo1.5-7B",
+            "model_id": null,
+            "score": 0.5793801391524351,
+            "normalized_score": 0.5793801391524351,
+            "status": "unverified"
+          },
+          {
+            "model_name": "UI-Venus-1-5-2B",
+            "model_id": null,
+            "score": 0.5774826059456041,
+            "normalized_score": 0.5774826059456041,
+            "status": "unverified"
+          },
+          {
+            "model_name": "BAMI-7B",
+            "model_id": null,
+            "score": 0.5774826059456041,
+            "normalized_score": 0.5774826059456041,
+            "status": "unverified"
+          },
+          {
+            "model_name": "MAI-UI-2B",
+            "model_id": null,
+            "score": 0.5736875395319418,
+            "normalized_score": 0.5736875395319418,
+            "status": "unverified"
+          },
+          {
+            "model_name": "Holo2-4B",
+            "model_id": null,
+            "score": 0.5724225173940544,
+            "normalized_score": 0.5724225173940544,
+            "status": "unverified"
+          },
+          {
+            "model_name": "GTA1-7B",
+            "model_id": null,
+            "score": 0.5547122074636306,
+            "normalized_score": 0.5547122074636306,
+            "status": "unverified"
+          },
+          {
+            "model_name": "GTA1-Qwen2.5VL-32B",
+            "model_id": null,
+            "score": 0.5357368753953194,
+            "normalized_score": 0.5357368753953194,
+            "status": "unverified"
+          },
+          {
+            "model_name": "Qwen2.5-VL-72B-Instruct",
+            "model_id": null,
+            "score": 0.5332068311195446,
+            "normalized_score": 0.5332068311195446,
+            "status": "unverified"
+          },
+          {
+            "model_name": "GUI-Spotlight",
+            "model_id": null,
+            "score": 0.528147,
+            "normalized_score": 0.528147,
+            "status": "unverified"
+          },
+          {
+            "model_name": "V2P-7B",
+            "model_id": null,
+            "score": 0.5253164556962026,
+            "normalized_score": 0.5253164556962026,
+            "status": "unverified"
+          },
+          {
+            "model_name": "TianXi-Action-7B",
+            "model_id": null,
+            "score": 0.5186590765338394,
+            "normalized_score": 0.5186590765338394,
+            "status": "unverified"
+          },
+          {
+            "model_name": "Holo1.5-3B",
+            "model_id": null,
+            "score": 0.5148640101201771,
+            "normalized_score": 0.5148640101201771,
+            "status": "unverified"
+          },
+          {
+            "model_name": "Kimi-VL-A3B-Thinking-2506",
+            "model_id": null,
+            "score": 0.5098039215686274,
+            "normalized_score": 0.5098039215686274,
+            "status": "unverified"
+          },
+          {
+            "model_name": "UI-Venus-7B",
+            "model_id": null,
+            "score": 0.5079063883617964,
+            "normalized_score": 0.5079063883617964,
+            "status": "unverified"
+          },
+          {
+            "model_name": "GTA1-Qwen2.5VL-7B",
+            "model_id": null,
+            "score": 0.5009487666034156,
+            "normalized_score": 0.5009487666034156,
+            "status": "unverified"
+          },
+          {
+            "model_name": "Qwen2.5-VL-32B-Instruct",
+            "model_id": null,
+            "score": 0.48007590132827327,
+            "normalized_score": 0.48007590132827327,
+            "status": "unverified"
+          },
+          {
+            "model_name": "UI-AGILE-7B",
+            "model_id": null,
+            "score": 0.47881087919038584,
+            "normalized_score": 0.47881087919038584,
+            "status": "unverified"
+          },
+          {
+            "model_name": "SE-GUI-7B",
+            "model_id": null,
+            "score": 0.47248576850094876,
+            "normalized_score": 0.47248576850094876,
+            "status": "unverified"
+          },
+          {
+            "model_name": "UI-AGILE-3B",
+            "model_id": null,
+            "score": 0.4497153700189753,
+            "normalized_score": 0.4497153700189753,
+            "status": "unverified"
+          },
+          {
+            "model_name": "GUI-Actor-2.5VL-7B",
+            "model_id": null,
+            "score": 0.4459203036053131,
+            "normalized_score": 0.4459203036053131,
+            "status": "unverified"
+          },
+          {
+            "model_name": "GUI-Actor-2.5VL-3B",
+            "model_id": null,
+            "score": 0.42188488298545224,
+            "normalized_score": 0.42188488298545224,
+            "status": "unverified"
+          },
+          {
+            "model_name": "GUI-Actor-2VL-7B",
+            "model_id": null,
+            "score": 0.407337128399747,
+            "normalized_score": 0.407337128399747,
+            "status": "unverified"
+          },
+          {
+            "model_name": "UI-TARS-72B",
+            "model_id": null,
+            "score": 0.38140417457305503,
+            "normalized_score": 0.38140417457305503,
+            "status": "unverified"
+          },
+          {
+            "model_name": "GUI-Actor-2VL-2B",
+            "model_id": null,
+            "score": 0.3668564199873498,
+            "normalized_score": 0.3668564199873498,
+            "status": "unverified"
+          },
+          {
+            "model_name": "GUI-G1",
+            "model_id": null,
+            "score": 0.3592662871600253,
+            "normalized_score": 0.3592662871600253,
+            "status": "unverified"
+          },
+          {
+            "model_name": "SE-GUI-3B",
+            "model_id": null,
+            "score": 0.35863377609108,
+            "normalized_score": 0.35863377609108,
+            "status": "unverified"
+          },
+          {
+            "model_name": "UI-TARS-7B",
+            "model_id": null,
+            "score": 0.3573687539531942,
+            "normalized_score": 0.3573687539531942,
+            "status": "unverified"
+          },
+          {
+            "model_name": "UGround-v1-72B",
+            "model_id": null,
+            "score": 0.34535104364326374,
+            "normalized_score": 0.34535104364326374,
+            "status": "unverified"
+          },
+          {
+            "model_name": "Di-GUI-3B",
+            "model_id": null,
+            "score": 0.31562302340290954,
+            "normalized_score": 0.31562302340290954,
+            "status": "unverified"
+          },
+          {
+            "model_name": "UGround-V1-7B",
+            "model_id": null,
+            "score": 0.3105629348513599,
+            "normalized_score": 0.3105629348513599,
+            "status": "unverified"
+          },
+          {
+            "model_name": "ZonUI-3B",
+            "model_id": null,
+            "score": 0.28716002530044277,
+            "normalized_score": 0.28716002530044277,
+            "status": "unverified"
+          },
+          {
+            "model_name": "UI-TARS-2B",
+            "model_id": null,
+            "score": 0.27703984819734345,
+            "normalized_score": 0.27703984819734345,
+            "status": "unverified"
+          },
+          {
+            "model_name": "Qwen2.5-VL-7B-Instruct",
+            "model_id": null,
+            "score": 0.2675521821631879,
+            "normalized_score": 0.2675521821631879,
+            "status": "unverified"
+          },
+          {
+            "model_name": "UGround-V1-2B",
+            "model_id": null,
+            "score": 0.26628716002530045,
+            "normalized_score": 0.26628716002530045,
+            "status": "unverified"
+          },
+          {
+            "model_name": "Aguvis-7B",
+            "model_id": null,
+            "score": 0.22896900695762176,
+            "normalized_score": 0.22896900695762176,
+            "status": "unverified"
+          },
+          {
+            "model_name": "OS-Atlas-7B",
+            "model_id": null,
+            "score": 0.18912080961416824,
+            "normalized_score": 0.18912080961416824,
+            "status": "unverified"
+          },
+          {
+            "model_name": "GPT5-minimal (resized)",
+            "model_id": null,
+            "score": 0.18532574320050602,
+            "normalized_score": 0.18532574320050602,
+            "status": "unverified"
+          },
+          {
+            "model_name": "Claude (Computer Use)",
+            "model_id": null,
+            "score": 0.17101226993865032,
+            "normalized_score": 0.17101226993865032,
+            "status": "unverified"
+          },
+          {
+            "model_name": "UGround-7B",
+            "model_id": null,
+            "score": 0.1650853889943074,
+            "normalized_score": 0.1650853889943074,
+            "status": "unverified"
+          },
+          {
+            "model_name": "Qwen2.5-VL-3B-Instruct",
+            "model_id": null,
+            "score": 0.16065781151170144,
+            "normalized_score": 0.16065781151170144,
+            "status": "unverified"
+          },
+          {
+            "model_name": "AriaUI (MOE, 3.9B active)",
+            "model_id": null,
+            "score": 0.11321948134092347,
+            "normalized_score": 0.11321948134092347,
+            "status": "unverified"
+          },
+          {
+            "model_name": "ShowUI (2B)",
+            "model_id": null,
+            "score": 0.07716635041113219,
+            "normalized_score": 0.07716635041113219,
+            "status": "unverified"
+          },
+          {
+            "model_name": "CogAgent (18B)",
+            "model_id": null,
+            "score": 0.07716635041113219,
+            "normalized_score": 0.07716635041113219,
+            "status": "unverified"
+          },
+          {
+            "model_name": "GPT5-high (resized)",
+            "model_id": null,
+            "score": 0.06008855154965212,
+            "normalized_score": 0.06008855154965212,
+            "status": "unverified"
+          },
+          {
+            "model_name": "OS-Atlas-4B",
+            "model_id": null,
+            "score": 0.03731815306767868,
+            "normalized_score": 0.03731815306767868,
+            "status": "unverified"
+          },
+          {
+            "model_name": "MiniCPM-V (7B)",
+            "model_id": null,
+            "score": 0.030360531309297913,
+            "normalized_score": 0.030360531309297913,
+            "status": "unverified"
+          },
+          {
+            "model_name": "Qwen2-VL-7B",
+            "model_id": null,
+            "score": 0.015812776723592662,
+            "normalized_score": 0.015812776723592662,
+            "status": "unverified"
+          },
+          {
+            "model_name": "SeeClick (7B)",
+            "model_id": null,
+            "score": 0.011385199240986717,
+            "normalized_score": 0.011385199240986717,
+            "status": "unverified"
+          },
+          {
+            "model_name": "Qwen2-VL-72B-Instruct",
+            "model_id": null,
+            "score": 0.010120177103099304,
+            "normalized_score": 0.010120177103099304,
+            "status": "unverified"
+          },
+          {
+            "model_name": "GPT-4o",
+            "model_id": null,
+            "score": 0.008222643896268185,
+            "normalized_score": 0.008222643896268185,
+            "status": "unverified"
+          },
+          {
+            "model_name": "Qwen-VL-7B",
+            "model_id": null,
+            "score": 0.0006325110689437065,
+            "normalized_score": 0.0006325110689437065,
+            "status": "unverified"
+          }
+        ]
+      },
+      "lib_recommendation_model_id": null,
+      "measured": {},
+      "recommendations": []
+    },
+    {
+      "id": "mmmu_pro",
+      "name": "MMMU Pro",
+      "description": "Artificial Analysis MMMU Pro visual-understanding accuracy; this is not the MMMU or MMBench benchmark.",
+      "category": "image",
+      "source": "Artificial Analysis public evaluation",
+      "source_auth": "",
+      "requires_auth": false,
+      "url": "https://artificialanalysis.ai/evaluations/mmmu-pro",
+      "score_url": "https://artificialanalysis.ai/evaluations/mmmu-pro",
+      "methodology_url": "https://artificialanalysis.ai/methodology/intelligence-benchmarking#mmmu-pro",
+      "metric": "accuracy",
+      "score_range": [
+        0.0,
+        1.0
+      ],
+      "higher_is_better": true,
+      "refresh_supported": false,
+      "published": null,
+      "lib_recommendation_model_id": null,
+      "measured": {},
+      "recommendations": []
+    },
+    {
+      "id": "mmbench",
+      "name": "MMBench",
+      "description": "Broad multiple-choice perception + reasoning over images (EN/CN), with robustness checks \u2014 a wide general image-understanding measure.",
+      "category": "image",
+      "source": "OpenCompass",
+      "source_auth": "",
+      "requires_auth": false,
+      "url": "https://github.com/open-compass/MMBench",
+      "score_url": "",
+      "methodology_url": "",
+      "metric": "accuracy",
+      "score_range": [
+        0.0,
+        1.0
+      ],
+      "higher_is_better": true,
+      "refresh_supported": true,
+      "published": null,
+      "lib_recommendation_model_id": null,
+      "measured": {},
+      "recommendations": []
+    },
+    {
+      "id": "video_mme",
+      "name": "Video-MME",
+      "description": "Full-spectrum video understanding: 900 videos (11s\u20131hr) across 6 domains with 2,700 QA pairs \u2014 the canonical video benchmark.",
+      "category": "video",
+      "source": "OpenCompass video leaderboard",
+      "source_auth": "",
+      "requires_auth": false,
+      "url": "https://video-mme.github.io/",
+      "score_url": "",
+      "methodology_url": "",
+      "metric": "accuracy",
+      "score_range": null,
+      "higher_is_better": null,
+      "refresh_supported": true,
+      "published": null,
+      "lib_recommendation_model_id": null,
+      "measured": {},
+      "recommendations": []
+    },
+    {
+      "id": "mvbench",
+      "name": "MVBench",
+      "description": "20 temporal-reasoning tasks (action/sequence understanding) that can't be solved from a single frame \u2014 tests genuine video, not stills.",
+      "category": "video",
+      "source": "OpenCompass video leaderboard",
+      "source_auth": "",
+      "requires_auth": false,
+      "url": "https://github.com/OpenGVLab/Ask-Anything",
+      "score_url": "",
+      "methodology_url": "",
+      "metric": "accuracy",
+      "score_range": null,
+      "higher_is_better": null,
+      "refresh_supported": true,
+      "published": null,
+      "lib_recommendation_model_id": null,
+      "measured": {},
+      "recommendations": []
+    },
+    {
+      "id": "mlvu",
+      "name": "MLVU",
+      "description": "Multi-task LONG-video understanding: 3-minute-to-2-hour videos across 9 tasks (holistic + single-detail + multi-detail) \u2014 the long-form complement to Video-MME.",
+      "category": "video",
+      "source": "OpenCompass video leaderboard",
+      "source_auth": "",
+      "requires_auth": false,
+      "url": "https://github.com/JUNJIE99/MLVU",
+      "score_url": "",
+      "methodology_url": "",
+      "metric": "accuracy",
+      "score_range": null,
+      "higher_is_better": null,
+      "refresh_supported": false,
+      "published": null,
+      "lib_recommendation_model_id": null,
+      "measured": {},
+      "recommendations": []
+    },
+    {
+      "id": "mmau",
+      "name": "MMAU",
+      "description": "Massive Multi-task Audio Understanding: 10,000 clips across speech, environmental sound and music with expert QA (27 skills) \u2014 the headline audio benchmark, the audio analogue of MMMU (image) and Video-MME (video). Transcription quality is ranked separately by Word Error Rate on the HF Open ASR Leaderboard.",
+      "category": "audio",
+      "source": "MMAU leaderboard",
+      "source_auth": "",
+      "requires_auth": false,
+      "url": "https://sakshi113.github.io/mmau_homepage/",
+      "score_url": "https://sakshi113.github.io/mmau_homepage/",
+      "methodology_url": "",
+      "metric": "accuracy",
+      "score_range": null,
+      "higher_is_better": null,
+      "refresh_supported": false,
+      "published": {
+        "source_url": "https://sakshi113.github.io/mmau_homepage/",
+        "retrieved": "2026-06-24",
+        "lib_recommendation": null,
+        "freshness": "stale",
+        "entries": [
+          {
+            "model_name": "Gemini 1.5 Pro",
+            "model_id": null,
+            "score": 0.6615,
+            "normalized_score": 0.6615,
+            "status": "unverified"
+          },
+          {
+            "model_name": "Qwen2.5-Omni-7B",
+            "model_id": null,
+            "score": 0.656,
+            "normalized_score": 0.656,
+            "status": "unverified"
+          },
+          {
+            "model_name": "GPT-4o-audio",
+            "model_id": null,
+            "score": 0.625,
+            "normalized_score": 0.625,
+            "status": "unverified"
+          },
+          {
+            "model_name": "Qwen2-Audio-7B-Instruct",
+            "model_id": null,
+            "score": 0.554,
+            "normalized_score": 0.554,
+            "status": "unverified"
+          }
+        ]
+      },
+      "lib_recommendation_model_id": null,
+      "measured": {},
+      "recommendations": []
+    }
+  ]
+}

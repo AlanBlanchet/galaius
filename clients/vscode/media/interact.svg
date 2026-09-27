@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+  <!-- THE PICK — interact's own mark.
+       interact looks at a surface it does not own, finds a thing on it, and acts on that thing.
+       So the mark is the two halves of that sentence and nothing else: the detection frame the
+       tool literally draws around an element it has resolved, and the pointer working inside it.
+
+       Beaten priors, named: a robot head, an eye, a bare cursor arrow, a letter A — and the mark
+       this replaces, three joined circles, which is the org-chart every multi-agent product ships
+       and which sat two icons away from Source Control's own circles-and-lines in the same bar.
+
+       Drawn for 24px, where only the outer silhouette and ONE interior mass survive. The frame is
+       four corner brackets (nothing else in the activity bar is bracket-shaped) and the interior
+       is a single solid diagonal (nothing else in the bar is diagonal — files, search, extensions
+       and accounts are all orthogonal or round). Single colour, currentColor, no fills that would
+       fight a theme: VS Code tints this with the bar's own foreground. -->
+  <path fill="none" stroke="currentColor" stroke-width="2.2"
+        d="M2.7 8.4V2.7h5.7M15.6 2.7h5.7v5.7M21.3 15.6v5.7h-5.7M8.4 21.3H2.7v-5.7"/>
+  <path d="M7.6 6.4l9.6 6.3-4.4.95 2.5 4.55-2.85 1.55-2.5-4.55-2.35 3.3z"/>
+</svg>

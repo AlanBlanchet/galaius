@@ -1,0 +1,577 @@
+{
+  "name": "interact",
+  "displayName": "Interact",
+  "description": "Interact — browser + desktop automation via an MCP server",
+  "version": "0.43.0",
+  "preview": true,
+  "publisher": "AlanBlanchet",
+  "icon": "icon.png",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AlanBlanchet/interact"
+  },
+  "homepage": "https://github.com/AlanBlanchet/interact#readme",
+  "bugs": {
+    "url": "https://github.com/AlanBlanchet/interact/issues"
+  },
+  "engines": {
+    "vscode": "^1.101.0"
+  },
+  "categories": [
+    "AI",
+    "Testing",
+    "Other"
+  ],
+  "keywords": [
+    "mcp",
+    "automation",
+    "browser",
+    "playwright",
+    "desktop",
+    "agent",
+    "vision",
+    "ai"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "interact",
+        "label": "Interact"
+      }
+    ],
+    "configuration": {
+      "title": "Interact",
+      "properties": {
+        "interact.projectPath": {
+          "type": "string",
+          "default": "",
+          "description": "DEV ONLY — path to a local interact checkout to run via 'uv run' instead of the released build. Leave EMPTY (the default) to run the published interact from GitHub via uvx (zero-config). Never auto-detected, so opening a clone of the repo does not silently run your working tree. Can also be set with the INTERACT_PROJECT_PATH env var."
+        },
+        "interact.display.currency": {
+          "type": "string",
+          "default": "USD",
+          "description": "Currency for displaying spend in the dashboard. Costs are recorded in USD and converted at live ECB rates (frankfurter.app); display-only."
+        },
+        "interact.media.backend": {
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "auto",
+            "session",
+            "api"
+          ],
+          "description": "Where image and sampled-video analysis runs. Auto follows the billing policy."
+        },
+        "interact.media.billing": {
+          "type": "string",
+          "default": "session_only",
+          "enum": [
+            "session_only",
+            "api_allowed"
+          ],
+          "description": "Session only prevents interact's metered API fallback; vendor CLI account credits are separate."
+        },
+        "interact.criteria.weights": {
+          "type": "string",
+          "default": "",
+          "description": "Optional weights over normalized unit-safe criteria only, shared by every role below; raw accuracy, index, latency, and price units cannot be combined."
+        },
+        "interact.media.noExtraUsageConfirmedFor": {
+          "type": "string",
+          "default": "",
+          "enum": [
+            "",
+            "claude"
+          ],
+          "enumDescriptions": [
+            "No provider confirmed; session dispatch stays blocked.",
+            "Claude only"
+          ],
+          "markdownDescription": "Provider-scoped confirmation that extra usage is unavailable. For Claude, check [Settings → Usage](https://claude.ai/settings/usage): Usage credits disabled, zero prepaid balance, auto-reload off. Interact cannot verify these account settings."
+        },
+        "interact.media.providerOrder": {
+          "type": "string",
+          "default": "claude",
+          "enum": [
+            "claude"
+          ],
+          "description": "Media-capable subscription CLI, currently Claude."
+        },
+        "interact.media.claudeCriteria": {
+          "type": "string",
+          "default": "",
+          "description": "Requirement the Claude CLI's own model must clear (e.g. 'cap.vlm'); blank uses its subscription default."
+        },
+        "interact.tierSovereign.criteria": {
+          "type": "string",
+          "default": "",
+          "description": "Requirement for review_ui/verify_ui's low/medium quality tier (cheapest clearing model wins — self-hosted sorts first at zero cost); blank means any VLM."
+        },
+        "interact.media.timeout": {
+          "type": "number",
+          "default": 120,
+          "description": "Hard timeout in seconds for a subscription media child process."
+        },
+        "interact.media.maxItems": {
+          "type": "number",
+          "default": 16,
+          "description": "Maximum number of image, video, or audio items accepted in one analysis."
+        },
+        "interact.media.maxTotalBytes": {
+          "type": "number",
+          "default": 52428800,
+          "description": "Maximum aggregate decoded media bytes accepted before any provider runs."
+        },
+        "interact.media.maxContextChars": {
+          "type": "number",
+          "default": 32768,
+          "description": "Maximum untrusted page, title, URL, or transcript context characters per request."
+        },
+        "interact.image.criteria": {
+          "type": "string",
+          "default": "",
+          "description": "Requirement for screenshots and images (e.g. 'cap.vlm and aa.intelligence > 80%'); blank means any VLM. Subscription sessions use interact.media.claudeCriteria instead."
+        },
+        "interact.video.criteria": {
+          "type": "string",
+          "default": "",
+          "description": "Requirement for video (falls back to cap.video). Subscription sessions always receive ordered sampled frames; APIs may use native video when supported."
+        },
+        "interact.video.fps": {
+          "type": "number",
+          "default": 5,
+          "description": "Frames per second for video capture"
+        },
+        "interact.video.duration": {
+          "type": "number",
+          "default": 3,
+          "description": "Duration in seconds for video capture"
+        },
+        "interact.component.criteria": {
+          "type": "string",
+          "default": "",
+          "description": "Requirement for GUI grounding (falls back to cap.gui_grounding). Subscription sessions use their media session model."
+        },
+        "interact.audio.criteria": {
+          "type": "string",
+          "default": "",
+          "description": "Requirement for transcribe (falls back to cap.audio). Claude subscription sessions do not hear audio; interact.media.billing must allow this separate path."
+        },
+        "interact.browser.headless": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run browser in headless mode"
+        },
+        "interact.browser.type": {
+          "type": "string",
+          "default": "chromium",
+          "enum": [
+            "chromium",
+            "firefox",
+            "webkit"
+          ],
+          "description": "Browser engine"
+        },
+        "interact.browser.viewportWidth": {
+          "type": "number",
+          "default": 1280,
+          "minimum": 1,
+          "description": "Browser viewport width"
+        },
+        "interact.browser.viewportHeight": {
+          "type": "number",
+          "default": 720,
+          "minimum": 1,
+          "description": "Browser viewport height"
+        },
+        "interact.browser.slowMo": {
+          "type": "number",
+          "default": 0,
+          "description": "Slow down browser actions by this many milliseconds (useful for observing automation)"
+        },
+        "interact.browser.profileDir": {
+          "type": "string",
+          "default": "",
+          "description": "When set, browser sessions keep their cookies/login on disk here (under <dir>/<session>) so you log in once and stay authenticated across restarts. Blank = ephemeral (logged out every launch)."
+        },
+        "interact.vlm.maxTokens": {
+          "type": "number",
+          "default": 2048,
+          "description": "Maximum tokens for VLM vision responses"
+        },
+        "interact.vlm.waitTimeout": {
+          "type": "number",
+          "default": 10000,
+          "description": "Default timeout in ms for waiting on elements"
+        },
+        "interact.debug.dir": {
+          "type": "string",
+          "default": "~/.interact/out",
+          "description": "Where interact writes the usage log + debug artifacts (blank = ~/.interact/out; point at a project's out/ when working locally). Must match INTERACT_DEBUG_DIR — the dashboard reads the usage log from here."
+        },
+        "interact.desktop.target": {
+          "type": "string",
+          "default": "local",
+          "enum": [
+            "local",
+            "nested"
+          ],
+          "enumDescriptions": [
+            "Drive the real desktop session (system-wide input + capture)",
+            "Drive an isolated nested display (Xephyr) — a sandbox that never touches your real windows or cursor"
+          ],
+          "description": "Where desktop automation acts: the real session, or an isolated nested display"
+        },
+        "interact.desktop.nestedDisplay": {
+          "type": "number",
+          "default": 99,
+          "description": "X display number for the nested desktop target (e.g. 99 → :99)"
+        },
+        "interact.desktop.nestedSize": {
+          "type": "string",
+          "default": "1280x800",
+          "pattern": "^[1-9]\\d*x[1-9]\\d*$",
+          "description": "Screen size of the nested desktop target (WIDTHxHEIGHT)"
+        },
+        "interact.desktop.nestedHeadless": {
+          "type": "boolean",
+          "default": true,
+          "description": "Nested target only: ON = Xvfb in the background (CI/servers); OFF = Xephyr you can watch"
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "interact.workspace",
+        "title": "Interact: Server Workspace"
+      },
+      {
+        "command": "interact.selectModel",
+        "title": "Interact: Select Model"
+      },
+      {
+        "command": "interact.manageApiKeys",
+        "title": "Interact: Manage API Keys"
+      },
+      {
+        "command": "interact.openDashboard",
+        "title": "Interact: Open Dashboard",
+        "icon": "$(graph)"
+      },
+      {
+        "command": "interact.reloadPanel",
+        "title": "Interact: Reload Panel"
+      },
+      {
+        "command": "interact.agents.refresh",
+        "title": "Refresh agents",
+        "category": "Interact",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "interact.agents.groupBy",
+        "title": "Group agents by…",
+        "category": "Interact",
+        "icon": "$(list-tree)"
+      },
+      {
+        "command": "interact.agents.stop",
+        "title": "Stop agent",
+        "category": "Interact",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "interact.agents.showEvents",
+        "title": "Show agent activity",
+        "category": "Interact",
+        "icon": "$(output)"
+      },
+      {
+        "command": "interact.agents.openConversation",
+        "title": "Open agent conversation",
+        "category": "Interact",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "interact.agents.show",
+        "title": "Interact: Show Agents Panel"
+      },
+      {
+        "command": "interact.agents.sequence",
+        "title": "Show agent sequence",
+        "category": "Interact",
+        "icon": "$(git-merge)"
+      },
+      {
+        "command": "interact.agents.send",
+        "title": "Send message to agent",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "interact.agents.team",
+        "title": "Interact: Show Team",
+        "icon": "$(organization)"
+      },
+      {
+        "command": "interact.agents.newSession",
+        "title": "Interact: New Session",
+        "icon": "$(add)"
+      },
+      {
+        "command": "interact.agents.spawn",
+        "title": "Interact: Start an Agent",
+        "icon": "$(person-add)"
+      },
+      {
+        "command": "interact.agents.providers",
+        "title": "Interact: Providers That Run Agents",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "interact.agents.workspace",
+        "title": "Interact: Show Agents From Workspace…",
+        "icon": "$(folder-library)"
+      },
+      {
+        "command": "interact.agents.pick",
+        "title": "Interact: Read an Agent…",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "interact.agents.broadcast",
+        "title": "Interact: Message Every Running Agent…",
+        "icon": "$(megaphone)"
+      },
+      {
+        "command": "interact.agents.permissions",
+        "title": "Interact: Default Agent Autonomy…",
+        "icon": "$(shield)"
+      },
+      {
+        "command": "interact.showLogs",
+        "title": "Interact: Show Logs",
+        "icon": "$(output)"
+      },
+      {
+        "command": "interact.agents.backToTeam",
+        "title": "Back to the Team",
+        "category": "Interact"
+      },
+      {
+        "command": "interact.agents.model",
+        "title": "Choose the Model an Agent Runs On",
+        "category": "Interact"
+      },
+      {
+        "command": "interact.agents.agent",
+        "title": "Show an Agent and the Tasks It Was Given",
+        "category": "Interact"
+      },
+      {
+        "command": "interact.agents.definition",
+        "title": "Open an Agent's Instructions",
+        "category": "Interact"
+      }
+    ],
+    "viewsContainers": {
+      "secondarySidebar": [
+        {
+          "id": "interactAgentsSecondary",
+          "title": "Interact",
+          "icon": "media/interact.svg"
+        }
+      ]
+    },
+    "views": {
+      "interactAgentsSecondary": [
+        {
+          "id": "interactAgents.chat",
+          "name": "Conversation",
+          "type": "webview",
+          "contextualTitle": "Interact agent chat",
+          "visibility": "visible",
+          "initialSize": 5
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "interact.agents.team",
+          "when": "view == interactAgents.board",
+          "group": "navigation@0"
+        },
+        {
+          "command": "interact.agents.spawn",
+          "when": "view == interactAgents.board",
+          "group": "navigation@1"
+        },
+        {
+          "command": "interact.agents.workspace",
+          "when": "view == interactAgents.board",
+          "group": "navigation@2"
+        },
+        {
+          "command": "interact.agents.refresh",
+          "when": "view == interactAgents.board",
+          "group": "navigation@3"
+        },
+        {
+          "command": "interact.agents.sequence",
+          "when": "view == interactAgents.board",
+          "group": "1_interact@0"
+        },
+        {
+          "command": "interact.agents.groupBy",
+          "when": "view == interactAgents.board",
+          "group": "1_interact@1"
+        },
+        {
+          "command": "interact.openDashboard",
+          "when": "view == interactAgents.board",
+          "group": "1_interact@2"
+        },
+        {
+          "command": "interact.agents.providers",
+          "when": "view == interactAgents.board",
+          "group": "1_interact@3"
+        },
+        {
+          "command": "interact.showLogs",
+          "when": "view == interactAgents.board",
+          "group": "1_interact@4"
+        },
+        {
+          "command": "interact.agents.team",
+          "when": "view == interactAgents.chat",
+          "group": "navigation@0"
+        },
+        {
+          "command": "interact.agents.spawn",
+          "when": "view == interactAgents.chat",
+          "group": "navigation@1"
+        },
+        {
+          "command": "interact.agents.pick",
+          "when": "view == interactAgents.chat",
+          "group": "navigation@2"
+        },
+        {
+          "command": "interact.agents.sequence",
+          "when": "view == interactAgents.chat",
+          "group": "1_interact@0"
+        },
+        {
+          "command": "interact.openDashboard",
+          "when": "view == interactAgents.chat",
+          "group": "1_interact@1"
+        },
+        {
+          "command": "interact.agents.providers",
+          "when": "view == interactAgents.chat",
+          "group": "1_interact@2"
+        },
+        {
+          "command": "interact.showLogs",
+          "when": "view == interactAgents.chat",
+          "group": "1_interact@3"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "interact.agents.openConversation",
+          "when": "view == interactAgents.board && viewItem =~ /interact(Running|Foreign)?Run/",
+          "group": "inline@0"
+        },
+        {
+          "command": "interact.agents.stop",
+          "when": "view == interactAgents.board && viewItem == interactRunningRun",
+          "group": "inline"
+        },
+        {
+          "command": "interact.agents.showEvents",
+          "when": "view == interactAgents.board && viewItem =~ /interact(Running)?Run/",
+          "group": "inline"
+        },
+        {
+          "command": "interact.agents.send",
+          "when": "view == interactAgents.board && viewItem =~ /interact(Running)?Run/",
+          "group": "inline@1"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "interact.agents.broadcast",
+          "when": "false"
+        },
+        {
+          "command": "interact.agents.definition",
+          "when": "false"
+        },
+        {
+          "command": "interact.agents.groupBy",
+          "when": "false"
+        },
+        {
+          "command": "interact.agents.model",
+          "when": "false"
+        },
+        {
+          "command": "interact.agents.openConversation",
+          "when": "false"
+        },
+        {
+          "command": "interact.agents.refresh",
+          "when": "false"
+        },
+        {
+          "command": "interact.agents.send",
+          "when": "false"
+        },
+        {
+          "command": "interact.agents.showEvents",
+          "when": "false"
+        },
+        {
+          "command": "interact.agents.stop",
+          "when": "false"
+        },
+        {
+          "command": "interact.agents.spawn",
+          "when": "false"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "npm run check-css && bash scripts/generate-types.sh && node scripts/sync-data.js && tsc -p ./ && tsc -p webview/tsconfig.json && node -e \"try{require('fs').cpSync('src/models.json','out/models.json')}catch{}\" && node -e \"try{require('fs').cpSync('src/benchmarks.json','out/benchmarks.json')}catch{}\" && node -e \"try{require('fs').cpSync('src/settings.json','out/settings.json')}catch{}\" && npm run build:webview && npm run build:workplace",
+    "build:webview": "esbuild webview/app.tsx --bundle --outfile=out/webview.js --format=iife --target=es2022 --jsx=automatic --jsx-import-source=. && cp webview/styles.css out/webview.css",
+    "watch": "tsc -watch -p ./",
+    "package": "npm run compile && npx @vscode/vsce package",
+    "publish": "npm run compile && npx @vscode/vsce publish",
+    "generate-models": "uv run --project .. python scripts/generate-models.py",
+    "generate-benchmarks": "uv run --project .. python scripts/generate-benchmarks.py",
+    "test:vscode": "npm run compile && tsc -p tsconfig.test.json && vscode-test",
+    "build:workplace": "esbuild webview/workplace/index.ts --bundle --outfile=out/workplace.js --format=cjs --platform=node --target=es2022",
+    "test": "node --test --experimental-strip-types src/*.test.ts",
+    "check-css": "node scripts/check-css-templates.js"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^25.6.0",
+    "@types/vscode": "^1.99.0",
+    "@vscode/test-cli": "^0.0.15",
+    "@vscode/test-electron": "^3.1.0",
+    "@vscode/vsce": "^3.5.0",
+    "esbuild": "^0.25.0",
+    "json-schema-to-typescript": "^15.0.4",
+    "mocha": "^11.8.0",
+    "typescript": "^5.7.0"
+  }
+}
