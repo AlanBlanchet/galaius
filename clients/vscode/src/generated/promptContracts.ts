@@ -13,6 +13,7 @@ export interface PromptCatalogPage {
   removed?: PromptKey[];
   cursor?: string | null;
   server_timestamp: string;
+  [k: string]: unknown;
 }
 /**
  * Compare-and-swap channel pointer to one immutable prompt revision.
@@ -23,6 +24,7 @@ export interface PromptChannelEntry {
   revision: string;
   digest: string;
   lock_version: number;
+  [k: string]: unknown;
 }
 /**
  * Stable prompt identity independent of revisions and publication channels.
@@ -30,6 +32,7 @@ export interface PromptChannelEntry {
 export interface PromptKey {
   namespace: string;
   slug: string;
+  [k: string]: unknown;
 }
 /**
  * Hostile authoring input for the first immutable Git-backed prompt revision.
@@ -47,6 +50,7 @@ export interface PromptExecutionRef {
   channel: string;
   digest: string;
   revision: string;
+  [k: string]: unknown;
 }
 /**
  * Integrity and compare-and-swap metadata for one bounded Git bundle.
@@ -57,6 +61,7 @@ export interface PromptGitBundleManifest {
   manifest_digest: string;
   bundle_digest: string;
   bundle_size: number;
+  [k: string]: unknown;
 }
 /**
  * One complete exact-commit prompt snapshot applied by global cursor CAS.
@@ -74,6 +79,7 @@ export interface PromptSelection {
   key: PromptKey;
   channel: string;
   digest: string;
+  [k: string]: unknown;
 }
 /**
  * Immutable prompt content and its verifiable publication provenance.
@@ -87,6 +93,7 @@ export interface PromptRevision {
   content: string;
   source_commit: string;
   created_at: string;
+  [k: string]: unknown;
 }
 /**
  * Safe server-side projection of the latest prompt Git synchronization.
@@ -97,5 +104,15 @@ export interface PromptSyncStatus {
   last_export_at?: string | null;
   last_result?: ("succeeded" | "conflict" | "unavailable") | null;
   error_code?: ("head_changed" | "non_fast_forward" | "invalid_bundle" | "repository_unavailable") | null;
+  [k: string]: unknown;
 }
-export interface WireModel {}
+/**
+ * A contract read from the other side: unknown fields are kept (see module docstring).
+ */
+export interface WireModel {
+  [k: string]: unknown;
+}
+/**
+ * A contract only a client authors and sends: an unknown field is refused.
+ */
+export interface WireRequest {}
