@@ -51,6 +51,7 @@ select another prompt or charge route.
 <p align="center">
   <a href="https://alanblanchet.github.io/interact/"><b>🌐 Website</b></a> ·
   <a href="#60-second-quickstart">Quickstart</a> ·
+  <a href="#install-and-connect">Install and connect</a> ·
   <a href="#ask-your-agent">Examples</a> ·
   <a href="#what-your-agent-can-do">Capabilities</a>
 </p>
@@ -107,6 +108,54 @@ uvx --from git+https://github.com/AlanBlanchet/interact interact mcp     # run w
 interact isn't on PyPI — the bare name is taken there. `interact install vscode` registers the server
 with Copilot's agent mode; no extension needed.
 </details>
+
+## Install and connect
+
+For you, or for an AI assistant asked to "install interact and configure it". Run the steps in
+order; each one ends with a check.
+
+1. **Prerequisites** — Linux or macOS with `curl` and `git`
+   (Debian / Ubuntu: `sudo apt-get install -y curl git`).
+
+2. **Install from GitHub**
+
+   ```bash
+   curl -LsSf https://raw.githubusercontent.com/AlanBlanchet/interact/main/install.sh | sh
+   export PATH="$HOME/.local/bin:$PATH"   # this shell only; new shells already have it
+   interact version                       # check: prints the installed version
+   ```
+
+3. **Get the server address from the user.** It is their Interact server — never guess it. A server
+   that listens only on its own host's loopback is reached through an SSH tunnel the user opens:
+   `ssh -fN -L 127.0.0.1:8817:127.0.0.1:8817 <server-host>`, then the address is `http://127.0.0.1:8817`.
+
+4. **Sign in**
+
+   ```bash
+   interact agents sync --endpoint <server-url> --preview
+   # HTTPS server: --endpoint https://<server> --token-file <private-token-file> --workspace <workspace-id>
+   ```
+
+   Check: prints `"status": "current"` and the number of agents.
+
+5. **Connect this machine.** In the server's web app open **Connections → Machines → Connect a
+   machine**. The page shows a one-time token and the exact `interact machine connect …` command.
+   Run that command with `--configure-only` added (it asks for the token), then keep it connected
+   as a user service (Linux, systemd):
+
+   ```bash
+   interact machine connect --server <server-url> --workspace <workspace-id> --machine <machine-id> \
+     --permission-ceiling full_access --configure-only
+   mkdir -p ~/.config/systemd/user
+   curl -LsSf -o ~/.config/systemd/user/interact-machine.service \
+     https://raw.githubusercontent.com/AlanBlanchet/interact/main/systemd/interact-machine.service
+   systemctl --user daemon-reload && systemctl --user enable --now interact-machine
+   ```
+
+   Check: the machine shows **online** under Connections → Machines.
+
+Coming next: `interact login --server <server-url>` replaces steps 4–5 with one approval in the
+browser.
 
 ## Ask your agent
 

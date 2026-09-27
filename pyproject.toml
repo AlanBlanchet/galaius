@@ -12,10 +12,13 @@ dependencies = [
     "interact-core @ git+https://github.com/AlanBlanchet/interact-core.git@8331967af8874651cce0a7fabdda5499df29fabd",
     "cyclopts>=3.0",
     "rich>=13.0",
-    "evdev>=1.9; sys_platform == 'linux'", # /dev/uinput absolute input (X11 + Wayland)
+    # /dev/uinput absolute input (X11 + Wayland). Same `evdev` import either way: prebuilt wheels
+    # where PyPI has them, so a fresh machine needs no compiler or kernel headers.
+    "evdev-binary>=2.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "evdev>=1.9; sys_platform == 'linux' and platform_machine != 'x86_64'",
     "python-xlib>=0.33; sys_platform == 'linux'", # enumerate override-redirect popups to composite into captures (#31)
     "mss>=9.0", # cross-platform screen capture for the macOS/Windows desktop backend (#24)
-    "pynput>=1.7", # cross-platform pointer + keyboard for the macOS/Windows desktop backend (#24)
+    "pynput>=1.7; sys_platform != 'linux'", # pointer + keyboard for the macOS/Windows desktop backend (#24); on Linux it would pull source-only evdev
     "httpx>=0.28.1",
     "websockets>=14,<16",
     "litellm>=1.83.4,<2",
