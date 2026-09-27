@@ -1124,7 +1124,7 @@ def _record_message_event_locked(
     for side in (from_run, to_run):
         event = AgentEvent(kind="message", event_id=message_id, text=text,
                            from_run=from_run, to_run=to_run, at=time.time(),
-                           raw_index=_raw_line_count(side))
+                           raw_index=raw_line_count(side))
         _append_private(messages_path(side), (event.model_dump_json() + "\n").encode())
         if _read_record(side) is not None:
             _merge_record_locked(side, {"last": event.summary(viewer=side)})
@@ -1164,7 +1164,7 @@ def record_message(*, from_run: str, to_run: str, text: str) -> bool:
     return record_message_event(from_run=from_run, to_run=to_run, text=text) is not None
 
 
-def _raw_line_count(run_id: str) -> int:
+def raw_line_count(run_id: str) -> int:
     """How many lines the vendor stream holds right now — where a message lands in it."""
     try:
         payload = _read_private(raw_events_path(run_id))

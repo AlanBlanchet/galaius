@@ -1056,3 +1056,12 @@ def test_a_prompt_starting_with_a_dash_is_never_an_option(provider, text):
     started = provider.command(text, cwd="/tmp", model=None, mcp_config=None, run_id="fixture-run")
     resumed = provider.resume_command("vendor-thread", text)
     assert started[-2:] == ["--", text] and resumed[-1] == text and resumed[-3 if provider.name == "codex" else -2] == "--"
+
+
+def test_claude_resumes_an_editor_conversation_into_a_copy():
+    """The editor's session is read, never written: Claude forks it under the id given."""
+    argv = ClaudeCodeProvider().resume_command("editor-session", "- go on", fork_to="copy-id")
+    assert argv[argv.index("--resume") + 1] == "editor-session" and argv[argv.index("--session-id") + 1] == "copy-id"
+    assert "--fork-session" in argv and argv[-2:] == ["--", "- go on"]
+    with pytest.raises(ValueError, match="cannot resume into a copy"):
+        CodexProvider().resume_command("thread", "x", fork_to="copy-id")

@@ -444,9 +444,10 @@ class AgentProvider(ABC):
         agent: str | None = None, agent_prompt: str | None = None,
         mcp_config: str | None = None, allowed_tools: list[str] | None = None,
         denied_tools: tuple[str, ...] = (), coarse_accepted: bool = False,
-        base_url: str | None = None,
+        base_url: str | None = None, fork_to: str | None = None,
     ) -> list[str]:
-        """The argv that delivers ``message`` into an existing session."""
+        """The argv that delivers ``message`` into an existing session — or, with ``fork_to``, into
+        a COPY of it under that new id (the original is never written)."""
         raise NotImplementedError(f"{type(self).__name__} cannot resume a session")
 
     def queue_command(self, session_id: str, message: str) -> list[str]:
@@ -782,13 +783,14 @@ class ClaudeCodeProvider(AgentProvider):
         agent: str | None = None,
         agent_prompt: str | None = None, allowed_tools: list[str] | None = None,
         denied_tools: tuple[str, ...] = (), mcp_config: str | None = None,
-        coarse_accepted: bool = False, base_url: str | None = None,
+        coarse_accepted: bool = False, base_url: str | None = None, fork_to: str | None = None,
     ) -> list[str]:
-        """Continue an existing session using its provider session id."""
+        """Continue an existing session using its provider session id (`fork_to`: as a copy)."""
         # base_url unused — see command()'s docstring note.
         return [
             self.binary, "-p",
             "--resume", session_id,
+            *(["--fork-session", "--session-id", fork_to] if fork_to else []),
             "--output-format", "stream-json",
             "--verbose",
         ] + (["--model", model] if model else []) + self._permission_flag(permission_mode) + self.role_arguments(agent, agent_prompt, allowed_tools, denied_tools) + (["--mcp-config", mcp_config] if mcp_config else []) + ["--", message]
@@ -1382,7 +1384,7 @@ class CodexProvider(AgentProvider):
         agent: str | None = None,
         mcp_config: str | None = None, allowed_tools: list[str] | None = None,
         agent_prompt: str | None = None, denied_tools: tuple[str, ...] = (),
-        coarse_accepted: bool = False, base_url: str | None = None,
+        coarse_accepted: bool = False, base_url: str | None = None, fork_to: str | None = None,
     ) -> list[str]:
         """Resume a stopped session with fresh model and reasoning policy.
 
@@ -1398,6 +1400,8 @@ class CodexProvider(AgentProvider):
         resumed run echoed turn 1's reply byte-for-byte until this injection was dropped; a bare
         follow-up on the same session answered correctly). A resume sends exactly the new message.
         """
+        if fork_to is not None:
+            raise ValueError("codex continues its own session; it cannot resume into a copy")
         self.validate_tool_policy(allowed_tools or [], denied_tools, coarse_accepted=coarse_accepted)
         if agent:
             self.validate_agent_name(agent)

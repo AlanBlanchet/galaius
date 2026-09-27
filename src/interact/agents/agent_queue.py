@@ -149,7 +149,7 @@ def claim_next_locked(run_id: str) -> QueueItem | None:
         return None
     return _replace_item_locked(
         run_id, item.id, state="running", started_at=time.time(),
-        raw_index=reg._raw_line_count(run_id), attempt_token=uuid.uuid4().hex, error="",
+        raw_index=reg.raw_line_count(run_id), attempt_token=uuid.uuid4().hex, error="",
     )
 
 

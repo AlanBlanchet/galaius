@@ -1,5 +1,7 @@
 """The machine owner drives coding agents on this computer from the web, through its machine
-connection: start one in a folder he allowed, read what it does, message it, stop it.
+connection, as the editor panel does: start an agent (a role) or a session (a conversation that
+asks before commands) in a folder he allowed, on a model he picks, read what it does, answer what
+it asks, message it, stop it; continue one of his own editor conversations; read the logs.
 
 Everything a request may touch is decided HERE, on the machine, never by the server: the folders
 (`MachineConfig.agent_roots`, set with `interact machine agent-roots`), the permission agents start
@@ -8,26 +10,34 @@ with (`agent_permission`, never bypass unless set here), and the runs a request 
 the launcher's own CLI (`interact agents spawn / send`) in a child process given the scrubbed
 environment explicitly, so no request ever changes this process's environment."""
 
+import asyncio
+import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import stat
 import subprocess
 import sys
 import tempfile
+import time
+from collections import deque
 from pathlib import Path
 from typing import ClassVar
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from interact_core import (
-    MACHINE_AGENT_TAIL, AgentFoldersRequest, AgentRunsRequest, AgentSendRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest,
-    AgentTouchScope, MachineAgentAnswer, MachineAgentRequest, MachineAgentRun, MachineFileEntry,
+    MACHINE_AGENT_TAIL, AgentAnswerRequest, AgentContinueRequest, AgentFoldersRequest, AgentInteraction, AgentLogsRequest, AgentOptionsRequest,
+    AgentRunKind, AgentRunsRequest, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
+    MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, MachineAgentSession, MachineFileEntry,
 )
 from interact.agents import registry as reg
-from interact.agents.run import load_policy
+from interact.agents.host import ConversationHost, ConversationRefused
+from interact.agents.providers import PROVIDERS
+from interact.agents.run import launch_editor_turn, load_policy, rank_candidates
 from interact.file_lock import exclusive
 
 logger = logging.getLogger(__name__)
@@ -38,6 +48,56 @@ LIVE_WEB_RUNS = 4
 COLD_TAIL = 48 * 1024
 #: Lines one `tail` answer carries at most (`MachineAgentAnswer.lines`); the cursor stops after the last.
 TAIL_LINES = 4000
+#: The CLIs agents and sessions run on here, and a criterion every model clears (the model list).
+AGENT_PROVIDERS = ("claude", "codex")
+ANY_MODEL = "price.in >= 0"
+#: Editor conversations offered for continuing: written in the last two weeks, newest first.
+EDITOR_SESSIONS_DAYS, EDITOR_SESSIONS_MAX = 14, 40
+#: An editor conversation written this recently is open in the editor right now.
+EDITOR_LIVE_SECONDS = 120
+
+
+class LogRing(logging.Handler):
+    """This machine connection's recent log lines, for the owner reading them from the web: only
+    interact's own loggers at INFO and above (a transport at DEBUG logs request headers), each
+    line redacted before it is kept (`redact`), the ring bounded."""
+
+    def __init__(self, keep: int = 400, secrets: tuple[str, ...] = ()) -> None:
+        super().__init__(logging.INFO)
+        self.lines: deque[str] = deque(maxlen=keep)
+        self.secrets = secrets
+        self.addFilter(lambda record: record.name == "interact" or record.name.startswith("interact."))
+
+    def emit(self, record: logging.LogRecord) -> None:
+        stamp = time.strftime("%H:%M:%S", time.localtime(record.created))
+        self.lines.append(redact(f"{stamp} {record.levelname.lower():7} {record.name.removeprefix('interact.')}: {record.getMessage()}", self.secrets)[:600])
+
+
+#: Credential shapes never shown on the web, whatever line carries them.
+_SECRET_SHAPES = re.compile(
+    r"(?i)(bearer\s+)\S+|\b(iwm_|iwk_|sk-|ghp_|gho_|github_pat_|xox[bpas]-)[A-Za-z0-9_\-]{6,}|\beyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]{8,}|\bAKIA[0-9A-Z]{16}\b|(://[^/\s:@]+:)[^@\s]+@"
+)
+
+
+def redact(text: str, secrets: tuple[str, ...] = ()) -> str:
+    """`text` with credential shapes and the exact `secrets` (this runner's own key values) masked."""
+    masked = _SECRET_SHAPES.sub(lambda found: (found.group(1) or found.group(2) or found.group(3) or "") + "•••", text)
+    for secret in secrets:
+        masked = masked.replace(secret, "•••")
+    return masked
+
+
+def secret_values(environment: dict[str, str]) -> tuple[str, ...]:
+    """The values in `environment` that are credentials (their names say so), longest first."""
+    named = (value for key, value in environment.items() if re.search(r"KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL", key, re.I) and len(value) >= 8)
+    return tuple(sorted(set(named), key=len, reverse=True))
+
+
+def interaction_digest(interaction: AgentInteraction | dict) -> str:
+    """sha256 of an approval request as the machine holds it (without its own digest)."""
+    value = interaction.model_dump(mode="json") if isinstance(interaction, AgentInteraction) else interaction
+    unsigned = {key: item for key, item in value.items() if key != "digest"}
+    return hashlib.sha256(json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 class WebRun(BaseModel):
@@ -45,6 +105,7 @@ class WebRun(BaseModel):
     run_id: UUID
     root: str
     path: str = ""
+    kind: AgentRunKind = "agent"
 
 
 class WebRuns(BaseModel):
@@ -73,19 +134,58 @@ class WebRuns(BaseModel):
             os.replace(temporary, self.path)
 
 
+class MachineSessions:
+    """The conversations ("sessions") this machine hosts for the web, for the runner's lifetime:
+    the same host the editor's chat uses (`ConversationHost`), opened on first use. A session asks
+    before a command or a file change; those questions are what the web answers."""
+
+    def __init__(self, working_directory: Path) -> None:
+        self.working_directory = working_directory
+        self._host: ConversationHost | None = None
+        self._lock = asyncio.Lock()
+
+    async def host(self) -> ConversationHost:
+        async with self._lock:
+            if self._host is None:
+                self._host = ConversationHost(self.working_directory)
+            return self._host
+
+    async def route(self) -> tuple[str | None, tuple[str, ...], str]:
+        """(the session route's id when it can open now, its models, why not otherwise)."""
+        catalog = await (await self.host()).catalog()
+        # Only the provider's own local session asks before acting; a completion route has no tools.
+        route = next((item for item in catalog.routes if item.connection == "local_session"), None)
+        if route is None:
+            return None, (), "No conversation route exists on this computer."
+        if route.availability != "available":
+            return None, (), route.reason or f"Sessions are {route.availability} on this computer."
+        return route.id, tuple(model.id for model in route.models)[:200], ""
+
+    async def close(self) -> None:
+        if self._host is not None:
+            await self._host.close()
+
+
 class MachineAgents(BaseModel):
     """Answers one MachineAgentRequest (already checked: this machine, signed, not expired), from
     the owner's CURRENT settings on this machine: its agent roots (name -> resolved folder), the
-    permission web-started agents get, and whether agents run here at all."""
+    permission web-started agents get, whether agents run here at all, and the two opt-ins the web
+    can never set (continuing his editor conversations, answering a session's approvals)."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
     roots: dict[str, Path]
     permission: AgentTouchScope
     run_agents: bool
+    continue_conversations: bool = False
+    answer_approvals: bool = False
     #: The launcher session every web-started run is recorded under (one per machine).
     session: str
     runs: WebRuns
     environment: dict[str, str]
+    sessions: MachineSessions | None = None
+    logs: LogRing | None = None
+    #: Where the editor keeps its conversations (Claude Code: one JSONL file per conversation).
+    editor_projects: Path = Field(default_factory=lambda: Path.home() / ".claude" / "projects")
     #: How to run this installation's own CLI (the `interact` beside this interpreter).
     cli: tuple[str, ...] = Field(default_factory=lambda: MachineAgents.own_cli())
 
@@ -97,24 +197,43 @@ class MachineAgents(BaseModel):
             raise RuntimeError("the interact command is not installed beside this runner")
         return (found,)
 
-    def answer(self, request: MachineAgentRequest) -> MachineAgentAnswer:
+    async def answer(self, request: MachineAgentRequest) -> MachineAgentAnswer:
+        """Session work runs on the runner's loop (its host is async); everything else on a worker
+        thread (files, the launcher's CLI)."""
         if not self.run_agents:
             raise PermissionError("agents are off on this computer; its owner turns them on there with `interact machine agents on`")
         if not self.roots:
             raise PermissionError("no agent folders on this computer yet; its owner adds some there with `interact machine agent-roots <folder>`")
         match request:
             case AgentFoldersRequest():
-                return self._folders(request)
+                return await asyncio.to_thread(self._folders, request)
             case AgentRunsRequest():
-                return self._runs(request)
+                return await asyncio.to_thread(self._runs, request)
             case AgentTailRequest():
-                return self._tail(request)
+                return await asyncio.to_thread(self._tail, request)
+            case AgentOptionsRequest():
+                return await self._options(request)
+            case AgentStartRequest(kind="session"):
+                return await self._start_session(request)
             case AgentStartRequest():
-                return self._start(request)
+                return await asyncio.to_thread(self._start, request)
+            case AgentSendRequest() | AgentStopRequest() | AgentAnswerRequest() if self._kind(request.run_id) == "session":
+                return await self._session_action(request)
             case AgentSendRequest():
-                return self._send(request)
+                return await asyncio.to_thread(self._send, request)
             case AgentStopRequest():
-                return self._stop(request)
+                return await asyncio.to_thread(self._stop, request)
+            case AgentAnswerRequest():
+                raise PermissionError("only a session asks before acting; this run is not one")
+            case AgentSessionsRequest():
+                return await asyncio.to_thread(self._editor_sessions, request)
+            case AgentContinueRequest():
+                return await asyncio.to_thread(self._continue, request)
+            case AgentLogsRequest():
+                return await asyncio.to_thread(self._logs, request)
+
+    def _kind(self, run_id: UUID) -> AgentRunKind:
+        return next((item.kind for item in self.runs.read() if item.run_id == run_id), "agent")
 
     @staticmethod
     def roles() -> tuple[str, ...]:
@@ -168,11 +287,13 @@ class MachineAgents(BaseModel):
         for run in runs[:200]:
             placed = started.get(run.run_id)
             root, path = (placed.root, placed.path) if placed else self._place(run.cwd)
+            kind = placed.kind if placed else "agent"
             found.append(MachineAgentRun(
                 run_id=UUID(run.run_id), name=run.name[:120], role=(run.agent or None) and run.agent[:80], provider=run.provider[:40],
                 model=run.model and run.model[:120], status=run.status, root=root[:240], path=path[:1024], task=run.task[:8000],
-                last=run.last[:400], started_at=run.started_at, finished_at=run.finished_at, cost_usd=run.cost_usd,
+                last=redact(run.last, self.secrets)[:400], started_at=run.started_at, finished_at=run.finished_at, cost_usd=run.cost_usd,
                 parent_run_id=UUID(run.parent_run_id) if run.parent_run_id and run.run_id not in started else None,
+                kind=kind, pending=self.pending(run.run_id) if kind == "session" and run.status == "waiting" else (),
             ))
         return MachineAgentAnswer(request_id=request.id, runs=tuple(found))
 
@@ -194,8 +315,26 @@ class MachineAgents(BaseModel):
             raise PermissionError("this run was not started from the web on this computer")
         return run
 
+    @property
+    def secrets(self) -> tuple[str, ...]:
+        return secret_values(self.environment)
+
+    @staticmethod
+    def pending(run_id: str) -> tuple[AgentInteraction, ...]:
+        """The approvals `run_id` (a session) still waits for, each with the digest an answer must
+        carry back."""
+        events = reg.read_events(run_id)
+        resolved = {event.event_id.removesuffix(":resolved") for event in events if event.kind == "interaction_resolved"}
+        asked = [event.interaction.model_dump(mode="json") for event in events if event.kind == "interaction" and event.interaction is not None]
+        waiting = [value for value in asked if value["id"] not in resolved][-16:]
+        return tuple(AgentInteraction.model_validate({**value, "digest": interaction_digest(value)}) for value in waiting)
+
     def _tail(self, request: AgentTailRequest) -> MachineAgentAnswer:
-        self._require_run(request.run_id)
+        run = self._require_run(request.run_id)
+        if run.status in {"running", "waiting"}:
+            # The readable copy of a working run's stream is rebuilt on demand; nothing else on a
+            # PC with no editor open would rebuild it while the owner watches.
+            reg.read_events(run.run_id)
         path = reg.events_path(str(request.run_id))
         try:
             size = path.stat().st_size
@@ -249,8 +388,10 @@ class MachineAgents(BaseModel):
         folder = self.folder(request.root, request.path)
         # The launcher's supervisor window (not the terminal's 20 s): the run shows at once; a
         # quota refusal after it is that run's failure, in the list.
-        options = ["--agent", request.role, "--cwd", str(folder), "--permission-mode", self.permission, "--session-id", self.session, "--quota-window", "4",
-                   *(["--provider", request.provider] if request.provider is not None else [])]
+        if request.model is not None and not any(item.model == request.model and request.provider in {None, item.provider} for item in self.models()):
+            raise PermissionError(f"{request.model} is not a model agents can run on here")
+        options = ["--agent", str(request.role), "--cwd", str(folder), "--permission-mode", self.permission, "--session-id", self.session, "--quota-window", "4",
+                   *(["--provider", request.provider] if request.provider is not None else []), *([f"--model={request.model}"] if request.model else [])]
         # "--" ends the options: a brief starting with "-" (a markdown bullet, "--help") is the brief.
         done = self._run_cli("agents", "spawn", *options, "--", request.text, timeout=120)
         output = done.stdout.strip().splitlines()
@@ -264,7 +405,9 @@ class MachineAgents(BaseModel):
         return MachineAgentAnswer(request_id=request.id, run_id=run_id)
 
     def _send(self, request: AgentSendRequest) -> MachineAgentAnswer:
-        self._require_run(request.run_id)
+        run = self._require_run(request.run_id)
+        if self._kind(request.run_id) == "continued":
+            return self._continue_turn(run, request.text, request_id=request.id)
         done = self._run_cli("agents", "send", "--", str(request.run_id), request.text, timeout=60)
         if done.returncode != 0:
             raise RuntimeError(self._said(done.stdout + "\n" + done.stderr) or f"not delivered (exit {done.returncode})")
@@ -277,3 +420,201 @@ class MachineAgents(BaseModel):
         if not reg.stop(str(request.run_id)):
             raise RuntimeError("the run could not be stopped")
         return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail="stopped")
+
+    # ---- what can start here ---------------------------------------------------------------
+
+    def models(self) -> tuple[MachineAgentModel, ...]:
+        """Every model an agent can run on here, best first per the launcher's own ranking, over
+        the CLIs that are installed and switched on (cached a minute: ranking reads the catalog)."""
+        global _MODELS
+        if _MODELS is not None and time.monotonic() - _MODELS[0] < 60:
+            return _MODELS[1]
+        try:
+            policy = load_policy()
+            providers = [PROVIDERS[name] for name in AGENT_PROVIDERS if name in PROVIDERS and policy.provider_active(name) and PROVIDERS[name].available()]
+            ranked = rank_candidates(ANY_MODEL, dict(self.environment), providers=providers) if providers else ()
+        except (OSError, ValueError, RuntimeError) as error:
+            logger.warning("agent models unavailable: %s", error)
+            ranked = ()
+        found = tuple(dict.fromkeys(MachineAgentModel(provider=item.provider, model=item.model) for item in ranked))[:500]
+        _MODELS = (time.monotonic(), found)
+        return found
+
+    async def _options(self, request: AgentOptionsRequest) -> MachineAgentAnswer:
+        roles, models = await asyncio.to_thread(lambda: (self.roles(), self.models()))
+        if not self.answer_approvals:
+            route, session_models, reason = None, (), "A session asks you before it runs a command or changes a file; answering from the web is off on this computer (its owner turns it on there with `interact machine agents --approvals on`)."
+        elif self.sessions is None:
+            route, session_models, reason = None, (), "Sessions are not hosted by this connection."
+        else:
+            route, session_models, reason = await self.sessions.route()
+        return MachineAgentAnswer(request_id=request.id, roles=roles, models=models, session_models=session_models if route else (),
+                                  session_reason=reason, permission=self.permission)
+
+    # ---- sessions: conversations that ask before acting -------------------------------------
+
+    async def _start_session(self, request: AgentStartRequest) -> MachineAgentAnswer:
+        if not self.answer_approvals or self.sessions is None:
+            raise PermissionError("answering a session's approvals from the web is off on this computer; its owner turns it on there with `interact machine agents --approvals on`")
+        folder = await asyncio.to_thread(self.folder, request.root, request.path)
+        _, runs = await asyncio.to_thread(self._allowed)
+        if sum(1 for run in runs if run.status in {"running", "waiting"}) >= LIVE_WEB_RUNS:
+            raise PermissionError(f"{LIVE_WEB_RUNS} agents started from the web are already working on this computer; stop one first")
+        route, models, reason = await self.sessions.route()
+        if route is None:
+            raise PermissionError(reason)
+        if request.model is not None and request.model not in models:
+            raise PermissionError(f"{request.model} is not a model sessions can use here")
+        try:
+            run = await (await self.sessions.host()).start(request.text, folder, route_id=route, model=request.model)
+        except ConversationRefused as error:
+            raise RuntimeError(str(error)) from error
+        await asyncio.to_thread(self.runs.add, WebRun(run_id=UUID(run.run_id), root=request.root, path=request.path, kind="session"))
+        return MachineAgentAnswer(request_id=request.id, run_id=UUID(run.run_id))
+
+    async def _session_action(self, request: AgentSendRequest | AgentStopRequest | AgentAnswerRequest) -> MachineAgentAnswer:
+        assert self.sessions is not None
+        run = await asyncio.to_thread(self._require_run, request.run_id)
+        host = await self.sessions.host()
+        try:
+            match request:
+                case AgentSendRequest():
+                    await host.send(run.run_id, request.text)
+                    detail = "sent"
+                case AgentStopRequest():
+                    await host.cancel(run.run_id)
+                    detail = "stopped"
+                case AgentAnswerRequest():
+                    if not self.answer_approvals:
+                        raise PermissionError("answering a session's approvals from the web is off on this computer")
+                    asked = next((item for item in await asyncio.to_thread(self.pending, run.run_id) if item.id == request.interaction_id), None)
+                    if asked is None or asked.digest != request.digest:
+                        raise PermissionError("this approval is no longer the one waiting on this computer; read it again")
+                    # Accept / decline only; a file change is accepted where its diff can be read.
+                    if asked.kind == "file_change_approval" and request.values.get("decision") != "decline":
+                        raise PermissionError("a file change is accepted in the editor on this computer, where its diff shows; from here it can only be declined")
+                    await host.answer(run.run_id, request.interaction_id, request.values)
+                    detail = str(request.values.get("decision") or "answered")
+        except ConversationRefused as error:
+            raise RuntimeError(str(error)) from error
+        return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=detail)
+
+    # ---- the owner's own editor conversations ------------------------------------------------
+
+    def _require_continue(self) -> None:
+        if not self.continue_conversations:
+            raise PermissionError("continuing your editor conversations from the web is off on this computer; its owner turns it on there with `interact machine agents --continue on`")
+
+    def _editor_file(self, session_id: UUID) -> Path:
+        found = [path for path in self.editor_projects.glob(f"*/{session_id}.jsonl") if path.is_file() and not path.is_symlink()]
+        if len(found) != 1:
+            raise PermissionError("this conversation is not on this computer")
+        return found[0]
+
+    @staticmethod
+    def _said_text(value: object) -> str:
+        """The plain text of a Claude transcript message's `content` (a string, or text blocks)."""
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list):
+            return " ".join(str(block.get("text") or "") for block in value if isinstance(block, dict) and block.get("type") == "text")
+        return ""
+
+    def _read_editor(self, path: Path) -> tuple[str, str, str]:
+        """(its folder, its first prompt, its last reply) from the conversation file's two ends."""
+        size = path.stat().st_size
+        with path.open("rb") as handle:
+            head = handle.read(256 * 1024)
+            handle.seek(max(0, size - 256 * 1024))
+            tail = handle.read()
+        cwd, first, last = "", "", ""
+        for line in head.splitlines():
+            try:
+                value = json.loads(line)
+            except ValueError:
+                continue
+            cwd = cwd or str(value.get("cwd") or "")
+            message = value.get("message") or {}
+            text = self._said_text(message.get("content")) if value.get("type") == "user" and not value.get("isMeta") else ""
+            if not first and text.strip() and not text.lstrip().startswith("<"):
+                first = text.strip()
+            if cwd and first:
+                break
+        for line in reversed(tail.splitlines()):
+            try:
+                value = json.loads(line)
+            except ValueError:
+                continue
+            if value.get("type") == "assistant" and (text := self._said_text((value.get("message") or {}).get("content")).strip()):
+                last = text
+                break
+        return cwd, first, last
+
+    def _editor_sessions(self, request: AgentSessionsRequest) -> MachineAgentAnswer:
+        """The owner's editor conversations written in the last two weeks whose folder lies inside
+        an agent root, newest first; none that interact itself started."""
+        self._require_continue()
+        since = time.time() - EDITOR_SESSIONS_DAYS * 86400
+        files = []
+        for path in self.editor_projects.glob("*/*.jsonl"):
+            try:
+                facts = path.lstat()
+            except OSError:
+                continue
+            if stat.S_ISREG(facts.st_mode) and facts.st_mtime >= since:
+                files.append((facts.st_mtime, path))
+        found = []
+        for updated, path in sorted(files, reverse=True):
+            try:
+                session_id = UUID(path.stem)
+            except ValueError:
+                continue
+            if reg.get_run(path.stem) is not None:
+                continue  # a run interact started (its session id is its run id), not an editor conversation
+            cwd, first, last = self._read_editor(path)
+            root, where = self._place(cwd)
+            if not root:
+                continue
+            found.append(MachineAgentSession(session_id=session_id, provider="claude", title=redact(first, self.secrets)[:400], last=redact(last, self.secrets)[:400],
+                                             root=root, path=where, updated_at=updated, live=time.time() - updated < EDITOR_LIVE_SECONDS))
+            if len(found) >= EDITOR_SESSIONS_MAX:
+                break
+        return MachineAgentAnswer(request_id=request.id, sessions=tuple(found))
+
+    def _continue(self, request: AgentContinueRequest) -> MachineAgentAnswer:
+        """A COPY of the editor conversation `session_id` continues here with `text` (Claude's own
+        fork: the editor's conversation is never written), in the conversation's own folder — read
+        HERE from its file, and only when it lies inside an agent root."""
+        self._require_continue()
+        cwd, first, _ = self._read_editor(self._editor_file(request.session_id))
+        root, where = self._place(cwd)
+        if not root:
+            raise PermissionError("this conversation's folder is not one this computer opens to agents")
+        folder = self.folder(root, where)
+        run = reg.AgentRun(run_id=str(uuid4()), provider="claude", name="Editor conversation", task=redact(first, self.secrets)[:500] or request.text[:500],
+                           cwd=str(folder), project=reg.project_for(str(folder)), permission_mode=self.permission, session_id=self.session, started_at=time.time(), status="running")
+        reg.save_run(run)
+        self.runs.add(WebRun(run_id=UUID(run.run_id), root=root, path=where, kind="continued"))
+        self._continue_turn(run, request.text, request_id=request.id, fork_from=str(request.session_id))
+        return MachineAgentAnswer(request_id=request.id, run_id=UUID(run.run_id))
+
+    def _continue_turn(self, run: reg.AgentRun, text: str, *, request_id: UUID, fork_from: str | None = None) -> MachineAgentAnswer:
+        if fork_from is None and run.status in {"running", "waiting"}:
+            raise PermissionError("it is still answering; send this once it has finished")
+        reg.record_message(from_run="operator", to_run=run.run_id, text=text)
+        launch_editor_turn(PROVIDERS["claude"], reg.get_run(run.run_id) or run, text, environment=self.environment, fork_from=fork_from)
+        return MachineAgentAnswer(request_id=request_id, run_id=UUID(run.run_id), detail="sent")
+
+    # ---- logs ------------------------------------------------------------------------------------
+
+    def _logs(self, request: AgentLogsRequest) -> MachineAgentAnswer:
+        """This connection's recent log lines, or one web-started run's error output, redacted."""
+        if request.run_id is not None:
+            self._require_run(request.run_id)
+            text = reg.read_stderr(str(request.run_id), limit=16_000)
+            return MachineAgentAnswer(request_id=request.id, lines=tuple(redact(line, self.secrets)[:600] for line in text.splitlines()[-400:] if line.strip()))
+        return MachineAgentAnswer(request_id=request.id, lines=tuple(self.logs.lines) if self.logs is not None else ())
+
+
+#: (when, models) — `MachineAgents.models`' one-minute cache.
+_MODELS: tuple[float, tuple[MachineAgentModel, ...]] | None = None

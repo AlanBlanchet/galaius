@@ -594,6 +594,62 @@ class _ConversationHost(BaseModel):
             sys.stdout.write(message.model_dump_json() + "\n")
             sys.stdout.flush()
 
+class ConversationRefused(RuntimeError):
+    """The host answered a command with an error: `code` is its ConversationErrorCode."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+class ConversationHost:
+    """The same conversations the extension's console hosts, driven in-process by a caller that is
+    not a newline-JSON pipe (the machine runner serving the web): each call is one command, its
+    answer the run as the registry now holds it, a refusal a `ConversationRefused`. Stream events
+    still land in the registry (`_record_event`); the console's outbound copy is drained here."""
+
+    def __init__(self, workspace_root: Path) -> None:
+        resolved = workspace_root.expanduser().resolve(strict=True)
+        self._host = _ConversationHost(workspace_root=resolved, transport_registry=build_transport_registry(resolved), config=Config())
+        self._drain = asyncio.get_running_loop().create_task(self._discard_outbound())
+
+    async def _discard_outbound(self) -> None:
+        while await self._host._outbound.get() is not None:
+            pass
+
+    async def _run(self, command: BaseModel) -> reg.AgentRun:
+        answer = await self._host._dispatch(command)
+        if isinstance(answer, ErrorResponse):
+            raise ConversationRefused(answer.error_code, answer.error)
+        return cast(RunResponse, answer).run
+
+    @staticmethod
+    def _request_id() -> str:
+        return uuid.uuid4().hex
+
+    async def catalog(self) -> ConversationCatalog:
+        return await self._host._catalog()
+
+    async def start(self, prompt: str, workspace: Path, *, route_id: str, model: str | None) -> reg.AgentRun:
+        request = {"route_id": route_id, "prompt": prompt, "workspace_root": str(workspace), "selection": ModelSelection(model=model).model_dump()}
+        return await self._run(StartCommand.model_validate({"version": 1, "request_id": self._request_id(), "method": "start", "request": request}))
+
+    async def send(self, run_id: str, prompt: str) -> reg.AgentRun:
+        return await self._run(SendCommand(version=1, request_id=self._request_id(), method="send", run_id=run_id, prompt=prompt))
+
+    async def cancel(self, run_id: str) -> reg.AgentRun:
+        return await self._run(CancelCommand(version=1, request_id=self._request_id(), method="cancel", run_id=run_id))
+
+    async def answer(self, run_id: str, interaction_id: str, values: dict[str, str | bool]) -> reg.AgentRun:
+        return await self._run(InteractionCommand.model_validate({"version": 1, "request_id": self._request_id(), "method": "interaction", "run_id": run_id,
+                                                                  "submission": {"interaction_id": interaction_id, "values": values}}))
+
+    async def close(self) -> None:
+        await self._host.transport_registry.close()
+        await self._host._outbound.put(None)
+        await self._drain
+
+
 def run_console(workspace_root: Path) -> None:
     """Standalone CLI launcher for one least-privileged local conversation console."""
     resolved = workspace_root.expanduser().resolve(strict=True)
@@ -606,4 +662,4 @@ def run_console(workspace_root: Path) -> None:
     ).serve())
 
 
-__all__ = ["run_console"]
+__all__ = ["ConversationHost", "ConversationRefused", "run_console"]

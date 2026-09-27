@@ -20,7 +20,7 @@ import uuid
 from pathlib import Path
 import subprocess
 import tempfile
-from typing import BinaryIO, Sequence
+from typing import BinaryIO, Mapping, Sequence
 from interact_core import AgentRevisionRef
 
 from interact.agents import registry as reg
@@ -688,12 +688,33 @@ def launch_continuation(
         coarse_accepted=coarse_accepted,
         base_url=routed.get("OPENAI_BASE_URL"),
     )
+    env = {**os.environ, **routed, "INTERACT_RUN_ID": run.run_id, "INTERACT_PARENT_RUN_ID": run.run_id}
+    if provider.name == "claude":
+        env["CLAUDE_CODE_EFFORT_LEVEL"] = reasoning
+    return _spawn_turn(argv, run, env=env, raw_index=raw_index, model=model, criterion=criterion, reasoning=reasoning, record_locked=record_locked)
+
+
+def launch_editor_turn(
+    provider: AgentProvider, run: reg.AgentRun, message: str, *, environment: Mapping[str, str], fork_from: str | None = None,
+) -> ContinuationHandle:
+    """One turn of a conversation the owner began in his editor, continued elsewhere (the machine
+    serving the web): its FIRST turn copies the editor's session `fork_from` into this run's own id
+    (the editor's session is never written), later turns resume the copy. No role: the session
+    keeps the model and instructions it was begun with; the permission is the run's recorded one,
+    the environment exactly `environment` (never this process's)."""
+    argv = provider.resume_command(fork_from or run.run_id, message, permission_mode=run.permission_mode, fork_to=run.run_id if fork_from else None)
+    env = {**environment, "INTERACT_RUN_ID": run.run_id}
+    return _spawn_turn(argv, run, env=env, raw_index=reg.raw_line_count(run.run_id), model=run.model, criterion=None, reasoning=None)
+
+
+def _spawn_turn(
+    argv: list[str], run: reg.AgentRun, *, env: Mapping[str, str], raw_index: int,
+    model: str | None, criterion: str | None, reasoning: str | None, record_locked: bool = False,
+) -> ContinuationHandle:
+    """Start one resumed turn of `run` from `argv` and its reaper, before returning."""
     sink = reg.open_raw_events(run.run_id, append=True)
     stderr_file = tempfile.TemporaryFile()
     try:
-        env = {**os.environ, **routed, "INTERACT_RUN_ID": run.run_id, "INTERACT_PARENT_RUN_ID": run.run_id}
-        if provider.name == "claude":
-            env["CLAUDE_CODE_EFFORT_LEVEL"] = reasoning
         process = subprocess.Popen(
             contained(argv), cwd=run.cwd or ".", env=env, stdout=sink, stderr=stderr_file,
             start_new_session=True,

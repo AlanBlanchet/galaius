@@ -34,7 +34,7 @@ from interact import USER_AGENT
 from interact.agents.catalog import AgentCatalog
 from interact.agents import providers as agent_providers
 from interact.file_lock import exclusive
-from interact.machine_agents import MachineAgents, WebRuns
+from interact.machine_agents import LogRing, MachineAgents, MachineSessions, WebRuns, secret_values
 from interact.agents.events import AgentEvent
 from interact.agents.run import run_agent
 from interact.agents import registry as reg
@@ -629,6 +629,10 @@ class MachineRunner:
         self._queries: set[asyncio.Task] = set()
         #: Agent actions already accepted (id -> expiry): each is taken once (`_answer_agent_request`).
         self._agent_requests: dict[UUID, datetime] = {}
+        #: The sessions this runner hosts for the web (opened on first use) and its recent log lines.
+        self._sessions: MachineSessions | None = None
+        self._log_ring = LogRing()
+        logging.getLogger("interact").addHandler(self._log_ring)
 
     def _vision_worker(self, config: MachineConfig) -> VisionWorker:
         if self._vision is None or self._vision.keep_warm != config.model_keep_warm_seconds:
@@ -881,9 +885,13 @@ class MachineRunner:
                     raise PermissionError("agent request was already used")
                 self._agent_requests[request.id] = request.expires_at
             current = self._current_config(config)
-            agents = MachineAgents(roots=current.agent_roots_by_name(), permission=current.agent_permission, run_agents=current.run_agents, session=f"web-{current.machine_id}",
-                                   runs=WebRuns(path=self.config_path.with_name("machine-agent-runs.json")), environment=self._safe_environment())
-            answer = await asyncio.to_thread(agents.answer, request)
+            self._sessions = self._sessions or MachineSessions(current.working_directory)
+            self._log_ring.secrets = (current.token.get_secret_value(), *secret_values(self._safe_environment()))
+            agents = MachineAgents(roots=current.agent_roots_by_name(), permission=current.agent_permission, run_agents=current.run_agents,
+                                   continue_conversations=current.continue_conversations, answer_approvals=current.answer_approvals, session=f"web-{current.machine_id}",
+                                   runs=WebRuns(path=self.config_path.with_name("machine-agent-runs.json")), environment=self._safe_environment(),
+                                   sessions=self._sessions, logs=self._log_ring)
+            answer = await agents.answer(request)
             logger.info("agent %s", request.op)
         except (PermissionError, OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
             reason = str(error) if isinstance(error, (PermissionError, ValueError, RuntimeError)) else f"{type(error).__name__}: {error}"

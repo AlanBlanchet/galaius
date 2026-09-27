@@ -4,18 +4,19 @@ import json
 import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
 import asyncio
 import hashlib
 import hmac
+import logging
 import time
 
-from interact_core import MACHINE_AGENT_REQUESTS, MachineAgentRequest
+from interact_core import MACHINE_AGENT_REQUESTS, MachineAgentModel, MachineAgentRequest
 from interact.agents import registry as reg
-from interact.machine_agents import MachineAgents, WebRun, WebRuns
+from interact.machine_agents import LogRing, MachineAgents, MachineSessions, WebRun, WebRuns, interaction_digest, redact
 from interact.machines import MachineConfig, MachineRunner
 
 
@@ -37,7 +38,12 @@ def _config(base: Path, **settings) -> MachineConfig:
 def _agents(base: Path, tmp_path: Path, cli: tuple[str, ...] = ("false",), **settings) -> MachineAgents:
     config = _config(base, **settings)
     return MachineAgents(roots=config.agent_roots_by_name(), permission=config.agent_permission, run_agents=config.run_agents, session="web-test",
+                         continue_conversations=config.continue_conversations, answer_approvals=config.answer_approvals,
                          runs=WebRuns(path=tmp_path / "web-runs.json"), environment={"PATH": os.environ["PATH"]}, cli=cli)
+
+
+def _answer(agents: MachineAgents, request: MachineAgentRequest):
+    return asyncio.run(agents.answer(request))
 
 
 def _request(op: str, config: MachineConfig | None = None, **fields) -> MachineAgentRequest:
@@ -72,8 +78,8 @@ def test_start_folder_stays_beneath_a_root(base: Path, tmp_path: Path, path: str
 
 def test_folders_lists_plain_subfolders_only(base: Path, tmp_path: Path) -> None:
     agents = _agents(base, tmp_path)
-    assert agents.answer(_request("folders")).roots == ("project",)
-    listing = agents.answer(_request("folders", root="project"))
+    assert _answer(agents, _request("folders")).roots == ("project",)
+    listing = _answer(agents, _request("folders", root="project"))
     assert [entry.name for entry in listing.entries] == ["src"] and listing.permission == "workspace_write"
 
 
@@ -83,19 +89,19 @@ def test_only_runs_started_from_the_web_are_reachable(base: Path, tmp_path: Path
     for run_id, parent in ((mine, None), (child, mine), (foreign, None)):
         reg.save_run(reg.AgentRun(run_id=run_id, provider="claude", name=run_id[:8], cwd=str(base / "project"), parent_run_id=parent, started_at=1.0, exit_code=0))
     agents.runs.add(WebRun(run_id=mine, root="project"))
-    listed = agents.answer(_request("runs")).runs
+    listed = _answer(agents, _request("runs")).runs
     assert {str(run.run_id) for run in listed} == {mine, child}
-    assert agents.answer(_request("tail", run_id=child)).cursor == 0
+    assert _answer(agents, _request("tail", run_id=child)).cursor == 0
     with pytest.raises(PermissionError, match="not started from the web"):
-        agents.answer(_request("stop", run_id=foreign))
+        _answer(agents, _request("stop", run_id=foreign))
 
 
 def test_off_switch_and_missing_roots_refuse_everything(base: Path, tmp_path: Path) -> None:
     with pytest.raises(PermissionError, match="agents are off"):
-        _agents(base, tmp_path, run_agents=False).answer(_request("folders"))
+        _answer(_agents(base, tmp_path, run_agents=False), _request("folders"))
     empty = _agents(base, tmp_path).model_copy(update={"roots": {}})
     with pytest.raises(PermissionError, match="no agent folders"):
-        empty.answer(_request("folders"))
+        _answer(empty, _request("folders"))
 
 
 def test_tail_reads_whole_lines_from_the_cursor(base: Path, tmp_path: Path) -> None:
@@ -105,11 +111,11 @@ def test_tail_reads_whole_lines_from_the_cursor(base: Path, tmp_path: Path) -> N
     agents.runs.add(WebRun(run_id=run_id, root="project"))
     path = reg.events_path(run_id)
     path.write_bytes(b'{"kind":"text","text":"one"}\n{"kind":"text","te')
-    first = agents.answer(_request("tail", run_id=run_id, cursor=0))
+    first = _answer(agents, _request("tail", run_id=run_id, cursor=0))
     assert [json.loads(line)["text"] for line in first.lines] == ["one"] and first.cursor == len(b'{"kind":"text","text":"one"}\n')
     with path.open("ab") as handle:
         handle.write(b'xt":"two"}\n')
-    assert [json.loads(line)["text"] for line in agents.answer(_request("tail", run_id=run_id, cursor=first.cursor)).lines] == ["two"]
+    assert [json.loads(line)["text"] for line in _answer(agents, _request("tail", run_id=run_id, cursor=first.cursor)).lines] == ["two"]
 
 
 @pytest.mark.parametrize("brief", ["- fix the header", "--help", "-x"])
@@ -118,12 +124,12 @@ def test_a_brief_or_message_starting_with_a_dash_stays_text(base: Path, tmp_path
     seen = tmp_path / "argv.json"
     recorder = ("python3", "-c", f"import json,sys; json.dump(sys.argv[1:], open({str(seen)!r}, 'w')); print({str(uuid4())!r})")
     agents = _agents(base, tmp_path, cli=recorder)
-    agents.answer(_request("start", root="project", role="app-engineer", text=brief))
+    _answer(agents, _request("start", root="project", role="app-engineer", text=brief))
     argv = json.loads(seen.read_text())
     assert argv[-2:] == ["--", brief] and argv[:2] == ["agents", "spawn"]
     run_id = str(agents.runs.read()[-1].run_id)
     reg.save_run(reg.AgentRun(run_id=run_id, provider="claude", name="r", cwd=str(base / "project"), started_at=1.0))
-    agents.answer(_request("send", run_id=run_id, text=brief))
+    _answer(agents, _request("send", run_id=run_id, text=brief))
     assert json.loads(seen.read_text()) == ["agents", "send", "--", run_id, brief]
 
 
@@ -156,7 +162,7 @@ def test_start_answers_while_the_agent_it_launched_still_runs(base: Path, tmp_pa
     lingering = ("python3", "-c", f"import subprocess,sys; subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']); print({run_id!r})")
     agents = _agents(base, tmp_path, cli=lingering)
     started = time.monotonic()
-    assert str(agents.answer(_request("start", root="project", role="app-engineer", text="go")).run_id) == run_id
+    assert str(_answer(agents, _request("start", root="project", role="app-engineer", text="go")).run_id) == run_id
     assert time.monotonic() - started < 10
 
 
@@ -167,7 +173,7 @@ def test_a_run_that_finished_unwatched_reads_done_not_lost(base: Path, tmp_path:
     reg.save_run(reg.AgentRun(run_id=run_id, provider="claude", name="r", cwd=str(base / "project"), started_at=1.0, pid=None))
     reg.events_path(run_id).write_text('{"kind":"text","text":"ok","at":2}\n{"kind":"done","text":"ok","at":3,"final_text":true}\n')
     agents.runs.add(WebRun(run_id=run_id, root="project"))
-    assert [run.status for run in agents.answer(_request("runs")).runs] == ["done"]
+    assert [run.status for run in _answer(agents, _request("runs")).runs] == ["done"]
 
 
 @pytest.mark.parametrize("exit_code", [143, -15, 1])
@@ -178,3 +184,84 @@ def test_a_stopped_run_stays_stopped_when_its_process_exits(base: Path, exit_cod
     assert reg.stop(run_id)
     reg.finish(run_id, exit_code=exit_code, expected_lifecycle_token="t" * 32)
     assert reg.get_run(run_id).status == "stopped"
+
+
+def test_logs_and_run_output_never_show_credentials() -> None:
+    address = "https://" + ":".join(("user", "hunter22")) + "@host/x"  # a password in a URL, built so no scanner mistakes the fixture for one
+    line = f"GET {address} Authorization: Bearer abc.def token iwm_0123456789abcdef sk-ABCDEFGHIJKLMNOP and MYSECRETVALUE"
+    shown = redact(line, ("MYSECRETVALUE",))
+    assert not any(secret in shown for secret in ("hunter22", "abc.def", "0123456789abcdef", "ABCDEFGHIJKLMNOP", "MYSECRETVALUE"))
+    ring = LogRing(keep=2)
+    for index in range(3):
+        logging.getLogger("interact.machines").addHandler(ring)
+        logging.getLogger("interact.machines").warning("line %d with iwk_0123456789abcdef", index)
+        logging.getLogger("websockets.client").warning("header Authorization: Bearer leaked")
+    assert len(ring.lines) == 2 and all("0123456789abcdef" not in line and "leaked" not in line for line in ring.lines)
+
+
+def _editor(tmp_path: Path, base: Path, cwd: Path, age: float = 3600) -> tuple[Path, UUID]:
+    session_id = uuid4()
+    folder = tmp_path / "projects" / "-dev-project"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{session_id}.jsonl"
+    path.write_text("\n".join(json.dumps(line) for line in (
+        {"type": "user", "cwd": str(cwd), "message": {"role": "user", "content": "<command-name>clear</command-name>"}},
+        {"type": "user", "cwd": str(cwd), "message": {"role": "user", "content": "Fix the header"}},
+        {"type": "assistant", "cwd": str(cwd), "message": {"role": "assistant", "content": [{"type": "text", "text": "Header fixed."}]}},
+    )) + "\n")
+    os.utime(path, (time.time() - age, time.time() - age))
+    return path, session_id
+
+
+def test_editor_conversations_are_listed_only_inside_agent_roots_and_continue_as_a_copy(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    agents = _agents(base, tmp_path, continue_conversations=True).model_copy(update={"editor_projects": tmp_path / "projects"})
+    _, inside = _editor(tmp_path, base, base / "project" / "src")
+    _editor(tmp_path, base, base / "other")
+    listed = _answer(agents, _request("sessions")).sessions
+    assert [(item.session_id, item.root, item.path, item.title, item.last, item.live) for item in listed] == [(inside, "project", "src", "Fix the header", "Header fixed.", False)]
+    turns = []
+    monkeypatch.setattr("interact.machine_agents.launch_editor_turn", lambda provider, run, text, *, environment, fork_from=None: turns.append((run.cwd, text, fork_from, run.permission_mode)))
+    started = _answer(agents, _request("continue", session_id=str(inside), text="- and the footer"))
+    assert turns == [(str(base.resolve() / "project" / "src"), "- and the footer", str(inside), "workspace_write")]
+    assert agents.runs.read()[-1].kind == "continued" and agents.runs.read()[-1].run_id == started.run_id
+
+
+def test_editor_conversations_need_their_own_opt_in(base: Path, tmp_path: Path) -> None:
+    with pytest.raises(PermissionError, match="continuing your editor conversations"):
+        _answer(_agents(base, tmp_path), _request("sessions"))
+
+
+def test_an_approval_answer_must_match_what_is_waiting(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    agents = _agents(base, tmp_path, answer_approvals=True).model_copy(update={"sessions": MachineSessions(base)})
+    run_id = str(uuid4())
+    reg.save_run(reg.AgentRun(run_id=run_id, kind="conversation", provider="codex", name="s", cwd=str(base / "project"), started_at=1.0, status="waiting"))
+    agents.runs.add(WebRun(run_id=run_id, root="project", kind="session"))
+    asked = {"id": "i1", "kind": "file_change_approval", "title": "Apply?", "fields": [{"key": "decision", "kind": "choice", "label": "Allow?", "options": ["accept", "decline"]}], "disclosure": ["edit a.py"]}
+    reg.events_path(run_id).write_text(json.dumps({"kind": "interaction", "at": 1, "event_id": "i1", "interaction": asked}) + "\n")
+    monkeypatch.setattr(reg, "read_events", lambda rid: [reg.AgentEvent.model_validate({"kind": "interaction", "event_id": "i1", "interaction": asked})])
+    answered = []
+
+    class Host:
+        async def answer(self, rid, interaction, values):
+            answered.append((interaction, values))
+
+    async def host(self):
+        return Host()
+    monkeypatch.setattr(MachineSessions, "host", host)
+    pending = _answer(agents, _request("runs")).runs[0].pending
+    assert [item.id for item in pending] == ["i1"] and pending[0].digest == interaction_digest(pending[0])
+    with pytest.raises(PermissionError, match="no longer the one waiting"):
+        _answer(agents, _request("answer", run_id=run_id, interaction_id="i1", digest="0" * 64, values={"decision": "decline"}))
+    with pytest.raises(PermissionError, match="accepted in the editor"):
+        _answer(agents, _request("answer", run_id=run_id, interaction_id="i1", digest=pending[0].digest, values={"decision": "accept"}))
+    _answer(agents, _request("answer", run_id=run_id, interaction_id="i1", digest=pending[0].digest, values={"decision": "decline"}))
+    assert answered == [("i1", {"decision": "decline"})]
+
+
+def test_sessions_and_unknown_models_are_refused_without_their_setting(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    agents = _agents(base, tmp_path)
+    with pytest.raises(PermissionError, match="approvals from the web is off"):
+        _answer(agents, _request("start", root="project", kind="session", text="hi"))
+    monkeypatch.setattr(MachineAgents, "models", lambda self: (MachineAgentModel(provider="claude", model="claude-sonnet-5"),))
+    with pytest.raises(PermissionError, match="not a model agents can run on here"):
+        _answer(agents, _request("start", root="project", role="app-engineer", provider="codex", model="claude-sonnet-5", text="go"))
