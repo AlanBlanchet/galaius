@@ -133,8 +133,11 @@ Linux (a systemd user service keeps the computer connected; macOS and Windows: n
    <workspace>` and `Synced: <n> agents, prompts installed`: the CLI is signed in, this computer is a
    machine of your workspace (started now and at every boot), your agents and prompts are installed.
 
-A computer added this way reaches no folder and runs no agent step until you allow it, on that
-computer: `interact machine file-roots <folder under home>`, `interact machine agents on`.
+Right after, it asks once whether agents may run on this computer from the web (default no) and
+in which folders under your home they may start (default none); `--agents` / `--no-agents` and
+`--agent-folder <name>` answer ahead. Change it later on that computer: `interact machine
+agent-roots <folder…>`, `interact machine agents on|off`. Workflows reach no folder until you
+share one: `interact machine file-roots <folder under home>`.
 `interact logout` removes it from your account and stops the service.
 
 ## Ask your agent

@@ -5,7 +5,8 @@ The CLI asks the server for a short code, the signed-in owner allows this comput
 machine token — saved where `interact machine connect` reads it, then kept connected by a systemd
 user service — and a read-only workspace key the CLI's `agents` / `workflows` commands use. Nothing
 on this computer is reachable by a workflow until its owner names a folder (`interact machine
-file-roots`)."""
+file-roots`). Whether agents may run here, and the folders the web may start them in, is asked
+once right after the approval (`AgentChoice`; off and none unless said)."""
 
 import getpass
 import os
@@ -17,6 +18,7 @@ import sys
 import time
 import webbrowser
 from importlib.metadata import version
+from collections.abc import Iterable
 from pathlib import Path
 from typing import ClassVar, Literal
 from urllib.parse import urlsplit
@@ -288,6 +290,89 @@ class AccountLogin(BaseModel):
         return answer.json()
 
 
+class AgentChoice(BaseModel):
+    """Whether agents may run on this computer, and the folders the web may start them in (names
+    under the machine's working directory, checked by `MachineConfig.usable_agent_roots`): asked
+    once by `interact login`, or given as flags; off and none unless said."""
+
+    model_config = ConfigDict(frozen=True)
+    run_agents: bool = False
+    folders: tuple[str, ...] = ()
+    rules: ClassVar[str] = ("a folder must be strictly below {base}, not hidden (.name), not a symlink, not Interact's own folder, "
+                            "and not inside or around a folder shared with workflows")
+
+    @staticmethod
+    def joining() -> MachineConfig:
+        """The machine `AccountLogin.save` writes, as far as the folder rules read it (no server yet)."""
+        return MachineConfig.model_construct(working_directory=Path.home(), file_roots=(), script_roots=())
+
+    @classmethod
+    def given(cls, agents: bool | None, folders: Iterable[str]) -> "AgentChoice | None":
+        """From `--agents/--no-agents` and `--agent-folder`, checked before any sign-in starts; None
+        when neither was given. A folder alone means agents on."""
+        if agents is None and not folders:
+            return None
+        if agents is False and folders:
+            raise LoginError("--no-agents and --agent-folder contradict each other: pick one")
+        machine = cls.joining()
+        choice, refused = cls(run_agents=agents is not False, folders=cls.named(folders, machine.working_directory)).checked(machine)
+        if refused:
+            raise LoginError(f"cannot let agents start in {', '.join(refused)}: {cls.rules.format(base=machine.working_directory)}")
+        return choice
+
+    @classmethod
+    def asked(cls, machine: MachineConfig) -> "AgentChoice":
+        """Two questions in the terminal; refused folders are said with the rules and asked once more,
+        then left out."""
+        if not _confirmed("Let agents run on this computer from the web? [y/N] "):
+            return cls()
+        base = machine.working_directory
+        print(f"Working directory: {base}")
+        for attempt in range(2):
+            answer = _answered(f"Which folders may they start in? (names under {base}, comma-separated; Enter = none) ")
+            choice, refused = cls(run_agents=True, folders=cls.named(answer.split(","), base)).checked(machine)
+            if not refused:
+                return choice
+            print(f"Refused: {', '.join(refused)} ({cls.rules.format(base=base)}).")
+        print(f"Left out: {', '.join(refused)}.")
+        return choice
+
+    @staticmethod
+    def named(folders: Iterable[str], base: Path) -> tuple[str, ...]:
+        """Typed names as the machine stores them: blanks dropped, `~` and absolute paths below
+        `base` made relative, each once."""
+        names: dict[str, None] = {}
+        for folder in (folder.strip() for folder in folders):
+            if not folder:
+                continue
+            path = Path(folder).expanduser()
+            if path.is_absolute() and base.resolve() in path.resolve().parents:
+                path = path.resolve().relative_to(base.resolve())
+            names[path.as_posix()] = None
+        return tuple(names)
+
+    def checked(self, machine: MachineConfig) -> tuple["AgentChoice", tuple[str, ...]]:
+        """(this choice keeping only the usable folders, by their stored name; the names refused)."""
+        usable, refused = machine.model_copy(update={"agent_roots": self.folders}).usable_agent_roots()
+        base = machine.working_directory.resolve()
+        return self.model_copy(update={"folders": tuple(root.relative_to(base).as_posix() for root in usable)}), refused
+
+    def applied(self, runner: MachineRunner) -> MachineConfig:
+        """Saved on this machine, re-checked against its file under the runner's lock."""
+        return runner.update(lambda current: current.model_copy(update={"run_agents": self.run_agents, "agent_roots": self.checked(current)[0].folders}))
+
+    @staticmethod
+    def described(config: MachineConfig) -> str:
+        """The result line, and how to change it later."""
+        if not config.run_agents:
+            return "Agents: off here. To allow them:  interact machine agents on  then  interact machine agent-roots <folder…>"
+        folders = list(config.agent_roots_by_name())
+        if not folders:
+            return "Agents: on here, no folder to start them in from the web yet. To add one:  interact machine agent-roots <folder…>"
+        return (f"Agents: on here; the web can start them in {', '.join(folders)} (under {config.working_directory}) or any folder beneath. "
+                "To change:  interact machine agent-roots <folder…>  (\"\" clears) or  interact machine agents off")
+
+
 def _existing_machine() -> MachineConfig | None:
     try:
         return MachineRunner().load()
@@ -311,14 +396,25 @@ def _confirmed(question: str) -> bool:
         return False
 
 
-def login(server: str | None, *, allow_runs: bool, yes: bool, open_browser: bool) -> None:
+def _answered(question: str) -> str:
+    """The typed line; Ctrl-D or Ctrl-C answer nothing."""
     try:
-        _login(server, allow_runs=allow_runs, yes=yes, open_browser=open_browser)
+        return input(question)
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return ""
+
+
+def login(server: str | None, *, allow_runs: bool, yes: bool, open_browser: bool, agents: bool | None = None, agent_folders: tuple[str, ...] = ()) -> None:
+    """`agents` / `agent_folders` answer the agents question ahead (scripts, the install line); unsaid
+    and in a terminal without `yes`, it is asked; else agents stay off."""
+    try:
+        _login(server, allow_runs=allow_runs, yes=yes, open_browser=open_browser, agents=AgentChoice.given(agents, agent_folders))
     except httpx.HTTPError as error:
         raise LoginError(f"cannot reach the server ({type(error).__name__}); check the address and your network, then run it again") from None
 
 
-def _login(server: str | None, *, allow_runs: bool, yes: bool, open_browser: bool) -> None:
+def _login(server: str | None, *, allow_runs: bool, yes: bool, open_browser: bool, agents: AgentChoice | None) -> None:
     account = AccountLogin.at(server)
     existing = _existing_machine()
     if existing is not None:
@@ -340,6 +436,10 @@ def _login(server: str | None, *, allow_runs: bool, yes: bool, open_browser: boo
             raise LoginError("not connected; the approval was withdrawn" if sys.stdin.isatty() else "confirm in a terminal, or pass --yes (the approval was withdrawn)")
         account.save(issued)
         account.remember()
+        runner = MachineRunner()
+        if agents is None:
+            agents = AgentChoice.asked(runner.load()) if sys.stdin.isatty() and not yes else AgentChoice()
+        machine = agents.applied(runner)
         synced = account.synced(CatalogConnection.load())
         service = UserService()
         refused = service.install()
@@ -353,7 +453,7 @@ def _login(server: str | None, *, allow_runs: bool, yes: bool, open_browser: boo
             if not service.linger():
                 print("It runs while you are signed in to this computer.")
         print("Workflows can reach no folder here yet. To share one:  interact machine file-roots <folder under your home>")
-        print("Agent steps are off here. To allow them:  interact machine agents on")
+        print(AgentChoice.described(machine))
 
 
 def logout() -> None:

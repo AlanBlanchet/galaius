@@ -62,8 +62,8 @@ class MachineConfig(BaseModel):
     #: workflow file step can write beside a script it would then run.
     script_roots: tuple[str, ...] = Field(default=(), max_length=32)
     #: Whether agent steps run here. An agent CLI on this computer can read any file its user can,
-    #: whatever the file roots, so `interact login` adds a computer with them off; its owner turns
-    #: them on here (`interact machine agents on`), never from the server.
+    #: whatever the file roots, so `interact login` asks its owner once (default off); changed here
+    #: later (`interact machine agents on|off`), never from the server.
     run_agents: bool = True
     #: The folders the owner lets agents be STARTED in from the web (any plain folder beneath one),
     #: relative to `working_directory` - set here (`interact machine agent-roots`), none by default.
