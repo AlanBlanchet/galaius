@@ -168,3 +168,13 @@ def test_a_run_that_finished_unwatched_reads_done_not_lost(base: Path, tmp_path:
     reg.events_path(run_id).write_text('{"kind":"text","text":"ok","at":2}\n{"kind":"done","text":"ok","at":3,"final_text":true}\n')
     agents.runs.add(WebRun(run_id=run_id, root="project"))
     assert [run.status for run in agents.answer(_request("runs")).runs] == ["done"]
+
+
+@pytest.mark.parametrize("exit_code", [143, -15, 1])
+def test_a_stopped_run_stays_stopped_when_its_process_exits(base: Path, exit_code: int) -> None:
+    """Stop records "stopped"; the killed turn's reaper then reports its exit (143 through a shell)."""
+    run_id = str(uuid4())
+    reg.save_run(reg.AgentRun(run_id=run_id, provider="claude", name="r", cwd=str(base / "project"), started_at=1.0, pid=None, lifecycle_token="t" * 32))
+    assert reg.stop(run_id)
+    reg.finish(run_id, exit_code=exit_code, expected_lifecycle_token="t" * 32)
+    assert reg.get_run(run_id).status == "stopped"

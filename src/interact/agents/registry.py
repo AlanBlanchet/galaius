@@ -710,14 +710,18 @@ def finish(
                 and quota.REFUSAL.search(terminal.text)):
             quota.record_refusal(stored.provider, stored.model, said=terminal.text)
         finished_at = time.time()
+        # A stop is the owner's decision and stays the ending: the killed process then exits with
+        # SIGTERM's code (-15, or 143 through a shell) and its reaper must not turn it "failed".
+        if stored.status == "stopped":
+            exit_code = stored.exit_code
         status = (
-            "stopped" if exit_code == -signal.SIGTERM
+            "stopped" if exit_code in (-signal.SIGTERM, 128 + signal.SIGTERM)
             else "done" if exit_code == 0
             else "failed" if exit_code is not None
             else _status_for(stored)
         )
         finished = _merge_record_locked(run_id, {
-            "finished_at": finished_at,
+            "finished_at": stored.finished_at if stored.status == "stopped" and stored.finished_at else finished_at,
             "exit_code": exit_code,
             "status": status,
         })
