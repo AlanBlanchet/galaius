@@ -159,12 +159,12 @@ class AccountLogin(BaseModel):
             catalog.connection.save()
             done.append(f"{len(catalog.snapshot.agents)} agents")
         except (OSError, ValueError, httpx.HTTPError) as error:
-            done.append(f"agents not synced ({type(error).__name__}; run: interact agents sync)")
+            done.append(f"agents not synced ({error or type(error).__name__}; then run: interact agents sync)")
         try:
             PromptMode.installed(ServerPrompts(connection=connection))
             done.append("prompts installed")
         except (OSError, ValueError, httpx.HTTPError) as error:
-            done.append(f"prompts not synced ({type(error).__name__}; run: interact prompts sync)")
+            done.append(f"prompts not synced ({error or type(error).__name__}; then run: interact prompts sync)")
         return "Synced: " + ", ".join(done)
 
     def client(self) -> httpx.Client:
@@ -298,9 +298,9 @@ def _login(server: str | None, *, allow_runs: bool, yes: bool, open_browser: boo
             webbrowser.open(started.verification_uri_complete)
         print("Waiting for approval…", flush=True)
         issued = account.wait(http, started)
-        company, approver = _shown(issued.workspace.name), _shown(issued.approved_by)
-        print(f"\nApproved by {approver} for the company “{company}”.")
-        if not yes and not _confirmed(f"Connect this computer to “{company}”? [y/N] "):
+        workspace, approver = _shown(issued.workspace.name), _shown(issued.approved_by)
+        print(f"\nApproved by {approver} for the workspace “{workspace}”.")
+        if not yes and not _confirmed(f"Connect this computer to “{workspace}”? [y/N] "):
             account.revoke(http, issued.api_key.secret.get_secret_value())
             raise LoginError("not connected; the approval was withdrawn" if sys.stdin.isatty() else "confirm in a terminal, or pass --yes (the approval was withdrawn)")
         account.save(issued)
@@ -313,7 +313,7 @@ def _login(server: str | None, *, allow_runs: bool, yes: bool, open_browser: boo
         elif not account.online(http, issued):
             print("Started, but the server does not see it online yet. Check:  systemctl --user status interact-machine", file=sys.stderr)
         else:
-            print(f"Connected: {issued.machine.name} is now a machine in {company}")
+            print(f"Connected: {issued.machine.name} is now a machine in {workspace}")
             print(synced)
             if not service.linger():
                 print("It runs while you are signed in to this computer.")
