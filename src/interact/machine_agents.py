@@ -239,7 +239,9 @@ class MachineAgents(BaseModel):
         if working >= LIVE_WEB_RUNS:
             raise PermissionError(f"{working} agents started from the web are already working on this computer; stop one first")
         folder = self.folder(request.root, request.path)
-        options = ["--agent", request.role, "--cwd", str(folder), "--permission-mode", self.permission, "--session-id", self.session,
+        # The launcher's supervisor window (not the terminal's 20 s): the run shows at once; a
+        # quota refusal after it is that run's failure, in the list.
+        options = ["--agent", request.role, "--cwd", str(folder), "--permission-mode", self.permission, "--session-id", self.session, "--quota-window", "4",
                    *(["--provider", request.provider] if request.provider is not None else [])]
         # "--" ends the options: a brief starting with "-" (a markdown bullet, "--help") is the brief.
         done = self._run_cli("agents", "spawn", *options, "--", request.text, timeout=120)

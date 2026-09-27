@@ -177,7 +177,7 @@ async def test_common_launcher_uses_one_catalog_for_prompt_and_policy(catalog_ho
         assert "--agents" in captured[1][2] and "--allowedTools" not in captured[1][2]
     else:
         assert captured[1][1]["agent"] == "fixture-worker" and "--agent" not in captured[1][2]
-        actual_task = captured[1][2][2]
+        actual_task = captured[1][2][-1]  # the task is last, after "--"
         assert actual_task.count("AGENT_ROLE:") == 1
         assert actual_task.count("Delegated task:") == 1
         assert "bounded task" in actual_task

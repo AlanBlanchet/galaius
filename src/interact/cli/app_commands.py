@@ -1401,7 +1401,8 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
                  delegate: str | None = None, parent_run_id: str | None = None,
                  session_id: str | None = None,
                  denied_tools: Annotated[list[str] | None, Parameter(name="--deny-tool")] = None,
-                 provider_modes: Annotated[list[str] | None, Parameter(name="--provider-mode")] = None) -> None:
+                 provider_modes: Annotated[list[str] | None, Parameter(name="--provider-mode")] = None,
+                 quota_window: Annotated[float, Parameter(name="--quota-window")] = CLI_QUOTA_WINDOW) -> None:
     """Start an agent and return its id immediately, without waiting for it to finish.
 
     `agents run` streams until the agent is done — right at a terminal, useless to a UI — the
@@ -1417,6 +1418,9 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
     and its continuations; it never grants permissions or changes global configuration.
     --provider-mode provider=mode preserves a provider's existing workspace permission setting
     during automatic selection. An explicit --permission-mode takes precedence.
+    --quota-window is how many seconds the new child is watched for a vendor quota refusal
+    before the id is printed (a refusal inside it falls through to the next candidate); a
+    supervisor that shows the run at once passes a short one.
     """
 
 
@@ -1430,6 +1434,7 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
             delegate=delegate, parent_run_id=parent_run_id,
             denied_tools=tuple(denied_tools or ()),
             provider_modes=_provider_modes(provider_modes),
+            quota_window=quota_window,
         )
         # Give the child a moment to be alive before this process exits out from under it.
         await asyncio.sleep(0.2)
