@@ -204,6 +204,8 @@ class AccountLogin(BaseModel):
                 continue  # the server is restarting or the network blinked: ask again next turn
             if answer.status_code == 200:
                 return DeviceLoginIssued.model_validate_json(answer.content)
+            if answer.status_code >= 500:
+                continue  # the server is restarting (a deploy) or its proxy blinked: ask again next turn
             try:
                 error = DeviceTokenRefusal.model_validate_json(answer.content).error if answer.status_code == 400 else None
             except ValueError:
