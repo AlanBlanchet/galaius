@@ -5,6 +5,7 @@ its detected coords are region-relative, so input must add the monitor origin to
 right screen. These are display-free unit tests (xrandr/maim mocked); the real e2e is opt-in.
 """
 
+import subprocess
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -12,15 +13,7 @@ import pytest
 from interact import server as srv
 from interact.desktop import DesktopWindow, _SCREEN_WID
 
-
-@pytest.fixture(autouse=True)
-def _desktop_gate_open(monkeypatch):
-    # These tests verify Linux desktop-resolution logic with mocked backends, so they run on every
-    # CI OS (no display needed). Pin the Linux resolution path: force desktop_supported() True (so
-    # _resolve_target doesn't take the macOS/Windows portable-screen branch on a mac/win runner) and
-    # open the unsupported gate. The off-Linux behaviour is covered in test_cross_platform.py.
-    monkeypatch.setattr("interact.desktop.backend.desktop_supported", lambda: True)
-    monkeypatch.setattr(srv.targets, "_desktop_unsupported", lambda *a, **k: None)
+pytestmark = pytest.mark.usefixtures("desktop_gate_open")
 
 
 _XRANDR = """Monitors: 2
@@ -171,28 +164,6 @@ async def test_window_target_input_stays_window_relative(monkeypatch):
     assert DesktopWindow._xdo.await_args.args[0] == 4242
 
 
-def test_blank_gpu_surface_capture_raises_actionable_error(monkeypatch):
-    """An Android-emulator / GPU-surface window grabs uniform black via X — don't hand back a
-    black image; raise a clear error naming the cause + the adb/compositor fixes."""
-    import io
-    from PIL import Image as PILImage
-    from interact.desktop import CaptureError
-
-    buf = io.BytesIO()
-    PILImage.new("RGB", (40, 40), "black").save(buf, format="PNG")
-    black = buf.getvalue()
-
-    def fake(cmd, *a, **k):  # maim → black; xdotool geometry → a valid region
-        if cmd[0] == "xdotool":
-            return "WIDTH=388\nHEIGHT=863\nX=0\nY=0\n"
-        return black
-
-    monkeypatch.setattr("interact.desktop.subprocess.check_output", fake)
-    win = DesktopWindow(name="Android Emulator - Pixel_7:5554", wid=123, x=0, y=0, w=388, h=863)
-    with pytest.raises(CaptureError) as exc:
-        win.capture()
-    msg = str(exc.value)
-    assert "GPU" in msg and "adb" in msg and "Android Emulator" in msg
 
 
 def test_resolve_target_routes_screen_to_screen_builder(monkeypatch):
@@ -250,79 +221,6 @@ def test_capture_video_window_target_still_queries_xdotool():
     assert "800x600" in ff and ff[ff.index("-i") + 1] == ":0+10,20"
 
 
-# --- #1.3: title targeting must prefer an exact match and refuse to silently guess between
-#     several partial matches (e.g. "aino" vs "aino - Visual Studio Code"). ---
-
-
-def _all(*windows):
-    return classmethod(lambda cls, *a, **k: list(windows))
-
-
-def test_exact_title_wins_over_a_larger_partial_match(monkeypatch):
-    small = DesktopWindow(name="aino", wid=1, x=0, y=0, w=50, h=50)
-    ide = DesktopWindow(name="aino - Visual Studio Code", wid=2, x=0, y=0, w=2000, h=1200)
-    monkeypatch.setattr(DesktopWindow, "all", _all(ide, small))
-    assert srv._find_desktop_window("aino") is small  # exact beats the bigger IDE window
-
-
-def test_ambiguous_partial_matches_error_lists_candidates(monkeypatch):
-    a = DesktopWindow(name="Chrome — Gmail", wid=1, x=0, y=0, w=100, h=100)
-    b = DesktopWindow(name="Chrome — GitHub", wid=2, x=0, y=0, w=100, h=100)
-    monkeypatch.setattr(DesktopWindow, "all", _all(a, b))
-    out = srv._find_desktop_window("Chrome")
-    assert isinstance(out, str) and "Gmail" in out and "GitHub" in out
-    assert "2" in out  # tells the agent how many matched, so it can disambiguate
-
-
-def test_single_partial_match_is_returned(monkeypatch):
-    only = DesktopWindow(name="aino - Quiz", wid=1, x=0, y=0, w=100, h=100)
-    monkeypatch.setattr(DesktopWindow, "all", _all(only))
-    assert srv._find_desktop_window("aino") is only
-
-
-def test_sole_editor_window_partial_match_is_not_silently_driven(monkeypatch):
-    """10x in client logs: target='aino' matched ONLY the IDE window ('shared.rs - aino - Visual
-    Studio Code') because the app itself ran in the sandbox — and the agent then typed into the
-    user's editor. A lone PARTIAL match with an editor/terminal-pattern title needs explicit
-    targeting (exact title or wid:), never a silent guess."""
-    ide = DesktopWindow(name="shared.rs - aino - Visual Studio Code", wid=7, x=0, y=0, w=2000, h=1200)
-    monkeypatch.setattr(DesktopWindow, "all", _all(ide))
-    out = srv._find_desktop_window("aino")
-    assert isinstance(out, str) and "wid:7" in out
-    assert "nested" in out  # hints the app may be in the sandbox instead
-
-
-def test_exact_editor_title_still_resolves(monkeypatch):
-    """Explicitly naming the editor window (exact title) is intentional — never blocked."""
-    ide = DesktopWindow(name="shared.rs - aino - Visual Studio Code", wid=7, x=0, y=0, w=2000, h=1200)
-    monkeypatch.setattr(DesktopWindow, "all", _all(ide))
-    assert srv._find_desktop_window("shared.rs - aino - Visual Studio Code") is ide
-
-
-# --- #5 part 2: when no title is unique (an app titled "aino" is a substring of the IDE's
-#     "aino - Visual Studio Code"), the window id is the only stable selector. ---
-
-
-def test_listing_includes_window_id():
-    app = DesktopWindow(name="aino", wid=29360135, x=0, y=0, w=464, h=1014)
-    assert "wid:29360135" in DesktopWindow.listing([app])  # the id the user can copy to target
-
-
-def test_target_by_window_id_selects_exactly(monkeypatch):
-    app = DesktopWindow(name="aino", wid=29360135, x=0, y=0, w=464, h=1014)
-    ide = DesktopWindow(name="aino - Visual Studio Code", wid=12, x=0, y=0, w=1920, h=1080)
-    monkeypatch.setattr(DesktopWindow, "all", _all(ide, app))
-    assert srv._find_desktop_window("wid:29360135") is app  # decimal
-    assert srv._find_desktop_window("wid:0x1c00007") is app  # hex (== 29360135), as xwininfo prints
-
-
-def test_unknown_window_id_errors_with_listing(monkeypatch):
-    app = DesktopWindow(name="aino", wid=29360135, x=0, y=0, w=464, h=1014)
-    monkeypatch.setattr(DesktopWindow, "all", _all(app))
-    out = srv._find_desktop_window("wid:999")
-    assert isinstance(out, str) and "999" in out and "aino" in out
-
-
 # --- headless/dedicated env: target="nested[:title]" drives an app in the isolated sandbox,
 #     non-intrusive and occlusion-proof — the fix for a window that fought the user's WM. ---
 
@@ -358,3 +256,30 @@ def test_resolve_nested_unknown_title_lists_sandbox_windows(monkeypatch):
     monkeypatch.setattr(DesktopWindow, "find_in", classmethod(lambda cls, be, title: None))
     win, mgr, err = srv._resolve_target("nested:missing", "default")
     assert win is None and isinstance(err, str) and "xclock" in err
+
+
+def test_a_capture_failure_reaches_the_agent_as_an_ERROR_string(monkeypatch):
+    """interact's whole tool contract is "a short prose summary, errors prefixed ERROR: so an
+    agent can branch" (CLAUDE.md). A CaptureError RAISED instead becomes a transport-level error:
+    the text still arrives, but not in the shape every other failure takes, so an agent testing
+    `result.startswith("ERROR:")` sees an exception where it expected a string it can read.
+
+    Fixed at the one seam every tool already passes through rather than per tool, because the next
+    capture-taking tool would otherwise have to remember.
+    """
+    import asyncio
+
+    from interact.desktop import CaptureError, DesktopWindow
+
+    win = DesktopWindow(name="doomed", wid=9, x=0, y=0, w=10, h=10)
+
+    def boom(self):
+        raise CaptureError('Could not capture: stale. Try target="screen".')
+
+    monkeypatch.setattr(DesktopWindow, "capture", boom)
+    monkeypatch.setattr(srv.targets, "_resolve_target", lambda *a, **k: (win, None, None))
+    fn = getattr(srv.screenshot, "fn", srv.screenshot)
+    out = asyncio.run(fn(target="doomed"))
+    assert isinstance(out, str), "a capture failure must be a readable result, not an exception"
+    assert out.startswith("ERROR:"), out
+    assert 'target="screen"' in out, "the actionable half must survive the wrapping"

@@ -7,17 +7,26 @@ caller comes back — something only another caller (or a self-redirect) can do 
 response, on every tool, not just get_page_state.
 """
 
+from types import SimpleNamespace
+
 import pytest
 
-from interact.server import core
+from interact.server import core, tools_web
 
 
 @pytest.fixture(autouse=True)
 def _clean_baselines():
-    core._session_url_baseline.clear()
-    core._session_shared_warned.clear()
+    _reset()
     yield
+    _reset()
+
+
+def _reset():
     core._session_url_baseline.clear()
+    core._session_drift_note.clear()
+    core._session_shared_warned.clear()
+    core._auto_session_names.clear()
+    core._sessions._sessions.clear()  # managers minted below never launched a browser
 
 
 def _bind(monkeypatch, url):
@@ -158,3 +167,125 @@ async def test_a_call_that_raises_still_rebaselines(monkeypatch):
     core._check_session_drift("default")
     out = core._session_response("default", "body")
     assert "https://app.test/two" in out and "https://app.test/three" in out
+
+
+# ── the name the caller never has to invent (#96/#98/#99/#101) ────────────────────────────────
+# The nudges above were the best a shared default allowed: they could only ASK the agent to make
+# a unique name up. An omitted `session` now means "mint me my own" — derived from the MCP
+# connection, reported in the `[session: ...]` prefix every reply already carried, stable for the
+# life of that connection. An EXPLICIT session="default" still selects the shared mailbox.
+
+
+class _Connection:
+    """Stands in for one MCP connection — what FastMCP hands back as ``Context.session``."""
+
+
+def _connect(monkeypatch, conn):
+    """Speak to the server as `conn` from here on (FastMCP has no live request in tests)."""
+    monkeypatch.setattr(core.mcp, "get_context", lambda: SimpleNamespace(session=conn))
+
+
+def _session_of(reply: str) -> str:
+    """The session a reply says it acted on — the prefix the agent plugs back in."""
+    line = next(ln for ln in reply.splitlines() if ln.startswith("[session: "))
+    return line[len("[session: "): -1]
+
+
+@pytest.mark.asyncio
+async def test_two_connections_each_get_their_own_minted_session(monkeypatch):
+    _bind(monkeypatch, None)
+    _connect(monkeypatch, _Connection())
+    mine = _session_of(await tools_web.get_logs(source="network"))
+    _connect(monkeypatch, _Connection())
+    theirs = _session_of(await tools_web.get_logs(source="network"))
+
+    assert mine.startswith("caller-") and theirs.startswith("caller-")
+    assert mine != theirs                                  # no shared mailbox, nothing invented
+    assert sorted(core._sessions.active()) == sorted([mine, theirs])  # two real browser sessions
+
+
+@pytest.mark.asyncio
+async def test_one_connection_gets_one_name_across_different_tools(monkeypatch):
+    _bind(monkeypatch, None)
+    conn = _Connection()
+    _connect(monkeypatch, conn)
+
+    first = _session_of(await tools_web.get_logs(source="network"))
+    assert _session_of(await tools_web.get_logs(source="console")) == first
+    # ...and a tool that names the parameter differently (`name`) resolves to the same session:
+    assert f"{first} (yours)" in await tools_web.session(action="list")
+
+    _connect(monkeypatch, conn)  # same connection object, later call
+    assert _session_of(await tools_web.get_logs(source="network")) == first
+
+
+@pytest.mark.parametrize(
+    "passed, expected, shared",
+    [
+        ({}, None, False),                          # omitted -> this caller's own session
+        ({"session": "default"}, "default", True),  # explicit -> the shared mailbox, warned once
+        ({"session": "critic-1"}, "critic-1", False),
+    ],
+    ids=["omitted", "explicit-default", "named"],
+)
+@pytest.mark.asyncio
+async def test_what_each_session_argument_resolves_to(monkeypatch, passed, expected, shared):
+    _bind(monkeypatch, None)
+    _connect(monkeypatch, _Connection())
+
+    reply = await tools_web.get_logs(source="network", **passed)
+    assert _session_of(reply) == (expected or core._auto_session_name())
+    assert ("shared browser session" in reply) is shared  # the nudge is now opt-in, not the norm
+
+
+@pytest.mark.asyncio
+async def test_an_explicit_default_still_shares_one_browser(monkeypatch):
+    _bind(monkeypatch, None)
+    _connect(monkeypatch, _Connection())
+    assert _session_of(await tools_web.get_logs(source="network", session="default")) == "default"
+    _connect(monkeypatch, _Connection())
+    assert _session_of(await tools_web.get_logs(source="network", session="default")) == "default"
+
+    assert core._sessions.active() == ["default"]  # one mailbox, deliberately shared
+
+
+@pytest.mark.asyncio
+async def test_a_desktop_target_still_refuses_a_session_the_caller_named(monkeypatch):
+    """The minted name is not a session the caller CHOSE, so it must not trip the guard that
+    keeps a desktop window and a browser session from being driven by one call."""
+    from interact.server import targets
+
+    _connect(monkeypatch, _Connection())
+    monkeypatch.setattr(targets, "_find_desktop_window", lambda title: "ERROR: no such window")
+
+    _, _, auto_err = targets._resolve_target("Some Window", core._auto_session_name())
+    assert auto_err == "ERROR: no such window"  # reached window resolution, was not refused
+
+    _, _, named_err = targets._resolve_target("Some Window", "critic-1")
+    assert "Cannot combine" in named_err
+
+
+@pytest.mark.parametrize(
+    "session, remedy",
+    [
+        ("default", "Omit session="),          # asked for the mailbox: stop asking
+        (None, "pass your own session="),      # the minted one: still one per CONNECTION
+    ],
+    ids=["explicit-default", "auto-minted"],
+)
+def test_drift_on_a_session_the_caller_never_named_still_suspects_another_caller(
+    monkeypatch, session, remedy
+):
+    """Minting a name per connection does not make the session single-caller: agents sharing one
+    MCP connection (a spawned subagent) share it, so the shared-mailbox cause still fits."""
+    _connect(monkeypatch, _Connection())
+    session = session or core._auto_session_name()
+
+    _bind(monkeypatch, "https://app.test/mine")
+    core._observe_session_url(session)
+    _bind(monkeypatch, "https://app.test/someone-elses")
+    core._check_session_drift(session)
+
+    out = core._session_response(session, "body")
+    assert "another caller shares this session" in out.lower()
+    assert remedy in out

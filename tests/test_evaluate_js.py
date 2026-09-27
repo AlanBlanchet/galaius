@@ -158,3 +158,61 @@ def test_canonical_evaluate_js_shape_unchanged():
 
     a = TypeAdapter(AnyAction).validate_python({"type": "evaluate_js", "script": "1+1"})
     assert isinstance(a, EvaluateJsAction) and a.script == "1+1"
+
+
+# --- _wrap_js: top-level return/await made valid, so a bare statement body never hits Playwright
+# unwrapped (agents' natural fetch scripts raised "Illegal return statement" / "await is only
+# valid in async functions") ---------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "script, wrapped",
+    [
+        ("document.title", False),  # bare expression — passed through, value returned
+        ("1 + 1", False),
+        ("const r = await fetch('/x'); return r.status", True),  # mid-script return + await
+        ("return document.querySelectorAll('a').length", True),  # leading return
+        ("const x = 2; x * 2", True),   # statement body — bare page.evaluate would SyntaxError
+    ],
+)
+def test_wrap_js_wraps_only_when_return_or_await_present(script, wrapped):
+    out = _wrap_js(script)
+    if wrapped:
+        assert out.startswith("(async () =>") and out.endswith(")()")
+        assert script.strip() in out
+    else:
+        assert out == script.strip()
+
+
+def test_evaluate_js_action_uses_wrapper():
+    """The action delegates to _wrap_js (no behavioural fork between the two)."""
+    action = EvaluateJsAction(script="const r = await f(); return r")
+    assert _wrap_js(action.script).startswith("(async () =>")
+
+
+def test_wrap_js_with_args_is_a_function_expression_taking_args():
+    out = _wrap_js("return args.x + 1", has_args=True)
+    assert out == "async (args) => { return args.x + 1 }"
+
+
+@pytest.mark.asyncio
+async def test_evaluate_js_passes_args_through_to_page():
+    from unittest.mock import AsyncMock, MagicMock
+
+    page = MagicMock()
+    page.evaluate = AsyncMock(return_value=3)
+    action = EvaluateJsAction(script="return args.x", args={"x": 2})
+    result = await action.execute(page)
+    assert result == 3
+    fn_arg, passed = page.evaluate.call_args.args
+    assert fn_arg.startswith("async (args) =>") and passed == {"x": 2}
+
+
+@pytest.mark.asyncio
+async def test_evaluate_js_without_args_passes_no_second_arg():
+    from unittest.mock import AsyncMock, MagicMock
+
+    page = MagicMock()
+    page.evaluate = AsyncMock(return_value="ok")
+    await EvaluateJsAction(script="document.title").execute(page)
+    assert len(page.evaluate.call_args.args) == 1  # no args value forwarded

@@ -1,0 +1,1 @@
+{"iteration_id":"20260827-workflow-gates","state":"SUPERSEDED","evidence":{"closed_commit":"723624d4a2a24a4c340d6667f06518fd983ca3c0","reason":"post-commit validation incorrectly compared the clean index with the historical candidate staged-diff hash"}}

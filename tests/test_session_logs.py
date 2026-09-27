@@ -31,8 +31,6 @@ def _fake_session(home: Path, slug: str, sid: str, custom_title: str | None):
 
 
 def test_session_name_uses_the_custom_title_over_the_dir(monkeypatch, tmp_path):
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Path.home() reads USERPROFILE on Windows, not HOME
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sid-1")
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", "/work/aino")  # dir basename "aino"
     _fake_session(tmp_path, "proj-aino", "sid-1", "Aino")  # title "Aino"
@@ -40,7 +38,6 @@ def test_session_name_uses_the_custom_title_over_the_dir(monkeypatch, tmp_path):
 
 
 def test_session_name_falls_back_to_project_basename_when_unnamed(monkeypatch, tmp_path):
-    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sid-2")
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", "/work/aino")
     _fake_session(tmp_path, "proj-aino", "sid-2", None)  # no custom-title → dir, NOT ai-title
@@ -48,7 +45,6 @@ def test_session_name_falls_back_to_project_basename_when_unnamed(monkeypatch, t
 
 
 def test_session_name_defaults_to_cwd_without_claude_env(monkeypatch, tmp_path):
-    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
     monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
     monkeypatch.chdir(tmp_path)
@@ -56,7 +52,6 @@ def test_session_name_defaults_to_cwd_without_claude_env(monkeypatch, tmp_path):
 
 
 def test_session_name_is_sanitised(monkeypatch, tmp_path):
-    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sid-3")
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", "/x/y")
     _fake_session(tmp_path, "-x-y", "sid-3", "My Session / v2!")
@@ -65,8 +60,6 @@ def test_session_name_is_sanitised(monkeypatch, tmp_path):
 
 
 def test_session_log_dir_is_sessions_name_date(monkeypatch, tmp_path):
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Path.home() reads USERPROFILE on Windows, not HOME
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sid-4")
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", "/work/interact")
     _fake_session(tmp_path, "proj-interact", "sid-4", "Interact")
@@ -80,7 +73,6 @@ def test_new_invocation_dir_default_nests_under_sessions_name_date(monkeypatch, 
     from interact.debug_utils import Debug
     from interact.runtime import config as rc
 
-    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", "/work/aino")
     monkeypatch.setattr(rc, "debug_dir", tmp_path / ".interact")
@@ -95,7 +87,6 @@ def test_open_log_writes_under_interact_not_tmp(monkeypatch, tmp_path):
     from interact.desktop import NestedBackend
     from interact.runtime import config as rc
 
-    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", "/work/interact")
     monkeypatch.setattr(rc, "debug_dir", tmp_path / ".interact")

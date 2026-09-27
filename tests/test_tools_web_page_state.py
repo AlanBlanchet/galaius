@@ -6,13 +6,12 @@ stateful dependency; the capture/scan plumbing already accepts it."""
 import pytest
 
 import interact.server as srv
-from interact.browser import BrowserManager
-from interact.config import Config
+from tests.support import browser_manager
 
 
 @pytest.mark.asyncio
 async def test_get_page_state_reads_the_requested_tab_not_the_active_one(monkeypatch):
-    mgr = BrowserManager(Config(headless=True, browser_type="chromium"))
+    mgr = browser_manager()
     try:
         try:
             await mgr.ensure_ready()

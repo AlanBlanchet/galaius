@@ -10,13 +10,14 @@ import pytest
 
 from interact.browser import BrowserManager, SessionRegistry
 from interact.config import Config
+from tests.support import browser_config, browser_manager
 
 
 # --- profile-dir resolution: opt-in + per-session isolation ---
 
 
 def test_no_profile_dir_means_ephemeral():
-    mgr = BrowserManager(Config(browser_profile_dir=None))
+    mgr = browser_manager(browser_profile_dir=None)
     assert mgr._profile_dir is None
     assert mgr._persistent is False
 
@@ -50,7 +51,7 @@ def _fake_context(pages: int):
 
 @pytest.mark.asyncio
 async def test_persistent_new_context_launches_from_the_session_profile_dir(tmp_path):
-    mgr = BrowserManager(Config(browser_profile_dir=tmp_path), "work")
+    mgr = browser_manager("work", browser_profile_dir=tmp_path)
     ctx = _fake_context(pages=1)  # a persistent context opens with one page already
     launcher = MagicMock()
     launcher.launch_persistent_context = AsyncMock(return_value=ctx)
@@ -69,7 +70,7 @@ async def test_persistent_new_context_launches_from_the_session_profile_dir(tmp_
 
 @pytest.mark.asyncio
 async def test_ephemeral_new_context_uses_new_context_and_opens_a_page():
-    mgr = BrowserManager(Config(browser_profile_dir=None))
+    mgr = browser_manager(browser_profile_dir=None)
     ctx = _fake_context(pages=0)  # an ephemeral context starts empty → must open the first page
     browser = MagicMock()
     browser.new_context = AsyncMock(return_value=ctx)
@@ -87,7 +88,7 @@ async def test_ephemeral_new_context_uses_new_context_and_opens_a_page():
 
 @pytest.mark.asyncio
 async def test_persistent_profile_keeps_a_cookie_across_a_restart(tmp_path):
-    cfg = Config(headless=True, browser_type="chromium", browser_profile_dir=tmp_path)
+    cfg = browser_config(browser_profile_dir=tmp_path)
     m1 = BrowserManager(cfg, "auth")
     try:
         await m1.ensure_ready()

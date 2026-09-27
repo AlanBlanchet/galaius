@@ -7,14 +7,16 @@ sampling, so video analysis is never worse than before."""
 
 import base64
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 import interact.vision.core as vision
 from interact.config import Config
-from interact.vision import MediaItem, VLMResult, _build_media_content
+from interact.vision import MediaItem, VLMResult
+from interact.vision.core import _build_media_content
 
-_RAW = b"\x00\x01\x02\x03"
+_RAW = b"\x00\x00\x00\x18ftypmp42"
 
 
 def _video(raw: bytes = _RAW) -> MediaItem:
@@ -35,7 +37,9 @@ async def test_native_inline_video_part_for_a_gemini_model_under_the_size_cap():
 @pytest.mark.asyncio
 async def test_non_gemini_video_model_still_gets_sampled_frames(monkeypatch):
     """Qwen-VL is native-video-capable but litellm has no inline-video transform for it → sampling."""
-    monkeypatch.setattr(vision, "_extract_frames", lambda *a, **k: ["FRAME_B64"])
+    monkeypatch.setattr(
+        vision, "_extract_frames", AsyncMock(return_value=["FRAME_B64"])
+    )
     content, sent_native = await _build_media_content(
         [_video()], "nebius/Qwen/Qwen2.5-VL-72B-Instruct", Config()
     )
@@ -69,7 +73,7 @@ async def test_oversized_gemini_clip_is_uploaded_and_referenced_by_uri(monkeypat
 @pytest.mark.asyncio
 async def test_oversized_gemini_clip_falls_back_to_frames_when_upload_fails(monkeypatch):
     monkeypatch.setattr(vision, "_NATIVE_VIDEO_MAX_BYTES", 8)
-    monkeypatch.setattr(vision, "_extract_frames", lambda *a, **k: ["F"])
+    monkeypatch.setattr(vision, "_extract_frames", AsyncMock(return_value=["F"]))
 
     async def boom(**k):
         raise RuntimeError("upload failed")
@@ -84,7 +88,7 @@ async def test_oversized_vertex_clip_samples_no_files_api(monkeypatch):
     """Vertex's Files API needs a GCS bucket interact doesn't configure, so an over-cap Vertex clip
     samples rather than attempting an upload."""
     monkeypatch.setattr(vision, "_NATIVE_VIDEO_MAX_BYTES", 8)
-    monkeypatch.setattr(vision, "_extract_frames", lambda *a, **k: ["F"])
+    monkeypatch.setattr(vision, "_extract_frames", AsyncMock(return_value=["F"]))
     called = False
 
     async def fake_acreate_file(**k):
@@ -103,7 +107,7 @@ async def test_analyze_falls_back_to_frames_when_native_video_is_rejected(monkey
     sampled frames so video analysis is never worse than before #48."""
     import litellm
 
-    monkeypatch.setattr(vision, "_extract_frames", lambda *a, **k: ["F"])
+    monkeypatch.setattr(vision, "_extract_frames", AsyncMock(return_value=["F"]))
     monkeypatch.setattr(
         vision.litellm, "validate_environment", lambda model: {"keys_in_environment": True}
     )

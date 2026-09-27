@@ -1,0 +1,1483 @@
+"""The run registry: what is running, who started it, what it cost, what it's doing now.
+
+Two properties matter more than the rest.
+
+**Status is DERIVED, never trusted.** A record says "running"; the process may have been killed.
+Reading liveness from the pid (the same check `server_registry` uses) means a crashed agent
+reports as crashed instead of spinning forever in the UI — the difference between a supervisor
+and a decoration.
+
+**The registry is a FIXED path, not debug_dir-relative.** It is cross-process IPC: the CLI
+writes, the extension reads, another shell stops a run. If one process had INTERACT_DEBUG_DIR set
+and another didn't they would look in different places — exactly the metering bug 0ef5fa4 fixed,
+reintroduced at the feature level. `server_registry._runtime_dir` is pinned for the same reason.
+"""
+
+import errno
+import hashlib
+import json
+import os
+import stat
+import threading
+from unittest.mock import MagicMock
+
+import pytest
+
+from interact.agents import registry as reg
+from interact.agents.events import TOKEN_FIELDS, AgentEvent
+from tests.support import register_run
+
+
+@pytest.fixture(autouse=True)
+def _debug_dir_is_ignored(monkeypatch, tmp_path):
+    """Prove the registry ignores INTERACT_DEBUG_DIR — conftest already isolates HOME and
+    UserConfig.PATH, so only that specific redirection has to be set up here."""
+    monkeypatch.setenv("INTERACT_DEBUG_DIR", str(tmp_path / "somewhere-else"))
+
+
+@pytest.fixture
+def unversioned_tmp_path(tmp_path):
+    """These two cases require an actually unversioned filesystem, not a nested checkout."""
+    if any((parent / marker).exists() for parent in (tmp_path, *tmp_path.parents)
+           for marker in (".git", ".hg", ".svn")):
+        pytest.skip("unversioned temporary-directory fixture unavailable inside an enclosing repository")
+    return tmp_path
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_registry_persists_explicit_mesh_choice(enabled):
+    register_run(mesh_enabled=enabled)
+    assert reg.get_run("r1").mesh_enabled is enabled
+
+
+def test_registry_preserves_ranked_selection_and_tool_denials():
+    first = reg.LaunchCandidate(provider="fixture-a", model="top", catalog_id="example/top", rank=0)
+    second = reg.LaunchCandidate(provider="fixture-b", model="next", catalog_id="example/next", rank=1)
+    original = register_run(candidates=(first, second), skipped=(reg.SkippedCandidate(candidate=first, reason="unauthenticated"),),
+                       denied_tools=("mcp__interact__report_issue",))
+    restored = reg.get_run("r1")
+    assert restored.candidates == original.candidates
+    assert restored.skipped == original.skipped
+    assert restored.denied_tools == original.denied_tools
+    with pytest.raises(ValueError):
+        reg.AgentRun.model_validate({**original.model_dump(), "denied_tools": ["--bad"]})
+
+
+def test_historical_record_does_not_enable_mesh_on_resume():
+    original = register_run()
+    (reg.agents_dir() / "r1.json").write_text(original.model_dump_json(exclude={"mesh_enabled"}))
+    assert reg.get_run("r1").mesh_enabled is False
+
+
+def test_the_registry_ignores_the_debug_dir_override(tmp_path):
+    # It must be findable by a process that never saw INTERACT_DEBUG_DIR.
+    assert "somewhere-else" not in str(reg.agents_dir())
+    assert reg.agents_dir() == tmp_path / ".interact" / "out" / "agents"
+
+
+@pytest.mark.parametrize(
+    ("provider", "model"),
+    [("codex", "openai/example-model"), ("fixture/local", "openai/gpt-real")],
+)
+def test_fixture_identity_cannot_write_without_an_isolated_registry(monkeypatch, provider, model):
+    monkeypatch.delenv("INTERACT_AGENTS_DIR", raising=False)
+
+    with pytest.raises(ValueError, match="isolated INTERACT_AGENTS_DIR"):
+        reg.register(
+            run_id="fixture-model-leak",
+            pid=None,
+            provider=provider,
+            name="test harness",
+            model=model,
+        )
+
+    assert not (reg.agents_dir() / "fixture-model-leak.json").exists()
+
+
+def test_registry_storage_is_private_despite_a_permissive_umask():
+    registry = reg.agents_dir()
+    parents = (registry.parents[1], registry.parent, registry)
+    for directory in parents:
+        directory.mkdir(exist_ok=True)
+        directory.chmod(0o775)
+
+    existing = (
+        registry / "r1.json",
+        reg.events_path("r1"),
+        reg.messages_path("r1"),
+        reg.raw_events_path("r1"),
+    )
+    for path in existing:
+        path.write_text("")
+        path.chmod(0o664)
+
+    previous_umask = os.umask(0o002)
+    try:
+        register_run()
+        register_run(run_id="r2")
+        reg.append_event("r1", AgentEvent(kind="text", text="private event"))
+        assert reg.record_message(from_run="r1", to_run="r2", text="private message")
+        with reg.open_raw_events("r2", append=False) as stream:
+            stream.write(b"private provider frame\n")
+    finally:
+        os.umask(previous_umask)
+
+    assert [stat.S_IMODE(path.stat().st_mode) for path in parents] == [0o700] * len(parents)
+    registry_files = [path for path in registry.iterdir() if path.is_file()]
+    assert registry_files
+    assert {stat.S_IMODE(path.stat().st_mode) for path in registry_files} == {0o600}
+    assert not list(registry.glob("*.new")), "an atomic replacement escaped its write boundary"
+
+
+@pytest.mark.parametrize("attack", ["directory-component", "append-target"])
+def test_registry_symlinks_cannot_redirect_private_bytes(attack: str, tmp_path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    external = outside / "unchanged.bin"
+    external.write_bytes(b"unchanged external bytes")
+    original_digest = hashlib.sha256(external.read_bytes()).digest()
+
+    if attack == "directory-component":
+        (tmp_path / ".interact").symlink_to(outside, target_is_directory=True)
+        with pytest.raises(OSError):
+            register_run(run_id="symlinked-directory")
+        assert not (outside / "out").exists()
+    else:
+        register_run(run_id="symlinked-file")
+        reg.events_path("symlinked-file").symlink_to(external)
+        with pytest.raises(OSError):
+            reg.append_event(
+                "symlinked-file",
+                AgentEvent(kind="prompt", text="private fixture payload"),
+            )
+
+    assert hashlib.sha256(external.read_bytes()).digest() == original_digest
+
+
+@pytest.mark.parametrize("no_follow", ["missing", "zero"])
+@pytest.mark.parametrize("append", [False, True], ids=["truncate", "append"])
+def test_registry_refuses_hostile_writes_without_effective_o_nofollow(
+    no_follow: str, append: bool, monkeypatch: pytest.MonkeyPatch, tmp_path,
+) -> None:
+    register_run(run_id="hostile-write")
+    external = tmp_path / "external-sentinel.bin"
+    external.write_bytes(b"unchanged external sentinel")
+    original_digest = hashlib.sha256(external.read_bytes()).digest()
+    reg.raw_events_path("hostile-write").symlink_to(external)
+    if no_follow == "missing":
+        monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
+    else:
+        monkeypatch.setattr(os, "O_NOFOLLOW", 0, raising=False)
+
+    failure: OSError | None = None
+    try:
+        with reg.open_raw_events("hostile-write", append=append) as stream:
+            stream.write(b"private registry payload")
+    except OSError as error:
+        failure = error
+    current_digest = hashlib.sha256(external.read_bytes()).digest()
+    actionable = failure is not None and (
+        "O_NOFOLLOW" in str(failure) or "no-follow" in str(failure).lower()
+    )
+
+    assert (actionable, current_digest) == (True, original_digest), (
+        "a platform without effective O_NOFOLLOW must fail explicitly before opening a hostile "
+        f"{('append' if append else 'truncate')} leaf; failure={failure!r}"
+    )
+
+
+@pytest.mark.parametrize("cleanup_fails", [False, True], ids=["cleanup-ok", "cleanup-error"])
+def test_private_replace_closes_directory_handle_when_replacement_open_fails(
+    cleanup_fails: bool, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    register_run(run_id="failed-replacement")
+    real_open = os.open
+    failure = OSError("replacement creation failed")
+    directory_descriptor = real_open(
+        reg.agents_dir(), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+    )
+
+    def fail_replacement_open(path, flags, *args, **kwargs):
+        if isinstance(path, str) and path.endswith(".new"):
+            raise failure
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", fail_replacement_open)
+    monkeypatch.setattr(reg, "_no_follow_flags", lambda: os.O_NOFOLLOW)
+    monkeypatch.setattr(
+        reg, "_registry_directory_descriptor", lambda: directory_descriptor,
+    )
+    if cleanup_fails:
+        def fail_cleanup(*_args, **_kwargs):
+            raise OSError("replacement cleanup failed")
+        monkeypatch.setattr(os, "unlink", fail_cleanup)
+
+    try:
+        with pytest.raises(OSError) as caught:
+            reg._replace_private(reg.agents_dir() / "failed-replacement.json", b"payload")
+        assert caught.value is failure
+        with pytest.raises(OSError) as closed:
+            os.fstat(directory_descriptor)
+        assert closed.value.errno == errno.EBADF
+    finally:
+        try:
+            os.close(directory_descriptor)
+        except OSError:
+            pass
+    assert not list(reg.agents_dir().glob("*.new"))
+
+
+def test_private_replace_does_not_unlink_an_exclusive_create_collision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    register_run(run_id="collision")
+    target = reg.agents_dir() / "collision.json"
+    original_target = target.read_bytes()
+    original_target_mode = stat.S_IMODE(target.stat().st_mode)
+    token = "fixedcollision"
+    replacement = reg.agents_dir() / f".{target.name}.{token}.new"
+    sentinel = b"pre-existing unowned replacement"
+    replacement.write_bytes(sentinel)
+    replacement.chmod(0o640)
+    original_mode = stat.S_IMODE(replacement.stat().st_mode)
+    directory_descriptor = os.open(
+        reg.agents_dir(), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+    )
+    monkeypatch.setattr(reg.secrets, "token_hex", lambda _size: token)
+    monkeypatch.setattr(
+        reg, "_registry_directory_descriptor", lambda: directory_descriptor,
+    )
+
+    try:
+        with pytest.raises(FileExistsError) as caught:
+            reg._replace_private(target, b"new payload")
+        assert caught.value.errno == errno.EEXIST
+        assert caught.value.filename == replacement.name
+        with pytest.raises(OSError) as closed:
+            os.fstat(directory_descriptor)
+        assert closed.value.errno == errno.EBADF
+        assert replacement.exists(), "collision cleanup deleted an unowned pre-existing leaf"
+        assert target.read_bytes() == original_target
+        assert stat.S_IMODE(target.stat().st_mode) == original_target_mode
+        assert replacement.read_bytes() == sentinel
+        assert stat.S_IMODE(replacement.stat().st_mode) == original_mode
+    finally:
+        try:
+            os.close(directory_descriptor)
+        except OSError:
+            pass
+        replacement.unlink(missing_ok=True)
+
+
+def test_private_replace_rejects_candidate_substitution_observed_before_publication(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Detect a substitution already present before publication; this does not claim that the
+    later validation-to-rename window is atomic against a malicious same-UID process."""
+    register_run(run_id="publication")
+    target = reg.agents_dir() / "publication.json"
+    original_target = target.read_bytes()
+    original_target_mode = stat.S_IMODE(target.stat().st_mode)
+    token = "fixedpublication"
+    candidate = reg.agents_dir() / f".{target.name}.{token}.new"
+    displaced = reg.agents_dir() / f".{target.name}.{token}.owned"
+    forged = b"forged unowned publication"
+    forged_mode = 0o640
+    real_fsync = os.fsync
+    owned_descriptor: int | None = None
+    owned_identity: tuple[int, int] | None = None
+    directory_descriptor = os.open(
+        reg.agents_dir(), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+    )
+
+    def substitute_after_fsync(descriptor: int) -> None:
+        nonlocal owned_descriptor, owned_identity
+        real_fsync(descriptor)
+        if owned_descriptor is not None:
+            return
+        owned_descriptor = descriptor
+        opened = os.fstat(descriptor)
+        owned_identity = (opened.st_dev, opened.st_ino)
+        os.rename(
+            candidate.name, displaced.name,
+            src_dir_fd=directory_descriptor, dst_dir_fd=directory_descriptor,
+        )
+        attacker = os.open(
+            candidate.name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            forged_mode,
+            dir_fd=directory_descriptor,
+        )
+        try:
+            assert os.write(attacker, forged) == len(forged)
+            os.fchmod(attacker, forged_mode)
+        finally:
+            os.close(attacker)
+
+    monkeypatch.setattr(reg.secrets, "token_hex", lambda _size: token)
+    monkeypatch.setattr(os, "fsync", substitute_after_fsync)
+    monkeypatch.setattr(
+        reg, "_registry_directory_descriptor", lambda: directory_descriptor,
+    )
+
+    failure: OSError | None = None
+    try:
+        try:
+            reg._replace_private(target, b"owned payload")
+        except OSError as error:
+            failure = error
+        target_bytes = target.read_bytes()
+        target_mode = stat.S_IMODE(target.stat().st_mode)
+        candidate_bytes = candidate.read_bytes() if candidate.exists() else None
+        candidate_mode = stat.S_IMODE(candidate.stat().st_mode) if candidate.exists() else None
+        owned_closed = owned_descriptor is not None
+        if owned_descriptor is not None:
+            try:
+                os.fstat(owned_descriptor)
+            except OSError as error:
+                owned_closed = error.errno == errno.EBADF
+            else:
+                owned_closed = False
+        try:
+            os.fstat(directory_descriptor)
+        except OSError as error:
+            directory_closed = error.errno == errno.EBADF
+        else:
+            directory_closed = False
+        actionable = failure is not None and "identity" in str(failure).lower()
+        displaced_stat = displaced.stat()
+        displaced_identity = (displaced_stat.st_dev, displaced_stat.st_ino)
+        assert (
+            actionable,
+            target_bytes,
+            target_mode,
+            candidate_bytes,
+            candidate_mode,
+            owned_closed,
+            directory_closed,
+            displaced_identity,
+        ) == (
+            True,
+            original_target,
+            original_target_mode,
+            forged,
+            forged_mode,
+            True,
+            True,
+            owned_identity,
+        ), "candidate substitution observed before publication must fail without publishing it"
+    finally:
+        try:
+            os.close(directory_descriptor)
+        except OSError:
+            pass
+        target.write_bytes(original_target)
+        target.chmod(original_target_mode)
+        candidate.unlink(missing_ok=True)
+        displaced.unlink(missing_ok=True)
+
+
+@pytest.mark.parametrize("failure_point", ["read", "fdopen"])
+def test_private_read_preserves_primary_failure_and_closes_descriptor_once(
+    failure_point: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    register_run(run_id="failed-read")
+    path = reg.agents_dir() / "failed-read.json"
+    original = path.read_bytes()
+    original_mode = stat.S_IMODE(path.stat().st_mode)
+    descriptor_count = len(os.listdir("/proc/self/fd"))
+    real_close = os.close
+    failure = OSError(errno.EIO, "primary read failure")
+    descriptor: int | None = None
+    close_attempts = 0
+
+    def failing_fdopen(raw_descriptor: int, *_args, **_kwargs):
+        nonlocal close_attempts, descriptor
+        descriptor = raw_descriptor
+        if failure_point == "fdopen":
+            raise failure
+        stream = MagicMock()
+        stream.__enter__.return_value = stream
+        stream.read.side_effect = failure
+
+        def close_stream(*_args) -> None:
+            nonlocal close_attempts
+            close_attempts += 1
+            real_close(raw_descriptor)
+
+        stream.__exit__.side_effect = close_stream
+        return stream
+
+    def close_raw(raw_descriptor: int) -> None:
+        nonlocal close_attempts
+        if raw_descriptor == descriptor:
+            close_attempts += 1
+        real_close(raw_descriptor)
+
+    monkeypatch.setattr(os, "fdopen", failing_fdopen)
+    monkeypatch.setattr(os, "close", close_raw)
+
+    with pytest.raises(OSError) as caught:
+        reg._read_private(path)
+
+    assert caught.value is failure
+    assert close_attempts == 1
+    assert descriptor is not None
+    with pytest.raises(OSError) as closed:
+        os.fstat(descriptor)
+    assert closed.value.errno == errno.EBADF
+    assert len(os.listdir("/proc/self/fd")) == descriptor_count
+    assert path.read_bytes() == original
+    assert stat.S_IMODE(path.stat().st_mode) == original_mode
+    assert not list(reg.agents_dir().glob("*.new"))
+
+
+@pytest.mark.parametrize("reader", ["get_run", "list_runs"])
+@pytest.mark.parametrize("no_follow", ["missing", "zero"])
+def test_registry_record_reads_require_effective_no_follow_before_open(
+    reader: str, no_follow: str, monkeypatch: pytest.MonkeyPatch, tmp_path,
+) -> None:
+    register_run(run_id="race")
+    canonical = reg.agents_dir() / "race.json"
+    external = tmp_path / "same-inode-record.json"
+    original = canonical.read_bytes()
+    os.link(canonical, external)
+    real_open = os.open
+    open_calls = 0
+
+    def race_open(path, flags, *args, **kwargs):
+        nonlocal open_calls
+        open_calls += 1
+        canonical.unlink()
+        canonical.symlink_to(external)
+        return real_open(path, flags, *args, **kwargs)
+
+    if no_follow == "missing":
+        monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
+    else:
+        monkeypatch.setattr(os, "O_NOFOLLOW", 0, raising=False)
+    monkeypatch.setattr(os, "open", race_open)
+
+    with pytest.raises(OSError, match="O_NOFOLLOW|no-follow"):
+        reg.get_run("race") if reader == "get_run" else reg.list_runs()
+
+    assert open_calls == 0, "unsupported no-follow reads must fail before the open callback"
+    assert external.read_bytes() == original
+    assert canonical.read_bytes() == original
+
+
+@pytest.mark.parametrize("no_follow", ["effective", "missing", "zero"])
+@pytest.mark.parametrize(
+    "seam", ["raw-transcript", "fallback-mirror", "messages", "raw-line-count", "carry-observed-at"],
+)
+def test_public_registry_reads_never_follow_hostile_private_leaves(
+    seam: str, no_follow: str, monkeypatch: pytest.MonkeyPatch, tmp_path,
+) -> None:
+    register_run(run_id="r1")
+    register_run(run_id="r2")
+    stored = reg.get_run("r1")
+    assert stored is not None
+    external = tmp_path / f"external-{seam}.jsonl"
+    hostile_text = "forged external transcript"
+    if seam == "raw-transcript":
+        target = reg.raw_events_path("r1")
+        payload = json.dumps({
+            "type": "assistant", "session_id": "s",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": hostile_text}]},
+        }) + "\n"
+    elif seam == "fallback-mirror":
+        target = reg.events_path("r1")
+        payload = AgentEvent(kind="text", text=hostile_text).model_dump_json() + "\n"
+    elif seam == "messages":
+        target = reg.messages_path("r1")
+        payload = AgentEvent(kind="message", text=hostile_text, from_run="r2", to_run="r1").model_dump_json() + "\n"
+    elif seam == "raw-line-count":
+        target = reg.raw_events_path("r1")
+        payload = "hostile\n" * 7
+    else:
+        reg.raw_events_path("r1").write_text(
+            '{"type":"system","subtype":"init","cwd":"/work","tools":[],"session_id":"s"}\n'
+        )
+        target = reg.events_path("r1")
+        payload = AgentEvent(kind="started", text="", at=123.0).model_dump_json() + "\n"
+    external.write_text(payload)
+    digest = hashlib.sha256(external.read_bytes()).digest()
+    target.symlink_to(external)
+    if no_follow != "effective":
+        monkeypatch.setattr(reg, "_read_record", lambda _run_id: stored)
+        if no_follow == "missing":
+            monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
+        else:
+            monkeypatch.setattr(os, "O_NOFOLLOW", 0, raising=False)
+
+    if no_follow == "effective":
+        if seam == "raw-line-count":
+            assert reg.record_message(from_run="r1", to_run="r2", text="safe")
+            recorded = [event for event in reg.read_events("r1") if event.kind == "message"]
+            assert recorded and recorded[-1].raw_index != 7
+        else:
+            observed = reg.read_events("r1")
+            assert hostile_text not in [event.text for event in observed]
+            assert 123.0 not in [event.at for event in observed]
+    else:
+        with pytest.raises(OSError, match="O_NOFOLLOW|no-follow"):
+            if seam == "raw-line-count":
+                reg.record_message(from_run="r1", to_run="r2", text="safe")
+            else:
+                reg.read_events("r1")
+    assert hashlib.sha256(external.read_bytes()).digest() == digest
+
+
+def test_a_registered_run_is_listed():
+    register_run()
+    runs = reg.list_runs()
+    assert [r.run_id for r in runs] == ["r1"]
+    assert runs[0].name == "tester" and runs[0].provider == "claude"
+
+
+@pytest.mark.parametrize(
+    "finish_exit_code, alive, expected_status",
+    [
+        pytest.param(None, False, "crashed", id="dead_pid_never_finished"),
+        pytest.param(None, True, "running", id="live_pid"),
+        pytest.param(0, False, "done", id="finished_exit_0"),
+        pytest.param(2, False, "failed", id="finished_exit_nonzero"),
+    ],
+)
+def test_status_is_derived_from_pid_liveness_and_recorded_exit(
+    monkeypatch, finish_exit_code, alive, expected_status
+):
+    """Status is never trusted from the record alone: a live pid overrides a stale 'done', a dead
+    pid with no recorded outcome reads as crashed, and a recorded exit code (clean or not) survives
+    the process going away."""
+    register_run(pid=999999 if not alive else 1)
+    if finish_exit_code is not None:
+        reg.finish("r1", exit_code=finish_exit_code)
+    monkeypatch.setattr(reg, "_alive", lambda pid: alive)
+    run = reg.list_runs()[0]
+    assert run.status == expected_status
+    if finish_exit_code is not None:
+        assert run.exit_code == finish_exit_code
+
+
+def test_a_stale_reaper_cannot_finish_a_reused_run_pid():
+    register_run(pid=111)
+    first = reg.get_run("r1")
+    assert first is not None and first.lifecycle_token
+    reg.begin_turn("r1", pid=111)
+    current = reg.get_run("r1")
+    assert current is not None and current.lifecycle_token != first.lifecycle_token
+
+    assert reg.finish(
+        "r1", exit_code=0, expected_pid=111,
+        expected_lifecycle_token=first.lifecycle_token,
+    ) is False
+    current = reg.get_run("r1")
+    assert current is not None and current.pid == 111 and current.status == "running"
+
+    assert reg.finish(
+        "r1", exit_code=0, expected_pid=111,
+        expected_lifecycle_token=current.lifecycle_token,
+    ) is True
+
+
+def test_stop_rejects_a_stale_lifecycle_token():
+    register_run(pid=None)
+    first = reg.get_run("r1")
+    assert first is not None and first.lifecycle_token
+    reg.begin_turn("r1", pid=None)
+    current = reg.get_run("r1")
+    assert current is not None and current.lifecycle_token != first.lifecycle_token
+
+    assert reg.stop("r1", expected_lifecycle_token=first.lifecycle_token) is False
+    assert reg.get_run("r1").status == "running"
+
+
+def test_stop_fails_closed_when_queue_cancellation_cannot_persist(monkeypatch):
+    from interact.agents import agent_queue
+
+    register_run(pid=None)
+    monkeypatch.setattr(
+        agent_queue, "cancel_pending_locked",
+        lambda run_id: (_ for _ in ()).throw(OSError("queue write failed")),
+    )
+    terminated = []
+    monkeypatch.setattr(reg, "_terminate", lambda pid: terminated.append(pid))
+
+    assert reg.stop("r1") is False
+    assert terminated == []
+    assert reg.get_run("r1").status == "running"
+
+
+def test_derived_fields_cannot_clobber_a_same_pid_new_turn(monkeypatch):
+    register_run(pid=111)
+    monkeypatch.setattr(reg, "_alive", lambda pid: True)
+    entered = threading.Event()
+    release = threading.Event()
+    stale_events = [AgentEvent(kind="text", text="stale reply", cost_usd=1.0)]
+    real_read_events = reg.read_events
+
+    def delayed_read_events(run_id):
+        entered.set()
+        assert release.wait(timeout=10)
+        return stale_events if run_id == "r1" else real_read_events(run_id)
+
+    monkeypatch.setattr(reg, "read_events", delayed_read_events)
+    result = {}
+
+    def derive():
+        result["runs"] = reg.list_runs()
+
+    worker = threading.Thread(target=derive)
+    worker.start()
+    assert entered.wait(timeout=10)
+    current = reg.begin_turn("r1", pid=111)
+    assert current is not None and current.lifecycle_token
+    reg._merge_record_locked("r1", {"last": "new turn", "cost_usd": 2.0})
+    release.set()
+    worker.join(timeout=10)
+
+    stored = reg.get_run("r1")
+    assert not worker.is_alive()
+    assert stored is not None and stored.lifecycle_token == current.lifecycle_token
+    assert stored.last == "new turn" and stored.cost_usd == 2.0
+
+
+# ── the spawn tree: who launched whom, across providers ──────────────────────────────────────
+
+
+def test_a_child_records_its_parent():
+    register_run(run_id="parent")
+    register_run(run_id="child", parent_run_id="parent", provider="codex")
+    tree = {r.run_id: r.parent_run_id for r in reg.list_runs()}
+    assert tree == {"parent": None, "child": "parent"}
+
+
+def test_the_tree_spans_providers():
+    # The whole point: a Claude agent starting a Codex agent is an ordinary record, not a
+    # special case — they met on MCP.
+    register_run(run_id="p", provider="claude")
+    register_run(run_id="c", provider="codex", parent_run_id="p")
+    kids = reg.children_of("p")
+    assert [k.provider for k in kids] == ["codex"]
+
+
+# ── events: what it is doing now, and what it cost ───────────────────────────────────────────
+
+
+def test_the_last_event_is_what_it_is_doing_now():
+    register_run()
+    reg.append_event("r1", reg.AgentEvent(kind="tool", tool="Bash"))
+    reg.append_event("r1", reg.AgentEvent(kind="text", text="thinking about it"))
+    assert reg.last_event("r1").text == "thinking about it"
+
+
+def test_cost_totals_come_from_the_events():
+    register_run()
+    reg.append_event("r1", reg.AgentEvent(kind="text", output_tokens=10))
+    reg.append_event("r1", reg.AgentEvent(kind="done", cost_usd=0.25, output_tokens=4))
+    run = reg.list_runs()[0]
+    assert run.cost_usd == pytest.approx(0.25)
+
+
+def test_a_run_with_no_events_reports_no_cost_not_zero():
+    # Zero would read as "free"; unknown is the truth before anything has been reported.
+    register_run()
+    assert reg.list_runs()[0].cost_usd is None
+
+
+def test_events_survive_a_corrupt_line():
+    register_run()
+    reg.append_event("r1", reg.AgentEvent(kind="text", text="one"))
+    (reg.agents_dir() / "r1.jsonl").open("a").write("{ this is not json\n")
+    reg.append_event("r1", reg.AgentEvent(kind="text", text="two"))
+    assert reg.last_event("r1").text == "two"
+
+
+# ── seeing agents we did NOT spawn ───────────────────────────────────────────────────────────
+
+
+def test_foreign_sessions_are_listed_without_duplicating_our_own(monkeypatch):
+    """`claude agents --json` sees the user's own interactive windows too — that is what makes
+    this a view of the machine. But it also sees the runs WE spawned, so they must not appear
+    twice: the vendor's sessionId and our run_id are deliberately the same string."""
+    register_run(run_id="43840bfe-mine")
+    monkeypatch.setattr(reg, "_alive", lambda pid: True)
+    monkeypatch.setattr(
+        reg, "_discover_foreign",
+        lambda: [
+            {"sessionId": "43840bfe-mine", "cwd": "/tmp", "kind": "background", "name": "ours"},
+            {"sessionId": "other-1", "cwd": "/home/x", "kind": "interactive", "name": "theirs"},
+        ],
+    )
+    runs = reg.list_runs(include_foreign=True)
+    ids = [r.run_id for r in runs]
+    assert ids.count("43840bfe-mine") == 1, "our own run was listed twice"
+    assert "other-1" in ids
+    foreign = next(r for r in runs if r.run_id == "other-1")
+    assert foreign.foreign is True and foreign.name == "theirs"
+
+
+def test_foreign_runs_are_excluded_by_default(monkeypatch):
+    monkeypatch.setattr(reg, "_discover_foreign", lambda: [{"sessionId": "x", "name": "n"}])
+    assert reg.list_runs() == []
+
+
+def test_stopping_records_the_outcome(monkeypatch):
+    register_run()
+    killed = []
+    monkeypatch.setattr(reg, "_terminate", lambda pid: killed.append(pid) or True)
+    assert reg.stop("r1") is True
+    monkeypatch.setattr(reg, "_alive", lambda pid: False)
+    assert reg.list_runs()[0].status == "stopped"
+    assert killed == [1]
+
+
+def test_stopping_an_unknown_run_is_false_not_an_exception():
+    assert reg.stop("nope") is False
+
+
+def test_a_corrupt_record_does_not_break_the_listing():
+    register_run()
+    (reg.agents_dir() / "broken.json").write_text("{ not json")
+    assert [r.run_id for r in reg.list_runs()] == ["r1"]
+
+
+@pytest.mark.parametrize("alias", ["mismatched-bytes", "leaf-symlink"])
+def test_registry_readers_reject_a_record_that_does_not_bind_its_filename(alias: str) -> None:
+    register_run(run_id="run-b")
+    genuine_path = reg.agents_dir() / "run-b.json"
+    requested_path = reg.agents_dir() / "run-a.json"
+    if alias == "mismatched-bytes":
+        requested_path.write_bytes(genuine_path.read_bytes())
+    else:
+        requested_path.symlink_to(genuine_path.name)
+
+    requested = reg.get_run("run-a")
+    genuine = reg.get_run("run-b")
+    listed = reg.list_runs()
+
+    assert requested is None
+    assert genuine is not None and genuine.run_id == "run-b"
+    assert [run.run_id for run in listed] == ["run-b"], (
+        "listing must use the same canonical no-follow, filename-bound reader as get_run"
+    )
+
+
+def test_the_record_round_trips_through_json():
+    register_run(task="a task with \"quotes\" and ünicode")
+    raw = json.loads((reg.agents_dir() / "r1.json").read_text())
+    assert raw["task"] == 'a task with "quotes" and ünicode'
+
+
+def test_the_row_keeps_the_last_MEANINGFUL_line(monkeypatch):
+    """A real stream interleaves hook/system events that summarise to nothing. Taking the last
+    event literally blanks the supervisor row mid-run, so the row keeps the last line that
+    actually says something."""
+    register_run()
+    reg.append_event("r1", reg.AgentEvent(kind="tool", tool="Bash"))
+    reg.append_event("r1", reg.AgentEvent(kind="other", raw_type="system"))
+    monkeypatch.setattr(reg, "_alive", lambda pid: True)
+    assert reg.list_runs()[0].last == "using Bash"
+
+
+def test_the_record_on_disk_carries_cost_and_activity(monkeypatch):
+    """The VS Code panel reads these files directly and cannot replay a JSONL per row. If cost and
+    the activity line lived only on Python's read path, a finished agent would render there as
+    'running, —, blank' — which is exactly what it did before this was folded in."""
+    register_run()
+    reg.append_event("r1", reg.AgentEvent(kind="tool", tool="Bash"))
+    reg.append_event("r1", reg.AgentEvent(kind="done", cost_usd=0.61))
+    reg.finish("r1", exit_code=0)
+
+    raw = json.loads((reg.agents_dir() / "r1.json").read_text())
+    assert raw["cost_usd"] == pytest.approx(0.61)
+    assert raw["last"] == "done"
+    assert raw["status"] == "done", "a finished run must not still claim to be running on disk"
+
+
+def test_costs_accumulate_across_events():
+    register_run()
+    reg.append_event("r1", reg.AgentEvent(kind="done", cost_usd=0.10))
+    reg.append_event("r1", reg.AgentEvent(kind="done", cost_usd=0.05))
+    assert reg.list_runs()[0].cost_usd == pytest.approx(0.15)
+
+
+@pytest.mark.parametrize(
+    "event, expected_status",
+    [
+        pytest.param(reg.AgentEvent(kind="done", cost_usd=0.6), "done", id="terminal_done_event"),
+        pytest.param(reg.AgentEvent(kind="error", text="blew up"), "failed", id="terminal_error_event"),
+        pytest.param(reg.AgentEvent(kind="tool", tool="Bash"), "crashed", id="no_terminal_event"),
+    ],
+)
+def test_status_is_derived_from_the_last_stream_event_when_the_pid_is_gone(
+    monkeypatch, event, expected_status
+):
+    """If the supervising process dies, no exit code is recorded and the pid is gone — but the
+    child's own stream says how it ended (or didn't). The transcript outranks our bookkeeping,
+    otherwise a successful run is libelled as crashed and a real crash reads as one too."""
+    register_run(pid=999999)
+    reg.append_event("r1", event)
+    monkeypatch.setattr(reg, "_alive", lambda pid: False)
+    assert reg.list_runs()[0].status == expected_status
+
+
+def test_a_healed_status_is_written_back_to_disk(monkeypatch):
+    """The panel reads the file, not Python's in-memory view, and only ever downgrades. A status
+    healed in memory but left stale on disk shows up there as 'crashed' regardless."""
+    register_run(pid=999999)
+    reg.append_event("r1", reg.AgentEvent(kind="done", cost_usd=0.6))
+    monkeypatch.setattr(reg, "_alive", lambda pid: False)
+    reg.list_runs()
+    assert json.loads((reg.agents_dir() / "r1.json").read_text())["status"] == "done"
+
+
+def test_an_ended_run_gets_an_observed_end_time(monkeypatch):
+    """A dead process never calls finish(), so 'ended, but no end time' is the COMMON case, not an
+    edge one — and a timeline cannot draw an interval without one. The last byte the child wrote
+    is an honest observed end: the last moment we know it was alive."""
+    register_run(pid=999999)
+    reg.raw_events_path("r1").write_text(
+        '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.2,'
+        '"usage":{},"session_id":"s"}\n'
+    )
+    monkeypatch.setattr(reg, "_alive", lambda pid: False)
+    run = reg.list_runs()[0]
+    assert run.status == "done"
+    assert run.finished_at is not None and run.finished_at >= run.started_at - 1
+
+
+def test_a_running_run_is_never_given_an_end_time(monkeypatch):
+    register_run()
+    reg.raw_events_path("r1").write_text("{}\n")
+    monkeypatch.setattr(reg, "_alive", lambda pid: True)
+    assert reg.list_runs()[0].finished_at is None
+
+
+def test_the_raw_stream_is_mirrored_into_a_provider_agnostic_file():
+    """The panel cannot parse a vendor dialect, and teaching it every provider's JSON would
+    duplicate the adapters in TypeScript. Python translates once; the panel reads one shape."""
+    register_run()
+    reg.raw_events_path("r1").write_text(
+        '{"type":"system","subtype":"init","cwd":"/tmp","tools":[],"session_id":"s"}\n'
+        '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.3,'
+        '"usage":{},"session_id":"s"}\n'
+    )
+    reg.read_events("r1")
+    mirrored = [json.loads(l) for l in (reg.agents_dir() / "r1.jsonl").read_text().splitlines()]
+    assert [m["kind"] for m in mirrored] == ["started", "done"]
+    assert all("kind" in m and "text" in m for m in mirrored)  # the shape agents.ts expects
+
+
+# ── the observed-at stamp: when interact first SAW an event, not when the vendor sent it ────────
+# The vendor writes no timestamps, so idleness used to be derived from the run's start time — an
+# agent working for two minutes was stamped HELD and drawn asleep, the harder it worked the deader
+# the building looked. interact cannot know when the agent acted, but it observes the stream, so
+# it stamps the moment it first saw each line — the honest clock for a watched workplace.
+
+
+def _mirrored_events(run_id: str) -> list[dict]:
+    return [json.loads(l) for l in reg.events_path(run_id).read_text().splitlines() if l.strip()]
+
+
+def test_an_event_is_stamped_when_interact_first_sees_it(monkeypatch):
+    monkeypatch.setattr(reg.time, "time", lambda: 1000.0)
+    reg._mirror_normalised("r", [AgentEvent(kind="text", text="one")])
+    assert _mirrored_events("r")[0]["at"] == 1000.0
+
+
+def test_an_event_keeps_the_time_it_was_FIRST_seen(monkeypatch):
+    """The mirror is rewritten wholesale from a re-parse on every pass. Stamping the clock of the
+    moment would move every event's time forward each time, which is the opposite of a timestamp."""
+    monkeypatch.setattr(reg.time, "time", lambda: 1000.0)
+    reg._mirror_normalised("r", [AgentEvent(kind="text", text="one")])
+
+    monkeypatch.setattr(reg.time, "time", lambda: 2500.0)
+    reg._mirror_normalised("r", [
+        AgentEvent(kind="text", text="one"),
+        AgentEvent(kind="tool", tool="Read", tool_input="a.py"),
+    ])
+
+    out = _mirrored_events("r")
+    assert out[0]["at"] == 1000.0, "an event already seen was re-stamped with a later clock"
+    assert out[1]["at"] == 2500.0, "a newly observed event takes the clock of the moment"
+
+
+def test_re_mirroring_an_unchanged_stream_rewrites_nothing(monkeypatch):
+    """Carrying the stamps forward is also what keeps a settled run free: if every pass re-stamped,
+    the payload would differ every time and the panel would re-read a finished run forever."""
+    monkeypatch.setattr(reg.time, "time", lambda: 1000.0)
+    events = [AgentEvent(kind="text", text="one")]
+    reg._mirror_normalised("r", events)
+    before = reg.events_path("r").stat().st_mtime_ns
+
+    monkeypatch.setattr(reg.time, "time", lambda: 9999.0)
+    reg._mirror_normalised("r", events)
+    assert reg.events_path("r").stat().st_mtime_ns == before
+
+
+# ── the message ledger: who said what to whom ────────────────────────────────────────────────
+# A sequence view (lanes per agent, time down, arrows between them) needs the EXCHANGE recorded,
+# not just each side's monologue. So a message is written to BOTH transcripts — the sender's, so
+# its own history shows what it asked for, and the recipient's, so the reply has context above it.
+
+
+def test_a_message_lands_in_both_transcripts():
+    register_run(run_id="a", name="lead")
+    register_run(run_id="b", name="reviewer")
+    reg.record_message(from_run="a", to_run="b", text="please review the diff")
+
+    sent = [e for e in reg.read_events("a") if e.kind == "message"]
+    got = [e for e in reg.read_events("b") if e.kind == "message"]
+    assert sent and got, "an exchange invisible to one side is not an exchange"
+    assert sent[0].to_run == "b" and got[0].from_run == "a"
+    assert "review the diff" in got[0].text
+
+
+def test_messages_are_listed_for_a_sequence_view():
+    register_run(run_id="a", name="lead")
+    register_run(run_id="b", name="reviewer")
+    reg.record_message(from_run="a", to_run="b", text="one")
+    reg.record_message(from_run="b", to_run="a", text="two")
+    pairs = [(m.from_run, m.to_run, m.text) for m in reg.messages()]
+    assert pairs == [("a", "b", "one"), ("b", "a", "two")], "order is the whole point of a sequence"
+
+
+def test_a_message_to_an_unknown_run_is_refused():
+    register_run(run_id="a")
+    assert reg.record_message(from_run="a", to_run="ghost", text="hi") is False
+
+
+def test_a_message_survives_a_run_that_has_a_raw_vendor_stream():
+    """The real-world case the tests above miss: once a run has its own vendor transcript, that
+    stream is authoritative and the mirror is rewritten from it — so a message appended into the
+    mirror would be silently clobbered. Messages live beside the stream, not inside it."""
+    register_run(run_id="a", name="lead")
+    register_run(run_id="b", name="reviewer")
+    reg.raw_events_path("b").write_text(
+        '{"type":"system","subtype":"init","cwd":"/tmp","tools":[],"session_id":"s"}\n'
+    )
+    reg.record_message(from_run="a", to_run="b", text="please review")
+    reg.read_events("b")  # forces the mirror rewrite
+
+    kinds = [e.kind for e in reg.read_events("b")]
+    assert "message" in kinds, "the message was lost behind the vendor stream"
+    assert "started" in kinds, "the vendor's own events must still be there"
+
+
+# ── which PROJECT a run belongs to ───────────────────────────────────────────────────────────
+# Grouping on the working directory's basename splits one repo across several groups the moment
+# an agent runs in a subfolder — "src" and "tests" appear as separate projects. The repo root is
+# the unit people actually mean by "project".
+
+
+def test_the_project_is_the_repo_root_not_the_working_subfolder(tmp_path):
+    repo = tmp_path / "my-repo"
+    (repo / ".git").mkdir(parents=True)
+    sub = repo / "src" / "deep"
+    sub.mkdir(parents=True)
+    assert reg.project_for(str(sub)) == "my-repo"
+
+
+def test_a_directory_outside_any_repo_falls_back_to_its_own_name(unversioned_tmp_path):
+    plain = unversioned_tmp_path / "scratch"
+    plain.mkdir()
+    assert reg.project_for(str(plain)) == "scratch"
+
+
+def test_a_registered_run_carries_its_project(tmp_path):
+    repo = tmp_path / "proj"
+    (repo / ".git").mkdir(parents=True)
+    work = repo / "pkg"
+    work.mkdir()
+    register_run(run_id="r9", cwd=str(work))
+    assert reg.list_runs()[0].project == "proj"
+
+
+def test_an_empty_cwd_has_no_project_rather_than_a_wrong_one():
+    assert reg.project_for("") == ""
+
+
+# ── A project is the REPO, not the nearest folder with a manifest ───────────────────────────
+# "Project detection is folder level" — reported, fixed, and STILL folder level: a package
+# manifest counted as a project root, so a repo's own sub-package filed as a separate project and
+# one repo's agents were split across two groups in the panel.
+
+
+def test_a_sub_package_belongs_to_its_repo_not_to_itself(tmp_path):
+    repo = tmp_path / "myrepo"
+    (repo / ".git").mkdir(parents=True)
+    sub = repo / "vscode-extension"
+    sub.mkdir()
+    (sub / "package.json").write_text("{}")
+    assert reg.project_for(str(sub)) == "myrepo"
+
+
+def test_a_nested_manifest_several_levels_down_still_resolves_to_the_repo(tmp_path):
+    repo = tmp_path / "myrepo"
+    (repo / ".git").mkdir(parents=True)
+    deep = repo / "services" / "api"
+    deep.mkdir(parents=True)
+    (deep / "pyproject.toml").write_text("")
+    assert reg.project_for(str(deep)) == "myrepo"
+
+
+def test_a_package_with_no_repo_around_it_is_still_its_own_project(unversioned_tmp_path):
+    """Not everything is version controlled — a bare package must not fall back to a home dir."""
+    pkg = unversioned_tmp_path / "loose-tool"
+    pkg.mkdir()
+    (pkg / "pyproject.toml").write_text("")
+    assert reg.project_for(str(pkg)) == "loose-tool"
+
+
+def test_the_repo_root_itself_resolves_to_itself(tmp_path):
+    repo = tmp_path / "myrepo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "pyproject.toml").write_text("")
+    assert reg.project_for(str(repo)) == "myrepo"
+
+
+# ── Forgetting a run ────────────────────────────────────────────────────────────────────────
+# Nothing could ever remove a run, so the panel grew forever: every agent ever spawned stayed
+# listed with its transcript and raw stream on disk. A list backed by an unbounded collection is
+# only usable for as long as you have not used it much.
+
+
+def _finished(run_id="r1", name="reviewer"):
+    run = reg.register(run_id=run_id, name=name, provider="claude", task="t", pid=None)
+    reg.finish(run_id, exit_code=0)
+    return run
+
+
+def test_forgetting_a_run_removes_it_and_everything_it_wrote(tmp_path, monkeypatch):
+    _finished()
+    reg.raw_events_path("r1").write_text("{}\n")
+    reg.messages_path("r1").write_text("{}\n")
+    assert reg.forget("r1") is True
+    assert not any(p.exists() for p in (reg.raw_events_path("r1"), reg.messages_path("r1")))
+    assert [r.run_id for r in reg.list_runs()] == []
+
+
+def test_a_RUNNING_agent_is_never_forgotten(tmp_path, monkeypatch):
+    """Removing a live run's record would orphan the process: still working, now invisible."""
+    reg.register(run_id="live", name="worker", provider="claude", task="t", pid=os.getpid())
+    assert reg.forget("live") is False
+    assert [r.run_id for r in reg.list_runs()] == ["live"]
+
+
+def test_clearing_finished_leaves_the_running_ones_alone(tmp_path, monkeypatch):
+    _finished("done1")
+    _finished("done2")
+    reg.register(run_id="live", name="worker", provider="claude", task="t", pid=os.getpid())
+    assert sorted(reg.clear_finished()) == ["done1", "done2"]
+    assert [r.run_id for r in reg.list_runs()] == ["live"]
+
+
+def test_clearing_accepts_the_short_id_the_tool_prints(tmp_path, monkeypatch):
+    _finished("abcd1234-0000-0000-0000-000000000000")
+    assert reg.forget("abcd1234") is True
+
+
+# ── What a run IS, not just what it said ────────────────────────────────────────────────────
+# "What i want is to be able to view an active running agent, context, system prompt (a file link
+# is enough), basically everything" — none of that was recorded. A run knew its name but not WHICH
+# definition produced it, so there was nothing to link to, and token use was thrown away.
+
+
+def test_a_run_remembers_the_definition_it_was_spawned_from(tmp_path, monkeypatch):
+    run = reg.register(run_id="r1", name="code-reviewer", provider="claude", task="t",
+                       pid=None, agent="code-reviewer")
+    assert run.agent == "code-reviewer"
+    assert reg.list_runs()[0].agent == "code-reviewer"
+
+
+def test_a_run_with_no_definition_says_so_rather_than_guessing(tmp_path, monkeypatch):
+    assert reg.register(run_id="r1", name="claude", provider="claude", task="t", pid=None).agent is None
+
+
+def test_the_definition_file_is_where_the_system_prompt_lives(tmp_path, monkeypatch):
+    """A file link is all he asked for, so the panel needs the path — resolved by the provider,
+    since only it knows where its definitions live."""
+    definitions = tmp_path / ".claude" / "agents"
+    definitions.mkdir(parents=True)
+    (definitions / "code-reviewer.md").write_text("---\nname: code-reviewer\n---\n")
+    run = reg.register(run_id="r1", name="code-reviewer", provider="claude", task="t", pid=None,
+                       agent="code-reviewer")
+    assert run.definition_path == str(definitions / "code-reviewer.md")
+    assert reg._read_record("r1").definition_path == str(definitions / "code-reviewer.md")
+
+
+def test_no_definition_means_no_path_rather_than_a_broken_link(tmp_path, monkeypatch):
+    assert reg.register(run_id="r1", name="claude", provider="claude", task="t", pid=None).definition_path is None
+
+
+def test_token_use_accumulates_so_context_size_is_visible(tmp_path, monkeypatch):
+    """"context" — you cannot see how much a running agent has consumed without this."""
+    reg.register(run_id="r1", name="a", provider="claude", task="t", pid=None)
+    for _ in range(2):
+        reg.append_event("r1", AgentEvent(kind="text", text="x", input_tokens=100,
+                                          output_tokens=20, cached_input_tokens=60,
+                                          cache_write_input_tokens=30))
+    folded = reg.get_run("r1")
+    healed = reg.list_runs()[0]
+    assert (healed.input_tokens, healed.output_tokens) == (200, 40)
+    assert (healed.cached_input_tokens, healed.cache_write_input_tokens) == (120, 60)
+    assert all(getattr(folded, f) == getattr(healed, f) for f in TOKEN_FIELDS), \
+        "the live fold and the self-heal must agree on every token field"
+
+
+def test_tokens_accumulate_for_a_run_with_a_raw_vendor_stream(tmp_path, monkeypatch):
+    """Cost was summed from the parsed stream but tokens were not, so every real run showed its
+    price and nothing about how much context it had actually used."""
+    reg.register(run_id="r1", name="a", provider="claude", task="t", pid=None)
+    raw = reg.raw_events_path("r1")
+    raw.parent.mkdir(parents=True, exist_ok=True)
+    block_line = json.dumps({
+        "type": "assistant", "session_id": "s",
+        "message": {"id": "msg_1", "role": "assistant", "content": [{"type": "text", "text": "hi"}],
+                    "usage": {"input_tokens": 500, "cache_read_input_tokens": 300,
+                              "output_tokens": 1}},
+    })
+    result_line = json.dumps({
+        "type": "result", "session_id": "s", "total_cost_usd": 0.5,
+        "usage": {"input_tokens": 500, "cache_read_input_tokens": 300, "output_tokens": 40},
+        "modelUsage": {"m": {"inputTokens": 500, "cacheReadInputTokens": 300,
+                             "cacheCreationInputTokens": 0, "outputTokens": 40}},
+    })
+    # One message's usage repeats on every content-block line; counted once.
+    raw.write_text("\n".join([block_line, block_line, result_line]) + "\n")
+    assert reg.finish("r1", exit_code=0)
+    stored = reg.get_run("r1")  # complete at termination, before anything lists runs
+    assert (stored.input_tokens, stored.cached_input_tokens, stored.output_tokens) == (800, 300, 40)
+    assert stored.cost_usd == 0.5
+
+
+# ── A detached run that finished cleanly is not a crash ─────────────────────────────────────
+# `agents spawn` returns immediately, so nobody is left waiting to record the exit code. Status
+# was inferred from the pid alone, so every detached run read as "crashed" the moment it finished
+# — measured live: a tester that reported "68 passed" was shown with a crash warning.
+
+
+@pytest.mark.parametrize(
+    "raw_line, expected_status",
+    [
+        pytest.param(
+            {"type": "result", "subtype": "success", "is_error": False,
+             "session_id": "s", "stop_reason": "end_turn"},
+            "done", id="stream_ended_cleanly",
+        ),
+        pytest.param(
+            {"type": "result", "subtype": "error", "is_error": True, "session_id": "s"},
+            "failed", id="stream_ended_in_error",
+        ),
+        pytest.param(
+            {"type": "assistant", "session_id": "s",
+             "message": {"role": "assistant", "content": [{"type": "text", "text": "half way"}]}},
+            "crashed", id="stream_stopped_mid_stream",
+        ),
+    ],
+)
+def test_status_is_derived_from_how_the_raw_vendor_stream_ended(
+    tmp_path, monkeypatch, raw_line, expected_status
+):
+    """`agents spawn` returns immediately, so nobody is left waiting to record the exit code.
+    Status derived from the pid alone reads every detached run as crashed the moment it finishes
+    — measured live: a tester that reported "68 passed" was shown with a crash warning. The real
+    crash must still read as one: no terminal line anywhere in the stream."""
+    reg.register(run_id="r1", name="tester", provider="claude", task="t", pid=999_999)
+    raw = reg.raw_events_path("r1")
+    raw.parent.mkdir(parents=True, exist_ok=True)
+    raw.write_text(json.dumps(raw_line) + "\n")
+    assert [r for r in reg.list_runs() if r.run_id == "r1"][0].status == expected_status
+
+
+# --- Someone else's sessions belong to a project too ------------------------------------------
+#
+# "i have agents in the 'sheets' folder elsewhere, and i can't change and see how they work."
+# Foreign runs — the user's own editor windows — were built straight from the discovery payload
+# with a cwd and NO project, while every registered run gets one at registration. So the panel's
+# workspace switcher, which groups by project, could never offer the folder those sessions were
+# actually working in: they were visible in the flat list and unreachable by workspace.
+
+
+def test_a_foreign_session_is_filed_under_the_project_it_is_working_in(monkeypatch, tmp_path):
+    sheets = tmp_path / "dev" / "xp" / "sheets"
+    (sheets / ".git").mkdir(parents=True)
+
+    monkeypatch.setattr(reg, "_discover_foreign", lambda: [
+        {"sessionId": "s-1", "name": "sheets-ab", "cwd": str(sheets), "kind": "interactive"},
+    ])
+    found = [r for r in reg.list_runs(include_foreign=True) if r.run_id == "s-1"]
+    assert found, "the foreign session vanished"
+    assert found[0].project == "sheets", (
+        f"filed under {found[0].project!r} — the workspace switcher groups by project, so an "
+        "unfiled session cannot be reached by folder")
+
+
+def test_a_foreign_session_with_no_cwd_claims_no_project(monkeypatch, tmp_path):
+    """An unknown directory must not be guessed into a project: a wrong grouping silently merges
+    unrelated work, which is worse than an ungrouped row.
+
+    Asserted against a sibling that DOES have a cwd, in the same call. `project` defaults to "",
+    so checking the empty case alone passed identically with the stamping reverted — it proved the
+    default, not the behaviour.
+    """
+    somewhere = tmp_path / "dev" / "thing"
+    (somewhere / ".git").mkdir(parents=True)
+    monkeypatch.setattr(reg, "_discover_foreign", lambda: [
+        {"sessionId": "s-2", "name": "nowhere", "cwd": "", "kind": "interactive"},
+        {"sessionId": "s-3", "name": "somewhere", "cwd": str(somewhere), "kind": "interactive"},
+    ])
+    runs = {r.run_id: r for r in reg.list_runs(include_foreign=True)}
+    assert runs["s-3"].project == "thing", "the stamping is not happening at all"
+    assert runs["s-2"].project == "", "an unknown directory was guessed into a project"
+
+
+def test_one_shape_for_a_discovered_session(monkeypatch, tmp_path):
+    """The record was built twice — once in `list_runs`, once in the CLI's `agents discovered` —
+    with the same nine fields, the same `sid[:8]` fallback and the same millisecond division. Add a
+    field to AgentRun and the CLI's JSON silently lacks it, and the panel reading that JSON never
+    notices. Both paths go through `AgentRun.from_foreign` now; this pins that they agree.
+    """
+    where = tmp_path / "dev" / "thing"
+    (where / ".git").mkdir(parents=True)
+    raw = {"sessionId": "s-9", "name": "win", "cwd": str(where), "kind": "interactive",
+           "pid": 77, "startedAt": 1_700_000_000_000}
+
+    built = reg.AgentRun.from_foreign(raw)
+    assert built is not None
+    assert (built.run_id, built.name, built.project, built.pid) == ("s-9", "win", "thing", 77)
+    assert built.foreign is True and built.status == "foreign"
+    assert built.started_at == 1_700_000_000.0, "milliseconds must become seconds exactly once"
+
+    monkeypatch.setattr(reg, "_discover_foreign", lambda: [raw])
+    listed = [r for r in reg.list_runs(include_foreign=True) if r.run_id == "s-9"]
+    assert listed and listed[0].model_dump() == built.model_dump(), (
+        "the listing builds a different record than from_foreign does")
+
+
+def test_a_discovered_session_with_no_id_is_not_a_run(monkeypatch, tmp_path):
+    assert reg.AgentRun.from_foreign({"name": "nameless"}) is None
+
+
+# ───────────── Definition link (formerly test_agent_definition_link.py) ────────────────────────
+#
+# Alan asked to see, for a running agent, "context, system prompt (a file link is enough)". The
+# registry has known where a definition's system prompt lives since the `agent` field was added,
+# but the path was only resolvable from Python — while the VS Code panel reads records off disk.
+# Recording it ON the run makes it reachable to every reader.
+
+
+@pytest.fixture
+def definition_link_home(tmp_path, monkeypatch):
+    """A fake definitions directory, so PROVIDERS['claude'].definition_path can be steered per
+    test. `.interact` is created up front because `CatalogConnection.path()` writes there without
+    creating the parent — conftest sets HOME here but does not populate the layout."""
+    monkeypatch.setattr(reg, "agents_dir", lambda: tmp_path / "agents")
+    (tmp_path / ".interact").mkdir(exist_ok=True)
+
+
+def test_a_run_that_IS_an_agent_records_where_its_system_prompt_lives(definition_link_home, monkeypatch, tmp_path):
+    definition = tmp_path / "visual-critic.md"
+    definition.write_text("# visual critic\n")
+    monkeypatch.setattr(
+        reg.PROVIDERS["claude"], "definition_path", lambda agent: definition if agent == "visual-critic" else None
+    )
+
+    run = reg.register(
+        run_id="rDL1", pid=1, provider="claude", name="visual-critic", agent="visual-critic"
+    )
+
+    assert run.definition_path == str(definition)
+    assert reg._read_record("rDL1").definition_path == str(definition), "and it survives the round trip"
+
+
+def test_a_plain_run_records_no_definition(definition_link_home):
+    run = reg.register(run_id="rDL2", pid=2, provider="claude", name="a task")
+    assert run.definition_path is None
+
+
+def test_an_agent_whose_definition_file_is_missing_records_nothing(definition_link_home, monkeypatch):
+    monkeypatch.setattr(reg.PROVIDERS["claude"], "definition_path", lambda agent: None)
+    run = reg.register(run_id="rDL3", pid=3, provider="claude", name="x", agent="ghost")
+    assert run.definition_path is None, "a link to a file that does not exist is worse than none"
+
+
+def test_a_record_written_before_the_field_existed_is_backfilled(definition_link_home, monkeypatch, tmp_path):
+    """Otherwise the client has to keep its own copy of where a provider stores definitions —
+    which is the vendor hard-coding this change exists to remove. Records already on disk are
+    repaired on read instead, so the guess has nobody left to serve."""
+    definition = tmp_path / "researcher.md"
+    definition.write_text("# researcher\n")
+    monkeypatch.setattr(reg.PROVIDERS["claude"], "definition_path", lambda agent: definition)
+
+    run = reg.register(run_id="rDL4-old", pid=1, provider="claude", name="researcher", agent="researcher")
+    stored = reg._record_path("rDL4-old")
+    stored.write_text(run.model_dump_json(exclude={"definition_path"}))
+
+    assert reg._read_record("rDL4-old").definition_path == str(definition)
+    assert "definition_path" not in stored.read_text(), "reading history does not rewrite its provenance"
+
+
+def test_server_mode_preserves_retired_history_without_catalog_lookup(definition_link_home, monkeypatch, tmp_path):
+    reg.CatalogConnection.path().write_text('{}')
+    def unexpected_lookup(agent):
+        raise AssertionError('history must not resolve roles against a live catalog')
+    monkeypatch.setattr(reg.PROVIDERS['claude'], 'definition_path', unexpected_lookup)
+    run = reg.AgentRun(run_id='old-retired', provider='claude', name='retired', agent='retired')
+    directory = reg.agents_dir()
+    directory.mkdir()
+    (directory / 'old-retired.json').write_text(run.model_dump_json(exclude={'definition_path'}))
+    (directory / 'old-retired.json').chmod(0o600)
+    assert reg._read_record('old-retired').definition_path is None
+    assert reg.resolve_run_id('old-retired') == 'old-retired'
+
+
+def test_backfill_does_not_touch_a_plain_run(definition_link_home, monkeypatch, tmp_path):
+    monkeypatch.setattr(reg.PROVIDERS["claude"], "definition_path", lambda agent: tmp_path / "x.md")
+    reg.register(run_id="rDL-plain", pid=1, provider="claude", name="a task")
+    before = reg._record_path("rDL-plain").read_text()
+    assert reg._read_record("rDL-plain").definition_path is None
+    assert reg._record_path("rDL-plain").read_text() == before, "no pointless rewrite"
+
+
+# ── A LATE quota refusal (after the post-spawn probe window) must still cool the model down ──
+# `run_agent`'s `_quota_probe` only watches the first few seconds after spawn — a refusal minutes
+# into a working run arrives only in the child's own event stream, read through `read_events`'s
+# REPARSE path (`_mirror_while_alive` polls it repeatedly). `append_event`'s built-in quota catch
+# never fires there — nothing calls `append_event` for an ordinary process-kind run, live or
+# resumed; it is reachable only from the interactive local_session `_ConversationProjector`. Three
+# real runs died on the same refusal in one machine-restart-adjacent morning and `quota-cooldowns.json`
+# never got a fresh entry — the next dispatch picked the same cooled model and died again.
+
+
+def _claude_error_stream(text: str) -> str:
+    """The real shape a Claude `-p --output-format stream-json` refusal ends on: an assistant
+    turn, then a `result` line with `is_error: true` — exactly what `ClaudeCodeProvider.parse`
+    turns into `AgentEvent(kind="error", text=...)`, matching the captured evidence
+    (`~/.interact/out/agents/4d1afafb*.jsonl` et al.)."""
+    return (
+        json.dumps({"type": "assistant", "session_id": "SID", "message": {
+            "content": [{"type": "text", "text": "working on it"}], "usage": {}}}) + "\n"
+        + json.dumps({"type": "result", "is_error": True, "session_id": "SID", "result": text}) + "\n"
+    )
+
+
+def test_a_late_refusal_ending_a_fresh_run_records_a_cooldown():
+    from interact.agents import quota
+
+    reg.register(run_id="late1", pid=222, provider="claude", name="w",
+                agent="web-researcher", model="claude-fable-5-1")
+    reg.raw_events_path("late1").parent.mkdir(parents=True, exist_ok=True)
+    reg.raw_events_path("late1").write_text(_claude_error_stream(
+        "You've reached your Fable limit. Switch to another model, or manage usage credits."
+    ))
+    assert quota.blocked_until("claude", "claude-fable-5-1") is None, "sanity: nothing recorded yet"
+
+    token = reg.get_run("late1").lifecycle_token
+    assert reg.finish("late1", exit_code=1, expected_pid=222, expected_lifecycle_token=token) is True
+
+    assert quota.blocked_until("claude", "claude-fable-5-1") is not None, \
+        "the late refusal in this run's own event stream never cooled its model down"
+
+
+def test_a_late_refusal_ending_a_RESUMED_run_records_a_cooldown():
+    """A resumed turn re-registers a fresh pid/lifecycle via `begin_turn` (what
+    `launch_continuation` does before spawning) and appends to the SAME raw stream — the shape
+    `agents send` produces. The refusal arrives on this second turn, after the first turn's own
+    successful reply, exactly like the captured evidence's resumed run
+    (`e3655140*` — a queued `agents send` delivery that died on the same Fable refusal)."""
+    from interact.agents import quota
+
+    reg.register(run_id="late2", pid=111, provider="claude", name="w",
+                agent="app-engineer", model="claude-fable-5-1")
+    reg.raw_events_path("late2").parent.mkdir(parents=True, exist_ok=True)
+    reg.raw_events_path("late2").write_text(json.dumps({
+        "type": "result", "is_error": False, "session_id": "SID", "result": "first turn ok",
+    }) + "\n")
+    reg.finish("late2", exit_code=0, expected_pid=111,
+              expected_lifecycle_token=reg.get_run("late2").lifecycle_token)
+    assert quota.blocked_until("claude", "claude-fable-5-1") is None, "a clean turn must not cool anything"
+
+    resumed = reg.begin_turn("late2", pid=333, model="claude-fable-5-1")
+    assert resumed is not None and resumed.lifecycle_token
+    with reg.raw_events_path("late2").open("a") as f:
+        f.write(_claude_error_stream(
+            "You've reached your Fable limit. Switch to another model, or manage usage credits."
+        ))
+
+    assert reg.finish(
+        "late2", exit_code=1, expected_pid=333, expected_lifecycle_token=resumed.lifecycle_token,
+    ) is True
+
+    assert quota.blocked_until("claude", "claude-fable-5-1") is not None, \
+        "a resumed run's late refusal never cooled its model down"
+
+
+def test_a_late_refusal_on_an_ORPHANED_run_records_a_cooldown_exactly_once():
+    """`agents spawn` deliberately detaches — "the child leads its own session ... so it outlives
+    this process" (`run.py::run_agent` docstring) — so its `_reap()` asyncio task dies WITH the
+    spawning CLI process, and `finish()` never runs at all: exit_code stays `None` forever. The
+    ONLY place such an orphaned run's ending is ever noticed is the LAZY self-heal in `_derive`
+    (triggered by any later `list_runs()` — a panel refresh, `agents list`). Two of the three real
+    runs that died on the same refusal had exactly this shape (`exit_code: None` in their `.json`).
+    Read repeatedly (as a panel polls), it must record the cooldown ONCE, never re-extend it
+    forever."""
+    from interact.agents import quota
+
+    reg.register(run_id="orphan1", pid=999999, provider="claude", name="w",
+                agent="visual-critic", model="claude-fable-5-1")
+    reg.raw_events_path("orphan1").parent.mkdir(parents=True, exist_ok=True)
+    reg.raw_events_path("orphan1").write_text(_claude_error_stream(
+        "You've reached your Fable limit. Switch to another model, or manage usage credits."
+    ))
+    # No `reg.finish(...)` call at all — the orphaned shape: exit_code stays None, nothing ever
+    # reaped this run's real process end.
+    assert quota.blocked_until("claude", "claude-fable-5-1") is None
+
+    first_pass = reg.list_runs()
+    found = next(r for r in first_pass if r.run_id == "orphan1")
+    assert found.status == "failed" and found.exit_code is None
+    first_deadline = quota.blocked_until("claude", "claude-fable-5-1")
+    assert first_deadline is not None, "the self-healed orphaned run never cooled its model down"
+
+    # A second, later read (the panel polling again) must not keep pushing the cooldown forward.
+    reg.list_runs()
+    reg.list_runs()
+    assert quota.blocked_until("claude", "claude-fable-5-1") == first_deadline
+
+
+def test_a_clean_finish_records_no_cooldown():
+    from interact.agents import quota
+
+    reg.register(run_id="late3", pid=444, provider="claude", name="w",
+                agent="tester", model="claude-fable-5-1")
+    reg.raw_events_path("late3").parent.mkdir(parents=True, exist_ok=True)
+    reg.raw_events_path("late3").write_text(json.dumps({
+        "type": "result", "is_error": False, "session_id": "SID", "result": "all done",
+    }) + "\n")
+    reg.finish("late3", exit_code=0, expected_pid=444,
+              expected_lifecycle_token=reg.get_run("late3").lifecycle_token)
+    assert quota.blocked_until("claude", "claude-fable-5-1") is None
+
+
+def test_polling_live_runs_rereads_only_records_written_since(monkeypatch):
+    """The MCP server polls every second over the whole store; a settled record is read once."""
+    import os
+    from tests.support import register_run
+
+    register_run("settled", name="s", provider="claude", task="t", pid=None)
+    register_run("live", name="l", provider="claude", task="t", pid=os.getpid())
+    assert [r.run_id for r in reg.running_runs()] == ["live"]
+
+    reads: list[str] = []
+    real = reg._read_record
+    monkeypatch.setattr(reg, "_read_record", lambda run_id: reads.append(run_id) or real(run_id))
+    assert [r.run_id for r in reg.running_runs()] == ["live"]
+    assert reads == []
+
+    reg.finish("live", exit_code=0)
+    reads.clear()
+    assert reg.running_runs() == []
+    assert reads == ["live"]

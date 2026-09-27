@@ -14,6 +14,8 @@ import pytest
 
 from interact import server as srv
 from interact.desktop import NestedBackend
+from interact.server import sandbox as _sandbox_mod, targets as _targets_mod
+from tests.support.desktop import bare_nested_backend
 
 # Spawn real short-lived processes the cross-platform way — `sh`/`sleep` don't exist on Windows
 # (the CI matrix runs macOS + Windows too), but the Python interpreter always does.
@@ -22,30 +24,18 @@ _CRASH = [sys.executable, "-c", "import sys; sys.stderr.write('kaboom'); sys.exi
 _SLEEP = [sys.executable, "-c", "import time; time.sleep(0.3)"]
 
 
-def _bare_backend() -> NestedBackend:
-    """A NestedBackend without an X server — every X call is stubbed by the test."""
-    nb = NestedBackend.__new__(NestedBackend)
-    nb.env = {"DISPLAY": ":88"}
-    nb.screen_w, nb.screen_h = 400, 400
-    nb._procs = []
-    nb._logs = {}
-    nb._repaint_useless = set()
-    nb._repaint_attempts = {}
-    return nb
-
-
 # --- is_alive: dead server, or a server that no longer answers, is not alive ---
 
 
 def test_is_alive_false_when_server_exited(monkeypatch):
-    nb = _bare_backend()
+    nb = bare_nested_backend()
     nb._xserver = type("P", (), {"poll": lambda self: 1})()  # exited
     monkeypatch.setattr("interact.desktop.nested._x11_screen_size", lambda env: (400, 400))
     assert nb.is_alive() is False
 
 
 def test_is_alive_false_when_display_unresponsive(monkeypatch):
-    nb = _bare_backend()
+    nb = bare_nested_backend()
     nb._xserver = type("P", (), {"poll": lambda self: None})()  # running...
     def boom(env):
         raise subprocess.CalledProcessError(1, "xdotool")
@@ -54,7 +44,7 @@ def test_is_alive_false_when_display_unresponsive(monkeypatch):
 
 
 def test_is_alive_true_when_running_and_answering(monkeypatch):
-    nb = _bare_backend()
+    nb = bare_nested_backend()
     nb._xserver = type("P", (), {"poll": lambda self: None})()
     monkeypatch.setattr("interact.desktop.nested._x11_screen_size", lambda env: (400, 400))
     assert nb.is_alive() is True
@@ -97,6 +87,18 @@ def _reset_sandbox_global():
     srv.sandbox._sandbox = None
 
 
+def test_free_displays_skips_taken(monkeypatch):
+    """A display is taken if its X lock or socket exists; _free_displays returns free ones from the
+    preferred number up, so concurrent sandboxes don't collide on :99 (#33)."""
+    import interact.desktop.nested as db
+
+    taken = {"/tmp/.X99-lock", "/tmp/.X11-unix/X100", "/tmp/.X101-lock"}
+    monkeypatch.setattr(db.os.path, "exists", lambda p: p in taken)
+    got = db.NestedBackend._free_displays(99)
+    assert got[0] == 102  # first free at/above 99 (99,100,101 taken)
+    assert all(n not in got for n in (99, 100, 101))
+
+
 def test_get_sandbox_respawns_a_dead_display(monkeypatch):
     monkeypatch.setattr("interact.desktop.NestedBackend", _FakeNested)
     dead = _FakeNested(alive=False)
@@ -117,11 +119,74 @@ def test_get_sandbox_reuses_a_live_display(monkeypatch):
     assert len(_FakeNested.instances) == 1, "no needless respawn of a healthy sandbox"
 
 
+# --- self-heal carries its reason forward, and a caller can tell its sandbox was replaced (#141/#159) ---
+
+
+def test_get_sandbox_respawn_records_the_death_reason(monkeypatch):
+    """`_get_sandbox`'s self-heal must not silently swap in a fresh sandbox — the next caller
+    (targets._sandbox_death_diagnostics) needs to say WHY the previous one vanished (#141)."""
+    monkeypatch.setattr("interact.desktop.NestedBackend", _FakeNested)
+    dead = _FakeNested(alive=False)
+    dead.display_health = lambda: "The sandbox Xephyr :99 is DOWN (SIGKILL — likely OOM-killed)"
+    srv.sandbox._sandbox = dead
+
+    srv._get_sandbox()
+
+    assert srv.sandbox.last_replace_reason() == (
+        "The sandbox Xephyr :99 is DOWN (SIGKILL — likely OOM-killed)"
+    )
+
+
+def test_get_sandbox_respawn_without_display_health_still_records_a_reason(monkeypatch):
+    """A backend with no `display_health` (the reservation/#159 fake used elsewhere) must still
+    get SOME reason recorded — never a silent respawn."""
+    monkeypatch.setattr("interact.desktop.NestedBackend", _FakeNested)
+    dead = _FakeNested(alive=False)
+    srv.sandbox._sandbox = dead
+
+    srv._get_sandbox()
+
+    assert srv.sandbox.last_replace_reason()
+
+
+def test_reservation_replaced_reason_none_while_still_the_live_sandbox(monkeypatch):
+    monkeypatch.setattr("interact.desktop.NestedBackend", _FakeNested)
+    reservation = srv.sandbox.reserve_sandbox()
+    assert reservation.replaced_reason() is None
+
+
+def test_reservation_replaced_reason_names_the_resize_that_replaced_it(monkeypatch):
+    """#159: caller A reserves the sandbox; caller B's launch_app asks for a different explicit
+    size, which respawns the singleton. A's reservation must now say it was replaced, and why —
+    never hand back stale state with no explanation."""
+    monkeypatch.setattr("interact.desktop.NestedBackend", _FakeNested)
+    reservation = srv.sandbox.reserve_sandbox(size="640x480")
+
+    srv._get_sandbox(size="800x600")  # a different caller, explicit new size → respawns it
+
+    reason = reservation.replaced_reason()
+    assert reason is not None
+    assert "640x480" in reason and "800x600" in reason
+
+
+def test_reservation_replaced_reason_after_death_respawn(monkeypatch):
+    """#141 + #159 together: a reservation holder whose sandbox died and self-healed under it (via
+    someone else's call) can ask why its handle is now stale."""
+    monkeypatch.setattr("interact.desktop.NestedBackend", _FakeNested)
+    reservation = srv.sandbox.reserve_sandbox()
+    srv.sandbox._sandbox.alive = False  # the X server dies after the reservation was taken
+
+    srv._get_sandbox()  # another caller's attach self-heals it
+
+    reason = reservation.replaced_reason()
+    assert reason is not None and "stopped answering" in reason
+
+
 # --- reaping + crash diagnostics use real short-lived processes (no X needed) ---
 
 
 def test_spawn_captures_output_readable_after_crash():
-    nb = _bare_backend()
+    nb = bare_nested_backend()
     proc = nb.spawn(_CRASH)
     proc.wait(timeout=5)
     assert proc.returncode == 3
@@ -131,7 +196,7 @@ def test_spawn_captures_output_readable_after_crash():
 def test_capture_reaps_exited_apps(monkeypatch):
     """capture() reaps apps that exited since the last spawn, so zombies don't accumulate between
     launches in a long session (#11)."""
-    nb = _bare_backend()
+    nb = bare_nested_backend()
     proc = nb.spawn(_EXIT0)
     proc.wait(timeout=5)
     monkeypatch.setattr(
@@ -145,7 +210,7 @@ def test_capture_reaps_exited_apps(monkeypatch):
 def test_capture_video_grabs_nested_display_not_zero(monkeypatch):
     """record() on a sandbox window must x11grab the NESTED display (:N), not :0 — the bug that
     returned all-black frames for a nested window while screenshot() worked (#18)."""
-    nb = _bare_backend()
+    nb = bare_nested_backend()
     nb.env = {"DISPLAY": ":99"}
     monkeypatch.setattr(nb, "window_geometry", lambda name: (10, 20, 300, 400))
     monkeypatch.setattr(nb, "force_repaint", lambda name: True)
@@ -168,7 +233,7 @@ def test_capture_video_grabs_nested_display_not_zero(monkeypatch):
 def test_reap_drops_exited_apps_and_unlinks_logs():
     import os
 
-    nb = _bare_backend()
+    nb = bare_nested_backend()
     proc = nb.spawn(_EXIT0)
     proc.wait(timeout=5)
     log = nb._logs[proc.pid]
@@ -178,6 +243,27 @@ def test_reap_drops_exited_apps_and_unlinks_logs():
     assert not os.path.exists(log), "its captured-output log is unlinked"
     for p in nb._procs:
         p.terminate()
+
+
+def test_close_kills_through_the_sweeps_and_forgets_its_apps(monkeypatch):
+    """#118: `close` was the only path that reached an app's helpers OUTSIDE its process group (the
+    display + profile sweeps) — it must share ONE kill path with `kill_apps`, and once torn down it
+    holds no app: it kept `_procs` populated, so a closed backend still claimed the apps it killed."""
+    nb = bare_nested_backend()
+    nb.display = ":88"
+    nb._video_sessions = {}
+    nb._xserver = type("X", (), {"poll": lambda self: None, "terminate": lambda self: None,
+                                 "wait": lambda self, timeout: 0})()
+    swept: list[tuple[str, bool]] = []
+    monkeypatch.setattr("interact.desktop.orphans.sweep_if_owned",
+                        lambda display, *, owned: swept.append((display, owned)) or [])
+    monkeypatch.setattr("interact.desktop.orphans.display_clients", lambda display: [])
+    monkeypatch.setattr("interact.launch.sandbox_profiles", lambda display: [])
+    proc = nb.spawn([sys.executable, "-c", "import time; time.sleep(30)"])
+    nb.close()
+    assert proc.poll() is not None
+    assert swept == [(":88", True)]
+    assert nb._procs == []
 
 
 # --- reset_sandbox tool ---
@@ -293,16 +379,17 @@ def test_idle_sandbox_is_reaped(monkeypatch):
 
     closed = []
     monkeypatch.setattr(srv.sandbox, "_sandbox", _fake_sandbox(idle=901.0))
-    monkeypatch.setattr(srv.sandbox, "_close_sandbox", lambda: closed.append(True))
+    monkeypatch.setattr(srv.sandbox, "_close_sandbox", lambda reason=None: closed.append(reason))
     srv._reap_sandbox(ttl=900)
-    assert closed == [True]
+    assert len(closed) == 1
+    assert "idle" in closed[0], "the reap reason must be carried so a later caller can tell why (#141)"
 
 
 def test_active_or_recording_sandbox_survives(monkeypatch):
     import interact.server as srv
 
     closed = []
-    monkeypatch.setattr(srv.sandbox, "_close_sandbox", lambda: closed.append(True))
+    monkeypatch.setattr(srv.sandbox, "_close_sandbox", lambda reason=None: closed.append(True))
     monkeypatch.setattr(srv.sandbox, "_sandbox", _fake_sandbox(idle=10.0))
     srv._reap_sandbox(ttl=900)                     # recently used → kept
     monkeypatch.setattr(srv.sandbox, "_sandbox", _fake_sandbox(idle=99999.0, recording=True))
@@ -353,3 +440,39 @@ def test_sandbox_reaping_runs_even_with_browser_ttl_disabled(monkeypatch):
 
     asyncio.run(fast(0))
     assert reaped and all(t == 300 for t in reaped)
+
+
+# =========================================================================================
+# `_sandbox_death_diagnostics` names WHY the sandbox was recreated (from
+# test_sandbox_death_diagnostics.py) — it must not merely report the FRESH backend's
+# (necessarily healthy) status when a self-heal happened under a caller (#141).
+# =========================================================================================
+
+
+class _HealthyBackend:
+    """Stands in for the fresh sandbox `_get_sandbox` already self-healed — `is_alive` is True,
+    so `display_health()`/`last_app_output()` alone say nothing about the PREVIOUS one's death."""
+
+    def display_health(self) -> str:
+        return ""
+
+    def last_app_output(self, limit: int = 800) -> str:
+        return ""
+
+
+def test_diagnostics_lead_with_the_recorded_replace_reason(monkeypatch):
+    monkeypatch.setattr(
+        _sandbox_mod, "last_replace_reason", lambda: "The sandbox Xephyr :99 is DOWN (SIGKILL)"
+    )
+    msg = _targets_mod._sandbox_death_diagnostics(_HealthyBackend())
+    assert "recreated automatically" in msg
+    assert "SIGKILL" in msg
+
+
+def test_diagnostics_fall_back_to_current_health_when_never_replaced(monkeypatch):
+    """No respawn happened — must fall through to the fresh backend's own health/output, not
+    claim a replacement that never occurred."""
+    monkeypatch.setattr(_sandbox_mod, "last_replace_reason", lambda: None)
+    msg = _targets_mod._sandbox_death_diagnostics(_HealthyBackend())
+    assert "recreated automatically" not in msg
+    assert msg == ""

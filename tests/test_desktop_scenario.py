@@ -14,6 +14,7 @@ Mirrors the browser ``Scenario`` but for the desktop: drive a real window throug
   free and non-intrusive (nothing touches the user's real session).
 """
 
+import asyncio
 import json
 import math
 import os
@@ -25,30 +26,12 @@ from pathlib import Path
 
 import pytest
 
-from interact.desktop import DesktopBackend, NestedBackend
+from interact.desktop import DesktopBackend, DesktopWindow, NestedBackend
+from tests.support.desktop import RecordingBackend
 
 FIXTURE = Path(__file__).parent / "fixtures" / "drag_window.py"
 PANEL = Path(__file__).parent / "fixtures" / "panel.py"
 BAR_H = 32  # matches drag_window.py's title-bar height
-
-
-class RecordingBackend(DesktopBackend):
-    """A backend that records primitive calls instead of touching a display."""
-
-    def __init__(self) -> None:
-        self.calls: list[tuple] = []
-
-    def capture(self) -> bytes:
-        return b""
-
-    def move(self, x: float, y: float) -> None:
-        self.calls.append(("move", x, y))
-
-    def mouse_down(self, button: str = "left") -> None:
-        self.calls.append(("down", button))
-
-    def mouse_up(self, button: str = "left") -> None:
-        self.calls.append(("up", button))
 
 
 def test_drag_circle_geometry() -> None:
@@ -58,14 +41,27 @@ def test_drag_circle_geometry() -> None:
 
     assert be.calls[0] == ("move", cx, cy), "press must start at the grab point"
     assert be.calls[1] == ("down", "left")
-    assert be.calls[-1] == ("up", "left"), "must release the button last"
-    assert be.calls[-2] == ("move", cx, cy), "must return to the grab point (closed loop)"
+    # #136: a settle move at the drop point follows the release — a webview that captured the
+    # pointer for the drag only learns the button is up from the NEXT motion/button event.
+    assert be.calls[-1] == ("move", cx, cy), "must settle-move after release (#136)"
+    assert be.calls[-2] == ("up", "left"), "must release the button before the settle move"
+    assert be.calls[-3] == ("move", cx, cy), "must return to the grab point (closed loop)"
 
-    orbit = [(x, y) for tag, x, y in be.calls[2:-2] if tag == "move"]
+    orbit = [(x, y) for tag, x, y in be.calls[2:-3] if tag == "move"]
     radii = [math.hypot(x - cx, y - cy) for x, y in orbit]
     assert all(abs(r - radius) < 1e-6 for r in radii), "every orbit point sits on the circle"
     assert any(x > cx for x, _ in orbit) and any(x < cx for x, _ in orbit), "spans left+right"
     assert any(y > cy for _, y in orbit) and any(y < cy for _, y in orbit), "spans up+down"
+
+
+@pytest.mark.parametrize("count", [1, 2], ids=["click", "double_click"])
+def test_click_count_repeats_the_press_release_pair(count: int) -> None:
+    """#116: a double-click is the click primitive with count=2 — the same down/up pair, repeated
+    at the same point, with a gap inside every toolkit's double-click interval."""
+    be = RecordingBackend()
+    be.click(10.0, 20.0, "left", count=count)
+    assert be.calls[0] == ("move", 10.0, 20.0)
+    assert be.calls[1:] == [("down", "left"), ("up", "left")] * count
 
 
 def _tk_python() -> str | None:
@@ -188,12 +184,62 @@ def test_panel_interactions_nested(tmp_path: Path) -> None:
 
         cx, cy = center("Enter text")
         backend.click(cx, cy)
+        # Keys go where keyboard focus IS, not where the click just went: wait for the panel to
+        # report the entry focused before typing, or under load "hello" lands nowhere (#130).
+        focused = _wait_for_state(state_path, lambda s: s.get("focus") == "Enter text")
+        assert focused.get("focus") == "Enter text", "the entry never took keyboard focus after the click"
         backend.type_text("hello")
         typed = _wait_for_state(state_path, lambda s: "hello" in s.get("typed", "")).get("typed", "")
         assert "hello" in typed, f"typing did not land (typed={typed!r})"
 
         backend.click(*center("Reset"))
         assert _wait_for_state(state_path, lambda s: s.get("count") == 0).get("count") == 0
+    finally:
+        backend.close()
+
+
+@pytest.mark.skipif(_skip_reason() is not None, reason=_skip_reason() or "")
+def test_a_ctrl_chord_reaches_the_app_through_the_nested_path(tmp_path: Path) -> None:
+    """A Ctrl-chord and a shifted character reach a real toolkit — through the XDOTOOL path.
+
+    **This does not settle #115, and it is worth being exact about why.** The nested backend sends
+    keys with `xdotool key`; #115 reports the UINPUT backend, which synthesises evdev events on a
+    virtual device. Those are different code paths, so a pass here says nothing about the reported
+    failure — it says the sandbox's own path is sound, which is worth pinning but was never the
+    question.
+
+    The uinput path cannot be exercised from a test: it is a SYSTEM-WIDE virtual keyboard, so its
+    keystrokes land in whichever window holds focus at that instant — including the one running
+    the agent that launched the test. Settling #115 needs a machine whose real desktop is
+    disposable, not this one.
+
+    What it does cover: a toolkit binding either fires or it does not, so this pins the nested
+    path against regression, and the shifted character pins the single-frame write that falsified
+    the atomic-SYN-frame theory of the chord bug.
+    """
+    state_path = tmp_path / "state.json"
+    state_path.write_text("{}")
+    backend = NestedBackend(display=97, size="700x600")
+    try:
+        backend.spawn([_tk_python(), str(PANEL), str(state_path), "360x420+120+90"])
+        state = _wait_for_state(state_path, lambda s: "widgets" in s)
+        wx, wy, ww, wh = state["widgets"]["Enter text"]
+        backend.click(wx + ww // 2, wy + wh // 2)  # focus, so the toplevel has the keyboard
+
+        backend.type_text("Hi!")
+        typed = _wait_for_state(state_path, lambda s: s.get("typed")).get("typed", "")
+        assert typed == "Hi!", (
+            f"a shifted character did not survive the sandbox: {typed!r}. type_text writes "
+            "shift-down, key, shift-up in ONE evdev frame, so this failing would mean the "
+            "atomic-frame theory of #115 is right after all"
+        )
+
+        backend.key("ctrl+p")
+        got = _wait_for_state(state_path, lambda s: s.get("chord"), timeout=6).get("chord")
+        assert got == "ctrl+p", (
+            "the chord arrived without its modifier — #115 reproduced in the sandbox, which is "
+            "the evidence needed to go looking at the udev settle race rather than the framing"
+        )
     finally:
         backend.close()
 
@@ -261,6 +307,28 @@ def test_desktop_window_drives_nested_backend(tmp_path: Path) -> None:
 
         # capture() on a bound window targets the nested window
         assert len(win.capture()) > 1000
+    finally:
+        backend.close()
+
+
+@pytest.mark.skipif(_skip_reason() is not None, reason=_skip_reason() or "")
+def test_double_click_fires_the_apps_dblclick_binding_in_the_nested_sandbox(tmp_path: Path) -> None:
+    """#116: two rapid `click`s don't reliably coalesce into an OS-level dblclick, so a product
+    behaviour gated on one stayed unverifiable live. `click(count=2)` through the SAME DesktopWindow
+    `run_actions` drives must fire the toolkit's OWN <Double-Button-1> binding, which the app
+    records itself."""
+    state_path = tmp_path / "state.json"
+    state_path.write_text("{}")
+    backend = NestedBackend(display=98, size="700x600")
+    try:
+        backend.spawn([_tk_python(), str(PANEL), str(state_path), "360x420+120+90"])
+        widgets = _wait_for_state(state_path, lambda s: "widgets" in s)["widgets"]
+        win = DesktopWindow.find_in(backend, "interact-panel")
+        assert win is not None
+        wx, wy, ww, wh = widgets["Click Me"]
+        asyncio.run(win.click(wx + ww // 2 - win.x, wy + wh // 2 - win.y, count=2))
+        got = _wait_for_state(state_path, lambda s: s.get("double")).get("double")
+        assert got == "Click Me", f"the app saw no double-click (state double={got!r})"
     finally:
         backend.close()
 

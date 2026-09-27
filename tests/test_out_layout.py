@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from interact import debug_utils
 from interact.debug_utils import Debug
 
 
@@ -18,10 +19,18 @@ _INVOCATION_RE = re.compile(r"out/vscode/(\d{8}_\d{6})/(\d{6}_screenshot)$")
 
 
 class TestOutLayout:
-    def test_rejects_bare_out(self, tmp_path, monkeypatch):
+    @pytest.fixture(autouse=True)
+    def isolate_output(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(debug_utils.config, "debug_dir", tmp_path / "artifacts")
+
+    @pytest.mark.parametrize("path", ["out", "./out/", "nested/../out", "absolute"])
+    def test_rejects_bare_out(self, tmp_path, monkeypatch, path):
         monkeypatch.chdir(tmp_path)
+        if path == "absolute":
+            path = str(tmp_path / "artifacts/out")
         with pytest.raises(ValueError, match="must be a subdirectory of out/"):
-            Debug.new_invocation_dir("out", "screenshot")
+            Debug.new_invocation_dir(path, "screenshot")
+        assert not (tmp_path / "artifacts").exists()
 
     def test_new_invocation_dir_under_vscode(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)

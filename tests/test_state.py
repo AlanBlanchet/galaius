@@ -7,12 +7,12 @@ from PIL import Image
 
 from interact.state import (
     DesktopState,
-    InteractiveElement,
     PageState,
     StateChange,
     annotate_screenshot,
     format_element_list,
 )
+from tests.support import interactive_element, solid_png
 
 
 def _make_state(**overrides) -> PageState:
@@ -71,28 +71,15 @@ def test_multiple_changes():
     assert "new" in change.description
 
 
-def _make_element(index: int, ref: str | None = None, **kw) -> InteractiveElement:
-    defaults = dict(
-        role="button", name=f"Element {index}", x=10.0, y=20.0, width=80.0, height=40.0
-    )
-    return InteractiveElement(index=index, ref=ref, **(defaults | kw))
-
-
-def _make_png(width: int = 200, height: int = 100) -> bytes:
-    buf = io.BytesIO()
-    Image.new("RGB", (width, height), color=(240, 240, 240)).save(buf, format="PNG")
-    return buf.getvalue()
-
-
 # --- annotate_screenshot ---
 
 
 def test_annotate_screenshot_produces_valid_png():
     elements = [
-        _make_element(1, x=5, y=5, width=30, height=20),
-        _make_element(2, x=50, y=10, width=40, height=30),
+        interactive_element(1, x=5, y=5, w=30, h=20),
+        interactive_element(2, x=50, y=10, w=40, h=30),
     ]
-    result = annotate_screenshot(_make_png(), elements)
+    result = annotate_screenshot(solid_png(200, 100, (240, 240, 240)), elements)
     img = Image.open(io.BytesIO(result))
     assert img.format == "PNG"
     assert img.size == (200, 100)
@@ -102,7 +89,7 @@ def test_annotate_screenshot_produces_valid_png():
 
 
 def test_format_element_list():
-    elements = [_make_element(1, ref="e10"), _make_element(2)]
+    elements = [interactive_element(1, ref="e10"), interactive_element(2)]
     text = format_element_list(elements)
     assert "[1]" in text
     assert "[2]" in text
@@ -188,7 +175,7 @@ def test_desktop_capture_calls_atspi():
 def test_format_element_list_shows_the_tooltip_description():
     # An icon-only toolbar is unreadable without its tooltips; the popup can't render in a nested
     # capture, so the listing carries the AT-SPI description (Qt's toolTip) instead (#75).
-    el = _make_element(1, ref="e1")
+    el = interactive_element(1, ref="e1")
     el.description = "Run the reconstruction"
     text = format_element_list([el])
     assert "Run the reconstruction" in text

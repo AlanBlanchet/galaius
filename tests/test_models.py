@@ -10,8 +10,8 @@ from interact.models import (
     CircuitBreaker,
     Model,
     ModelCapability,
-    ModelChain,
 )
+from tests.support.models import model
 
 SAMPLE_JSON = json.dumps(
     {
@@ -64,29 +64,25 @@ def _clear_registry():
 
     Benchmark.registry() itself is NOT reset — the pre-registered grounding
     benchmarks (screenspot, screenspot_pro) must remain across tests.
+
+    ``_catalog_loaded`` is reset too — ``_reset()`` alone empties the registry but leaves that
+    flag set from an earlier ``load_registry(SAMPLE_JSON)`` call in this file, so the NEXT test
+    anywhere in the suite that asks ``Model.catalog()`` for the bundled catalog gets a
+    permanently empty one instead (`catalog()` only self-loads when the flag is still False) —
+    every criterion in that later test then quietly qualifies nothing.
     """
     Model._reset()
+    Model._catalog_loaded = False
     _clear_measured()
     yield
     Model._reset()
+    Model._catalog_loaded = False
     _clear_measured()
 
 
 def _register_models(*models: Model) -> None:
     for m in models:
         Model._register(m)
-
-
-def _make_model(
-    id: str = "test/model", caps=None, input_cost=1.0, output_cost=2.0, available=True
-):
-    return Model(
-        id=id,
-        provider="test",
-        capabilities=caps or {ModelCapability.VLM},
-        input_cost_per_million=input_cost,
-        output_cost_per_million=output_cost,
-    )
 
 
 class TestModelCapability:
@@ -99,7 +95,7 @@ class TestModelCapability:
         ],
     )
     def test_model_can_capability(self, cap, expected):
-        m = _make_model(caps={ModelCapability.VLM})
+        m = model(caps={ModelCapability.VLM})
         assert m.can(cap) is expected
 
     @pytest.mark.parametrize(
@@ -109,16 +105,88 @@ class TestModelCapability:
             (None, None, 0.0),
             (0.5, None, 0.5),
             (None, 3.0, 3.0),
+            (5.0, None, 5.0),
+            (None, 5.0, 5.0),
+            (0.0, 0.0, 0.0),
         ],
     )
     def test_model_cost_score(self, input_cost, output_cost, expected):
-        m = _make_model(input_cost=input_cost, output_cost=output_cost)
-        assert m.cost_score == expected
+        """The property and the free function it delegates to agree on every case."""
+        m = model(input_cost=input_cost, output_cost=output_cost)
+        assert m.cost_score == Model.cost_of(input_cost, output_cost) == expected
+
+    def test_live_scored_catalog_model_enters_registry_without_litellm_row(self, monkeypatch):
+        """A fresh live model catalog can outrun LiteLLM's release map; selection must still
+        see the model and carry its source price when present."""
+        from types import SimpleNamespace
+
+        from interact import model_catalog
+
+        monkeypatch.setattr(model_catalog, "live_scores", lambda: {"new-live": 90.0})
+        monkeypatch.setattr(model_catalog, "ranked_extras", lambda: {})
+        monkeypatch.setattr(model_catalog, "load_catalog", lambda: SimpleNamespace(models=[
+            model_catalog.ModelInfo(
+                id="vendor/new-live", input_cost_per_token=None,
+                output_cost_per_token=None, input_modalities=("text",),
+            ),
+        ]))
+        Model.load_registry(SAMPLE_JSON)
+        found = Model.by_id("new-live")
+        assert found is not None
+        assert found.provider == "vendor"
+        assert found.intelligence_score == 90.0
+        assert found.input_cost_per_million is None
+
+    def test_live_catalog_model_keeps_its_own_version_spelling(self, monkeypatch):
+        """The score join folds `5.6` and `5-6` together; the id a harness is launched with must
+        not. Registering the folded key sent codex `gpt-5-6-luna`, which it rejects outright:
+        "The 'gpt-5-6-luna' model is not supported when using Codex with a ChatGPT account"."""
+        from types import SimpleNamespace
+
+        from interact import model_catalog
+
+        monkeypatch.setattr(model_catalog, "live_scores", lambda: {"gpt-5-6-luna": 80.0})
+        monkeypatch.setattr(model_catalog, "ranked_extras", lambda: {})
+        monkeypatch.setattr(model_catalog, "load_catalog", lambda: SimpleNamespace(models=[
+            model_catalog.ModelInfo(
+                id="openai/gpt-5.6-luna", input_cost_per_token=None,
+                output_cost_per_token=None, input_modalities=("text",),
+            ),
+        ]))
+        Model.load_registry(SAMPLE_JSON)
+        assert Model.by_id("gpt-5.6-luna") is not None
+        assert Model.by_id("gpt-5-6-luna") is None
+
+    @pytest.mark.parametrize(
+        "score, cost, expected",
+        [
+            (0.5, 2.0, 0.25),
+            (0.5, 0.0, None),
+            (0.5, None, None),
+            (0.0, 1.0, 0.0),
+        ],
+    )
+    def test_quality_per_dollar(self, score, cost, expected):
+        assert Model.quality_per_dollar(score, cost) == expected
+
+    def test_recommendation_quality_per_dollar_uses_helper(self):
+        m = model(id="x/y", input_cost=2.0, output_cost=2.0)
+        bench = Benchmark(id="bx", name="b", description="b")
+        rec = BenchmarkRecommendation(
+            benchmark=bench, model=m, source="published", rank=1, score=0.8
+        )
+        assert rec.quality_per_dollar == Model.quality_per_dollar(0.8, 4.0) == 0.2
+
+        zero = model(id="z/z", input_cost=None, output_cost=None)
+        rec2 = BenchmarkRecommendation(
+            benchmark=bench, model=zero, source="published", rank=1, score=0.5
+        )
+        assert rec2.quality_per_dollar is None
 
 
 class TestModelFromLitellmId:
     def test_known_in_registry(self):
-        m = _make_model(id="anthropic/haiku")
+        m = model(id="anthropic/haiku")
         _register_models(m)
         result = Model.from_litellm_id("anthropic/haiku")
         assert result.id == "anthropic/haiku"
@@ -197,7 +265,7 @@ class TestRegistryMixin:
         assert Model.registry() is not Benchmark.registry()
         before_models = len(Model.registry())
         before_bench = len(Benchmark.registry())
-        m = _make_model(id="iso/check")
+        m = model(id="iso/check")
         Model._register(m)
         assert len(Model.registry()) == before_models + 1
         assert len(Benchmark.registry()) == before_bench
@@ -212,55 +280,15 @@ class TestCircuitBreakerTTL:
         assert cb.tripped("model-x") is False
 
 
-class TestModelChain:
-    def test_active_skips_tripped(self):
-        m1 = _make_model(id="model-a")
-        m2 = _make_model(id="model-b")
-        chain = ModelChain(role="image", preferences=[m1, m2])
-        cb = CircuitBreaker()
-        cb.trip("model-a")
-
-        with patch.object(Model, "is_available", return_value=True):
-            result = chain.active(breaker=cb)
-        assert result is not None
-        assert result.id == "model-b"
-
-    def test_active_skips_unavailable(self):
-        m1 = _make_model(id="model-a")
-        m2 = _make_model(id="model-b")
-        chain = ModelChain(role="image", preferences=[m1, m2])
-
-        def availability(self):
-            return self.id == "model-b"
-
-        with patch.object(Model, "is_available", availability):
-            result = chain.active()
-        assert result is not None
-        assert result.id == "model-b"
-
-    def test_from_config(self):
-        Model.load_registry(SAMPLE_JSON)
-        with patch.object(Model, "is_available", return_value=False):
-            chain = ModelChain.from_config(
-                role="image",
-                configured_model="gemini/gemini-2.0-flash",
-                recommendations=["claude-3-haiku-20240307"],
-            )
-        assert chain.preferences[0].id == "gemini/gemini-2.0-flash"
-        assert chain.preferences[1].id == "claude-3-haiku-20240307"
-        ids = [m.id for m in chain.preferences]
-        assert len(ids) == len(set(ids))
-
-
 class TestByCapability:
     def test_filters_and_sorts(self):
-        m_cheap = _make_model(
+        m_cheap = model(
             id="cheap", input_cost=0.1, output_cost=0.2, caps={ModelCapability.VLM}
         )
-        m_expensive = _make_model(
+        m_expensive = model(
             id="expensive", input_cost=5.0, output_cost=10.0, caps={ModelCapability.VLM}
         )
-        m_llm = _make_model(id="llm-only", caps={ModelCapability.LLM})
+        m_llm = model(id="llm-only", caps={ModelCapability.LLM})
         _register_models(m_expensive, m_cheap, m_llm)
 
         with patch.object(Model, "is_available", return_value=True):
@@ -301,13 +329,13 @@ class TestIsAvailable:
 
 class TestBenchmarkRecommend:
     def test_quality_per_dollar_orders_recommendations(self):
-        cheap = _make_model(
+        cheap = model(
             id="cheap-vlm",
             input_cost=0.5,
             output_cost=1.5,
             caps={ModelCapability.GUI_GROUNDING, ModelCapability.VLM},
         )
-        expensive = _make_model(
+        expensive = model(
             id="pricey-vlm",
             input_cost=10.0,
             output_cost=30.0,
@@ -331,10 +359,10 @@ class TestBenchmarkRecommend:
         assert recs[0].cost_per_million == 2.0
 
     def test_min_score_filter(self):
-        weak = _make_model(
+        weak = model(
             id="weak", caps={ModelCapability.GUI_GROUNDING, ModelCapability.VLM}
         )
-        strong = _make_model(
+        strong = model(
             id="strong", caps={ModelCapability.GUI_GROUNDING, ModelCapability.VLM}
         )
         _register_models(weak, strong)
@@ -349,10 +377,10 @@ class TestBenchmarkRecommend:
         assert [r.model.id for r in recs] == ["strong"]
 
     def test_models_without_score_excluded(self):
-        scored = _make_model(
+        scored = model(
             id="scored", caps={ModelCapability.GUI_GROUNDING, ModelCapability.VLM}
         )
-        unscored = _make_model(
+        unscored = model(
             id="unscored", caps={ModelCapability.GUI_GROUNDING, ModelCapability.VLM}
         )
         _register_models(scored, unscored)
@@ -381,7 +409,7 @@ class TestBenchmarkRecommend:
         by_cat: dict[str, set[str]] = {}
         for b in Benchmark.registry():
             by_cat.setdefault(b.category, set()).add(b.id)
-        assert "mmmu" in by_cat.get("image", set())
+        assert "mmmu_pro" in by_cat.get("image", set())
         assert "video_mme" in by_cat.get("video", set())
         assert {"screenspot", "screenspot_pro"} <= by_cat.get("gui_grounding", set())
         # every benchmark explains its task and links out
@@ -428,20 +456,20 @@ class TestBenchmarkRecommend:
 
 
 class TestPublishedTable:
-    def test_lib_recommendation_model_substring_match(self):
+    def test_lib_recommendation_model_exact_identity_match(self):
         bench = Benchmark.by_id("screenspot_pro")
         assert bench is not None
-        # Published lib_recommendation comes from the upstream cache; substring-match
-        # using whatever model_name happens to top the leaderboard today.
+        # Published identity is normalized for punctuation, never shortened by substring.
         rec_name = bench.published.lib_recommendation if bench.published else None
         assert rec_name is not None
-        token = rec_name.split()[0].lower()
         assert bench.lib_recommendation_model() is None
-        m = _make_model(
-            id=f"openai/{token}",
+        m = model(
+            id=f"openai/{rec_name}",
             caps={ModelCapability.GUI_GROUNDING, ModelCapability.VLM},
         )
         _register_models(m)
+        bench.published.freshness = "current"
+        next(e for e in bench.published.entries if e.model_name == rec_name).status = "eligible"
         matched = bench.lib_recommendation_model()
         assert matched is not None
         assert matched.id == m.id
@@ -452,12 +480,13 @@ class TestPublishedTable:
         assert bench.published is not None
         # Pick any entry from the live cache and assert the bridge wires it through.
         entry = bench.published.entries[0]
-        token = entry.model_name.split()[0].lower()
-        m = _make_model(
-            id=f"vendor/{token}",
+        m = model(
+            id=f"vendor/{entry.model_name}",
             caps={ModelCapability.GUI_GROUNDING, ModelCapability.VLM},
         )
         _register_models(m)
+        bench.published.freshness = "current"
+        entry.status = "eligible"
         pairs = bench.published_models_in_registry()
         assert any(
             model.id == m.id and abs(score - entry.score) < 1e-9
@@ -467,8 +496,8 @@ class TestPublishedTable:
 
 class TestRecommendBoth:
     def test_recommend_prefer_both_includes_both_sources(self):
-        m = _make_model(
-            id="openai/ui-tars-1.5-7b-vision",
+        m = model(
+            id="openai/ui-tars-1.5",
             input_cost=1.0,
             output_cost=2.0,
             caps={ModelCapability.GUI_GROUNDING, ModelCapability.VLM},
@@ -476,6 +505,10 @@ class TestRecommendBoth:
         _register_models(m)
         bench = Benchmark.by_id("screenspot_pro")
         assert bench is not None
+        assert bench.published is not None
+        bench.published.freshness = "current"
+        for entry in bench.published.entries:
+            entry.status = "eligible"
         bench._measured[m.id] = 0.7
 
         with patch.object(Model, "is_available", return_value=True):
@@ -485,13 +518,17 @@ class TestRecommendBoth:
         assert sources == {"published", "measured"}
 
     def test_benchmark_recommendation_source_field(self):
-        m = _make_model(
-            id="ui-tars-1.5-7b",
+        m = model(
+            id="ui-tars-1.5",
             caps={ModelCapability.GUI_GROUNDING, ModelCapability.VLM},
         )
         _register_models(m)
         bench = Benchmark.by_id("screenspot_pro")
         assert bench is not None
+        assert bench.published is not None
+        bench.published.freshness = "current"
+        for entry in bench.published.entries:
+            entry.status = "eligible"
         with patch.object(Model, "is_available", return_value=True):
             published_recs = bench.recommend(prefer="published")
         assert published_recs
@@ -500,3 +537,28 @@ class TestRecommendBoth:
         with patch.object(Model, "is_available", return_value=True):
             measured_recs = bench.recommend(prefer="measured")
         assert all(r.source == "measured" for r in measured_recs)
+
+
+def test_the_served_check_joins_two_spellings_of_one_model():
+    """The local daemon calls it `ollama/kimi-k3:cloud`; the Ollama cloud endpoint calls the same
+    model `ollama/kimi-k3`. Whichever answered discovery in THIS process is the spelling the
+    served set holds, so a pin written in the other one read as "not served" — and `interact
+    providers` printed "key missing" beside a model that answers a live call.
+
+    Every other cross-source join in this codebase goes through `bare_model_name`; this one
+    compared raw strings.
+    """
+    from interact.models import Model
+
+    saved = dict(Model._served)
+    try:
+        Model._served = {"ollama": {"ollama/kimi-k3"}}
+        assert Model(provider="ollama", id="ollama/kimi-k3", capabilities=set()).is_served()
+        assert Model(provider="ollama", id="ollama/kimi-k3:cloud", capabilities=set()).is_served(), (
+            "the local daemon's spelling of the very model the cloud endpoint named"
+        )
+        assert not Model(provider="ollama", id="ollama/never-pulled", capabilities=set()).is_served(), (
+            "a model the daemon really does not have is still absent"
+        )
+    finally:
+        Model._served = saved

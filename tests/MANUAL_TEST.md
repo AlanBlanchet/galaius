@@ -5,7 +5,7 @@ Test interact tools against the GTK test window.
 ## Setup
 
 ```bash
-uv run python tests/fixtures/test_gui.py &
+uv run python tests/fixtures/gui_app.py &
 ```
 
 ## Test Scenarios (ref-based, no raw coordinates)

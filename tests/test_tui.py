@@ -27,8 +27,8 @@ def test_mask(value, expected):
     assert _mask(value) == expected
 
 
-# A real grounding-capable id present in the model dropdown (so Select accepts it).
-_PICK = "gemini/gemini-3.5-flash"
+# A criterion string — free text, so any well-formed sentence round-trips through the Input.
+_PICK = "cap.vlm and aa.intelligence > 80%"
 
 
 async def test_tui_saves_config(temp_config):
@@ -36,57 +36,43 @@ async def test_tui_saves_config(temp_config):
     # set values and invoke the save handler directly — no dependence on tab-switch timing.
     app = InteractTUI()
     async with app.run_test():
-        app.query_one(_sid("image.model"), Select).value = _PICK  # pick from the dropdown
+        app.query_one(_sid("image.criteria"), Input).value = _PICK  # a free-text criterion
         app.query_one(_sid("desktop.target"), Select).value = "nested"
         app.query_one(_sid("desktop.nestedHeadless"), Switch).value = True
         app.query_one(_sid("debug.dir"), Input).value = "/tmp/x/out"
         app._save_config()
 
     data = UserConfig.read()
-    assert data["INTERACT_IMAGE_MODEL"] == _PICK
+    assert data["INTERACT_IMAGE_CRITERIA"] == _PICK
     assert data["INTERACT_DESKTOP_TARGET"] == "nested"
-    assert data["INTERACT_NESTED_HEADLESS"] == "true"
+    assert "INTERACT_NESTED_HEADLESS" not in data, "the declarative default is not a persisted override"
     assert data["INTERACT_DEBUG_DIR"] == "/tmp/x/out"
 
 
 async def test_tui_reset_to_defaults(temp_config):
-    from interact.cli.tui import _AUTO
-
-    UserConfig.set("image.model", _PICK)
+    UserConfig.set("image.criteria", _PICK)
     UserConfig.set("desktop.target", "nested")
     UserConfig.set("debug.dir", "/x/out")
     app = InteractTUI()
     async with app.run_test():
         app._reset_config()
-        assert app.query_one(_sid("image.model"), Select).value == _AUTO  # back to "(auto)"
+        assert app.query_one(_sid("image.criteria"), Input).value == ""  # back to blank/default
         assert app.query_one(_sid("desktop.target"), Select).value == "local"
     data = UserConfig.read()
-    assert "INTERACT_IMAGE_MODEL" not in data
+    assert "INTERACT_IMAGE_CRITERIA" not in data
     assert "INTERACT_DESKTOP_TARGET" not in data
     assert "INTERACT_DEBUG_DIR" not in data
 
 
-async def test_tui_save_auto_unsets_model(temp_config):
-    # Selecting "(auto)" must remove the persisted model (the clear-doesn't-save bug fix).
-    from interact.cli.tui import _AUTO
-
-    UserConfig.set("image.model", _PICK)
+async def test_tui_save_blank_unsets_criterion(temp_config):
+    # Clearing the field must remove the persisted criterion (the clear-doesn't-save bug fix) —
+    # a free-text field needs no auto-sentinel, blank already means "unset".
+    UserConfig.set("image.criteria", _PICK)
     app = InteractTUI()
     async with app.run_test():
-        app.query_one(_sid("image.model"), Select).value = _AUTO  # → unset
+        app.query_one(_sid("image.criteria"), Input).value = ""
         app._save_config()
-    assert "INTERACT_IMAGE_MODEL" not in UserConfig.read()
-
-
-async def test_tui_survives_stale_or_custom_model(temp_config):
-    """A persisted model id absent from the current registry — renamed/removed upstream, or a
-    self-hosted/custom id the user typed into config.env — must NOT crash the TUI at compose
-    (it used to raise InvalidSelectValueError). The value stays selected + selectable."""
-    UserConfig.set("image.model", "my-local/llava-custom")
-    app = InteractTUI()
-    async with app.run_test():  # previously: InvalidSelectValueError → whole TUI unopenable
-        sel = app.query_one(_sid("image.model"), Select)
-        assert sel.value == "my-local/llava-custom"
+    assert "INTERACT_IMAGE_CRITERIA" not in UserConfig.read()
 
 
 async def test_tui_survives_invalid_enum(temp_config):
@@ -96,30 +82,6 @@ async def test_tui_survives_invalid_enum(temp_config):
     async with app.run_test():
         sel = app.query_one(_sid("desktop.target"), Select)
         assert sel.value == by_key("desktop.target").default
-
-
-def test_model_options_trim_and_keep(monkeypatch):
-    """Model dropdowns list only providers you have keys for (+ auto + any configured value),
-    so the picker isn't a 128-item wall; with NO keys they show the full list to browse."""
-    from interact.cli import tui
-
-    s = by_key("image.model")
-    full = tui._select_options(s)
-
-    monkeypatch.setattr(tui, "_available_model_ids", lambda: None)  # no keys → browse everything
-    assert tui._model_options(s, "") == full
-
-    some = {v for _, v in full if v.startswith("gemini/")}
-    assert some and some != {v for _, v in full}  # a real strict subset exists to trim to
-    monkeypatch.setattr(tui, "_available_model_ids", lambda: set(some))
-    opts = tui._model_options(s, "")
-    vals = {v for _, v in opts}
-    assert tui._AUTO in vals  # (auto) always offered
-    assert vals - {tui._AUTO} <= some  # nothing from an un-keyed provider
-    assert len(opts) < len(full)  # actually trimmed
-
-    kept = tui._model_options(s, "weird/custom-x")  # a configured value survives the trim
-    assert "weird/custom-x" in {v for _, v in kept}
 
 
 async def test_tui_enter_in_key_input_sets_it(temp_config):
@@ -166,37 +128,6 @@ def test_select_value_always_in_its_options():
     assert tui._select_value(enum, "wayland-stale") == enum.default  # invalid → default
     assert tui._select_value(enum, "wayland-stale") in valid
     assert tui._select_value(enum, "nested") == "nested"  # valid kept
-    model = by_key("image.model")
-    assert tui._select_value(model, "any/custom-x") == "any/custom-x"  # custom kept
-    assert tui._select_value(model, "") == tui._AUTO  # blank → (auto)
-
-
-async def test_rebuild_model_options_preserves_selection(temp_config):
-    """Rebuilding the model dropdowns (after a key change) keeps the current selection and never
-    raises — the value is guaranteed to survive the re-trim."""
-    from interact.cli.tui import _AUTO
-
-    app = InteractTUI()
-    async with app.run_test():
-        sel = app.query_one(_sid("image.model"), Select)
-        sel.value = _AUTO
-        app._rebuild_model_options()
-        assert sel.value == _AUTO
-
-
-async def test_set_and_clear_key_refresh_model_dropdowns(temp_config):
-    """Setting or clearing a provider key re-trims the model menus (finding: they used to go
-    stale until a full TUI restart, though the Config hint promised otherwise)."""
-    app = InteractTUI()
-    async with app.run_test() as pilot:
-        app.query_one(TabbedContent).active = "tab-keys"
-        await pilot.pause()
-        calls = []
-        app._rebuild_model_options = lambda: calls.append(True)
-        app.query_one("#in-GEMINI_API_KEY", Input).value = "gm-test"
-        app._set_key("GEMINI_API_KEY")
-        app._clear_key("GEMINI_API_KEY")
-        assert len(calls) == 2  # once per set, once per clear
 
 
 async def test_tui_save_and_reset_show_a_toast(temp_config):
@@ -240,7 +171,7 @@ async def test_tui_quit_disabled_while_editing_a_control(temp_config):
     async with app.run_test() as pilot:
         app.query_one(TabbedContent).active = "tab-config"
         await pilot.pause()
-        app.query_one(_sid("image.model"), Select).focus()
+        app.query_one(_sid("image.criteria"), Input).focus()
         await pilot.pause()
         assert app.check_action("quit", ()) is False
         assert app.check_action("refresh", ()) is False

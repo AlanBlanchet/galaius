@@ -1,11 +1,14 @@
 """Tests for AT-SPI accessibility tree integration."""
 
+import io
 from unittest.mock import MagicMock, patch
 
 import pytest
+from PIL import Image
 
+from interact.desktop import atspi
 from interact.desktop.atspi import AtSpi
-from interact.desktop import DesktopElement, DesktopWindow
+from interact.desktop import CoordTransform, DesktopElement, DesktopWindow
 
 
 class _MockExtents:
@@ -607,3 +610,53 @@ def test_tooltip_description_is_captured(monkeypatch):
         result = AtSpi.detect_elements("Test Window")
 
     assert result is not None and result[0].description == "Run the reconstruction"
+
+
+# --- Live AT-SPI coords against a real running window (from test_desktop_integration.py) ----
+# Everything above mocks _Atspi; these need "Interact Test" actually running and skip otherwise.
+
+_WINDOW_TITLE = "Interact Test"
+
+
+@pytest.fixture
+def _live_window():
+    win = DesktopWindow.find(_WINDOW_TITLE)
+    if not win:
+        pytest.skip(f"{_WINDOW_TITLE} not running")
+    return win
+
+
+@pytest.fixture
+def _live_elements():
+    return atspi.AtSpi.detect_elements(_WINDOW_TITLE)
+
+
+@pytest.mark.desktop
+def test_atspi_coords_are_in_screenshot_space(_live_window, _live_elements):
+    assert _live_elements, "No elements detected"
+    screenshot = _live_window.capture()
+    img = Image.open(io.BytesIO(screenshot))
+    for el in _live_elements:
+        assert 0 <= el.x < img.width, f"Element '{el.name}' x={el.x} out of bounds"
+        assert 0 <= el.y < img.height, f"Element '{el.name}' y={el.y} out of bounds"
+
+
+@pytest.mark.desktop
+def test_xdotool_coords_within_window(_live_window, _live_elements):
+    assert _live_elements
+    offsets = CoordTransform.get(_live_window.wid)
+    first = _live_elements[0]
+    xdo_x, xdo_y = offsets.screenshot_to_xdotool(first.center_x, first.center_y)
+    # xdotool coords should be >= screenshot coords (offset by shadow if any)
+    assert xdo_x >= first.center_x
+    assert xdo_y >= first.center_y
+
+
+@pytest.mark.desktop
+def test_screenshot_contains_element_at_reported_coords(_live_window, _live_elements):
+    assert _live_elements
+    screenshot = _live_window.capture()
+    img = Image.open(io.BytesIO(screenshot))
+    first = _live_elements[0]
+    pixel = img.getpixel((first.center_x, first.center_y))
+    assert pixel is not None, "Could get pixel"

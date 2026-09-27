@@ -107,22 +107,21 @@ def test_gh_never_inherits_stdin(monkeypatch, tmp_path):
     assert captured.get("stdin") == fb.subprocess.DEVNULL
 
 
-def test_no_gh_opens_the_prefilled_issue_page_in_the_browser(monkeypatch, tmp_path):
-    """Default UX without gh: the user's browser opens straight on the prefilled new-issue
-    page so submitting is just pressing the button — no file hunting."""
+def test_no_gh_returns_the_prefilled_issue_page_without_opening_it(monkeypatch, tmp_path):
+    """Automated reporting returns an actionable URL but leaves navigation to the user."""
     opened: list[str] = []
     monkeypatch.setattr(fb.shutil, "which", lambda c: None)
     monkeypatch.setattr(fb, "_open_browser", lambda url: opened.append(url) or True)
     monkeypatch.setattr(fb, "FEEDBACK_DIR", tmp_path / "feedback")
     out = fb.report("crash on launch", "details here")
-    assert opened and f"https://github.com/{fb.REPO}/issues/new?" in opened[0]
-    assert "crash%20on%20launch" in opened[0]
-    assert "browser" in out.lower() and "submit" in out.lower()
-    assert not (tmp_path / "feedback").exists()  # delivered to the browser, not squirreled away
+    assert opened == []
+    assert f"https://github.com/{fb.REPO}/issues/new?" in out
+    assert "crash%20on%20launch" in out
+    assert "open" in out.lower() or "submit" in out.lower()
 
 
-def test_gh_failure_also_opens_the_browser(monkeypatch, tmp_path):
-    """gh present but failing (not authed, network, scopes) gets the same browser hand-off."""
+def test_gh_failure_returns_an_explicit_browser_action(monkeypatch, tmp_path):
+    """A background report must never launch a browser without an explicit user gesture."""
 
     class _Denied:
         returncode = 1
@@ -135,7 +134,9 @@ def test_gh_failure_also_opens_the_browser(monkeypatch, tmp_path):
     monkeypatch.setattr(fb, "_open_browser", lambda url: opened.append(url) or True)
     monkeypatch.setattr(fb, "FEEDBACK_DIR", tmp_path / "feedback")
     out = fb.report("t", "b")
-    assert opened
+    assert opened == []
+    assert f"https://github.com/{fb.REPO}/issues/new?" in out
+    assert "open" in out.lower() or "submit" in out.lower()
     assert "gh auth login" in out  # the reason still reaches the caller
 
 

@@ -10,16 +10,12 @@ from unittest.mock import AsyncMock
 import pytest
 
 from interact.browser import BrowserManager, SessionRegistry
-from interact.config import Config
-
-
-def _cfg(**kw) -> Config:
-    return Config(headless=True, browser_type="chromium", **kw)
+from tests.support import browser_config
 
 
 def _open_mgr(idle_for: float) -> BrowserManager:
     """A manager standing in for one with an open browser last used `idle_for` seconds ago."""
-    mgr = BrowserManager(_cfg())
+    mgr = BrowserManager(browser_config())
     mgr._browser = AsyncMock()  # a stand-in open Chromium whose .close() is awaitable
     mgr._playwright = None
     mgr._last_active = time.monotonic() - idle_for
@@ -32,14 +28,14 @@ def _open_mgr(idle_for: float) -> BrowserManager:
 def test_is_idle_only_when_a_browser_is_open_and_past_ttl():
     assert _open_mgr(idle_for=1000).is_idle(900) is True
     assert _open_mgr(idle_for=0).is_idle(900) is False
-    never_opened = BrowserManager(_cfg())  # _browser is None — nothing to reap
+    never_opened = BrowserManager(browser_config())  # _browser is None — nothing to reap
     assert never_opened.is_idle(900) is False
     assert never_opened.idle_seconds() is None
 
 
 @pytest.mark.asyncio
 async def test_close_idle_closes_only_stale_sessions():
-    reg = SessionRegistry(_cfg())
+    reg = SessionRegistry(browser_config())
     fresh, stale = _open_mgr(0), _open_mgr(1000)
     reg._sessions = {"default": fresh, "old": stale}
     stale_browser = stale._browser  # close() nulls _browser, so grab it first
@@ -51,7 +47,7 @@ async def test_close_idle_closes_only_stale_sessions():
 
 @pytest.mark.asyncio
 async def test_close_idle_is_a_noop_when_ttl_nonpositive():
-    reg = SessionRegistry(_cfg())
+    reg = SessionRegistry(browser_config())
     reg._sessions = {"old": _open_mgr(99999)}
     assert await reg.close_idle(0) == []
     assert reg.active() == ["old"]  # TTL<=0 disables auto-close entirely
@@ -61,7 +57,7 @@ async def test_close_idle_is_a_noop_when_ttl_nonpositive():
 async def test_idle_close_stashes_login_and_reopen_restores_it():
     """#36: an idle close must not log the agent out — storage_state is stashed before close and
     handed to the next manager, which restores it lazily."""
-    reg = SessionRegistry(_cfg())
+    reg = SessionRegistry(browser_config())
     stale = _open_mgr(1000)
     stash = {"cookies": [{"name": "sid", "value": "abc"}], "_url": "https://app/x"}
     stale.save_state = AsyncMock(return_value=stash)
@@ -79,7 +75,7 @@ async def test_idle_close_stashes_login_and_reopen_restores_it():
 
 @pytest.mark.asyncio
 async def test_ensure_ready_restores_pending_state_instead_of_a_fresh_context():
-    mgr = BrowserManager(_cfg())
+    mgr = BrowserManager(browser_config())
     mgr._pending_state = {"cookies": []}
     calls: list[str] = []
     mgr.load_state = AsyncMock(side_effect=lambda s: calls.append("load"))
@@ -93,7 +89,7 @@ async def test_ensure_ready_restores_pending_state_instead_of_a_fresh_context():
 
 @pytest.mark.asyncio
 async def test_stash_is_bounded():
-    reg = SessionRegistry(_cfg())
+    reg = SessionRegistry(browser_config())
     reg._stash = {f"s{i}": {"cookies": []} for i in range(SessionRegistry._MAX_STASH)}
     stale = _open_mgr(1000)
     stale.save_state = AsyncMock(return_value={"cookies": [{"name": "n"}]})
@@ -107,7 +103,7 @@ async def test_stash_is_bounded():
 async def test_use_resets_the_idle_clock():
     """A real browser: any action funnels through get_page, which must refresh last-active so the
     reaper never closes a session that's still in use."""
-    mgr = BrowserManager(_cfg())
+    mgr = BrowserManager(browser_config())
     try:
         await mgr.ensure_ready()
     except Exception as exc:  # no launchable chromium (bare CI)

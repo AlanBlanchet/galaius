@@ -38,7 +38,7 @@ state_file = sys.argv[1] if len(sys.argv) > 1 else None
 
 
 def main() -> None:
-    state = {"last": "", "count": 0, "typed": ""}
+    state = {"last": "", "count": 0, "typed": "", "focus": "", "double": ""}
 
     def persist() -> None:
         if state_file:
@@ -68,12 +68,20 @@ def main() -> None:
         status.config(text=f"{label}  (count={state['count']})")
         persist()
 
+    def record_double(label: str) -> None:
+        # The toolkit's OWN double-click detection (two presses within Tk's interval, at the same
+        # spot) — so a test can tell a real dblclick from two clicks that never coalesced (#116).
+        state["double"] = label
+        status.config(text=f"double: {label}")
+        persist()
+
     widgets = {}
     for label, color in (("Click Me", "#3060c0"), ("Increment", "#2a9d4a"), ("Reset", "#b03030")):
         button = tk.Button(root, text=label, bg=color, fg="white", activebackground=color,
                            font=("TkDefaultFont", 14, "bold"), height=2,
                            command=lambda lbl=label: record(lbl))
         button.pack(fill="x", padx=16, pady=8)
+        button.bind("<Double-Button-1>", lambda _e, lbl=label: record_double(lbl))
         widgets[label] = button
 
     tk.Label(root, text="Enter text:", bg="#f4f4f8", anchor="w").pack(fill="x", padx=16)
@@ -85,6 +93,18 @@ def main() -> None:
     # the test sandboxes) a click doesn't assign keyboard focus, so typed keys would go
     # nowhere. Real apps can force focus; doing so makes typing land with or without a WM.
     entry.bind("<Button-1>", lambda _e: entry.focus_force())
+
+    def on_focus(name: str):
+        # Report where keyboard focus IS, so a test can WAIT for it before typing: under a bare X
+        # server a click takes measurable time to become focus, and keys sent before that land
+        # nowhere — the whole-suite flake behind #130.
+        def handler(_event: "tk.Event") -> None:
+            state["focus"] = name
+            persist()
+        return handler
+
+    entry.bind("<FocusIn>", on_focus("Enter text"))
+    entry.bind("<FocusOut>", on_focus(""))
 
     root.attributes("-topmost", True)  # stay above other windows so clicks reliably land
 
@@ -109,6 +129,18 @@ def main() -> None:
         persist()
 
     entry.bind("<KeyRelease>", on_type)
+
+    # A real Ctrl-chord, recorded by the app itself. #115 reports that a chord dispatched through
+    # the sandbox arrives UNMODIFIED — the app sees a bare keystroke — and every attempt to settle
+    # that has been reasoning about evdev frames rather than evidence. A toolkit binding either
+    # fires or it does not.
+    def on_chord(_event: "tk.Event") -> str:
+        state["chord"] = "ctrl+p"
+        status.config(text="chord: ctrl+p")
+        persist()
+        return "break"  # so the keystroke does not also fall through to the entry
+
+    root.bind_all("<Control-Key-p>", on_chord)
 
     persist()
     root.mainloop()

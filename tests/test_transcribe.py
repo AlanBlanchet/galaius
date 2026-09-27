@@ -6,11 +6,15 @@ hear the clip (Gemini, gpt-4o-audio) and over the transcript otherwise (Whisper)
 are mocked — unit tests never spend (conftest also blocks the transcription endpoints)."""
 
 import base64
+from pathlib import Path
 
 import pytest
 
 import interact.server as srv
-from interact.vision import VLMResult, _audio_content, MediaItem, transcribe_audio
+import interact.vision.core as vis
+from interact.config import Config
+from interact.vision import MediaItem, VLMResult
+from interact.vision.core import _audio_content, transcribe_audio
 
 
 class _FakeConfig:
@@ -18,12 +22,32 @@ class _FakeConfig:
 
     def __init__(self, audio: str, image: str = "gemini/img-model"):
         self._audio, self._image = audio, image
+        self.media_backend = "session"
+        self.media_billing = "api_allowed"
+        self.media_provider_order = ("claude",)
+        self.media_session_no_extra_usage_confirmed_for = ("claude",)
+        self.media_max_items = 16
+        self.media_max_total_bytes = 50 * 1024 * 1024
+        self.media_max_context_chars = 32 * 1024
+        self.criteria_weights = ""
 
     def refresh(self):
         return self
 
+    def criteria_for(self, role):
+        return ""  # blank → the criterion-selection block is skipped, same as an unset field
+
     def resolve_model(self, role, override="", breaker=None):
         return override or {"audio": self._audio, "image": self._image}.get(role, self._image)
+
+    def media_api_enabled(self):
+        return False
+
+    def media_sessions_enabled(self):
+        return True
+
+    def ranked_models(self, role, breaker=None):
+        return []
 
 
 def _audio_file(tmp_path, name="clip.mp3", data=b"ID3audio"):
@@ -32,11 +56,42 @@ def _audio_file(tmp_path, name="clip.mp3", data=b"ID3audio"):
     return str(p)
 
 
+@pytest.mark.asyncio
+async def test_session_only_audio_policy_precedes_file_read_and_model_resolution(
+    monkeypatch, tmp_path
+) -> None:
+    fake_config = _FakeConfig(audio="whisper-1")
+    fake_config.media_billing = "session_only"
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("session-only audio performed I/O or resolved an API model")
+
+    fake_config.resolve_model = forbidden
+    monkeypatch.setattr(srv.tools_vision, "config", fake_config)
+    audio_path = tmp_path / "must-not-be-read.mp3"
+    read_bytes = Path.read_bytes
+
+    def guarded_read(path):
+        if path == audio_path:
+            forbidden()
+        return read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", guarded_read)
+
+    result = await srv.transcribe(str(audio_path))
+
+    assert "subscription sessions cannot transcribe audio" in result
+
+
+def test_transcribe_public_copy_names_only_proven_session_media_provider() -> None:
+    copy = " ".join((srv.transcribe.__doc__ or "").split())
+    assert "Claude subscription sessions" in copy
+    assert "Codex" not in copy
+
+
 # ── transcribe_audio (the litellm transcription endpoint) ───────────────────────────────────
 @pytest.mark.asyncio
-async def test_transcribe_audio_calls_the_transcription_endpoint(monkeypatch):
-    import interact.vision.core as vis
-
+async def test_transcribe_audio_calls_the_transcription_endpoint(monkeypatch, media_output_root):
     captured: dict = {}
 
     class _Resp:
@@ -49,24 +104,28 @@ async def test_transcribe_audio_calls_the_transcription_endpoint(monkeypatch):
 
     monkeypatch.setattr(vis.litellm, "validate_environment", lambda m: {"keys_in_environment": True})
     monkeypatch.setattr(vis.litellm, "atranscription", fake_at)
-    r = await transcribe_audio(b"AUDIOBYTES", model="whisper-1", mime_type="audio/wav")
+    r = await transcribe_audio(
+        b"RIFF\x08\x00\x00\x00WAVE", model="whisper-1", mime_type="audio/wav",
+        config=Config(debug_dir=media_output_root, media_backend="api", media_billing="api_allowed"),
+    )
     assert r.text == "the quick brown fox" and r.model == "whisper-1"
-    assert captured["model"] == "whisper-1" and captured["read"] == b"AUDIOBYTES"
+    assert captured["model"] == "whisper-1" and captured["read"] == b"RIFF\x08\x00\x00\x00WAVE"
 
 
 @pytest.mark.asyncio
 async def test_transcribe_audio_missing_key_is_friendly_not_a_crash(monkeypatch):
-    import interact.vision.core as vis
-
     monkeypatch.setattr(vis.litellm, "validate_environment", lambda m: {"keys_in_environment": False})
     r = await transcribe_audio(b"x", model="whisper-1")
     assert "unavailable" in r.text.lower() and r.elapsed == 0
 
 
-def test_audio_content_builds_an_input_audio_part_passthrough_wav():
-    part = _audio_content(MediaItem.from_bytes(b"RIFFWAVEDATA", "audio", "audio/wav"))
+@pytest.mark.asyncio
+async def test_audio_content_builds_an_input_audio_part_passthrough_wav():
+    part = await _audio_content(
+        MediaItem.from_bytes(b"RIFF\x08\x00\x00\x00WAVE", "audio", "audio/wav"), Config()
+    )
     assert part["type"] == "input_audio" and part["input_audio"]["format"] == "wav"
-    assert base64.b64decode(part["input_audio"]["data"]) == b"RIFFWAVEDATA"
+    assert base64.b64decode(part["input_audio"]["data"]) == b"RIFF\x08\x00\x00\x00WAVE"
 
 
 # ── the transcribe tool ─────────────────────────────────────────────────────────────────────
@@ -75,32 +134,54 @@ async def test_transcribe_no_query_returns_the_transcript(monkeypatch, tmp_path)
     monkeypatch.setattr(srv.tools_vision, "config", _FakeConfig(audio="whisper-1"))
     captured: dict = {}
 
-    async def fake_transcribe(data, *, model, mime_type="audio/mpeg"):
-        captured.update(model=model, mime=mime_type)
+    async def fake_transcribe(data, *, model, mime_type="audio/mpeg", config=None):
+        captured.update(
+            model=model,
+            mime=mime_type,
+            backend=config.media_backend,
+            billing=config.media_billing,
+        )
         return VLMResult(text="hello world", elapsed=0.4, model=model)
 
     monkeypatch.setattr(srv.tools_vision, "transcribe_audio", fake_transcribe)
     out = await srv.transcribe(_audio_file(tmp_path))
     assert "hello world" in out
     assert captured["model"] == "whisper-1" and captured["mime"] == "audio/mpeg"
+    assert captured["backend"] == "session" and captured["billing"] == "api_allowed"
 
 
 @pytest.mark.asyncio
 async def test_transcribe_query_with_audio_chat_model_hears_the_clip(monkeypatch, tmp_path):
     """A Gemini-class model takes the audio directly (acoustic understanding) — media_type='audio',
     no transcription round-trip."""
-    monkeypatch.setattr(srv.tools_vision, "config", _FakeConfig(audio="gemini/gemini-2.5-flash"))
+    fake_config = _FakeConfig(audio="gemini/gemini-2.5-flash")
+    monkeypatch.setattr(srv.tools_vision, "config", fake_config)
+    monkeypatch.setattr(srv.vlm, "config", fake_config)
     captured: dict = {}
 
-    async def fake_vlm(data, context, query=None, media_type="image", mime="image/png", **kw):
-        captured.update(media_type=media_type, query=query, mime=mime)
+    async def api(media, context, config, prompt, max_tokens, response_format, model, _dispatch_state):
+        captured.update(
+            media_type=media[0].media_type,
+            query=prompt,
+            mime=media[0].mime_type,
+            backend=config.media_backend,
+            billing=config.media_billing,
+        )
         return VLMResult(text="two speakers, calm tone", elapsed=1.0, model="gemini")
 
-    monkeypatch.setattr(srv.vlm, "_vlm", fake_vlm)
-    out = await srv.transcribe(_audio_file(tmp_path, "v.webm", b"WEBM"), query="how many speakers?")
+    async def forbidden_session(*args, **kwargs):
+        raise AssertionError("audio-chat query reached a visual session")
+
+    monkeypatch.setattr(vis, "_api_media_completion", api)
+    monkeypatch.setattr(vis, "subscription_media_completion", forbidden_session)
+    out = await srv.transcribe(
+        _audio_file(tmp_path, "v.webm", b"\x1aE\xdf\xa3audio"),
+        query="how many speakers?",
+    )
     assert "two speakers" in out
     assert captured["media_type"] == "audio" and captured["query"] == "how many speakers?"
     assert captured["mime"] == "audio/webm"
+    assert captured["backend"] == "session" and captured["billing"] == "api_allowed"
 
 
 @pytest.mark.asyncio
@@ -110,19 +191,28 @@ async def test_transcribe_query_with_transcription_only_model_answers_over_trans
     monkeypatch.setattr(srv.tools_vision, "config", _FakeConfig(audio="whisper-1", image="gemini/img"))
     captured: dict = {}
 
-    async def fake_transcribe(data, *, model, mime_type="audio/mpeg"):
+    async def fake_transcribe(data, *, model, mime_type="audio/mpeg", config=None):
         return VLMResult(text="quarterly revenue grew 12 percent", elapsed=0.3, model=model)
 
-    async def fake_analyze(media, context, config, prompt=None, **kw):
-        captured.update(media=media, context=context, prompt=prompt)
+    async def session(
+        media, context, config, prompt, response_format, explicit_model, _dispatch_state,
+    ):
+        captured.update(
+            media=media,
+            context=context,
+            prompt=prompt,
+            backend=config.media_backend,
+            billing=config.media_billing,
+        )
         return VLMResult(text="Revenue +12%.", elapsed=0.2, model="gemini/img")
 
     monkeypatch.setattr(srv.tools_vision, "transcribe_audio", fake_transcribe)
-    monkeypatch.setattr(srv.tools_vision, "analyze_media", fake_analyze)
+    monkeypatch.setattr(vis, "subscription_media_completion", session)
     out = await srv.transcribe(_audio_file(tmp_path), query="summarize the numbers")
     assert "Revenue +12%." in out and "quarterly revenue grew 12 percent" in out  # answer + transcript
     assert captured["media"] == [] and captured["prompt"] == "summarize the numbers"  # text-only over transcript
     assert "quarterly revenue" in captured["context"]
+    assert captured["backend"] == "session" and captured["billing"] == "api_allowed"
 
 
 @pytest.mark.asyncio

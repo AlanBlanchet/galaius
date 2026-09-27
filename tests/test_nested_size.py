@@ -1,6 +1,9 @@
-"""launch_app display sizing: a phone/tablet app needs a correctly-shaped nested screen, not the
-1280x800 desktop default. A `size`/`device` picks the resolution, and asking for a new size
-respawns the shared sandbox (the first app's size no longer wins forever)."""
+"""launch_app sizing + `_get_sandbox` respawn on size change.
+
+A phone/tablet app needs a correctly-shaped nested screen, not the 1280x800 desktop
+default. A `size`/`device` picks the resolution, and asking for a new size respawns the
+shared sandbox (the first app's size no longer wins forever).
+"""
 
 import pytest
 
@@ -42,25 +45,32 @@ def _restore_sandbox():
     srv.sandbox._sandbox = saved
 
 
+class _SizedFakeBackend:
+    """Records what size the sandbox was constructed at + reports alive/close cleanly."""
+
+    def __init__(self, display, size, headless=False):
+        self.size = size
+        self._alive = True
+
+    def is_alive(self):
+        return self._alive
+
+    def touch(self):
+        pass
+
+    def close(self):
+        self._alive = False
+
+
 def test_get_sandbox_respawns_only_on_size_change(monkeypatch, _restore_sandbox):
     created: list[str] = []
 
-    class FakeBackend:
+    class Backend(_SizedFakeBackend):
         def __init__(self, display, size, headless=False):
-            self.size = size
-            self._alive = True
+            super().__init__(display, size, headless)
             created.append(size)
 
-        def is_alive(self):
-            return self._alive
-
-        def touch(self):
-            pass
-
-        def close(self):
-            self._alive = False
-
-    monkeypatch.setattr("interact.desktop.NestedBackend", FakeBackend)
+    monkeypatch.setattr("interact.desktop.NestedBackend", Backend)
 
     b1 = srv._get_sandbox("412x915")
     assert b1.size == "412x915"
@@ -73,28 +83,18 @@ def test_get_sandbox_respawns_only_on_size_change(monkeypatch, _restore_sandbox)
 
 def test_get_sandbox_without_size_never_resizes_a_running_sandbox(monkeypatch, _restore_sandbox):
     """A phone/tablet sandbox must survive every attach/capture tool. Those reach it via
-    _resolve_nested_target → _get_sandbox() with NO size; collapsing None to the 1280x800 default
-    used to respawn the phone sandbox landscape on the FIRST screenshot/run_actions — the user saw
-    the window open portrait, close, and reopen landscape, then the tools reported an empty sandbox.
-    size=None means "attach to whatever is running", never resize."""
+    _resolve_nested_target → _get_sandbox() with NO size; collapsing None to the 1280x800
+    default used to respawn the phone sandbox landscape on the FIRST screenshot/run_actions —
+    the user saw the window open portrait, close, and reopen landscape, then the tools
+    reported an empty sandbox. size=None means "attach to whatever is running", never resize."""
     created: list[str] = []
 
-    class FakeBackend:
+    class Backend(_SizedFakeBackend):
         def __init__(self, display, size, headless=False):
-            self.size = size
-            self._alive = True
+            super().__init__(display, size, headless)
             created.append(size)
 
-        def is_alive(self):
-            return self._alive
-
-        def touch(self):
-            pass
-
-        def close(self):
-            self._alive = False
-
-    monkeypatch.setattr("interact.desktop.NestedBackend", FakeBackend)
+    monkeypatch.setattr("interact.desktop.NestedBackend", Backend)
     monkeypatch.setattr(srv.config, "nested_size", "1280x800")
 
     phone = srv._get_sandbox("412x915")  # launch_app(device="phone")
@@ -110,22 +110,12 @@ def test_get_sandbox_without_size_creates_at_default_when_none_running(monkeypat
     path must work cold, it just must not RESIZE an existing one."""
     created: list[str] = []
 
-    class FakeBackend:
+    class Backend(_SizedFakeBackend):
         def __init__(self, display, size, headless=False):
-            self.size = size
-            self._alive = True
+            super().__init__(display, size, headless)
             created.append(size)
 
-        def is_alive(self):
-            return self._alive
-
-        def touch(self):
-            pass
-
-        def close(self):
-            self._alive = False
-
-    monkeypatch.setattr("interact.desktop.NestedBackend", FakeBackend)
+    monkeypatch.setattr("interact.desktop.NestedBackend", Backend)
     monkeypatch.setattr(srv.config, "nested_size", "1280x800")
 
     b = srv._get_sandbox()

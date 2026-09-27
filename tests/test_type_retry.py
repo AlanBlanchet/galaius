@@ -1,48 +1,35 @@
 """Keyboard delivery into a toolkit field (#59): a focusing click leaves Flutter's text-input
 connection not-yet-ready, so XTEST keystrokes are dropped non-deterministically. dispatch verifies
 the keys registered (band-scoped pixel diff at the focus point) and re-types if they didn't."""
-import io
-
 import pytest
-from PIL import Image
 
 from interact.actions.dispatch import _field_changed, _type_desktop
-
-
-def _png(size=(500, 400), block=None) -> bytes:
-    """A grayscale PNG, optionally with a black rectangle ``block`` = (x0, y0, x1, y1)."""
-    img = Image.new("L", size, 255)
-    if block:
-        x0, y0, x1, y1 = block
-        for x in range(x0, x1):
-            for y in range(y0, y1):
-                img.putpixel((x, y), 0)
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    return buf.getvalue()
+from tests.support import solid_png
 
 
 def test_field_changed_detects_typed_text():
     # A field that filled with glyphs (a big block in the band around the focus point) → changed.
-    before = _png()
-    after = _png(block=(60, 80, 240, 105))  # ~180×25 px of "text" in the band
+    before = solid_png((500, 400), 255, mode="L")
+    after = solid_png((500, 400), 255, mode="L", block=(60, 80, 240, 105))  # ~180×25 px "text" band
     assert _field_changed(before, after, 150, 92) is True
 
 
 def test_field_changed_ignores_caret_blink():
     # A 2-px caret toggling on is far below the threshold → NOT a change (so we never double-type).
-    before = _png()
-    after = _png(block=(62, 80, 64, 100))
+    before = solid_png((500, 400), 255, mode="L")
+    after = solid_png((500, 400), 255, mode="L", block=(62, 80, 64, 100))
     assert _field_changed(before, after, 150, 92) is False
 
 
 def test_field_changed_identical_is_false():
-    same = _png()
+    same = solid_png((500, 400), 255, mode="L")
     assert _field_changed(same, same, 150, 92) is False
 
 
 def test_field_changed_size_mismatch_is_true():
-    assert _field_changed(_png((500, 400)), _png((400, 300)), 150, 92) is True
+    a = solid_png((500, 400), 255, mode="L")
+    b = solid_png((400, 300), 255, mode="L")
+    assert _field_changed(a, b, 150, 92) is True
 
 
 class _FakeWin:

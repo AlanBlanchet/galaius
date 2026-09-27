@@ -1,24 +1,27 @@
-"""A wheel-scroll must never mutate the window it is scrolling, and a caller must be able to
-resize a sandbox window without shelling out.
+"""Window-safety: a wheel-scroll must never mutate the window; a resize is first-class.
 
-- #82: a wheel event over a Qt scroll area RESIZED the whole app window (1600x1200 -> 1600x2000)
-  instead of scrolling the widget — twice in one session. A bigger window also reveals content
-  that was genuinely clipped at the real size, so it manufactures false layout verdicts.
-- #90: the same misrouted wheel took the window down entirely; the next call reported an empty
-  sandbox with no explanation, and ~10 minutes of app state was lost.
-- #84 (part 1): there was no action to resize a desktop/nested window post-launch; the reporter
-  fell back to ``xdotool windowsize`` outside the MCP surface.
+- #82: a wheel event over a Qt scroll area RESIZED the whole app window (1600x1200 ->
+  1600x2000) instead of scrolling the widget — twice in one session. A bigger window also
+  reveals content that was genuinely clipped at the real size, so it manufactures false
+  layout verdicts.
+- #90: the same misrouted wheel took the window down entirely; the next call reported an
+  empty sandbox with no explanation, and ~10 minutes of app state was lost.
+- #84 (part 1): there was no action to resize a desktop/nested window post-launch; the
+  reporter fell back to ``xdotool windowsize`` outside the MCP surface.
 - #88 (part 1): refs cached before a layout change silently relabel a different widget.
 """
-
-import asyncio
 
 import pytest
 
 from interact.desktop import DesktopElement, DesktopWindow
+from tests.support.desktop import desktop_window
 
 
-class FakeBackend:
+
+import asyncio
+
+
+class _SafetyBackend:
     """A nested backend stand-in that records input and lets a test script the window geometry."""
 
     def __init__(self, geometry=(0, 0, 800, 600)):
@@ -52,16 +55,14 @@ class FakeBackend:
         return "Segmentation fault"
 
 
-def _win(backend):
-    win = DesktopWindow(name="App", wid=123, x=0, y=0, w=800, h=600)
-    win._backend = backend
-    return win
+def _bound_win(backend):
+    return desktop_window(name="App", backend=backend)
 
 
 def test_scroll_restores_a_window_the_wheel_resized():
-    """#82: whatever made the window grow, the caller asked to scroll a WIDGET — the window's own
-    geometry is restored so a later capture measures the size the caller set up."""
-    be = FakeBackend()
+    """#82: whatever made the window grow, the caller asked to scroll a WIDGET — the window's
+    own geometry is restored so a later capture measures the size the caller set up."""
+    be = _SafetyBackend()
 
     original_scroll = be.scroll
 
@@ -70,29 +71,29 @@ def test_scroll_restores_a_window_the_wheel_resized():
         be.geometry = (0, 0, 800, 1000)  # the misrouted wheel resized the window
 
     be.scroll = growing_scroll
-    asyncio.run(_win(be).scroll(400, 300, "down", 3))
+    asyncio.run(_bound_win(be).scroll(400, 300, "down", 3))
     assert be.geometry[2:] == (800, 600), "the window was left at the wheel-resized size"
     assert be.resized[-1] == (800, 600)
 
 
 def test_scroll_leaves_an_unchanged_window_alone():
-    be = FakeBackend()
-    asyncio.run(_win(be).scroll(400, 300, "down", 2))
+    be = _SafetyBackend()
+    asyncio.run(_bound_win(be).scroll(400, 300, "down", 2))
     assert be.resized == []
     assert be.scrolls == [(-2, False)]
 
 
 def test_scroll_reports_a_window_that_died_under_the_wheel():
-    """#90: the window vanished mid-scroll. The caller must get a named cause (and the app's own
-    output), not a later mystery "the sandbox has no windows"."""
-    be = FakeBackend()
+    """#90: the window vanished mid-scroll. The caller must get a named cause (and the app's
+    own output), not a later mystery "the sandbox has no windows"."""
+    be = _SafetyBackend()
 
     def killing_scroll(clicks, horizontal=False):
         be.alive = False
 
     be.scroll = killing_scroll
     with pytest.raises(RuntimeError) as exc:
-        asyncio.run(_win(be).scroll(400, 300, "down", 3))
+        asyncio.run(_bound_win(be).scroll(400, 300, "down", 3))
     msg = str(exc.value)
     assert "scroll" in msg.lower() and "App" in msg
     assert "Segmentation fault" in msg, "the app's own output must be surfaced as the cause"
@@ -100,8 +101,8 @@ def test_scroll_reports_a_window_that_died_under_the_wheel():
 
 def test_resize_sets_the_window_size():
     """#84: a first-class resize, so verifying a narrow layout needs no xdotool shell-out."""
-    be = FakeBackend()
-    assert asyncio.run(_win(be).resize(500, 900)) is True
+    be = _SafetyBackend()
+    assert asyncio.run(_bound_win(be).resize(500, 900)) is True
     assert be.resized == [(500, 900)]
 
 
@@ -119,8 +120,8 @@ def test_resize_refuses_a_screen_target():
     ],
 )
 def test_detection_stale_flags_a_layout_change_since_detection(detected_geometry, current, stale):
-    """#88: refs detected under one geometry silently relabel other widgets after a layout change.
-    The resolver can now SAY so instead of clicking the wrong thing quietly."""
+    """#88: refs detected under one geometry silently relabel other widgets after a layout
+    change. The resolver can now SAY so instead of clicking the wrong thing quietly."""
     wid = 4242
     DesktopElement.invalidate(wid)
     detected = [DesktopElement(index=1, x=10, y=10, w=40, h=20, role="button", name="Params")]
@@ -136,3 +137,5 @@ def test_detection_stale_is_silent_without_a_detection():
     DesktopElement.invalidate(77)
     win = DesktopWindow(name="App", wid=77, x=0, y=0, w=800, h=600)
     assert DesktopElement.detection_stale(77, win) is None
+
+

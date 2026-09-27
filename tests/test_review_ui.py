@@ -16,6 +16,7 @@ from interact.vision.critique import (
     parse_review,
 )
 from interact.state import InteractiveElement
+from tests.support import interactive_element
 from interact.vision import VLMResult
 
 
@@ -125,7 +126,7 @@ async def test_review_ui_degrades_to_raw_text_when_schema_unparsable(monkeypatch
 
 
 def _el(ref: str, name: str = "Save") -> InteractiveElement:
-    return InteractiveElement(ref=ref, role="button", name=name, x=5, y=5, w=80, h=24, index=1)
+    return interactive_element(ref=ref, name=name, x=5, y=5, w=80, h=24)
 
 
 def test_format_grounding_lists_ref_role_name_and_position():

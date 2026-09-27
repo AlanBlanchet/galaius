@@ -48,7 +48,7 @@ def _setup_debug():
 
 @pytest.fixture(scope="session")
 def gtk_window():
-    gui_path = Path(__file__).parents[1] / "fixtures" / "test_gui.py"
+    gui_path = Path(__file__).parents[1] / "fixtures" / "gui_app.py"
     proc = subprocess.Popen(
         [sys.executable, str(gui_path)],
         stdout=subprocess.DEVNULL,

@@ -1,0 +1,25 @@
+{
+  "before": {
+    "source_url": "https://example.test/authoritative-board",
+    "retrieved": "2026-09-05",
+    "freshness": "current",
+    "entries": [
+      {"model_name": "visual-a", "model_id": "openai/visual-a", "score": 0.9, "normalized_score": 0.9, "status": "eligible"},
+      {"model_name": "visual-b", "model_id": "openai/visual-b", "score": 0.6, "normalized_score": 0.6, "status": "eligible"}
+    ]
+  },
+  "after": {
+    "source_url": "https://example.test/authoritative-board",
+    "retrieved": "2026-09-06",
+    "freshness": "current",
+    "entries": [
+      {"model_name": "visual-a", "model_id": "openai/visual-a", "score": 0.6, "normalized_score": 0.6, "status": "eligible"},
+      {"model_name": "visual-b", "model_id": "openai/visual-b", "score": 0.95, "normalized_score": 0.95, "status": "eligible"}
+    ]
+  },
+  "excluded": {
+    "missing": {"source_url": "https://example.test/authoritative-board", "retrieved": "2026-09-06", "freshness": "current", "entries": [{"model_name": "visual-a", "model_id": "openai/visual-a", "score": 0.9, "normalized_score": null, "status": "missing"}]},
+    "stale": {"source_url": "https://example.test/authoritative-board", "retrieved": "2026-09-05", "freshness": "stale", "entries": [{"model_name": "visual-a", "model_id": "openai/visual-a", "score": 0.9, "normalized_score": 0.9, "status": "eligible"}]},
+    "approximate": {"source_url": "https://example.test/authoritative-board", "retrieved": "2026-09-06", "freshness": "current", "entries": [{"model_name": "visual-a", "model_id": "openai/visual-a", "score": 0.9, "normalized_score": 0.9, "status": "approximate"}]}
+  }
+}

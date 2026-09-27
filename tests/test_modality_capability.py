@@ -17,7 +17,8 @@ from interact.models import (
     is_transcription_only_model,
     supports_native_video_inline,
 )
-from interact.config import by_key
+from interact.config.settings import _ROLE_DEFAULT_CRITERIA
+from interact.criteria import Criteria
 
 
 @pytest.mark.parametrize(
@@ -87,15 +88,17 @@ def test_transcription_only(model_id, only):
     assert is_transcription_only_model(model_id) is only
 
 
-def test_video_picker_lists_only_native_video_models_not_the_image_list():
-    """The regression: video must NOT mirror image. The video dropdown is genuinely video-capable
-    models (Gemini/Qwen-VL/Nova), and a frames-only model (Claude/GPT) never appears in it."""
-    video_ids = {o.value for o in by_key("video.model").model_options() if o.value}
-    image_ids = {o.value for o in by_key("image.model").model_options() if o.value}
-    audio_ids = {o.value for o in by_key("audio.model").model_options() if o.value}
+def test_an_explicit_video_criterion_selects_only_native_video_models_not_the_image_list():
+    """The regression: video must NOT mirror image. ``video.criteria`` defaults to the loosest
+    ``cap.vlm`` bar (interact frame-samples for any VLM), but a person who writes ``cap.video``
+    explicitly gets genuinely video-capable models (Gemini/Qwen-VL/Nova) — never a frames-only
+    model (Claude/GPT), and never the same set as the image role."""
+    video_ids = {m.id for m in Criteria.parse("cap.video").qualifying(available_only=False)}
+    image_ids = {m.id for m in Criteria.parse(_ROLE_DEFAULT_CRITERIA["image"]).qualifying(available_only=False)}
+    audio_ids = {m.id for m in Criteria.parse(_ROLE_DEFAULT_CRITERIA["audio"]).qualifying(available_only=False)}
 
-    assert video_ids, "video picker is empty — the family table didn't tag any model"
-    assert audio_ids, "audio picker is empty"
+    assert video_ids, "cap.video selects nothing — the family table didn't tag any model"
+    assert audio_ids, "audio criterion selects nothing"
     # Every video option is a real native-video model; no Claude/GPT leaks in.
     assert all(is_native_video_model(m) for m in video_ids)
     assert not any("claude" in m.lower() or m.lower().startswith("gpt-") for m in video_ids)
@@ -104,8 +107,9 @@ def test_video_picker_lists_only_native_video_models_not_the_image_list():
 
 
 def test_video_role_still_resolves_a_model_without_a_native_video_key(monkeypatch):
-    """No regression: even with no native-video provider keyed, the video chain falls back (interact
-    frame-samples a recording, so any VLM works) — chain_for appends the cheapest available VLM."""
+    """No regression: even with no native-video provider keyed, video still resolves (interact
+    frame-samples a recording, so any VLM works) — the default criterion is cap.vlm, not
+    cap.video, precisely so an OpenAI-only user still gets a video model."""
     from interact.config import Config
 
     # Only an OpenAI key present → no Gemini/Qwen native-video model is available.
@@ -114,13 +118,14 @@ def test_video_role_still_resolves_a_model_without_a_native_video_key(monkeypatc
             monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     Model.load_registry()
-    chain = Config().chain_for("video")
-    assert chain.preferences, "video chain is empty — a user with no Gemini key can't analyze video"
+    resolved = Config().resolve_model("video")
+    assert resolved, "video resolution is empty — a user with no Gemini key can't analyze video"
 
 
 @pytest.mark.parametrize(
     "bid, category, has_scores",
-    [("video_mme", "video", True), ("mvbench", "video", False),
+    # Video-MME's unreceipted offline scores were removed; registration does not imply evidence.
+    [("video_mme", "video", False), ("mvbench", "video", False),
      ("mlvu", "video", False), ("mmau", "audio", True)],
 )
 def test_benchmarks_registered_with_categories(bid, category, has_scores):
@@ -128,6 +133,8 @@ def test_benchmarks_registered_with_categories(bid, category, has_scores):
     assert b is not None and b.category == category
     if has_scores:
         assert b.published is not None and b.published.entries
+    else:
+        assert b.published is None
 
 
 def test_audio_is_its_own_benchmark_category():

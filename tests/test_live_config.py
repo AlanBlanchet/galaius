@@ -3,44 +3,97 @@ edits on the next tool call (config.refresh()), and clearing a setting in the fi
 no stale environment snapshot. This is the bug where a TUI/file model change didn't reach the
 already-running MCP server."""
 
+import os
+
 import pytest
 
-from interact.config import UserConfig
+from interact.config import Config, UserConfig
+from interact.runtime import _LiveConfig, config
 
 
 @pytest.fixture
 def live_config(tmp_path, monkeypatch):
     monkeypatch.setattr(UserConfig, "PATH", tmp_path / "config.env")
     # Start from a clean environment for the settings under test.
-    for name in ("INTERACT_COMPONENT_MODEL", "INTERACT_IMAGE_MODEL"):
+    for name in ("INTERACT_COMPONENT_CRITERIA", "INTERACT_IMAGE_CRITERIA"):
         monkeypatch.delenv(name, raising=False)
-    from interact.runtime import config
-
     config.clear_overrides()  # isolate from any override leaked by an earlier test
-    return config
+    yield config
+    # `_LiveConfig.refresh()` writes every file-defined var straight into `os.environ` itself
+    # (`for name, value in file_vars.items(): os.environ[name] = value`) — bypassing
+    # `monkeypatch.setenv`, so nothing here auto-restores it at teardown. A test that calls
+    # `refresh()` after setting a criteria field (`test_in_process_override_survives_refresh`)
+    # leaves that value sitting directly in the process environment; a literal model id like
+    # "zai/glm-4.5v" was harmless there under the old pin field, but is invalid CRITERIA syntax
+    # now, crashing any LATER test that resolves or explains that role. Clear every criteria env
+    # var this file's tests touch, then replace `_inner` outright with a fresh, environment-
+    # independent `Config()` rather than trusting a refresh (which would just re-read the same
+    # environment) to land clean.
+    for name in ("INTERACT_COMPONENT_CRITERIA", "INTERACT_IMAGE_CRITERIA", "INTERACT_CLAUDE_MEDIA_CRITERIA"):
+        os.environ.pop(name, None)
+    object.__getattribute__(config, "_overrides").clear()
+    object.__setattr__(config, "_inner", Config())
+
+
+def test_spawned_interact_env_survives_file_overlay_and_removal(
+    tmp_path, monkeypatch, caplog
+) -> None:
+    """VS settings arrive in the child environment, then config.env temporarily overrides them."""
+    monkeypatch.setattr(UserConfig, "PATH", tmp_path / "config.env")
+    monkeypatch.setenv("INTERACT_MEDIA_BACKEND", "session")
+    monkeypatch.delenv(
+        "INTERACT_MEDIA_SESSION_NO_EXTRA_USAGE_CONFIRMED_FOR", raising=False
+    )
+    monkeypatch.delenv("INTERACT_CLAUDE_MEDIA_CRITERIA", raising=False)
+    monkeypatch.setattr(UserConfig, "_process_interact_env", None, raising=False)
+
+    UserConfig.apply()
+    live = _LiveConfig()
+    assert live.refresh().media_backend == "session"
+    assert live.media_session_no_extra_usage_confirmed_for == ()
+
+    try:
+        UserConfig.set("media.backend", "auto")
+        UserConfig.set(
+            "INTERACT_MEDIA_SESSION_NO_EXTRA_USAGE_CONFIRMED_FOR", "claude"
+        )
+        UserConfig.set("INTERACT_CLAUDE_MEDIA_CRITERIA", "must-not-appear-in-logs")
+        assert live.refresh().media_backend == "auto"
+        assert live.media_session_no_extra_usage_confirmed_for == ("claude",)
+        assert live.claude_media_criteria == "must-not-appear-in-logs"
+    finally:
+        UserConfig.unset("media.backend")
+        UserConfig.unset("INTERACT_MEDIA_SESSION_NO_EXTRA_USAGE_CONFIRMED_FOR")
+        UserConfig.unset("INTERACT_CLAUDE_MEDIA_CRITERIA")
+
+    assert live.refresh().media_backend == "session"
+    assert live.media_session_no_extra_usage_confirmed_for == ()
+    assert live.claude_media_criteria == ""
+    assert "INTERACT_CLAUDE_MEDIA_CRITERIA" not in os.environ
+    assert "must-not-appear-in-logs" not in caplog.text
 
 
 def test_file_edit_is_picked_up_and_clearing_reverts(live_config):
     # No pin → the configured model is empty (resolves to the auto default downstream).
-    assert live_config.refresh().component_model == ""
+    assert live_config.refresh().component_criteria == ""
 
     # A file edit (what the TUI / hand-edit does) reaches a running server on the next refresh.
-    UserConfig.set("component.model", "zai/glm-4.5v")
-    assert live_config.refresh().component_model == "zai/glm-4.5v"
+    UserConfig.set("component.criteria", "zai/glm-4.5v")
+    assert live_config.refresh().component_criteria == "zai/glm-4.5v"
 
     # Clearing it in the file actually takes effect — the stale env var is dropped, not kept.
-    UserConfig.unset("component.model")
-    assert live_config.refresh().component_model == ""
+    UserConfig.unset("component.criteria")
+    assert live_config.refresh().component_criteria == ""
 
 
 def test_in_process_override_survives_refresh(live_config):
     # An explicit in-process set (tests, screenshot_dump_dir) wins over the file and persists
     # across refreshes — and is visible to methods that read self.field (model_for).
-    live_config.component_model = "test/override"
-    assert live_config.model_for("component") == "test/override"
-    UserConfig.set("component.model", "zai/glm-4.5v")
+    live_config.component_criteria = "test/override"
+    assert live_config.criteria_for("component") == "test/override"
+    UserConfig.set("component.criteria", "zai/glm-4.5v")
     live_config.refresh()
-    assert live_config.model_for("component") == "test/override"  # override still wins
+    assert live_config.criteria_for("component") == "test/override"  # override still wins
 
 
 def test_cleared_provider_key_is_dropped_from_env_not_leaked(live_config, monkeypatch):
@@ -86,10 +139,10 @@ def test_env_shaped_key_stored_verbatim(temp_cfg, env_name):
 
 @pytest.mark.parametrize(
     "friendly,expected",
-    [("image.model", "INTERACT_IMAGE_MODEL"),
+    [("image.criteria", "INTERACT_IMAGE_CRITERIA"),
      ("desktop.target", "INTERACT_DESKTOP_TARGET"),
      ("desktop-target", "INTERACT_DESKTOP_TARGET"),
-     ("desktop.nestedHeadless", "INTERACT_DESKTOP_NESTEDHEADLESS"),
+     ("desktop.nestedHeadless", "INTERACT_NESTED_HEADLESS"),
      ("INTERACT_DEBUG_DIR", "INTERACT_DEBUG_DIR")],
 )
 def test_friendly_keys_still_map_to_interact_env(friendly, expected):

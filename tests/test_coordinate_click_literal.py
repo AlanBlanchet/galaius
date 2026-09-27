@@ -58,7 +58,7 @@ async def test_raw_coordinates_are_never_snapped_to_a_cached_element(desktop_spi
     click, _ = desktop_spies
     with _stale(reason):
         await _run_actions_desktop(win, [ClickAction(x=130, y=1180)], None)
-    click.assert_awaited_once_with(130, 1180, 1)  # NOT the cached element's centre (300, 1200)
+    click.assert_awaited_once_with(130, 1180, 1, count=1)  # NOT the cached centre (300, 1200)
 
 
 @pytest.mark.asyncio
@@ -116,7 +116,7 @@ async def test_a_ref_resolved_click_warns_when_the_detection_is_stale(desktop_sp
     reason = "window was 1200x800 at detection, now 1200x1400"
     with _stale(reason):
         report = await _run_actions_desktop(win, [ClickAction(ref="e12")], None)
-    click.assert_awaited_once_with(CACHED.center_x, CACHED.center_y, 1)  # still clicks the ref
+    click.assert_awaited_once_with(CACHED.center_x, CACHED.center_y, 1, count=1)  # still the ref
     assert reason in report
 
 

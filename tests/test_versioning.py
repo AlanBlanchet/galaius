@@ -41,8 +41,8 @@ def test_bump(version, part, expected):
 
 def _project(tmp_path, py="0.1.0", pkg="0.1.0"):
     (tmp_path / "pyproject.toml").write_text(f'[project]\nname = "interact"\nversion = "{py}"\n')
-    ext = tmp_path / "vscode-extension"
-    ext.mkdir()
+    ext = tmp_path / "clients" / "vscode"
+    ext.mkdir(parents=True)
     if pkg is not None:
         (ext / "package.json").write_text(json.dumps({"name": "interact", "version": pkg}))
     return tmp_path

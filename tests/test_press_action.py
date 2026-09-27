@@ -12,8 +12,7 @@ import pytest
 from pydantic import ValidationError
 
 from interact.actions import PressAction
-from interact.browser import BrowserManager
-from interact.config import Config
+from tests.support import browser_manager
 
 _PAGE = """
 <style>
@@ -34,7 +33,7 @@ def test_hold_must_be_positive_and_bounded():
 
 @pytest.mark.asyncio
 async def test_a_press_engages_real_active_state_then_releases():
-    mgr = BrowserManager(Config(headless=True, browser_type="chromium"))
+    mgr = browser_manager()
     try:
         try:
             await mgr.ensure_ready()
@@ -48,17 +47,19 @@ async def test_a_press_engages_real_active_state_then_releases():
         transform = "() => getComputedStyle(document.querySelector('#b')).transform"
         assert await page.evaluate(transform) in ("none", "matrix(1, 0, 0, 1, 0, 0)")
 
-        held: list[str] = []
+        # Sample WHILE the press is held — by polling until the pressed style appears, never at a
+        # fixed instant: under full-suite load the mousedown can land later than any chosen delay,
+        # and a one-shot read then sees the resting style and calls a working press broken (#129).
+        press = asyncio.create_task(PressAction(selector="#b", hold=0.8).execute(page))
+        seen: list[str] = []
+        while not press.done():
+            seen.append(await page.evaluate(transform))
+            if seen[-1] == "matrix(1, 0, 0, 1, 0, 4)":
+                break
+            await asyncio.sleep(0.03)
+        await press
 
-        async def watch():
-            await asyncio.sleep(0.35)               # sample WHILE the press is held
-            held.append(await page.evaluate(transform))
-
-        watcher = asyncio.create_task(watch())
-        await PressAction(selector="#b", hold=0.8).execute(page)
-        await watcher
-
-        assert held == ["matrix(1, 0, 0, 1, 0, 4)"], f"not pressed while held: {held}"
+        assert "matrix(1, 0, 0, 1, 0, 4)" in seen, f"not pressed while held; saw {sorted(set(seen))}"
         assert await page.evaluate(transform) in ("none", "matrix(1, 0, 0, 1, 0, 0)"), (
             "the press never released"
         )

@@ -8,8 +8,8 @@ import importlib
 import pytest
 
 from interact.desktop import backend as db
-from interact.browser import BrowserManager
 from interact.config import Config
+from tests.support import browser_manager
 
 
 def test_server_module_imports_on_any_platform():
@@ -23,7 +23,7 @@ def test_server_module_imports_on_any_platform():
 def test_browser_manager_constructs_without_a_display():
     # Constructing a session must not require X11 / a browser launch — browser tools are the
     # cross-platform path and must be reachable everywhere.
-    BrowserManager(Config())
+    browser_manager()
 
 
 def test_desktop_supported_is_linux_only(monkeypatch):

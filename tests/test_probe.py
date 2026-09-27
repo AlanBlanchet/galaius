@@ -1,43 +1,25 @@
-import json
 import re
 
 import pytest
 
 from interact.models import Model
 from interact.probe import ArtifactRun
+from tests.support import catalog_json
 
 # Two gemini grounding models (priced high vs free) + an unconfigured chatgpt model.
-# Only "good-grounder" is a curated component recommendation.
-SAMPLE = json.dumps(
-    {
-        "providers": {
-            "gemini": {
-                "envKeys": ["GEMINI_API_KEY"],
-                "models": {
-                    "gemini/good-grounder": {
-                        "input_cost_per_million": 5.0,
-                        "output_cost_per_million": 10.0,
-                    },
-                    "gemini/free-junk": {
-                        "input_cost_per_million": 0.0,
-                        "output_cost_per_million": 0.0,
-                    },
-                },
-            },
-            # Empty envKeys → provider is never "configured" (e.g. chatgpt subscription auth).
-            "chatgpt": {"envKeys": [], "models": {"chatgpt/x": {}}},
-        },
-        "recommendations": {"component": ["gemini/good-grounder", "chatgpt/x"]},
-        "coordFormats": {"gemini/": {"normalized": True, "box_order": "yxyx"}},
-    }
+# Only "good-grounder" is a curated component recommendation. chatgpt has no configured env key
+# (e.g. a subscription auth), so it is never "configured" even though it is in the catalog.
+SAMPLE = catalog_json(
+    ("gemini/good-grounder", 5.0, 10.0), "gemini/free-junk", "chatgpt/x",
+    env_keys={"gemini": ["GEMINI_API_KEY"]},
+    recommend={"component": ["gemini/good-grounder", "chatgpt/x"]},
+    coord_formats={"gemini/": {"normalized": True, "box_order": "yxyx"}},
 )
 
 
 @pytest.fixture(autouse=True)
-def _registry():
-    Model._reset()
-    yield
-    Model._reset()
+def _registry(reset_model_registry):
+    pass
 
 
 class TestGroundingModelRanking:

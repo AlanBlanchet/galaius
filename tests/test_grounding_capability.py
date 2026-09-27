@@ -7,10 +7,7 @@ import json
 import pytest
 
 from interact.models import Model, ModelCapability
-
-
-def _model(*caps: ModelCapability) -> Model:
-    return Model(id="x/y", provider="x", capabilities=set(caps))
+from tests.support.models import model
 
 
 @pytest.mark.parametrize(
@@ -23,7 +20,7 @@ def _model(*caps: ModelCapability) -> Model:
     ],
 )
 def test_grounding_strategy_is_derived_from_capabilities(caps, strategy):
-    assert _model(*caps).grounding_strategy() == strategy
+    assert model(id="x/y", caps=set(caps)).grounding_strategy() == strategy
 
 
 @pytest.mark.parametrize(

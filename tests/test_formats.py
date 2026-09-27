@@ -1,8 +1,13 @@
+"""`CoordFormat` — parsing a VLM's geometry payload (box key, box order, normalization, and the
+field-name ALIASES a model actually writes for a box: x/left, w/width, and so on) into pixel
+coordinates that never guess past what the payload actually said."""
+
 import json
 import logging
 
 import pytest
 
+from interact.desktop import DesktopElement
 from interact.formats import BoxOrder, CoordFormat
 
 _QWEN_RESPONSE = json.dumps(
@@ -162,3 +167,101 @@ def test_coord_format_load_from_config_clears_registry():
     prefixes = {f.prefix for f in CoordFormat.registry()}
     assert prefixes == {"b/", "c/"}
     CoordFormat._reset()
+
+
+_TYPO_RESPONSE = json.dumps(
+    [
+        # The misspelling a real model produced (#122): one letter off a known box key.
+        {"role": "button", "name": "OK", "box_2dd": [37, 896, 64, 928]},
+        # A four-number list under an unrelated key is NOT a box.
+        {"role": "swatch", "name": "Red", "color": [255, 0, 0, 255]},
+    ]
+)
+
+
+def test_a_misspelled_box_key_is_still_a_box(caplog):
+    """#122: a model wrote `box_2dd`; dropping the entry silently turned one typo into
+    "0 elements". A four-number list under a key one edit away from a box key is read as the
+    box — and said so in the log — while a four-list under an unrelated key stays out."""
+    fmt = CoordFormat(box_order=BoxOrder.YXYX, normalized=True, box_key="box_2d")
+    with caplog.at_level(logging.WARNING, logger="interact.formats"):
+        elements = fmt.parse(_TYPO_RESPONSE, 1000, 1000)
+    assert elements is not None and len(elements) == 1, elements
+    assert elements[0].name == "OK"
+    assert "box_2dd" in caplog.text
+
+
+# =============================================================================================
+# xywh field-name aliases (#122 / #133 / #135)
+# =============================================================================================
+
+
+@pytest.mark.parametrize('entry', [
+    {'left': 100, 'top': 200, 'width': 300, 'height': 100},
+    {'x': 100, 'y': 200, 'widht': 300, 'height': 100},
+    {'x': 100, 'y': 200, 'ww': 300, 'h': 100},
+])
+def test_xywh_aliases_preserve_pixels_and_normalized_coordinates(entry):
+    parsed = DesktopElement.parse_vlm(json.dumps([entry]))
+    assert parsed is not None
+    assert (parsed[0].x, parsed[0].y, parsed[0].w, parsed[0].h) == (100, 200, 300, 100)
+    scaled = CoordFormat(normalized=True).parse(json.dumps([entry]), 800, 600)
+    assert scaled is not None
+    assert (scaled[0].x, scaled[0].y, scaled[0].w, scaled[0].h) == (80, 120, 240, 60)
+
+
+def test_xywh_unrelated_or_invalid_geometry_is_not_guessed():
+    for entry in ({'color': [1, 2, 3, 4]}, {'x': 1, 'y': 2, 'width': 'bad', 'height': 4}):
+        assert DesktopElement.parse_vlm(json.dumps([entry])) is None
+        assert CoordFormat().parse(json.dumps([entry]), 800, 600) is None
+
+
+@pytest.mark.parametrize('entry', [
+    {'x': 1, 'y': 2, 'w': 'inf', 'h': 3},
+    {'x': 1, 'y': 2, 'widht': 30, 'ww': 40, 'h': 3},
+])
+def test_xywh_nonfinite_and_ambiguous_typos_are_refused(entry):
+    assert DesktopElement.parse_vlm(json.dumps([entry])) is None
+    assert CoordFormat().parse(json.dumps([entry]), 800, 600) is None
+
+
+def test_normalized_object_fallback_scales_aliases():
+    source = json.dumps({'left': 100, 'top': 200, 'width': 300, 'height': 100})
+    parsed = CoordFormat(normalized=True).parse(source, 800, 600)
+    assert parsed is not None
+    assert (parsed[0].x, parsed[0].y, parsed[0].w, parsed[0].h) == (80, 120, 240, 60)
+
+
+@pytest.mark.parametrize('aliases', [
+    {'x': 10, 'left': 11},
+    {'w': 30, 'width': 40},
+    {'x': 10.1, 'left': 10.9},
+    {'w': 30, 'widht': 40},
+])
+def test_conflicting_coordinate_aliases_are_not_actionable(aliases):
+    entry = {'x': 10, 'y': 20, 'w': 30, 'h': 40, **aliases}
+    source = json.dumps([entry])
+    assert DesktopElement.parse_vlm(source) is None
+    assert CoordFormat(normalized=True).parse(source, 800, 600) is None
+
+
+def test_equivalent_coordinate_aliases_agree():
+    entry = {'x': 10, 'left': '10', 'y': 20, 'top': 20, 'w': 30, 'width': 30, 'h': 40, 'height': 40}
+    element = DesktopElement.from_vlm_dict(entry, 1)
+    assert (element.x, element.y, element.w, element.h) == (10, 20, 30, 40)
+
+
+def test_unrelated_near_spelling_is_not_a_coordinate():
+    source = json.dumps([{'x': 10, 'y': 20, 'w': 30, 'weight': 40}])
+    assert DesktopElement.parse_vlm(source) is None
+
+
+def test_parse_vlm_elements_no_transform():
+    """CoordFormat.parse returns raw VLM-space coords; caller applies CoordTransform."""
+    from interact.formats import CoordFormat
+
+    response = '[{"role":"button","name":"OK","x":200,"y":100,"w":80,"h":30}]'
+    elements = CoordFormat().parse(response, 800, 600)
+    assert elements is not None
+    assert elements[0].x == 200
+    assert elements[0].y == 100

@@ -16,14 +16,7 @@ from interact import server as srv
 from interact.actions import WaitForAction
 from interact.actions.dispatch import _execute_browser_action
 
-
-@pytest.fixture(autouse=True)
-def _desktop_gate_open(monkeypatch):
-    # The desktop-target tests below verify Linux resolution logic with mocked backends and run on
-    # every CI OS. Pin the Linux path (force desktop_supported() True so a mac/win runner doesn't
-    # take the portable-screen branch) and open the unsupported gate; harmless for the browser tests.
-    monkeypatch.setattr("interact.desktop.backend.desktop_supported", lambda: True)
-    monkeypatch.setattr(srv.targets, "_desktop_unsupported", lambda *a, **k: None)
+pytestmark = pytest.mark.usefixtures("desktop_gate_open")
 
 
 # --- target: one param, browser default or a desktop window ---
