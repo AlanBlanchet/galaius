@@ -1,38 +1,72 @@
 #!/usr/bin/env sh
-# Install the `interact` CLI.
+# Install the `interact` CLI, then connect this computer to your Interact account.
 #   curl -LsSf https://raw.githubusercontent.com/AlanBlanchet/interact/main/install.sh | sh
 #
-# Installs uv (the Python tool manager) if missing, then installs `interact`
-# globally as a uv tool. Override the source with INTERACT_REPO=<path-or-git-url>.
-set -e
+# Needs only curl (or wget): installs uv (the Python tool manager) and a Python if missing, then
+# `interact` from GitHub's source archives (no git needed). Run from a terminal, it goes straight on
+# to `interact login`. Override the source with INTERACT_REPO=<path-or-git-url>, or another source
+# archive of this repository (a branch or tag .tar.gz) with INTERACT_ARCHIVE=<url>.
+set -eu
 
-REPO="${INTERACT_REPO:-git+https://github.com/AlanBlanchet/interact}"
+main() {
+  fetch_tool
+  if ! command -v uv >/dev/null 2>&1; then
+    echo "Installing uv (Python tool manager)…"
+    fetch https://astral.sh/uv/install.sh | sh
+    # uv installs to ~/.local/bin; make it available for the rest of this script
+    PATH="$HOME/.local/bin:$PATH"
+    export PATH
+  fi
 
-if ! command -v uv >/dev/null 2>&1; then
-  echo "Installing uv (Python tool manager)…"
-  curl -LsSf https://astral.sh/uv/install.sh | sh
-  # uv installs to ~/.local/bin; make it available for the rest of this script
-  export PATH="$HOME/.local/bin:$PATH"
-fi
+  if [ -n "${INTERACT_REPO:-}" ]; then
+    echo "Installing interact from ${INTERACT_REPO}…"
+    uv tool install --force "${INTERACT_REPO}"
+  else
+    install_from_archives
+  fi
 
-echo "Installing interact from ${REPO}…"
-uv tool install --force "${REPO}"
+  # Put uv's tool bin on PATH for future shells, so `interact` is found there.
+  uv tool update-shell >/dev/null 2>&1 || true
+  bin="$(uv tool dir --bin)"
 
-# Put ~/.local/bin (uv's tool bin) on PATH for future shells, so `interact` is found.
-uv tool update-shell >/dev/null 2>&1 || true
+  echo ""
+  echo "✓ interact installed."
+  # stdin is this script: ask the terminal, and only when there is one.
+  if [ -t 1 ] && (exec </dev/tty) 2>/dev/null; then
+    echo "Connecting this computer to your Interact account…"
+    "$bin/interact" login </dev/tty || echo "Not connected. Run it again any time:  interact login"
+  else
+    echo "Next, connect this computer to your Interact account:  interact login"
+  fi
+  echo "(In a new terminal \`interact\` is on your PATH; here: $bin/interact)"
+  echo ""
+  echo "Also: interact install <claude|cursor|codex|vscode|windsurf|zed|claude-desktop>   # register the MCP server"
+  echo "      interact status | interact doctor | interact    # bindings, checks, settings UI"
+}
 
-cat <<'DONE'
+# The main branch and the exact interact-core it pins, as source archives: no git on the computer.
+install_from_archives() {
+  work="$(mktemp -d)"
+  trap 'rm -rf "$work"' EXIT INT TERM
+  echo "Downloading interact…"
+  fetch "${INTERACT_ARCHIVE:-https://github.com/AlanBlanchet/interact/archive/refs/heads/main.tar.gz}" | tar -xz -C "$work"
+  source_dir="$(find "$work" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+  core="$(sed -n 's/.*interact-core\.git@\([0-9a-f]\{40\}\).*/\1/p' "$source_dir/pyproject.toml")"
+  [ -n "$core" ] || { echo "interact: cannot read the pinned interact-core version" >&2; exit 1; }
+  printf 'interact-core @ https://github.com/AlanBlanchet/interact-core/archive/%s.tar.gz\n' "$core" > "$work/overrides.txt"
+  echo "Installing interact (this takes a minute the first time)…"
+  uv tool install --force --quiet --overrides "$work/overrides.txt" "$source_dir"
+}
 
-✓ interact installed.  If `interact` isn't found, open a new shell (PATH was just updated).
+fetch_tool() {
+  if command -v curl >/dev/null 2>&1; then FETCH=curl
+  elif command -v wget >/dev/null 2>&1; then FETCH=wget
+  else echo "interact: install curl or wget first" >&2; exit 1
+  fi
+}
 
-  interact            # configuration TUI — models, API keys, usage, bindings (no commands to type)
-  interact install <claude|cursor|codex|vscode|windsurf|zed|claude-desktop>   # register the MCP server
-  interact status     # what it's bound to + models + keys + usage
-  interact doctor     # check keys / providers / Playwright / desktop
+fetch() {
+  if [ "$FETCH" = curl ]; then curl -LsSf "$1"; else wget -qO- "$1"; fi
+}
 
-Codex: run `interact install codex`, start a fresh session (or restart the IDE
-extension), then verify with `codex mcp get interact`.
-
-VS Code: also install the "Interact" extension (marketplace publisher AlanBlanchet)
-for the dashboard + settings UI — it launches the same `interact mcp` server.
-DONE
+main "$@"

@@ -9,7 +9,7 @@ license-files = ["LICENSE"]
 keywords = ["mcp", "automation", "browser", "desktop", "playwright", "vision", "agent", "llm"]
 requires-python = ">=3.11"
 dependencies = [
-    "interact-core @ git+https://github.com/AlanBlanchet/interact-core.git@8331967af8874651cce0a7fabdda5499df29fabd",
+    "interact-core @ git+https://github.com/AlanBlanchet/interact-core.git@b517bd3021c3a542a573002464f25063d5824e62",
     "cyclopts>=3.0",
     "rich>=13.0",
     # /dev/uinput absolute input (X11 + Wayland). Same `evdev` import either way: prebuilt wheels

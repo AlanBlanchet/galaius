@@ -111,42 +111,31 @@ with Copilot's agent mode; no extension needed.
 
 ## Install and connect
 
-For you, or for an AI assistant asked to "install interact and configure it". Run the steps in
-order; each one ends with a check.
+Linux (a systemd user service keeps the computer connected; macOS and Windows: not yet).
 
-1. **Prerequisites** — Linux or macOS with `curl` and `git`
-   (Debian / Ubuntu: `sudo apt-get install -y curl git`).
-
-2. **Install from GitHub**
+1. **Install**
 
    ```bash
    curl -LsSf https://raw.githubusercontent.com/AlanBlanchet/interact/main/install.sh | sh
-   export PATH="$HOME/.local/bin:$PATH"   # this shell only; new shells already have it
-   interact version                       # check: prints the installed version
    ```
 
-3. **Get the server address from the user.** It is their Interact server — never guess it. A server
-   that listens only on its own host's loopback is reached through an SSH tunnel the user opens:
-   `ssh -fN -L 127.0.0.1:8817:127.0.0.1:8817 <server-host>`, then the address is `http://127.0.0.1:8817`.
-   (A computer installed with the line from the server's own Machines page skips steps 2–3: it
-   installs the server's own build and remembers its address.)
+   Needs only `curl` (or `wget -qO-` in its place): it brings uv and Python. Run from a terminal, it
+   goes straight on to step 2.
 
-4. **Sign in and connect this computer** (Linux, systemd)
+2. **Sign in**
 
    ```bash
-   interact login --server <server-url>
+   interact login
    ```
 
-   It prints a code and a page to open; the user signs in there and allows this computer, then
-   answers `y`. The computer becomes a machine of the chosen company, kept connected by the
-   `interact-machine` user service, and the CLI is signed in for `interact agents` /
-   `interact workflows` (read only; `--allow-runs` also lets it start runs).
+   It asks once for your Interact server address, opens its sign-in page, and you allow this
+   computer there, then answer `y`. It prints `Connected: <this computer> is now a machine in
+   <workspace>` and `Synced: <n> agents, prompts installed`: the CLI is signed in, this computer is a
+   machine of your workspace (started now and at every boot), your agents and prompts are installed.
 
-   Check: prints `Connected: <this computer> is now a machine in <company>`.
-
-   A computer added this way reaches no folder and runs no agent step until its owner allows it,
-   on that computer: `interact machine file-roots <folder under home>`, `interact machine agents on`.
-   `interact logout` removes it from the company and stops the service.
+A computer added this way reaches no folder and runs no agent step until you allow it, on that
+computer: `interact machine file-roots <folder under home>`, `interact machine agents on`.
+`interact logout` removes it from your account and stops the service.
 
 ## Ask your agent
 
