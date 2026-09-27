@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from pathlib import Path
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from interact.data import PackageData
 
@@ -29,7 +31,35 @@ class PublishedEntry(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
     model_name: str
+    model_id: str | None = None
     score: float
+    normalized_score: float | None = None
+    status: Literal[
+        "eligible", "unverified", "missing", "not_applicable", "approximate", "unmapped"
+    ] = "unverified"
+    #: Row provenance, for boards that score an agent VARIANT (harness + reasoning effort) rather
+    #: than a bare model and that publish row by row (launch articles, posts). ``evidence`` says
+    #: whether ``source_url`` is the publisher itself or a secondary copy of its number.
+    harness: str | None = None
+    effort: str | None = None
+    version: str | None = None
+    retrieved: str | None = None
+    source_url: str | None = None
+    evidence: Literal["primary", "secondary"] | None = None
+
+    @model_validator(mode="after")
+    def normalize_unit_interval(self) -> "PublishedEntry":
+        if self.normalized_score is None and 0 <= self.score <= 1:
+            self.normalized_score = self.score
+        return self
+
+    def qualifies(self, freshness: str) -> bool:
+        return (
+            freshness == "current"
+            and self.status == "eligible"
+            and self.normalized_score is not None
+            and math.isfinite(self.normalized_score)
+        )
 
 
 class PublishedTable(BaseModel):
@@ -39,6 +69,15 @@ class PublishedTable(BaseModel):
     retrieved: str  # ISO date the table was copied
     lib_recommendation: str | None = None
     entries: list[PublishedEntry] = Field(default_factory=list)
+    freshness: Literal["current", "stale", "unknown"] = "stale"
+
+    @model_validator(mode="after")
+    def one_version(self) -> "PublishedTable":
+        """Scores from two versions of one benchmark are different numbers under one name."""
+        versions = {entry.version for entry in self.entries if entry.version is not None}
+        if len(versions) > 1:
+            raise ValueError(f"one table mixes benchmark versions {sorted(versions)}")
+        return self
 
     @staticmethod
     def default_cache_path() -> Path:
@@ -74,8 +113,7 @@ class PublishedTable(BaseModel):
     def _fuzzy_match_registered(cls, name: str):
         """Match a published model name against ``Model.registry()``.
 
-        Lowercase + strip non-alphanumerics, then substring either direction.
-        Both sides must have length >= 4 to avoid trivial collisions like ``o1``.
+        Lowercase + strip non-alphanumerics, then require exact identity.
         Returns the first matching ``Model`` or ``None``.
         """
         from interact.models import Model  # noqa: PLC0415 — circular import
@@ -87,7 +125,7 @@ class PublishedTable(BaseModel):
             bare = cls._fuzzy_norm(m.id.split("/", 1)[-1])
             if len(bare) < 4:
                 continue
-            if needle in bare or bare in needle:
+            if needle == bare:
                 return m
         return None
 
@@ -109,6 +147,8 @@ class PublishedTable(BaseModel):
             if table is None:
                 continue
             for entry in table.entries:
+                if not entry.qualifies(table.freshness):
+                    continue
                 bare = cls._fuzzy_norm(entry.model_name)
                 if len(bare) < 4:
                     continue
@@ -132,6 +172,8 @@ class PublishedTable(BaseModel):
             return None
         best: tuple[str, float] | None = None
         for entry in table.entries:
+            if not entry.qualifies(table.freshness):
+                continue
             m = cls._fuzzy_match_registered(entry.model_name)
             if m is None:
                 continue
@@ -172,31 +214,6 @@ _SCREENSPOT_V2_FALLBACK = PublishedTable(
 )
 
 
-# Small "never leave the user with nothing" snapshots for the image/video benchmarks, until
-# `interact-fetch-upstream` populates the live OpenVLM tables. Approximate top entries from
-# public leaderboards (frontier numbers diverge by eval protocol); provenance + retrieved date
-# below. These are the offline fallback, NOT the source of truth — the fetch overwrites them.
-_MMMU_FALLBACK = PublishedTable(
-    source_url="https://mmmu-benchmark.github.io/",
-    retrieved="2026-06-07",
-    lib_recommendation="GPT-5.4",
-    entries=[
-        PublishedEntry(model_name="GPT-5.4", score=0.94),
-        PublishedEntry(model_name="Claude Opus 4.7", score=0.927),
-        PublishedEntry(model_name="Gemini 3.1 Pro", score=0.84),
-        PublishedEntry(model_name="Qwen3.5", score=0.77),
-    ],
-)
-_VIDEO_MME_FALLBACK = PublishedTable(
-    source_url="https://video-mme.github.io/",
-    retrieved="2026-06-07",
-    lib_recommendation="Kimi K2.5",
-    entries=[
-        PublishedEntry(model_name="Kimi K2.5", score=0.874),
-        PublishedEntry(model_name="Gemini 2.5 Pro", score=0.848),
-        PublishedEntry(model_name="Qwen3.6 Plus", score=0.842),
-    ],
-)
 
 
 # MMAU (audio understanding) — single-pass test-mini accuracy from the MMAU paper/leaderboard,
@@ -218,8 +235,5 @@ _MMAU_FALLBACK = PublishedTable(
 _FALLBACKS: dict[str, PublishedTable] = {
     "screenspot_pro": _SCREENSPOT_PRO_FALLBACK,
     "screenspot": _SCREENSPOT_V2_FALLBACK,
-    "mmmu": _MMMU_FALLBACK,
-    "video_mme": _VIDEO_MME_FALLBACK,
     "mmau": _MMAU_FALLBACK,
 }
-

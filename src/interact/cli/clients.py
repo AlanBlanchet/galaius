@@ -16,9 +16,11 @@ its format.
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import tomllib
 from enum import StrEnum
 from pathlib import Path
@@ -41,7 +43,13 @@ class MCPServer(BaseModel):
     env: dict[str, str] = {}
 
     @classmethod
-    def resolve(cls, dev_from: Path | None = None) -> "MCPServer":
+    def resolve(
+        cls,
+        dev_from: Path | None = None,
+        *,
+        portable: bool = False,
+        project: Path | None = None,
+    ) -> "MCPServer":
         """Build the registration, resolving an absolute command for portability.
 
         GUI clients (Claude Desktop) may not inherit the shell ``PATH``, so an
@@ -50,9 +58,53 @@ class MCPServer(BaseModel):
         (running the server from a local checkout).
         """
         if dev_from is not None:
-            return cls(command="uvx", args=["--from", str(dev_from), "interact", "mcp"])
+            source = dev_from
+            if portable:
+                if project is None:
+                    raise ValueError("A project root is required for a portable development source")
+                root = project.resolve()
+                candidate = (
+                    (root / dev_from).resolve()
+                    if not dev_from.is_absolute()
+                    else dev_from.resolve()
+                )
+                try:
+                    source = candidate.relative_to(root)
+                except ValueError as exc:
+                    raise ValueError(
+                        "Project-scoped --dev-from must stay inside the target project so its "
+                        "persisted path is shareable"
+                    ) from exc
+                if not candidate.exists():
+                    raise ValueError(f"Project-scoped --dev-from does not exist: {source}")
+            return cls(command="uvx", args=["--from", str(source), "interact", "mcp"])
+        if portable:
+            return cls()
         binary = shutil.which("interact")
         return cls(command=binary or "interact", args=["mcp"])
+
+    def require_available(self) -> None:
+        command = Path(self.command)
+        if command.is_absolute():
+            available = command.is_file() and os.access(command, os.X_OK)
+        else:
+            available = shutil.which(self.command) is not None
+        if available:
+            return
+        raise FileNotFoundError(
+            f"MCP executable {self.command!r} is unavailable. Install Interact, then rerun "
+            "`interact install codex`. No fallback command, scope, or provider was tried."
+        )
+
+    def require_portable(self) -> None:
+        values = [self.command, *self.args]
+        absolute = next((value for value in values if Path(value).is_absolute()), None)
+        if absolute is None:
+            return
+        raise ValueError(
+            f"Project-scoped MCP launch value {absolute!r} is an absolute path. "
+            "Use the portable installed Interact command instead."
+        )
 
     def json_entry(self, include_type: bool, extra: dict) -> dict:
         """Server object for ``mcpServers`` / ``servers`` / ``context_servers`` configs."""
@@ -177,34 +229,46 @@ class JsonClient(ClientTarget):
 
 
 class TomlClient(ClientTarget):
-    """Codex — ``[mcp_servers.<name>]`` TOML, preferring the ``codex mcp add`` CLI."""
+    """Codex — user registration through its CLI, project registration through trusted TOML."""
 
     cli: str = "codex"
 
     def install(self, server, scope, project, dry_run):
-        if shutil.which(self.cli):
-            cmd = [self.cli, "mcp", "add", server.name]
-            for key, value in server.env.items():
-                cmd += ["--env", f"{key}={value}"]
-            cmd += ["--", server.command, *server.args]
-            if dry_run:
-                return InstallResult(client=self.id, action="manual", target=" ".join(cmd))
-            subprocess.run(cmd, check=True)
-            return InstallResult(client=self.id, action="ran", target=" ".join(cmd))
+        server.require_available()
+        if scope == Scope.project:
+            server.require_portable()
+        if scope == Scope.user and shutil.which(self.cli):
+            return self._install_cli(server, dry_run)
+        return self._install_config(server, scope, project, dry_run)
 
-        path = self.path_for(scope, project)
-        if path and path.exists():
-            existing = tomllib.loads(path.read_text())
-            if server.name in existing.get("mcp_servers", {}):
-                return InstallResult(client=self.id, action="skipped", target=str(path),
-                                     detail=f"[mcp_servers.{server.name}] already present")
-        block = self._toml_block(server)
+    def _install_cli(self, server, dry_run):
+        cmd = [self.cli, "mcp", "add", server.name]
+        for key, value in server.env.items():
+            cmd += ["--env", f"{key}={value}"]
+        cmd += ["--", server.command, *server.args]
         if dry_run:
-            return InstallResult(client=self.id, action="manual", target=str(path), detail=block)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a") as handle:
-            handle.write(("\n" if path.exists() and path.stat().st_size else "") + block)
-        return InstallResult(client=self.id, action="wrote", target=str(path), detail="appended block")
+            return InstallResult(client=self.id, action="manual", target=" ".join(cmd))
+        subprocess.run(cmd, check=True)
+        return InstallResult(client=self.id, action="ran", target=" ".join(cmd))
+
+    def _install_config(self, server, scope, project, dry_run):
+        path = self.path_for(scope, project)
+        if path is None:
+            return InstallResult(
+                client=self.id, action="skipped", target=scope.value,
+                detail=f"{self.label} has no {scope.value} scope",
+            )
+        original = path.read_text() if path.exists() else ""
+        merged = self._merged_toml(original, server, path)
+        if dry_run:
+            return InstallResult(client=self.id, action="manual", target=str(path), detail=merged)
+        if merged == original:
+            return InstallResult(
+                client=self.id, action="skipped", target=str(path),
+                detail=f"[mcp_servers.{server.name}] already current",
+            )
+        self._write_atomic(path, merged)
+        return InstallResult(client=self.id, action="wrote", target=str(path), detail="updated registration")
 
     def _has_server(self, path, name):
         try:
@@ -212,6 +276,64 @@ class TomlClient(ClientTarget):
         except (tomllib.TOMLDecodeError, ValueError):
             return False
         return name in (document.get("mcp_servers") or {})
+
+    def _merged_toml(self, original: str, server: MCPServer, path: Path) -> str:
+        try:
+            document = tomllib.loads(original)
+        except tomllib.TOMLDecodeError as exc:
+            raise ValueError(f"Cannot update {path}: invalid TOML; file was left unchanged") from exc
+        servers = document.get("mcp_servers")
+        if servers is not None and not isinstance(servers, dict):
+            raise ValueError(f"Cannot update {path}: mcp_servers is not a table; file was left unchanged")
+
+        headers = list(re.finditer(
+            r"(?m)^[ \t]*\[(?!\[)([^\]\r\n]+)\][ \t]*(?:#.*)?(?:\r?\n|$)",
+            original,
+        ))
+        spans = []
+        for index, header in enumerate(headers):
+            if self._is_server_table(header.group(1).strip(), server.name):
+                end = headers[index + 1].start() if index + 1 < len(headers) else len(original)
+                spans.append((header.start(), end))
+        existing = isinstance(servers, dict) and server.name in servers
+        if existing and not spans:
+            raise ValueError(
+                f"Cannot update {path}: existing {server.name!r} registration is not a table; "
+                "file was left unchanged"
+            )
+
+        pieces = []
+        cursor = 0
+        for start, end in spans:
+            pieces.append(original[cursor:start])
+            cursor = end
+        pieces.append(original[cursor:])
+        base = "".join(pieces).rstrip("\r\n")
+        separator = "\n\n" if base else ""
+        return base + separator + self._toml_block(server)
+
+    @staticmethod
+    def _is_server_table(section: str, name: str) -> bool:
+        roots = (f"mcp_servers.{name}", f'mcp_servers."{name}"', f"mcp_servers.'{name}'")
+        return any(section == root or section.startswith(root + ".") for root in roots)
+
+    @staticmethod
+    def _write_atomic(path: Path, content: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        mode = path.stat().st_mode if path.exists() else None
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", newline="", dir=path.parent,
+            prefix=f".{path.name}.", delete=False,
+        ) as handle:
+            handle.write(content)
+            temporary = Path(handle.name)
+        try:
+            if mode is not None:
+                temporary.chmod(mode)
+            os.replace(temporary, path)
+        except OSError:
+            temporary.unlink(missing_ok=True)
+            raise
 
     @staticmethod
     def _toml_block(server: MCPServer) -> str:
@@ -321,7 +443,7 @@ JsonClient(
 TomlClient(
     id="codex", label="OpenAI Codex CLI", doc_url="https://developers.openai.com/codex/mcp",
     user_path=Path("~/.codex/config.toml"), project_path=".codex/config.toml",
-    note="Prefers `codex mcp add`; project config loads only in a trusted project.",
+    note="User scope uses `codex mcp add`; project scope loads only in a trusted project.",
 )
 VSCodeClient(
     id="vscode", label="VS Code / GitHub Copilot",

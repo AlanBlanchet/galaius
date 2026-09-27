@@ -1,11 +1,11 @@
 """UI critique: turn a captured screen into a STRUCTURED list of what's *wrong* with it.
 
 interact's VLM path lets an agent ask a free-form `query` about a screenshot, but real usage shows
-agents hand-rolling the same elaborate "flag every low-contrast / overflow / misaligned ... element"
-prompt over and over — and most never ask at all, so they act on pixels they never judged. This
-bakes that reviewer expertise into one rubric + a typed result, so `review_ui` gives any agent a
-defect list without crafting a prompt, and the findings are machine-readable (severity/category/
-location) rather than prose to re-parse.
+agents hand-rolling the same elaborate "flag every low-contrast/overflow/misaligned... element"
+prompt over and over — and most never ask at all, acting on pixels they never judged. This bakes
+that reviewer expertise into one rubric + a typed result, so `review_ui` gives any agent a defect
+list without crafting a prompt, findings machine-readable (severity/category/location) rather than
+prose to re-parse.
 """
 
 from __future__ import annotations
@@ -68,8 +68,8 @@ which invites confident-but-wrong verdicts. Do not assume a brand, palette, or d
 see on screen; if matching a specific design is what matters, a reference image is supplied — say so \
 rather than guessing the intent. If the screen is genuinely clean, set looks_ok=true and return no findings."""
 
-# When a reference image is supplied: judge the BUILD against the REFERENCE, not a generic ideal — the
-# real-usage failure mode was the VLM "PASS"-ing a build it judged in isolation (lime accent vs the
+# When a reference image is supplied: judge the BUILD against the REFERENCE, not a generic ideal —
+# real-usage failure mode was the VLM "PASS"-ing a build judged in isolation (lime accent vs
 # reference's teal, missing nav) because it never saw the two together.
 _COMPARE_RUBRIC = """You are comparing two screenshots: IMAGE 1 is the REFERENCE (the target/design to \
 match) and IMAGE 2 is the BUILD (what was produced). Report every way the BUILD DIVERGES from the \
@@ -82,12 +82,12 @@ build defects (unreadable text, overflow, broken state) too. If the build faithf
 
 
 # Grounding the critique to interact's already-detected element list is the single biggest
-# hallucination reducer for UI judgement — bigger than swapping the model. A pure-vision model invents
-# elements / wrong coordinates until it's handed the parsed element list and told to reference it, at
-# which point grounding accuracy jumps sharply (OmniParser arXiv:2408.00203, Set-of-Mark
-# arXiv:2310.11441). So when interact has a reliable element list (the browser DOM-ref scan) we hand it
-# over and require each finding to cite a `ref` — turning "looks misaligned" into a checkable claim and
-# letting a finding that cites a non-existent ref be flagged as a likely hallucination.
+# hallucination reducer for UI judgement — bigger than swapping the model. A pure-vision model
+# invents elements/wrong coordinates until handed the parsed element list and told to reference
+# it, at which point grounding accuracy jumps sharply (OmniParser arXiv:2408.00203, Set-of-Mark
+# arXiv:2310.11441). When interact has a reliable element list (browser DOM-ref scan) we hand it
+# over and require each finding to cite a `ref` — turns "looks misaligned" into a checkable claim,
+# flags a finding citing a non-existent ref as likely hallucination.
 _GROUNDING_NOTE = (
     "\n\nDETECTED ELEMENTS — interact located these on the screen, as `ref: role \"name\" @ (x,y w×h)`. "
     "For EVERY finding, set its `ref` to the element it concerns when that element is one of these (use "
@@ -99,9 +99,10 @@ _GROUNDING_NOTE = (
 
 def format_grounding(elements: list) -> str:
     """A compact list of interact's DETECTED elements (ref, role, name, position) for the model to
-    ANCHOR each finding to — the strongest single hallucination reducer for UI critique (give it the
-    real element list and require it to reference it, rather than inventing element descriptions).
-    Empty list → ``""`` (no grounding block, e.g. a desktop/file target with no reliable scan)."""
+    ANCHOR each finding to — the strongest single hallucination reducer for UI critique (give it
+    the real element list, require it to reference it, rather than inventing element
+    descriptions). Empty list → ``""`` (no grounding block, e.g. desktop/file target with no
+    reliable scan)."""
     lines = []
     for el in elements:
         ref = getattr(el, "ref", None) or f"#{el.index}"
@@ -175,8 +176,8 @@ def parse_review(text: str) -> UIReview | None:
 
 # ── verify_ui: requirement-anchored ACCEPTANCE (the complement to review_ui's discovery) ──────────
 # Real usage showed freeform critique is satisfiable by a vague "looks good" that never tests the
-# literal form-defect ("is this icon dark or COLORED?"). verify_ui judges each of the user's exact
-# requirements PASS/FAIL on the rendered pixels, naming the element + observed value as evidence.
+# literal form-defect ("is this icon dark or COLORED?"). verify_ui judges each requirement
+# PASS/FAIL on the rendered pixels, naming the element + observed value as evidence.
 ReqVerdict = Literal["pass", "fail", "unclear"]
 
 

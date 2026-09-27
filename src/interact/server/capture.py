@@ -12,6 +12,7 @@ from interact.debug_utils import Debug
 from interact.desktop import DesktopElement, DesktopWindow
 from interact.vision.detect import _desktop_context, _detect_desktop_elements
 from interact.server import core, targets, vlm
+from interact.settle import settle_page
 from interact.server.core import config
 from interact.state import (
     InteractiveElement,
@@ -66,8 +67,11 @@ async def _annotate_page(
     scope: str | None = None,
     limit: int = DEFAULT_LIMIT,
 ) -> tuple[bytes, list[InteractiveElement]]:
-    elements = await _scan_elements(mgr, tab, scope, limit)
     page = await mgr.get_page(tab)
+    # Before the scan, not just before the shutter: the boxes are drawn at coordinates measured
+    # here, so a page still moving yields an annotation offset from the thing it labels (#109).
+    await settle_page(page)
+    elements = await _scan_elements(mgr, tab, scope, limit)
     screenshot_bytes = await page.screenshot(type="png")
     return annotate_screenshot(screenshot_bytes, elements), elements
 
@@ -83,7 +87,7 @@ async def _annotate_and_describe(
     element_list = format_element_list(elements)
     context = f"Annotated page with {len(elements)} interactive elements:\n{element_list}"
     result = await vlm._media_response(annotated_bytes, context, query)
-    return result or context
+    return result.text or context
 
 
 async def _capture_desktop(
@@ -97,7 +101,7 @@ async def _capture_desktop(
     result = await vlm._media_response(
         screenshot_bytes, context, query, path, model_override=model_override
     )
-    return screenshot_bytes, result or context
+    return screenshot_bytes, result.text or context
 
 
 async def _annotate_desktop(
@@ -148,7 +152,7 @@ async def _annotate_desktop(
     element_list = DesktopElement.format_list(elements)
     context = f"Annotated desktop window with {len(elements)} elements:\n{element_list}"
     result = await vlm._media_response(annotated, context, query, model_override=model_override)
-    return elements, f"{result or context}\n{timing}"
+    return elements, f"{result.text or context}\n{timing}"
 
 
 async def _element_screenshot(
@@ -184,11 +188,12 @@ async def _element_screenshot(
             meta += f" ({box['width']:.0f}x{box['height']:.0f} at {box['x']:.0f},{box['y']:.0f})"
 
     try:
+        await settle_page(page)  # an element photo goes stale exactly like a page one (#109)
         png_bytes = await locator.screenshot(type="png")
     except Exception as e:
         return f"Cannot screenshot element: {e}"
     result = await vlm._media_response(png_bytes, meta, query, path)
-    return result or meta
+    return result.text or meta
 
 
 _DURATION_UNITS = {"ms": 0.001, "s": 1.0, "m": 60.0, "": 1.0}
@@ -252,7 +257,7 @@ async def _capture_or_file(target, session, scope):
 async def _resolve_capture(target, session, scope, path, reference, inv):
     """Shared capture path for review_ui / verify_ui: resolve the target (via ``_capture_or_file``),
     save to ``path`` if given, and read an optional ``reference`` image. Returns
-    ``(img_bytes, context, ref_bytes, elements, err_or_None)`` — on error the caller returns the string.
+    ``(img_bytes, context, ref_bytes, elements, saved_path_or_None, err_or_None)`` — on error the caller returns the string.
 
     ``elements`` is interact's detected element list for a BROWSER target (the reliable, no-VLM DOM-ref
     scan), used to GROUND the critique and flag a hallucinated ref. Empty for a desktop/file target,
@@ -261,23 +266,22 @@ async def _resolve_capture(target, session, scope, path, reference, inv):
 
     img, context, mgr, win, err = await _capture_or_file(target, session, scope)
     if err:
-        return None, None, None, [], err
+        return None, None, None, [], None, err
     elements: list = []
     if win is None and mgr is not None:  # browser target → DOM ref list to anchor the critique on
         try:
             elements = await _scan_elements(mgr, scope=scope)
         except Exception:
             elements = []  # never fail a capture because the grounding scan hiccuped
-    if path:
-        core._save_to_path(path, img)
+    saved = core._save_to_path(path, img) if path else None
     Debug.save("capture", img, ext="png", invocation_id=inv)
     ref_bytes = None
     if reference:
         try:
             ref_bytes = Path(reference).read_bytes()
         except OSError as e:
-            return None, None, None, [], f"ERROR: could not read reference image {reference!r} — {e}"
-    return img, context, ref_bytes, elements, None
+            return None, None, None, [], None, f"ERROR: could not read reference image {reference!r} — {e}"
+    return img, context, ref_bytes, elements, saved, None
 
 
 def _quality_plan(quality: str | None, model: str | None) -> tuple[str | None, bool, str | None]:
@@ -321,7 +325,7 @@ async def _run_ui_critique(
     Debug.dump_input(inv, {"tool": tool, "target": target, "reference": reference,
                            "model": model, "quality": quality, **dump_extra},
                      vlm._resolved_config(eff_model, "image"))
-    img, context, ref_bytes, elements, err = await _resolve_capture(
+    img, context, ref_bytes, elements, saved, err = await _resolve_capture(
         target, session, scope, path, reference, inv
     )
     if err:
@@ -329,13 +333,17 @@ async def _run_ui_critique(
         return err
     grounding = format_grounding(elements) if elements else None  # anchor findings to real elements
     valid_refs = {e.ref for e in elements if getattr(e, "ref", None)} or None
+    session_model = eff_model if model or not config.media_sessions_enabled() else None
+    api_model = eff_model if config.media_api_enabled() else None
     try:
         if ref_bytes is not None:  # reference first, build second — matches the compare rubric
             r = await vlm._vlm(ref_bytes, context, build_prompt(True, grounding),
-                               response_format=schema, model_override=eff_model, extra_images=[img])
+                               response_format=schema, model_override=session_model,
+                               _api_model_override=api_model, extra_images=[img])
         else:
             r = await vlm._vlm(img, context, build_prompt(False, grounding),
-                               response_format=schema, model_override=eff_model)
+                               response_format=schema, model_override=session_model,
+                               _api_model_override=api_model)
     except Exception as e:  # never crash the agent's flow on a vision hiccup
         return f"ERROR: {tool} vision call failed — {e}"
     parsed = parse(r.text)
@@ -344,5 +352,7 @@ async def _run_ui_critique(
     body = format_body(parsed, valid_refs) if parsed else r.text  # graceful: raw VLM text on parse miss
     model_tag = f" {r.model}" if r.model else ""
     out = f"{context}\n{body}\n(VLM:{model_tag} {r.elapsed:.1f}s)"
+    if saved:
+        out += f"\n{core._saved_note(saved, img)}"
     Debug.dump_output(inv, out)
     return out

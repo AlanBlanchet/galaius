@@ -1,14 +1,14 @@
 """The one declarative description of interact's user-configurable settings.
 
 Every front end that lets a user configure interact — the bare-``interact`` Textual TUI and the
-VS Code extension panel — renders from THIS list, instead of each re-declaring the fields, labels,
+VS Code extension panel — renders from THIS list instead of each re-declaring fields, labels,
 defaults and env-var mappings (which had already drifted: the TUI wrote ``INTERACT_BROWSER_HEADLESS``
 that :class:`~interact.config.Config` never reads, and TUI/extension disagreed on ``debug.dir``).
 
 A :class:`Setting` is keyed to a real ``Config`` attribute (``field``), so its env-var name and
-default are derived from the runtime config and can't drift; a test asserts every setting maps to
-an existing field. The schema is exported to JSON (``PackageData.settings_raw``) for the extension,
-which generates its env-map and renders its Configuration panel from the same source.
+default derive from the runtime config and can't drift; a test asserts every setting maps to an
+existing field. Schema exports to JSON (``PackageData.settings_raw``) for the extension, which
+generates its env-map and renders its Configuration panel from the same source.
 
 Front ends consume the common spec and override only presentation when they must (a richer widget,
 hiding a field) — the *behaviour* (which key, which env var, the default) stays shared.
@@ -22,20 +22,8 @@ from pydantic import BaseModel, computed_field
 
 from interact.config.settings import Config
 
-SettingKind = Literal["model", "enum", "bool", "int", "str", "path"]
+SettingKind = Literal["enum", "bool", "int", "str", "path"]
 SettingGroup = Literal["Models", "Desktop", "Browser", "Advanced"]
-
-# Capability a model must have to appear in a role's dropdown. image/component need GUI grounding;
-# video needs NATIVE video input (Gemini / Qwen-VL / Nova — not every VLM, which was the old bug:
-# the list mirrored the image list); audio needs audio understanding / transcription. interact can
-# still drive a non-native model for video (it ffmpeg-samples frames) or audio, but the picker shows
-# only genuinely capable models so the choice is honest.
-_ROLE_CAP = {
-    "image": "gui_grounding",
-    "component": "gui_grounding",
-    "video": "video",
-    "audio": "audio",
-}
 
 
 class Option(BaseModel):
@@ -49,14 +37,27 @@ class Setting(BaseModel):
     """A single user-configurable setting, keyed to a ``Config`` attribute so its env-var name and
     default come from the runtime config (no second copy to keep in sync)."""
 
-    key: str  # friendly dotted key used by UserConfig / the extension, e.g. "image.model"
-    field: str  # the Config attribute this maps to, e.g. "image_model" — source of env + default
+    key: str  # friendly dotted key used by UserConfig / the extension, e.g. "image.criteria"
+    field: str  # the Config attribute this maps to, e.g. "image_criteria" — source of env + default
     label: str
     description: str
     group: SettingGroup
     kind: SettingKind
-    role: str | None = None  # for kind="model": the model role (image/component/video)
+    role: str | None = None  # the model role this criterion resolves for (image/component/video/audio)
     options: list[Option] | None = None  # for kind="enum"
+    @computed_field
+    @property
+    def minimum(self) -> int | None:
+        """Numeric lower bound projected from the runtime Config field, when declared."""
+        value = Config.model_json_schema()["properties"][self.field].get("minimum")
+        return int(value) if isinstance(value, int | float) else None
+
+    @computed_field
+    @property
+    def pattern(self) -> str | None:
+        """String constraint projected from the runtime Config field, when it declares one."""
+        value = Config.model_json_schema()["properties"][self.field].get("pattern")
+        return value if isinstance(value, str) else None
 
     @computed_field
     @property
@@ -73,61 +74,109 @@ class Setting(BaseModel):
         unset"; home is collapsed to ``~`` so the export is portable, not the build machine's path."""
         from pathlib import Path
 
-        value = Config.model_fields[self.field].default
+        field = Config.model_fields[self.field]
+        value = field.default_factory() if field.default_factory is not None else field.default
         if isinstance(value, bool):
             return "true" if value else "false"
         if value is None:
             return ""
         if isinstance(value, Path):
-            # Render path defaults POSIX-style (forward slashes) so the exported JSON is byte-identical
-            # on every OS — otherwise Windows bakes `~\.interact` and drifts from the bundled (Linux-
-            # generated) settings.json, failing the lockstep check.
+            # Render path defaults POSIX-style (forward slashes) so exported JSON is byte-identical
+            # on every OS — otherwise Windows bakes `~\.interact` and drifts from the bundled
+            # (Linux-generated) settings.json, failing the lockstep check.
             text, home = value.as_posix(), Path.home().as_posix()
+        elif isinstance(value, tuple):
+            text, home = ",".join(str(part) for part in value), str(Path.home())
         else:
             text, home = str(value), str(Path.home())
         return "~" + text[len(home):] if text.startswith(home) else text
-
-    def model_options(self) -> list[Option]:
-        """For a ``model`` setting: ``(auto)`` first, then bundled model ids capable of the role.
-        Reads the bundled catalog only — no network, no registry load."""
-        from interact.data import PackageData
-
-        cap = _ROLE_CAP.get(self.role or "", "gui_grounding")
-        ids: set[str] = set()
-        for spec in PackageData.models_data().get("providers", {}).values():
-            for model_id, mspec in (spec.get("models") or {}).items():
-                if cap in (mspec.get("capabilities") or []):
-                    ids.add(model_id)
-        return [Option(label="(auto — best available)", value="")] + [
-            Option(label=mid, value=mid) for mid in sorted(ids)
-        ]
 
 
 # Ordered by group; the order here is the order shown in every front end.
 SETTINGS: list[Setting] = [
     # ── Models ───────────────────────────────────────────────────────────────
+    # Every role below carries a CRITERION, never a pinned model id: a sentence the resolver
+    # re-reads every call against whatever provider key or CLI session is actually reachable
+    # (interact_core.tool_settings.PortableToolSettingsValues). A blank field falls back to the
+    # bare capability that made the role usable at all (Config._ROLE_DEFAULT_CRITERIA).
     Setting(
-        key="image.model", field="image_model", group="Models", kind="model", role="image",
-        label="Vision model",
-        description="Screenshots & media analysis (the default for most VLM calls).",
+        key="criteria.weights", field="criteria_weights", group="Models", kind="str",
+        label="Criteria weights",
+        description="Optional weights over normalized unit-safe criteria only, shared by every "
+        "role below; raw accuracy, index, latency, and price units cannot be combined.",
     ),
     Setting(
-        key="component.model", field="component_model", group="Models", kind="model", role="component",
-        label="Component model",
-        description="UI-element detection / GUI grounding (falls back to the vision model).",
+        key="media.backend", field="media_backend", group="Models", kind="enum",
+        label="Media backend",
+        description="Where image and sampled-video analysis runs in an isolated sandbox. Auto follows the billing policy.",
+        options=[
+            Option(label="Auto", value="auto"),
+            Option(label="Subscription session", value="session"),
+            Option(label="API", value="api"),
+        ],
     ),
     Setting(
-        key="video.model", field="video_model", group="Models", kind="model", role="video",
-        label="Video model",
-        description="Video understanding. A Gemini model gets the clip natively (inline video); "
-        "other models — and clips too large to send inline — fall back to sampled frames, so any "
-        "listed model works.",
+        key="media.billing", field="media_billing", group="Models", kind="enum",
+        label="Media billing policy",
+        description="Session only prevents interact's metered API fallback; vendor CLI account "
+        "credits are separate and require the explicit attestation below.",
+        options=[
+            Option(label="Session only", value="session_only"),
+            Option(label="API allowed", value="api_allowed"),
+        ],
     ),
     Setting(
-        key="audio.model", field="audio_model", group="Models", kind="model", role="audio",
-        label="Audio model",
-        description="Speech-to-text + audio understanding for the transcribe tool "
-        "(Whisper / gpt-4o-transcribe / Gemini).",
+        key="media.noExtraUsageConfirmedFor", field="media_session_no_extra_usage_confirmed_for",
+        group="Models", kind="enum", label="No-extra-usage confirmed providers",
+        description="Claude confirmation: Usage credits disabled, zero prepaid balance, "
+        "and auto-reload off. interact cannot verify this account state.",
+        options=[
+            Option(label="None (sessions blocked)", value=""),
+            Option(label="Claude", value="claude"),
+        ],
+    ),
+    Setting(
+        key="media.providerOrder", field="media_provider_order", group="Models", kind="enum",
+        label="Subscription provider order",
+        description="Media-capable subscription CLI, currently Claude.",
+        options=[Option(label="Claude", value="claude")],
+    ),
+    Setting(
+        key="media.claudeCriteria", field="claude_media_criteria", group="Models", kind="str",
+        label="Claude session model criteria",
+        description="Requirement the Claude CLI's own model must clear (e.g. 'cap.vlm'); blank "
+        "uses the subscription CLI default.",
+    ),
+    Setting(
+        key="tierSovereign.criteria", field="tier_sovereign_criteria", group="Models", kind="str",
+        label="Sovereign-tier criteria",
+        description="Requirement for review_ui/verify_ui's low/medium quality tier (cheapest "
+        "clearing model wins — self-hosted sorts first at zero cost); blank means any VLM.",
+    ),
+    Setting(
+        key="image.criteria", field="image_criteria", group="Models", kind="str", role="image",
+        label="Vision model criteria",
+        description="Requirement for screenshots and images (e.g. 'cap.vlm and aa.intelligence "
+        "> 80%'); blank means any VLM. Subscription sessions use media.claudeCriteria instead.",
+    ),
+    Setting(
+        key="component.criteria", field="component_criteria", group="Models", kind="str", role="component",
+        label="Component model criteria",
+        description="Requirement for GUI grounding (falls back to cap.gui_grounding). "
+        "Subscription sessions use their media session model.",
+    ),
+    Setting(
+        key="video.criteria", field="video_criteria", group="Models", kind="str", role="video",
+        label="Video model criteria",
+        description="Requirement for video (falls back to cap.video). Subscription sessions "
+        "always receive ordered, timestamped sampled frames; an API model may receive native "
+        "video when supported.",
+    ),
+    Setting(
+        key="audio.criteria", field="audio_criteria", group="Models", kind="str", role="audio",
+        label="Audio model criteria",
+        description="Requirement for transcribe (falls back to cap.audio). Claude subscription "
+        "sessions do not hear audio; media.billing must allow this separate path.",
     ),
     # ── Desktop ──────────────────────────────────────────────────────────────
     Setting(
@@ -196,6 +245,26 @@ SETTINGS: list[Setting] = [
         key="vlm.maxTokens", field="max_tokens", group="Advanced", kind="int",
         label="VLM max tokens",
         description="Cap on VLM output tokens per call (blank = the model's default).",
+    ),
+    Setting(
+        key="media.timeout", field="media_timeout", group="Advanced", kind="int",
+        label="Subscription media timeout (s)",
+        description="Hard limit for a Claude media-analysis child process.",
+    ),
+    Setting(
+        key="media.maxItems", field="media_max_items", group="Advanced", kind="int",
+        label="Media items per request",
+        description="Maximum number of image, video, or audio items accepted in one analysis.",
+    ),
+    Setting(
+        key="media.maxTotalBytes", field="media_max_total_bytes", group="Advanced", kind="int",
+        label="Media bytes per request",
+        description="Maximum aggregate decoded media bytes accepted before any provider runs.",
+    ),
+    Setting(
+        key="media.maxContextChars", field="media_max_context_chars", group="Advanced", kind="int",
+        label="Media context characters",
+        description="Maximum untrusted page, title, URL, or transcript context characters per request.",
     ),
     Setting(
         key="vlm.waitTimeout", field="wait_timeout", group="Advanced", kind="int",

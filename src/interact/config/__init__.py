@@ -15,8 +15,6 @@ from interact.config.settings import (  # noqa: F401
     DEFAULT_LIMIT,
     LOG_MAXLEN,
     QUALITY_TIERS,
-    _DEFAULT_SOVEREIGN_MODEL,
-    _SOVEREIGN_MODELS,
     _resolve_session_name,
     _safe_dir_name,
     _session_custom_title,
@@ -25,7 +23,6 @@ from interact.config.settings import (  # noqa: F401
 )
 from interact.config.user import UserConfig  # noqa: F401
 from interact.config.schema import (  # noqa: F401
-    _ROLE_CAP,
     SETTINGS,
     Option,
     Setting,

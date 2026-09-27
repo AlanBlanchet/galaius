@@ -31,9 +31,28 @@
     // `summary` is the natively-interactive trigger of a <details> disclosure — clicking it is how
     // the panel opens. It carries no button role, so a role/tag list without it made the trigger
     // invisible to the scan and the disclosure undrivable.
-    "a,button,input,select,textarea,summary,[role=button],[role=link],[role=checkbox],[role=radio],[role=tab],[role=menuitem],[role=combobox],[role=textbox],[draggable=true],[role=listitem][aria-grabbed],[role=option]";
+    //
+    // `[tabindex]:not([tabindex="-1"])` catches a control an author made keyboard-focusable
+    // without giving it an interactive ARIA role — a hover/focus explanation marker with
+    // `role="note"` (a real shipped shape) is otherwise invisible to every ref-based tool, not
+    // just this scan: get_interactive_elements, run_actions by ref, and any state-machine walker
+    // built on top all read this same list.
+    "a,button,input,select,textarea,summary,[role=button],[role=link],[role=checkbox],[role=radio],[role=tab],[role=menuitem],[role=combobox],[role=textbox],[draggable=true],[role=listitem][aria-grabbed],[role=option],[tabindex]:not([tabindex='-1'])";
   const vw = window.innerWidth;
   const vh = window.innerHeight;
+
+  // opacity:0 on the element OR any ancestor composites it invisible — the element's own computed
+  // opacity still reads 1 under a transparent parent, so an own-style check let an inherited ghost
+  // through as a ref (#128). checkVisibility walks the ancestors natively; older engines walk here.
+  const transparent = (el) => {
+    if (typeof el.checkVisibility === "function") {
+      return !el.checkVisibility({ checkOpacity: true, opacityProperty: true });
+    }
+    for (let n = el; n; n = n.parentElement) {
+      if (parseFloat(getComputedStyle(n).opacity) === 0) return true;
+    }
+    return false;
+  };
 
   // Keep only elements a user could actually act on: visible, enabled, not aria-hidden,
   // not collapsed. (display:none yields a 0×0 rect so it's caught by the size gate.)
@@ -44,7 +63,7 @@
     const s = getComputedStyle(el);
     if (s.visibility === "hidden" || s.visibility === "collapse") return false;
     if (s.pointerEvents === "none") return false;
-    if (parseFloat(s.opacity) === 0) return false;
+    if (transparent(el)) return false;
     return true;
   };
 

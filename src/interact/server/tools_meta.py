@@ -1,21 +1,57 @@
 """Meta MCP tools that aren't about a page or a window: report_issue (feedback channel) and
 list_providers (what VLM models/keys are configured)."""
 
+import asyncio
 import json
 import os
 
 import litellm as _litellm
 
+from interact.agents.providers import PROVIDERS, AgentProvider
 from interact.server.core import mcp
 
 
-@mcp.tool()
-async def report_issue(title: str, body: str, kind: str = "bug") -> str:
-    """Report a problem, missing capability, or feedback about INTERACT ITSELF — not the site/app
-    you're automating — to its maintainers, so it gets fixed. Use it when interact errors in a way
-    that blocks you, behaves unexpectedly, or is missing something you needed.
+async def _subscription_provider_state(provider: AgentProvider) -> dict:
+    """Credential-free readiness for one registered subscription CLI."""
+    if not provider.available():
+        return {
+            "provider": provider.name,
+            "cli": provider.binary,
+            "installed": False,
+            "authenticated": None,
+            "action": f"Install and log in with the {provider.binary} CLI",
+        }
+    try:
+        authenticated = await provider.subscription_authenticated(
+            provider.subscription_env(), timeout=3
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        authenticated = None
+    action = (
+        "Ready"
+        if authenticated is True
+        else f"Log in with the {provider.binary} CLI"
+        if authenticated is False
+        else f"Check the {provider.binary} CLI login; authentication status was unavailable"
+    )
+    return {
+        "provider": provider.name,
+        "cli": provider.binary,
+        "installed": True,
+        "authenticated": authenticated,
+        "action": action,
+    }
 
-    Files a GitHub issue on interact's repo when gh is authed; otherwise it opens the prefilled
+
+@mcp.tool(category="feedback")
+async def report_issue(title: str, body: str, kind: str = "bug") -> str:
+    """Report a problem, missing capability, or feedback about INTERACT ITSELF — not the
+    site/app you're automating — to its maintainers, so it gets fixed. Use when interact errors
+    in a way that blocks you, behaves unexpectedly, or is missing something you needed.
+
+    Files a GitHub issue on interact's repo when gh is authed; otherwise opens the prefilled
     issue page in the user's browser (they just press Submit — tell them). Don't include
     secrets/credentials; interact appends its version + platform itself.
     kind: bug | limitation | feedback.
@@ -25,14 +61,15 @@ async def report_issue(title: str, body: str, kind: str = "bug") -> str:
     return report(title, body, kind)
 
 
-@mcp.tool()
+@mcp.tool(category="vision")
 async def list_providers() -> str:
-    """Return available VLM providers, models, and current configuration.
+    """Return subscription visual CLIs, API/local providers, and current configuration.
 
-    Use this to discover what models can be passed as the 'model' override
-    to get_interactive_elements and screenshot tools.
+    Use to discover what models can be passed as the 'model' override to
+    get_interactive_elements and screenshot tools.
     """
     from interact.server.core import config
+    config.refresh()
 
     # Extension declaratively passes which providers have keys configured
     declared = os.environ.get("INTERACT_CONFIGURED_PROVIDERS", "")
@@ -64,28 +101,85 @@ async def list_providers() -> str:
                 if key in keys:
                     available.add(provider)
 
-    result: dict = {
-        "config": {
-            "image_model": config.image_model or None,
-            "component_model": config.component_model or None,
-            "video_model": config.video_model or None,
-        },
-        "available_providers": sorted(available),
-    }
-
-    # Warn on configured models whose provider has no key — via the env-key check, NOT
-    # litellm.validate_environment (which can hang on interactive provider auth flows).
     from interact.models import Model
 
-    Model.load_registry()
+    # Off the event loop: loading the registry now asks a running Ollama daemon what it has, and
+    # a host that ACCEPTS then stalls would otherwise block every other MCP call on this server
+    # for the length of the timeouts.
+    await asyncio.to_thread(Model.load_registry)
+    # A provider that ANSWERED us is available whatever the key scan above concluded — a local
+    # Ollama needs no key at all, so the scan alone would both hide it and then warn about a
+    # model pinned to it. Discovery is the authority here.
+    available |= Model.live_providers()
+
+    def _resolved(role: str) -> str | None:
+        try:
+            return config.resolve_model(role)
+        except RuntimeError:
+            return None  # nothing clears the criterion right now — named below in warnings
+
+    result: dict = {
+        "config": {
+            "image_criteria": config.criteria_for("image"),
+            "component_criteria": config.criteria_for("component"),
+            "video_criteria": config.criteria_for("video"),
+            "image_resolved": _resolved("image"),
+            "component_resolved": _resolved("component"),
+            "video_resolved": _resolved("video"),
+        },
+        "available_providers": sorted(available),
+        "media": {
+            "backend": config.media_backend,
+            "billing": config.media_billing,
+            "no_extra_usage_confirmed_for": list(
+                config.media_session_no_extra_usage_confirmed_for
+            ),
+            "provider_order": list(config.media_provider_order),
+            "timeout_seconds": config.media_timeout,
+            "models": {
+                name: config.media_model_for(name) or None
+                for name in config.media_provider_order
+            },
+            "subscription_providers": await asyncio.gather(*(
+                _subscription_provider_state(PROVIDERS[name])
+                for name in config.media_provider_order
+            )),
+            "audio_boundary": (
+                "Audio uses its configured API/local-compatible backend only when billing is "
+                "api_allowed; Claude subscription sessions handle visual media, not "
+                "transcription."
+            ),
+            "session_credit_limit": (
+                "Each installed provider is skipped until its name is listed in "
+                "media.noExtraUsageConfirmedFor after its account-side extra-usage controls are "
+                "disabled. interact cannot inspect those account settings atomically."
+            ),
+        },
+    }
+
+    # An agent picking a model over MCP cannot see the user's daemon, so name what it actually
+    # serves — otherwise the only discoverable models are the ones baked into the catalog.
+    # Memoised by the load_registry call above, so this is a dict lookup, not a second round trip.
+    from interact import ollama
+
+    served = ollama.serving()
+    if served:
+        result["ollama"] = {
+            "endpoint": served[0].base,
+            "models": [
+                {"id": m.model_id, "vision": m.vision, "cloud": m.cloud} for m in served
+            ],
+        }
+
+    # Warn — by name, never blank — on a role whose criterion clears nothing right now, via the
+    # same resolver every VLM call uses, not a second re-implementation of the check.
     warnings = []
-    for model_name in [config.image_model, config.component_model, config.video_model]:
-        if not model_name:
-            continue
-        model = Model.by_id(model_name)
-        provider = model.provider if model else (model_name.split("/", 1)[0] if "/" in model_name else None)
-        if provider and provider not in available:
-            warnings.append(f"{model_name}: provider '{provider}' has no API key set")
+    for role in ("image", "component", "video"):
+        if result["config"][f"{role}_resolved"] is None:
+            warnings.append(
+                f"{role}: '{config.criteria_for(role)}' clears nothing — "
+                f"{config.explain_model(role)}"
+            )
     if warnings:
         result["warnings"] = warnings
 

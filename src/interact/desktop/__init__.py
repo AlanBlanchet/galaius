@@ -55,6 +55,9 @@ from interact.desktop.window import (  # noqa: F401
     _DRAG_STEPS,
     _SCREEN_WID,
     _is_blank_png,
+    blank_capture_error,
+    dead_window_error,
     gpu_surface_error,
+    unreadable_window_error,
 )
 from interact.desktop.atspi import AtSpi  # noqa: F401

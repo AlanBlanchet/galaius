@@ -1,6 +1,6 @@
 """Record the README demo animations by actually driving interact — no mockups.
 
-Every GIF in `docs/assets/` is produced by this script, so a claim in the README is a recording of
+Every GIF in `site/assets/` is produced by this script, so a claim in the README is a recording of
 the real tool doing the real thing, and any of them can be regenerated after a behaviour change:
 
     uv run python scripts/demos/record_demos.py            # all demos
@@ -227,7 +227,7 @@ DEMO_PAGE = REPO / "docs" / "demo" / "shop.html"
 def demo_browser(out: Path) -> None:
     """Drive a real page through a real browser session — filter, search, add to cart.
 
-    Recorded against a LOCAL fixture (docs/demo/shop.html) rather than someone's live site: a demo
+    Recorded against a LOCAL fixture (site/demo/shop.html) rather than someone's live site: a demo
     pinned to a third party breaks on their next redesign and drags their branding into this repo.
     The controls are the ordinary ones an agent meets — a filter that re-renders a list, a search
     box, a counter that changes — so the clip shows targeting and state-change reporting, not a

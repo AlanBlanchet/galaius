@@ -1,0 +1,39 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "oneOf": [
+    {
+      "$ref": "./CommandExecutionRequestApprovalRequest.json"
+    },
+    {
+      "$ref": "./FileChangeRequestApprovalRequest.json"
+    },
+    {
+      "$ref": "./ToolRequestUserInputRequest.json"
+    },
+    {
+      "$ref": "./McpServerElicitationRequestRequest.json"
+    },
+    {
+      "$ref": "./PermissionsRequestApprovalRequest.json"
+    },
+    {
+      "$ref": "./DynamicToolCallRequest.json"
+    },
+    {
+      "$ref": "./ChatgptAuthTokensRefreshRequest.json"
+    },
+    {
+      "$ref": "./AttestationGenerateRequest.json"
+    },
+    {
+      "$ref": "./CurrentTimeReadRequest.json"
+    },
+    {
+      "$ref": "./ApplyPatchApprovalRequest.json"
+    },
+    {
+      "$ref": "./ExecCommandApprovalRequest.json"
+    }
+  ],
+  "title": "ServerRequest"
+}

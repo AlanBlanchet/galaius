@@ -3,12 +3,28 @@ measure_ui, transcribe. They resolve the target/quality plan and delegate to the
 helpers; the discover→verify→measure trio share the ``_run_ui_critique`` runner."""
 
 import base64
-import re
 import logging
+import re
+from pathlib import Path
 
 from mcp.server.fastmcp.utilities.types import Image
 
 from interact.config import DEFAULT_LIMIT
+from interact.debug_utils import Debug
+from interact.desktop import DesktopElement
+from interact.models import is_audio_model, is_transcription_only_model
+from interact.server import capture, core, targets, vlm
+from interact.server.core import (
+    _AUTO_SESSION,
+    _audio_mime,
+    _session_response,
+    config,
+    instrumented,
+    mcp,
+)
+from interact.state import format_element_list
+from interact.vision import MediaItem
+from interact.vision.core import analyze_media, transcribe_audio
 from interact.vision.critique import (
     UIReview,
     VerifyReport,
@@ -19,20 +35,13 @@ from interact.vision.critique import (
     parse_review,
     parse_verify,
 )
-from interact.debug_utils import Debug
-from interact.desktop import DesktopElement
-from interact.vision.detect import _crop_image, _desktop_context
-from interact.vision.measure import format_measure, measure
-from interact.models import is_audio_model, is_transcription_only_model
-from interact.server import capture, core, targets, vlm
-from interact.server.core import _DEFAULT_SESSION, _audio_mime, _session_response, config, instrumented, mcp
-from interact.state import format_element_list
-from interact.vision import analyze_media, transcribe_audio
+from interact.vision.detect import _crop_image, _desktop_context, _page_signature
+from interact.vision.measure import blank_frame_reason, format_measure, measure
 
 _log = logging.getLogger("interact")
 
 
-@mcp.tool()
+@mcp.tool(category="vision")
 @instrumented
 async def screenshot(
     query: str | None = None,
@@ -43,17 +52,17 @@ async def screenshot(
     return_image: bool = False,
     debug_dir: str | None = None,
     target: str | None = None,
-    session: str = _DEFAULT_SESSION,
+    session: str = _AUTO_SESSION,
     model: str | None = None,
 ):
     """Capture the current page or a desktop window.
 
-    Default (target unset): operates on browser session "default".
+    Default (target unset): operates on your own browser session (named in the reply).
     target=<window title>: captures a desktop window. target="screen"/"screen:<index>": the whole
     desktop or one monitor (use list_desktop_windows to discover windows + monitor indexes).
     target="file:<path>": ANALYZE an existing image file (with query) instead of capturing — for an
     artifact produced out-of-band; this never writes, so it can't clobber the file.
-    A desktop target and a non-default session are mutually exclusive.
+    A desktop target and a session you named are mutually exclusive.
 
     Returns depend on parameters:
     - No selector/element, no query: page title + visible text content (browser) or, for a
@@ -67,8 +76,10 @@ async def screenshot(
     selector: CSS selector targeting one element (browser only).
     query: question for VLM visual analysis of the captured content.
     scope: CSS selector to restrict text extraction to a sub-tree (browser only).
-    path: OUTPUT sink — saves the captured PNG here (overwrites any existing file, and says so). To
-        ANALYZE an existing image, use target="file:<path>", not path.
+    path: OUTPUT sink — saves the captured PNG here (overwrites any existing file, and says so). A
+        relative path lands under ~/.interact/out (interact's output dir), never the server's cwd;
+        "~" expands. The reply names the absolute file written. To ANALYZE an existing image, use
+        target="file:<path>", not path.
     return_image: when True, return the raw screenshot bytes as an MCP ImageContent alongside the text,
         so the calling agent can SEE the pixels directly (not just a VLM summary).
     model: override the configured VLM model for this call. Uses the VS Code configured model when not set.
@@ -84,51 +95,72 @@ async def screenshot(
     if file_bytes is not None:
         src = target.strip()[5:]
         label = f"Image file: {src}"
+        media_mime = MediaItem.detect_mime(file_bytes)
+        media_format = media_mime.split("/", 1)[1]
         if query:
-            r = await vlm._vlm(file_bytes, label, query, model_override=model)
+            r = await vlm._vlm(
+                file_bytes, label, query, mime=media_mime, model_override=model
+            )
             text = f"{label}\n{vlm._fmt_timing(r)}"
         else:
             import io as _io
+
             from PIL import Image as _PILImage
             w, h = _PILImage.open(_io.BytesIO(file_bytes)).size
             text = f"{label} ({w}x{h}) — pass query=… to analyze it, or use measure_ui for exact pixels."
-        Debug.save("capture", file_bytes, ext="png", invocation_id=inv)
-        out = [text, Image(data=file_bytes, format="png")] if return_image else text
+        Debug.save("capture", file_bytes, ext=media_format, invocation_id=inv)
+        out = [text, Image(data=file_bytes, format=media_format)] if return_image else text
         return out
     win, mgr, err = targets._resolve_target(target, session)
     if err:
         return err
     # If `path` already exists we're about to OVERWRITE it with this capture — surface that so the
     # result can't be mistaken for an analysis of the prior file (#44). To analyze a file, use
-    # target="file:<path>" above; `path` is an OUTPUT sink.
-    overwrote_path = bool(path) and __import__("pathlib").Path(path).exists()
+    # target="file:<path>" above — `path` is an OUTPUT sink.
+    overwrote_path = bool(path) and core._resolve_save_path(path).exists()
     img_bytes: bytes | None = None
     if win:
         if element is not None:
+            raw = win.capture()
             el = targets._resolve_desktop_el(win.wid, win.name, element=element)
             if el is None:
                 nf = core._not_found(f"Element {element}")
                 return nf
-            raw = win.capture()
             img_bytes = _crop_image(raw, el.x, el.y, el.w, el.h)
-            meta = f"[{el.index}] {el.role}: {el.name!r} ({el.w}x{el.h} at {el.x},{el.y})"
+            geometry = f"({el.w}x{el.h} at {el.x},{el.y})"
+            # The LABEL is what must not survive a screen change. Cropping the live frame at a
+            # ref's coordinates is what was asked for; telling the model those pixels are a widget
+            # detected on a DIFFERENT frame hands it an image and a description that disagree — the
+            # setup for the confident wrong answer in #112. So on a changed frame the crop still
+            # goes, described only by where it was taken from, and the caller is warned.
+            #
+            # A warning, not a refusal, deliberately: the signature is a 16x16 hash of the frame,
+            # so a blinking caret or a clock flips it, and refusing there would make element
+            # queries unusable on any live window — matches how this codebase already treats the
+            # geometry case (DesktopElement.detection_stale).
+            stale = DesktopElement.stale_for(win.wid, _page_signature(raw))
+            meta = geometry if stale else f"[{el.index}] {el.role}: {el.name!r} {geometry}"
             result = await vlm._media_response(img_bytes, meta, query, path, model_override=model)
-            text = f"{core._desktop_label(win)}\n{result or meta}"
+            note = (
+                f"\n(note: ref [{el.index}] was detected on a different frame — describing the "
+                f"region at {geometry} without its recorded label; re-run "
+                "get_interactive_elements if this is not the element you meant)"
+                if stale else ""
+            )
+            text = f"{core._desktop_label(win)}\n{result.text or meta}{note}"
         elif query:
             img_bytes, description = await capture._capture_desktop(win, query, path, model_override=model)
             text = f"{core._desktop_label(win)}\n{description}"
         else:
-            # No query → just capture. screenshot NEVER runs VLM grounding (that's
-            # get_interactive_elements' job, and a VLM call here would be slow + wrong). If a
-            # detection already exists for this window, surface those refs so the capture is
-            # actionable; otherwise return metadata and point the agent at the detect tool.
+            # No query → just capture. screenshot NEVER runs VLM grounding (get_interactive_elements'
+            # job; a VLM call here would be slow + wrong). If a detection already exists for this
+            # window, surface those refs so the capture is actionable; otherwise return metadata
+            # and point the agent at the detect tool.
             img_bytes = win.capture()
-            if path:
-                core._save_to_path(path, img_bytes)
+            dest = core._save_to_path(path, img_bytes) if path else None
             # Surface cached refs ONLY if they belong to the frame just captured — after a navigation
             # the live frame's signature differs, so we don't list a prior screen's refs on a screen
             # that's no longer shown (the screenshot↔elements desync, #19).
-            from interact.vision.detect import _page_signature
             cached = DesktopElement.cached_for(win.wid, _page_signature(img_bytes))
             if cached:
                 text = f"{core._desktop_label(win)}\n{DesktopElement.format_list(cached)}"
@@ -137,6 +169,8 @@ async def screenshot(
                     f"{core._desktop_label(win)}\n{_desktop_context(win)}\n"
                     "(call get_interactive_elements to detect clickable elements and act by [ref])"
                 )
+            if dest is not None:
+                text += f"\n{core._saved_note(dest, img_bytes)}"
     elif element is not None or selector is not None:
         text = _session_response(
             session, await capture._element_screenshot(mgr, mgr.active_tab, selector, element, query, path)
@@ -144,8 +178,7 @@ async def screenshot(
     else:
         state = await capture._capture(mgr, scope)
         img_bytes = base64.b64decode(state.screenshot_base64)
-        if path:
-            core._save_to_path(path, img_bytes)
+        dest = core._save_to_path(path, img_bytes) if path else None
         if query:
             text = _session_response(session, await vlm._analyze(state, query, model_override=model))
         else:
@@ -159,15 +192,25 @@ async def screenshot(
                 else ""
             )
             text = _session_response(session, state.text_summary() + refs)
+        if dest is not None:
+            text += f"\n{core._saved_note(dest, img_bytes)}"
     if overwrote_path:
-        text += f"\n(note: overwrote existing file {path} with this capture)"
+        text += "\n(note: overwrote existing file with this capture)"
+    # An empty frame is indistinguishable from "still loading", so a caller retries and waits
+    # instead of looking — exactly what happened to a CRASHED window whose per-window capture
+    # came back black while target="screen" showed the crash modal (#113). One line.
+    if img_bytes is not None and "nothing to analyse" not in text and (why := blank_frame_reason(img_bytes)):
+        text += (
+            f"\n(note: {why} — the window may be crashed, occluded or GPU-composited"
+            + (' ; try target="screen", which shows crash modals per-window capture misses)' if win else ")")
+        )
     if img_bytes is not None:
         Debug.save("capture", img_bytes, ext="png", invocation_id=inv)
     result = [text, Image(data=img_bytes, format="png")] if (return_image and img_bytes is not None) else text
     return result
 
 
-@mcp.tool()
+@mcp.tool(category="vision")
 @instrumented
 async def get_interactive_elements(
     scope: str | None = None,
@@ -177,7 +220,7 @@ async def get_interactive_elements(
     tab: int | None = None,
     debug_dir: str | None = None,
     target: str | None = None,
-    session: str = _DEFAULT_SESSION,
+    session: str = _AUTO_SESSION,
     method: str = "default",
     model: str | None = None,
     fresh: bool = False,
@@ -185,12 +228,12 @@ async def get_interactive_elements(
     """List the interactive elements with numbered badges + their details; act on them by the
     returned `ref`/`element` in run_actions.
 
-    Default (target unset): browser session "default" — sets data-interact-ref attributes via a
+    Default (target unset): your own browser session — sets data-interact-ref attributes via a
     pure DOM scan (no VLM). get_page_state and screenshot return these refs too, so you often
     already have them without a separate call. target=<window title>: VLM-detects elements in a
     desktop window;
     target="screen"/"screen:<index>": VLM-detects across the whole desktop or one monitor.
-    A desktop target and a non-default session are mutually exclusive (list_desktop_windows lists them).
+    A desktop target and a session you named are mutually exclusive (list_desktop_windows lists them).
 
     Returns a numbered list with role/name for each element.
     Use element indices in subsequent click_element actions, or ref values for click/type_text/hover (browser only).
@@ -235,12 +278,12 @@ async def get_interactive_elements(
     return result
 
 
-@mcp.tool()
+@mcp.tool(category="vision")
 async def review_ui(
     focus: str | None = None,
     reference: str | None = None,
     target: str | None = None,
-    session: str = _DEFAULT_SESSION,
+    session: str = _AUTO_SESSION,
     scope: str | None = None,
     path: str | None = None,
     model: str | None = None,
@@ -262,7 +305,9 @@ async def review_ui(
     reference: path to a reference/target image (a design or a prior good build). When set, the review
         judges how the capture DIVERGES from this reference (wrong accent, missing nav, layout drift),
         instead of against a generic ideal — the reliable way to catch a build that's subtly off.
-    path: save the reviewed PNG here. Requires a configured vision model (same as screenshot's query).
+    path: save the reviewed PNG here. A relative path lands under ~/.interact/out (interact's output
+        dir), never the server's cwd; "~" expands. Requires a configured vision model (same as
+        screenshot's query).
     quality: pick the model by STAKES, not by name — "low"/"medium" use a cheap sovereign self-host
         model, "high"/"critical" the best frontier model; "critical" also drops findings whose element
         interact can't confirm (highest precision, for a pre-ship sign-off). Unset = the configured/
@@ -281,13 +326,13 @@ async def review_ui(
     )
 
 
-@mcp.tool()
+@mcp.tool(category="vision")
 async def verify_ui(
     requirements: list[str],
     target: str | None = None,
     reference: str | None = None,
     focus: str | None = None,
-    session: str = _DEFAULT_SESSION,
+    session: str = _AUTO_SESSION,
     scope: str | None = None,
     path: str | None = None,
     model: str | None = None,
@@ -306,6 +351,8 @@ async def verify_ui(
     requirements: the literal requirements to check, each judged PASS / FAIL / UNCLEAR with evidence.
     focus: optional extra emphasis layered onto the rubric.
     reference: a target/design image to judge the build against.
+    path: save the judged PNG here. A relative path lands under ~/.interact/out (interact's output
+        dir), never the server's cwd; "~" expands.
     quality: pick the model by STAKES — "low"/"medium" use a cheap sovereign model, "high"/"critical"
         the best frontier; "critical" downgrades any PASS resting on an element interact can't confirm.
         Unset = configured/auto. An explicit model= overrides this.
@@ -325,13 +372,13 @@ async def verify_ui(
     )
 
 
-@mcp.tool()
+@mcp.tool(category="vision")
 @instrumented
 async def measure_ui(
     target: str | None = None,
     region: str | None = None,
     point: str | None = None,
-    session: str = _DEFAULT_SESSION,
+    session: str = _AUTO_SESSION,
     scope: str | None = None,
     path: str | None = None,
 ) -> str:
@@ -349,6 +396,8 @@ async def measure_ui(
     Pairs with review_ui: the VLM flags a suspect ("this text looks low-contrast") → measure_ui
     confirms the actual ratio. Coordinates are image pixels (as screenshot / get_interactive_elements
     report them).
+    path: save the measured PNG here. A relative path lands under ~/.interact/out (interact's output
+        dir), never the server's cwd; "~" expands. The reply names the absolute file written.
     """
     inv = Debug.inv()
     Debug.dump_input(inv, {"tool": "measure_ui", "target": target, "region": region,
@@ -362,13 +411,14 @@ async def measure_ui(
     img, label, _mgr, _win, err = await capture._capture_or_file(target, session, scope)
     if err:
         return err
-    if path:
-        core._save_to_path(path, img)
+    dest = core._save_to_path(path, img) if path else None
     try:
         result = measure(img, region=reg, point=pt)
     except Exception as e:
         return f"ERROR: measure_ui failed — {e}"
     out = f"{label}\n{format_measure(result)}"
+    if dest is not None:
+        out += f"\n{core._saved_note(dest, img)}"
     return out
 
 
@@ -384,10 +434,10 @@ def _asks_about_sound_quality(query: str | None) -> bool:
     """Is this query a judgement about how the audio SOUNDS (fidelity, artifacts, which is
     cleaner) rather than what it CONTAINS (words, speakers, language, timing)?
 
-    Such answers are the ones that proved unreliable: on one clean file the same model rated
-    fidelity, then claimed it had only received a transcript, then inverted an A/B comparison
-    against an objectively measured relationship (#94). The verdict is a caption, never a
-    measurement — so these queries get told so."""
+    Such answers proved unreliable: on one clean file the same model once rated fidelity, then
+    claimed it had only received a transcript, then inverted an A/B comparison against an
+    objectively measured relationship (#94). The verdict is a caption, never a measurement — so
+    these queries get told so."""
     return bool(query) and bool(_SOUND_QUALITY_RE.search(query))
 
 
@@ -400,7 +450,7 @@ _QUALITY_CAVEAT = (
 )
 
 
-@mcp.tool()
+@mcp.tool(category="media")
 @instrumented
 async def transcribe(path: str, query: str | None = None, model: str | None = None) -> str:
     """Transcribe an audio (or audio-bearing) file to text, and optionally answer a question about it.
@@ -412,15 +462,22 @@ async def transcribe(path: str, query: str | None = None, model: str | None = No
     Audio understanding is acoustic (it HEARS the clip — tone, speakers, music, sound events) when the
     audio model can take audio in chat (Gemini, gpt-4o-audio); with a transcription-only model
     (Whisper, gpt-4o-transcribe) the query is answered over the transcript. Set the model with the
-    `audio.model` setting / INTERACT_AUDIO_MODEL, or override per-call with `model`.
+    `audio.model` setting / INTERACT_AUDIO_MODEL, or override per-call with `model`. Claude
+    subscription sessions are visual-only: audio requires `media.billing=api_allowed` and uses the
+    configured API or local-compatible audio transport regardless of `media.backend`; transcript
+    Q&A may use a session after a transcription-only model has produced text.
 
     path: local audio/media file to read.
     query: optional question about the audio (omit for a plain transcript).
     model: override the configured audio model for this call.
     """
-    from pathlib import Path
-
     config.refresh()
+    if config.media_billing != "api_allowed":
+        return (
+            "ERROR: subscription sessions cannot transcribe audio. Configure audio.model for an "
+            "API or local-compatible transcription backend and set media.billing=api_allowed; "
+            "transcript Q&A can use a Claude subscription session after that transcription step."
+        )
     try:
         data = Path(path).read_bytes()
     except OSError as e:
@@ -428,7 +485,6 @@ async def transcribe(path: str, query: str | None = None, model: str | None = No
     mime = _audio_mime(path)
     audio_model = config.resolve_model("audio", model or "")
     name = Path(path).name
-
     # Acoustic understanding when the model can hear the clip directly; otherwise fall through to
     # transcript-based answering below (so Whisper-style transcription-only models still serve a query).
     if query and is_audio_model(audio_model) and not is_transcription_only_model(audio_model):
@@ -440,16 +496,16 @@ async def transcribe(path: str, query: str | None = None, model: str | None = No
             return f"ERROR: audio understanding failed on {audio_model} — {e}"
 
     try:
-        r = await transcribe_audio(data, model=audio_model, mime_type=mime)
+        r = await transcribe_audio(data, model=audio_model, mime_type=mime, config=config)
     except Exception as e:
         return f"ERROR: transcription failed on {audio_model} — {e}"
     transcript = r.text
     if not query:
         return f"{transcript}\n(transcribed:{(' ' + r.model) if r.model else ''} {r.elapsed:.1f}s)"
 
-    # The model never heard the clip — it is reading the transcript. Say so, because a confident
+    # The model never heard the clip — it's reading the transcript. Say so: a confident
     # acoustic-sounding answer over text is exactly the failure reported in #94. A question about
-    # how it SOUNDS cannot be answered from a transcript at all, so refuse rather than invent one.
+    # how it SOUNDS can't be answered from a transcript at all, so refuse rather than invent one.
     if _asks_about_sound_quality(query):
         return (
             f"CANNOT ANSWER: {audio_model} is transcription-only, so this query was going to be "
@@ -459,7 +515,7 @@ async def transcribe(path: str, query: str | None = None, model: str | None = No
             f"(PESQ / STOI / ASR-WER vs a reference).\n\n--- transcript ---\n{transcript}"
         )
     answer = await analyze_media(
-        [], f"Transcript of {name}:\n{transcript}", config, query, model=config.resolve_model("image")
+        [], f"Transcript of {name}:\n{transcript}", config, query, role="image"
     )
     return (
         f"(answered from the TRANSCRIPT — {audio_model} is transcription-only and did not hear "

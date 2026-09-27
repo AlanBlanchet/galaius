@@ -30,7 +30,7 @@ from interact.models import Model, ModelCapability
 from interact.state import annotate_screenshot
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-TEST_GUI = _REPO_ROOT / "tests" / "fixtures" / "test_gui.py"
+TEST_GUI = _REPO_ROOT / "tests" / "fixtures" / "gui_app.py"
 TEST_PAGE = _REPO_ROOT / "tests" / "fixtures" / "test_page.html"
 SCENARIO_PAGE = _REPO_ROOT / "tests" / "fixtures" / "scenario_page.html"
 PANEL_GUI = _REPO_ROOT / "tests" / "fixtures" / "panel.py"

@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "prompts": [
+    {
+      "key": {"namespace": "interact", "slug": "conversation-system"},
+      "path": "conversation/system.md",
+      "digest": "f3d0a8cfc263d43f889b52df0f00477ffc67b9691293bbe865800d07a53d35df"
+    }
+  ]
+}

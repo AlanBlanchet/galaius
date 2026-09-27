@@ -1,6 +1,6 @@
 """Single source of truth for the project version, plus semver helpers.
 
-``pyproject.toml`` ``[project].version`` is authoritative; ``vscode-extension/package.json``
+``pyproject.toml`` ``[project].version`` is authoritative; ``clients/vscode/package.json``
 ``version`` must match it. These helpers power the release skill, the pre-commit sync
 check, the CI auto-tagger, and the TUI/CLI update check — so a bump is mechanical and the
 two files can't drift.
@@ -65,7 +65,7 @@ def pyproject_version(root: Path) -> str:
 
 def package_json_version(root: Path) -> str | None:
     """The extension's version, or None if there's no extension package.json."""
-    package = root / "vscode-extension" / "package.json"
+    package = root / "clients" / "vscode" / "package.json"
     if not package.exists():
         return None
     return json.loads(package.read_text()).get("version")
@@ -80,7 +80,7 @@ def check_in_sync(root: Path) -> list[str]:
         return [str(exc)]
     extension = package_json_version(root)
     if extension is not None and extension != py:
-        return [f"version mismatch: pyproject.toml={py} but vscode-extension/package.json={extension}"]
+        return [f"version mismatch: pyproject.toml={py} but clients/vscode/package.json={extension}"]
     return []
 
 
@@ -91,7 +91,7 @@ def set_version(root: Path, version: str) -> None:
     pyproject.write_text(
         re.sub(r'(?m)^(version\s*=\s*")[^"]+(")', rf"\g<1>{version}\g<2>", pyproject.read_text(), count=1)
     )
-    package = root / "vscode-extension" / "package.json"
+    package = root / "clients" / "vscode" / "package.json"
     if package.exists():
         package.write_text(
             re.sub(r'("version"\s*:\s*")[^"]+(")', rf"\g<1>{version}\g<2>", package.read_text(), count=1)

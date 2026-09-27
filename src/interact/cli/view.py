@@ -59,6 +59,15 @@ class View(BaseModel):
 
         providers = Model.available_providers()
         grounding = Model.recommended_grounding()
+
+        def _resolved(role: str) -> str:
+            """What the role's criterion resolves to right now, or a plain reason it does
+            not — never blank, the defect this column exists to prevent."""
+            try:
+                return config.resolve_model(role)
+            except RuntimeError:
+                return "none — nothing clears its criterion"
+
         return cls(
             title="interact",
             sections=[
@@ -76,12 +85,12 @@ class View(BaseModel):
                     table=Table(
                         columns=[
                             Column(key="role", label="Role"),
-                            Column(key="model", label="Configured"),
+                            Column(key="criteria", label="Criteria"),
+                            Column(key="resolved", label="Resolves to"),
                         ],
                         rows=[
-                            {"role": "image", "model": config.image_model or "(recommended)"},
-                            {"role": "component", "model": config.component_model or "(falls back to image)"},
-                            {"role": "video", "model": config.video_model or "(recommended)"},
+                            {"role": role, "criteria": config.criteria_for(role), "resolved": _resolved(role)}
+                            for role in ("image", "component", "video")
                         ],
                     ),
                 ),

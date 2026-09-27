@@ -16,11 +16,75 @@ Coordinates are screen pixels; map other spaces in via :class:`interact.frames.F
 
 import glob
 import os
+import subprocess
 import time
+from collections.abc import Callable
 
 
 ABS_MAX = 32767
 _BUTTONS = {"left": 1, "middle": 2, "right": 3}
+# Gap between the clicks of a multi-click (a double-click is count=2), in ms: well inside any
+# toolkit's double-click interval, far outside the ~20 ms hold of one press, so the presses land
+# as ONE dblclick and never as a long press. The single number every input path shares — the
+# uinput loop, the base backend loop, and xdotool's `click --delay` (#116).
+MULTI_CLICK_GAP_MS = 60
+
+# How long to wait for the X server to attach a freshly-created uinput node. Generous: the cost of
+# waiting is paid once per session, the cost of NOT waiting is an event dropped in silence.
+_ATTACH_TIMEOUT = 2.0
+
+
+def _xinput_names() -> str:
+    """Device names X currently knows about, one per line. Empty when there is no X server or no
+    `xinput` — both normal (Wayland, headless CI), neither an error."""
+    return subprocess.check_output(
+        ["xinput", "list", "--name-only"], text=True, timeout=2, stderr=subprocess.DEVNULL
+    )
+
+
+def wait_for_device(
+    name: str,
+    timeout: float = _ATTACH_TIMEOUT,
+    interval: float = 0.02,
+    lister: Callable[[], str] | None = None,
+) -> bool:
+    """Block until the X server LISTS an input device called ``name``. Returns True once it does,
+    False if the wait ran out or X couldn't be asked.
+
+    A uinput node exists the moment ``UI_DEV_CREATE`` returns, but X and libinput only learn about
+    it later, through udev — every event written in that window is discarded by the kernel with no
+    error. Because ``key()`` writes the MODIFIERS first, they fall in the gap; the target key
+    follows a moment later, once the device is attached, and lands alone.
+
+    That mechanism is real and worth closing here. It is NOT, however, established as the cause of
+    #115, and an earlier version of this docstring claimed it was. Independent verification found
+    the gap: this runs only from ``UinputPointer.__init__``, which only ``LocalBackend`` ever
+    constructs — while #115 was reported driving the NESTED sandbox, whose backend routes every
+    key through ``xdotool`` and never builds a pointer at all. So this code cannot execute on the
+    path the bug was reported from. Eight fresh nested trials also failed to reproduce it (the
+    modifier landed every time), leaving #115 either intermittent or mis-attributed to the nested
+    path. Treat it as OPEN; if a dropped chord reappears there, ``nested.py``'s xdotool path is
+    the place to look, not this one.
+
+    Waiting on the CONDITION rather than a guessed sleep makes this both correct and free: returns
+    the instant the device is really there, and can't silently under-wait on a slow box the way a
+    fixed delay does.
+
+    Never raises. No X server, no `xinput`, or a timed-out wait all return False and let
+    injection proceed — a missing wait degrades to today's behaviour instead of breaking input on
+    machines where the check can't run at all.
+    """
+    deadline = time.monotonic() + timeout
+    look = lister or _xinput_names
+    while True:
+        try:
+            if name in look():
+                return True
+        except Exception:
+            return False  # no X, no xinput, no answer — not confirmable, not fatal
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(interval)
 
 
 def screen_to_abs(
@@ -41,14 +105,14 @@ def screen_to_abs(
 def kernel_input_device_names() -> list[str]:
     """Names of every input device the KERNEL currently exposes, read from sysfs.
 
-    The display-server-agnostic way to confirm a uinput device was created. ``xinput list`` cannot
-    do this job: under a Wayland session it enumerates only XWayland's own X11 devices, so a real,
-    working ``interact-virtual-pointer`` is invisible there and a check built on it fails on a
-    Wayland host while the device is perfectly fine (#79). Sysfs is populated by the kernel at
-    ``UI_DEV_CREATE``, identically under Xorg and Wayland, and needs no root.
+    The display-server-agnostic way to confirm a uinput device was created. ``xinput list``
+    can't do this job: under a Wayland session it enumerates only XWayland's own X11 devices,
+    so a real, working ``interact-virtual-pointer`` is invisible there and a check built on it
+    fails on a Wayland host while the device is perfectly fine (#79). Sysfs is populated by the
+    kernel at ``UI_DEV_CREATE``, identically under Xorg and Wayland, needs no root.
 
     (Confirming libinput has *claimed* the device is a further step — `libinput list-devices`,
-    which needs root. Creation is what a test can assert unprivileged.)
+    needs root. Creation is what a test can assert unprivileged.)
     """
     names: list[str] = []
     for path in sorted(glob.glob("/sys/class/input/event*/device/name")):
@@ -67,16 +131,79 @@ def _keyboard_codes(ecodes) -> list[int]:
     names = (
         [f"KEY_{c}" for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"]
         + [f"KEY_{d}" for d in "0123456789"]
-        + [
+        + [f"KEY_F{i}" for i in range(1, 13)]  # F1 was resolvable but never declared, so `key("F1")`
+        + [                                    # wrote an event the kernel dropped, in silence (#115)
             "KEY_SPACE", "KEY_ENTER", "KEY_TAB", "KEY_BACKSPACE", "KEY_ESC", "KEY_DELETE",
             "KEY_MINUS", "KEY_EQUAL", "KEY_DOT", "KEY_COMMA", "KEY_SLASH", "KEY_SEMICOLON",
             "KEY_APOSTROPHE", "KEY_LEFTBRACE", "KEY_RIGHTBRACE", "KEY_BACKSLASH", "KEY_GRAVE",
-            "KEY_LEFTSHIFT", "KEY_LEFTCTRL", "KEY_LEFTALT",
-            "KEY_HOME", "KEY_END", "KEY_PAGEUP", "KEY_PAGEDOWN",
+            # Every modifier `_UINPUT_MODIFIERS` can produce must be here or the chord arrives
+            # UNMODIFIED — KEY_LEFTMETA was missing, so every `super+`/`cmd+` chord was a no-op.
+            "KEY_LEFTSHIFT", "KEY_LEFTCTRL", "KEY_LEFTALT", "KEY_LEFTMETA",
+            "KEY_RIGHTSHIFT", "KEY_RIGHTCTRL", "KEY_RIGHTALT",
+            "KEY_HOME", "KEY_END", "KEY_PAGEUP", "KEY_PAGEDOWN", "KEY_INSERT",
             "KEY_UP", "KEY_DOWN", "KEY_LEFT", "KEY_RIGHT",
         ]
     )
     return [getattr(ecodes, n) for n in names if hasattr(ecodes, n)]
+
+
+class XdotoolKeyError(RuntimeError):
+    """xdotool was handed a name X does not know, and dropped the key."""
+
+
+# Names interact accepts (and the uinput backend maps happily) that are NOT X keysyms. xdotool
+# resolves through XStringToKeysym, case-sensitive: `Return` exists, `enter` does not. Handed
+# an unknown name it prints "No such key name" and EXITS 0, so the key vanishes and the caller
+# is told it worked — the silent no-op behind #115's "confusing failure mode". Modifiers are
+# absent on purpose: ctrl/shift/alt/super are xdotool's own aliases and already resolve.
+_XDOTOOL_KEYSYMS = {
+    "enter": "Return", "return": "Return", "esc": "Escape", "escape": "Escape",
+    "tab": "Tab", "backspace": "BackSpace", "bksp": "BackSpace", "delete": "Delete",
+    "del": "Delete", "insert": "Insert", "home": "Home", "end": "End",
+    "pageup": "Prior", "pgup": "Prior", "pagedown": "Next", "pgdn": "Next",
+    "up": "Up", "down": "Down", "left": "Left", "right": "Right",
+    "space": "space", "menu": "Menu", "print": "Print", "pause": "Pause",
+    # The DOM-style vocabulary the browser side speaks. `window.py` carried a SECOND, case-
+    # sensitive table for exactly these; one translation now serves both backends, so a name
+    # cannot work on one path and vanish on the other.
+    "arrowup": "Up", "arrowdown": "Down", "arrowleft": "Left", "arrowright": "Right",
+}
+
+# Modifier spellings, normalised to the aliases xdotool resolves.
+_XDOTOOL_MODS = {
+    "ctrl": "ctrl", "control": "ctrl", "shift": "shift", "alt": "alt", "option": "alt",
+    "meta": "super", "super": "super", "cmd": "super", "command": "super", "win": "super",
+}
+
+
+def to_xdotool_key(name: str) -> str:
+    """Translate a key or chord into names X actually knows.
+
+    Only the FINAL key is translated — chord modifiers are xdotool's own aliases and resolve
+    already. A name that's a keysym stays untouched (never mangle a caller who speaks X), and a
+    bare letter stays as-is, since `A` means shift+a to X while `a` means the letter.
+    """
+    mods, final = _parse_chord(name)
+    mapped = _XDOTOOL_KEYSYMS.get(final.lower())
+    if mapped is None:
+        # F1-F12 and friends are already keysyms; a single character is one too.
+        mapped = final
+    return "+".join([_XDOTOOL_MODS.get(m.lower(), m) for m in mods] + [mapped])
+
+
+def check_xdotool_key_output(name: str, output: str) -> None:
+    """Raise when xdotool reported it IGNORED the key.
+
+    It exits 0 in that case, so a normal returncode check reads a dropped keystroke as a success.
+    This is the difference between "the app ignored my key" and "the key was never sent" — the
+    ambiguity that made the reported bug so expensive to chase.
+    """
+    if "No such key name" in (output or ""):
+        raise XdotoolKeyError(
+            f"xdotool does not know a key called {name!r}, so nothing was sent. "
+            "Use an X keysym name (Return, Escape, Up, BackSpace) or one of the aliases "
+            "interact maps for you."
+        )
 
 
 def _parse_chord(name: str) -> tuple[list[str], str]:
@@ -116,6 +243,10 @@ class UinputPointer:
             ) from exc
 
         self._ecodes = ecodes
+        # Set BEFORE the device is opened, so the guard below can never silently no-op: it used
+        # to read through a getattr default, doing nothing wherever the attribute was missing —
+        # including in most of its own tests.
+        self._declared = set(_keyboard_codes(ecodes))
         self.screen_w, self.screen_h, self.abs_max = screen_w, screen_h, abs_max
         capabilities = {
             ecodes.EV_KEY: [
@@ -136,7 +267,16 @@ class UinputPointer:
             # A SEPARATE keyboard node: the kernel drops key events a device never
             # declared, and a touchscreen (INPUT_PROP_DIRECT) + keyboard on one node
             # confuses libinput's classification — so typing/keys get their own device.
-            self._kbd = UInput({ecodes.EV_KEY: _keyboard_codes(ecodes)}, name="interact-virtual-keyboard")
+            self._kbd = UInput({ecodes.EV_KEY: sorted(self._declared)},
+                               name="interact-virtual-keyboard")
+            # Both nodes must be ATTACHED before anyone writes to them. The kernel accepts
+            # events into a device X hasn't picked up yet and drops them silently: a first
+            # chord's modifiers are written first, so they're what lands in that window and
+            # vanishes. Waiting here (once, on the condition) makes the first chord as reliable
+            # as the hundredth. Pointer too — same race, same silent loss, harder to notice.
+            # NB: this path is LocalBackend-only; the nested sandbox drives xdotool instead.
+            wait_for_device("interact-virtual-keyboard")
+            wait_for_device("interact-virtual-pointer")
         except (PermissionError, FileNotFoundError) as exc:
             raise RuntimeError(
                 "cannot open /dev/uinput — add a udev rule and join the `input` group "
@@ -164,11 +304,14 @@ class UinputPointer:
         self._ui.write(self._ecodes.EV_KEY, self._btn_code(button), 0)
         self._ui.syn()
 
-    def click(self, x: float, y: float, button: str = "left") -> None:
+    def click(self, x: float, y: float, button: str = "left", count: int = 1) -> None:
         self.move(x, y)
-        self.press(button)
-        time.sleep(0.02)
-        self.release(button)
+        for i in range(count):
+            if i:
+                time.sleep(MULTI_CLICK_GAP_MS / 1000)
+            self.press(button)
+            time.sleep(0.02)
+            self.release(button)
 
     def scroll(self, clicks: int, horizontal: bool = False) -> None:
         axis = self._ecodes.REL_HWHEEL if horizontal else self._ecodes.REL_WHEEL
@@ -183,21 +326,55 @@ class UinputPointer:
         )
         return getattr(self._ecodes, name)
 
+    def _check_declared(self, code, spec: str) -> None:
+        """A uinput device may only emit codes it declared at creation; anything else the kernel
+        discards without a word. That silence is the actual defect users report — the key simply
+        does nothing and nothing points at why (#115)."""
+        if code not in self._declared:
+            raise ValueError(
+                f"cannot send {spec!r}: not a key this virtual keyboard declares, so the kernel "
+                "would discard it in silence. Letters, digits, F1-F12, the arrows, and "
+                "ctrl/shift/alt/super are available."
+            )
+
     def key(self, name: str) -> None:
-        # Hold modifiers, tap the final key, release modifiers — so a chord like "ctrl+a" works,
-        # not just a single key (previously getattr(ecodes, "KEY_CTRL+A") raised). Shared chord
-        # split with the portable backend via _parse_chord.
+        """Press a key or chord.
+
+        Each transition gets its own SYN frame, what real hardware does: the modifier latches,
+        then the key arrives.
+
+        It is NOT the explanation for #115, and an earlier version of this docstring said it
+        was. The theory was that an atomic frame lets the key be evaluated against the modifier
+        state from before it — but ``type_text`` below writes shift-down, key-down, key-up,
+        shift-up and a SINGLE ``syn()``, and typing capitals is this module's most exercised
+        path. If the theory held, every uppercase character would be broken. So the framing
+        here is correctness for its own sake and costs nothing (frames are delimiters, not
+        transactions); the cause of a declared chord arriving unmodified is still unconfirmed.
+        The candidate not yet excluded is a settle race: X and libinput learn about the uinput
+        node through udev AFTER ``UI_DEV_CREATE``, events written before that are dropped with
+        no error.
+
+        Shared chord split with the portable backend via _parse_chord.
+        """
         mods, final = _parse_chord(name)
         held = [self._key_code(m) for m in mods]
         target = self._key_code(final)
-        for code in held:
-            self._kbd.write(self._ecodes.EV_KEY, code, 1)
+        for code, spec in zip(held, mods):
+            self._check_declared(code, spec)
+        self._check_declared(target, final)
+
+        if held:
+            for code in held:
+                self._kbd.write(self._ecodes.EV_KEY, code, 1)
+            self._kbd.syn()  # modifiers latched BEFORE the key exists
         self._kbd.write(self._ecodes.EV_KEY, target, 1)
         self._kbd.syn()
         self._kbd.write(self._ecodes.EV_KEY, target, 0)
-        for code in reversed(held):
-            self._kbd.write(self._ecodes.EV_KEY, code, 0)
-        self._kbd.syn()
+        self._kbd.syn()  # key up while the modifiers are still down, as on real hardware
+        if held:
+            for code in reversed(held):
+                self._kbd.write(self._ecodes.EV_KEY, code, 0)
+            self._kbd.syn()
 
     def _char_spec(self, ch: str) -> tuple[str, bool] | None:
         """Map a character to its evdev key name + whether Shift is held (US layout).

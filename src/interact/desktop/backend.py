@@ -17,7 +17,15 @@ import tempfile
 import time
 from abc import ABC, abstractmethod
 
-from interact.desktop.input import ABS_MAX, UinputPointer, _BUTTONS, _parse_chord, screen_to_abs
+from interact.desktop.input import (
+    ABS_MAX,
+    MULTI_CLICK_GAP_MS,
+    UinputPointer,
+    _BUTTONS,
+    _parse_chord,
+    screen_to_abs,
+)
+from interact.desktop.window import unreadable_window_error
 
 
 def _rects_overlap(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> bool:
@@ -55,14 +63,13 @@ def desktop_unsupported_message() -> str:
     )
 
 
-# A process killed by the host (OOM) versus one that failed on its own terms look identical as a
-# bare `rc=` number, and that ambiguity is exactly what a caller could not resolve when the sandbox
-# X server died three times in one session with zero diagnostics (#84).
-# Keyed by signal NAME, never by `signal.SIGKILL` and friends: those attributes do not exist on
+# A process killed by the host (OOM) vs one that failed on its own terms look identical as a
+# bare `rc=` number — the ambiguity a caller couldn't resolve when the sandbox X server died
+# three times in one session with zero diagnostics (#84).
+# Keyed by signal NAME, never by `signal.SIGKILL` and friends: those attributes don't exist on
 # Windows, and this dict is built at import time, so naming them here made `import
 # interact.desktop.backend` raise AttributeError on Windows — taking the whole suite down at
-# collection, invisibly to any Linux or macOS run. A name that this platform lacks simply never
-# matches.
+# collection, invisibly to any Linux/macOS run. A name this platform lacks simply never matches.
 _SIGNAL_CAUSE = {
     "SIGKILL": "SIGKILL — killed from outside; on a loaded host this is usually the "
                "OOM-killer, not an interact fault",
@@ -105,8 +112,8 @@ def _tail_file(path: str | None, limit: int) -> str:
 
 def _frac_dark(gray, cutoff: int = 8) -> float:
     """Fraction of (near-)true-black pixels in an 8-bit grayscale PIL image, via its histogram
-    (C-fast, no Python per-pixel loop). The cutoff is deliberately low: an unrendered GL buffer is
-    *exactly* black (0,0,0), whereas a real dark theme (#1e1e1e ≈ 30) sits well above it — so the
+    (C-fast, no Python per-pixel loop). Cutoff is deliberately low: an unrendered GL buffer is
+    *exactly* black (0,0,0), a real dark theme (#1e1e1e ≈ 30) sits well above it — so the
     repaint heuristic fires on the unrendered case without flagging a legitimately dark UI."""
     hist = gray.histogram()
     total = sum(hist) or 1
@@ -118,10 +125,10 @@ def _gl_unrendered(png: bytes, *, strip_fracs: tuple[float, ...] = (0.08, 0.12, 
     """True when a nested GL-window capture looks like it never painted: the whole frame is
     near-black, or a black bottom strip sits over a rendered body — a blurred bottom nav
     (BottomNavigationBar / convex_bottom_bar ConvexAppBar) that software GL left black (#7/#8,
-    #14-#20). Both clear after a repaint nudge. The black bar's height varies by toolkit, so scan a
+    #14-#20). Both clear after a repaint nudge. Black bar's height varies by toolkit, so scan a
     band of candidate strip fractions, not one fixed 12%. A genuinely dark theme has a dark body
-    too, so the strip-only case demands a much lighter body — otherwise every capture of a dark UI
-    would needlessly nudge (and reset its scroll)."""
+    too, so the strip-only case demands a much lighter body — else every dark-UI capture would
+    needlessly nudge (and reset its scroll)."""
     try:
         from PIL import Image
 
@@ -211,11 +218,17 @@ class DesktopBackend(ABC):
     @abstractmethod
     def mouse_up(self, button: str = "left") -> None: ...
 
-    def click(self, x: float, y: float, button: str = "left") -> None:
+    def click(self, x: float, y: float, button: str = "left", count: int = 1) -> None:
+        """Press+release ``button`` at (x, y) ``count`` times. A double-click is count=2: the same
+        pair repeated at the same point, the gap inside the toolkit's double-click interval — two
+        separate ``click`` calls never reliably coalesce into one (#116)."""
         self.move(x, y)
-        self.mouse_down(button)
-        time.sleep(0.02)
-        self.mouse_up(button)
+        for i in range(count):
+            if i:
+                time.sleep(MULTI_CLICK_GAP_MS / 1000)
+            self.mouse_down(button)
+            time.sleep(0.02)
+            self.mouse_up(button)
 
     def drag(self, fx: float, fy: float, tx: float, ty: float, steps: int = 20) -> None:
         self.move(fx, fy)
@@ -224,6 +237,23 @@ class DesktopBackend(ABC):
             self.move(fx + (tx - fx) * i / steps, fy + (ty - fy) * i / steps)
             time.sleep(0.01)
         self.mouse_up()
+        self._settle_after_drag(tx, ty)
+
+    def _settle_after_drag(self, x: float, y: float) -> None:
+        """A no-op move at the drop point, right after the release (#136).
+
+        A nested Electron/Chromium target can end a drag still believing the button is held: its
+        internal mouse-capture tracking is reconciled by the NEXT motion/button event it
+        receives, and our synthetic sequence ends exactly at ``mouse_up`` with nothing after it —
+        so a webview that captured the pointer for the drag never sees the event that would tell
+        it the button is up, and stays dead to every following click. One extra MotionNotify at
+        the same point (button state now clear) costs nothing and flushes it. Best-effort: any
+        backend that overrides ``move`` to raise on a redundant call degrades to the old
+        (occasionally-stuck) behaviour rather than crashing the drag that just completed."""
+        try:
+            self.move(x, y)
+        except Exception:
+            pass
 
     def type_text(self, text: str) -> None:
         """Type a literal string into whatever currently has focus."""
@@ -245,6 +275,21 @@ class DesktopBackend(ABC):
         (so a window behind others still captures correctly) override this.
         """
         return self.capture()
+
+    def spawn(self, argv: list[str], cwd: str | None = None,
+              env: dict[str, str] | None = None) -> subprocess.Popen:
+        """Launch a process on this desktop (the caller manages its lifetime). ``env`` is merged
+        OVER the environment this backend's children normally get — see :meth:`child_env` — so a
+        ``FOO=bar app`` launch (#117) sets FOO without dropping the backend's own pins."""
+        return subprocess.Popen(
+            argv, cwd=cwd, env=self.child_env(env),
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+
+    def child_env(self, env: dict[str, str] | None = None) -> dict[str, str]:
+        """The environment a spawned child gets: this backend's base — the host's own for a real
+        session — with the caller's ``env`` layered on top. The sandbox overrides the base."""
+        return {**os.environ, **(env or {})}
 
     def start_video(self, name: str, fps: int) -> None:
         """Begin a non-blocking recording of one window — returns at once so the agent can drive
@@ -271,6 +316,7 @@ class DesktopBackend(ABC):
             time.sleep(0.01)
         self.move(cx, cy)
         self.mouse_up()
+        self._settle_after_drag(cx, cy)
 
     def close(self) -> None:  # noqa: B027 — optional teardown
         pass
@@ -293,10 +339,6 @@ class LocalBackend(DesktopBackend):
 
     def capture(self) -> bytes:
         return subprocess.run(["maim"], capture_output=True, check=True).stdout
-
-    def spawn(self, argv: list[str], cwd: str | None = None) -> subprocess.Popen:
-        """Launch a process on the real session (caller manages its lifetime)."""
-        return subprocess.Popen(argv, cwd=cwd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def move(self, x: float, y: float) -> None:
         self._pointer.move(x, y)
@@ -329,23 +371,29 @@ class LocalBackend(DesktopBackend):
         ).stdout.split()
         if not found:
             return self.capture()
-        return subprocess.run(["maim", "-i", found[0]], capture_output=True, check=True).stdout
+        try:
+            return subprocess.run(
+                ["maim", "-i", found[0]], capture_output=True, check=True).stdout
+        except subprocess.CalledProcessError:
+            # A window that has died does not grab black — the grab fails outright, and this
+            # raised a bare CalledProcessError naming a numeric id and nothing else.
+            raise unreadable_window_error(name, int(found[0])) from None
 
     def close(self) -> None:
         self._pointer.close()
 
 
 class PortableBackend(DesktopBackend):
-    """A cross-platform real-session backend — the one selected on **macOS / Windows**, where the
+    """A cross-platform real-session backend — selected on **macOS / Windows**, where the
     Linux uinput/X11 path doesn't exist. Screen capture via **mss**, pointer + keyboard via
-    **pynput**, both pure-Python and OS-native underneath (Quartz on macOS, Win32 SendInput/GDI on
-    Windows, Xlib on Linux). It drives the whole virtual desktop in screen pixels, so
+    **pynput**, both pure-Python and OS-native underneath (Quartz on macOS, Win32 SendInput/GDI
+    on Windows, Xlib on Linux). Drives the whole virtual desktop in screen pixels, so
     ``target="screen"`` works everywhere; per-window targeting on macOS/Windows is a follow-up
-    (mss/pynput don't enumerate windows). On macOS the process needs Screen-Recording (capture) +
-    Accessibility (input) permission, granted once to the host terminal/app.
+    (mss/pynput don't enumerate windows). On macOS the process needs Screen-Recording (capture)
+    + Accessibility (input) permission, granted once to the host terminal/app.
 
     Linux keeps :class:`LocalBackend` (deeper, works on X11 + Wayland); this is the portable
-    fallback. It's verifiable on Linux too (mss/pynput honour ``DISPLAY``), so the macOS/Windows
+    fallback. Verifiable on Linux too (mss/pynput honour ``DISPLAY``), so the macOS/Windows
     behaviour is exercised in CI on real runners."""
 
     _BUTTONS = ("left", "right", "middle")
@@ -402,6 +450,13 @@ class PortableBackend(DesktopBackend):
     def mouse_up(self, button: str = "left") -> None:
         self._mouse.release(self._button(button))
 
+    def click(self, x: float, y: float, button: str = "left", count: int = 1) -> None:
+        # pynput's own multi-click, not the base down/up loop: on macOS a double-click is recognised
+        # by the click-state pynput stamps on each event ONLY inside this call — two separate
+        # press/release pairs never read as one there (#116).
+        self.move(x, y)
+        self._mouse.click(self._button(button), count)
+
     def scroll(self, clicks: int, horizontal: bool = False) -> None:
         # pynput scroll(dx, dy): positive dy scrolls up, positive dx scrolls right.
         self._mouse.scroll(clicks, 0) if horizontal else self._mouse.scroll(0, clicks)
@@ -412,7 +467,17 @@ class PortableBackend(DesktopBackend):
     def _resolve_key(self, token: str):
         if len(token) == 1:
             return token  # a literal character
-        return getattr(self._Key, self._KEYS.get(token.lower(), token.lower()), token)
+        name = self._KEYS.get(token.lower(), token.lower())
+        resolved = getattr(self._Key, name, None)
+        if resolved is None:
+            # Falling back to the raw token made pynput TYPE the key's name as text — so
+            # `key("f13")` wrote "f13" into the document instead of failing. Same silent-wrong
+            # class as the uinput backend discarding an undeclared code (#115).
+            raise ValueError(
+                f"cannot send {token!r}: not a key this backend knows. Use a single character "
+                "or a named key (enter, tab, esc, f1-f20, up/down/left/right, ctrl/shift/alt/cmd)."
+            )
+        return resolved
 
     def key(self, name: str) -> None:
         mods, final = _parse_chord(name)
@@ -466,20 +531,20 @@ _X11_PINS = {
 def sandbox_child_env(base: dict[str, str], display: str, shim_dir: str) -> dict[str, str]:
     """The environment every sandboxed child gets: the host's, with the escapes closed.
 
-    Pure so the containment guarantees are testable without an X server. Three jobs: point the
-    child at the nested DISPLAY and pin the toolkits to X11 (#85), contain URL opening so it
-    cannot reach the user's browser (#83), and force software GL (a nested display has no usable
+    Pure so containment guarantees are testable without an X server. Three jobs: point the
+    child at the nested DISPLAY and pin toolkits to X11 (#85), contain URL opening so it can't
+    reach the user's browser (#83), and force software GL (a nested display has no usable
     hardware GL, so a GPU app renders black).
 
-    URL containment is done TWICE over, because ``$BROWSER`` alone is not enough — verified live:
-    ``xdg-open`` resolves the ``x-scheme-handler/https`` desktop association first and only
+    URL containment is done TWICE over, because ``$BROWSER`` alone isn't enough — verified live:
+    ``xdg-open`` resolves the ``x-scheme-handler/https`` desktop association first, only
     consults ``$BROWSER`` if that finds nothing, so it still reached the host's Chrome. So the
-    shim directory is also prepended to ``PATH``, which intercepts the ``xdg-open`` binary itself
-    no matter what the mime database says. ``$BROWSER`` still matters: Python's
+    shim directory is also prepended to ``PATH``, intercepting the ``xdg-open`` binary itself no
+    matter what the mime database says. ``$BROWSER`` still matters: Python's
     ``webbrowser.open()`` reads it before trying anything else.
 
-    Note the deliberate limit: ``DBUS_SESSION_BUS_ADDRESS`` is left ALONE. Clearing it would close
-    the xdg-desktop-portal route too, but interact's own AT-SPI element detection rides that same
+    Deliberate limit: ``DBUS_SESSION_BUS_ADDRESS`` is left ALONE. Clearing it would close the
+    xdg-desktop-portal route too, but interact's own AT-SPI element detection rides that same
     bus, so a direct portal D-Bus call can still escape.
     """
     env = {k: v for k, v in base.items() if k not in _WAYLAND_ESCAPE_VARS | _DESKTOP_DETECT_VARS}
@@ -542,6 +607,10 @@ def write_sandbox_url_shims(directory, log_path) -> str:
     return str(directory)
 
 
+#: What a sandbox window is called, and how we recognise our own X servers.
+SANDBOX_TITLE = "interact sandbox"
+
+
 def nested_server_command(display: str, size: str, headless: bool) -> list[str]:
     """The nested X server command line: ``Xvfb`` when headless (runs in the
     background, no window — for CI/servers), else ``Xephyr`` (renders as a window on
@@ -549,7 +618,12 @@ def nested_server_command(display: str, size: str, headless: bool) -> list[str]:
     the agent drives via ``DISPLAY=:N``."""
     if headless:
         return ["Xvfb", display, "-screen", "0", f"{size}x24", "-nolisten", "tcp"]
-    return ["Xephyr", display, "-screen", size, "-br", "-ac", "-noreset", "-no-host-grab"]
+    # `-title` is undocumented in -help but honoured. Earns its place twice: the window on the
+    # user's desktop says whose it is (several servers means several sandboxes, otherwise looks
+    # like a leak), and it's a marker interact CONTROLS — the plain flags below are exactly what
+    # someone types by hand, so they could never tell our display from anyone else's.
+    return ["Xephyr", display, "-title", f"{SANDBOX_TITLE} {display}",
+            "-screen", size, "-br", "-ac", "-noreset", "-no-host-grab"]
 
 
 

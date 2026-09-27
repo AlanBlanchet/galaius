@@ -1,22 +1,22 @@
 """The ``interact`` MCP server, split by cohesion into a package.
 
 ``core`` owns the shared ``FastMCP`` instance, lifespan, instructions and the browser session
-registry; ``vlm`` / ``sandbox`` / ``targets`` / ``capture`` hold the private helpers; the
-``tools_*`` modules hold the ``@mcp.tool`` surfaces (importing them registers the tools). This
-``__init__`` imports them in dependency order and RE-EXPORTS the whole public + test-patched
-surface, so ``import interact.server as srv; srv._vlm`` and ``from interact.server import
-_scan_elements`` keep working exactly as when this was one module.
+registry; ``vlm`` / ``sandbox`` / ``targets`` / ``capture`` hold private helpers; ``tools_*``
+modules hold the ``@mcp.tool`` surfaces (importing them registers the tools). This ``__init__``
+imports them in dependency order and RE-EXPORTS the whole public + test-patched surface, so
+``import interact.server as srv; srv._vlm`` and ``from interact.server import _scan_elements``
+keep working exactly as when this was one module.
 
 Monkeypatch note: a helper is patched on the module that DEFINES it (``srv.vlm._vlm``,
 ``srv.targets._resolve_target``, ``srv.sandbox._get_sandbox``) — cross-module call sites are
-module-qualified so the patch is seen; the re-exports below are for direct import/read access.
+module-qualified so the patch is seen; re-exports below are for direct import/read access.
 """
 
 import asyncio  # noqa: F401 — re-exported: some tests patch interact.server.asyncio
 
 # Submodules — importing the tools_* modules runs their @mcp.tool decorators (registration).
 from interact.server import capture, core, sandbox, targets, vlm  # noqa: F401
-from interact.server import tools_desktop, tools_meta, tools_vision, tools_web  # noqa: F401
+from interact.server import tools_agents, tools_desktop, tools_meta, tools_vision, tools_web  # noqa: F401
 
 # --- Shared instances / entrypoint (core) ---
 from interact.server.core import (  # noqa: F401
@@ -24,6 +24,7 @@ from interact.server.core import (  # noqa: F401
     _AUDIO_MIME,
     _DBG_ACTIONS,
     _DBG_ELEMENTS,
+    _AUTO_SESSION,
     _DEFAULT_SESSION,
     _MAX_FALLBACKS,
     _NO_WINDOWS_MSG,
@@ -34,13 +35,16 @@ from interact.server.core import (  # noqa: F401
     _not_found,
     _parse_int_tuple,
     _save_to_path,
+    _saved_note,
     _session_response,
     _sessions,
     breaker,
     config,
+    dispatchable_tools,
     instrumented,
     main,
     mcp,
+    undispatchable_tools,
 )
 
 # --- Sandbox / portable backend lifecycle ---
@@ -123,7 +127,16 @@ from interact.server.tools_desktop import (  # noqa: F401
     record,
     reset_sandbox,
 )
+from interact.server.tools_audit import audit_ui  # noqa: F401
 from interact.server.tools_meta import list_providers, report_issue  # noqa: F401
+from interact.server.tools_agents import (  # noqa: F401
+    agent_events,
+    agent_list,
+    agent_providers,
+    agent_send,
+    agent_spawn,
+    agent_stop,
+)
 
 # --- Names other modules define but tests reach through interact.server (back-compat) ---
 from interact.debug_utils import Debug  # noqa: F401
@@ -136,10 +149,9 @@ from interact.launch import (  # noqa: F401
     _resolve_nested_size,
     apply_launch_rewrites,
 )
-from interact.vision import (  # noqa: F401
+from interact.vision import MediaItem, VLMResult  # noqa: F401
+from interact.vision.core import (  # noqa: F401
     _UNSET,
-    MediaItem,
-    VLMResult,
     _Unset,
     analyze_media,
     analyze_screenshot,

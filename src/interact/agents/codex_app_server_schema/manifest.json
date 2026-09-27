@@ -1,0 +1,287 @@
+{
+  "experimental_api": false,
+  "portable_bundle_sha256": "9178ce22748c600fddb1bb0b969243f77c3a2f30eb4a6ce6ae62f8e891f14d8e",
+  "server_request_sha256": "1b8268c3d7f19f5fea362b7b9f5e964c6ba9c53acb79f86e2b69394ebd719e20",
+  "server_requests": [
+    {
+      "method": "item/commandExecution/requestApproval",
+      "policy": "supported",
+      "representative_interaction_values": {
+        "decision": "decline"
+      },
+      "representative_request": {
+        "id": "request",
+        "method": "item/commandExecution/requestApproval",
+        "params": {
+          "itemId": "value",
+          "startedAtMs": 1,
+          "threadId": "value",
+          "turnId": "value"
+        }
+      },
+      "request_ref": "./CommandExecutionRequestApprovalRequest.json",
+      "required_params": [
+        "itemId",
+        "startedAtMs",
+        "threadId",
+        "turnId"
+      ],
+      "response_ref": "CommandExecutionRequestApprovalResponse.json"
+    },
+    {
+      "method": "item/fileChange/requestApproval",
+      "policy": "supported",
+      "representative_interaction_values": {
+        "decision": "decline"
+      },
+      "representative_request": {
+        "id": "request",
+        "method": "item/fileChange/requestApproval",
+        "params": {
+          "itemId": "value",
+          "startedAtMs": 1,
+          "threadId": "value",
+          "turnId": "value"
+        }
+      },
+      "request_ref": "./FileChangeRequestApprovalRequest.json",
+      "required_params": [
+        "itemId",
+        "startedAtMs",
+        "threadId",
+        "turnId"
+      ],
+      "response_ref": "FileChangeRequestApprovalResponse.json"
+    },
+    {
+      "method": "item/tool/requestUserInput",
+      "policy": "supported",
+      "representative_interaction_values": {
+        "value": "value"
+      },
+      "representative_request": {
+        "id": "request",
+        "method": "item/tool/requestUserInput",
+        "params": {
+          "isBlocking": false,
+          "itemId": "value",
+          "questions": [
+            {
+              "header": "value",
+              "id": "value",
+              "question": "value"
+            }
+          ],
+          "threadId": "value",
+          "turnId": "value"
+        }
+      },
+      "request_ref": "./ToolRequestUserInputRequest.json",
+      "required_params": [
+        "isBlocking",
+        "itemId",
+        "questions",
+        "threadId",
+        "turnId"
+      ],
+      "response_ref": "ToolRequestUserInputResponse.json"
+    },
+    {
+      "method": "mcpServer/elicitation/request",
+      "policy": "reject",
+      "representative_interaction_values": {
+        "decision": "decline"
+      },
+      "representative_request": {
+        "id": "request",
+        "method": "mcpServer/elicitation/request",
+        "params": {
+          "message": "value",
+          "mode": "form",
+          "requestedSchema": {
+            "properties": {},
+            "type": "object"
+          },
+          "serverName": "value",
+          "threadId": "value"
+        }
+      },
+      "request_ref": "./McpServerElicitationRequestRequest.json",
+      "required_params": [
+        "serverName",
+        "threadId"
+      ],
+      "response_ref": "McpServerElicitationRequestResponse.json"
+    },
+    {
+      "method": "item/permissions/requestApproval",
+      "policy": "reject",
+      "representative_interaction_values": {
+        "decision": "decline"
+      },
+      "representative_request": {
+        "id": "request",
+        "method": "item/permissions/requestApproval",
+        "params": {
+          "cwd": "/",
+          "itemId": "value",
+          "permissions": {},
+          "startedAtMs": 1,
+          "threadId": "value",
+          "turnId": "value"
+        }
+      },
+      "request_ref": "./PermissionsRequestApprovalRequest.json",
+      "required_params": [
+        "cwd",
+        "itemId",
+        "permissions",
+        "startedAtMs",
+        "threadId",
+        "turnId"
+      ],
+      "response_ref": "PermissionsRequestApprovalResponse.json"
+    },
+    {
+      "method": "item/tool/call",
+      "policy": "reject",
+      "representative_interaction_values": {
+        "decision": "decline"
+      },
+      "representative_request": {
+        "id": "request",
+        "method": "item/tool/call",
+        "params": {
+          "arguments": {},
+          "callId": "value",
+          "threadId": "value",
+          "tool": "value",
+          "turnId": "value"
+        }
+      },
+      "request_ref": "./DynamicToolCallRequest.json",
+      "required_params": [
+        "arguments",
+        "callId",
+        "threadId",
+        "tool",
+        "turnId"
+      ],
+      "response_ref": "DynamicToolCallResponse.json"
+    },
+    {
+      "method": "account/chatgptAuthTokens/refresh",
+      "policy": "reject",
+      "representative_interaction_values": {
+        "decision": "decline"
+      },
+      "representative_request": {
+        "id": "request",
+        "method": "account/chatgptAuthTokens/refresh",
+        "params": {
+          "reason": "unauthorized"
+        }
+      },
+      "request_ref": "./ChatgptAuthTokensRefreshRequest.json",
+      "required_params": [
+        "reason"
+      ],
+      "response_ref": "ChatgptAuthTokensRefreshResponse.json"
+    },
+    {
+      "method": "attestation/generate",
+      "policy": "reject",
+      "representative_interaction_values": {
+        "decision": "decline"
+      },
+      "representative_request": {
+        "id": "request",
+        "method": "attestation/generate",
+        "params": {}
+      },
+      "request_ref": "./AttestationGenerateRequest.json",
+      "required_params": [],
+      "response_ref": "AttestationGenerateResponse.json"
+    },
+    {
+      "method": "currentTime/read",
+      "policy": "reject",
+      "representative_interaction_values": {
+        "decision": "decline"
+      },
+      "representative_request": {
+        "id": "request",
+        "method": "currentTime/read",
+        "params": {
+          "threadId": "value"
+        }
+      },
+      "request_ref": "./CurrentTimeReadRequest.json",
+      "required_params": [
+        "threadId"
+      ],
+      "response_ref": "CurrentTimeReadResponse.json"
+    },
+    {
+      "method": "applyPatchApproval",
+      "policy": "reject",
+      "representative_interaction_values": {
+        "decision": "decline"
+      },
+      "representative_request": {
+        "id": "request",
+        "method": "applyPatchApproval",
+        "params": {
+          "callId": "value",
+          "conversationId": "value",
+          "fileChanges": {}
+        }
+      },
+      "request_ref": "./ApplyPatchApprovalRequest.json",
+      "required_params": [
+        "callId",
+        "conversationId",
+        "fileChanges"
+      ],
+      "response_ref": "ApplyPatchApprovalResponse.json"
+    },
+    {
+      "method": "execCommandApproval",
+      "policy": "reject",
+      "representative_interaction_values": {
+        "decision": "decline"
+      },
+      "representative_request": {
+        "id": "request",
+        "method": "execCommandApproval",
+        "params": {
+          "callId": "value",
+          "command": [
+            "value"
+          ],
+          "conversationId": "value",
+          "cwd": "value",
+          "parsedCmd": [
+            {
+              "cmd": "value",
+              "name": "value",
+              "path": "value",
+              "type": "read"
+            }
+          ]
+        }
+      },
+      "request_ref": "./ExecCommandApprovalRequest.json",
+      "required_params": [
+        "callId",
+        "command",
+        "conversationId",
+        "cwd",
+        "parsedCmd"
+      ],
+      "response_ref": "ExecCommandApprovalResponse.json"
+    }
+  ],
+  "source_executable_sha256": "ec77cf443344309a29859e16204cac6f0bae162ffd39427e94f24aeebb5e3d68",
+  "source_version": "codex-cli 0.150.0-alpha.8"
+}

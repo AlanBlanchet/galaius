@@ -1,11 +1,11 @@
 """Let an agent (or user) report a problem / missing capability / feedback about interact ITSELF
 back to the maintainers, so issues hit in the wild actually surface.
 
-Deliberately AGENT-INITIATED, not automatic telemetry: the caller composes the report, so there's
-no surprise data collection and no secret leakage by default. Delivery ladder: a GitHub issue via
-`gh` when it's available + authed; else the prefilled new-issue page opens in the user's browser
-(submitting = one click); else a local report + submit link. interact's version + platform are
-appended automatically (safe, useful triage context).
+Deliberately AGENT-INITIATED, not automatic telemetry: the caller composes the report, so no
+surprise data collection and no secret leakage by default. Delivery ladder: a GitHub issue via
+`gh` when available + authed; otherwise save locally and return a prefilled new-issue link the
+user may explicitly open. interact's version + platform append automatically (safe, useful
+triage context).
 """
 
 from __future__ import annotations
@@ -26,9 +26,9 @@ def _footer() -> str:
 
     from interact import __version__
 
-    # platform.platform() can shell out internally (e.g. macOS/Windows code paths), so it breaks
-    # under a mocked subprocess and on the odd host. The footer is cosmetic and must never crash a
-    # bug report, so fall back to the pieces that read straight from os.uname/sys.
+    # platform.platform() can shell out internally (macOS/Windows code paths), breaking under a
+    # mocked subprocess or on the odd host. Footer is cosmetic, must never crash a bug report —
+    # fall back to pieces reading straight from os.uname/sys.
     try:
         plat = platform.platform()
     except Exception:
@@ -58,13 +58,13 @@ def _version_lt(a: str, b: str) -> bool:
 
 
 def _stale_warning() -> str:
-    """A banner prepended to a report when the REPORTING process is running an interact OLDER than
-    what's installed on this machine right now. A long-lived MCP server keeps the code it imported at
-    startup (``__version__`` is frozen then), so a bug filed from a stale one is the single biggest
-    source of already-fixed reports — flag it up front, for the filer and the maintainer, with the
-    one-line fix. Compares the frozen startup version against the live installed metadata (what a
-    restart would load), so it never false-fires on a fresh process. Best-effort: any trouble → no
-    banner (a report must never be blocked by its own staleness check)."""
+    """A banner prepended to a report when the REPORTING process runs an interact OLDER than
+    what's installed on this machine right now. A long-lived MCP server keeps the code it
+    imported at startup (``__version__`` frozen then), so a bug filed from a stale one is the
+    single biggest source of already-fixed reports — flag it up front, for filer and maintainer,
+    with the one-line fix. Compares the frozen startup version against live installed metadata
+    (what a restart would load), so it never false-fires on a fresh process. Best-effort: any
+    trouble → no banner (a report must never be blocked by its own staleness check)."""
     try:
         from interact import __version__, installed_version
 
@@ -154,10 +154,8 @@ def _open_browser(url: str) -> bool:
 
 def report(title: str, body: str, kind: str = "bug") -> str:
     """File the report and say what happened. Delivery ladder: an authed ``gh`` files the
-    issue outright; otherwise the user's browser opens on the prefilled new-issue page
-    (submitting = pressing the button); only with no browser either (headless/SSH) is the
-    report saved locally with the submit link. Never raises — reporting a bug must not
-    itself blow up."""
+    issue outright; otherwise the report is saved locally and an explicit prefilled submission
+    link is returned. Never opens an external application and never raises."""
     kind = kind if kind in KINDS else "feedback"
     title = f"[{kind}] {title.strip()}" if not title.lower().startswith(f"[{kind}]") else title.strip()
     full = _stale_warning() + body.strip() + _footer()
@@ -167,15 +165,7 @@ def report(title: str, body: str, kind: str = "bug") -> str:
         return f"Reported to interact — {url}"
 
     submit = _prefilled_url(title, full)
-    if _open_browser(submit):
-        return (
-            f"Couldn't file via gh ({reason}), so the prefilled issue page was opened in the "
-            f"user's browser — ask them to press Submit there. (Link, in case the tab was "
-            f"lost: {submit})"
-        )
-
-    # Last resort (no gh, no browser): persist locally so the report isn't lost, say WHY,
-    # and hand back the prefilled link so delivery is still one click.
+    # Preserve the draft without stealing focus. Following the returned link is an explicit action.
     try:
         FEEDBACK_DIR.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
@@ -183,7 +173,7 @@ def report(title: str, body: str, kind: str = "bug") -> str:
         path.write_text(f"# {title}\n\n{full}\n")
         return (
             f"Saved feedback locally to {path} — couldn't file to GitHub ({reason}). "
-            f"Submit it in one click: {submit}"
+            f"Open this link to review and submit it: {submit}"
         )
     except OSError as e:
         return f"Could not record feedback ({e}); please open it yourself: {submit}"

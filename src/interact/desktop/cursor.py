@@ -84,18 +84,25 @@ class Cursor:
         return _CURSOR_LABELS.get(cursor_type, cursor_type)
 
     @classmethod
-    def current_type(cls) -> str:
-        """Current X11 cursor type via XFixes."""
+    def current_type(cls, display: str | None = None) -> str:
+        """Current X11 cursor type via XFixes, on ``display`` (e.g. ``":99"``) when given.
+
+        ``display=None`` opens the process's own ``$DISPLAY`` (``XOpenDisplay(NULL)``) — correct
+        for the real desktop (``LocalBackend``). A nested sandbox target runs on its OWN isolated
+        display and must pass it explicitly, or this silently reads the HOST's cursor instead of
+        the sandbox's (#131) — e.g. ``NestedBackend.cursor_type()`` passes ``self.display``.
+        """
         try:
             if not _libx11 or not _libxfixes:
                 return "unknown"
 
-            display = _libx11.XOpenDisplay(None)
-            if not display:
+            display_arg = display.encode() if display else None
+            display_ptr = _libx11.XOpenDisplay(display_arg)
+            if not display_ptr:
                 return "unknown"
 
             try:
-                cursor_ptr = _libxfixes.XFixesGetCursorImage(display)
+                cursor_ptr = _libxfixes.XFixesGetCursorImage(display_ptr)
                 if not cursor_ptr:
                     return "unknown"
 
@@ -113,7 +120,7 @@ class Cursor:
                 finally:
                     _libx11.XFree(cursor_ptr)
             finally:
-                _libx11.XCloseDisplay(display)
+                _libx11.XCloseDisplay(display_ptr)
         except Exception:
             return "unknown"
 

@@ -73,8 +73,8 @@ async def _vlm_detect_elements(
     simple: bool = False,
     model_override: str | None = None,
 ) -> tuple[list[DesktopElement] | None, float, str, str]:
-    # Sourced from the split server submodules so a test patching srv.vlm._vlm / srv.core.config
-    # is seen here (the server package imports detect, so this stays a lazy in-body import).
+    # Sourced from the split server submodules so a test patching srv.vlm._vlm/srv.core.config
+    # is seen here (server package imports detect, so this stays a lazy in-body import).
     from interact.server import core as _srv_core, vlm as _srv_vlm  # noqa: PLC0415
 
     _vlm = _srv_vlm._vlm
@@ -87,16 +87,26 @@ async def _vlm_detect_elements(
         transform = transform.with_crop(crop_offset[0], crop_offset[1])
     vlm_bytes, vlm_w, vlm_h = transform.resize_image(screenshot_bytes, img_w, img_h)
 
-    # Resolve each role to a concrete model at this boundary via the one resolution site
-    # (Config.resolve_model): the configured id, else the first available model in the role's
-    # chain. Without it an unconfigured (auto) install ran detection with an empty-string model
-    # → instant silent failure (0 elements, 0.00s).
-    component_model = config.resolve_model("component", breaker=breaker)
-    image_model = config.resolve_model("image", breaker=breaker)
+    # A session provider emits the provider-neutral schema below; an unrelated API catalog/model
+    # must not choose its coordinate dialect or appear as the model that ran. Auto/API fallback
+    # resolves inside server.vlm's separate breaker-aware API path.
+    session_transport = config.media_sessions_enabled() and not model_override
+    component_model = ""
+    if not session_transport:
+        try:
+            # "component" is a PREFERENCE with a real fallback (image) below it — a criterion
+            # that clears nothing here is not a dead end, unlike "image" itself.
+            component_model = config.resolve_model("component", breaker=breaker)
+        except RuntimeError:
+            component_model = ""
+    image_model = "" if session_transport else config.resolve_model("image", breaker=breaker)
 
     if model_override:
         use_component = False
         detection_model = model_override
+    elif session_transport:
+        use_component = not simple
+        detection_model = ""
     else:
         use_component = (
             not simple
@@ -112,9 +122,10 @@ async def _vlm_detect_elements(
     task_coord_formats: list[CoordFormat] = []
 
     def _enqueue(model: str, label: str):
-        fmt = CoordFormat.for_model(model)
-        structured = (
-            not simple and fmt == CoordFormat() and _model_supports_structured(model)
+        fmt = CoordFormat() if session_transport else CoordFormat.for_model(model)
+        structured = not simple and (
+            session_transport
+            or (fmt == CoordFormat() and _model_supports_structured(model))
         )
         preamble = (
             f"This image is {vlm_w}x{vlm_h} pixels. "
@@ -131,11 +142,10 @@ async def _vlm_detect_elements(
                 media_type=label,
                 max_tokens=None,
                 response_format=resp_fmt,
-                # Pass the RESOLVED detection model, not the outer model_override: in auto mode
-                # model_override is None, and forwarding it made _vlm fall back to the (empty)
-                # configured image model → an empty-string model id → instant silent failure
-                # (0 elements, 0.00s). `model` is already the resolved component/image/override.
-                model_override=model,
+                # Only a caller's explicit override belongs on a subscription CLI's --model.
+                # Auto-resolved API catalog ids are still used above for prompt formatting, but
+                # forwarding one here would silently replace the CLI's configured/default model.
+                model_override=model_override,
             )
         )
         task_labels.append(label)
@@ -144,6 +154,8 @@ async def _vlm_detect_elements(
 
     if model_override:
         _enqueue(detection_model, "override")
+    elif session_transport:
+        _enqueue("", "component" if use_component else "image")
     elif use_component:
         _enqueue(component_model, "component")
     else:
@@ -161,7 +173,7 @@ async def _vlm_detect_elements(
                 label,
                 r if isinstance(r, BaseException) else r.text,
             )
-            if label == "component":
+            if label == "component" and component_model:
                 breaker.trip(component_model)
             continue
         parsed = None
@@ -171,9 +183,9 @@ async def _vlm_detect_elements(
                 parsed = _structured_to_elements(detection)
                 if parsed and all(el.x == 0 for el in parsed):
                     _log.warning("Structured output garbage (all x=0), discarding")
-                    breaker.trip(
-                        component_model if label == "component" else image_model
-                    )
+                    broken_model = component_model if label == "component" else image_model
+                    if broken_model:
+                        breaker.trip(broken_model)
                     parsed = None
             except Exception:
                 _log.warning(
@@ -214,12 +226,20 @@ async def _vlm_detect_elements(
     )
 
     Debug.save("vlm_raw", raw_text, invocation_id=invocation_id)
-    vlm_label = model_override or (component_model if use_component else image_model)
+    actual = next(
+        (r for r in results if not isinstance(r, BaseException) and r.text), None
+    )
+    vlm_label = (
+        actual.model if actual is not None and actual.model
+        else model_override or (component_model if use_component else image_model)
+    )
     Debug.save(
         "vlm_meta",
         json.dumps(
             {
                 "model": vlm_label,
+                "provider": actual.provider if actual is not None else "",
+                "backend": actual.backend if actual is not None else "none",
                 "elements": len(all_elements),
                 "elapsed_s": round(elapsed, 3),
                 "vlm_resize": [vlm_w, vlm_h],
@@ -270,7 +290,8 @@ async def judge_missing_elements(
         "detection completeness check",
         config,
         prompt,
-        model=config.resolve_model("component", model_override or ""),
+        model=model_override or "",
+        role="component",
     )
     text = (result.text or "").strip()
     if not text or text.upper().startswith("NONE") or text.startswith("["):
@@ -288,9 +309,9 @@ def _is_wm_only(elements: list[DesktopElement], titlebar_y: int = _TITLEBAR_Y) -
 
 def _win_geometry(win: DesktopWindow) -> tuple[int, int, int, int] | None:
     """The layout a detection's boxes were measured in — stored alongside the refs so a later
-    resolve can warn that the window has since been reshaped and the refs may name other
-    widgets (#88). None when the target can't report a geometry, in which case the staleness
-    warning is simply not offered: this is an annotation on detection, never a precondition of it."""
+    resolve can warn the window has since been reshaped and refs may name other widgets (#88).
+    None when the target can't report a geometry: the staleness warning is simply not offered —
+    an annotation on detection, never a precondition of it."""
     try:
         return (int(win.x), int(win.y), int(win.w), int(win.h))
     except (AttributeError, TypeError, ValueError):
@@ -300,9 +321,9 @@ def _win_geometry(win: DesktopWindow) -> tuple[int, int, int, int] | None:
 def _page_signature(png_bytes: bytes) -> str:
     """Content fingerprint of the window screenshot — the key for "is this still the same screen?".
     Downscaled + grayscaled so the tiniest pixel diffs wash out; any real content change yields a
-    new key. It errs toward a NEW key (re-detect) over a stale match — the safe direction. Must NOT
-    be the window title: a single-window app (Flutter, Electron, a game) keeps one title across
-    every screen, so a title key never resets and stale refs from the previous screen pile up."""
+    new key. Errs toward a NEW key (re-detect) over a stale match — the safe direction. Must NOT be
+    the window title: a single-window app (Flutter, Electron, a game) keeps one title across every
+    screen, so a title key never resets and stale refs from the previous screen pile up."""
     try:
         thumb = PILImage.open(io.BytesIO(png_bytes)).convert("L").resize((16, 16))
         return hashlib.sha1(thumb.tobytes()).hexdigest()
@@ -426,15 +447,30 @@ async def _detect_desktop_elements(
                 "detect_elements: atspi partial (%d elements), running VLM for fusion",
                 len(atspi_result),
             )
-            vlm_elements, _, _, vlm_label = await _vlm_detect_elements(
-                screenshot_bytes,
-                context,
-                img_w,
-                img_h,
-                crop_offset=crop,
-                invocation_id=invocation_id,
-                model_override=model_override,
-            )
+            try:
+                vlm_elements, _, _, vlm_label = await _vlm_detect_elements(
+                    screenshot_bytes,
+                    context,
+                    img_w,
+                    img_h,
+                    crop_offset=crop,
+                    invocation_id=invocation_id,
+                    model_override=model_override,
+                )
+            except RuntimeError as gated:
+                # The media provider is gated or absent (#157, #161). The AT-SPI elements are
+                # already computed and deterministic: return those rather than nothing at all.
+                _log.info("detect_elements: VLM unavailable (%s); returning atspi only", gated)
+                merged = DesktopElement.merge_into(
+                    win.wid, list(atspi_result), page_sig, _win_geometry(win)
+                )
+                return (
+                    screenshot_bytes,
+                    merged,
+                    None,
+                    time.monotonic() - t0,
+                    "atspi (VLM unavailable)",
+                )
             if vlm_elements:
                 fused = DesktopElement.fuse(vlm_elements, atspi_result)
                 fused = DesktopElement.merge_into(win.wid, fused, page_sig, _win_geometry(win))
@@ -468,15 +504,27 @@ async def _detect_desktop_elements(
         ext="png",
         invocation_id=invocation_id,
     )
-    elements, vlm_elapsed, raw_text, vlm_label = await _vlm_detect_elements(
-        screenshot_bytes,
-        context,
-        img_w,
-        img_h,
-        crop_offset=crop,
-        invocation_id=invocation_id,
-        model_override=model_override,
-    )
+    try:
+        elements, vlm_elapsed, raw_text, vlm_label = await _vlm_detect_elements(
+            screenshot_bytes,
+            context,
+            img_w,
+            img_h,
+            crop_offset=crop,
+            invocation_id=invocation_id,
+            model_override=model_override,
+        )
+    except RuntimeError as gated:
+        # No AT-SPI and no media provider (#157, #161): say so with the capture in hand instead
+        # of raising, so the caller still has the screenshot and a stated reason.
+        _log.info("detect_elements: VLM unavailable (%s) and no atspi elements", gated)
+        return (
+            screenshot_bytes,
+            [],
+            f"No element detection available: {gated}",
+            time.monotonic() - t0,
+            "unavailable",
+        )
     if elements is None:
         detail = (
             "VLM detected 0 interactive elements — "
@@ -494,9 +542,9 @@ async def _detect_desktop_elements(
             img_h,
         )
     elements = DesktopElement.filter_junk(elements, titlebar_y)
-    # Single pass — one screenshot, one VLM call. The multi-pass refinement (dense strips +
-    # quadrants) multiplied calls into 100s+ on large screens; recall is recovered on demand
-    # instead, since a follow-up (query-focused) detect accumulates into the window's refs.
+    # Single pass — one screenshot, one VLM call. Multi-pass refinement (dense strips + quadrants)
+    # once multiplied calls into 100s+ on large screens; recall is recovered on demand instead —
+    # a follow-up (query-focused) detect accumulates into the window's refs.
     elements = DesktopElement.merge_into(win.wid, elements, page_sig, _win_geometry(win))
     _log.info(
         "detect_elements: vlm fallback %d elements in %.3fs", len(elements), vlm_elapsed

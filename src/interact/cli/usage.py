@@ -7,11 +7,13 @@ provider, optionally restricted to a recent window. No network, no VLM: pure loc
 analysis of calls already made.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Self
 
 from pydantic import BaseModel, ValidationError
+
+from interact.vision.usage_records import UsageEntry
 
 
 def default_log_path() -> Path:
@@ -19,18 +21,6 @@ def default_log_path() -> Path:
     from interact.runtime import config
 
     return config.usage_log
-
-
-class UsageEntry(BaseModel):
-    timestamp: datetime
-    model: str
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cost: float = 0.0
-
-    @property
-    def provider(self) -> str:
-        return self.model.split("/", 1)[0] if "/" in self.model else "?"
 
 
 class Group(BaseModel):
@@ -41,12 +31,19 @@ class Group(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
     cost: float = 0.0
+    unknown_cost_calls: int = 0
+    session_usage_calls: int = 0
 
     def add(self, entry: UsageEntry) -> None:
         self.calls += 1
         self.input_tokens += entry.input_tokens
         self.output_tokens += entry.output_tokens
-        self.cost += entry.cost
+        if entry.cost is None:
+            self.unknown_cost_calls += 1
+        else:
+            self.cost += entry.cost
+        if entry.billing == "session_usage":
+            self.session_usage_calls += 1
 
 
 class UsageReport(BaseModel):
@@ -55,6 +52,8 @@ class UsageReport(BaseModel):
     total_cost: float
     total_input: int
     total_output: int
+    unknown_cost_calls: int
+    session_usage_calls: int
     by_model: list[Group]
     by_provider: list[Group]
 
@@ -79,22 +78,24 @@ class UsageReport(BaseModel):
               now: datetime | None = None) -> Self:
         entries = cls.read_entries(path)
         if since_days is not None:
-            cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=since_days)
+            cutoff = (now or datetime.now(UTC)) - timedelta(days=since_days)
             entries = [e for e in entries if e.timestamp >= cutoff]
 
         models: dict[str, Group] = {}
         providers: dict[str, Group] = {}
         for entry in entries:
             models.setdefault(entry.model, Group(name=entry.model)).add(entry)
-            providers.setdefault(entry.provider, Group(name=entry.provider)).add(entry)
+            providers.setdefault(entry.provider or "?", Group(name=entry.provider or "?")).add(entry)
 
-        by_cost = lambda groups: sorted(groups.values(), key=lambda g: g.cost, reverse=True)  # noqa: E731
+        by_cost = lambda groups: sorted(groups.values(), key=lambda g: g.cost, reverse=True)
         return cls(
             since_days=since_days,
             entries=len(entries),
-            total_cost=sum(e.cost for e in entries),
+            total_cost=sum(e.cost or 0 for e in entries),
             total_input=sum(e.input_tokens for e in entries),
             total_output=sum(e.output_tokens for e in entries),
+            unknown_cost_calls=sum(e.cost is None for e in entries),
+            session_usage_calls=sum(e.billing == "session_usage" for e in entries),
             by_model=by_cost(models),
             by_provider=by_cost(providers),
         )

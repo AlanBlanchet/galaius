@@ -7,6 +7,7 @@ import asyncio
 import io
 import json
 import logging
+import os
 import re
 import subprocess
 import tempfile
@@ -19,6 +20,7 @@ from pydantic import BaseModel, PrivateAttr, computed_field
 from interact.desktop.coords import CoordTransform
 from interact.desktop.cursor import Cursor
 from interact.desktop.video import _ffmpeg_grab_args, _VideoSession
+from interact.desktop.input import MULTI_CLICK_GAP_MS, to_xdotool_key
 from interact.parsing import Parse
 from interact.state import Element, InteractiveElement
 
@@ -31,22 +33,6 @@ _TYPE_DELAY_MS = 12
 _DRAG_STEPS = 24  # Flutter needs a fine, slow pointer path for a kinetic drag/scroll (#13)
 _DRAG_STEP_DELAY = 0.015
 _LINE_RE = re.compile(r"(0x[0-9a-fA-F]+)\s+\"([^\"]+)\".*?(\d+)x(\d+)\+(-?\d+)\+(-?\d+)")
-_KEY_MAP = {
-    "Enter": "Return",
-    "ArrowDown": "Down",
-    "ArrowUp": "Up",
-    "ArrowLeft": "Left",
-    "ArrowRight": "Right",
-    "Backspace": "BackSpace",
-    "Delete": "Delete",
-    "Escape": "Escape",
-    "Tab": "Tab",
-    "Control": "ctrl",
-    "Shift": "shift",
-    "Alt": "alt",
-    "Meta": "super",
-}
-
 _SCROLL_BUTTON = {"down": 5, "up": 4, "left": 6, "right": 7}
 
 _SCREEN_WID = -1  # synthetic wid base for screen targets — a cache key, never a real X window
@@ -57,17 +43,97 @@ class CaptureError(RuntimeError):
     Surfaced to the agent as a clear, actionable error instead of a black image."""
 
 
+#: Offered on EVERY blank capture, whatever the cause. A whole-screen grab reads crash dialogs,
+#: modals and anything else a per-window grab cannot — it is one call, and it is what the reporter
+#: of #113 found unaided after burning two rounds waiting for a window that had already died.
+_SCREEN_FALLBACK = 'Try target="screen": it costs one call and shows what is actually on the '\
+    "display, including a crash dialog a per-window grab cannot see."
+
+
+def _pid_alive(pid: int) -> bool:
+    """Is that process still there? Used only to tell a DEAD window from an unreadable one."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True  # exists, not ours to signal
+    return True
+
+
+def _window_pid(wid: int) -> int | None:
+    """The process behind a window, or None when X will not say. A failed lookup is not evidence
+    of anything — see the caller, which must not turn silence into a liveness claim."""
+    try:
+        out = subprocess.check_output(
+            ["xdotool", "getwindowpid", str(wid)],
+            text=True, timeout=5,
+            # An invalid window makes xdotool print an X error to the terminal. This is a probe
+            # whose failure is already handled; its noise must not reach the user's console.
+            stderr=subprocess.DEVNULL,
+        )
+        return int(out.strip())
+    except (FileNotFoundError, subprocess.SubprocessError, ValueError):
+        return None
+
+
+def dead_window_error(name: str, pid: int) -> "CaptureError":
+    """A uniform grab whose process is GONE. Distinct from the GPU case because the remedies do
+    not overlap at all: no compositor setting brings back a window that has crashed, and telling
+    somebody to install picom when their editor died is a confident answer to the wrong question.
+    """
+    return CaptureError(
+        f"Capture of {name!r} came back a single uniform colour and its process (pid {pid}) is "
+        "no longer running — the window is a dead frame, not an unreadable one. Nothing about "
+        f"capture settings will change this; the application has to be restarted. {_SCREEN_FALLBACK}"
+    )
+
+
 def gpu_surface_error(name: str) -> "CaptureError":
-    """The one diagnostic for a uniform-black grab — an X screen-grab (maim or ffmpeg x11grab)
-    can't read a GPU-rendered surface. Names the cause + the fixes, shared by capture() and the
-    record path so the agent gets the same actionable message wherever it hits this."""
+    """The diagnostic for a uniform-black grab whose process is still ALIVE — an X screen-grab
+    (maim or ffmpeg x11grab) can't read a GPU-rendered surface. Names the cause + the fixes,
+    shared by capture() and the record path so the agent gets the same actionable message
+    wherever it hits this."""
     return CaptureError(
         f"Capture of {name!r} came back a single uniform colour — an X screen-grab can't read it. "
         "That's the signature of a GPU-rendered surface (Android emulator, game, hardware-"
         "accelerated video) that isn't in the X framebuffer. Fixes: run a compositing manager "
         "(e.g. picom) so the surface is redirected and grabbable, or capture the app's own "
-        "framebuffer — for an Android emulator: `adb exec-out screencap -p` rather than a desktop grab."
+        "framebuffer — for an Android emulator: `adb exec-out screencap -p` rather than a desktop "
+        f"grab. {_SCREEN_FALLBACK}"
     )
+
+
+def unreadable_window_error(name: str, wid: int) -> "CaptureError":
+    """The grab itself failed — X would not hand over that window's pixels at all.
+
+    Distinct from a UNIFORM grab: there is no image to inspect, so the cause is read from the
+    process instead. Almost always the window is gone (its application quit or crashed) and the id
+    is now stale; occasionally X refuses a window it still lists.
+    """
+    pid = _window_pid(wid)
+    gone = pid is not None and not _pid_alive(pid)
+    why = (f"its process (pid {pid}) is no longer running, so the window id is stale"
+           if gone else
+           "X would not hand over its pixels — it may have closed since it was listed")
+    return CaptureError(
+        f"Could not capture {name!r} (window {wid}): {why}. "
+        f"Re-run list_desktop_windows to see what is actually open. {_SCREEN_FALLBACK}"
+    )
+
+
+def blank_capture_error(name: str, wid: int) -> "CaptureError":
+    """Which of the two it actually is, decided by asking rather than assuming.
+
+    An unknowable pid falls back to the GPU wording — it is the likelier cause and it no longer
+    hides the alternative, since both messages now carry the screen fallback. What must NOT happen
+    is a failed lookup being reported as "the window is dead": that is a claim about one lookup
+    path, not about the process.
+    """
+    pid = _window_pid(wid)
+    if pid is not None and not _pid_alive(pid):
+        return dead_window_error(name, pid)
+    return gpu_surface_error(name)
 
 
 def _is_blank_png(data: bytes) -> bool:
@@ -261,7 +327,14 @@ class DesktopWindow(BaseModel):
             img = subprocess.check_output(cmd, timeout=10)
         else:
             self._raise_window()  # a moved/buried window must come to the front first
-            img = subprocess.check_output(["maim", "-i", str(self.wid)], timeout=10)
+            try:
+                img = subprocess.check_output(["maim", "-i", str(self.wid)], timeout=10)
+            except subprocess.CalledProcessError:
+                # A window that is genuinely GONE does not grab black — the grab FAILS. Killing a
+                # real window and capturing it is what showed this: every actual dead-window case
+                # lands here rather than on the uniform-colour path below, and what reached the
+                # agent was a raw traceback naming a numeric window id and nothing else.
+                raise unreadable_window_error(self.name, self.wid) from None
             if _is_blank_png(img):
                 # window-id capture of a hardware-accelerated surface can come back blank; retry by
                 # geometry (reads the framebuffer region) — recovers non-GPU cases.
@@ -274,7 +347,7 @@ class DesktopWindow(BaseModel):
         if _is_blank_png(img):
             # Still uniform → an X screen-grab genuinely can't read this surface. Don't hand back a
             # black image the model will misread as a broken UI; say what it is and how to capture it.
-            raise gpu_surface_error(self.name)
+            raise blank_capture_error(self.name, self.wid)
         return img
 
     def _geometry_now(self) -> str | None:
@@ -414,6 +487,31 @@ class DesktopWindow(BaseModel):
             return
         await self._run("xdotool", "windowactivate", "--sync", str(self.wid))
         await self._run("xdotool", "windowfocus", "--sync", str(self.wid))
+        await self._assert_focused()
+
+    async def _assert_focused(self) -> None:
+        """Confirm the intended window really has focus before any keystroke.
+
+        ``windowactivate`` is asynchronous and best-effort: a WM can refuse it, another window
+        can take focus first, or it can simply lose the race. Typing regardless sends the keys
+        to WHATEVER holds focus — how a command aimed at one editor landed in another and killed
+        the session issuing it. Keystrokes are unrecoverable once delivered, so this refuses
+        rather than hoping."""
+        if self.is_screen or not self.wid:
+            return
+        try:
+            raw = await self._run("xdotool", "getwindowfocus")
+        except Exception:
+            return  # cannot verify (no xdotool / odd WM) — do not block on the check itself
+        if not isinstance(raw, str):
+            return  # a runner that returns something else cannot answer the question
+        focused = raw.strip()
+        if focused.isdigit() and int(focused) != int(self.wid):
+            raise RuntimeError(
+                f"focus did not land on {self.name!r} (wid {self.wid}); window {focused} has it. "
+                "Refusing to type, because keystrokes go to whatever is focused and cannot be "
+                "taken back. Raise the window and retry."
+            )
 
     _BUTTON_NAMES = {1: "left", 2: "middle", 3: "right"}
 
@@ -425,7 +523,7 @@ class DesktopWindow(BaseModel):
         Focus the EXACT window this DesktopWindow resolved to (``self.wid``) — the same window
         click/scroll act on — not a re-search by title: a title can match a hidden helper window
         (Chrome spawns a 10x10 "clipboard" window), so re-resolving could focus the wrong one and
-        the keystrokes land nowhere ("clicks work, typing doesn't", #25)."""
+        keystrokes land nowhere ("clicks work, typing doesn't", #25)."""
         backend = self._backend
         focus_wid = getattr(backend, "focus_wid", None)
         if focus_wid is not None and self.wid:
@@ -436,18 +534,25 @@ class DesktopWindow(BaseModel):
                 await asyncio.to_thread(focus, self.name)
         await asyncio.sleep(_FOCUS_DELAY)  # let focus settle before the XTEST keystrokes
 
-    async def click(self, x: int, y: int, button: int = 1):
-        _log.debug("desktop_click wid=%s x=%s y=%s button=%s", self.wid, x, y, button)
+    async def click(self, x: int, y: int, button: int = 1, count: int = 1):
+        """Click at capture-space (x, y): ``button`` is the X code (1/2/3), ``count`` the number of
+        clicks — 2 is a double-click, delivered as ONE coalescing sequence on every path (#116)."""
+        _log.debug(
+            "desktop_click wid=%s x=%s y=%s button=%s count=%s", self.wid, x, y, button, count
+        )
         if self._backend is not None:
             sx, sy = self.to_screen(x, y)
-            await asyncio.to_thread(self._backend.click, sx, sy, self._BUTTON_NAMES.get(button, "left"))
+            await asyncio.to_thread(
+                self._backend.click, sx, sy, self._BUTTON_NAMES.get(button, "left"), count
+            )
             return
         xdo_x, xdo_y = self._input_xy(x, y)
         await self._activate()
         await asyncio.sleep(_FOCUS_DELAY)
         await self._mousemove(xdo_x, xdo_y)
         await asyncio.sleep(_FOCUS_DELAY)
-        await self._run("xdotool", "click", str(button))
+        repeat = ("--repeat", str(count), "--delay", str(MULTI_CLICK_GAP_MS)) if count > 1 else ()
+        await self._run("xdotool", "click", *repeat, str(button))
 
     async def type_text(self, text: str):
         if self._backend is not None:
@@ -526,13 +631,13 @@ class DesktopWindow(BaseModel):
             horizontal = direction in ("left", "right")
             positive = direction in ("up", "right")  # up / right are the +clicks directions
             clicks = amount if positive else -amount
-            # A wheel in a WM-less nested display does not always stay inside the widget it was
+            # A wheel in a WM-less nested display doesn't always stay inside the widget it was
             # aimed at: reported twice, it RESIZED the whole app window (1600x1200 -> 1600x2000,
-            # #82) and once took the window down entirely (#90). The caller asked to scroll a
-            # WIDGET, so the window's own geometry is a post-condition of this call, not something
-            # the wheel may change — snapshot it and put it back. Left un-restored, a taller window
-            # also reveals content genuinely clipped at the real size, manufacturing false layout
-            # verdicts from every later capture.
+            # #82), once took the window down entirely (#90). The caller asked to scroll a
+            # WIDGET, so the window's own geometry is a post-condition of this call, not
+            # something the wheel may change — snapshot it and put it back. Left un-restored, a
+            # taller window also reveals content genuinely clipped at the real size,
+            # manufacturing false layout verdicts from every later capture.
             guarded = self._tracks_geometry()
             before = await asyncio.to_thread(self._backend_geometry) if guarded else None
 
@@ -598,6 +703,10 @@ class DesktopWindow(BaseModel):
             await self._mousemove(ix, iy)
             await asyncio.sleep(_DRAG_STEP_DELAY)
         await self._run("xdotool", "mouseup", "1")
+        # Settle move at the drop point (#136): a webview that captured the pointer for the drag
+        # only learns the button is up from the NEXT motion/button event, not from mouseup alone
+        # — see DesktopBackend._settle_after_drag for the same fix on the backend-driven path.
+        await self._mousemove(xtx, xty)
 
     async def hover(self, x: int, y: int):
         if self._backend is not None:
@@ -654,7 +763,13 @@ class DesktopWindow(BaseModel):
 
     @staticmethod
     def map_key(key: str) -> str:
-        parts = key.split("+")
-        return "+".join(_KEY_MAP.get(p, p) for p in parts)
+        """Translate a key or chord into names X actually knows.
+
+        This used to be a second, case-sensitive table living here: it mapped the DOM spelling
+        (``Enter``) and let the lowercase one (``enter``) fall through to xdotool, which does not
+        know it, prints "No such key name" and exits 0 — dropping the key in silence. One shared
+        translation now serves this path and the nested backend both.
+        """
+        return to_xdotool_key(key)
 
 

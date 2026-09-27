@@ -8,7 +8,7 @@ from interact.desktop.atspi import AtSpi
 from interact.browser import BrowserManager
 from interact.desktop import DesktopElement, DesktopWindow
 from interact.server import core, sandbox
-from interact.server.core import _DEFAULT_SESSION, _NO_WINDOWS_MSG, config
+from interact.server.core import _NO_WINDOWS_MSG, config
 
 
 def _desktop_unsupported(is_screen: bool = False) -> str | None:
@@ -44,9 +44,9 @@ def _resolve_nested_target(spec: str) -> tuple[DesktopWindow | None, None, str |
         win._backend = backend
         return win, None, None
     if title.lower().startswith("wid:"):
-        # The stable per-window handle: an app that sets no per-instance title (two copies of the
-        # same Qt app) makes a title target ambiguous and it silently drifts to whichever window is
-        # topmost — a full test session landed on the wrong one (#87). A wid cannot drift.
+        # The stable per-window handle: an app that sets no per-instance title (two copies of
+        # the same Qt app) makes a title target ambiguous, silently drifting to whichever window
+        # is topmost — a full test session landed on the wrong one (#87). A wid cannot drift.
         return _resolve_nested_wid(backend, title[4:].strip())
     win = DesktopWindow.find_in(backend, title)
     if win is None:
@@ -54,11 +54,12 @@ def _resolve_nested_target(spec: str) -> tuple[DesktopWindow | None, None, str |
         if windows:
             avail = "\n".join(f'  target="nested:{n}" (or target="nested:wid:{w}")' for w, n in windows)
             return None, None, f"No sandbox window titled '{title}'. In the sandbox:\n{avail}"
-        # Empty sandbox. The old "(none — launch_app first)" misled an agent that had JUST launched —
-        # the real cause is the display being respawned (a size change pre-#50/#53, or exhaustion
-        # after many GPU launches) and dropping the app. Steer recovery INSIDE the sandbox and forbid
-        # the real-desktop fallback: a real session bailed to DISPLAY=:0 xdotool/import on the user's
-        # actual desktop, which is exactly what the isolated sandbox exists to avoid.
+        # Empty sandbox. The old "(none — launch_app first)" misled an agent that had JUST
+        # launched — the real cause is the display being respawned (a size change pre-#50/#53,
+        # or exhaustion after many GPU launches) dropping the app. Steer recovery INSIDE the
+        # sandbox and forbid the real-desktop fallback: a real session bailed to DISPLAY=:0
+        # xdotool/import on the user's actual desktop — exactly what the isolated sandbox exists
+        # to avoid.
         return None, None, (
             f"No sandbox window titled '{title}' — the sandbox has no windows right now. "
             + _sandbox_death_diagnostics(backend)
@@ -89,10 +90,18 @@ def _resolve_nested_wid(backend, raw: str) -> tuple[DesktopWindow | None, None, 
 
 
 def _sandbox_death_diagnostics(backend) -> str:
-    """Why the sandbox is empty, when it can be told: a dead nested X server (with its decoded exit
-    signal — SIGKILL points at the host OOM-killer, not interact) and the last app's own output.
-    Without this a caller could not distinguish "the app crashed" from "the host killed the whole
-    sandbox" from "interact lost track of it" (#84)."""
+    """Why the sandbox is empty, when it can be told: a dead nested X server (with its decoded
+    exit signal — SIGKILL points at the host OOM-killer, not interact) and the last app's own
+    output. Without this a caller couldn't distinguish "the app crashed" from "the host killed
+    the whole sandbox" from "interact lost track of it" (#84).
+
+    ``backend`` here is always the CURRENT (fresh) sandbox — `_get_sandbox` already self-healed a
+    dead one before this runs, so its own `display_health` reports "alive" and says nothing about
+    why the window this call was looking for is gone. `sandbox.last_replace_reason()` carries that
+    forward from the respawn instead of leaving it silently swallowed (#141)."""
+    if replaced := sandbox.last_replace_reason():
+        return f"The sandbox was recreated automatically — the previous one: {replaced}\n"
+
     def _text(fn_name: str) -> str:
         """A diagnostic string from the backend, or "" — never anything that could break the
         resolution this only annotates."""
@@ -148,10 +157,10 @@ def _find_desktop_window(title: str) -> DesktopWindow | str:
     if any(w.name.lower() == hint for w in matches):
         return matches[0]
     if len(matches) == 1:
-        # A lone PARTIAL match that looks like an editor/terminal window (its title merely CONTAINS
-        # the query — "shared.rs - aino - Visual Studio Code") is the user's IDE, not the app: the
-        # app is usually running in the sandbox instead. Driving it silently typed into the user's
-        # editor (10x in client logs) — require explicit targeting.
+        # A lone PARTIAL match that looks like an editor/terminal window (its title merely
+        # CONTAINS the query — "shared.rs - aino - Visual Studio Code") is the user's IDE, not
+        # the app: the app usually runs in the sandbox instead. Driving it silently typed into
+        # the user's editor (10x in client logs) — require explicit targeting.
         if _looks_like_editor(matches[0].name):
             return (
                 f"'{title}' only matches the editor/terminal window "
@@ -175,7 +184,7 @@ def _resolve_target(
     Unifies the old `window`/`session` split into a single "what am I driving?" choice."""
     config.refresh()  # ~/.interact/config.env is the source of truth: pick up live edits per call
     is_desktop = bool(target) and target.strip().lower() != "browser"
-    if is_desktop and session != _DEFAULT_SESSION:
+    if is_desktop and core._named_session(session):
         return None, None, "Cannot combine a desktop `target` with a browser `session`"
     if is_desktop:
         t = target.strip()
@@ -200,9 +209,9 @@ def _resolve_target(
 
 def _resolve_image_source(target: str | None) -> tuple[bytes | None, str | None]:
     """A ``target="file:<path>"`` reads an EXISTING image file instead of capturing — so
-    screenshot/review_ui/measure_ui can judge an artifact produced out-of-band (a saved capture, a
-    script's output) without the capture clobbering it (#44). Returns ``(bytes, None)`` for a file
-    target, ``(None, "ERROR: …")`` if it can't be read, or ``(None, None)`` for a normal target."""
+    screenshot/review_ui/measure_ui can judge an artifact produced out-of-band (a saved capture,
+    a script's output) without the capture clobbering it (#44). Returns ``(bytes, None)`` for a
+    file target, ``(None, "ERROR: …")`` if unreadable, or ``(None, None)`` for a normal target."""
     if not (target and target.strip().lower().startswith("file:")):
         return None, None
     p = target.strip()[5:]

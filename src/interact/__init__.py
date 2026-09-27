@@ -20,3 +20,20 @@ def installed_version() -> str:
 
 
 __version__ = installed_version()
+
+USER_AGENT = f"{DIST_NAME}/{__version__}"
+"""How this client names itself to an Interact server. A request without it (the HTTP library's
+default) is served the contract of clients released before responses were read tolerantly."""
+
+
+def __getattr__(name: str):
+    """Resolve `interact.function` (the `@interact.function` decorator) and `interact.workflows`
+    (the reverse-direction "run a server workflow from this machine" API) lazily, so a plain
+    `import interact` for `installed_version()` never pays for `interact_core`/`httpx`."""
+    if name == "function":
+        from interact.functions import function
+        return function
+    if name == "workflows":
+        import importlib
+        return importlib.import_module("interact.workflows")
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -6,29 +6,18 @@ bare-``interact`` config TUI — NOT the MCP tool surface (that is :mod:`interac
 ``tui`` / ``clients`` / ``usage`` / ``view`` / ``render`` / ``update`` are its helpers, imported
 only within this cluster.
 
-``main`` is re-exported so the ``interact = "interact.cli:main"`` entry point resolves, along with
-the commands + helpers tests reach via ``import interact.cli``. The ``usage`` / ``update`` command
-functions are deliberately NOT re-exported here — they would shadow the ``interact.cli.usage`` /
-``interact.cli.update`` submodules; reach them via ``app`` (they are registered as commands there).
+``main`` is re-exported so the ``interact = "interact.cli:main"`` entry point resolves. Command
+implementations stay deferred until selected; package-level command attributes are resolved lazily
+for existing callers. The ``usage`` / ``update`` command functions are deliberately NOT exposed
+here because they would shadow the matching submodules.
 """
 
-from interact.cli.app import (  # noqa: F401
-    _mask,
-    _print_resolved_models,
-    _print_stale_servers,
-    app,
-    config_get,
-    config_list,
-    config_path,
-    config_set,
-    config_unset,
-    dashboard,
-    doctor,
-    install,
-    main,
-    mcp,
-    providers,
-    report,
-    status,
-    version,
-)
+from interact.cli.app import __getattr__ as _resolve_command
+from interact.cli.app import app, main, version
+
+
+def __getattr__(name: str):
+    return _resolve_command(name)
+
+
+__all__ = ["app", "main", "version"]

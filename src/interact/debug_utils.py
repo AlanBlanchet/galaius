@@ -16,10 +16,22 @@ from interact.state import _SLUG_MAX
 
 _log = logging.getLogger("interact")
 
-# The dump dir of the tool call currently running. The @instrumented decorator (interact.server.core)
-# sets it per call, so a tool body reaches its invocation dir via Debug.inv() instead of threading an
-# `inv` argument through every helper. A ContextVar keeps concurrent tool calls isolated.
+# Dump dir of the tool call currently running. @instrumented (interact.server.core) sets it per
+# call, so a tool body reaches its invocation dir via Debug.inv() instead of threading an `inv`
+# arg through every helper. ContextVar keeps concurrent calls isolated.
 _CURRENT_INV: ContextVar[str | None] = ContextVar("interact_current_inv", default=None)
+
+
+def resolve_output_path(path: str) -> Path:
+    """Where a caller-supplied output ``path`` lands — ONE rule for every tool taking one: ``~``
+    expands, an absolute path is kept, a RELATIVE path anchors under ``config.debug_dir``
+    (interact's own output dir, ``~/.interact/out``, where every other artifact lives) — never the
+    server process's cwd, whatever the editor started it with and invisible to the calling agent
+    (#120). Always absolute, so a tool can name the file the caller will actually find."""
+    p = Path(path).expanduser()
+    if not p.is_absolute():
+        p = Path(config.debug_dir).expanduser() / p
+    return p.absolute()
 
 
 class Debug:
@@ -34,9 +46,11 @@ class Debug:
 
     @staticmethod
     def dump_dir(debug_dir: str | None) -> Path | None:
-        # per-call arg wins, then the explicit screenshot override, then the debug_dir base.
+        # per-call arg wins, then explicit screenshot override, then debug_dir base. per-call
+        # STRING follows the one output-path rule (#120): `~` expands, RELATIVE dir lands under
+        # the base, never beside the server's cwd (Config's fields already expanded).
         if debug_dir:
-            return Path(debug_dir)
+            return resolve_output_path(debug_dir)
         return config.screenshot_dump_dir or config.debug_dir
 
     @classmethod
@@ -44,14 +58,14 @@ class Debug:
         d = cls.dump_dir(debug_dir)
         if not d:
             return None
-        if d.resolve() == Path("out").resolve():
+        if d.resolve() in {Path("out").resolve(), resolve_output_path("out").resolve()}:
             raise ValueError(
                 "debug_dir must be a subdirectory of out/, not out/ itself; "
                 "use 'out/vscode' or 'out/tests'"
             )
-        # Default (no override) → organize under sessions/<session>/<date> so artifacts land in
-        # ~/.interact/out, separated by the calling session and dated. An explicit debug_dir or
-        # screenshot_dump_dir keeps the flat <base>/<session_ts> layout (out/vscode, dump dirs, tests).
+        # Default (no override) → organize under sessions/<session>/<date>, artifacts land in
+        # ~/.interact/out, separated by session and dated. Explicit debug_dir/screenshot_dump_dir
+        # keeps the flat <base>/<session_ts> layout (out/vscode, dump dirs, tests).
         if debug_dir is None and config.screenshot_dump_dir is None:
             session_dir = config.session_log_dir()
         else:
@@ -97,10 +111,10 @@ class Debug:
     @classmethod
     def dump_output(cls, invocation_id: str | None, result) -> None:
         """Record the EXACT value handed back to the agent in ``output.txt`` — including
-        ``ERROR:``/``No window matching…`` strings, so a failed call (and any retry that
-        followed) is fully reconstructable from the logs, not just its inputs. ``result`` is
-        whatever the tool returns: a plain string, or the ``[text, Image]`` pair from a
-        ``return_image`` capture (only the text is written; the PNG is already dumped)."""
+        ``ERROR:``/``No window matching…`` strings, so a failed call (and any retry after it) is
+        fully reconstructable from the logs, not just its inputs. ``result`` is whatever the tool
+        returns: a plain string, or the ``[text, Image]`` pair from a ``return_image`` capture
+        (only the text is written; the PNG is already dumped)."""
         if not invocation_id:
             return
         if isinstance(result, (list, tuple)):  # [text, Image(...)] from return_image=True

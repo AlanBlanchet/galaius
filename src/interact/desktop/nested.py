@@ -8,6 +8,10 @@ import subprocess
 import tempfile
 import time
 
+from pydantic import BaseModel, Field, field_validator
+
+from interact.desktop import orphans
+
 from interact.desktop.backend import (
     DesktopBackend,
     _gl_unrendered,
@@ -18,8 +22,40 @@ from interact.desktop.backend import (
     sandbox_child_env,
     write_sandbox_url_shims,
 )
-from interact.desktop.input import _BUTTONS
+from interact.desktop.input import (
+    MULTI_CLICK_GAP_MS,
+    _BUTTONS,
+    check_xdotool_key_output,
+    to_xdotool_key,
+)
 from interact.desktop.video import _VideoSession, _ffmpeg_grab_args
+
+
+class KillReport(BaseModel):
+    """What replacing sandbox apps actually achieved.
+
+    ``killed`` counts tracked app leaders removed by their process groups. ``swept`` counts
+    detached helpers reached by the sandbox display/profile sweeps. Anything still alive is named
+    in ``survivors`` so launch_app never reports a hoped-for replacement as complete.
+    """
+
+    killed: int
+    swept: int = 0
+    survivors: dict[int, str] = Field(default_factory=dict)
+
+    @staticmethod
+    def executable_name(command: str) -> str:
+        """Keep only the executable basename in a survivor diagnostic."""
+        first = command.split(maxsplit=1)[0] if command else "unknown"
+        return os.path.basename(first) or first
+
+    @field_validator("survivors")
+    @classmethod
+    def normalize_survivors(cls, survivors: dict[int, str]) -> dict[int, str]:
+        return {pid: cls.executable_name(command) for pid, command in survivors.items()}
+
+    def describe_survivors(self) -> str:
+        return ", ".join(f"pid {pid} `{command}`" for pid, command in self.survivors.items())
 
 
 class NestedBackend(DesktopBackend):
@@ -40,9 +76,11 @@ class NestedBackend(DesktopBackend):
     _audio_module: str | None = None
     _last_used: float = 0.0  # monotonic timestamp of the last attach/launch (idle reaping)
     _opened_urls: str | None = None  # log of URLs a sandboxed app tried to open (#83)
+    _xserver: subprocess.Popen | None = None  # None until _start_server has claimed a display
+    _KILL_GRACE_S = 2.0  # per escalation step (SIGTERM, then SIGKILL)
 
     def __init__(self, display: int = 99, size: str = "1280x800", *,
-                 headless: bool = False, ready_timeout: float = 5.0):
+                 headless: bool = True, ready_timeout: float = 5.0):
         self.size = size
         self.headless = headless
         width, height = size.split("x")
@@ -67,6 +105,8 @@ class NestedBackend(DesktopBackend):
         # MCP servers fight over it — the loser's Xephyr died seconds in, taking the launched app's
         # windows with it (#33). Picking a free number also sidesteps a stale lock from a crashed
         # prior server.
+        # Never sweep process-global displays from a constructor. This instance owns only the
+        # display it starts below and cleanup remains bound to that recorded ownership.
         last_err: Exception | None = None
         for candidate in self._free_displays(display):
             self.display = f":{candidate}"
@@ -197,10 +237,10 @@ class NestedBackend(DesktopBackend):
         alive, and WHY it died — so launch_app can explain a dead display instead of only listing
         the generic Qt-helper windows (#33).
 
-        The exit status is decoded, not printed raw (#84): a negative returncode is a SIGNAL, and
-        which signal separates the two causes a caller otherwise cannot tell apart — SIGKILL means
-        something outside interact killed the whole sandbox (host OOM-killer under memory pressure,
-        which is exactly what the reporter suspected), while an ordinary non-zero exit is the X
+        Exit status is decoded, not printed raw (#84): a negative returncode is a SIGNAL, and
+        which signal separates the two causes a caller otherwise can't tell apart — SIGKILL means
+        something outside interact killed the whole sandbox (host OOM-killer under memory
+        pressure, exactly what the reporter suspected), while an ordinary non-zero exit is the X
         server failing on its own terms."""
         if self.is_alive():
             return ""
@@ -215,6 +255,15 @@ class NestedBackend(DesktopBackend):
             f"The sandbox {self.server_name} {self.display} is DOWN ({why}){detail}"
             + ("" if tail else " — call reset_sandbox to respawn it.")
         )
+
+    def cursor_type(self) -> str:
+        """The pointer shape on THIS nested display — never the host's. `Cursor.current_type()`
+        with no argument opens the process's own ``$DISPLAY``, which is the real desktop, not this
+        isolated Xephyr/Xvfb; a cursor step reported through that path always read "default"
+        because the host cursor never moves while the agent drives the sandbox (#131)."""
+        from interact.desktop.cursor import Cursor
+
+        return Cursor.current_type(self.display)
 
     def _reap(self) -> None:
         """Drop exited child apps (and unlink their logs) so a long session doesn't accumulate dead
@@ -265,27 +314,35 @@ class NestedBackend(DesktopBackend):
         sink = self._ensure_audio_sink()
         return f"{sink}.monitor" if sink else None
 
-    def spawn(self, argv: list[str], cwd: str | None = None) -> subprocess.Popen:
+    def spawn(self, argv: list[str], cwd: str | None = None,
+              env: dict[str, str] | None = None) -> subprocess.Popen:
         """Launch a process inside the nested display (tracked for teardown), capturing its
         stdout/stderr so a crash can be explained. Reaps previously-exited apps first.
 
-        ``start_new_session`` makes the child lead its OWN process group, which is what lets
-        :meth:`kill_apps` take a whole app TREE down. A real launch is rarely one process — `uv run
-        app`, a Flutter bundle launcher, an Electron main+renderer — and terminating only the direct
-        child orphaned the rest onto the display: four live instances accumulated in one session and
-        a capture composited a stray element from an OLDER one over the current app (#92)."""
+        ``start_new_session`` makes the child lead its OWN process group, what lets
+        :meth:`kill_apps` take a whole app TREE down. A real launch is rarely one process — `uv
+        run app`, a Flutter bundle launcher, an Electron main+renderer — and terminating only the
+        direct child orphaned the rest onto the display: four live instances accumulated in one
+        session and a capture composited a stray element from an OLDER one over the current app
+        (#92)."""
         self._ensure_audio_sink()  # route the app's audio into the sandbox sink from birth (#47)
         self._reap()
         path = self._open_log("app")
         with open(path, "wb") as f:
             proc = subprocess.Popen(
-                argv, env=self.env, cwd=cwd, stdout=f, stderr=subprocess.STDOUT,
+                argv, env=self.child_env(env), cwd=cwd, stdout=f, stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
         self._procs.append(proc)
         self._logs[proc.pid] = path
         self._commands[proc.pid] = list(argv)
         return proc
+
+    def child_env(self, env: dict[str, str] | None = None) -> dict[str, str]:
+        """The sandbox's containment env (DISPLAY, the X11 pins, the URL shim on PATH) with the
+        caller's ``env`` layered on top — a launch may add or override a variable on purpose, never
+        lose the pins by accident (#117)."""
+        return {**self.env, **(env or {})}
 
     @property
     def _commands(self) -> dict[int, list[str]]:
@@ -308,6 +365,38 @@ class NestedBackend(DesktopBackend):
         wanted = list(argv)
         return next((p for p in self._procs if self._commands.get(p.pid) == wanted), None)
 
+    def window_pid(self, wid: int) -> int | None:
+        """The pid that owns X window ``wid`` (``xdotool getwindowpid``) — the pid used to look
+        up which launched argv (and so which ``--remote-debugging-port``, #126/#143/#174) created
+        it. Best-effort: an odd WM-less state or a dead window returns None, never raises."""
+        try:
+            out = subprocess.run(
+                ["xdotool", "getwindowpid", str(wid)], env=self.env, check=True,
+                capture_output=True, text=True, timeout=3,
+            ).stdout.strip()
+            return int(out)
+        except (subprocess.SubprocessError, ValueError):
+            return None
+
+    def debug_port_for_wid(self, wid: int, timeout: float = 5.0) -> int | None:
+        """The CDP port for the app that owns ``wid``, or None when its launch named no
+        ``--remote-debugging-port`` — the caller then has only the synthetic-input path.
+
+        Looked up by the OWNING pid first; falls back to the sandbox's one other tracked launch
+        when ``getwindowpid`` names a process we never spawned directly (an Electron toplevel can
+        report a helper's pid, not the browser process's) — sound because this sandbox runs ONE
+        app at a time by default (``launch_app``'s ``replace=True``, #92/#118); with exactly one
+        tracked launch there is no ambiguity to resolve."""
+        from interact.desktop.cdp import resolve_port  # noqa: PLC0415 — avoid import cycle at load
+
+        pid = self.window_pid(wid)
+        argv = self._commands.get(pid) if pid is not None else None
+        if argv is None and len(self._commands) == 1:
+            argv = next(iter(self._commands.values()))
+        if argv is None:
+            return None
+        return resolve_port(argv, timeout=timeout)
+
     def _kill_tree(self, proc: subprocess.Popen) -> None:
         """Terminate a launched app and everything it spawned, via its process GROUP — escalating
         from a polite stop to a hard kill. Falls back to the direct child if the group is gone
@@ -317,7 +406,7 @@ class NestedBackend(DesktopBackend):
                 return
             self._signal_tree(proc, hard)
             try:
-                proc.wait(timeout=2)
+                proc.wait(timeout=self._KILL_GRACE_S)
                 return
             except subprocess.TimeoutExpired:
                 continue
@@ -341,15 +430,52 @@ class NestedBackend(DesktopBackend):
         if proc.poll() is None:
             proc.kill() if hard else proc.terminate()
 
-    def kill_apps(self) -> int:
-        """Stop every app launched into this sandbox, leaving the display itself up. Returns how
-        many were running. The lighter alternative to a full ``reset_sandbox`` teardown that #92
-        asked for: a relaunch replaces the previous app instead of silently adding a ghost."""
-        live = [p for p in self._procs if p.poll() is None]
+    def _owns_display(self) -> bool:
+        """Whether this backend's X server still owns its display number.
+
+        Display numbers are reusable as soon as the X server lock disappears. A display sweep is
+        safe only while this backend's own server is still alive; otherwise another interact server
+        may have claimed the number and its apps are not ours to kill.
+        """
+        return self._xserver is not None and self._xserver.poll() is None
+
+    def kill_apps(self) -> KillReport:
+        """Stop sandbox apps and report what was actually removed.
+
+        Process groups handle normal app trees. Electron/Chromium helpers can call ``setsid`` and
+        escape those groups, so while this backend still owns its X server, sweep the exact
+        sandbox display and the exact sandbox profile paths too. The sweeps exclude this server,
+        its ancestors, and its direct child handles, so a recorder or the user's editor is never a
+        target. ``close`` uses this same path.
+        """
+        live = [proc for proc in self._procs if proc.poll() is None]
         for proc in live:
             self._kill_tree(proc)
+
+        owned = self._owns_display()
+        swept = set(orphans.sweep_if_owned(self.display, owned=owned))
+        if owned:
+            # launch imports desktop.orphans, while desktop.__init__ imports NestedBackend: this
+            # genuine cycle requires resolving the profile helper only after package import.
+            from interact.launch import sandbox_profiles
+
+            for profile in sandbox_profiles(self.display):
+                swept.update(orphans.kill_profile_clients(str(profile)))
+
         self._reap()
-        return len(live)
+        survivors = {
+            proc.pid: KillReport.executable_name(self._commands[proc.pid][0])
+            for proc in self._procs
+        }
+        if owned:
+            survivors.update(
+                (pid, KillReport.executable_name(command))
+                for pid in orphans.display_clients(self.display)
+                if (command := orphans.cmdline_of(pid))
+            )
+        return KillReport(
+            killed=len(live) - len(self._procs), swept=len(swept), survivors=survivors
+        )
 
     def last_app_output(self, limit: int = 800) -> str:
         """Tail of the most recently launched app's own stdout/stderr — the cause line ("Segmentation
@@ -633,15 +759,15 @@ class NestedBackend(DesktopBackend):
     def _announce_active_window(self, wid) -> None:
         """Publish ``_NET_ACTIVE_WINDOW`` on the root, the way a window manager would.
 
-        X input focus alone is not what a GTK toolkit consults to decide a toplevel is ACTIVE — it
+        X input focus alone isn't what a GTK toolkit consults to decide a toplevel is ACTIVE — it
         reads the WM's ``_NET_ACTIVE_WINDOW`` hint, and the sandbox deliberately runs WM-less, so
-        nothing ever sets it. GTK then treats the window as inactive and its ``GtkIMContext`` stays
-        focused-out, which drops TEXT input while pointer events (routed purely by position) keep
-        working — the exact reported shape: the click lands, the field shows its focus ring, and
-        not one character ever appears (#93).
+        nothing ever sets it. GTK then treats the window as inactive and its ``GtkIMContext``
+        stays focused-out, dropping TEXT input while pointer events (routed purely by position)
+        keep working — the exact reported shape: the click lands, the field shows its focus ring,
+        and not one character ever appears (#93).
 
-        Best-effort by construction: python-xlib is optional, and a toolkit that ignores the hint is
-        simply unaffected. Never raises — this runs before every keyboard action."""
+        Best-effort by construction: python-xlib is optional, and a toolkit that ignores the hint
+        is simply unaffected. Never raises — runs before every keyboard action."""
         try:
             from Xlib import X, display as _xdisplay  # lazy: Linux X11 only, optional
         except ImportError:
@@ -666,6 +792,20 @@ class NestedBackend(DesktopBackend):
 
     def mouse_up(self, button: str = "left") -> None:
         self._xdotool("mouseup", str(_BUTTONS[button]))
+
+    def click(self, x: float, y: float, button: str = "left", count: int = 1) -> None:
+        if count == 1:
+            super().click(x, y, button)
+            return
+        # A multi-click must COALESCE, so it is ONE xdotool process with an explicit inter-click
+        # delay — the rule `scroll` follows below (#88): presses fired as separate mousedown/mouseup
+        # processes arrive as unevenly spaced as process start-up, and a toolkit reads two of them
+        # as one double-click only by luck (#116).
+        self.move(x, y)
+        self._xdotool(
+            "click", "--repeat", str(count), "--delay", str(MULTI_CLICK_GAP_MS),
+            str(_BUTTONS[button]),
+        )
 
     def type_text(self, text: str) -> None:
         self._xdotool("type", "--delay", "20", text)
@@ -694,7 +834,19 @@ class NestedBackend(DesktopBackend):
         )
 
     def key(self, name: str) -> None:
-        self._xdotool("key", name)  # xdotool keysym syntax, e.g. "ctrl+a", "Return"
+        """Press a key or chord on the nested display.
+
+        Two things stand between a caller and a keystroke that actually lands. The name must be one
+        X knows — ``enter`` is not a keysym, ``Return`` is — and xdotool ANSWERS AN UNKNOWN NAME BY
+        IGNORING IT AND EXITING 0, so a plain returncode check reads a dropped key as a success.
+        That silent no-op is the confusing half of #115: nothing happens and nothing says why.
+        """
+        spec = to_xdotool_key(name)
+        proc = subprocess.run(
+            ["xdotool", "key", spec], env=self.env, check=True,
+            capture_output=True, text=True,
+        )
+        check_xdotool_key_output(name, (proc.stderr or "") + (proc.stdout or ""))
 
     def _window_id(self, name: str) -> str | None:
         """The wid of the window titled ``name``. A toolkit spawns several same-/substring-titled
@@ -808,9 +960,9 @@ class NestedBackend(DesktopBackend):
             subprocess.run(["pactl", "unload-module", self._audio_module],
                            capture_output=True, timeout=5, check=False)
             self._audio_module = self._audio_sink = None
-        for proc in self._procs:
-            self._kill_tree(proc)  # by GROUP: a launcher's children must go too (#92)
-        if self._xserver.poll() is None:
+        self.kill_apps()  # one kill path: groups, then display + profile sweeps (#92/#118)
+        owned = self._owns_display()
+        if owned:
             self._xserver.terminate()
             try:
                 self._xserver.wait(timeout=2)
@@ -823,5 +975,5 @@ class NestedBackend(DesktopBackend):
                 except OSError:
                     pass
         self._logs.clear()
-
-
+        self._procs.clear()
+        self._commands.clear()

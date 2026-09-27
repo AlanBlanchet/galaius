@@ -10,7 +10,9 @@ from typing import Callable, NamedTuple
 from playwright.async_api import Error as PlaywrightError, TimeoutError as PlaywrightTimeout
 
 from interact import desktop
+from interact.desktop import cdp as _cdp
 from interact.desktop.atspi import AtSpi
+from interact.settle import settle_animations
 from interact.actions.models import (
     AnyAction,
     AnnotateAction,
@@ -24,7 +26,6 @@ from interact.actions.models import (
     EvaluateJsAction,
     HandleDialogAction,
     HoverAction,
-    settle_animations,
     NewTabAction,
     ScreenshotAction,
     SwitchTabAction,
@@ -65,12 +66,12 @@ async def _finalize_step(
         obs_result = await _run_observe(obs_bytes, action.observe, context)
         step_reports[-1] += f"\n  observation: {obs_result}"
 
-# Typing into a toolkit field after the focusing click: Flutter (GTK) under XTEST doesn't have its
-# text-input connection wired up the instant a field focuses, and keystrokes sent into that window
-# are silently dropped until it is — non-deterministically, worse under software GL / debug builds.
-# The field shows its focus ring (the click landed) yet stays empty (#59). So: settle after the
-# focusing click, then verify the keystrokes registered (a band-scoped pixel diff at the focus
-# point) and re-type if they didn't.
+# Typing into a toolkit field after the focusing click: Flutter (GTK) under XTEST doesn't have
+# its text-input connection wired up the instant a field focuses, so keystrokes sent into that
+# window are silently dropped until it is — non-deterministically, worse under software GL/debug
+# builds. Field shows its focus ring (click landed) yet stays empty (#59). So: settle after the
+# focusing click, verify the keystrokes registered (a band-scoped pixel diff at the focus point),
+# re-type if they didn't.
 _TYPE_FOCUS_SETTLE = 0.5   # seconds to let the toolkit wire up text input before the first keys
 _TYPE_RENDER = 0.6         # seconds to let the field repaint before judging whether text appeared
 _TYPE_RETRIES = 2          # extra type attempts when the keystrokes didn't register
@@ -80,9 +81,9 @@ _TYPE_CHANGE_FRAC = 0.012  # min changed fraction of that band that counts as "t
 
 def _field_changed(before: bytes, after: bytes, cx: int, cy: int) -> bool:
     """Did the field band around the focus point (cx, cy) gain glyphs between two window captures?
-    Scoping the diff to the field makes even short typed text a large fraction of the band while a
-    caret blink stays tiny — so this reliably tells "text landed" from "nothing happened" without
-    ever mistaking a caret for input (which would double-type). Any error → True (assume it
+    Scoping the diff to the field makes even short typed text a large fraction of the band while
+    a caret blink stays tiny — reliably tells "text landed" from "nothing happened" without ever
+    mistaking a caret for input (which would double-type). Any error → True (assume it
     registered, so the retry loop can't spin forever)."""
     try:
         import io  # noqa: PLC0415
@@ -238,6 +239,60 @@ def _selector_of(action):
     return getattr(action, "selector", None)
 
 
+# Navigate failures split into two causes the agent must react to differently: the TARGET is
+# unreachable (DNS/refused/TLS/timeout — nothing interact can do about it, name it and move on)
+# vs an interact-side failure (worth retrying or reporting). A generic ValueError collapsed both
+# into the same shrug (#149).
+_NAVIGATE_UNREACHABLE_CODES = {
+    "ERR_NAME_NOT_RESOLVED": "DNS lookup failed",
+    "ERR_CONNECTION_REFUSED": "connection refused",
+    "ERR_CONNECTION_RESET": "connection reset",
+    "ERR_CONNECTION_CLOSED": "connection closed",
+    "ERR_CONNECTION_TIMED_OUT": "connection timed out",
+    "ERR_ADDRESS_UNREACHABLE": "address unreachable",
+    "ERR_INTERNET_DISCONNECTED": "no network route",
+    "ERR_NETWORK_CHANGED": "network changed mid-request",
+    "ERR_TIMED_OUT": "connection timed out",
+}
+_NAVIGATE_TLS_CODES = ("ERR_CERT_", "ERR_SSL_", "ERR_TLS_")
+
+
+def _classify_navigate_failure(url: str, msg: str, *, timed_out: bool) -> str:
+    for code, label in _NAVIGATE_UNREACHABLE_CODES.items():
+        if code in msg:
+            return (
+                f"navigate: {url!r} is unreachable ({label}) — the target failed to connect, "
+                "not interact."
+            )
+    if any(code in msg for code in _NAVIGATE_TLS_CODES):
+        return (
+            f"navigate: {url!r} is unreachable (TLS/certificate error) — the target's "
+            "certificate failed, not interact."
+        )
+    if timed_out:
+        return (
+            f"navigate: {url!r} is unreachable (timed out loading) — the target never finished "
+            "responding, not interact."
+        )
+    first = msg.splitlines()[0] if msg else "no further detail"
+    return f"navigate: {url!r} failed on interact's side: {first}"
+
+
+async def _final_state_digest(page) -> str:
+    """A short snapshot of the page at the moment a wait gave up — the SAME page, so the agent
+    doesn't need one more round-trip to see why (#147)."""
+    try:
+        url = page.url
+        title = await page.title()
+        text = await page.evaluate(
+            "() => (document.body ? document.body.innerText : '').replace(/\\s+/g, ' ').trim()"
+        )
+        digest = text[:200] + ("…" if len(text) > 200 else "")
+        return f"Page state: {title!r} @ {url} — {digest!r}"
+    except Exception as e:
+        return f"(could not read page state: {e})"
+
+
 async def _execute_browser_action(action, page):
     """Run a browser action, converting Playwright's opaque 30s "Timeout exceeded" / strict-mode
     dumps into a short message. For element-targeting actions a dead/ambiguous selector is the
@@ -247,10 +302,15 @@ async def _execute_browser_action(action, page):
     try:
         return await action.execute(page)
     except PlaywrightTimeout:
+        if action.type == "navigate":
+            raise ValueError(
+                _classify_navigate_failure(action.url, "", timed_out=True)
+            ) from None
         sel = _selector_of(action)
         if not targets_element:
+            state = await _final_state_digest(page)
             raise ValueError(
-                f"{action.type} timed out after the configured wait — check the page state."
+                f"{action.type} timed out after the configured wait. {state}"
             ) from None
         where = f" for selector {sel!r}" if sel else ""
         raise ValueError(
@@ -260,6 +320,10 @@ async def _execute_browser_action(action, page):
     except PlaywrightError as e:
         msg = str(e)
         first = msg.splitlines()[0]  # trim Playwright's multi-line call-log dump
+        if action.type == "navigate":
+            raise ValueError(
+                _classify_navigate_failure(action.url, msg, timed_out=False)
+            ) from None
         if "strict mode violation" in msg:
             # A selector (often :has-text) matched several nodes — duplicated link text
             # (breadcrumb mirrors sidebar) or a generic button label. Say so precisely instead of
@@ -269,6 +333,16 @@ async def _execute_browser_action(action, page):
             raise ValueError(
                 f"{action.type}: {target} matched multiple elements — narrow it (add :visible, a "
                 "parent scope, or `>> nth=0`) or use a unique `ref` from get_interactive_elements."
+            ) from None
+        if "Execution context was destroyed" in msg:
+            # Accurate and useless on its own: it names a browser internal rather than what the
+            # caller did or should do. It means the page navigated while the script was running —
+            # a redirect, a router push, a form submit — so the script never finished. Seen 12
+            # times in client logs, always from evaluate_js reading a page as it moved.
+            raise ValueError(
+                f"{action.type}: the page navigated while the script was running, so it never "
+                "finished. Let the navigation settle first — add a `wait_for` step (a selector "
+                "that only exists on the destination) before this one, and re-read the page after."
             ) from None
         if not targets_element:
             raise ValueError(f"{action.type} failed: {first}") from None
@@ -331,23 +405,26 @@ async def _named_locator(page, action):
     )
 
 
-async def _click_element(page, mgr, element: int, tab: int, button: str = "left") -> bool:
+async def _click_element(
+    page, mgr, element: int, tab: int, button: str = "left", click_count: int = 1
+) -> bool:
     """Click the numbered ``element`` on ``page``. Prefers the stored element map (its ref →
     locator, or center coordinates); if the map has no entry — it was cleared, or the ref came
     from a scan in a separate call — falls back to the live ``data-interact-ref="e{N}"`` attribute,
     which persists on the DOM across tool calls until the next scan. So a ref from an earlier
     get_interactive_elements still clicks even when the server-side map is stale (#34). Returns
-    False only when the element resolves by neither route (a genuinely stale ref)."""
+    False only when the element resolves by neither route (a genuinely stale ref). ``click_count``
+    is Playwright's own — 2 is a dblclick, the shape a double_click by ref takes here (#116)."""
     el = mgr.get_element(element, tab)
     if el is not None:
         if el.ref:
-            await page.locator(el.playwright_ref).click(button=button)
+            await page.locator(el.playwright_ref).click(button=button, click_count=click_count)
         else:
-            await page.mouse.click(el.center_x, el.center_y, button=button)
+            await page.mouse.click(el.center_x, el.center_y, button=button, click_count=click_count)
         return True
     locator = page.locator(ref_locator(f"e{element}"))
     if await locator.count() == 1:  # the badge is still on the live DOM — resolve it directly
-        await locator.click(button=button)
+        await locator.click(button=button, click_count=click_count)
         return True
     return False
 
@@ -384,17 +461,24 @@ def _render_js_result(value) -> str:
     return rendered
 
 
-def _fmt_cursor() -> str:
-    ct = desktop.Cursor.current_type()
+def _fmt_cursor(win=None) -> str:
+    # A nested target runs on its own display; reading the process $DISPLAY reports the host's
+    # cursor, which never moves while the agent drives the sandbox (#131). Ask the window's own
+    # backend when it can answer.
+    backend = getattr(win, "_backend", None)
+    reader = getattr(backend, "cursor_type", None)
+    ct = reader() if callable(reader) else desktop.Cursor.current_type()
     return f"{ct} ({desktop.Cursor.label(ct)})"
 
 
 def _click_verb(action) -> str:
-    """"clicked" / "right-clicked" / "middle-clicked" — the report must NAME a non-left button so
+    """"clicked" / "right-clicked" / "double-clicked" — the report must NAME a non-left button so
     the agent can see WHICH click it made; a right-click that opened no context menu is otherwise
-    indistinguishable from a left-click in the transcript (#91)."""
+    indistinguishable from a left-click in the transcript (#91). A double-click is named the same
+    way, for the same reason (#116)."""
     button = getattr(action, "button", "left")
-    return "clicked" if button == "left" else f"{button}-clicked"
+    verb = "double-clicked" if getattr(action, "click_count", 1) == 2 else "clicked"
+    return verb if button == "left" else f"{button}-{verb}"
 
 
 def _button_prefix(action) -> str:
@@ -403,17 +487,17 @@ def _button_prefix(action) -> str:
     return "" if getattr(action, "button", "left") == "left" else f"{_click_verb(action)}: "
 
 
-def _el_report(verb: str, el, note: str = "") -> str:
+def _el_report(verb: str, el, note: str = "", win=None) -> str:
     # Reference elements by ref/index + role/name — never pixel coordinates. The agent
     # acts via refs; resolved coords are a dispatch implementation detail it must not see.
-    return f"{verb} [{el.index}] {el.role}: {el.name!r} cursor={_fmt_cursor()}{note}"
+    return f"{verb} [{el.index}] {el.role}: {el.name!r} cursor={_fmt_cursor(win)}{note}"
 
 
-def _xy_report(verb: str, x: int, y: int, note: str = "") -> str:
+def _xy_report(verb: str, x: int, y: int, note: str = "", win=None) -> str:
     # A raw-coordinate action reports the ACTUAL coordinates it acted on: this said only "at
     # coordinates", which — combined with the old snap — left the agent unable to tell where the
     # click actually landed (#81). `note` carries the hedged cached-detection annotation.
-    return f"{verb} at ({x},{y}) cursor={_fmt_cursor()}{note}"
+    return f"{verb} at ({x},{y}) cursor={_fmt_cursor(win)}{note}"
 
 
 def _report_with_change(win_name: str, before: DesktopState, report: str) -> str:
@@ -454,9 +538,9 @@ class _StepReport:
 @asynccontextmanager
 async def _mutating_step(win: DesktopWindow, i: int, action, step_reports: list[str]):
     """The shape EVERY mutating desktop branch repeats: snapshot the window, act, then append the
-    step's report annotated with what changed. Each branch had its own hand-written copy of the
-    four lines, so a change to how a desktop mutation reports had to be made six times and drifted
-    (#71). The branch now contributes only its own action and verb:
+    step's report annotated with what changed. Each branch had its own hand-written copy of these
+    four lines, so a change to how a desktop mutation reports had to be made six times and
+    drifted (#71). The branch now contributes only its own action and verb:
 
         async with _mutating_step(win, i, action, step_reports) as step:
             await win.press_key(action.key)
@@ -467,6 +551,72 @@ async def _mutating_step(win: DesktopWindow, i: int, action, step_reports: list[
     yield step
     report = _report_with_change(win.name, before, step.text) + step.suffix
     step_reports.append(_step(i, action.type, report))
+
+
+_UNSET = object()  # "not resolved yet", distinct from a resolved None (no port found)
+
+
+class _CdpSlot:
+    """The CDP bridge for ONE ``run_actions`` desktop batch — #126/#143/#174's DOM-level path.
+
+    Opened lazily on the first action that needs it, reused by every later action in the SAME
+    batch (one port lookup, one websocket handshake), and closed by the batch's own ``finally`` —
+    never cached beyond one ``run_actions`` call, so a relaunched app between two calls never
+    inherits a stale connection. A window not bound to a :class:`NestedBackend`, or a launch that
+    named no ``--remote-debugging-port``, resolves to "unavailable" once and stays that way for
+    the rest of the batch (no repeated polling)."""
+
+    def __init__(self, win: DesktopWindow):
+        self._win = win
+        self._port: int | None = _UNSET
+        self._bridge: "_cdp.CDPBridge | None" = None
+        self._error: str | None = None
+
+    async def _port_once(self) -> int | None:
+        if self._port is _UNSET:
+            backend = getattr(self._win, "_backend", None)
+            if isinstance(backend, desktop.NestedBackend) and self._win.wid:
+                self._port = await asyncio.to_thread(backend.debug_port_for_wid, self._win.wid)
+            else:
+                self._port = None
+        return self._port
+
+    async def available(self) -> bool:
+        return await self._port_once() is not None
+
+    async def ensure(self) -> "tuple[_cdp.CDPBridge | None, str | None]":
+        """The connected bridge for this batch, connecting on first call. Later calls (this
+        action, or a later one) get the SAME bridge — or the SAME cached error, never retried
+        mid-batch against a port that already refused once."""
+        if self._bridge is not None:
+            return self._bridge, None
+        if self._error is not None:
+            return None, self._error
+        port = await self._port_once()
+        if port is None:
+            self._error = (
+                "no --remote-debugging-port on this launch — relaunch with it "
+                "(e.g. --remote-debugging-port=0) for DOM-accurate click/type_text/evaluate_js"
+            )
+            return None, self._error
+        try:
+            targets = await _cdp.list_targets(port)
+            target = _cdp.pick_target(targets)
+            if target is None:
+                self._error = f"CDP port {port} is up but exposes no page target"
+                return None, self._error
+            bridge = _cdp.CDPBridge(port, target)
+            await bridge.connect()
+        except Exception as exc:  # noqa: BLE001 — any failure here means "use the fallback"
+            self._error = f"CDP connect to port {port} failed ({exc}) — using synthetic input"
+            return None, self._error
+        self._bridge = bridge
+        return bridge, None
+
+    async def aclose(self) -> None:
+        if self._bridge is not None:
+            await self._bridge.close()
+            self._bridge = None
 
 
 class _DesktopCtx(NamedTuple):
@@ -481,6 +631,7 @@ class _DesktopCtx(NamedTuple):
     snapshots: dict[int, bytes]
     step_idx: int
     invocation_id: str | None
+    cdp: _CdpSlot | None = None
 
     def say(self, report: str) -> None:
         self.step_reports.append(_step(self.i, self.action.type, report))
@@ -538,18 +689,41 @@ async def _d_resize(c: _DesktopCtx) -> None:
     c.say(report + ". Element refs are now stale — re-run get_interactive_elements")
 
 
-@_handles("click", "click_element")
+async def _dispatch_click(c: _DesktopCtx, x: float, y: float, button_code: int = 1, count: int = 1) -> str:
+    """Click at (x, y) via the window's CDP bridge when it has one — a REAL Chromium
+    ``Input.dispatchMouseEvent``, which moves DOM focus the way a trusted click always does
+    (#174), unlike a JS-dispatched event. Falls back to the existing synthetic-X path when no
+    bridge is available. Returns which path ran, appended to the step report so the agent knows
+    (never silently one or the other)."""
+    if c.cdp is not None:
+        bridge, err = await c.cdp.ensure()
+        if bridge is not None:
+            button = c.win._BUTTON_NAMES.get(button_code, "left")
+            await bridge.page.mouse.click(x, y, button=button, click_count=count)
+            return "via CDP"
+        if err:
+            _log.info("desktop click at (%s,%s) falling back to synthetic input: %s", x, y, err)
+    await c.win.click(x, y, button_code, count=count)
+    return "via synthetic input"
+
+
+@_handles("click", "click_element", "double_click")
 async def _d_click(c: _DesktopCtx) -> None:
     x, y, el, err, note = _resolve_action_coords(c.action, c.wid, c.win)
     if err:
         c.skip(err)
         return
     async with _mutating_step(c.win, c.i, c.action, c.step_reports) as step:
-        # click_element carries no `button`, so default left for it (#91).
-        await c.win.click(x, y, getattr(c.action, "button_code", 1))
+        # click_element carries no `button` (nor count), so default left, single, for it (#91). A
+        # double_click is this same primitive with count=2 — never two separate clicks, which don't
+        # coalesce into a toolkit-level dblclick (#116).
+        path = await _dispatch_click(
+            c, x, y, getattr(c.action, "button_code", 1), count=getattr(c.action, "click_count", 1)
+        )
         await asyncio.sleep(0.05)
         verb = _click_verb(c.action)
-        step.text = _el_report(verb, el, note) if el else _xy_report(verb, x, y, note)
+        base = _el_report(verb, el, note, c.win) if el else _xy_report(verb, x, y, note, c.win)
+        step.text = f"{base} ({path})"
 
 
 @_handles("hover")
@@ -560,7 +734,7 @@ async def _d_hover(c: _DesktopCtx) -> None:
         return
     await c.win.hover(x, y)
     await asyncio.sleep(0.05)
-    c.say(_el_report("hovered", el, note) if el else _xy_report("hovered", x, y, note))
+    c.say(_el_report("hovered", el, note, c.win) if el else _xy_report("hovered", x, y, note, c.win))
 
 
 @_handles("type_text")
@@ -572,15 +746,28 @@ async def _d_type_text(c: _DesktopCtx) -> None:
         if err:
             c.skip(err)
             return
-        await win.click(x, y)
+        await _dispatch_click(c, x, y)
         await asyncio.sleep(_TYPE_FOCUS_SETTLE)  # let the toolkit wire up text input (#59)
         fx, fy = x, y
     async with _mutating_step(win, c.i, action, c.step_reports) as step:
+        bridge, err = await c.cdp.ensure() if c.cdp is not None else (None, None)
+        if bridge is not None:
+            # CDP dispatches the real Unicode `text` field per keystroke (#126) — xdotool's
+            # per-character XKB keysym lookup is what dropped/garbled characters outside the
+            # active keymap.
+            if action.clear_first:
+                await bridge.page.keyboard.press("Control+A")
+                await bridge.page.keyboard.press("Delete")
+            await bridge.page.keyboard.type(action.text)
+            step.text = f"typed {len(action.text)} chars (via CDP)"
+            return
+        if err:
+            _log.info("desktop type_text falling back to synthetic input: %s", err)
         if action.clear_first:
             await win.press_key("ctrl+a")
             await win.press_key("Delete")
         undelivered = await _type_desktop(win, action.text, fx, fy)
-        step.text = f"typed {len(action.text)} chars"
+        step.text = f"typed {len(action.text)} chars (via synthetic input)"
         if undelivered:  # a verified drop must not read as a success (#93)
             step.suffix = f"\n  {undelivered}"
 
@@ -635,6 +822,20 @@ async def _d_drag(c: _DesktopCtx) -> None:
         step.text = f"dragged ({fx},{fy})->({tx},{ty})"
 
 
+@_handles("evaluate_js")
+async def _d_evaluate_js(c: _DesktopCtx) -> None:
+    """The desktop side of #143: run against the window's own DOM via CDP. Only reachable at all
+    when the runner's browser-only guard already confirmed a bridge is available for this
+    window — a plain nested target (no debug port) never gets here, still errors upstream."""
+    bridge, err = await c.cdp.ensure() if c.cdp is not None else (None, "no CDP bridge for this window")
+    if bridge is None:
+        c.skip(f"evaluate_js needs a CDP bridge ({err})")
+        return
+    async with _mutating_step(c.win, c.i, c.action, c.step_reports) as step:
+        result = await _execute_browser_action(c.action, bridge.page)
+        step.text = f"(via CDP) {_render_js_result(result)}"
+
+
 @_handles("screenshot")
 async def _d_screenshot(c: _DesktopCtx) -> None:
     from interact.server import _capture_desktop  # noqa: PLC0415 — circular
@@ -667,6 +868,7 @@ async def _run_actions_desktop(
     query: str | None,
     invocation_id: str | None = None,
     record_frames: list[bytes] | None = None,
+    wait: str | None = None,
 ) -> str:
     from interact.server import (  # noqa: PLC0415 — circular: server imports dispatch
         _annotate_desktop,
@@ -680,63 +882,116 @@ async def _run_actions_desktop(
     label = _desktop_label(win)
     step_reports: list[str] = []
     snapshots: dict[int, bytes] = {}
+    # One CDP bridge for this whole batch (#126/#143/#174) — opened on first use, closed in the
+    # `finally` below regardless of how the loop ends, never carried into a later run_actions call.
+    cdp_slot = _CdpSlot(win)
 
-    for i, action in enumerate(actions):
-        step_idx = i + 1
-        _log.info("desktop action %d: %s", step_idx, action.type)
+    from interact.server.capture import _parse_wait_seconds
 
-        if isinstance(action, CompareAction):
-            result = await _run_compare(
-                snapshots, action.steps, action.query, _desktop_context(win)
-            )
-            step_reports.append(_step(i, action.type, result))
-            continue
+    def seconds_for(condition: str) -> float:
+        seconds = _parse_wait_seconds(condition)
+        if seconds is None:
+            raise ValueError("Desktop wait takes a duration like '2s'; selectors/load states need a browser")
+        return seconds
 
-        # A BARE `wait_for` (timeout only) is a plain pause, meaningful on any surface, so it is
-        # not rejected here even though `wait_for` is otherwise browser-only; its selector/text
-        # forms need a DOM and say so precisely.
-        if action.type in BROWSER_ONLY_ACTIONS and not getattr(action, "is_pause", False):
-            hint = (
-                "a selector/text wait needs a DOM — on a desktop target use a bare wait_for "
-                "(timeout only) to pause, then screenshot to check the state"
-                if isinstance(action, WaitForAction)
-                else "use a session instead of window"
-            )
-            step_reports.append(
-                _step(i, action.type, f"Action '{action.type}' is browser-only — {hint}")
-            )
-            continue
+    # Reject invalid batch waits before any input is sent.
+    try:
+        batch_seconds = seconds_for(wait) if wait else None
+    except ValueError as exc:
+        return f"{label}\nERROR: {exc}"
 
-        handler = _DESKTOP_HANDLERS.get(action.type)
-        if handler is None:
-            step_reports.append(
-                _step(i, action.type, f"Action '{action.type}' not supported on desktop")
-            )
+    try:
+        for i, action in enumerate(actions):
+            step_idx = i + 1
+            _log.info("desktop action %d: %s", step_idx, action.type)
+
+            try:
+                step_seconds = seconds_for(action.wait) if action.wait else None
+            except ValueError as exc:
+                step_reports.append(_step(i, action.type, f"ERROR: {exc}"))
+                continue
+            capture_step = isinstance(action, (ScreenshotAction, AnnotateAction))
+            if capture_step and step_seconds is not None:
+                await asyncio.sleep(step_seconds)
+
+            if isinstance(action, CompareAction):
+                result = await _run_compare(
+                    snapshots, action.steps, action.query, _desktop_context(win)
+                )
+                step_reports.append(_step(i, action.type, result))
+                if step_seconds is not None:
+                    await asyncio.sleep(step_seconds)
+                continue
+
+            # A BARE `wait_for` (timeout only) is a plain pause, meaningful on any surface, so it
+            # is not rejected here even though `wait_for` is otherwise browser-only; its
+            # selector/text forms need a DOM and say so precisely. `evaluate_js` is carved out the
+            # same way when THIS window's launch actually exposes a CDP port (#143) — otherwise it
+            # keeps the old browser-only rejection, since there is truly no DOM to reach.
+            is_bridged_js = action.type == "evaluate_js" and await cdp_slot.available()
+            if (
+                action.type in BROWSER_ONLY_ACTIONS
+                and not getattr(action, "is_pause", False)
+                and not is_bridged_js
+            ):
+                hint = (
+                    "a selector/text wait needs a DOM — on a desktop target use a bare wait_for "
+                    "(timeout only) to pause, then screenshot to check the state"
+                    if isinstance(action, WaitForAction)
+                    else "use a session instead of window (or relaunch with "
+                         "--remote-debugging-port for a nested Electron/VS Code target)"
+                )
+                step_reports.append(
+                    _step(i, action.type, f"Action '{action.type}' is browser-only — {hint}")
+                )
+                continue
+
+            try:
+                handler = _DESKTOP_HANDLERS.get(action.type)
+                if handler is None:
+                    step_reports.append(
+                        _step(i, action.type, f"Action '{action.type}' not supported on desktop")
+                    )
+                else:
+                    await handler(
+                        _DesktopCtx(
+                            win, wid, i, action, step_reports, snapshots, step_idx,
+                            invocation_id, cdp_slot,
+                        )
+                    )
+
+                if not capture_step and step_seconds is not None:
+                    await asyncio.sleep(step_seconds)
+                await asyncio.sleep(0.1)
+
+                await _finalize_step(
+                    action, i, step_idx, invocation_id, step_reports, record_frames, snapshots,
+                    capture_fn=win.capture, context=_desktop_context(win),
+                )
+            except Exception as exc:
+                # Sibling of the browser loop's guard (#138, #139): a handler failure must not
+                # discard the steps already run or abort the ones still queued.
+                _log.warning("desktop action %d (%s) failed: %s", step_idx, action.type, exc)
+                step_reports.append(_step(i, action.type, f"ERROR: {exc}"))
+                continue
+
+        if batch_seconds is not None:
+            await asyncio.sleep(batch_seconds)
+        if query:
+            _, final_summary = await _capture_desktop(win, query)
         else:
-            await handler(
-                _DesktopCtx(win, wid, i, action, step_reports, snapshots, step_idx, invocation_id)
-            )
+            final_summary = f"{win.name} ({win.w}x{win.h})"
 
-        await asyncio.sleep(0.1)
-
-        await _finalize_step(
-            action, i, step_idx, invocation_id, step_reports, record_frames, snapshots,
-            capture_fn=win.capture, context=_desktop_context(win),
+        report = (
+            f"{label}\n"
+            + "\n".join(step_reports)
+            + f"\n\n---\nFinal state: {final_summary}"
         )
 
-    if query:
-        _, final_summary = await _capture_desktop(win, query)
-    else:
-        final_summary = f"{win.name} ({win.w}x{win.h})"
-
-    report = (
-        f"{label}\n"
-        + "\n".join(step_reports)
-        + f"\n\n---\nFinal state: {final_summary}"
-    )
-
-    Debug.save("desktop_final", report, invocation_id=invocation_id)
-    return report
+        Debug.save("desktop_final", report, invocation_id=invocation_id)
+        return report
+    finally:
+        await cdp_slot.aclose()
 
 
 async def _run_actions_browser(
@@ -756,6 +1011,7 @@ async def _run_actions_browser(
         _element_screenshot,
         _run_compare,
         _save_to_path,
+        _saved_note,
         _session_response,
         _wait as _wait_fn,
     )
@@ -767,201 +1023,234 @@ async def _run_actions_browser(
     snapshots: dict[int, bytes] = {}
 
     for i, action in enumerate(actions):
-        step_idx = i + 1
-        _log.info("browser action %d: %s", step_idx, action.type)
+        try:
+            step_idx = i + 1
+            _log.info("browser action %d: %s", step_idx, action.type)
 
-        # The mirror of the desktop runner's browser-only guard: a native-window action has no
-        # browser meaning, so name the browser-side equivalent instead of failing obscurely (#84).
-        if action.type in DESKTOP_ONLY_ACTIONS:
-            step_reports.append(
-                _step(
-                    i,
-                    action.type,
-                    f"Action '{action.type}' is desktop-only (it resizes a native window) — for a "
-                    "browser viewport use emulate_device (width+height, or a device name like "
-                    "'iPhone 13'), which sets true device metrics",
+            # The mirror of the desktop runner's browser-only guard: a native-window action has no
+            # browser meaning, so name the browser-side equivalent instead of failing obscurely (#84).
+            if action.type in DESKTOP_ONLY_ACTIONS:
+                step_reports.append(
+                    _step(
+                        i,
+                        action.type,
+                        f"Action '{action.type}' is desktop-only (it resizes a native window) — for a "
+                        "browser viewport use emulate_device (width+height, or a device name like "
+                        "'iPhone 13'), which sets true device metrics",
+                    )
                 )
-            )
-            continue
-
-        if isinstance(action, CompareAction):
-            ctx = f"Browser session comparison of steps {action.steps}"
-            result = await _run_compare(snapshots, action.steps, action.query, ctx)
-            step_reports.append(_step(i, action.type, result))
-            continue
-
-        if isinstance(action, HandleDialogAction):
-            mgr.arm_dialog(action.action, action.prompt_text)
-            answer = f" answering {action.prompt_text!r}" if action.prompt_text else ""
-            step_reports.append(
-                _step(i, action.type, f"armed: the next dialog will be {action.action}ed{answer}")
-            )
-            continue
-
-        if isinstance(action, NewTabAction):
-            idx = await mgr.new_tab(action.url)
-            current_tab = idx
-            page = await mgr.get_page(current_tab)
-            step_reports.append(_step(i, action.type, f"opened tab {idx}"))
-
-        elif isinstance(action, SwitchTabAction):
-            page = await mgr.switch_tab(action.index)  # persists the active tab on the session (#30)
-            current_tab = action.index
-            step_reports.append(
-                _step(i, action.type, f"switched to tab {action.index}")
-            )
-
-        elif isinstance(action, CloseTabAction):
-            idx = action.index if action.index is not None else mgr.tab_count - 1
-            await mgr.close_tab(idx)  # adjusts the session's active tab to stay valid
-            current_tab = mgr.active_tab
-            page = await mgr.get_page(current_tab)
-            step_reports.append(_step(i, action.type, f"closed tab {idx}"))
-
-        elif isinstance(action, AnnotateAction):
-            report = await _annotate_and_describe(
-                mgr, current_tab, action.scope, action.query, action.limit
-            )
-            step_reports.append(_step(i, action.type, report))
-            final = await _capture(mgr, scope=action.scope, tab=current_tab)
-            snapshots[step_idx] = base64.b64decode(final.screenshot_base64)
-
-        elif isinstance(action, ClickElementAction):
-            before = await _capture(mgr, tab=current_tab)
-            if not await _click_element(page, mgr, action.element, current_tab):
-                step_reports.append(_step(i, action.type, _element_miss(action.element)))
                 continue
-            final, desc = await _settle_and_diff(mgr, page, action, current_tab, before)
-            step_reports.append(_step(i, action.type, desc))
 
-        elif isinstance(action, ClickAction) and (
-            action.name or action.element is not None
-        ):
-            before = await _capture(mgr, tab=current_tab)
-            if action.name:
-                locator = await _named_locator(page, action)
-                await locator.click(button=action.button)
-            elif not await _click_element(
-                page, mgr, action.element, current_tab, action.button
-            ):
-                step_reports.append(_step(i, action.type, _element_miss(action.element)))
-                continue
-            final, desc = await _settle_and_diff(mgr, page, action, current_tab, before)
-            step_reports.append(_step(i, action.type, _button_prefix(action) + desc))
-
-        elif isinstance(action, HoverAction) and action.name:
-            locator = await _named_locator(page, action)
-            await locator.hover()
-            await settle_animations(page)  # final hovered state for the next capture (#49)
-            step_reports.append(_step(i, action.type, "hovered"))
-
-        elif isinstance(action, TypeTextAction) and action.name:
-            locator = await _named_locator(page, action)
-            await locator.click()
-            before = await _capture(mgr, tab=current_tab)
-            if action.clear_first:
-                await locator.fill(action.text)
-            else:
-                await locator.type(action.text)
-            final, desc = await _settle_and_diff(mgr, page, action, current_tab, before)
-            step_reports.append(_step(i, action.type, desc))
-
-        elif isinstance(action, ScreenshotAction):
-            if action.element is not None or action.selector is not None:
-                report = await _element_screenshot(
-                    mgr, current_tab, action.selector, action.element, action.query, action.path
-                )
-            else:
-                state = await _capture(mgr, action.scope, current_tab)
-                snapshots[step_idx] = base64.b64decode(state.screenshot_base64)
-                Debug.step_save(
-                    invocation_id,
-                    i,
-                    action.type,
-                    "screenshot",
-                    snapshots[step_idx],
-                    ext="png",
-                )
-                if action.path:  # honour an inline screenshot's path, like the standalone tool (#27)
-                    _save_to_path(action.path, snapshots[step_idx])
-                if action.query:
-                    report = await _analyze(state, action.query)
-                else:
-                    report = f"{state.title} — {state.visible_text[:300]}"
-                if action.path:
-                    report += f"  (saved {action.path})"
-                final = state
-            step_reports.append(_step(i, action.type, report))
-
-        elif isinstance(action, EvaluateJsAction):
-            # The return value IS the output — surface it JSON-serialised as the step's primary
-            # text (never bury it under a change description). Any DOM mutation the script caused
-            # shows in the final state / the next observation.
-            result = await _execute_browser_action(action, page)
-            if action.wait:
+            capture_step = isinstance(action, (ScreenshotAction, AnnotateAction))
+            wait_consumed = capture_step
+            if capture_step and action.wait:
                 await _wait_fn(page, action.wait)
-            step_reports.append(_step(i, action.type, _render_js_result(result)))
 
-        elif isinstance(action, EmulateDeviceAction):
-            try:
-                # Media features alone need no context rebuild, so a bare reduced_motion call
-                # doesn't disturb the viewport or reload the page (#107).
-                media_desc = await mgr.apply_media(**action._media())
-                if not (action.device or action.width or action.reset):
-                    step_reports.append(_step(i, action.type, media_desc))
-                    continue
-                desc = await mgr.emulate_device(
-                    device=action.device,
-                    width=action.width,
-                    height=action.height,
-                    device_scale_factor=action.device_scale_factor,
-                    is_mobile=action.is_mobile,
-                    has_touch=action.has_touch,
-                    user_agent=action.user_agent,
-                    reset=action.reset,
+            if isinstance(action, CompareAction):
+                ctx = f"Browser session comparison of steps {action.steps}"
+                result = await _run_compare(snapshots, action.steps, action.query, ctx)
+                step_reports.append(_step(i, action.type, result))
+                if action.wait:
+                    await _wait_fn(page, action.wait)
+                continue
+
+            if isinstance(action, HandleDialogAction):
+                mgr.arm_dialog(action.action, action.prompt_text)
+                answer = f" answering {action.prompt_text!r}" if action.prompt_text else ""
+                step_reports.append(
+                    _step(i, action.type, f"armed: the next dialog will be {action.action}ed{answer}")
                 )
-                current_tab = 0
-                page = await mgr.get_page(current_tab)  # context rebuilt → refresh the handle
-                await mgr.reapply_media()  # the rebuild dropped the media overrides with it
-                if media_desc:
-                    desc = f"{desc}; {media_desc}"
-            except ValueError as e:
-                desc = f"SKIPPED: {e}"
-            step_reports.append(_step(i, action.type, desc))
+                if action.wait:
+                    await _wait_fn(page, action.wait)
+                continue
 
-        elif not action.mutates:
-            result = await _execute_browser_action(action, page)
-            step_reports.append(_step(i, action.type, str(result)))
+            if isinstance(action, NewTabAction):
+                idx = await mgr.new_tab(action.url)
+                current_tab = idx
+                page = await mgr.get_page(current_tab)
+                step_reports.append(_step(i, action.type, f"opened tab {idx}"))
 
+            elif isinstance(action, SwitchTabAction):
+                page = await mgr.switch_tab(action.index)  # persists the active tab on the session (#30)
+                current_tab = action.index
+                step_reports.append(
+                    _step(i, action.type, f"switched to tab {action.index}")
+                )
+
+            elif isinstance(action, CloseTabAction):
+                idx = action.index if action.index is not None else mgr.tab_count - 1
+                await mgr.close_tab(idx)  # adjusts the session's active tab to stay valid
+                current_tab = mgr.active_tab
+                page = await mgr.get_page(current_tab)
+                step_reports.append(_step(i, action.type, f"closed tab {idx}"))
+
+            elif isinstance(action, AnnotateAction):
+                report = await _annotate_and_describe(
+                    mgr, current_tab, action.scope, action.query, action.limit
+                )
+                step_reports.append(_step(i, action.type, report))
+                final = await _capture(mgr, scope=action.scope, tab=current_tab)
+                snapshots[step_idx] = base64.b64decode(final.screenshot_base64)
+
+            elif isinstance(action, ClickElementAction):
+                before = await _capture(mgr, tab=current_tab)
+                if not await _click_element(page, mgr, action.element, current_tab):
+                    step_reports.append(_step(i, action.type, _element_miss(action.element)))
+                    continue
+                final, desc = await _settle_and_diff(mgr, page, action, current_tab, before)
+                wait_consumed = True
+                step_reports.append(_step(i, action.type, desc))
+
+            elif isinstance(action, ClickAction) and (
+                action.name or action.element is not None
+            ):
+                before = await _capture(mgr, tab=current_tab)
+                if action.name:
+                    locator = await _named_locator(page, action)
+                    await locator.click(button=action.button, click_count=action.click_count)
+                elif not await _click_element(
+                    page, mgr, action.element, current_tab, action.button, action.click_count
+                ):
+                    step_reports.append(_step(i, action.type, _element_miss(action.element)))
+                    continue
+                final, desc = await _settle_and_diff(mgr, page, action, current_tab, before)
+                wait_consumed = True
+                step_reports.append(_step(i, action.type, _button_prefix(action) + desc))
+
+            elif isinstance(action, HoverAction) and action.name:
+                locator = await _named_locator(page, action)
+                await locator.hover()
+                await settle_animations(page)  # final hovered state for the next capture (#49)
+                step_reports.append(_step(i, action.type, "hovered"))
+
+            elif isinstance(action, TypeTextAction) and action.name:
+                locator = await _named_locator(page, action)
+                await locator.click()
+                before = await _capture(mgr, tab=current_tab)
+                if action.clear_first:
+                    await locator.fill(action.text)
+                else:
+                    await locator.type(action.text)
+                final, desc = await _settle_and_diff(mgr, page, action, current_tab, before)
+                wait_consumed = True
+                step_reports.append(_step(i, action.type, desc))
+
+            elif isinstance(action, ScreenshotAction):
+                if action.element is not None or action.selector is not None:
+                    report = await _element_screenshot(
+                        mgr, current_tab, action.selector, action.element, action.query, action.path
+                    )
+                else:
+                    state = await _capture(mgr, action.scope, current_tab)
+                    snapshots[step_idx] = base64.b64decode(state.screenshot_base64)
+                    Debug.step_save(
+                        invocation_id,
+                        i,
+                        action.type,
+                        "screenshot",
+                        snapshots[step_idx],
+                        ext="png",
+                    )
+                    if action.path:  # honour an inline screenshot's path, like the standalone tool (#27)
+                        dest = _save_to_path(action.path, snapshots[step_idx])
+                    if action.query:
+                        report = await _analyze(state, action.query)
+                    else:
+                        report = f"{state.title} — {state.visible_text[:300]}"
+                    if action.path:
+                        report += f"  ({_saved_note(dest, snapshots[step_idx])})"
+                    final = state
+                step_reports.append(_step(i, action.type, report))
+
+            elif isinstance(action, EvaluateJsAction):
+                # The return value IS the output — surface it JSON-serialised as the step's primary
+                # text (never bury it under a change description). Any DOM mutation the script caused
+                # shows in the final state / the next observation.
+                result = await _execute_browser_action(action, page)
+                if action.wait:
+                    await _wait_fn(page, action.wait)
+                wait_consumed = True
+                step_reports.append(_step(i, action.type, _render_js_result(result)))
+
+            elif isinstance(action, EmulateDeviceAction):
+                try:
+                    # Media features alone need no context rebuild, so a bare reduced_motion call
+                    # doesn't disturb the viewport or reload the page (#107).
+                    media_desc = await mgr.apply_media(**action._media())
+                    if not (action.device or action.width or action.reset):
+                        step_reports.append(_step(i, action.type, media_desc))
+                        if action.wait:
+                            await _wait_fn(page, action.wait)
+                        continue
+                    desc = await mgr.emulate_device(
+                        device=action.device,
+                        width=action.width,
+                        height=action.height,
+                        device_scale_factor=action.device_scale_factor,
+                        is_mobile=action.is_mobile,
+                        has_touch=action.has_touch,
+                        user_agent=action.user_agent,
+                        reset=action.reset,
+                    )
+                    current_tab = 0
+                    page = await mgr.get_page(current_tab)  # context rebuilt → refresh the handle
+                    await mgr.reapply_media()  # the rebuild dropped the media overrides with it
+                    if media_desc:
+                        desc = f"{desc}; {media_desc}"
+                except ValueError as e:
+                    desc = f"SKIPPED: {e}"
+                step_reports.append(_step(i, action.type, desc))
+
+            elif not action.mutates:
+                result = await _execute_browser_action(action, page)
+                step_reports.append(_step(i, action.type, str(result)))
+
+            else:
+                before = await _capture(mgr, tab=current_tab)
+                result = await _execute_browser_action(action, page)
+                final, desc = await _settle_and_diff(mgr, page, action, current_tab, before)
+                wait_consumed = True
+                entry = _step(i, action.type, _button_prefix(action) + desc)
+                if result is not None:
+                    entry += f"\n  result: {result}"
+                step_reports.append(entry)
+
+            if action.wait and not wait_consumed:
+                await _wait_fn(page, action.wait)
+
+            # Surface any native dialog this step triggered — an auto-dismissed confirm() used to
+            # no-op a click with zero trace, the worst default for admin UIs (#77).
+            for msg in mgr.drain_dialog_log():
+                step_reports.append(_step(i, "dialog", msg))
+
+            await _finalize_step(
+                action, i, step_idx, invocation_id, step_reports, record_frames, snapshots,
+                capture_fn=lambda: page.screenshot(type="png"), context=f"Browser step {step_idx}",
+            )
+        except Exception as exc:
+            # One step's failure must not discard every earlier step's report, and must not
+            # abort steps still queued after it (#138, #139) — record it and move on; the
+            # caller sees the partial batch plus exactly which step broke it.
+            _log.warning("browser action %d (%s) failed: %s", step_idx, action.type, exc)
+            step_reports.append(_step(i, action.type, f"ERROR: {exc}"))
+            continue
+
+    try:
+        if wait:
+            await _wait_fn(page, wait)
+        # Always recapture at the END of the batch: a `final` kept from a mid-batch action's
+        # before/after diff misses everything later actions changed (a login redirect, an
+        # evaluate_js mutation, a render settling) — the "Final state" summary lagged reality (#65).
+        final = await _capture(mgr, scope, current_tab)
+        if query:
+            final_summary = await _analyze(final, query)
         else:
-            before = await _capture(mgr, tab=current_tab)
-            result = await _execute_browser_action(action, page)
-            final, desc = await _settle_and_diff(mgr, page, action, current_tab, before)
-            entry = _step(i, action.type, _button_prefix(action) + desc)
-            if result is not None:
-                entry += f"\n  result: {result}"
-            step_reports.append(entry)
-
-        # Surface any native dialog this step triggered — an auto-dismissed confirm() used to
-        # no-op a click with zero trace, the worst default for admin UIs (#77).
-        for msg in mgr.drain_dialog_log():
-            step_reports.append(_step(i, "dialog", msg))
-
-        await _finalize_step(
-            action, i, step_idx, invocation_id, step_reports, record_frames, snapshots,
-            capture_fn=lambda: page.screenshot(type="png"), context=f"Browser step {step_idx}",
-        )
-
-    if wait:
-        await _wait_fn(page, wait)
-    # Always recapture at the END of the batch: a `final` kept from a mid-batch action's
-    # before/after diff misses everything later actions changed (a login redirect, an evaluate_js
-    # mutation, a render settling) — the "Final state" summary lagged reality (#65).
-    final = await _capture(mgr, scope, current_tab)
-    if query:
-        final_summary = await _analyze(final, query)
-    else:
-        final_summary = f"{final.title} — {final.url}\n{final.visible_text[:500]}"
+            final_summary = f"{final.title} — {final.url}\n{final.visible_text[:500]}"
+    except Exception as exc:
+        # The final-state capture is best-effort commentary on top of the batch, never the reason
+        # to discard every step already run (#139) — report the failure and still return them.
+        _log.warning("browser final-state capture failed: %s", exc)
+        final_summary = f"ERROR capturing final state: {exc}"
 
     result = _session_response(
         session, "\n".join(step_reports) + f"\n\n---\nFinal state: {final_summary}"

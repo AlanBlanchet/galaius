@@ -36,6 +36,5 @@ from interact.actions.models import (  # noqa: F401
     UploadFileAction,
     WaitForAction,
     _wrap_js,
-    settle_animations,
 )
 from interact.actions.dispatch import _run_actions_browser, _run_actions_desktop  # noqa: F401

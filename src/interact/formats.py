@@ -1,3 +1,4 @@
+import difflib
 import logging
 from enum import StrEnum
 from typing import ClassVar, Self
@@ -8,6 +9,9 @@ from interact.desktop import DesktopElement
 from interact.parsing import Parse
 
 _log = logging.getLogger(__name__)
+
+#: The names models give a bounding box, in the order we try them after the format's own key.
+_BOX_KEYS = ("box_2d", "bbox_2d", "box", "bbox")
 
 
 class BoxOrder(StrEnum):
@@ -111,13 +115,35 @@ class CoordFormat(BaseModel):
             data.pop("divisor", None)
         return data
 
+    def _box_of(self, entry: dict) -> list | None:
+        """The entry's box: under the key we asked for, a known alias, or — last — a key the model
+        MISSPELLED (`box_2dd`, #122). A four-number list under a name one edit away from a box key
+        is a box — dropping it silently once turned one typo into "0 elements"; it's logged, and
+        never guessed from any random four-list (a `color: [r, g, b, a]` stays what it is)."""
+        asked = (self.box_key,) if self.box_key else ()
+        for key in asked + _BOX_KEYS:
+            box = entry.get(key)
+            if box:
+                return box
+        known = set(asked) | set(_BOX_KEYS)
+        for key, value in entry.items():
+            if not (isinstance(value, list) and len(value) >= 4):
+                continue
+            if difflib.get_close_matches(str(key).lower(), known, n=1, cutoff=0.8):
+                _log.warning("VLM wrote a box under %r — read as a box (#122)", key)
+                return value
+        return None
+
     def parse(
         self, response: str, img_w: int, img_h: int
     ) -> list[DesktopElement] | None:
         """Parse VLM response into elements in pixel coords of the VLM image."""
         raw_list = CoordFormat.extract_json_list(response)
         if raw_list is None:
-            return DesktopElement.parse_vlm(response)
+            fallback = DesktopElement.parse_vlm(response)
+            if not fallback:
+                return None
+            raw_list = [element.model_dump() for element in fallback]
 
         raw_entries: list[tuple[int, int, int, int, str, str]] = []
         for entry in raw_list:
@@ -127,16 +153,7 @@ class CoordFormat(BaseModel):
                 role = str(entry.get("role", entry.get("label", "element")))
                 name = str(entry.get("name", entry.get("label", "")))
 
-                box = None
-                if self.box_key:
-                    box = entry.get(self.box_key)
-                if not box:
-                    box = (
-                        entry.get("box_2d")
-                        or entry.get("bbox_2d")
-                        or entry.get("box")
-                        or entry.get("bbox")
-                    )
+                box = self._box_of(entry)
 
                 if box and isinstance(box, list) and len(box) >= 4:
                     vals = [int(v) for v in box[:4]]
@@ -153,13 +170,14 @@ class CoordFormat(BaseModel):
                     raw_entries.append(
                         (xmin, ymin, xmax - xmin, ymax - ymin, role, name)
                     )
-                elif "x" in entry and "y" in entry and "w" in entry and "h" in entry:
+                else:
+                    element = DesktopElement.from_vlm_dict(entry, 0)
                     raw_entries.append(
                         (
-                            int(float(entry["x"])),
-                            int(float(entry["y"])),
-                            int(float(entry["w"])),
-                            int(float(entry["h"])),
+                            element.x,
+                            element.y,
+                            element.w,
+                            element.h,
                             role,
                             name,
                         )

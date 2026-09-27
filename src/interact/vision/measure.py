@@ -48,8 +48,8 @@ def contrast_ratio(rgb1: Rgb, rgb2: Rgb) -> float:
 
 def _dominant_colors(arr: np.ndarray, k: int = 4, quant: int = 16) -> list[tuple[Rgb, float]]:
     """Top-``k`` colours by frequency. Pixels are grouped into coarse buckets so anti-aliasing
-    doesn't fragment a flat fill, but each colour returned is the MEAN of the actual pixels in its
-    bucket (not the bucket centre) — so pure black/white come back exact and the WCAG ratio is
+    doesn't fragment a flat fill, but each colour returned is the MEAN of actual pixels in its
+    bucket (not the bucket centre) — pure black/white come back exact and the WCAG ratio is
     accurate, not quantization-skewed. Returns ``[(rgb, fraction), …]`` most-common first."""
     flat = arr.reshape(-1, 3).astype(int)
     buckets = flat // quant
@@ -60,6 +60,67 @@ def _dominant_colors(arr: np.ndarray, k: int = 4, quant: int = 16) -> list[tuple
         mean = flat[keys == key].mean(axis=0)
         out.append((tuple(int(round(float(c))) for c in mean), count / total))
     return out
+
+
+# Blank means NO CONTRAST ANYWHERE — not "one colour dominates". Text is a minority of pixels
+# by area on every page ever designed, so a dominant-colour test calls a real sign-in form
+# (99.6% white) empty and REFUSES to analyse it. A confident wrong refusal about a real screen
+# is worse than the confabulation this exists to prevent.
+# The bar is FLAT, deliberately strict. Every reported case — a crashed window, an unmapped
+# surface, a GPU buffer the grabber can't read — comes back perfectly uniform, so nothing is
+# lost by demanding that; any frame carrying text carries near-black pixels on near-white,
+# nowhere near it. Erring this way is the point: wrongly calling a real screen blank REFUSES to
+# look at it — the failure this gate exists to prevent, in the other direction. Wrongly calling
+# an empty one real just spends a model call.
+_FLAT_RANGE = 8
+_COMPRESSIBLE_ENOUGH = 0.05
+# Below this the encoded size says more about PNG's header than the picture: an 8x8 blank frame
+# encodes at 1.08 bytes/pixel, twenty times the threshold. An element query crops single
+# widgets, exactly this size range, so the check is simply skipped there — the decode it exists
+# to avoid costs microseconds at that size.
+_FAST_PATH_MIN_PIXELS = 20_000
+
+_MIN_FOREGROUND_OCCUPANCY = 0.01
+# Below 1% of sampled pixels, the second-most-common colour is as likely to be an
+# anti-aliasing fringe, a single stray icon pixel, or compression noise as it is real text —
+# real glyph coverage clears this even for small captions. A confident WCAG PASS/FAIL computed
+# off that sliver is a false violation (or false pass), not a measurement (issue #164).
+
+
+def _png_dimensions(png: bytes) -> tuple[int, int] | None:
+    """Width and height straight out of the IHDR header, without decoding the image."""
+    if len(png) < 24 or png[:8] != b"\x89PNG\r\n\x1a\n" or png[12:16] != b"IHDR":
+        return None
+    return int.from_bytes(png[16:20], "big"), int.from_bytes(png[20:24], "big")
+
+
+def blank_frame_reason(png: bytes) -> str | None:
+    """Why this frame has nothing on it, or ``None`` if it does.
+
+    Handed an all-black capture of a CRASHED window, a VLM didn't say "this image is empty" —
+    it answered the question anyway, echoing the agent's own action text back as if it had read
+    it on screen (#112). A plausible invented answer is worse than an error, because it reads
+    as a real observation and the caller acts on it. Emptiness is deterministic, decided here on
+    the pixels, never sent to a model.
+    """
+    # Cheapest question first: a flat image is what PNG compresses BEST, so its encoded size can
+    # rule out a busy frame before any decode — hundreds of kB for a real screenshot against a few
+    # for an all-black one.
+    if (dims := _png_dimensions(png)) is not None:
+        w, h = dims
+        if w * h >= _FAST_PATH_MIN_PIXELS and len(png) / (w * h) > _COMPRESSIBLE_ENOUGH:
+            return None
+    try:
+        img = Image.open(io.BytesIO(png)).convert("L")
+    except Exception:
+        return None  # unreadable bytes are a different failure; don't mask it as "blank"
+    lum = np.asarray(img)
+    if not lum.size:
+        return None
+    if int(lum.max()) - int(lum.min()) > _FLAT_RANGE:
+        return None
+    tone = _hex((int(lum.mean()),) * 3)
+    return f"blank {img.width}x{img.height} frame — flat {tone}, no contrast anywhere"
 
 
 def _largest_uniform_band(
@@ -102,6 +163,7 @@ class MeasureResult(BaseModel):
     foreground: str | None = None
     contrast_ratio: float | None = None
     wcag: dict | None = None  # {"aa_normal", "aa_large", "aaa"} pass flags for contrast_ratio
+    contrast_uncertain: bool = False  # True: fg occupancy too low to trust as real text glyphs
     largest_uniform_band: dict | None = None  # {"y", "height", "color"} or None
 
 
@@ -136,11 +198,18 @@ def measure(
     if dom:
         res.sampled_color = _hex(dom[0][0])
     if len(dom) >= 2:
-        bg, fg = dom[0][0], dom[1][0]  # most pixels = background, next = text/foreground
+        bg, (fg, fg_fraction) = dom[0][0], dom[1]  # most pixels = background, next = text/foreground
         res.background, res.foreground = _hex(bg), _hex(fg)
         cr = contrast_ratio(bg, fg)
         res.contrast_ratio = round(cr, 2)
-        res.wcag = {"aa_normal": cr >= 4.5, "aa_large": cr >= 3.0, "aaa": cr >= 7.0}
+        if fg_fraction < _MIN_FOREGROUND_OCCUPANCY:
+            # Too few pixels to be legible glyphs — likely anti-aliasing fringe, a stray icon
+            # pixel, or compression noise. Reporting a confident PASS/FAIL off that sliver is
+            # exactly the false-violation pattern measure_ui exists to avoid (see module intro);
+            # the ratio is kept as information, the verdict is withheld.
+            res.contrast_uncertain = True
+        else:
+            res.wcag = {"aa_normal": cr >= 4.5, "aa_large": cr >= 3.0, "aaa": cr >= 7.0}
 
     band = _largest_uniform_band(sub)
     if band is not None and region is not None:
@@ -158,10 +227,13 @@ def format_measure(r: MeasureResult) -> str:
     if r.palette:
         lines.append("palette: " + ", ".join(f"{c} ({p:.0%})" for c, p in r.palette))
     if r.contrast_ratio is not None:
-        wc = r.wcag or {}
-        flags = " ".join(
-            f"{k.replace('_', ' ').upper()}:{'PASS' if v else 'FAIL'}" for k, v in wc.items()
-        )
+        if r.contrast_uncertain:
+            flags = "UNCERTAIN (foreground colour too sparse to read as legible text)"
+        else:
+            wc = r.wcag or {}
+            flags = " ".join(
+                f"{k.replace('_', ' ').upper()}:{'PASS' if v else 'FAIL'}" for k, v in wc.items()
+            )
         lines.append(
             f"contrast: {r.contrast_ratio}:1  (fg {r.foreground} on bg {r.background})  {flags}"
         )

@@ -1,4 +1,171 @@
 {
+  "coding_agent_index": {
+    "entries": [
+      {
+        "effort": "max",
+        "evidence": "secondary",
+        "harness": "Claude Code",
+        "model_id": "claude-opus-5-5",
+        "model_name": "Claude Opus 5.5",
+        "normalized_score": 66.0,
+        "retrieved": "2026-09-25",
+        "score": 66.0,
+        "source_url": "https://x.com/ArtificialAnlys/status/2102932119995756613",
+        "status": "eligible",
+        "version": "v1.5"
+      },
+      {
+        "effort": "max",
+        "evidence": "primary",
+        "harness": "Claude Code",
+        "model_id": "claude-fable-5-1",
+        "model_name": "Claude Fable 5.1",
+        "normalized_score": 62.0,
+        "retrieved": "2026-09-25",
+        "score": 62.0,
+        "source_url": "https://artificialanalysis.ai/articles/benchmarking-gpt-6-astra",
+        "status": "eligible",
+        "version": "v1.5"
+      },
+      {
+        "effort": "max",
+        "evidence": "primary",
+        "harness": "Codex",
+        "model_id": "gpt-6-astra",
+        "model_name": "GPT-6 Astra",
+        "normalized_score": 62.0,
+        "retrieved": "2026-09-25",
+        "score": 62.0,
+        "source_url": "https://artificialanalysis.ai/articles/benchmarking-gpt-6-astra",
+        "status": "eligible",
+        "version": "v1.5"
+      },
+      {
+        "effort": "max",
+        "evidence": "secondary",
+        "harness": "Claude Code",
+        "model_id": "claude-opus-5",
+        "model_name": "Claude Opus 5",
+        "normalized_score": 59.7,
+        "retrieved": "2026-09-25",
+        "score": 59.7,
+        "source_url": "https://benchlm.ai/benchmarks/aacodingagents",
+        "status": "eligible",
+        "version": "v1.5"
+      },
+      {
+        "effort": "max",
+        "evidence": "secondary",
+        "harness": "Codex",
+        "model_id": "gpt-6-sol",
+        "model_name": "GPT-6 Sol",
+        "normalized_score": 56.7,
+        "retrieved": "2026-09-25",
+        "score": 56.7,
+        "source_url": "https://benchlm.ai/benchmarks/aacodingagents",
+        "status": "eligible",
+        "version": "v1.5"
+      },
+      {
+        "effort": "xhigh",
+        "evidence": "secondary",
+        "harness": "Grok Build",
+        "model_id": "xai/grok-4.7",
+        "model_name": "Grok 4.7",
+        "normalized_score": 56.3,
+        "retrieved": "2026-09-25",
+        "score": 56.3,
+        "source_url": "https://benchlm.ai/benchmarks/aacodingagents",
+        "status": "eligible",
+        "version": "v1.5"
+      },
+      {
+        "effort": "max",
+        "evidence": "primary",
+        "harness": "Codex",
+        "model_id": "gpt-5.6-sol",
+        "model_name": "GPT-5.6 Sol",
+        "normalized_score": 55.0,
+        "retrieved": "2026-09-25",
+        "score": 55.0,
+        "source_url": "https://artificialanalysis.ai/articles/benchmarking-gpt-6-astra",
+        "status": "eligible",
+        "version": "v1.5"
+      },
+      {
+        "effort": "max",
+        "evidence": "secondary",
+        "harness": "Muse Code",
+        "model_name": "Muse Spark 1.3",
+        "normalized_score": 54.3,
+        "retrieved": "2026-09-25",
+        "score": 54.3,
+        "source_url": "https://benchlm.ai/benchmarks/aacodingagents",
+        "status": "unmapped",
+        "version": "v1.5"
+      },
+      {
+        "effort": "max",
+        "evidence": "secondary",
+        "harness": "Opencode",
+        "model_name": "GLM-5.3",
+        "normalized_score": 53.6,
+        "retrieved": "2026-09-25",
+        "score": 53.6,
+        "source_url": "https://benchlm.ai/benchmarks/aacodingagents",
+        "status": "unmapped",
+        "version": "v1.5"
+      },
+      {
+        "evidence": "secondary",
+        "harness": "Kimi Code CLI",
+        "model_name": "Kimi K3",
+        "normalized_score": 51.9,
+        "retrieved": "2026-09-25",
+        "score": 51.9,
+        "source_url": "https://benchlm.ai/benchmarks/aacodingagents",
+        "status": "unmapped",
+        "version": "v1.5"
+      },
+      {
+        "evidence": "secondary",
+        "harness": "Claude Code",
+        "model_name": "Qwen3.8 Max",
+        "normalized_score": 43.3,
+        "retrieved": "2026-09-25",
+        "score": 43.3,
+        "source_url": "https://benchlm.ai/benchmarks/aacodingagents",
+        "status": "unmapped",
+        "version": "v1.5"
+      },
+      {
+        "effort": "high",
+        "evidence": "secondary",
+        "harness": "Antigravity SDK",
+        "model_name": "Gemini 3.8 Flash",
+        "normalized_score": 41.9,
+        "retrieved": "2026-09-25",
+        "score": 41.9,
+        "source_url": "https://benchlm.ai/benchmarks/aacodingagents",
+        "status": "unmapped",
+        "version": "v1.5"
+      },
+      {
+        "evidence": "secondary",
+        "harness": "Codex",
+        "model_name": "DeepSeek V4 Flash 0731",
+        "normalized_score": 38.7,
+        "retrieved": "2026-09-25",
+        "score": 38.7,
+        "source_url": "https://benchlm.ai/benchmarks/aacodingagents",
+        "status": "unmapped",
+        "version": "v1.5"
+      }
+    ],
+    "freshness": "current",
+    "retrieved": "2026-09-25",
+    "source_url": "https://artificialanalysis.ai/agents/coding-agents"
+  },
   "screenspot": {
     "entries": [
       {
@@ -452,5 +619,47 @@
     "lib_recommendation": "KV-Ground-8B + Qwen3.5-27B Consistency Router",
     "retrieved": "2026-05-21",
     "source_url": "https://raw.githubusercontent.com/GUI-Agent/grounding-leaderboard/main/results/screenspot_pro.json"
+  },
+  "terminalbench_4": {
+    "entries": [
+      {
+        "effort": "max",
+        "evidence": "primary",
+        "harness": "mini-swe-agent",
+        "model_id": "claude-opus-5-5",
+        "model_name": "Claude Opus 5.5",
+        "retrieved": "2026-09-25",
+        "score": 0.596,
+        "source_url": "https://artificialanalysis.ai/articles/claude-opus-5-5",
+        "status": "eligible",
+        "version": "4.0"
+      },
+      {
+        "effort": "xhigh",
+        "evidence": "primary",
+        "harness": "mini-swe-agent",
+        "model_id": "gpt-6-astra",
+        "model_name": "GPT-6 Astra",
+        "retrieved": "2026-09-25",
+        "score": 0.596,
+        "source_url": "https://artificialanalysis.ai/articles/claude-opus-5-5",
+        "status": "eligible",
+        "version": "4.0"
+      },
+      {
+        "evidence": "primary",
+        "harness": "mini-swe-agent",
+        "model_id": "claude-opus-5",
+        "model_name": "Claude Opus 5",
+        "retrieved": "2026-09-25",
+        "score": 0.486,
+        "source_url": "https://artificialanalysis.ai/articles/claude-opus-5-5",
+        "status": "eligible",
+        "version": "4.0"
+      }
+    ],
+    "freshness": "current",
+    "retrieved": "2026-09-25",
+    "source_url": "https://artificialanalysis.ai/evaluations/terminalbench-4-0"
   }
 }
