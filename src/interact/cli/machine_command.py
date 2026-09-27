@@ -41,12 +41,17 @@ def machine_file_roots(*roots: str) -> None:
 
 
 @machine_app.command(name="agents")
-def machine_agents(state: Literal["on", "off"] | None = None) -> None:
-    """Owner-only, on this machine: whether workflow agent steps may run here (an agent CLI can read
-    any file of this user). No argument prints it."""
+def machine_agents(state: Literal["on", "off"] | None = None, *,
+                   continue_conversations: Annotated[Literal["on", "off"] | None, Parameter(name="--continue")] = None,
+                   answer_approvals: Annotated[Literal["on", "off"] | None, Parameter(name="--approvals")] = None) -> None:
+    """Owner-only, on this machine: whether agents may run here (workflow agent steps and agents
+    started from the web; an agent CLI can read any file of this user). --continue: the web may
+    continue your editor conversations here (as a copy). --approvals: the web may answer what a
+    session asks before running a command or changing a file. No argument prints the settings."""
+    changes = {key: value == "on" for key, value in (("run_agents", state), ("continue_conversations", continue_conversations), ("answer_approvals", answer_approvals)) if value is not None}
     runner = MachineRunner()
-    config = runner.update(lambda current: current.model_copy(update={"run_agents": state == "on"})) if state is not None else runner.load()
-    print(json.dumps({"run_agents": config.run_agents}))
+    config = runner.update(lambda current: current.model_copy(update=changes)) if changes else runner.load()
+    print(json.dumps({"run_agents": config.run_agents, "continue_conversations": config.continue_conversations, "answer_approvals": config.answer_approvals}))
 
 
 @machine_app.command(name="script-roots")

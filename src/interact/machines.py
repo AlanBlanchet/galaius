@@ -74,6 +74,13 @@ class MachineConfig(BaseModel):
     #: What an agent started from the web may do: never unrestricted unless its owner sets it here
     #: (`interact machine agent-permission full_access`); the server cannot raise it.
     agent_permission: AgentTouchScope = "workspace_write"
+    #: Whether the web may continue the owner's own editor conversations here (a forked copy in
+    #: an agent root; the editor's session is never written) — set here only, off by default.
+    continue_conversations: bool = False
+    #: Whether the web may answer the approvals a session asks for (run this command, apply this
+    #: change): accept / decline only — set here only, off by default. An accept can run what the
+    #: session's sandbox would block, so the server never decides this alone.
+    answer_approvals: bool = False
     #: How long a vision model stays loaded after a step used it (0: loaded per step, GPU memory
     #: freed at once). Trades held GPU memory for ~6 s saved on each next step on that model.
     model_keep_warm_seconds: int = Field(default=300, ge=0, le=86400)
