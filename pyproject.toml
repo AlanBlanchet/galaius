@@ -9,7 +9,7 @@ license-files = ["LICENSE"]
 keywords = ["mcp", "automation", "browser", "desktop", "playwright", "vision", "agent", "llm"]
 requires-python = ">=3.11"
 dependencies = [
-    "interact-core @ git+https://github.com/AlanBlanchet/interact-core.git@12ef5eced0aac6e1645e9a311eae08e5d4ed29df",
+    "interact-core @ git+https://github.com/AlanBlanchet/interact-core.git@8331967af8874651cce0a7fabdda5499df29fabd",
     "cyclopts>=3.0",
     "rich>=13.0",
     "evdev>=1.9; sys_platform == 'linux'", # /dev/uinput absolute input (X11 + Wayland)
