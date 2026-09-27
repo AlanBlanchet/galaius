@@ -60,6 +60,10 @@ class MachineConfig(BaseModel):
     #: (`interact machine script-roots`), none by default. Never inside or around a file root: no
     #: workflow file step can write beside a script it would then run.
     script_roots: tuple[str, ...] = Field(default=(), max_length=32)
+    #: Whether agent steps run here. An agent CLI on this computer can read any file its user can,
+    #: whatever the file roots, so `interact login` adds a computer with them off; its owner turns
+    #: them on here (`interact machine agents on`), never from the server.
+    run_agents: bool = True
     #: How long a vision model stays loaded after a step used it (0: loaded per step, GPU memory
     #: freed at once). Trades held GPU memory for ~6 s saved on each next step on that model.
     model_keep_warm_seconds: int = Field(default=300, ge=0, le=86400)
@@ -856,6 +860,8 @@ class MachineRunner:
                 if command.tenancy == "pooled":
                     output = json.dumps(await asyncio.to_thread(self._run_script_pooled, command, config), separators=(",", ":"))
                 elif command.impl.kind == "agent":
+                    if not config.run_agents:
+                        raise PermissionError("agent steps are off on this computer; its owner turns them on there with `interact machine agents on`")
                     output = await self._run_agent(command.impl.agent, str(command.inputs["task"]), config, socket, command.id)
                 else:
                     # Files first: a step never sees a server reference, only a checked local copy.

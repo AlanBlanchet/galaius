@@ -40,6 +40,15 @@ def machine_file_roots(*roots: str) -> None:
     print(json.dumps({"working_directory": str(config.working_directory), "file_roots": list(config.file_roots)}))
 
 
+@machine_app.command(name="agents")
+def machine_agents(state: Literal["on", "off"] | None = None) -> None:
+    """Owner-only, on this machine: whether workflow agent steps may run here (an agent CLI can read
+    any file of this user). No argument prints it."""
+    runner = MachineRunner()
+    config = runner.update(lambda current: current.model_copy(update={"run_agents": state == "on"})) if state is not None else runner.load()
+    print(json.dumps({"run_agents": config.run_agents}))
+
+
 @machine_app.command(name="script-roots")
 def machine_script_roots(*roots: str) -> None:
     """Owner-only, on this machine: the folders (relative to its working directory) Script steps

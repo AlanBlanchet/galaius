@@ -64,6 +64,14 @@ app.command(
     help="Spawn and supervise agent runs across providers.",
 )
 app.command(
+    "interact.cli.login_command:login", name="login",
+    help="Connect this computer to your Interact account.",
+)
+app.command(
+    "interact.cli.login_command:logout", name="logout",
+    help="Disconnect this computer from your Interact account.",
+)
+app.command(
     "interact.cli.machine_command:machine_app", name="machine",
     help="Connect this computer as a workflow machine.",
 )
