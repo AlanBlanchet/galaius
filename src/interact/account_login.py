@@ -122,14 +122,47 @@ class AccountLogin(BaseModel):
         asked once in the terminal; a bare host means https."""
         if server is None:
             try:
-                server = cls.remembered_path().read_text(encoding="utf-8").strip()
-            except FileNotFoundError:
-                if not sys.stdin.isatty():
-                    raise LoginError("which Interact server? Pass --server https://…") from None
-                try:
-                    server = input("Interact server address (e.g. https://interact.example.com): ").strip()
-                except (EOFError, KeyboardInterrupt):
-                    raise LoginError("no server given") from None
+                remembered = cls.parsed(cls.remembered_path().read_text(encoding="utf-8"))
+            except (FileNotFoundError, LoginError):
+                remembered = None
+            account = None if remembered is None else remembered.public()
+            return account if account is not None else cls.parsed(cls.asked())
+        return cls.parsed(server)
+
+    @staticmethod
+    def asked() -> str:
+        if not sys.stdin.isatty():
+            raise LoginError("which Interact server? Pass --server https://…")
+        try:
+            return input("Interact server address (e.g. https://interact.example.com): ")
+        except (EOFError, KeyboardInterrupt):
+            raise LoginError("no server given") from None
+
+    def public(self) -> "AccountLogin | None":
+        """A remembered server as another computer reaches it: an address on this computer only (an
+        SSH tunnel's 127.0.0.1) is swapped for the public address it names, and dropped when it does
+        not answer; a public address is kept as is."""
+        if urlsplit(self.server).hostname not in {"127.0.0.1", "localhost", "::1"}:
+            return self
+        try:
+            with self.client() as http:
+                named = http.get("/v1/install").json().get("server")
+                public = None if not named else self.parsed(named)
+                if public is not None and urlsplit(public.server).hostname not in {"127.0.0.1", "localhost", "::1"} and public.answers():
+                    return public
+                return self if http.get("/v1/version").status_code == 200 else None
+        except (httpx.HTTPError, ValueError, AttributeError, LoginError):
+            return None
+
+    def answers(self) -> bool:
+        try:
+            with self.client() as http:
+                return http.get("/v1/version").status_code == 200
+        except httpx.HTTPError:
+            return False
+
+    @classmethod
+    def parsed(cls, server: str) -> "AccountLogin":
         server = server.strip()
         if "://" not in server:
             server = f"https://{server}"
