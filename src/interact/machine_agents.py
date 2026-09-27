@@ -15,6 +15,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import ClassVar
 from uuid import UUID
@@ -219,7 +220,14 @@ class MachineAgents(BaseModel):
         return MachineAgentAnswer(request_id=request.id, lines=lines, cursor=start + whole, truncated=skipped)
 
     def _run_cli(self, *arguments: str, timeout: float) -> subprocess.CompletedProcess[str]:
-        return subprocess.run([*self.cli, *arguments], env=self.environment, capture_output=True, text=True, timeout=timeout, check=False, stdin=subprocess.DEVNULL)
+        """The CLI's own exit and output. Output goes to files, never pipes: the agent it starts
+        outlives it and inherits its descriptors, and reading a pipe to its end would wait for the
+        AGENT to finish (a start answered only once the run was over)."""
+        with tempfile.TemporaryFile("w+") as out, tempfile.TemporaryFile("w+") as err:
+            done = subprocess.run([*self.cli, *arguments], env=self.environment, stdin=subprocess.DEVNULL, stdout=out, stderr=err, timeout=timeout, check=False)
+            out.seek(0)
+            err.seek(0)
+            return subprocess.CompletedProcess(done.args, done.returncode, out.read(), err.read())
 
     @staticmethod
     def _first_line(text: str) -> str:

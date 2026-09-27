@@ -740,7 +740,7 @@ class ClaudeCodeProvider(AgentProvider):
         if image_paths:
             self._image_args(image_paths)
         argv = [
-            self.binary, "-p", task,
+            self.binary, "-p",
             "--output-format", "stream-json",
             "--verbose",  # mandatory companion to stream-json
             # Our run id IS the vendor's session id, so `claude --resume <run_id>` works and no
@@ -755,7 +755,9 @@ class ClaudeCodeProvider(AgentProvider):
         argv += self._permission_flag(permission_mode)
         if reasoning is not None:
             argv += ["--effort", self.provider_thinking_level(reasoning)]
-        return argv
+        # The prompt goes LAST, after "--": one starting with "-" (a markdown bullet) is the
+        # prompt, never an option Claude refuses ("unknown option").
+        return [*argv, "--", task]
 
     def definition_path(self, agent: str) -> Path | None:
         catalog = AgentCatalog.active()
@@ -785,11 +787,11 @@ class ClaudeCodeProvider(AgentProvider):
         """Continue an existing session using its provider session id."""
         # base_url unused — see command()'s docstring note.
         return [
-            self.binary, "-p", message,
+            self.binary, "-p",
             "--resume", session_id,
             "--output-format", "stream-json",
             "--verbose",
-        ] + (["--model", model] if model else []) + self._permission_flag(permission_mode) + self.role_arguments(agent, agent_prompt, allowed_tools, denied_tools) + (["--mcp-config", mcp_config] if mcp_config else [])
+        ] + (["--model", model] if model else []) + self._permission_flag(permission_mode) + self.role_arguments(agent, agent_prompt, allowed_tools, denied_tools) + (["--mcp-config", mcp_config] if mcp_config else []) + ["--", message]
 
     #: Claude's two usage dialects: ``message.usage`` / ``result.usage`` (snake) and
     #: ``result.modelUsage[model]`` (camel). Each reports the UNCACHED prompt remainder, cache
@@ -1341,7 +1343,7 @@ class CodexProvider(AgentProvider):
                 base_url: str | None = None) -> list[str]:
         self.validate_tool_policy(allowed_tools or [], denied_tools, coarse_accepted=coarse_accepted)
         task = self._inject_definition(agent, task, agent_prompt)
-        argv = [self.binary, "exec", task, "--json", *self.native_delegation_flags]
+        argv = [self.binary, "exec", "--json", *self.native_delegation_flags]
         argv += self.mesh_arguments(mcp_config)
         argv += self._mcp_tool_scope_arguments(allowed_tools or [], denied_tools)
         argv += self._native_sandbox_arguments(allowed_tools or [], denied_tools,
@@ -1351,7 +1353,9 @@ class CodexProvider(AgentProvider):
             argv += ["--model", model]
         if reasoning is not None:
             argv += ["-c", f'model_reasoning_effort="{self.provider_thinking_level(reasoning)}"']
-        return argv + self._image_args(image_paths)
+        # The task goes LAST, after "--": one starting with "-" stays the task ("-" alone would
+        # otherwise mean "read it from stdin").
+        return [*argv, *self._image_args(image_paths), "--", task]
 
     def image_attachment_support(self) -> bool:
         """Verify ``--image`` against the installed ``codex exec --help`` output."""
@@ -1397,7 +1401,7 @@ class CodexProvider(AgentProvider):
         self.validate_tool_policy(allowed_tools or [], denied_tools, coarse_accepted=coarse_accepted)
         if agent:
             self.validate_agent_name(agent)
-        argv = [self.binary, "exec", "resume", session_id, message, "--json", *self.native_delegation_flags]
+        argv = [self.binary, "exec", "resume", "--json", *self.native_delegation_flags]
         argv += self.mesh_arguments(mcp_config)
         argv += self._mcp_tool_scope_arguments(allowed_tools or [], denied_tools)
         argv += self._openai_compat_arguments(base_url)
@@ -1425,7 +1429,7 @@ class CodexProvider(AgentProvider):
             argv += ["--model", model]
         if reasoning is not None:
             argv += ["-c", f'model_reasoning_effort="{self.provider_thinking_level(reasoning)}"']
-        return argv
+        return [*argv, "--", session_id, message]
 
     def _inject_definition(self, agent: str | None, task: str, agent_prompt: str | None = None) -> str:
         if not agent:

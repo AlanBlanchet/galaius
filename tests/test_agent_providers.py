@@ -337,7 +337,7 @@ def test_codex_command_emits_one_image_flag_per_attachment(monkeypatch, tmp_path
         "Inspect", cwd="/tmp", model="fixture-model", mcp_config=None,
         run_id="fixture-run", image_paths=(first, second),
     )
-    assert command[-3:] == ["--image", str(first), str(second)]
+    assert command[-5:] == ["--image", str(first), str(second), "--", "Inspect"]
 
 
 def test_unsupported_provider_refuses_image_attachments(tmp_path):
@@ -383,7 +383,7 @@ def test_codex_delivery_commands_use_the_vendor_thread_id():
         "vendor-thread", "ping", model="fresh-model", reasoning="high",
         permission_mode="acceptEdits",
     )
-    assert resumed[:5] == ["codex", "exec", "resume", "vendor-thread", "ping"]
+    assert resumed[:3] == ["codex", "exec", "resume"] and resumed[-3:] == ["--", "vendor-thread", "ping"]
     assert "--json" in resumed and "--model" in resumed
     assert 'model_reasoning_effort="high"' in resumed
     assert "--sandbox" not in resumed
@@ -407,7 +407,7 @@ def test_codex_resume_does_not_re_inject_the_role_definition(monkeypatch, tmp_pa
 
     resumed = CodexProvider().resume_command("vendor-thread", "continue", agent="tester")
 
-    assert resumed[4] == "continue"
+    assert resumed[-1] == "continue"
 
 
 def test_codex_command_injects_the_named_role_definition(monkeypatch, tmp_path):
@@ -423,9 +423,9 @@ def test_codex_command_injects_the_named_role_definition(monkeypatch, tmp_path):
     started = CodexProvider().command(
         "continue", cwd="/tmp", model=None, mcp_config=None, run_id="fixture-run", agent="tester",
     )
-    prompt = started[2]
+    prompt = started[-1]
 
-    assert prompt.startswith("AGENT_ROLE: tester\n")
+    assert started[-2] == "--" and prompt.startswith("AGENT_ROLE: tester\n")
     assert "Do the assigned check." in prompt
     assert "Delegated task:\ncontinue" in prompt
 
@@ -1047,3 +1047,12 @@ async def test_spawn_refuses_an_unknown_definition_and_says_which_exist(monkeypa
     out = await srv.tools_agents.agent_spawn("do a thing", agent="../../../etc/passwd")
     assert out.startswith("ERROR:")
     assert "tester" in out and "researcher" in out, "an agent cannot ask, so list what IS valid"
+
+
+@pytest.mark.parametrize("provider", [ClaudeCodeProvider(), CodexProvider()], ids=["claude", "codex"])
+@pytest.mark.parametrize("text", ["- a markdown bullet", "--help", "-"])
+def test_a_prompt_starting_with_a_dash_is_never_an_option(provider, text):
+    """A message the owner types ("- fix the header") reaches the model as text: after "--", last."""
+    started = provider.command(text, cwd="/tmp", model=None, mcp_config=None, run_id="fixture-run")
+    resumed = provider.resume_command("vendor-thread", text)
+    assert started[-2:] == ["--", text] and resumed[-1] == text and resumed[-3 if provider.name == "codex" else -2] == "--"

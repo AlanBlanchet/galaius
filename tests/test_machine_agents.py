@@ -11,6 +11,7 @@ import pytest
 import asyncio
 import hashlib
 import hmac
+import time
 
 from interact_core import MACHINE_AGENT_REQUESTS, MachineAgentRequest
 from interact.agents import registry as reg
@@ -147,3 +148,13 @@ def test_an_action_is_accepted_once(base: Path, tmp_path: Path, monkeypatch: pyt
     assert "not started from the web" in socket.sent[0]["error"] and socket.sent[1]["error"] == "agent request was already used"
     asyncio.run(runner._answer_agent_request(socket, config, {**signed, "signature": "0" * 64}))
     assert socket.sent[2]["error"] == "agent request signature is invalid"
+
+
+def test_start_answers_while_the_agent_it_launched_still_runs(base: Path, tmp_path: Path) -> None:
+    """The launcher's child keeps the CLI's descriptors: the start still answers at once."""
+    run_id = str(uuid4())
+    lingering = ("python3", "-c", f"import subprocess,sys; subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']); print({run_id!r})")
+    agents = _agents(base, tmp_path, cli=lingering)
+    started = time.monotonic()
+    assert str(agents.answer(_request("start", root="project", role="app-engineer", text="go")).run_id) == run_id
+    assert time.monotonic() - started < 10
