@@ -29,7 +29,7 @@ from uuid import UUID, uuid4
 import websockets
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator, model_validator
 
-from interact_core import MACHINE_AGENT_ACTIONS, MACHINE_MODELS, AgentRevisionRef, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, MachineAgentAnswer, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachineRuntime, ScriptFile, UserModelOrigin
+from interact_core import MACHINE_AGENT_REQUESTS, MACHINE_MODELS, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, MachineAgentAnswer, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachineRuntime, ScriptFile, UserModelOrigin
 from interact import USER_AGENT
 from interact.agents.catalog import AgentCatalog
 from interact.agents import providers as agent_providers
@@ -73,7 +73,7 @@ class MachineConfig(BaseModel):
     agent_roots: tuple[str, ...] = Field(default=(), max_length=32)
     #: What an agent started from the web may do: never unrestricted unless its owner sets it here
     #: (`interact machine agent-permission full_access`); the server cannot raise it.
-    agent_permission: Literal["read_only", "workspace_write", "full_access"] = "workspace_write"
+    agent_permission: AgentTouchScope = "workspace_write"
     #: How long a vision model stays loaded after a step used it (0: loaded per step, GPU memory
     #: freed at once). Trades held GPU memory for ~6 s saved on each next step on that model.
     model_keep_warm_seconds: int = Field(default=300, ge=0, le=86400)
@@ -86,20 +86,24 @@ class MachineConfig(BaseModel):
     def usable_script_roots(self) -> tuple[tuple[Path, ...], tuple[str, ...]]:
         """(the script roots safe to use, resolved; the names refused): a file root's rules, and
         never overlapping a usable file root (inside it, around it, or the same folder)."""
-        files = self.usable_file_roots()[0]
-        usable, refused = self._usable_roots(self.script_roots)
-        base = self.working_directory.resolve()
-        overlapping = [root for root in usable if any(root == other or other in root.parents or root in other.parents for other in files)]
-        return tuple(root for root in usable if root not in overlapping), (*refused, *(root.relative_to(base).as_posix() for root in overlapping))
+        return self._apart(self._usable_roots(self.script_roots), self.usable_file_roots()[0])
 
     def usable_agent_roots(self) -> tuple[tuple[Path, ...], tuple[str, ...]]:
         """(the agent roots safe to use, resolved; the names refused): a file root's rules, never
         overlapping a usable file or script root (inside it, around it, or the same folder)."""
-        taken = (*self.usable_file_roots()[0], *self.usable_script_roots()[0])
-        usable, refused = self._usable_roots(self.agent_roots)
+        return self._apart(self._usable_roots(self.agent_roots), (*self.usable_file_roots()[0], *self.usable_script_roots()[0]))
+
+    def _apart(self, found: tuple[tuple[Path, ...], tuple[str, ...]], taken: tuple[Path, ...]) -> tuple[tuple[Path, ...], tuple[str, ...]]:
+        """`found` (usable, refused) minus every usable root inside, around or equal to one of `taken`."""
+        usable, refused = found
         base = self.working_directory.resolve()
         overlapping = [root for root in usable if any(root == other or other in root.parents or root in other.parents for other in taken)]
         return tuple(root for root in usable if root not in overlapping), (*refused, *(root.relative_to(base).as_posix() for root in overlapping))
+
+    def agent_roots_by_name(self) -> dict[str, Path]:
+        """The usable agent roots, by the name the web shows (relative to the working directory)."""
+        base = self.working_directory.resolve()
+        return {root.relative_to(base).as_posix(): root for root in self.usable_agent_roots()[0]}
 
     def _usable_roots(self, names: tuple[str, ...]) -> tuple[tuple[Path, ...], tuple[str, ...]]:
         """A usable root is strictly below the working directory, never the home folder or above
@@ -137,8 +141,6 @@ class MachineConfig(BaseModel):
             raise ValueError("machine working directory must be an existing absolute directory")
         return self
 
-
-MachineAgents.model_rebuild(_types_namespace={"MachineConfig": MachineConfig})
 
 
 logger = logging.getLogger(__name__)
@@ -857,7 +859,7 @@ class MachineRunner:
         machine, this workspace, signed, not expired; an action's id accepted once), answered from
         the owner's CURRENT settings on this machine."""
         try:
-            request = MachineAgentRequest.model_validate(payload)
+            request: MachineAgentRequest = MACHINE_AGENT_REQUESTS.validate_python(payload)
         except ValidationError:
             logger.warning("malformed agent request dropped")
             return
@@ -865,23 +867,24 @@ class MachineRunner:
             if request.machine.id != config.machine_id or request.workspace_id != config.workspace_id:
                 raise PermissionError("agent request targets another machine")
             self._verify_signed(config, request, "agent request")
-            if request.op in MACHINE_AGENT_ACTIONS:
+            if request.action:
                 now = datetime.now(UTC)
                 self._agent_requests = {key: until for key, until in self._agent_requests.items() if until > now}
                 if request.id in self._agent_requests:
                     raise PermissionError("agent request was already used")
                 self._agent_requests[request.id] = request.expires_at
             current = self._current_config(config)
-            agents = MachineAgents(config=current, runs=WebRuns(path=self.default_config_path().with_name("machine-agent-runs.json")), environment=self._safe_environment())
+            agents = MachineAgents(roots=current.agent_roots_by_name(), permission=current.agent_permission, run_agents=current.run_agents, session=f"web-{current.machine_id}",
+                                   runs=WebRuns(path=self.config_path.with_name("machine-agent-runs.json")), environment=self._safe_environment())
             answer = await asyncio.to_thread(agents.answer, request)
-            logger.info("agent %s %s", request.op, answer.run_id or request.run_id or request.root or "(folders)")
+            logger.info("agent %s", request.op)
         except (PermissionError, OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
             reason = str(error) if isinstance(error, (PermissionError, ValueError, RuntimeError)) else f"{type(error).__name__}: {error}"
             answer = MachineAgentAnswer(request_id=request.id, error=reason[:400] or type(error).__name__)
-        if request.op in MACHINE_AGENT_ACTIONS:
+        if request.action:
             # The whole brief / message stays HERE, in the owner's local log; the server keeps a digest.
-            self.audit("agents.log", {"op": request.op, "account": str(request.initiator_account), "root": request.root, "path": request.path, "role": request.role,
-                                      "provider": request.provider, "run_id": str(answer.run_id or request.run_id or ""), "text": request.text, "error": answer.error})
+            asked = request.model_dump(mode="json", exclude={"type", "id", "machine", "workspace_id", "expires_at", "signature"})
+            self.audit("agents.log", {**asked, **({"started_run_id": str(answer.run_id)} if answer.run_id and "run_id" not in asked else {}), "error": answer.error})
         await socket.send(json.dumps({"type": "agent_answer", "result": answer.model_dump(mode="json")}))
 
     def _accept_command(self, config: MachineConfig, connected: MachineConfig, command: MachineCommand) -> MachineConfig:

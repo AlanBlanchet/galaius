@@ -9,7 +9,7 @@ from uuid import UUID
 
 from cyclopts import App, Parameter
 
-from interact_core import WorkflowNode
+from interact_core import AgentTouchScope, WorkflowNode
 
 from interact.machines import MachineFiles, MachineRunner, ScriptExecution, connect_command
 
@@ -79,7 +79,7 @@ def machine_agent_roots(*roots: str) -> None:
 
 
 @machine_app.command(name="agent-permission")
-def machine_agent_permission(scope: Literal["read_only", "workspace_write", "full_access"] | None = None) -> None:
+def machine_agent_permission(scope: AgentTouchScope | None = None) -> None:
     """Owner-only, on this machine: what agents started from the web may do — read_only, edit
     files (workspace_write, the default), or full_access (no permission prompts at all). No
     argument prints it."""

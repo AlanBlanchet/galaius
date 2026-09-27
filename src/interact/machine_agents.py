@@ -9,28 +9,34 @@ the launcher's own CLI (`interact agents spawn / send`) in a child process given
 environment explicitly, so no request ever changes this process's environment."""
 
 import json
+import logging
 import os
 import shutil
 import stat
 import subprocess
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar
+from typing import ClassVar
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from interact_core import MACHINE_AGENT_TAIL, MachineAgentAnswer, MachineAgentRequest, MachineAgentRun, MachineFileEntry
+from interact_core import (
+    MACHINE_AGENT_TAIL, AgentFoldersRequest, AgentRunsRequest, AgentSendRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest,
+    AgentTouchScope, MachineAgentAnswer, MachineAgentRequest, MachineAgentRun, MachineFileEntry,
+)
 from interact.agents import registry as reg
+from interact.agents.run import load_policy
 from interact.file_lock import exclusive
 
-if TYPE_CHECKING:
-    from interact.machines import MachineConfig
+logger = logging.getLogger(__name__)
 
 #: Web-started runs working at once on one computer; one more start is refused until one ends.
 LIVE_WEB_RUNS = 4
 #: What a cold `tail` (no cursor) reads back from the end of a run's stream.
 COLD_TAIL = 48 * 1024
+#: Lines one `tail` answer carries at most (`MachineAgentAnswer.lines`); the cursor stops after the last.
+TAIL_LINES = 4000
 
 
 class WebRun(BaseModel):
@@ -67,10 +73,16 @@ class WebRuns(BaseModel):
 
 
 class MachineAgents(BaseModel):
-    """Answers one MachineAgentRequest (already checked: this machine, signed, not expired)."""
+    """Answers one MachineAgentRequest (already checked: this machine, signed, not expired), from
+    the owner's CURRENT settings on this machine: its agent roots (name -> resolved folder), the
+    permission web-started agents get, and whether agents run here at all."""
 
-    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
-    config: "MachineConfig"
+    model_config = ConfigDict(frozen=True)
+    roots: dict[str, Path]
+    permission: AgentTouchScope
+    run_agents: bool
+    #: The launcher session every web-started run is recorded under (one per machine).
+    session: str
     runs: WebRuns
     environment: dict[str, str]
     #: How to run this installation's own CLI (the `interact` beside this interpreter).
@@ -85,22 +97,37 @@ class MachineAgents(BaseModel):
         return (found,)
 
     def answer(self, request: MachineAgentRequest) -> MachineAgentAnswer:
-        if not self.config.run_agents:
+        if not self.run_agents:
             raise PermissionError("agents are off on this computer; its owner turns them on there with `interact machine agents on`")
-        roots = self.roots()
-        if not roots:
+        if not self.roots:
             raise PermissionError("no agent folders on this computer yet; its owner adds some there with `interact machine agent-roots <folder>`")
-        return {"folders": self._folders, "runs": self._runs, "tail": self._tail, "start": self._start, "send": self._send, "stop": self._stop}[request.op](request, roots)
-
-    def roots(self) -> dict[str, Path]:
-        base = self.config.working_directory.resolve()
-        return {root.relative_to(base).as_posix(): root for root in self.config.usable_agent_roots()[0]}
+        match request:
+            case AgentFoldersRequest():
+                return self._folders(request)
+            case AgentRunsRequest():
+                return self._runs(request)
+            case AgentTailRequest():
+                return self._tail(request)
+            case AgentStartRequest():
+                return self._start(request)
+            case AgentSendRequest():
+                return self._send(request)
+            case AgentStopRequest():
+                return self._stop(request)
 
     @staticmethod
-    def folder(roots: dict[str, Path], root: str, path: str) -> Path:
+    def roles() -> tuple[str, ...]:
+        """The roles `interact agents spawn --agent` accepts here: the launcher's active catalog."""
+        try:
+            return tuple(sorted(load_policy().agents))[:500]
+        except (OSError, ValueError, RuntimeError) as error:
+            logger.warning("agent roles unavailable: %s", error)
+            return ()
+
+    def folder(self, root: str, path: str) -> Path:
         """`path` beneath agent root `root`, walked part by part: every part a plain, unhidden
         folder, never a link. Raises PermissionError otherwise."""
-        base = roots.get(root)
+        base = self.roots.get(root)
         if base is None:
             raise PermissionError(f"{root!r} is not an agent folder on this computer")
         current = base
@@ -116,11 +143,11 @@ class MachineAgents(BaseModel):
                 raise PermissionError(f"{root}/{path} is not a plain folder (links are never followed)")
         return current
 
-    def _folders(self, request: MachineAgentRequest, roots: dict[str, Path]) -> MachineAgentAnswer:
-        permission = self.config.agent_permission
+    def _folders(self, request: AgentFoldersRequest) -> MachineAgentAnswer:
+        permission, roots = self.permission, tuple(sorted(self.roots))
         if not request.root:
-            return MachineAgentAnswer(request_id=request.id, roots=tuple(sorted(roots)), permission=permission)
-        target = self.folder(roots, request.root, request.path)
+            return MachineAgentAnswer(request_id=request.id, roots=roots, permission=permission, roles=self.roles())
+        target = self.folder(request.root, request.path)
         names = []
         with os.scandir(target) as entries:
             for entry in entries:
@@ -128,19 +155,18 @@ class MachineAgents(BaseModel):
                     names.append(entry.name)
         names.sort(key=str.lower)
         folders = tuple(MachineFileEntry(name=name, kind="folder") for name in names[:500])
-        return MachineAgentAnswer(request_id=request.id, roots=tuple(sorted(roots)), entries=folders, truncated=len(names) > 500, permission=permission)
+        return MachineAgentAnswer(request_id=request.id, roots=roots, entries=folders, truncated=len(names) > 500, permission=permission)
 
     def _allowed(self) -> tuple[dict[str, WebRun], list[reg.AgentRun]]:
         started = {str(item.run_id): item for item in self.runs.read()}
         return started, reg.trees(frozenset(started))
 
-    def _runs(self, request: MachineAgentRequest, roots: dict[str, Path]) -> MachineAgentAnswer:
+    def _runs(self, request: AgentRunsRequest) -> MachineAgentAnswer:
         started, runs = self._allowed()
-        base = self.config.working_directory.resolve()
         found = []
         for run in runs[:200]:
             placed = started.get(run.run_id)
-            root, path = (placed.root, placed.path) if placed else self._place(run.cwd, base)
+            root, path = (placed.root, placed.path) if placed else self._place(run.cwd)
             found.append(MachineAgentRun(
                 run_id=UUID(run.run_id), name=run.name[:120], role=(run.agent or None) and run.agent[:80], provider=run.provider[:40],
                 model=run.model and run.model[:120], status=run.status, root=root[:240], path=path[:1024], task=run.task[:8000],
@@ -149,14 +175,16 @@ class MachineAgents(BaseModel):
             ))
         return MachineAgentAnswer(request_id=request.id, runs=tuple(found))
 
-    @staticmethod
-    def _place(cwd: str, base: Path) -> tuple[str, str]:
+    def _place(self, cwd: str) -> tuple[str, str]:
+        """(agent root, path beneath it) of a folder a launched child works in; ("", "") elsewhere."""
         try:
-            relative = Path(cwd).resolve().relative_to(base).as_posix()
-        except (ValueError, OSError):
+            folder = Path(cwd).resolve()
+        except OSError:
             return "", ""
-        root, _, path = relative.partition("/")
-        return root, path
+        for name, root in self.roots.items():
+            if folder == root or root in folder.parents:
+                return name, "" if folder == root else folder.relative_to(root).as_posix()
+        return "", ""
 
     def _require_run(self, run_id: UUID) -> reg.AgentRun:
         _, runs = self._allowed()
@@ -165,8 +193,7 @@ class MachineAgents(BaseModel):
             raise PermissionError("this run was not started from the web on this computer")
         return run
 
-    def _tail(self, request: MachineAgentRequest, roots: dict[str, Path]) -> MachineAgentAnswer:
-        assert request.run_id is not None
+    def _tail(self, request: AgentTailRequest) -> MachineAgentAnswer:
         self._require_run(request.run_id)
         path = reg.events_path(str(request.run_id))
         try:
@@ -183,9 +210,13 @@ class MachineAgents(BaseModel):
         if skipped:
             newline = data.find(b"\n")
             data, start = (data[newline + 1:], start + newline + 1) if newline >= 0 else (b"", end)
-        whole = data.rfind(b"\n") + 1  # a line still being written is read next time
+        # Whole lines only (one still being written is read next time), at most TAIL_LINES: the
+        # cursor stops right after the last line sent, so the next read continues from there.
+        whole, count = 0, 0
+        while count < TAIL_LINES and (newline := data.find(b"\n", whole)) >= 0:
+            whole, count = newline + 1, count + 1
         lines = tuple(line.decode("utf-8", "replace") for line in data[:whole].split(b"\n") if line)
-        return MachineAgentAnswer(request_id=request.id, lines=lines[-4000:], cursor=start + whole, truncated=skipped)
+        return MachineAgentAnswer(request_id=request.id, lines=lines, cursor=start + whole, truncated=skipped)
 
     def _run_cli(self, *arguments: str, timeout: float) -> subprocess.CompletedProcess[str]:
         return subprocess.run([*self.cli, *arguments], env=self.environment, capture_output=True, text=True, timeout=timeout, check=False, stdin=subprocess.DEVNULL)
@@ -194,17 +225,16 @@ class MachineAgents(BaseModel):
     def _first_line(text: str) -> str:
         return next((line.strip() for line in text.splitlines() if line.strip()), "")[:400]
 
-    def _start(self, request: MachineAgentRequest, roots: dict[str, Path]) -> MachineAgentAnswer:
+    def _start(self, request: AgentStartRequest) -> MachineAgentAnswer:
         _, runs = self._allowed()
         working = sum(1 for run in runs if run.status in {"running", "waiting"})
         if working >= LIVE_WEB_RUNS:
             raise PermissionError(f"{working} agents started from the web are already working on this computer; stop one first")
-        folder = self.folder(roots, request.root, request.path)
-        arguments = ["agents", "spawn", request.text, "--agent", str(request.role), "--cwd", str(folder),
-                     "--permission-mode", self.config.agent_permission, "--session-id", f"web-{self.config.machine_id}"]
-        if request.provider is not None:
-            arguments += ["--provider", request.provider]
-        done = self._run_cli(*arguments, timeout=120)
+        folder = self.folder(request.root, request.path)
+        options = ["--agent", request.role, "--cwd", str(folder), "--permission-mode", self.permission, "--session-id", self.session,
+                   *(["--provider", request.provider] if request.provider is not None else [])]
+        # "--" ends the options: a brief starting with "-" (a markdown bullet, "--help") is the brief.
+        done = self._run_cli("agents", "spawn", *options, "--", request.text, timeout=120)
         output = done.stdout.strip().splitlines()
         try:
             run_id = UUID(output[-1].strip()) if done.returncode == 0 and output else None
@@ -215,16 +245,14 @@ class MachineAgents(BaseModel):
         self.runs.add(WebRun(run_id=run_id, root=request.root, path=request.path))
         return MachineAgentAnswer(request_id=request.id, run_id=run_id)
 
-    def _send(self, request: MachineAgentRequest, roots: dict[str, Path]) -> MachineAgentAnswer:
-        assert request.run_id is not None
+    def _send(self, request: AgentSendRequest) -> MachineAgentAnswer:
         self._require_run(request.run_id)
-        done = self._run_cli("agents", "send", str(request.run_id), request.text, timeout=60)
+        done = self._run_cli("agents", "send", "--", str(request.run_id), request.text, timeout=60)
         if done.returncode != 0:
             raise RuntimeError(self._first_line(done.stdout + "\n" + done.stderr).removeprefix("ERROR: ") or f"not delivered (exit {done.returncode})")
         return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=self._first_line(done.stdout))
 
-    def _stop(self, request: MachineAgentRequest, roots: dict[str, Path]) -> MachineAgentAnswer:
-        assert request.run_id is not None
+    def _stop(self, request: AgentStopRequest) -> MachineAgentAnswer:
         run = self._require_run(request.run_id)
         if run.status not in {"running", "waiting"}:
             return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail="already ended")
