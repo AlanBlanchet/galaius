@@ -520,6 +520,29 @@ def test_command_preserves_owner_changes_and_persists_replay_protection(tmp_path
         asyncio.run(runner._execute(AsyncMock(), connected, command))
 
 
+@pytest.mark.parametrize(("run_agents", "status"), [(False, "failed"), (True, "succeeded")])
+def test_an_agent_step_runs_only_once_the_owner_turned_agents_on_here(tmp_path, monkeypatch, run_agents, status):
+    """`interact login` adds a computer with agent steps off: a signed agent command is refused
+    until `interact machine agents on` on that computer, and the agent CLI never starts."""
+    from interact.machines import AgentRevisionRef
+    from interact_core import AgentImplementation
+
+    runner = MachineRunner(tmp_path / "config" / "machine.json")
+    connected = _config(tmp_path, "read_only").model_copy(update={"run_agents": run_agents})
+    runner.save(connected)
+    command = _signed(connected, _script_command(connected.machine_id, "python", "").model_copy(update={"inputs": {"task": "summarize"}, "config": {},
+        "workspace_id": connected.workspace_id, "impl": AgentImplementation(kind="agent", agent=AgentRevisionRef(id=uuid4(), revision=uuid4())),
+        "expires_at": datetime.now(UTC) + timedelta(seconds=30)}))
+    started = AsyncMock(return_value="done")
+    monkeypatch.setattr(runner, "_run_agent", started)
+    socket = AsyncMock()
+    asyncio.run(runner._execute(socket, connected, command))
+    result = json.loads(socket.send.await_args_list[-1].args[0])["result"]
+    assert (result["status"], started.await_count) == (status, int(run_agents))
+    if not run_agents:
+        assert "interact machine agents on" in result["error"]
+
+
 @pytest.mark.parametrize("state", ["missing", "corrupt", "permissions"])
 def test_unreadable_current_config_never_falls_back_to_connected_roots(tmp_path, state):
     runner = MachineRunner(tmp_path / "config" / "machine.json")
@@ -558,7 +581,7 @@ async def test_data_query_answers_during_command_and_commands_stay_serial(tmp_pa
     runner = MachineRunner()
     runner.heartbeat_seconds = 3600
     for name in ("_runtimes", "_accelerators", "_functions"):
-        monkeypatch.setattr(runner, name, lambda: [])
+        monkeypatch.setattr(runner, name, lambda *_: [])
     monkeypatch.setattr(runner, "_resources", lambda _: {})
     config = _config(tmp_path, "full_access")
     runner.save(config)
@@ -622,7 +645,7 @@ async def test_a_new_enrollment_on_disk_reconnects_with_its_token(tmp_path, monk
     runner = MachineRunner()
     runner.heartbeat_seconds = 0.05
     for name in ("_runtimes", "_accelerators", "_functions"):
-        monkeypatch.setattr(runner, name, lambda: [])
+        monkeypatch.setattr(runner, name, lambda *_: [])
     monkeypatch.setattr(runner, "_resources", lambda _: {})
     config = _config(tmp_path, "read_only")
     runner.save(config)

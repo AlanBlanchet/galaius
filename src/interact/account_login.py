@@ -22,8 +22,8 @@ from typing import ClassVar, Literal
 from urllib.parse import urlsplit
 
 import httpx
-from interact_core import DeviceLoginIssued, DeviceLoginStart, DeviceLoginStarted, ReleaseInfo
-from pydantic import BaseModel, ConfigDict
+from interact_core import DeviceLoginIssued, DeviceLoginStart, DeviceLoginStarted, DeviceTokenRefusal, MachineSummary, ReleaseInfo
+from pydantic import BaseModel, ConfigDict, TypeAdapter
 
 from interact import USER_AGENT, __version__
 from interact.agents.catalog_connection import CatalogConnection
@@ -43,8 +43,7 @@ class UserService(BaseModel):
 
     @property
     def path(self) -> Path:
-        base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-        return base / "systemd" / "user" / self.name
+        return MachineRunner.default_config_path().parent.parent / "systemd" / "user" / self.name
 
     @staticmethod
     def executable() -> Path:
@@ -55,13 +54,15 @@ class UserService(BaseModel):
             raise LoginError("cannot find the interact program to start at boot; install it with the line from your Interact page")
         return found.absolute()
 
-    def unit(self, workspace: str) -> str:
+    def unit(self) -> str:
+        """Nothing the server sent goes in here: a unit line is a command line."""
+        program = str(self.executable()).replace("%", "%%").replace("\\", "\\\\").replace('"', '\\"')
         return (
             "[Unit]\n"
-            f"Description=Interact: this computer as a machine of {workspace}\n"
+            "Description=Interact: this computer as a machine of your account\n"
             "After=network-online.target\nWants=network-online.target\n\n"
             "[Service]\n"
-            f"ExecStart={self.executable()} machine connect\n"
+            f'ExecStart="{program}" machine connect\n'
             # A revoked computer exits 0 and stays stopped; a crash or lost network restarts it.
             "Restart=on-failure\nRestartSec=10\n\n"
             "[Install]\nWantedBy=default.target\n"
@@ -71,12 +72,12 @@ class UserService(BaseModel):
     def _systemctl(*arguments: str) -> subprocess.CompletedProcess:
         return subprocess.run(["systemctl", "--user", *arguments], capture_output=True, text=True, timeout=30)
 
-    def install(self, workspace: str) -> str | None:
+    def install(self) -> str | None:
         """Write, enable and start the unit; the reason it could not, else None."""
         if shutil.which("systemctl") is None:
             return "this computer has no systemd"
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(self.unit(workspace), encoding="utf-8")
+        self.path.write_text(self.unit(), encoding="utf-8")
         for arguments in (("daemon-reload",), ("enable", "--now", self.name)):
             done = self._systemctl(*arguments)
             if done.returncode != 0:
@@ -109,8 +110,8 @@ class AccountLogin(BaseModel):
 
     @staticmethod
     def remembered_path() -> Path:
-        base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-        return base / "interact" / "login-server"
+        """Written by the server's install script."""
+        return MachineRunner.default_config_path().parent / "login-server"
 
     @classmethod
     def at(cls, server: str | None) -> "AccountLogin":
@@ -149,8 +150,8 @@ class AccountLogin(BaseModel):
         system = self.platforms.get(platform.system())
         if system is None:
             raise LoginError(f"{platform.system()} is not supported yet")
-        request = DeviceLoginStart(client_name=name, platform=system, client_version=__version__)
-        answer = http.post("/v1/device/authorizations" + ("?runs=1" if runs else ""), json=request.model_dump(mode="json"))
+        request = DeviceLoginStart(client_name=name, platform=system, client_version=__version__, runs=runs)
+        answer = http.post("/v1/device/authorizations", json=request.model_dump(mode="json"))
         if answer.status_code == 429:
             raise LoginError("too many sign-in attempts from this network; wait a minute and try again")
         if answer.status_code != 201:
@@ -167,7 +168,10 @@ class AccountLogin(BaseModel):
                 continue  # the server is restarting or the network blinked: ask again next turn
             if answer.status_code == 200:
                 return DeviceLoginIssued.model_validate_json(answer.content)
-            error = answer.json().get("error") if answer.headers.get("content-type", "").startswith("application/json") else None
+            try:
+                error = DeviceTokenRefusal.model_validate_json(answer.content).error if answer.status_code == 400 else None
+            except ValueError:
+                error = None
             if error == "slow_down":
                 interval += 5
             elif error == "access_denied":
@@ -196,8 +200,8 @@ class AccountLogin(BaseModel):
         deadline = time.monotonic() + within
         while time.monotonic() < deadline:
             try:
-                machines = http.get(f"/v1/workspaces/{issued.workspace.id}/machines", headers=headers).json()
-                if any(item.get("id") == str(issued.machine.id) and item.get("state") == "online" for item in machines):
+                machines = TypeAdapter(tuple[MachineSummary, ...]).validate_json(http.get(f"/v1/workspaces/{issued.workspace.id}/machines", headers=headers).content)
+                if any(item.id == issued.machine.id and item.state == "online" for item in machines):
                     return True
             except (httpx.HTTPError, ValueError):
                 pass
@@ -220,7 +224,30 @@ def _existing_machine() -> MachineConfig | None:
         return None
 
 
+def _shown(value: str) -> str:
+    """Server text as one plain terminal line: no escape sequence or line break reaches the screen."""
+    return "".join(character if character.isprintable() else "?" for character in value)
+
+
+def _confirmed(question: str) -> bool:
+    """Yes only for an explicit y; no terminal, Ctrl-D or Ctrl-C answer no."""
+    if not sys.stdin.isatty():
+        return False
+    try:
+        return input(question).strip().lower() in {"y", "yes"}
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+
+
 def login(server: str | None, *, allow_runs: bool, yes: bool, open_browser: bool) -> None:
+    try:
+        _login(server, allow_runs=allow_runs, yes=yes, open_browser=open_browser)
+    except httpx.HTTPError as error:
+        raise LoginError(f"cannot reach the server ({type(error).__name__}); check the address and your network, then run it again") from None
+
+
+def _login(server: str | None, *, allow_runs: bool, yes: bool, open_browser: bool) -> None:
     account = AccountLogin.at(server)
     existing = _existing_machine()
     if existing is not None:
@@ -235,23 +262,20 @@ def login(server: str | None, *, allow_runs: bool, yes: bool, open_browser: bool
             webbrowser.open(started.verification_uri_complete)
         print("Waiting for approval…", flush=True)
         issued = account.wait(http, started)
-        print(f"\nApproved by {issued.approved_by} for the company “{issued.workspace.name}”.")
-        if not yes:
-            if not sys.stdin.isatty():
-                account.revoke(http, issued.api_key.secret.get_secret_value())
-                raise LoginError("confirm in a terminal, or pass --yes")
-            if input("Connect this computer to it? [y/N] ").strip().lower() not in {"y", "yes"}:
-                account.revoke(http, issued.api_key.secret.get_secret_value())
-                raise LoginError("not connected; the approval was withdrawn")
+        company, approver = _shown(issued.workspace.name), _shown(issued.approved_by)
+        print(f"\nApproved by {approver} for the company “{company}”.")
+        if not yes and not _confirmed(f"Connect this computer to “{company}”? [y/N] "):
+            account.revoke(http, issued.api_key.secret.get_secret_value())
+            raise LoginError("not connected; the approval was withdrawn" if sys.stdin.isatty() else "confirm in a terminal, or pass --yes (the approval was withdrawn)")
         account.save(issued)
         service = UserService()
-        refused = service.install(issued.workspace.name)
+        refused = service.install()
         if refused is not None:
             print(f"Could not start it in the background ({refused}). Keep it connected with:  interact machine connect", file=sys.stderr)
         elif not account.online(http, issued):
             print("Started, but the server does not see it online yet. Check:  systemctl --user status interact-machine", file=sys.stderr)
         else:
-            print(f"Connected: {issued.machine.name} is now a machine in {issued.workspace.name}")
+            print(f"Connected: {issued.machine.name} is now a machine in {company}")
             if not service.linger():
                 print("It runs while you are signed in to this computer.")
         print("Workflows can reach no folder here yet. To share one:  interact machine file-roots <folder under your home>")
@@ -268,8 +292,11 @@ def logout() -> None:
         key = read_prompt_token(connection.token_file)
     except ValueError:
         key = None  # already gone: nothing to revoke from here
-    with account.client() as http:
-        revoked = account.revoke(http, key) if key is not None else {}
+    try:
+        with account.client() as http:
+            revoked = account.revoke(http, key) if key is not None else {}
+    except httpx.HTTPError as error:
+        raise LoginError(f"cannot reach {account.server} ({type(error).__name__}); nothing was removed here, run it again") from None
     UserService().remove()
     if machine is not None and machine.server_url == account.server:
         MachineRunner.default_config_path().unlink(missing_ok=True)

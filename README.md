@@ -128,34 +128,25 @@ order; each one ends with a check.
 3. **Get the server address from the user.** It is their Interact server — never guess it. A server
    that listens only on its own host's loopback is reached through an SSH tunnel the user opens:
    `ssh -fN -L 127.0.0.1:8817:127.0.0.1:8817 <server-host>`, then the address is `http://127.0.0.1:8817`.
+   (A computer installed with the line from the server's own Machines page skips steps 2–3: it
+   installs the server's own build and remembers its address.)
 
-4. **Sign in**
-
-   ```bash
-   interact agents sync --endpoint <server-url> --preview
-   # HTTPS server: --endpoint https://<server> --token-file <private-token-file> --workspace <workspace-id>
-   ```
-
-   Check: prints `"status": "current"` and the number of agents.
-
-5. **Connect this machine.** In the server's web app open **Connections → Machines → Connect a
-   machine**. The page shows a one-time token and the exact `interact machine connect …` command.
-   Run that command with `--configure-only` added (it asks for the token), then keep it connected
-   as a user service (Linux, systemd):
+4. **Sign in and connect this computer** (Linux, systemd)
 
    ```bash
-   interact machine connect --server <server-url> --workspace <workspace-id> --machine <machine-id> \
-     --permission-ceiling full_access --configure-only
-   mkdir -p ~/.config/systemd/user
-   curl -LsSf -o ~/.config/systemd/user/interact-machine.service \
-     https://raw.githubusercontent.com/AlanBlanchet/interact/main/systemd/interact-machine.service
-   systemctl --user daemon-reload && systemctl --user enable --now interact-machine
+   interact login --server <server-url>
    ```
 
-   Check: the machine shows **online** under Connections → Machines.
+   It prints a code and a page to open; the user signs in there and allows this computer, then
+   answers `y`. The computer becomes a machine of the chosen company, kept connected by the
+   `interact-machine` user service, and the CLI is signed in for `interact agents` /
+   `interact workflows` (read only; `--allow-runs` also lets it start runs).
 
-Coming next: `interact login --server <server-url>` replaces steps 4–5 with one approval in the
-browser.
+   Check: prints `Connected: <this computer> is now a machine in <company>`.
+
+   A computer added this way reaches no folder and runs no agent step until its owner allows it,
+   on that computer: `interact machine file-roots <folder under home>`, `interact machine agents on`.
+   `interact logout` removes it from the company and stops the service.
 
 ## Ask your agent
 

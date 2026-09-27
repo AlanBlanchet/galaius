@@ -678,7 +678,7 @@ class MachineRunner:
                 ) as socket:
                     delay_index = 0
                     logger.info("connected to %s", endpoint, extra={"machine_id": config.machine_id, "workspace_id": config.workspace_id})
-                    await socket.send(json.dumps({"type": "hello", "features": list(self.FEATURES), "runtimes": self._runtimes(), "accelerators": self._accelerators(), "functions": self._functions(), "resources": self._resources(config.working_directory), "file_roots": self._file_roots(config)}))
+                    await socket.send(json.dumps({"type": "hello", "features": list(self.FEATURES), "runtimes": self._runtimes(config), "accelerators": self._accelerators(), "functions": self._functions(), "resources": self._resources(config.working_directory), "file_roots": self._file_roots(config)}))
                     if await self._serve(socket, config):
                         return
             except EnrollmentChanged:
@@ -1268,7 +1268,10 @@ class MachineRunner:
         return {key: value for key, value in os.environ.items() if key in fixed or key in ALLOWED_ENV or key.startswith("LC_")}
 
     @staticmethod
-    def _runtimes() -> list[dict[str, str]]:
+    def _runtimes(config: MachineConfig) -> list[dict[str, str]]:
+        """The agent CLIs the server may place agent steps on: none while agent steps are off here."""
+        if not config.run_agents:
+            return []
         return [MachineRuntime(provider=provider.name).model_dump(mode="json", exclude_none=True) for provider in agent_providers.PROVIDERS.values() if provider.name in {"claude", "codex"} and provider.available()]
 
     @staticmethod
@@ -1331,7 +1334,7 @@ class MachineRunner:
     async def _heartbeat(self, socket, config: MachineConfig) -> None:
         while True:
             await asyncio.sleep(self.heartbeat_seconds)
-            await socket.send(json.dumps({"type": "heartbeat", "runtimes": self._runtimes(), "accelerators": self._accelerators(), "functions": self._functions(), "resources": self._resources(config.working_directory), "file_roots": self._file_roots(config)}))
+            await socket.send(json.dumps({"type": "heartbeat", "runtimes": self._runtimes(config), "accelerators": self._accelerators(), "functions": self._functions(), "resources": self._resources(config.working_directory), "file_roots": self._file_roots(config)}))
 
     def _file_roots(self, connected: MachineConfig) -> list[str]:
         """The folders file nodes may use, as the machine file on disk says NOW: an owner's
