@@ -233,6 +233,14 @@ class MachineAgents(BaseModel):
     def _first_line(text: str) -> str:
         return next((line.strip() for line in text.splitlines() if line.strip()), "")[:400]
 
+    @staticmethod
+    def _said(text: str) -> str:
+        """The CLI's refusal on one line: its first line, then each DISTINCT reason once (a
+        ranked-candidates refusal repeats one reason per model: "  codex/x/model: <reason>")."""
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        reasons = dict.fromkeys(line.split(": ", 1)[-1] for line in lines[1:])
+        return " ".join([*lines[:1], *reasons]).removeprefix("ERROR: ")[:400]
+
     def _start(self, request: AgentStartRequest) -> MachineAgentAnswer:
         _, runs = self._allowed()
         working = sum(1 for run in runs if run.status in {"running", "waiting"})
@@ -251,7 +259,7 @@ class MachineAgents(BaseModel):
         except ValueError:
             run_id = None
         if run_id is None:
-            raise RuntimeError(self._first_line(done.stderr).removeprefix("ERROR: ") or f"the agent did not start (exit {done.returncode})")
+            raise RuntimeError(self._said(done.stderr) or f"the agent did not start (exit {done.returncode})")
         self.runs.add(WebRun(run_id=run_id, root=request.root, path=request.path))
         return MachineAgentAnswer(request_id=request.id, run_id=run_id)
 
@@ -259,7 +267,7 @@ class MachineAgents(BaseModel):
         self._require_run(request.run_id)
         done = self._run_cli("agents", "send", "--", str(request.run_id), request.text, timeout=60)
         if done.returncode != 0:
-            raise RuntimeError(self._first_line(done.stdout + "\n" + done.stderr).removeprefix("ERROR: ") or f"not delivered (exit {done.returncode})")
+            raise RuntimeError(self._said(done.stdout + "\n" + done.stderr) or f"not delivered (exit {done.returncode})")
         return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=self._first_line(done.stdout))
 
     def _stop(self, request: AgentStopRequest) -> MachineAgentAnswer:
