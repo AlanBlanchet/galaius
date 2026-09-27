@@ -26,7 +26,10 @@ from interact_core import DeviceLoginIssued, DeviceLoginStart, DeviceLoginStarte
 from pydantic import BaseModel, ConfigDict, TypeAdapter
 
 from interact import USER_AGENT, __version__
+from interact.agents.catalog import AgentCatalog
 from interact.agents.catalog_connection import CatalogConnection
+from interact.cli.prompts import PromptMode
+from interact.server_prompts import ServerPrompts
 from interact.machines import MachineConfig, MachineRunner
 from interact.prompt_secret import read_prompt_token
 
@@ -115,13 +118,22 @@ class AccountLogin(BaseModel):
 
     @classmethod
     def at(cls, server: str | None) -> "AccountLogin":
-        """`server`, else the one the installer remembered."""
+        """`server`, else the one remembered (by the server's installer or an earlier login), else
+        asked once in the terminal; a bare host means https."""
         if server is None:
             try:
                 server = cls.remembered_path().read_text(encoding="utf-8").strip()
             except FileNotFoundError:
-                raise LoginError("which Interact server? Run the install line from your Interact page, or pass --server https://…") from None
-        parts = urlsplit(server.strip())
+                if not sys.stdin.isatty():
+                    raise LoginError("which Interact server? Pass --server https://…") from None
+                try:
+                    server = input("Interact server address (e.g. https://interact.example.com): ").strip()
+                except (EOFError, KeyboardInterrupt):
+                    raise LoginError("no server given") from None
+        server = server.strip()
+        if "://" not in server:
+            server = f"https://{server}"
+        parts = urlsplit(server)
         loopback = parts.hostname in {"127.0.0.1", "localhost", "::1"}
         if parts.scheme not in ({"https", "http"} if loopback else {"https"}) or not parts.hostname or parts.username or parts.path not in {"", "/"}:
             raise LoginError(f"{server} is not an Interact server address (https://…)")
@@ -130,6 +142,30 @@ class AccountLogin(BaseModel):
     @property
     def key_path(self) -> Path:
         return CatalogConnection.path().parent / "credentials" / f"{urlsplit(self.server).netloc.replace(':', '_')}.key"
+
+    def remember(self) -> None:
+        """The next `interact login` on this computer needs no address."""
+        path = self.remembered_path()
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path.write_text(self.server + "\n", encoding="utf-8")
+
+    @staticmethod
+    def synced(connection: CatalogConnection) -> str:
+        """The account's agent catalog and prompts, installed here as `agents sync` and
+        `prompts sync` do: what was synced, or why not (the computer stays connected either way)."""
+        done = []
+        try:
+            catalog = AgentCatalog.refresh(connection)
+            catalog.connection.save()
+            done.append(f"{len(catalog.snapshot.agents)} agents")
+        except (OSError, ValueError, httpx.HTTPError) as error:
+            done.append(f"agents not synced ({type(error).__name__}; run: interact agents sync)")
+        try:
+            PromptMode.installed(ServerPrompts(connection=connection))
+            done.append("prompts installed")
+        except (OSError, ValueError, httpx.HTTPError) as error:
+            done.append(f"prompts not synced ({type(error).__name__}; run: interact prompts sync)")
+        return "Synced: " + ", ".join(done)
 
     def client(self) -> httpx.Client:
         return httpx.Client(base_url=self.server, headers={"User-Agent": USER_AGENT}, timeout=httpx.Timeout(15, connect=10), trust_env=False, follow_redirects=False)
@@ -268,6 +304,8 @@ def _login(server: str | None, *, allow_runs: bool, yes: bool, open_browser: boo
             account.revoke(http, issued.api_key.secret.get_secret_value())
             raise LoginError("not connected; the approval was withdrawn" if sys.stdin.isatty() else "confirm in a terminal, or pass --yes (the approval was withdrawn)")
         account.save(issued)
+        account.remember()
+        synced = account.synced(CatalogConnection.load())
         service = UserService()
         refused = service.install()
         if refused is not None:
@@ -276,6 +314,7 @@ def _login(server: str | None, *, allow_runs: bool, yes: bool, open_browser: boo
             print("Started, but the server does not see it online yet. Check:  systemctl --user status interact-machine", file=sys.stderr)
         else:
             print(f"Connected: {issued.machine.name} is now a machine in {company}")
+            print(synced)
             if not service.linger():
                 print("It runs while you are signed in to this computer.")
         print("Workflows can reach no folder here yet. To share one:  interact machine file-roots <folder under your home>")

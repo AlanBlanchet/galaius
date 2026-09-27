@@ -61,17 +61,22 @@ class PromptMode:
         }, separators=(",", ":")))
 
     @staticmethod
+    def installed(server: ServerPrompts) -> Path:
+        """Install the server's prompts into this computer's consumers; raises what failed."""
+        vscode_root = Path(os.environ.get(
+            "INTERACT_PROMPT_VSCODE_ROOT", Path.home() / ".config" / "Code" / "User" / "prompts"
+        ))
+        state = _state_home() / "interact" / "prompts" / "installed.json"
+        return prompt_projection.install_server_prompt_projection(
+            server.connection, _consumer_home(), vscode_root, state, state.parent / "bootstrap-adoption.json",
+        )
+
+    @staticmethod
     def project(server: ServerPrompts, *, install: bool) -> Path:
         try:
-            if not install:
-                return prompt_projection.compile_server_prompt_projection(server.connection, _consumer_home())
-            vscode_root = Path(os.environ.get(
-                "INTERACT_PROMPT_VSCODE_ROOT", Path.home() / ".config" / "Code" / "User" / "prompts"
-            ))
-            state = _state_home() / "interact" / "prompts" / "installed.json"
-            return prompt_projection.install_server_prompt_projection(
-                server.connection, _consumer_home(), vscode_root, state, state.parent / "bootstrap-adoption.json",
-            )
+            if install:
+                return PromptMode.installed(server)
+            return prompt_projection.compile_server_prompt_projection(server.connection, _consumer_home())
         except (OSError, ValueError, httpx.HTTPError):
             _editor_error("Server prompt projection failed; local recovery worktree is untouched.")
 
