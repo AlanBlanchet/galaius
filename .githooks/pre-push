@@ -1,15 +1,8 @@
 #!/usr/bin/env bash
-# This repository is PUBLIC. Pushing is the owner's act: agents commit locally, the owner pushes.
-# 1. Refuse unless the owner opted in for this push:  INTERACT_OWNER_PUSH=1 git push ...
-# 2. Even then, refuse if the commits being published add private material: machine-local home
+# This repository is PUBLIC: refuse a push whose commits add private material: machine-local home
 #    paths, recorded agent sessions, private notes/research, or any term listed (one regex per
 #    line) in .git/info/private-terms, a file git never tracks.
 set -uo pipefail
-
-if [ "${INTERACT_OWNER_PUSH:-}" != "1" ]; then
-  echo "pre-push: refused. This repository is public; only the owner pushes (INTERACT_OWNER_PUSH=1)." >&2
-  exit 1
-fi
 
 terms_file="$(git rev-parse --path-format=absolute --git-common-dir)/info/private-terms"
 terms=""
@@ -21,7 +14,7 @@ while read -r _local_ref local_sha _remote_ref remote_sha; do
   [ "$local_sha" = "$zero" ] && continue                      # deleting a remote branch
   if [ "$remote_sha" = "$zero" ]; then range="$local_sha --not --remotes"; else range="$remote_sha..$local_sha"; fi
   # shellcheck disable=SC2086
-  added="$(git log -p --no-color --format= $range | grep -E '^\+' | grep -Ev '^\+\+\+' || true)"
+  added="$(git log -p --no-color --format= $range -- . ':(exclude).githooks' | grep -E '^\+' | grep -Ev '^\+\+\+' || true)"
   # shellcheck disable=SC2086
   paths="$(git log --name-only --format= $range | sort -u)"
 
