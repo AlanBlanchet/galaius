@@ -30,6 +30,9 @@ cat <<'DONE'
   interact status     # what it's bound to + models + keys + usage
   interact doctor     # check keys / providers / Playwright / desktop
 
+Codex: run `interact install codex`, start a fresh session (or restart the IDE
+extension), then verify with `codex mcp get interact`.
+
 VS Code: also install the "Interact" extension (marketplace publisher AlanBlanchet)
 for the dashboard + settings UI — it launches the same `interact mcp` server.
 DONE

@@ -5,7 +5,7 @@ publishes. This doc is the source of truth for how versions, branches, tags, and
 
 ## Version — single source of truth
 
-`pyproject.toml` `[project].version` **is** the version. `vscode-extension/package.json` `version`
+`pyproject.toml` `[project].version` **is** the version. `clients/vscode/package.json` `version`
 must match it (the pre-commit hook and CI both fail on drift). Change them only via:
 
 ```bash

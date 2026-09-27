@@ -1,6 +1,6 @@
 [project]
 name = "interact"
-version = "0.27.0"
+version = "0.43.0"
 description = "MCP server for browser + desktop automation with vision analysis"
 readme = "README.md"
 authors = [{ name = "Alan Blanchet", email = "alan@alan-blanchet.fr" }]
@@ -9,6 +9,7 @@ license-files = ["LICENSE"]
 keywords = ["mcp", "automation", "browser", "desktop", "playwright", "vision", "agent", "llm"]
 requires-python = ">=3.11"
 dependencies = [
+    "interact-core @ git+https://github.com/AlanBlanchet/interact-core.git@12ef5eced0aac6e1645e9a311eae08e5d4ed29df",
     "cyclopts>=3.0",
     "rich>=13.0",
     "evdev>=1.9; sys_platform == 'linux'", # /dev/uinput absolute input (X11 + Wayland)
@@ -16,14 +17,19 @@ dependencies = [
     "mss>=9.0", # cross-platform screen capture for the macOS/Windows desktop backend (#24)
     "pynput>=1.7", # cross-platform pointer + keyboard for the macOS/Windows desktop backend (#24)
     "httpx>=0.28.1",
-    "litellm>=1.83.4",
-    "mcp[cli]>=1.27.0",
+    "websockets>=14,<16",
+    "litellm>=1.83.4,<2",
+    "openai>=1.0",  # imported directly (vision/core.py maps its exception tree), not only via litellm
+    "mcp[cli]>=1.27.0,<2",
     "numpy>=1.26",
     "pillow>=12.2.0",
-    "playwright>=1.58.0",
-    "pydantic-settings>=2.13.1",
+    "playwright>=1.58.0,<2",
+    "pydantic-settings>=2.13.1,<3",
+    "pyyaml>=6.0,<7",
+    "jsonschema>=4.23,<5",
     "datasets>=2.20",
     "textual>=8.2.7",
+    "huggingface_hub>=0.35",  # fetches a workspace's own huggingface_repo model weights (interact/user_models.py); no torch dependency
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -57,9 +63,18 @@ e2e = ["pytesseract>=0.3.10", "pillow>=12.2.0"]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [tool.hatch.build.targets.wheel]
-packages = ["src/interact"]
-artifacts = ["src/interact/js/*.js", "src/interact/data/*.json"]
+packages = [
+    "src/interact",
+]
+artifacts = [
+    "src/interact/js/*.js",
+    "src/interact/data/*.json",
+    "src/interact/agents/codex_app_server_schema/*.json",
+]
 
 [project.scripts]
 interact = "interact.cli:main"
@@ -67,6 +82,7 @@ interact-fetch-upstream = "interact.benchmarks.upstream:_main"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+testpaths = ["tests"]
 norecursedirs = ["tests/fixtures", "tests/e2e"]
 # Per-test timeout so a test that hangs (e.g. on Windows) FAILS with a traceback instead of
 # blocking the whole job forever. "thread" method works on Windows (signal/SIGALRM is Unix-only).

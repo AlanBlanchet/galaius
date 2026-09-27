@@ -1,8 +1,47 @@
 <p align="center">
   <a href="https://alanblanchet.github.io/interact/">
-    <img src="docs/assets/banner.png" alt="interact — give your agent eyes and hands" width="820">
+    <img src="site/assets/banner.png" alt="interact — give your agent eyes and hands" width="820">
   </a>
 </p>
+
+## Repository boundaries
+
+Interact has a public client, a shared public contracts package, and a separate server:
+
+- `src/interact` — the `interact` Python import, CLI, MCP server, automation, local
+  sessions, and explicit API routes.
+- `interact-core` — the standalone dependency-light contracts package and its generated JSON Schema,
+  shared by every surface; `clients/vscode` consumes the generated TypeScript form. In the private
+  parent workspace, its development checkout sits beside this repository under `worktrees/`.
+- `clients/vscode` owns the VS Code extension, and `site` owns the static public website.
+- `prompts/` contains distributable product defaults and their manifest. Personal prompts live in the configured account's server catalog and never enter this repository.
+
+`the hosted server` is private and holds the server side — tenants, authentication,
+billing, secrets, queues, retention, deployment, and the web gateway. It consumes a released public
+schema version and is never imported here. In the combined `workspace` workspace it is checked
+out as the sibling `the server`; the parent workspace opens all three repositories.
+
+The public package depends on the exact public `interact-core` Git revision declared in `pyproject.toml`.
+It installs without a sibling checkout. To work on both packages locally, use
+`uv run --with-editable ../interact-core interact --help` from this repository.
+Local-session and local-compute routes
+stay distinct from separately billed `metered_api` routes; failure never silently crosses that
+charge boundary, and a vendor subscription is not described as universally free.
+
+### Prompt distribution
+
+With a configured server, `interact prompts` reads and saves immutable personal prompt revisions
+through that server. Installed provider instructions and local catalogs are rebuildable caches.
+The older worktree at `${XDG_DATA_HOME:-~/.local/share}/interact/prompts` remains recovery evidence;
+server-connected writes do not overwrite it. Standalone local authoring remains available when no
+server is configured. `prompts/manifest.json` here defines shipped product defaults, digest-validated
+before publication.
+`interact.prompt_client._PromptClient.sync(account, cache)` downloads the authenticated typed catalog
+and exact immutable revisions into an account-scoped `_PromptCache`. A conversation start may carry a
+`PromptSelection` beside the ordinary `prompt`: the console resolves it, sends the verified content as
+the provider's system instruction, and persists the server-derived `PromptExecutionRef` on `AgentRun`.
+Missing, oversized, unauthorized, or mismatched revisions fail before provider startup — they never
+select another prompt or charge route.
 
 <p align="center">
   <b>Browser <i>and</i> desktop automation for AI agents — over MCP.</b><br>
@@ -30,11 +69,11 @@
 Your agent clicks a filter, types a search, adds to a cart. Each caption is the tool call that ran
 and the text that came back — that text is all your model sees.
 
-<p align="center"><img src="docs/assets/demo-browser.gif" alt="An agent driving a web store: clicking the Audio filter narrows the list to 2 products, typing 'field' narrows it to 1, and Add to cart takes the cart from 0 to 1" width="760"></p>
+<p align="center"><img src="site/assets/demo-browser.gif" alt="An agent driving a web store: clicking the Audio filter narrows the list to 2 products, typing 'field' narrows it to 1, and Add to cart takes the cart from 0 to 1" width="760"></p>
 
 The same tools drive a **real desktop app** — `launch_app` puts it in an isolated display the agent owns.
 
-<p align="center"><img src="docs/assets/demo-desktop.gif" alt="An agent launching gnome-calculator into interact's sandbox and clicking 7 x 6 = , the app showing 42" width="380"></p>
+<p align="center"><img src="site/assets/demo-desktop.gif" alt="An agent launching gnome-calculator into interact's sandbox and clicking 7 x 6 = , the app showing 42" width="380"></p>
 
 ## 60-second quickstart
 
@@ -42,14 +81,20 @@ The same tools drive a **real desktop app** — `launch_app` puts it in an isola
 # 1. install the `interact` command (installs uv if missing)
 curl -LsSf https://raw.githubusercontent.com/AlanBlanchet/interact/main/install.sh | sh
 
-# 2. register it with your agent
-interact install claude     # or: cursor · vscode · copilot · codex · windsurf · zed · claude-desktop
+# 2. register it with Codex
+interact install codex
 
-# 3. check keys, providers, browser, desktop
+# 3. start a fresh Codex session (or restart the IDE extension), then verify
+codex mcp get interact
+
+# 4. check keys, providers, browser, desktop
 interact doctor
 ```
 
 That's it — your agent can now navigate, click, type, scroll, drag, see, hear and watch.
+
+Other hosts use the same bootstrap: `interact install claude`, `cursor`, `vscode`, `copilot`,
+`windsurf`, `zed`, or `claude-desktop`.
 
 <details>
 <summary>Other install routes (Windows, no-install, VS Code)</summary>
@@ -100,10 +145,50 @@ One tool per job. The generic ones take a `target` — unset for the browser, a 
 
 ### Models and keys
 
-Run `interact` with no arguments for a terminal UI to set models and API keys. Models default to
-**auto** — a capable, cheaper-first pick per job from the providers you have keys for, falling back if
-one errors. `interact status` prints what each role resolves to and what you've spent; settings live
-in `~/.interact/config.env`.
+Visual jobs select your installed, authenticated **Claude Code session transport by
+default**—including screenshot descriptions, element grounding, `review_ui` / `verify_ui`, and
+sampled video/interaction analysis. Session dispatch is blocked until the explicit operator
+attestation below. No API key is needed, and `session_only` prevents interact from falling through
+to a metered API, but vendor CLIs can consume account-side credits after included plan usage.
+
+Before enabling sessions, open Claude **Settings → Usage**, keep Usage credits disabled, ensure the
+prepaid balance is zero, and turn auto-reload off ([Anthropic's usage-credit controls](https://support.claude.com/en/articles/12429409-manage-usage-credits-for-paid-claude-plans)). Anthropic's announced Agent SDK /
+`claude -p` monthly-credit change was paused on June 16; `claude -p` continues to draw plan
+usage limits ([Anthropic's paused-change notice](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan)), but the account-side Usage-credit controls still require this guard. CLI authentication cannot verify these account settings, and a later change is a residual race interact cannot detect.
+Video sessions receive ordered, timestamped frames (up to the configured frame cap; 12 by default),
+rather than uploading the original clip.
+
+The transport and spending policy are separate, explicit settings:
+
+```bash
+# Session transport, with no metered API fallback by interact.
+interact config set media.backend auto               # auto | session | api
+interact config set media.billing session_only       # session_only | api_allowed
+interact config set media.providerOrder claude
+
+# Only after disabling each named provider's account-side credits as described above:
+interact config set media.noExtraUsageConfirmedFor claude
+
+# Optional session model pins and process timeout.
+interact config set media.claudeModel <claude-model>
+interact config set media.timeout 120
+```
+
+Without that attestation, `session` is blocked; `auto+api_allowed` skips sessions and uses the
+explicitly permitted API instead. To opt into metered visual fallback, set
+`media.billing=api_allowed` and keep `media.backend=auto`; set `media.backend=api` to use only
+the API. An explicit model override must belong to the selected provider—it is never silently
+ignored.
+
+Audio is the deliberate boundary: Claude visual sessions do not transcribe or hear audio.
+With `session_only`, `transcribe` fails before any API call. With
+`media.billing=api_allowed`, audio always uses the configured `audio.model` API or local-compatible
+transport, even when `media.backend=session`; after a transcription-only model produces text, a
+Claude session may answer questions over that transcript.
+
+Run `interact status` to see the media backend, billing policy, ordered CLI availability, API/local
+models, and usage. Run `interact` with no arguments for the terminal configuration UI. Settings live
+in `~/.interact/config.env` and are also exposed by the VS Code extension.
 
 ## Platform support
 
@@ -128,6 +213,18 @@ uv run pytest -m "not integration"      # fast, cross-platform suite
 uv tool install --force --editable .    # put your checkout's `interact` on PATH
 ```
 
+When an MCP process is already serving your editor, preserve its environment. Build the public
+and core wheels, then install a separate runtime and switch future CLI/MCP launches:
+
+```sh
+python scripts/install_runtime.py --public-wheel /absolute/path/interact.whl --core-wheel /absolute/path/interact_core.whl
+```
+
+The installer verifies package metadata and import location, retains the previous environment,
+and records its former launcher target. Activation briefly removes the launcher link before
+creating its replacement; a concurrent replacement is preserved. Running MCP connections keep their loaded code until
+you reconnect them; the installer does not reload the editor.
+
 CI runs the suite on Linux/macOS/Windows plus a sandboxed Linux desktop job; on push to `main` it tags
 and publishes the release from `pyproject.toml`'s version (see [RELEASING.md](RELEASING.md)).
 
@@ -139,3 +236,86 @@ Issues and PRs welcome. Please add a failing test for a bug before fixing it, ke
 ## License
 
 [MIT](LICENSE) © Alan Blanchet
+
+## Server-owned agent definitions
+
+A configured launcher reads agent definitions, model criteria, reasoning effort, tool bindings
+and exact prompt revisions from the server. Local snapshots and generated skill files are
+replaceable caches. Transport failures may use a previously verified snapshot with a visible
+`STALE` notice; authentication or workspace refusal disables cached access.
+
+To connect an existing loopback preview, including an SSH tunnel to a remote server:
+
+```bash
+interact agents sync --endpoint http://127.0.0.1:8817 --preview
+interact agents definitions codex
+```
+
+For the existing token authentication path, pass `--token-file /absolute/private/token-file`
+in place of `--preview` and select `--workspace WORKSPACE_UUID`. The token file must satisfy
+the existing private-file checks. Remote origins require HTTPS; preview login is loopback only.
+Connection settings, private session cookies and catalog content are stored separately.
+
+A parent's delegated capability pins an exact child revision. Use `--delegate CAPABILITY`
+with `--parent-run-id RUN_UUID`, or an explicit `--agent-id UUID --agent-revision UUID`.
+The launcher retrieves historical agent and prompt records when needed, verifies their identity
+and digest, and never substitutes a newer head for a missing pin. Continuations retain the
+original selected revision. Server-side edits appear on the next sync or launch.
+
+Without a configured server catalog, existing local role policy and definitions remain available.
+
+## Run workflows from scripts
+
+A server workflow can be one step of your own script: start it, wait for its end, continue with
+its outputs. Both entry points use the connection made by `interact agents sync` (preview session
+or workspace API key token file).
+
+From a shell — progress goes to stderr, the result JSON to stdout:
+
+```bash
+summary=$(interact workflows run "Write a report" --input topic=Q3 --download ./out) || exit
+echo "$summary" | jq -r .outputs.answer
+```
+
+| exit | meaning |
+| :-: | --- |
+| 0 | run succeeded (with `--detach`: run accepted) |
+| 1 | run ended failed, cancelled or interrupted |
+| 2 | run could not be started, followed or its files saved (unknown workflow, refused, inputs rejected, unreachable, `--timeout`, file digest mismatch, a different file already there without `--overwrite`) |
+| 130 | Ctrl-C: the CLI stopped waiting, the run goes on (`interact workflows wait RUN_ID`) |
+
+`--input name=value` repeats (the value is JSON when it parses, text otherwise); `--input-json
+FILE` (`-` for stdin) passes an object. `--detach` returns at once; `interact workflows wait
+RUN_ID` follows that run later. `--idempotency-key KEY` makes a retried script get back the run
+that key already started. See `interact workflows run --help`.
+
+From Python:
+
+```python
+from interact.client import Client
+
+run = Client().workflows.run("Write a report", inputs={"topic": "Q3"})
+print(run.outputs["answer"])          # raises WorkflowRunFailed unless the run succeeded
+run.download("report", "./out")       # a file output, saved under its path, sha256-checked
+
+started = Client().workflows.start("Write a report")   # returns once accepted
+for event in started.stream():                          # events until the run ends
+    print(started.describe(event))
+```
+
+`AsyncClient` has the same methods for asyncio code (`await client.workflows.run(...)`,
+`async for event in run.stream()`). A workflow is named by its exact name or, when several share a
+name, its id.
+
+## Portable tool preferences
+
+Signed-in clients share account preferences through the server. `interact config status` reports
+the source and revision; `interact config sync` refreshes the verified cache. The web Account page,
+TUI and VS Code settings use the same values. Connected writes require the revision the editor
+loaded, so another device's update produces a conflict instead of being overwritten.
+
+Portable fields cover model selection, capture dimensions, media limits and action waiting.
+Provider credentials, billing consent and device paths retain their existing local setup.
+An existing local override is not silently imported: review `interact config import-preview`
+before explicitly applying its selected values. Authentication refusal invalidates cached access;
+a transport failure can expose a verified same-account snapshot marked stale.

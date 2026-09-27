@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: How to install and use interact
+    url: https://alanblanchet.github.io/interact/
+    about: Install steps per platform, and what each tool does.

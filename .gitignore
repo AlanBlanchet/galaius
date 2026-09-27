@@ -27,3 +27,15 @@ vscode-extension/src/settings.json
 
 # personal scratch prompt — never commit
 .github/prompt.txt
+
+# Per-developer prompt overlay — each developer materializes their OWN customizations
+# (agents / instructions / prompts / skills) here via `python scripts/sync_prompts.py`.
+# Never committed: the repo carries no one's set. See CLAUDE.md "Per-developer prompts".
+.github/agents/
+.github/instructions/
+.github/prompts/
+.github/skills/
+
+*.code-workspace
+
+.recovery/

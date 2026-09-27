@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# This repository is PUBLIC. Pushing is the owner's act: agents commit locally, the owner pushes.
+# 1. Refuse unless the owner opted in for this push:  INTERACT_OWNER_PUSH=1 git push ...
+# 2. Even then, refuse if the commits being published add private material: machine-local home
+#    paths, recorded agent sessions, private notes/research, or any term listed (one regex per
+#    line) in .git/info/private-terms, a file git never tracks.
+set -uo pipefail
+
+if [ "${INTERACT_OWNER_PUSH:-}" != "1" ]; then
+  echo "pre-push: refused. This repository is public; only the owner pushes (INTERACT_OWNER_PUSH=1)." >&2
+  exit 1
+fi
+
+terms_file="$(git rev-parse --path-format=absolute --git-common-dir)/info/private-terms"
+terms=""
+[ -f "$terms_file" ] && terms="$(grep -Ev '^[[:space:]]*(#|$)' "$terms_file" | paste -sd '|' -)"
+
+zero=0000000000000000000000000000000000000000
+status=0
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+  [ "$local_sha" = "$zero" ] && continue                      # deleting a remote branch
+  if [ "$remote_sha" = "$zero" ]; then range="$local_sha --not --remotes"; else range="$remote_sha..$local_sha"; fi
+  # shellcheck disable=SC2086
+  added="$(git log -p --no-color --format= $range | grep -E '^\+' | grep -Ev '^\+\+\+' || true)"
+  # shellcheck disable=SC2086
+  paths="$(git log --name-only --format= $range | sort -u)"
+
+  hits="$(printf '%s\n' "$added" | grep -E '/home/[a-z_][a-z0-9_-]*/' | head -5)"
+  [ -n "$hits" ] && { echo "pre-push: machine-local home path:" >&2; echo "$hits" >&2; status=1; }
+
+  hits="$(printf '%s\n' "$added" | grep -E '"slash''_commands"' | head -3)"
+  [ -n "$hits" ] && { echo "pre-push: recorded agent session (tool/skill roster):" >&2; echo "$hits" | cut -c1-160 >&2; status=1; }
+
+  hits="$(printf '%s\n' "$paths" | grep -E '^\.github/(memory|research)/' | head -5)"
+  [ -n "$hits" ] && { echo "pre-push: private notes/research files:" >&2; echo "$hits" >&2; status=1; }
+
+  if [ -n "$terms" ]; then
+    hits="$(printf '%s\n' "$added" | grep -iE "$terms" | head -5)"
+    [ -n "$hits" ] && { echo "pre-push: private term (.git/info/private-terms):" >&2; echo "$hits" | cut -c1-160 >&2; status=1; }
+  fi
+done
+
+[ "$status" = 0 ] || echo "pre-push: nothing was pushed. Remove the material above (or rewrite those commits) first." >&2
+exit "$status"

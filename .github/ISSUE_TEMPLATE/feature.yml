@@ -1,0 +1,15 @@
+name: Feature or limitation
+description: Something you needed interact to do that it can't.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: What are you trying to get your agent to do?
+      description: The task, not the API you imagine. What blocked it matters more than the fix you have in mind.
+    validations: { required: true }
+  - type: textarea
+    id: workaround
+    attributes:
+      label: What you do instead today
+      placeholder: "Nothing — I gave up / I shell out to xdotool / I take a screenshot and read it myself"
