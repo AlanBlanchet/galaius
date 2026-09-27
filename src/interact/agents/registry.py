@@ -23,8 +23,6 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import BinaryIO, Literal
 
-import fcntl
-
 from pydantic import BaseModel, Field, PrivateAttr
 from interact.agents import quota
 from interact_core import AgentRevisionRef, PromptExecutionRef
@@ -32,6 +30,7 @@ from interact_core import AgentRevisionRef, PromptExecutionRef
 from interact.agents.events import TOKEN_FIELDS, AgentEvent, UsageLedger
 from interact.agents.catalog_connection import CatalogConnection
 from interact.agents.providers import PROVIDERS, DeniedTool
+from interact.file_lock import exclusive
 from interact.server_registry import (
     _alive,  # generic pid liveness (Windows-safe, no signal sent)
 )
@@ -531,15 +530,8 @@ def lock_path(run_id: str) -> Path:
 @contextmanager
 def record_lock(run_id: str):
     """Serialize registry writers across CLI, MCP, dispatcher and provider processes."""
-    descriptor = _open_private(lock_path(run_id), os.O_RDWR)
-    try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
+    with exclusive(_open_private(lock_path(run_id), os.O_RDWR)):
         yield
-    finally:
-        try:
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
-        finally:
-            os.close(descriptor)
 
 
 def stderr_path(run_id: str) -> Path:

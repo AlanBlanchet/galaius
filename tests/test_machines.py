@@ -7,12 +7,16 @@ import os
 import shutil
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
-from interact_core import ConnectionResourceRef, FunctionImplementation, MachineCommand, MachineFileQuery, MachineRef, ModelImplementation, PortSpec, ScriptFile, ScriptImplementation, UserModelOrigin, WorkflowInterface, WorkflowKey, WorkflowNode, WorkflowRevision, WorkflowRevisionRef
+import websockets
+from pydantic import SecretStr
+from interact_core import ConnectionResourceRef, FunctionImplementation, MachineCommand, MachineDataRequest, MachineFileQuery, MachineRef, ModelImplementation, PortSpec, ScriptFile, ScriptImplementation, UserModelOrigin, WorkflowInterface, WorkflowKey, WorkflowNode, WorkflowRevision, WorkflowRevisionRef
 
 from interact import server_workspace
 from interact.cli import machine_command
@@ -494,6 +498,172 @@ def test_the_runner_reports_the_file_roots_it_accepts_as_they_are_now(tmp_path: 
     assert runner._file_roots(connected) == ["exports"]
 
 
+def _signed(config, message):
+    unsigned = message.model_dump(mode="json", exclude={"signature"})
+    key = hashlib.sha256(config.token.get_secret_value().encode()).digest()
+    return message.model_copy(update={"signature": hmac.new(key, json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode(), hashlib.sha256).hexdigest()})
+
+
+def test_command_preserves_owner_changes_and_persists_replay_protection(tmp_path, monkeypatch):
+    runner = MachineRunner(tmp_path / "config" / "machine.json")
+    connected = _scripts_config(tmp_path)
+    runner.save(connected)
+    runner.save(connected.model_copy(update={"file_roots": (), "script_roots": ()}))
+    command = _signed(connected, _script_command(connected.machine_id, "python", "print(1)").model_copy(update={
+        "workspace_id": connected.workspace_id, "expires_at": datetime.now(UTC) + timedelta(seconds=30)}))
+    monkeypatch.setattr(runner, "_run_script", lambda *_: "ok")
+    asyncio.run(runner._execute(AsyncMock(), connected, command))
+    saved = runner.load()
+    assert saved.file_roots == saved.script_roots == ()
+    assert saved.seen_nonces == (command.nonce,)
+    with pytest.raises(PermissionError, match="nonce was already used"):
+        asyncio.run(runner._execute(AsyncMock(), connected, command))
+
+
+@pytest.mark.parametrize("state", ["missing", "corrupt", "permissions"])
+def test_unreadable_current_config_never_falls_back_to_connected_roots(tmp_path, state):
+    runner = MachineRunner(tmp_path / "config" / "machine.json")
+    connected = _scripts_config(tmp_path)
+    runner.save(connected)
+    if state == "missing":
+        runner.config_path.unlink()
+    elif state == "corrupt":
+        runner.config_path.write_text("{")
+    else:
+        runner.config_path.chmod(0o644)
+    with pytest.raises((OSError, ValueError)):
+        runner._current_config(connected)
+
+
+def test_config_updates_serialize_nonce_claims_with_owner_edits(tmp_path):
+    runner = MachineRunner(tmp_path / "config" / "machine.json")
+    config = _scripts_config(tmp_path)
+    runner.save(config)
+    commands = [_signed(config, _script_command(config.machine_id, "python", "print(1)").model_copy(update={
+        "workspace_id": config.workspace_id, "expires_at": datetime.now(UTC) + timedelta(seconds=30)})) for _ in range(12)]
+    with ThreadPoolExecutor(max_workers=4) as workers:
+        claims = [workers.submit(runner.update, lambda current, command=command: runner._accept_command(current, config, command)) for command in commands]
+        edit = workers.submit(runner.update, lambda current: current.model_copy(update={"file_roots": (), "script_roots": ()}))
+        for job in (*claims, edit):
+            job.result(timeout=5)
+    saved = runner.load()
+    assert saved.file_roots == saved.script_roots == ()
+    assert set(saved.seen_nonces) == {command.nonce for command in commands}
+
+
+@pytest.mark.asyncio
+async def test_data_query_answers_during_command_and_commands_stay_serial(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    runner = MachineRunner()
+    runner.heartbeat_seconds = 3600
+    for name in ("_runtimes", "_accelerators", "_functions"):
+        monkeypatch.setattr(runner, name, lambda: [])
+    monkeypatch.setattr(runner, "_resources", lambda _: {})
+    config = _config(tmp_path, "full_access")
+    runner.save(config)
+    source = "import pathlib, time\npathlib.Path('running').touch()\nwhile not pathlib.Path('release').exists(): time.sleep(0.01)\nprint('released')\n"
+    commands = [_signed(config, _script_command(config.machine_id, "python", code).model_copy(update={
+        "workspace_id": config.workspace_id, "expires_at": datetime.now(UTC) + timedelta(seconds=30)})) for code in (source, "print('second')\n")]
+    query = _signed(config, MachineDataRequest(id=uuid4(), machine=MachineRef(id=config.machine_id), workspace_id=config.workspace_id,
+                    op="list", expires_at=datetime.now(UTC) + timedelta(seconds=30), signature="0" * 64))
+    finished = asyncio.get_running_loop().create_future()
+
+    async def server(socket):
+        try:
+            assert json.loads(await socket.recv())["type"] == "hello"
+            await socket.send(json.dumps({"type": "command", "command": commands[0].model_dump(mode="json")}))
+            async with asyncio.timeout(5):
+                while not (tmp_path / "running").exists():
+                    await asyncio.sleep(0.01)
+            await socket.send(json.dumps({"type": "command", "command": commands[1].model_dump(mode="json")}))
+            await socket.send(json.dumps({"type": "data_request", "request": query.model_dump(mode="json")}))
+            while True:
+                packet = json.loads(await asyncio.wait_for(socket.recv(), 3))
+                assert packet["type"] != "result"
+                if packet["type"] == "event":
+                    assert packet["event"]["command_id"] == str(commands[0].id)
+                if packet["type"] == "data_answer":
+                    assert packet["result"]["error"] is None
+                    break
+            (tmp_path / "release").touch()
+            results = []
+            while len(results) < 2:
+                packet = json.loads(await asyncio.wait_for(socket.recv(), 5))
+                if packet["type"] == "result":
+                    assert packet["result"]["status"] == "succeeded"
+                    results.append(packet["result"]["command_id"])
+                elif packet["type"] == "event" and packet["event"]["command_id"] == str(commands[1].id):
+                    assert results == [str(commands[0].id)]
+            assert results == [str(command.id) for command in commands]
+            await socket.send(json.dumps({"type": "revoked"}))
+            finished.set_result(None)
+        except BaseException as error:
+            (tmp_path / "release").touch()
+            finished.set_exception(error)
+
+    async with websockets.serve(server, "127.0.0.1", 0) as endpoint:
+        monkeypatch.setattr(runner, "_channel_url", lambda _: f"ws://127.0.0.1:{endpoint.sockets[0].getsockname()[1]}")
+        connection = asyncio.create_task(runner.connect(config))
+        try:
+            await asyncio.wait_for(asyncio.shield(finished), 12)
+            await asyncio.wait_for(connection, 5)
+        finally:
+            (tmp_path / "release").touch()
+            connection.cancel()
+            await asyncio.gather(connection, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_a_new_enrollment_on_disk_reconnects_with_its_token(tmp_path, monkeypatch):
+    """The owner re-enrolls while connected: the old token stops at the next beat and the runner
+    comes back with the new one, never exiting and never answering as the old enrollment."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    runner = MachineRunner()
+    runner.heartbeat_seconds = 0.05
+    for name in ("_runtimes", "_accelerators", "_functions"):
+        monkeypatch.setattr(runner, name, lambda: [])
+    monkeypatch.setattr(runner, "_resources", lambda _: {})
+    config = _config(tmp_path, "read_only")
+    runner.save(config)
+    renewed = config.model_copy(update={"token": SecretStr("iwm_" + "y" * 48)})
+    tokens = []
+
+    async def server(socket):
+        tokens.append(socket.request.headers["Authorization"])
+        await socket.recv()
+        if len(tokens) == 1:
+            runner.save(renewed)
+            await socket.wait_closed()
+        else:
+            await socket.send(json.dumps({"type": "revoked"}))
+
+    async with websockets.serve(server, "127.0.0.1", 0) as endpoint:
+        monkeypatch.setattr(runner, "_channel_url", lambda _: f"ws://127.0.0.1:{endpoint.sockets[0].getsockname()[1]}")
+        await asyncio.wait_for(runner.connect(config), 5)
+    assert tokens == [f"Bearer {token.get_secret_value()}" for token in (config.token, renewed.token)]
+
+
+def test_approval_preview_and_runner_agree_on_file_with_declared_packages(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    config = _scripts_config(tmp_path)
+    runner = MachineRunner()
+    runner.save(config)
+    script = tmp_path / "scripts" / "job.py"
+    script.parent.mkdir()
+    script.write_text(_PEP723)
+    spec = ScriptFile(path="scripts/job.py", file_digest=hashlib.sha256(script.read_bytes()).hexdigest())
+    command = _file_script_command(config.machine_id, spec)
+    node = WorkflowNode(id=uuid4(), label="Report", x=0, y=0, impl=command.impl, config=command.config,
+                        placement={"target": "machine", "machine": {"id": config.machine_id}}, ports=())
+    shown = _described_step("Work", node, config.machine_id)
+    assert "Program: uv run" in shown
+    called = []
+    monkeypatch.setattr(runner, "_run_process", lambda argv, *_: called.append(argv) or "ok")
+    runner._run_script(command, config)
+    assert Path(called[0][0]).name == "uv" and "--script" in called[0]
+
+
 # The editor writes a script's packages as a PEP 723 header (frontend graph/scriptSource.joinScript).
 _PEP723 = '# /// script\n# dependencies = [\n#   "six",\n# ]\n# ///\n\nimport six\nprint(six.__name__)\n'
 
@@ -542,6 +712,7 @@ def test_script_file_runs_its_pinned_digest_and_refuses_a_changed_file(tmp_path:
     are the ones it was picked with; one edit on disk and it is refused, naming the new digest."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     config = _scripts_config(tmp_path)
+    MachineRunner().save(config)
     script = tmp_path / "scripts" / "tools" / "report.py"
     script.parent.mkdir(parents=True)
     script.write_text("import os, sys\nprint(os.getcwd(), *sys.argv[1:])\n")
@@ -564,6 +735,7 @@ def test_script_file_outside_the_script_roots_is_refused(tmp_path: Path, monkeyp
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     interpreter = update.pop("interpreter", None)
     config = _scripts_config(tmp_path, **update)
+    MachineRunner().save(config)
     for folder in ("interact-files", "scripts/inbox"):
         (tmp_path / folder).mkdir(parents=True, exist_ok=True)
     for name in ("outside.py", "interact-files/job.py", "scripts/job.py"):
@@ -577,6 +749,7 @@ def test_script_file_outside_the_script_roots_is_refused(tmp_path: Path, monkeyp
 def test_the_program_running_a_script_never_lives_where_file_steps_write(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     config = _scripts_config(tmp_path)
+    MachineRunner().save(config)
     (tmp_path / "scripts").mkdir()
     (tmp_path / "scripts" / "job.py").write_text("print('x')\n")
     planted = tmp_path / "interact-files" / "python"
@@ -662,12 +835,12 @@ def test_a_script_in_a_git_checkout_shows_its_repository_without_credentials(tmp
 
 
 @pytest.mark.parametrize(("language", "program"), [("python", "interact's own Python"), ("shell", "/bin/sh")])
-def test_approving_inline_code_names_its_language_and_an_old_pin(language: str, program: str) -> None:
+def test_approving_inline_code_names_its_execution_program(language: str, program: str) -> None:
     source = "echo 39\n"
-    legacy = WorkflowNode(id=uuid4(), label="Weekly", x=0, y=0, impl={"kind": "script", "language": language, "source_digest": hashlib.sha256(source.encode()).hexdigest()},
+    node = WorkflowNode(id=uuid4(), label="Weekly", x=0, y=0, impl={"kind": "script", "language": language, "source_digest": hashlib.sha256(source.encode()).hexdigest()},
                           config={"source": source}, placement={"target": "machine", "machine": {"id": str(uuid4())}}, ports=(PortSpec(name="result", direction="output", value_type="text"),))
-    shown = _described_step("Report", legacy, uuid4())
-    assert f"run by {program}" in shown and "Approved before approvals covered the language" in shown
+    shown = _described_step("Report", node, uuid4())
+    assert f"run by {program}" in shown
 
 
 def test_a_script_approved_as_python_is_refused_as_shell(tmp_path: Path) -> None:

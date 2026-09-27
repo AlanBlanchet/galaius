@@ -19,9 +19,10 @@ import stat
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import ClassVar, Literal
+from typing import ClassVar, Literal, Self
 from urllib.parse import urlencode, urlsplit, urlunsplit
 from uuid import UUID, uuid4
 
@@ -32,6 +33,7 @@ from interact_core import MACHINE_MODELS, AgentRevisionRef, ArtifactRef, EgressA
 from interact import USER_AGENT
 from interact.agents.catalog import AgentCatalog
 from interact.agents import providers as agent_providers
+from interact.file_lock import exclusive
 from interact.agents.events import AgentEvent
 from interact.agents.run import run_agent
 from interact.agents import registry as reg
@@ -535,6 +537,49 @@ class CommandLogs(logging.Handler):
 FORWARDED_EVENT_KINDS: frozenset[str] = frozenset({"text", "tool", "tool_result", "thinking", "error", "rate_limit", "done"})
 
 
+class EnrollmentChanged(PermissionError):
+    """The machine file on disk names another enrollment (machine, workspace, server or token)
+    than the connection holds: nothing runs under the old one, the runner reconnects as the new."""
+
+
+class ScriptExecution(BaseModel):
+    """The program a Script step runs through here, chosen from what the owner approves (language,
+    code, a file's own `interpreter`): the approval preview shows it, the runner resolves it. A file
+    naming its interpreter runs through that; Python declaring its packages (PEP 723) through
+    `uv run --script`, which installs them into a cached throwaway environment; other inline Python
+    on the runner's own interpreter, a machine's Python file on its `python3`; shell on `/bin/sh`."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    program: Literal["runner_python", "python3", "uv", "shell", "custom"]
+    #: The program a file names (a command on PATH or an absolute path); only for "custom".
+    interpreter: str | None = None
+    #: PEP 723 inline script metadata: `# /// script` … `# ///` (the editor writes a script's packages there).
+    METADATA: ClassVar[re.Pattern] = re.compile(r"(?m)^# /// script\r?\n(?:^#(?: .*)?\r?\n)*?^# ///$")
+    DESCRIPTIONS: ClassVar[dict[str, str]] = {"runner_python": "interact's own Python", "python3": "python3", "uv": "uv", "shell": "/bin/sh"}
+
+    @model_validator(mode="after")
+    def custom_interpreter(self) -> Self:
+        if (self.program == "custom") != (self.interpreter is not None):
+            raise ValueError("only a custom program names its interpreter")
+        return self
+
+    @classmethod
+    def select(cls, language: Literal["python", "shell"], source: str, file: ScriptFile | None = None) -> Self:
+        if file is not None and file.interpreter is not None:
+            return cls(program="custom", interpreter=file.interpreter)
+        if language == "shell":
+            return cls(program="shell")
+        return cls(program="uv" if cls.METADATA.search(source) else "python3" if file is not None else "runner_python")
+
+    @property
+    def options(self) -> tuple[str, ...]:
+        return ("run", "--quiet", "--no-project", "--script") if self.program == "uv" else ()
+
+    @property
+    def description(self) -> str:
+        return " ".join((self.interpreter if self.program == "custom" else self.DESCRIPTIONS[self.program], *self.options))
+
+
 class MachineRunner:
     heartbeat_seconds = 3
     reconnect_seconds = (1, 2, 5, 10, 20)
@@ -568,7 +613,23 @@ class MachineRunner:
         base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
         return base / "interact" / "machine.json"
 
+    def _config_lock(self):
+        """Held by every writer of the machine file (`machine.lock` beside it, never replaced)."""
+        self.config_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        return exclusive(os.open(self.config_path.with_suffix(".lock"), os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600))
+
     def save(self, config: MachineConfig) -> None:
+        with self._config_lock():
+            self._save(config)
+
+    def update(self, change: Callable[[MachineConfig], MachineConfig]) -> MachineConfig:
+        """Read, merge and atomically replace under the same lock as enrollment and owner edits."""
+        with self._config_lock():
+            config = MachineConfig.model_validate(change(self.load()).model_dump())
+            self._save(config)
+            return config
+
+    def _save(self, config: MachineConfig) -> None:
         self.config_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.config_path.parent.chmod(0o700)
         temporary = self.config_path.with_name(f".{self.config_path.name}.{uuid4().hex}.tmp")
@@ -614,26 +675,12 @@ class MachineRunner:
                     delay_index = 0
                     logger.info("connected to %s", endpoint, extra={"machine_id": config.machine_id, "workspace_id": config.workspace_id})
                     await socket.send(json.dumps({"type": "hello", "features": list(self.FEATURES), "runtimes": self._runtimes(), "accelerators": self._accelerators(), "functions": self._functions(), "resources": self._resources(config.working_directory), "file_roots": self._file_roots(config)}))
-                    heartbeat = asyncio.create_task(self._heartbeat(socket, config))
-                    try:
-                        async for payload in socket:
-                            response = json.loads(payload)
-                            if response.get("type") == "command":
-                                await self._execute(socket, config, MachineCommand.model_validate(response["command"]))
-                            elif response.get("type") == "file_query":
-                                # Answered beside a running step (read-only), never queued behind it.
-                                task = asyncio.create_task(self._answer_file_query(socket, config, response["query"]))
-                                self._queries.add(task)
-                                task.add_done_callback(self._queries.discard)
-                            elif response.get("type") == "data_request":
-                                # Read-only too, answered beside a running step.
-                                task = asyncio.create_task(self._answer_data_request(socket, config, response["request"]))
-                                self._queries.add(task)
-                                task.add_done_callback(self._queries.discard)
-                            elif response.get("type") == "revoked":
-                                return
-                    finally:
-                        heartbeat.cancel()
+                    if await self._serve(socket, config):
+                        return
+            except EnrollmentChanged:
+                config = self.load()
+                logger.warning("machine file changed its enrollment; reconnecting with it", extra={"machine_id": config.machine_id})
+                continue
             except PermissionError:
                 raise
             except websockets.ConnectionClosed as error:
@@ -658,6 +705,55 @@ class MachineRunner:
             await asyncio.sleep(delay)
             delay_index += 1
 
+    async def _serve(self, socket, config: MachineConfig) -> bool:
+        # Only the receiver consumes the websocket; only the worker executes commands.
+        # Ending a connection drops queued work but joins the active command before reconnecting:
+        # cancelling to_thread would leave its subprocess running beside the next command.
+        commands: asyncio.Queue[MachineCommand | None] = asyncio.Queue(maxsize=32)
+        receiver = asyncio.create_task(self._receive(socket, config, commands))
+        worker = asyncio.create_task(self._command_worker(socket, config, commands))
+        heartbeat = asyncio.create_task(self._heartbeat(socket, config))
+        try:
+            done, _ = await asyncio.wait((receiver, worker, heartbeat), return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                task.result()
+            return receiver in done and receiver.result()
+        finally:
+            receiver.cancel()
+            heartbeat.cancel()
+            while not commands.empty():
+                commands.get_nowait()
+            commands.put_nowait(None)
+            for query in self._queries:
+                query.cancel()
+            await asyncio.gather(receiver, heartbeat, *self._queries, return_exceptions=True)
+            await asyncio.shield(worker)
+
+    async def _command_worker(self, socket, config: MachineConfig, commands: asyncio.Queue[MachineCommand | None]) -> None:
+        while (command := await commands.get()) is not None:
+            await self._execute(socket, config, command)
+
+    async def _receive(self, socket, config: MachineConfig, commands: asyncio.Queue[MachineCommand | None]) -> bool:
+        async for payload in socket:
+            response = json.loads(payload)
+            if response.get("type") == "command":
+                # A full queue holds this read, as the one-at-a-time loop did: never an exit.
+                await commands.put(MachineCommand.model_validate(response["command"]))
+            elif response.get("type") in {"file_query", "data_request"}:
+                answer = (self._answer_file_query(socket, config, response["query"]) if response["type"] == "file_query"
+                          else self._answer_data_request(socket, config, response["request"]))
+                task = asyncio.create_task(answer)
+                self._queries.add(task)
+                task.add_done_callback(self._query_finished)
+            elif response.get("type") == "revoked":
+                return True
+        return False
+
+    def _query_finished(self, task: asyncio.Task) -> None:
+        self._queries.discard(task)
+        if not task.cancelled() and (error := task.exception()) is not None:
+            logger.warning("machine query failed", exc_info=error)
+
     #: What this runner can do beyond the base protocol (the server's `MachineChannel.require_feature`):
     #: file queries browse the owner's script roots; a script file runs from them.
     FEATURES: ClassVar[tuple[str, ...]] = ("file_query", "script_file", "file_read")
@@ -675,12 +771,15 @@ class MachineRunner:
             raise PermissionError(f"{what} signature is invalid")
 
     def _current_config(self, connected: MachineConfig) -> MachineConfig:
-        """The machine file as it is on disk NOW (an owner's `interact machine file-roots` change
-        applies at once), else the one it connected with."""
-        try:
-            return self.load()
-        except Exception:
-            return connected
+        """Current owner permissions, or refusal. A stale connection can never restore access."""
+        current = self.load()
+        self._same_enrollment(current, connected)
+        return current
+
+    @staticmethod
+    def _same_enrollment(current: MachineConfig, connected: MachineConfig) -> None:
+        if (current.machine_id, current.workspace_id, current.server_url, current.token) != (connected.machine_id, connected.workspace_id, connected.server_url, connected.token):
+            raise EnrollmentChanged("machine enrollment changed on this machine; reconnecting with it")
 
     async def _answer_file_query(self, socket, config: MachineConfig, payload: object) -> None:
         """What a person picking a script sees of this machine: checked like a command (this
@@ -721,7 +820,8 @@ class MachineRunner:
             answer = MachineDataAnswer(request_id=request.id, error=reason[:400] or type(error).__name__)
         await socket.send(json.dumps({"type": "data_answer", "result": answer.model_dump(mode="json")}))
 
-    async def _execute(self, socket, config: MachineConfig, command: MachineCommand) -> None:
+    def _accept_command(self, config: MachineConfig, connected: MachineConfig, command: MachineCommand) -> MachineConfig:
+        self._same_enrollment(config, connected)
         if command.machine.id != config.machine_id:
             raise PermissionError("machine command targets another machine")
         # A pooled command legitimately carries a DIFFERENT workspace_id (the TENANT borrowing
@@ -739,8 +839,10 @@ class MachineRunner:
         self._verify_signed(config, command, "machine command")
         if command.nonce in config.seen_nonces:
             raise PermissionError("machine command nonce was already used")
-        config = config.model_copy(update={"seen_nonces": (*config.seen_nonces[-9998:], command.nonce)})
-        self.save(config)
+        return config.model_copy(update={"seen_nonces": (*config.seen_nonces[-9998:], command.nonce)})
+
+    async def _execute(self, socket, config: MachineConfig, command: MachineCommand) -> None:
+        config = await asyncio.to_thread(self.update, lambda current: self._accept_command(current, config, command))
         bound = {"machine_id": config.machine_id, "command_id": command.id, "run_id": command.run_id, "node_id": command.node_id, "action": command.impl.kind}
         # Everything the runner logs from here to the result reaches the server inside this step.
         forwarded = CommandLogs()
@@ -983,38 +1085,30 @@ class MachineRunner:
         logger.info("script exited 0, %d bytes of output", len(completed.stdout))
         return completed.stdout
 
-    #: PEP 723 inline script metadata: `# /// script` … `# ///` (the editor writes a script's packages there).
-    _SCRIPT_METADATA = re.compile(r"(?m)^# /// script\r?\n(?:^#(?: .*)?\r?\n)*?^# ///$")
-
     @classmethod
-    def _interpreter(cls, language: str, source: str, spec: ScriptFile | None = None) -> list[str]:
-        """The program (and its options) a script runs through here. A file's own `interpreter`
-        wins (a command name found on PATH, or an absolute path). Otherwise Python declaring its
-        packages (PEP 723) runs through `uv run --script`, which installs them into a cached
-        throwaway environment; without such a block, inline code runs on the runner's own
-        interpreter and a machine's file on its `python3`; shell runs on `/bin/sh`. A script
-        needing packages on a machine without uv fails with that reason, never with an ImportError
-        halfway through."""
-        if spec is not None and spec.interpreter is not None:
-            if "/" in spec.interpreter and not Path(spec.interpreter).is_absolute():
-                raise RuntimeError(f"{spec.interpreter}: name the program by its full path, or by a name on the machine's PATH")
-            found = spec.interpreter if Path(spec.interpreter).is_absolute() else shutil.which(spec.interpreter, path=cls._safe_environment().get("PATH"))
+    def _interpreter(cls, language: Literal["python", "shell"], source: str, spec: ScriptFile | None = None) -> list[str]:
+        """Resolve the same execution description the owner sees before approval."""
+        execution = ScriptExecution.select(language, source, spec)
+        if execution.program == "custom":
+            interpreter = execution.interpreter
+            if "/" in interpreter and not Path(interpreter).is_absolute():
+                raise RuntimeError(f"{interpreter}: name the program by its full path, or by a name on the machine's PATH")
+            found = interpreter if Path(interpreter).is_absolute() else shutil.which(interpreter, path=cls._safe_environment().get("PATH"))
             if found is None or not os.access(found, os.X_OK):
-                raise RuntimeError(f"{spec.interpreter} is not a program this machine can run (not found on its PATH)")
-            return [found]
-        if language != "python":
-            return ["/bin/sh"]
-        if not cls._SCRIPT_METADATA.search(source):
-            if spec is None:
-                return [sys.executable]
+                raise RuntimeError(f"{interpreter} is not a program this machine can run (not found on its PATH)")
+        elif execution.program == "runner_python":
+            found = sys.executable
+        elif execution.program == "shell":
+            found = "/bin/sh"
+        elif execution.program == "python3":
             found = shutil.which("python3", path=cls._safe_environment().get("PATH"))
             if found is None:
                 raise RuntimeError("python3 is not installed on this machine's PATH: name the interpreter in the step")
-            return [found]
-        uv = shutil.which("uv")
-        if uv is None:
-            raise RuntimeError("this script declares the packages it needs (PEP 723): install uv on this machine to run it")
-        return [uv, "run", "--quiet", "--no-project", "--script"]
+        else:
+            found = shutil.which("uv")
+            if found is None:
+                raise RuntimeError("this script declares the packages it needs (PEP 723): install uv on this machine to run it")
+        return [found, *execution.options]
 
     def _run_script_pooled(self, command: MachineCommand, config: MachineConfig, timeout: float = 120) -> str:
         """The POOLED sibling of `_run_script`: same digest re-check and audit log, but the

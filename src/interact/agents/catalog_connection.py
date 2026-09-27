@@ -4,7 +4,6 @@ Connection settings and private preview sessions persist separately from catalog
 content. Standard authentication uses the existing protected token-file reader.
 """
 
-import fcntl
 import hashlib
 import ipaddress
 import os
@@ -23,6 +22,7 @@ from interact_core.accounts import Bootstrap
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from interact import USER_AGENT
+from interact.file_lock import exclusive
 from interact.prompt_secret import read_prompt_token
 
 
@@ -194,13 +194,8 @@ class CatalogConnection(BaseModel):
         info = path.parent.lstat()
         if not stat.S_ISDIR(info.st_mode) or info.st_mode & 0o077 or info.st_uid != os.getuid():
             raise CatalogConnectionError("catalog session directory must be private and owned by the current user")
-        descriptor = os.open(path.with_suffix(suffix), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
-        try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX)
+        with exclusive(os.open(path.with_suffix(suffix), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)):
             yield
-        finally:
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
-            os.close(descriptor)
 
     @contextmanager
     def access_guard(self, generation: UUID | None = None):

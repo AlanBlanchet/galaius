@@ -11,7 +11,7 @@ from cyclopts import App, Parameter
 
 from interact_core import WorkflowNode
 
-from interact.machines import MachineFiles, MachineRunner, connect_command
+from interact.machines import MachineFiles, MachineRunner, ScriptExecution, connect_command
 
 machine_app = App(name="machine", help="Connect this computer as a workflow machine.")
 
@@ -36,8 +36,7 @@ def machine_file_roots(*roots: str) -> None:
     runner = MachineRunner()
     config = runner.load()
     if roots:
-        config = config.model_copy(update={"file_roots": tuple(roots)})
-        runner.save(config)
+        config = runner.update(lambda current: current.model_copy(update={"file_roots": tuple(roots)}))
     print(json.dumps({"working_directory": str(config.working_directory), "file_roots": list(config.file_roots)}))
 
 
@@ -49,8 +48,7 @@ def machine_script_roots(*roots: str) -> None:
     runner = MachineRunner()
     config = runner.load()
     if roots:
-        config = config.model_copy(update={"script_roots": tuple(root for root in roots if root)})
-        runner.save(config)
+        config = runner.update(lambda current: current.model_copy(update={"script_roots": tuple(root for root in roots if root)}))
     usable, refused = config.usable_script_roots()
     base = config.working_directory.resolve()
     print(json.dumps({"working_directory": str(config.working_directory), "script_roots": [root.relative_to(base).as_posix() for root in usable], "refused": list(refused)}))
@@ -125,25 +123,27 @@ def _described_step(workflow: str, node: WorkflowNode, machine_id: UUID) -> str:
     lines = [f"Workflow “{workflow}”, step “{node.label}”"]
     if impl.origin == "inline":
         source = str(node.config.get("source", ""))
-        program = "/bin/sh" if impl.language == "shell" else "uv run --script (it lists its packages)" if MachineRunner._SCRIPT_METADATA.search(source) else "interact's own Python"
+        program = ScriptExecution.select(impl.language, source).description
         lines.append(f"Language: {language}, run by {program}")
-        if impl.needs_reapproval(node.config):
-            lines.append("Approved before approvals covered the language: approving now covers this code AS " + language)
         shown = source.splitlines()[:80]
         lines += ["Code:", *(f"  {line}" for line in shown), *([f"  … {len(source.splitlines()) - len(shown)} more lines"] if len(source.splitlines()) > len(shown) else [])]
         return "\n".join(lines)
     spec = impl.script_file(node.config)
     lines += [f"Language: {language}", f"File: {spec.path} (sha256 {spec.file_digest})", f"Arguments: {' '.join(spec.args) or 'none'}",
-              f"Starts in: {spec.cwd or 'the file’s folder'}", f"Program: {spec.interpreter or ('python3' if impl.language == 'python' else '/bin/sh')}"]
+              f"Starts in: {spec.cwd or 'the file’s folder'}"]
     try:
         config = MachineRunner().load()
     except Exception:
         config = None
     if config is None or config.machine_id != machine_id:
+        lines.append("Program: " + (ScriptExecution.select(impl.language, "", spec).description if spec.interpreter or impl.language == "shell" else "not checked here; python3 or uv, depending on the file's declared packages"))
         lines.append("Not checked here: run this on that machine to compare the file as it is now.")
         return "\n".join(lines)
     try:
-        listing = MachineFiles(config=config, area="scripts").listing(spec.path)
+        files = MachineFiles(config=config, area="scripts")
+        content = files.script_bytes(files.inside(spec.path))
+        lines.append(f"Program: {ScriptExecution.select(impl.language, content.decode(errors='replace'), spec).description}")
+        listing = files.listing(spec.path)
     except (OSError, PermissionError) as error:
         lines.append(f"On this machine: cannot read it ({error})")
         return "\n".join(lines)

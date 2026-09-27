@@ -1,7 +1,6 @@
 """Compile exact committed prompt sources into verified provider projections."""
 
 import hashlib
-import fcntl
 import json
 import os
 from contextlib import contextmanager
@@ -21,6 +20,7 @@ from interact_core import PromptExecutionRef, PromptKey
 from interact.agents.catalog import AgentCatalog, AgentInstructionSet
 from interact.agents.catalog_connection import CatalogConnection
 from interact.agents.policy import TOOL_PREFIX
+from interact.file_lock import exclusive
 
 
 MANIFEST_NAME = "projection-manifest.json"
@@ -377,11 +377,8 @@ def install_prompt_projection(
     lock = state_path.with_name(f".{state_path.name}.lock")
     with _directory_handle(lock.parent) as parent:
         descriptor = os.open(lock.name, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600, dir_fd=parent)
-    try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
+    with exclusive(descriptor):
         _install_prompt_projection(projection_root, home, vscode_root, state_path, adoption_path)
-    finally:
-        os.close(descriptor)
 
 
 def _install_prompt_projection(
