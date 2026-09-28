@@ -235,3 +235,7 @@ def test_the_package_retires_the_key_that_was_readable_on_the_owner_pc() -> None
     shipped = ReleaseKeys.shipped()
     assert "sha256:3314e5ae82205e0e7c2fbaf3a687fd1b1dc90989cc637cfee7c95af137eff4dd" in ReleaseKeys.retired_by_package()
     assert shipped.keys and not {ReleaseKeys.fingerprint_of(key) for key in shipped.keys} & ReleaseKeys.retired_by_package()
+
+
+def test_a_server_offering_no_release_says_so(tmp_path, signer, published, monkeypatch) -> None:
+    assert "offers no release (HTTP 404)" in checker(tmp_path, signer, published, monkeypatch).run()

@@ -115,6 +115,8 @@ class UpgradeCheck(BaseModel):
                 return self.refused(f"{source.base}: {error}")
             except ValidationError as error:
                 return self.refused(f"{source.base}: a signed document that is not a release ({error.error_count()} problems)")
+            except httpx.HTTPStatusError as error:
+                return f"{source.base} offers no release (HTTP {error.response.status_code}); trying again in {self.config.upgrade_check_seconds} s"
             except httpx.HTTPError as error:
                 return f"{source.base} did not answer ({type(error).__name__}); trying again in {self.config.upgrade_check_seconds} s"
             if self.running(release):
