@@ -72,6 +72,9 @@ def catalog_home(monkeypatch, tmp_path):
 #: Other processes racing this one: `fork` where the system has it, else `spawn` (Windows), whose
 #: children import their target by name - hence the module-level targets below.
 PROCESSES = multiprocessing.get_context("fork" if "fork" in multiprocessing.get_all_start_methods() else "spawn")
+#: How many race at once: a forked child shares its parent's memory; a spawned one re-imports
+#: interact in a process of its own (~150 MB each), and fifty of those exhaust a CI runner.
+RACERS = 50 if PROCESSES.get_start_method() == "fork" else 8
 
 
 def deny_catalog(connection_json: str, value, status: int, config: str) -> None:
@@ -732,11 +735,11 @@ def test_preview_session_reused_for_fifty_independent_connections(catalog_home):
     assert calls.count("/v1/auth/local-preview") == 1
 
 
-def test_fifty_concurrent_processes_share_one_preview_login(catalog_home):
+def test_concurrent_processes_share_one_preview_login(catalog_home):
     connection = CatalogConnection(endpoint="http://127.0.0.1:8767", auth_mode="preview", workspace_id=uuid4())
     login_log = catalog_home / "login-count"
 
-    children = [PROCESSES.Process(target=share_preview_login, args=(connection.model_dump_json(), str(login_log), str(UserConfig.PATH))) for _ in range(50)]
+    children = [PROCESSES.Process(target=share_preview_login, args=(connection.model_dump_json(), str(login_log), str(UserConfig.PATH))) for _ in range(RACERS)]
     try:
         for child in children:
             child.start()
