@@ -140,14 +140,15 @@ class _ConversationHost(BaseModel):
                     "Request does not match the typed conversation protocol.",
                 )
             else:
-                response = await self._dispatch(command)
+                response = await self.dispatch(command)
         await self._outbound.put(response)
         self._holding = False
         for event in self._held_events:
             await self._outbound.put(event)
         self._held_events.clear()
 
-    async def _dispatch(self, command):
+    async def dispatch(self, command):
+        """One command's answer (the console's lines and the in-process `ConversationHost` both call this)."""
         if isinstance(command, InitializeCommand):
             return InitializeResponse(
                 version=1, type="response", method="initialize", request_id=command.request_id,
@@ -156,7 +157,7 @@ class _ConversationHost(BaseModel):
         if isinstance(command, CatalogCommand):
             return CatalogResponse(
                 version=1, type="response", method="catalog", request_id=command.request_id,
-                ok=True, catalog=await self._catalog(),
+                ok=True, catalog=await self.catalog(),
             )
         if isinstance(command, StartCommand):
             return await self._start(command)
@@ -166,7 +167,7 @@ class _ConversationHost(BaseModel):
             return await self._cancel(command)
         return await self._interaction(cast(InteractionCommand, command))
 
-    async def _catalog(self) -> ConversationCatalog:
+    async def catalog(self) -> ConversationCatalog:
         now = time.time()
         # Only routes that could actually carry a conversation. This used to MANUFACTURE two more
         # — a Claude and a Gemini consumer session — for the sole purpose of refusing them, and
@@ -197,7 +198,7 @@ class _ConversationHost(BaseModel):
                 command.request_id, command.method, "invalid_request",
                 "The referenced prompt could not be verified.",
             )
-        catalog = await self._catalog()
+        catalog = await self.catalog()
         route = catalog.route_by_id(command.request.route_id)
         if route is None:
             return self._error(
@@ -315,7 +316,7 @@ class _ConversationHost(BaseModel):
         """
         if run.connection is None:
             raise ValueError("stored conversation has no recorded connection")
-        catalog = await self._catalog()
+        catalog = await self.catalog()
         route = catalog.route_by_id(f"{run.provider}:{run.connection}")
         if route is None:
             raise ValueError(f"route {run.provider}:{run.connection} no longer exists")
@@ -589,6 +590,14 @@ class _ConversationHost(BaseModel):
             if chunk.endswith(b"\n"):
                 return
 
+    async def discard_output(self) -> None:
+        """Consume the outbound copy until `close_output` (a host with no console to write to)."""
+        while await self._outbound.get() is not None:
+            pass
+
+    async def close_output(self) -> None:
+        await self._outbound.put(None)
+
     async def _write_output(self) -> None:
         while message := await self._outbound.get():
             sys.stdout.write(message.model_dump_json() + "\n")
@@ -611,14 +620,10 @@ class ConversationHost:
     def __init__(self, workspace_root: Path) -> None:
         resolved = workspace_root.expanduser().resolve(strict=True)
         self._host = _ConversationHost(workspace_root=resolved, transport_registry=build_transport_registry(resolved), config=Config())
-        self._drain = asyncio.get_running_loop().create_task(self._discard_outbound())
-
-    async def _discard_outbound(self) -> None:
-        while await self._host._outbound.get() is not None:
-            pass
+        self._drain = asyncio.get_running_loop().create_task(self._host.discard_output())
 
     async def _run(self, command: BaseModel) -> reg.AgentRun:
-        answer = await self._host._dispatch(command)
+        answer = await self._host.dispatch(command)
         if isinstance(answer, ErrorResponse):
             raise ConversationRefused(answer.error_code, answer.error)
         return cast(RunResponse, answer).run
@@ -628,7 +633,7 @@ class ConversationHost:
         return uuid.uuid4().hex
 
     async def catalog(self) -> ConversationCatalog:
-        return await self._host._catalog()
+        return await self._host.catalog()
 
     async def start(self, prompt: str, workspace: Path, *, route_id: str, model: str | None) -> reg.AgentRun:
         request = {"route_id": route_id, "prompt": prompt, "workspace_root": str(workspace), "selection": ModelSelection(model=model).model_dump()}
@@ -646,7 +651,7 @@ class ConversationHost:
 
     async def close(self) -> None:
         await self._host.transport_registry.close()
-        await self._host._outbound.put(None)
+        await self._host.close_output()
         await self._drain
 
 

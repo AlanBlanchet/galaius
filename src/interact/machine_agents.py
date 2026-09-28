@@ -21,6 +21,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from collections import deque
 from pathlib import Path
@@ -94,10 +95,9 @@ def secret_values(environment: dict[str, str]) -> tuple[str, ...]:
     return tuple(sorted(set(named), key=len, reverse=True))
 
 
-def interaction_digest(interaction: AgentInteraction | dict) -> str:
-    """sha256 of an approval request as the machine holds it (without its own digest)."""
-    value = interaction.model_dump(mode="json") if isinstance(interaction, AgentInteraction) else interaction
-    unsigned = {key: item for key, item in value.items() if key != "digest"}
+def interaction_digest(interaction: dict) -> str:
+    """sha256 of an approval request as the machine holds it (its JSON, without its own digest)."""
+    unsigned = {key: item for key, item in interaction.items() if key != "digest"}
     return hashlib.sha256(json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
@@ -324,11 +324,17 @@ class MachineAgents(BaseModel):
     def pending(run_id: str) -> tuple[AgentInteraction, ...]:
         """The approvals `run_id` (a session) still waits for, each with the digest an answer must
         carry back."""
-        events = reg.read_events(run_id)
-        resolved = {event.event_id.removesuffix(":resolved") for event in events if event.kind == "interaction_resolved"}
-        asked = [event.interaction.model_dump(mode="json") for event in events if event.kind == "interaction" and event.interaction is not None]
-        waiting = [value for value in asked if value["id"] not in resolved][-16:]
-        return tuple(AgentInteraction.model_validate({**value, "digest": interaction_digest(value)}) for value in waiting)
+        waiting: dict[str, dict] = {}
+        for event in reg.read_events(run_id):
+            if event.kind in {"done", "cancelled", "error"}:
+                waiting.clear()  # a turn that ended took its unanswered questions with it
+            elif event.kind == "interaction" and event.interaction is not None:
+                waiting[event.interaction.id] = event.interaction.model_dump(mode="json")
+            elif event.kind == "interaction_resolved":
+                # The host closes one as "<id>:resolved", the Codex transport as "<id>:closed:<status>".
+                closed = event.event_id.removesuffix(":resolved").split(":closed:")[0]
+                waiting.pop(closed, None)
+        return tuple(AgentInteraction.model_validate({**value, "digest": interaction_digest(value)}) for value in list(waiting.values())[-16:])
 
     def _tail(self, request: AgentTailRequest) -> MachineAgentAnswer:
         run = self._require_run(request.run_id)
@@ -491,7 +497,10 @@ class MachineAgents(BaseModel):
                     asked = next((item for item in await asyncio.to_thread(self.pending, run.run_id) if item.id == request.interaction_id), None)
                     if asked is None or asked.digest != request.digest:
                         raise PermissionError("this approval is no longer the one waiting on this computer; read it again")
-                    # Accept / decline only; a file change is accepted where its diff can be read.
+                    # An approval is answered accept / decline and nothing else (never "for the whole
+                    # session", never a policy change); a file change is accepted where its diff shows.
+                    if asked.kind != "user_input" and (set(request.values) != {"decision"} or request.values["decision"] not in {"accept", "decline"}):
+                        raise PermissionError("an approval is answered accept or decline, nothing else")
                     if asked.kind == "file_change_approval" and request.values.get("decision") != "decline":
                         raise PermissionError("a file change is accepted in the editor on this computer, where its diff shows; from here it can only be declined")
                     await host.answer(run.run_id, request.interaction_id, request.values)
@@ -590,6 +599,9 @@ class MachineAgents(BaseModel):
         fork: the editor's conversation is never written), in the conversation's own folder — read
         HERE from its file, and only when it lies inside an agent root."""
         self._require_continue()
+        _, runs = self._allowed()
+        if sum(1 for run in runs if run.status in {"running", "waiting"}) >= LIVE_WEB_RUNS:
+            raise PermissionError(f"{LIVE_WEB_RUNS} agents started from the web are already working on this computer; stop one first")
         cwd, first, _, _ = self._read_editor(self._editor_file(request.session_id))
         root, where = self._place(cwd)
         if not root:
@@ -603,22 +615,34 @@ class MachineAgents(BaseModel):
         return MachineAgentAnswer(request_id=request.id, run_id=UUID(run.run_id))
 
     def _continue_turn(self, run: reg.AgentRun, text: str, *, request_id: UUID, fork_from: str | None = None) -> MachineAgentAnswer:
-        if fork_from is None and run.status in {"running", "waiting"}:
-            raise PermissionError("it is still answering; send this once it has finished")
-        reg.record_message(from_run="operator", to_run=run.run_id, text=text)
-        launch_editor_turn(PROVIDERS["claude"], reg.get_run(run.run_id) or run, text, environment=self.environment, fork_from=fork_from)
+        """One turn of a continued conversation: the opt-in is checked on EVERY turn (turning it off
+        stops the copies too), and one turn at a time (checked and started under the run's lock)."""
+        self._require_continue()
+        with _TURN_LOCKS.setdefault(run.run_id, threading.Lock()):
+            current = reg.get_run(run.run_id) or run
+            if fork_from is None and reg.trees(frozenset({run.run_id}))[0].status in {"running", "waiting"}:
+                raise PermissionError("it is still answering; send this once it has finished")
+            reg.record_message(from_run="operator", to_run=run.run_id, text=text)
+            try:
+                launch_editor_turn(PROVIDERS["claude"], current, text, environment=self.environment, fork_from=fork_from)
+            except BaseException:
+                reg.finish(run.run_id, exit_code=1)  # never left "running" by a turn that did not start
+                raise
         return MachineAgentAnswer(request_id=request_id, run_id=UUID(run.run_id), detail="sent")
 
     # ---- logs ------------------------------------------------------------------------------------
 
     def _logs(self, request: AgentLogsRequest) -> MachineAgentAnswer:
-        """This connection's recent log lines, or one web-started run's error output, redacted."""
+        """This connection's recent log lines, or one web-started run's error output, redacted (the
+        ring's lines once more on the way out, with this request's secrets)."""
         if request.run_id is not None:
             self._require_run(request.run_id)
             text = reg.read_stderr(str(request.run_id), limit=16_000)
             return MachineAgentAnswer(request_id=request.id, lines=tuple(redact(line, self.secrets)[:600] for line in text.splitlines()[-400:] if line.strip()))
-        return MachineAgentAnswer(request_id=request.id, lines=tuple(self.logs.lines) if self.logs is not None else ())
+        return MachineAgentAnswer(request_id=request.id, lines=tuple(redact(line, self.secrets) for line in self.logs.lines) if self.logs is not None else ())
 
 
+#: One turn at a time per continued conversation (`_continue_turn`).
+_TURN_LOCKS: dict[str, threading.Lock] = {}
 #: (when, models) — `MachineAgents.models`' one-minute cache.
 _MODELS: tuple[float, tuple[MachineAgentModel, ...]] | None = None

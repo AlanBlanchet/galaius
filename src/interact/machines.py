@@ -700,6 +700,8 @@ class MachineRunner:
         return MachineConfig.model_validate_json(self.config_path.read_text(encoding="utf-8"))
 
     async def connect(self, config: MachineConfig) -> None:
+        # Exact secrets masked in every kept log line from the first one on (`LogRing`).
+        self._log_ring.secrets = (config.token.get_secret_value(), *secret_values(self._safe_environment()))
         delay_index = 0
         while True:
             endpoint = self._channel_url(config.server_url)

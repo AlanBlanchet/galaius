@@ -249,7 +249,7 @@ def test_an_approval_answer_must_match_what_is_waiting(base: Path, tmp_path: Pat
         return Host()
     monkeypatch.setattr(MachineSessions, "host", host)
     pending = _answer(agents, _request("runs")).runs[0].pending
-    assert [item.id for item in pending] == ["i1"] and pending[0].digest == interaction_digest(pending[0])
+    assert [item.id for item in pending] == ["i1"] and pending[0].digest == interaction_digest(pending[0].model_dump(mode="json"))
     with pytest.raises(PermissionError, match="no longer the one waiting"):
         _answer(agents, _request("answer", run_id=run_id, interaction_id="i1", digest="0" * 64, values={"decision": "decline"}))
     with pytest.raises(PermissionError, match="accepted in the editor"):
@@ -265,3 +265,34 @@ def test_sessions_and_unknown_models_are_refused_without_their_setting(base: Pat
     monkeypatch.setattr(MachineAgents, "models", lambda self: (MachineAgentModel(provider="claude", model="claude-sonnet-5"),))
     with pytest.raises(PermissionError, match="not a model agents can run on here"):
         _answer(agents, _request("start", root="project", role="app-engineer", provider="codex", model="claude-sonnet-5", text="go"))
+
+
+def test_a_continued_copy_stops_taking_turns_once_the_opt_in_is_off(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    on = _agents(base, tmp_path, continue_conversations=True).model_copy(update={"editor_projects": tmp_path / "projects"})
+    _, editor = _editor(tmp_path, base, base / "project")
+    monkeypatch.setattr("interact.machine_agents.launch_editor_turn", lambda *args, **kwargs: None)
+    copy = _answer(on, _request("continue", session_id=str(editor), text="go"))
+    reg.finish(str(copy.run_id), exit_code=0)
+    off = on.model_copy(update={"continue_conversations": False})
+    with pytest.raises(PermissionError, match="continuing your editor conversations"):
+        _answer(off, _request("send", run_id=str(copy.run_id), text="and more"))
+
+
+def test_a_failed_first_turn_never_leaves_the_copy_running(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    agents = _agents(base, tmp_path, continue_conversations=True).model_copy(update={"editor_projects": tmp_path / "projects"})
+    _, editor = _editor(tmp_path, base, base / "project")
+    def refuse(*args, **kwargs):
+        raise OSError("claude is not installed")
+    monkeypatch.setattr("interact.machine_agents.launch_editor_turn", refuse)
+    with pytest.raises(OSError):
+        _answer(agents, _request("continue", session_id=str(editor), text="go"))
+    assert [run.status for run in _answer(agents, _request("runs")).runs] == ["failed"]
+
+
+def test_questions_of_a_turn_that_ended_are_no_longer_waiting(monkeypatch: pytest.MonkeyPatch) -> None:
+    asked = {"id": "i1", "kind": "command_approval", "title": "Run?", "fields": [{"key": "decision", "kind": "choice", "label": "Allow?", "options": ["accept", "decline"]}], "disclosure": ["ls"]}
+    events = [{"kind": "interaction", "event_id": "i1", "interaction": asked}, {"kind": "cancelled", "event_id": "t1"},
+              {"kind": "interaction", "event_id": "i2", "interaction": {**asked, "id": "i2"}}, {"kind": "interaction_resolved", "event_id": "i2:closed:declined"},
+              {"kind": "interaction", "event_id": "i3", "interaction": {**asked, "id": "i3"}}]
+    monkeypatch.setattr(reg, "read_events", lambda run_id: [reg.AgentEvent.model_validate(event) for event in events])
+    assert [item.id for item in MachineAgents.pending("r")] == ["i3"]

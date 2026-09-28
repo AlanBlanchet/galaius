@@ -2654,7 +2654,7 @@ async def test_a_route_that_can_never_work_is_not_offered_as_a_route(tmp_path: P
         transport_registry=_TransportRegistry(workspace_root=tmp_path),
         config=Config(),
     )
-    catalog = await host._catalog()
+    catalog = await host.catalog()
     blocked = [route for route in catalog.routes if route.availability == "policy_blocked"]
     assert not blocked, (
         "a row nothing can ever make available belongs in the policy, not the route list: "
