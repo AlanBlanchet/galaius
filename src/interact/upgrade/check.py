@@ -54,10 +54,17 @@ class UpgradeCheck(BaseModel):
 
     @staticmethod
     def server() -> str | None:
-        """The Interact server this computer signed in to (`interact login` remembers it)."""
+        """The Interact server this computer signed in to: the one `interact login` remembers,
+        else the one its machine connection is enrolled with (a computer set up before logins
+        were remembered)."""
+        runner = MachineRunner()
         try:
-            return (MachineRunner.default_config_path().parent / "login-server").read_text(encoding="utf-8").strip() or None
+            return (runner.config_path.parent / "login-server").read_text(encoding="utf-8").strip() or None
         except FileNotFoundError:
+            pass
+        try:
+            return runner.load().server_url
+        except (OSError, ValueError, KeyError):
             return None
 
     def source(self) -> ReleaseSource | None:

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from interact.machines import MachineConfig
+from interact.machines import MachineConfig, MachineRunner
 from interact.server_tool_settings import PORTABLE_ENV
 from interact.upgrade.check import UpgradeCheck, UpgradePolicy
 from interact.upgrade.release import Release, ReleaseFile, ReleaseRefused
@@ -166,3 +166,13 @@ def test_a_remembered_plain_http_server_elsewhere_is_refused_as_a_source(tmp_pat
     monkeypatch.setattr(UpgradeCheck, "server", staticmethod(lambda: "http://interact.example.com"))
     assert "not a release source" in check.run()
     assert check.store.events()[-1].kind == "refused"
+
+
+def test_a_computer_enrolled_before_logins_were_remembered_upgrades_from_its_machine_server(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    assert UpgradeCheck.server() is None
+    MachineRunner().save(MachineConfig(server_url="http://127.0.0.1:8817", workspace_id="00000000-0000-0000-0000-000000000001", machine_id="00000000-0000-0000-0000-000000000002",
+                                       token="t" * 32, permission_ceiling="read_only", working_directory=tmp_path))
+    assert UpgradeCheck.server() == "http://127.0.0.1:8817"
+    (tmp_path / "config" / "interact" / "login-server").write_text("https://interact.example.com\n")
+    assert UpgradeCheck.server() == "https://interact.example.com"
