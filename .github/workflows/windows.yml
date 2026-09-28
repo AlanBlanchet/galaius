@@ -20,6 +20,24 @@ env:
   SERVER: http://127.0.0.1:8765
 
 jobs:
+  # The whole suite on Windows (integration and live-desktop tests auto-skip): every agent, console
+  # and provider path a Windows PC runs, not only the install one. -rf names each failure.
+  suite:
+    name: windows (full suite)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Tests
+        run: uv run --frozen python -m pytest -m "not integration" -q -rfEs -p no:cacheprovider
+
   windows:
     name: windows (install.ps1 + login + service)
     runs-on: windows-latest
