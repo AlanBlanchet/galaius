@@ -48,19 +48,24 @@ jobs:
           $files = @(Get-ChildItem tests -Filter 'test_*.py' | Sort-Object Name)
           $mine = @(for ($i = 0; $i -lt $files.Count; $i++) { if ($i % 8 -eq ${{ matrix.shard }}) { "tests/$($files[$i].Name)" } })
           $mine | Set-Content -Encoding ascii shard.txt
-          '.venv\Scripts\python.exe -m pytest -m "not integration" -v -rfEs -p no:cacheprovider @shard.txt < NUL > suite.log 2>&1' | Set-Content -Encoding ascii run-tests.cmd
           uv sync --frozen --quiet
-      # In a console of its own (`start /wait`), stdin empty, output kept in a file (uploaded below): a
-      # console control event a test sends (Ctrl-Break to a pid that leads no process group reaches
-      # every process on the console) then stops pytest, never the runner, and the log names the test.
+      # pytest under a watchdog of our own, well inside the step's limit: on a hang it prints the test
+      # in progress and every process (who started what), then ends the tree - the log survives.
       - name: Tests
         timeout-minutes: 25
-        shell: cmd
         run: |
-          start "tests" /wait /min cmd /c run-tests.cmd
-          set code=%ERRORLEVEL%
-          type suite.log
-          exit /b %code%
+          New-Item -ItemType File -Force empty.txt | Out-Null
+          $pytest = Start-Process -FilePath .venv\Scripts\python.exe -PassThru -NoNewWindow -RedirectStandardInput empty.txt `
+            -RedirectStandardOutput suite.log -RedirectStandardError suite.err `
+            -ArgumentList '-m', 'pytest', '-m', '"not integration"', '-v', '-rfEs', '-p', 'no:cacheprovider', '@shard.txt'
+          if (-not $pytest.WaitForExit(18 * 60 * 1000)) {
+            "== HUNG: last lines"; Get-Content suite.log -Tail 40; Get-Content suite.err -Tail 40
+            "== processes"; Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, Name, CommandLine | Format-Table -AutoSize -Wrap | Out-String -Width 300
+            taskkill /T /F /PID $pytest.Id
+            exit 1
+          }
+          Get-Content suite.log; Get-Content suite.err
+          exit $pytest.ExitCode
       - name: Upload the test log
         if: always()
         uses: actions/upload-artifact@v4
