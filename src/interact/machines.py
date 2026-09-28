@@ -899,6 +899,7 @@ class MachineRunner:
         except (PermissionError, OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
             reason = str(error) if isinstance(error, (PermissionError, ValueError, RuntimeError)) else f"{type(error).__name__}: {error}"
             answer = MachineAgentAnswer(request_id=request.id, error=reason[:400] or type(error).__name__)
+            logger.warning("agent %s refused: %s", request.op, answer.error)
         if request.action:
             # The whole brief / message stays HERE, in the owner's local log; the server keeps a digest.
             asked = request.model_dump(mode="json", exclude={"type", "id", "machine", "workspace_id", "expires_at", "signature"})

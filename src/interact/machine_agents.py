@@ -108,6 +108,8 @@ class WebRun(BaseModel):
     root: str
     path: str = ""
     kind: AgentRunKind = "agent"
+    #: A continued copy: the editor conversation it copies (its history opens the copy's transcript).
+    source: UUID | None = None
 
 
 class WebRuns(BaseModel):
@@ -347,13 +349,15 @@ class MachineAgents(BaseModel):
         try:
             size = path.stat().st_size
         except FileNotFoundError:
-            return MachineAgentAnswer(request_id=request.id, cursor=0)
+            size = 0  # nothing written yet (a copy's first turn is still starting)
         cursor = request.cursor
         start = max(0, size - COLD_TAIL) if cursor is None else (0 if cursor > size else cursor)
         end = min(size, start + MACHINE_AGENT_TAIL)
-        with path.open("rb") as handle:
-            handle.seek(start)
-            data = handle.read(end - start)
+        data = b""
+        if size:
+            with path.open("rb") as handle:
+                handle.seek(start)
+                data = handle.read(end - start)
         skipped = start > 0 and cursor is None
         if skipped:
             newline = data.find(b"\n")
@@ -364,7 +368,41 @@ class MachineAgents(BaseModel):
         while count < TAIL_LINES and (newline := data.find(b"\n", whole)) >= 0:
             whole, count = newline + 1, count + 1
         lines = tuple(line.decode("utf-8", "replace") for line in data[:whole].split(b"\n") if line)
+        if cursor is None and (placed := next((item for item in self.runs.read() if item.run_id == request.run_id and item.source), None)):
+            lines = (*self._editor_history(placed.source), *lines)[-TAIL_LINES:]
         return MachineAgentAnswer(request_id=request.id, lines=lines, cursor=start + whole, truncated=skipped)
+
+    def _editor_history(self, session_id: UUID, keep: int = 40) -> tuple[str, ...]:
+        """The editor conversation a copy continues, as stream lines the transcript reads (what the
+        owner typed, what it answered): the copy opens where the editor left off."""
+        try:
+            path = self._editor_file(session_id)
+        except PermissionError:
+            return ()
+        size = path.stat().st_size
+        with path.open("rb") as handle:
+            handle.seek(max(0, size - 1024 * 1024))
+            tail = handle.read()
+        said: list[str] = []
+        for line in tail.splitlines():
+            try:
+                value = json.loads(line)
+            except ValueError:
+                continue
+            kind, message = value.get("type"), value.get("message") or {}
+            text = redact(self._said_text(message.get("content")).strip(), self.secrets)
+            if not text or value.get("isMeta") or (kind == "user" and text.startswith("<")):
+                continue
+            at = value.get("timestamp")
+            try:
+                moment = time.mktime(time.strptime(str(at)[:19], "%Y-%m-%dT%H:%M:%S")) if at else 0.0
+            except ValueError:
+                moment = 0.0
+            if kind == "user":
+                said.append(json.dumps({"kind": "prompt", "text": text[:8000], "at": moment}))
+            elif kind == "assistant":
+                said.append(json.dumps({"kind": "text", "text": text[:20000], "at": moment}))
+        return tuple(said[-keep:])
 
     def _run_cli(self, *arguments: str, timeout: float) -> subprocess.CompletedProcess[str]:
         """The CLI's own exit and output. Output goes to files, never pipes: the agent it starts
@@ -616,7 +654,7 @@ class MachineAgents(BaseModel):
         run = reg.AgentRun(run_id=str(uuid4()), provider="claude", name="Editor conversation", task=redact(first, self.secrets)[:500] or request.text[:500],
                            cwd=str(folder), project=reg.project_for(str(folder)), permission_mode=self.permission, session_id=self.session, started_at=time.time(), status="running")
         reg.save_run(run)
-        self.runs.add(WebRun(run_id=UUID(run.run_id), root=root, path=where, kind="continued"))
+        self.runs.add(WebRun(run_id=UUID(run.run_id), root=root, path=where, kind="continued", source=request.session_id))
         self._continue_turn(run, request.text, request_id=request.id, fork_from=str(request.session_id))
         return MachineAgentAnswer(request_id=request.id, run_id=UUID(run.run_id))
 

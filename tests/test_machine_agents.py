@@ -296,3 +296,12 @@ def test_questions_of_a_turn_that_ended_are_no_longer_waiting(monkeypatch: pytes
               {"kind": "interaction", "event_id": "i3", "interaction": {**asked, "id": "i3"}}]
     monkeypatch.setattr(reg, "read_events", lambda run_id: [reg.AgentEvent.model_validate(event) for event in events])
     assert [item.id for item in MachineAgents.pending("r")] == ["i3"]
+
+
+def test_a_continued_copy_opens_with_the_editor_history(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    agents = _agents(base, tmp_path, continue_conversations=True).model_copy(update={"editor_projects": tmp_path / "projects"})
+    _, editor = _editor(tmp_path, base, base / "project")
+    monkeypatch.setattr("interact.machine_agents.launch_editor_turn", lambda *args, **kwargs: None)
+    copy = _answer(agents, _request("continue", session_id=str(editor), text="go"))
+    lines = [json.loads(line) for line in _answer(agents, _request("tail", run_id=str(copy.run_id))).lines]
+    assert [(line["kind"], line["text"]) for line in lines][:2] == [("prompt", "Fix the header"), ("text", "Header fixed.")]
