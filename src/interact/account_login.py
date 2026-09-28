@@ -193,12 +193,9 @@ class AccountLogin(BaseModel):
         raise LoginError("nobody approved this computer in time; run `interact login` again")
 
     def save(self, issued: DeviceLoginIssued) -> None:
-        """The key for the CLI (0600), the CLI's connection, and the machine credential."""
-        self.key_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        descriptor = os.open(self.key_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            stream.write(issued.api_key.secret.get_secret_value() + "\n")
-        os.chmod(self.key_path, 0o600)
+        """The key for the CLI and the machine credential (private files, sealed at rest where the
+        system can: `PRIVATE_FILES`), and the CLI's connection."""
+        PRIVATE_FILES.write_secret(self.key_path, issued.api_key.secret.get_secret_value())
         CatalogConnection(endpoint=self.server, workspace_id=issued.workspace.id, auth_mode="token", token_file=self.key_path.absolute()).save()
         MachineRunner().save(MachineConfig(
             server_url=self.server, workspace_id=issued.workspace.id, machine_id=issued.machine.id, token=issued.machine_token,

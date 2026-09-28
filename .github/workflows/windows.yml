@@ -70,6 +70,8 @@ jobs:
           if (-not $login.WaitForExit(180000)) { throw 'interact login did not finish' }
           Get-Content login.out, login.err
           if ($login.ExitCode -ne 0 -or -not (Select-String -Path login.out -Pattern '^Connected: ' -Quiet)) { throw "interact login failed (exit $($login.ExitCode))" }
+          # The double serves no agent catalog (a 404 is expected there); refusing its own files is a Windows defect.
+          if (Select-String -Path login.out, login.err -Pattern 'must be private' -Quiet) { throw 'interact refused its own files as not private' }
 
       - name: The logon task runs; the machine is online with Windows' script languages
         run: |

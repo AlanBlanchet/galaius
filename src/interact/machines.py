@@ -35,7 +35,7 @@ from interact.agents.catalog import AgentCatalog
 from interact.agents import providers as agent_providers
 from interact.file_lock import exclusive
 from interact.private_files import PRIVATE_FILES
-from interact.machine_agents import LogRing, MachineAgents, MachineSessions, WebRuns, secret_values
+from interact.machine_agents import LogRing, MachineAgents, MachineSessions, WebRuns, redact, secret_values
 from interact.agents.events import AgentEvent
 from interact.agents.run import run_agent
 from interact.agents import registry as reg

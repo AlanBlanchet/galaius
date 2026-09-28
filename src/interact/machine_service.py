@@ -13,7 +13,6 @@ operating system (`MACHINE_SERVICE`), started, stopped and read by `interact mac
 import asyncio
 import getpass
 import logging
-import os
 import shutil
 import subprocess
 import sys
@@ -290,13 +289,16 @@ class WindowsMachineService(MachineService):
     def run(self) -> None:
         """What the task starts: its programs held in a job that closes with it, its output in
         `log_path` (pythonw has no console), then the restarting connection."""
-        job = self.held_children()  # noqa: F841 - kept open for the process's life: its programs close with it
+        job = self.held_children()
         if sys.stdout is None or sys.stderr is None:
             path = self.log_path()
             if path.exists() and path.stat().st_size > 5 << 20:
                 path.replace(path.with_suffix(".log.1"))
             sys.stdout = sys.stderr = open(path, "a", encoding="utf-8", buffering=1)  # noqa: SIM115 - lives as long as the process
-        super().run()
+        try:
+            super().run()
+        finally:
+            job.Close()  # the last handle: every program still in the job ends with it
 
     @staticmethod
     def held_children():

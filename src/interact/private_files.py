@@ -162,12 +162,16 @@ class WindowsPrivateFiles(PrivateFiles):
                                                          win32security.OWNER_SECURITY_INFORMATION | win32security.DACL_SECURITY_INFORMATION)
         user, owner, dacl = win32security.ConvertSidToStringSid(self.user()), descriptor.GetSecurityDescriptorOwner(), descriptor.GetSecurityDescriptorDacl()
         allowed = {user, *self.trusted}
-        entries = () if dacl is None else tuple(dacl.GetAce(index) for index in range(dacl.GetAceCount()))
+        # An inherit-only entry grants nothing on this file or folder (only on what is created in it, where it is checked).
+        entries = () if dacl is None else tuple(ace for ace in (dacl.GetAce(index) for index in range(dacl.GetAceCount()))
+                                                if not ace[0][1] & ntsecuritycon.INHERIT_ONLY_ACE)
         # Deny entries only narrow access; any allow entry but a plain one (conditional, object, callback) refuses the file.
         kinds = {ace[0][0] for ace in entries} - {ntsecuritycon.ACCESS_ALLOWED_ACE_TYPE, ntsecuritycon.ACCESS_DENIED_ACE_TYPE}
-        granted = {win32security.ConvertSidToStringSid(ace[-1]) for ace in entries if ace[0][0] == ntsecuritycon.ACCESS_ALLOWED_ACE_TYPE}
-        if dacl is None or kinds or win32security.ConvertSidToStringSid(owner) not in allowed or not granted <= allowed:
-            raise PermissionError(f"{path} must be private to this user (only you may read it; run `interact login` again to rewrite it)")
+        others = {win32security.ConvertSidToStringSid(ace[-1]) for ace in entries if ace[0][0] == ntsecuritycon.ACCESS_ALLOWED_ACE_TYPE} - allowed
+        owned = win32security.ConvertSidToStringSid(owner)
+        if dacl is None or kinds or owned not in allowed or others:
+            reason = "no access list" if dacl is None else f"unusual access entries {sorted(kinds)}" if kinds else f"owned by {owned}" if owned not in allowed else f"also readable by {', '.join(sorted(others))}"
+            raise PermissionError(f"{path} must be private to this user ({reason}; run `interact login` again to rewrite it)")
 
     def seal(self, secret: str) -> str:
         sealed = win32crypt.CryptProtectData(secret.encode("utf-8"), "interact", self.entropy, None, None, win32cryptcon.CRYPTPROTECT_UI_FORBIDDEN)

@@ -180,7 +180,8 @@ class CatalogConnection(BaseModel):
     @contextmanager
     def session_lock(self, *, suffix: Literal[".lock", ".access-lock"] = ".lock"):
         path = self.session_path()
-        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if not path.parent.exists():
+            PRIVATE_FILES.directory(path.parent)  # made private as it is created; an existing one is only checked
         try:
             PRIVATE_FILES.check(path.parent)
         except PermissionError as error:
