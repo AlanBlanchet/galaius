@@ -8,11 +8,20 @@
 # archive of this repository (a branch or tag .tar.gz) with INTERACT_ARCHIVE=<url>.
 set -eu
 
+# uv's own installer, this exact release, its bytes pinned (it pins each uv binary's sha256 in turn);
+# the same pins as the Interact server's installer.
+UV_VERSION="0.11.25"
+UV_INSTALLER_SHA256="ca2de1bca2913ba30ce88658b6d90a663c627ecac378803aa58084a9adb35a46"
+
 main() {
   fetch_tool
   if ! command -v uv >/dev/null 2>&1; then
-    echo "Installing uv (Python tool manager)…"
-    fetch https://astral.sh/uv/install.sh | sh
+    echo "Installing uv ${UV_VERSION} (Python tool manager)…"
+    uv_installer="$(mktemp)"
+    fetch "https://astral.sh/uv/${UV_VERSION}/install.sh" > "$uv_installer"
+    [ "$(sha256 "$uv_installer")" = "$UV_INSTALLER_SHA256" ] || { rm -f "$uv_installer"; echo "interact: the uv installer is not the expected file (checksum differs); nothing was installed" >&2; exit 1; }
+    sh "$uv_installer"
+    rm -f "$uv_installer"
     # uv installs to ~/.local/bin; make it available for the rest of this script
     PATH="$HOME/.local/bin:$PATH"
     export PATH
@@ -63,6 +72,10 @@ fetch_tool() {
   elif command -v wget >/dev/null 2>&1; then FETCH=wget
   else echo "interact: install curl or wget first" >&2; exit 1
   fi
+}
+
+sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi
 }
 
 fetch() {

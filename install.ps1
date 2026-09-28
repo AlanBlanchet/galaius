@@ -18,13 +18,25 @@ function Invoke-Tool([string]$What, [scriptblock]$Command) {
     if ($LASTEXITCODE -ne 0) { throw "$What failed (exit $LASTEXITCODE); see the lines above" }
 }
 
+# uv's own installer, this exact release, its bytes pinned (it pins each uv binary's sha256 in
+# turn); the same pins as the Interact server's installer.
+$UvVersion = '0.11.25'
+$UvInstallerSha256 = 'e9d26d1b6c34553831c5334189c1e9e821e53bedc5ad9a37d88992b0355af965'
+
 function Install-Interact {
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
     $uvBin = Join-Path $HOME '.local\bin'
     if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
-        Write-Host 'Installing uv (Python tool manager)...'
-        # Its own process: uv's installer ends with `exit`, which would close this window.
-        Invoke-Tool 'installing uv' { powershell -NoProfile -ExecutionPolicy ByPass -Command 'irm https://astral.sh/uv/install.ps1 | iex' }
+        Write-Host "Installing uv $UvVersion (Python tool manager)..."
+        $uvInstaller = Join-Path ([IO.Path]::GetTempPath()) ("uv-installer-" + [Guid]::NewGuid().ToString('N') + '.ps1')
+        try {
+            Invoke-WebRequest -UseBasicParsing -Uri "https://astral.sh/uv/$UvVersion/install.ps1" -OutFile $uvInstaller
+            if ((Get-FileHash -Algorithm SHA256 $uvInstaller).Hash.ToLower() -ne $UvInstallerSha256) { throw 'the uv installer is not the expected file (checksum differs); nothing was installed' }
+            # Its own process: uv's installer ends with `exit`, which would close this window.
+            Invoke-Tool 'installing uv' { powershell -NoProfile -ExecutionPolicy ByPass -File $uvInstaller }
+        } finally {
+            Remove-Item -Force $uvInstaller -ErrorAction SilentlyContinue
+        }
         $env:Path = "$uvBin;$env:Path"  # uv edits the user PATH for new windows, not this one
     }
 
