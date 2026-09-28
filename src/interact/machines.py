@@ -803,7 +803,7 @@ class MachineRunner:
 
     #: What this runner can do beyond the base protocol (the server's `MachineChannel.require_feature`):
     #: file queries browse the owner's script roots; a script file runs from them.
-    FEATURES: ClassVar[tuple[str, ...]] = ("file_query", "script_file", "file_read", "agent_control")
+    FEATURES: ClassVar[tuple[str, ...]] = ("file_query", "script_file", "file_read", "agent_control", "agent_settings")
 
     @staticmethod
     def _verify_signed(config: MachineConfig, message: MachineCommand | MachineFileQuery | MachineDataRequest | MachineAgentRequest, what: str) -> None:
@@ -900,7 +900,8 @@ class MachineRunner:
             recorded = reg.get_run(str(run_id)) if run_id else None
             folder = "/".join(filter(None, (getattr(request, "root", "") or (placed.root if placed else ""), getattr(request, "path", "") or (placed.path if placed else ""))))
             said = " ".join(f"{key}={value}" for key, value in (("role", getattr(request, "role", None) or (recorded.agent if recorded else None)), ("folder", folder),
-                                                                 ("run", str(run_id)[:8] if run_id else None), ("answer", answer.detail if request.op in {"answer", "send"} else None)) if value)
+                                                                 ("run", str(run_id)[:8] if run_id else None), ("provider", getattr(request, "provider", None) if request.op == "provider" else None),
+                                                                 ("answer", answer.detail if request.op in {"answer", "send", "provider"} else None)) if value)
             logger.log(logging.INFO if request.action else logging.DEBUG, "agent %s %s", request.op, said)
         except (PermissionError, OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
             reason = str(error) if isinstance(error, (PermissionError, ValueError, RuntimeError)) else f"{type(error).__name__}: {error}"

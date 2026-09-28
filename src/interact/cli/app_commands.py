@@ -635,6 +635,48 @@ def config_status(*, json_out: bool = False) -> None:
     WorkspaceCLI.emit(_settings_status)
 
 
+#: The tools that pick their model by rule, as `ToolRoleModels.role` names them; "sovereign" is the
+#: quick (low / medium) review tier.
+_TOOL_MODEL_ROLES = ("image", "component", "video", "audio", "sovereign")
+
+
+def _tool_models() -> dict:
+    """Each tool's rule and what it resolves to HERE, best first: the rule is the account's, the
+    keys that decide what clears it are this computer's."""
+    from interact.config.settings import _TIER_SOVEREIGN_DEFAULT_CRITERIA
+
+    config.refresh()
+    Model.load_registry()
+    roles = []
+    for role in _TOOL_MODEL_ROLES:
+        written = (config.tier_sovereign_criteria if role == "sovereign" else getattr(config, f"{role}_criteria")) or ""
+        criterion = written.strip() or (_TIER_SOVEREIGN_DEFAULT_CRITERIA if role == "sovereign" else config.criteria_for(role))
+        try:
+            rule = Criteria.parse(criterion)
+            rule.validate_weights(config.criteria_weights)
+            ranked = rule.ranked(available_only=True, weights=config.criteria_weights)
+            reason = "" if ranked else rule.explain(available_only=True)
+        except CriteriaError as error:
+            ranked, reason = [], str(error)
+        roles.append({"role": role, "criterion": criterion, "configured": bool(written.strip()),
+                      "models": [{"provider": model.provider, "model": model.id} for model in ranked[:5]],
+                      "reason": reason[:600]})
+    return {"roles": roles}
+
+
+@config_app.command(name="models")
+def config_models(*, json_out: bool = False) -> None:
+    """What each tool's model rule (image, component, video, audio, and the quick review tier)
+    resolves to on this computer, best first. Change a rule with `interact config set
+    image.criteria "…"`; it applies on every computer of your account."""
+    if json_out:
+        WorkspaceCLI.emit(_tool_models)
+        return
+    for role in _tool_models()["roles"]:
+        chosen = ", ".join(item["model"] for item in role["models"]) or f"— {role['reason']}"
+        print(f"{role['role']:<10} {role['criterion']}{'' if role['configured'] else ' (default)'}\n           → {chosen}")
+
+
 @config_app.command(name="sync")
 def config_sync(*, json_out: bool = False) -> None:
     """Refresh the replaceable personal settings cache online; never upload local entries."""

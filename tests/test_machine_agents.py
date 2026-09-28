@@ -364,3 +364,42 @@ def test_options_for_a_role_ask_the_pc_what_its_rule_picks(base: Path, tmp_path:
     agents = _agents(base, tmp_path)
     monkeypatch.setattr(MachineAgents, "role_models", lambda self, role: (MachineAgentModel(provider="claude", model="claude-sonnet-5"),) if role == "source-validator" else ())
     assert [(item.provider, item.model) for item in _answer(agents, _request("options", role="source-validator")).models] == [("claude", "claude-sonnet-5")]
+
+
+def test_providers_switch_through_the_cli_the_editor_uses_and_settings_survive_a_bad_answer(base: Path, tmp_path: Path) -> None:
+    """The web's provider switch is the editor toggle's own command; a PC whose model read fails
+    still answers with its providers, and says why the models are missing."""
+    seen = tmp_path / "argv.json"
+    recorder = ("python3", "-c", f"import json,sys; json.dump(sys.argv[1:], open({str(seen)!r}, 'w')); print('not json')")
+    agents = _agents(base, tmp_path, cli=recorder)
+    switched = _answer(agents, _request("provider", provider="codex", active=False))
+    assert json.loads(seen.read_text()) == ["agents", "providers", "--name", "codex", "--state", "off"] and switched.detail == "off"
+    assert {item.provider for item in switched.providers} == {"claude", "codex"}
+    settings = _answer(agents, _request("settings"))
+    assert json.loads(seen.read_text()) == ["config", "models", "--json-out"]
+    assert settings.tool_models == () and settings.detail.startswith("models not read here") and settings.providers
+
+
+def test_settings_carry_each_tool_rule_as_the_pc_resolves_it(base: Path, tmp_path: Path) -> None:
+    payload = {"ok": True, "roles": [{"role": "image", "criterion": "cap.vlm", "configured": False, "models": [{"provider": "gemini", "model": "gemini/x"}], "reason": ""},
+                                     {"role": "audio", "criterion": "cap.nope", "configured": True, "models": [], "reason": "unknown capability"}]}
+    agents = _agents(base, tmp_path, cli=("python3", "-c", f"print({json.dumps(json.dumps(payload))})"))
+    settings = _answer(agents, _request("settings"))
+    assert [(role.role, role.configured, [m.model for m in role.models], role.reason) for role in settings.tool_models] == [
+        ("image", False, ["gemini/x"], ""), ("audio", True, [], "unknown capability")]
+
+
+def test_a_rule_that_cannot_be_read_says_why_instead_of_resolving(monkeypatch: pytest.MonkeyPatch) -> None:
+    from interact.cli import app_commands
+    from interact.config import Config
+
+    class Settings:  # the runtime proxy's surface, without reading this computer's account
+        inner = Config(audio_criteria="cap.not_a_capability")
+        def refresh(self): return self
+        def __getattr__(self, name): return getattr(self.inner, name)
+
+    monkeypatch.setattr(app_commands, "config", Settings())
+    roles = {role["role"]: role for role in app_commands._tool_models()["roles"]}
+    assert roles["audio"]["configured"] and roles["audio"]["models"] == [] and roles["audio"]["reason"]
+    assert not roles["sovereign"]["configured"] and roles["sovereign"]["criterion"] == "cap.vlm"
+    assert set(roles) == {"image", "component", "video", "audio", "sovereign"}

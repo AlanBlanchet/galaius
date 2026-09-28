@@ -32,7 +32,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from interact_core import (
     MACHINE_AGENT_TAIL, AgentAnswerRequest, AgentContinueRequest, AgentFoldersRequest, AgentInteraction, AgentLogsRequest, AgentOptionsRequest,
-    AgentRunKind, AgentRunsRequest, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
+    AgentProviderState, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
     MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, MachineAgentSession, MachineFileEntry,
 )
 from interact.agents import registry as reg
@@ -279,6 +279,10 @@ class MachineAgents(BaseModel):
                 return await asyncio.to_thread(self._continue, request)
             case AgentLogsRequest():
                 return await asyncio.to_thread(self._logs, request)
+            case AgentSettingsRequest():
+                return await asyncio.to_thread(self._settings, request)
+            case AgentProviderSwitchRequest():
+                return await asyncio.to_thread(self._switch_provider, request)
 
     def _kind(self, run_id: UUID) -> AgentRunKind:
         return next((item.kind for item in self.runs.read() if item.run_id == run_id), "agent")
@@ -576,6 +580,37 @@ class MachineAgents(BaseModel):
             route, session_models, reason = await self.sessions.route()
         return MachineAgentAnswer(request_id=request.id, roles=roles, models=models, session_models=session_models if route else (),
                                   session_reason=reason, permission=self.permission)
+
+    # ---- providers and tool models (VS Code: "Providers That Run Agents", "Select Model") ----
+
+    @staticmethod
+    def providers() -> tuple[AgentProviderState, ...]:
+        policy = load_policy()
+        return tuple(AgentProviderState(provider=name, active=policy.provider_active(name), available=PROVIDERS[name].available())
+                     for name in AGENT_PROVIDERS if name in PROVIDERS)
+
+    def _settings(self, request: AgentSettingsRequest) -> MachineAgentAnswer:
+        """The CLIs agents may run through here, and what each tool's rule resolves to here, asked
+        of this installation's own CLI (`interact config models`): a fresh read of the account's
+        rules against this computer's keys, never this process's snapshot."""
+        done = self._run_cli("config", "models", "--json-out", timeout=40)
+        try:
+            payload = json.loads(done.stdout.strip().splitlines()[-1])
+            if payload.get("ok") is not True:
+                raise ValueError(payload.get("message") or "refused")
+            tool_models, detail = tuple(ToolRoleModels.model_validate(role) for role in payload["roles"]), ""
+        except (ValueError, IndexError, KeyError, TypeError) as error:
+            tool_models, detail = (), f"models not read here: {self._first_line(str(error)) or self._said(done.stderr)}"[:400]
+        return MachineAgentAnswer(request_id=request.id, providers=self.providers(), tool_models=tool_models, detail=detail)
+
+    def _switch_provider(self, request: AgentProviderSwitchRequest) -> MachineAgentAnswer:
+        """Through the CLI the editor's toggle uses, so both write the one policy file the same way."""
+        global _MODELS
+        done = self._run_cli("agents", "providers", "--name", request.provider, "--state", "on" if request.active else "off", timeout=30)
+        if done.returncode != 0:
+            raise RuntimeError(self._said(done.stderr) or f"not switched (exit {done.returncode})")
+        _MODELS = None  # the model list follows the switched-on CLIs
+        return MachineAgentAnswer(request_id=request.id, providers=self.providers(), detail="on" if request.active else "off")
 
     # ---- sessions: conversations that ask before acting -------------------------------------
 
