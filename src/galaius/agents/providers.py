@@ -61,9 +61,14 @@ def _safe_process_detail(value: str) -> str:
     return _clip(value.replace("\x00", ""), 500)
 
 
-def _clip(text: str, limit: int = _CLIP) -> str:
+def _clip(text: str, limit: int = _CLIP, tail: int = 0) -> str:
+    """At most `limit` characters kept: the opening, and the last `tail` of them when the end is
+    what the text concludes with (a Stop-hook block closes on its verdict)."""
     text = text.strip()
-    return text if len(text) <= limit else f"{text[:limit]}… (+{len(text) - limit} chars)"
+    if len(text) <= limit:
+        return text
+    head = limit - tail
+    return f"{text[:head]}… (+{len(text) - limit} chars) …{text[len(text) - tail:]}" if tail else f"{text[:limit]}… (+{len(text) - limit} chars)"
 
 
 def _summarise_input(value) -> str:
@@ -1103,7 +1108,8 @@ class ClaudeCodeProvider(AgentProvider):
                     text = str(block.get("text") or "")
                     said = "prompt" if not raw.get("isSynthetic") else (
                         "check" if text.startswith(_STOP_HOOK_FEEDBACK) else "injected")
-                    return AgentEvent(kind=said, text=_clip(text), session_id=sid, raw_type=kind)
+                    return AgentEvent(kind=said, text=_clip(text, tail=_CLIP // 2 if said == "check" else 0),
+                                      session_id=sid, raw_type=kind)
             return AgentEvent(kind="other", session_id=sid, raw_type=kind)
 
         if kind == "rate_limit_event":

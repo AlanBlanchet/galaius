@@ -1157,3 +1157,17 @@ def test_a_harness_injected_user_turn_is_never_an_operator_prompt(text, kind):
     }))
     assert event is not None and event.kind == kind
     assert event.text == text
+
+
+def test_a_long_stop_hook_block_keeps_its_verdict():
+    """The block opens on the hook's whole rule (15k chars on a real run) and CLOSES on what it
+    found; clipped from the front only, every long one lost the verdict the reader needs."""
+    from galaius.agents.providers import ClaudeCodeProvider
+
+    text = "Stop hook feedback:\n[" + "rule " * 3000 + "]: Check 1(b) fires: two items left as remaining."
+    event = ClaudeCodeProvider().parse(json.dumps({
+        "type": "user", "session_id": "s", "isSynthetic": True,
+        "message": {"role": "user", "content": [{"type": "text", "text": text}]},
+    }))
+    assert event.kind == "check" and event.text.startswith("Stop hook feedback:")
+    assert event.text.endswith("]: Check 1(b) fires: two items left as remaining.") and len(event.text) < 2100
