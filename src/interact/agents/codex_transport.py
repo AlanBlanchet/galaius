@@ -260,6 +260,31 @@ class _CodexTransport(_ConversationTransport):
             raise ValueError("provider changed model")
         return _ConversationStart(conversation_id=conversation_id, model=returned_model)
 
+    async def list_threads(self, *, limit: int = 50) -> list[dict[str, JsonValue]]:
+        """The Codex conversations recorded on this computer, newest first (`thread/list`): each its
+        id, preview, folder, originator (who made it) and last update."""
+        result = await self.request("thread/list", {"limit": limit})
+        rows = result.get("data") if isinstance(result, dict) else None
+        keep = ("id", "preview", "cwd", "originator", "updatedAt", "forkedFromId")
+        return [{key: row.get(key) for key in keep} for row in rows if isinstance(row, dict) and isinstance(row.get("id"), str)] if isinstance(rows, list) else []
+
+    async def fork_conversation(self, *, thread_id: str, model: str, workspace: Path) -> _ConversationStart:
+        """A COPY of conversation `thread_id` (`thread/fork`) that continues in `workspace` under
+        the same read-only sandbox and ask-first approvals as a conversation started here; the
+        original is never written."""
+        result = _THREAD_RESULT.validate_python(await self.request("thread/fork", {
+            "threadId": self.identifier(thread_id),
+            "model": model,
+            "cwd": str(workspace),
+            "sandbox": "read-only",
+            "approvalPolicy": "on-request",
+            "approvalsReviewer": "user",
+        }))
+        conversation_id = self.identifier(result["thread"]["id"])
+        if conversation_id == thread_id:
+            raise ValueError("provider continued the original instead of a copy")
+        return _ConversationStart(conversation_id=conversation_id, model=result.get("model", model))
+
     async def resume_conversation(
         self, *, conversation_id: str, model: str, workspace: Path
     ) -> _ConversationStart:

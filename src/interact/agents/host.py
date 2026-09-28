@@ -183,7 +183,12 @@ class _ConversationHost(BaseModel):
         routes.extend(self.transport_registry.completion_routes(now))
         return ConversationCatalog(routes=routes, criteria=Variables.names(), cataloged_at=now)
 
-    async def _start(self, command: StartCommand) -> ConversationResponseValue:
+    async def fork(self, command: StartCommand, thread_id: str) -> ConversationResponseValue:
+        """`command` continued from a COPY of the provider's conversation `thread_id` (its history,
+        never written), then exactly as a start: same route, sandbox, approvals and registration."""
+        return await self._start(command, fork_from=thread_id)
+
+    async def _start(self, command: StartCommand, *, fork_from: str | None = None) -> ConversationResponseValue:
         try:
             workspace = self._workspace(command.request.workspace_root)
         except ValueError:
@@ -222,9 +227,8 @@ class _ConversationHost(BaseModel):
             )
         connection = self.transport_registry.require(route)
         try:
-            started = await connection.start_conversation(
-                model=model.id, workspace=workspace, instruction=instruction
-            )
+            started = await (connection.fork_conversation(thread_id=fork_from, model=model.id, workspace=workspace) if fork_from is not None
+                             else connection.start_conversation(model=model.id, workspace=workspace, instruction=instruction))
             run_id = started.conversation_id
         except (ConnectionError, ValidationError, ValueError):
             return self._error(
@@ -242,7 +246,7 @@ class _ConversationHost(BaseModel):
             run_id=run_id,
             kind="conversation",
             provider=route.provider,
-            name=f"{route.label} conversation",
+            name=f"{route.label} conversation" if fork_from is None else f"Copy of a {route.label} conversation",
             task=command.request.prompt[:500],
             cwd=str(workspace),
             project=reg.project_for(str(workspace)),
@@ -638,6 +642,21 @@ class ConversationHost:
     async def start(self, prompt: str, workspace: Path, *, route_id: str, model: str | None) -> reg.AgentRun:
         request = {"route_id": route_id, "prompt": prompt, "workspace_root": str(workspace), "selection": ModelSelection(model=model).model_dump()}
         return await self._run(StartCommand.model_validate({"version": 1, "request_id": self._request_id(), "method": "start", "request": request}))
+
+    async def fork(self, thread_id: str, prompt: str, workspace: Path, *, route_id: str, model: str | None) -> reg.AgentRun:
+        request = {"route_id": route_id, "prompt": prompt, "workspace_root": str(workspace), "selection": ModelSelection(model=model).model_dump()}
+        answer = await self._host.fork(StartCommand.model_validate({"version": 1, "request_id": self._request_id(), "method": "start", "request": request}), thread_id)
+        if isinstance(answer, ErrorResponse):
+            raise ConversationRefused(answer.error_code, answer.error)
+        return cast(RunResponse, answer).run
+
+    async def threads(self, route_id: str) -> list[dict]:
+        """The provider's own recorded conversations on this computer (`route_id`'s CLI)."""
+        catalog = await self._host.catalog()
+        route = catalog.route_by_id(route_id)
+        if route is None or route.availability != "available":
+            raise ConversationRefused("unavailable", route.reason if route else "Selected route does not exist.")
+        return await self._host.transport_registry.require(route).list_threads()
 
     async def send(self, run_id: str, prompt: str) -> reg.AgentRun:
         return await self._run(SendCommand(version=1, request_id=self._request_id(), method="send", run_id=run_id, prompt=prompt))

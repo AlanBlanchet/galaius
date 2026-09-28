@@ -328,3 +328,33 @@ def test_a_continued_copy_opens_with_the_editor_history(base: Path, tmp_path: Pa
     copy = _answer(agents, _request("continue", session_id=str(editor), text="go"))
     lines = [json.loads(line) for line in _answer(agents, _request("tail", run_id=str(copy.run_id))).lines]
     assert [(line["kind"], line["text"]) for line in lines][:2] == [("prompt", "Fix the header"), ("text", "Header fixed.")]
+
+
+def test_codex_conversations_of_the_owner_continue_as_a_session_copy(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    agents = _agents(base, tmp_path, continue_conversations=True, answer_approvals=True).model_copy(
+        update={"sessions": MachineSessions(base), "editor_projects": tmp_path / "projects"})
+    owners, ours = str(uuid4()), str(uuid4())
+    forked = []
+
+    class Host:
+        async def threads(self, route):
+            return [{"id": owners, "preview": "Plan the page", "cwd": str(base / "project"), "originator": "codex_vscode", "updatedAt": 100},
+                    {"id": ours, "preview": "Run ls", "cwd": str(base / "project"), "originator": "interact", "updatedAt": 200},
+                    {"id": str(uuid4()), "preview": "elsewhere", "cwd": str(base / "other"), "originator": "codex_cli_rs", "updatedAt": 300}]
+
+        async def fork(self, thread_id, prompt, workspace, *, route_id, model):
+            forked.append((thread_id, prompt, workspace))
+            return reg.AgentRun(run_id=str(uuid4()), provider="codex", name="copy", cwd=str(workspace))
+
+    async def host(self):
+        return Host()
+
+    async def route(self):
+        return "codex:local_session", ("gpt-6-luna",), ""
+    monkeypatch.setattr(MachineSessions, "host", host)
+    monkeypatch.setattr(MachineSessions, "route", route)
+    listed = _answer(agents, _request("sessions")).sessions
+    assert [(str(item.session_id), item.provider, item.title) for item in listed] == [(owners, "codex", "Plan the page")]
+    started = _answer(agents, _request("continue", session_id=owners, text="- go on"))
+    assert forked == [(owners, "- go on", base.resolve() / "project")] and agents.runs.read()[-1].kind == "session"
+    assert agents.runs.read()[-1].run_id == started.run_id

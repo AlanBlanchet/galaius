@@ -270,7 +270,11 @@ class MachineAgents(BaseModel):
             case AgentAnswerRequest():
                 raise PermissionError("only a session asks before acting; this run is not one")
             case AgentSessionsRequest():
-                return await asyncio.to_thread(self._editor_sessions, request)
+                claude = await asyncio.to_thread(self._editor_sessions, request)
+                codex = await self._codex_conversations()
+                return claude.model_copy(update={"sessions": tuple(sorted((*claude.sessions, *codex), key=lambda item: item.updated_at, reverse=True))[:EDITOR_SESSIONS_MAX]})
+            case AgentContinueRequest() if not await asyncio.to_thread(self._is_claude_conversation, request.session_id):
+                return await self._continue_codex(request)
             case AgentContinueRequest():
                 return await asyncio.to_thread(self._continue, request)
             case AgentLogsRequest():
@@ -603,6 +607,60 @@ class MachineAgents(BaseModel):
     def _require_continue(self) -> None:
         if not self.continue_conversations:
             raise PermissionError("continuing your editor conversations from the web is off on this computer; its owner turns it on there with `interact machine agents --continue on`")
+
+    def _is_claude_conversation(self, session_id: UUID) -> bool:
+        return any(path.is_file() for path in self.editor_projects.glob(f"*/{session_id}.jsonl"))
+
+    async def _codex_conversations(self) -> tuple[MachineAgentSession, ...]:
+        """The owner's own Codex conversations inside an agent root (never ones interact made).
+        Continuing one opens a session (a copy that asks before acting), so both opt-ins apply;
+        without them, or with Codex unavailable here, there are none to offer."""
+        if not (self.continue_conversations and self.answer_approvals and self.sessions is not None):
+            return ()
+        route, _, _ = await self.sessions.route()
+        if route is None:
+            return ()
+        try:
+            rows = await (await self.sessions.host()).threads(route)
+        except (ConversationRefused, ConnectionError, ValueError) as error:
+            logger.warning("codex conversations unavailable: %s", error)
+            return ()
+        launched = await asyncio.to_thread(reg.session_ids)
+        found = []
+        for row in rows:
+            root, where = self._place(str(row.get("cwd") or ""))
+            try:
+                thread_id = UUID(str(row["id"]))
+            except ValueError:
+                continue
+            if not root or row.get("originator") == "interact" or str(thread_id) in launched:
+                continue
+            found.append(MachineAgentSession(session_id=thread_id, provider="codex", title=redact(str(row.get("preview") or ""), self.secrets)[:400], root=root, path=where,
+                                             updated_at=float(row.get("updatedAt") or 0), live=time.time() - float(row.get("updatedAt") or 0) < EDITOR_LIVE_SECONDS))
+        return tuple(found)
+
+    async def _continue_codex(self, request: AgentContinueRequest) -> MachineAgentAnswer:
+        """A COPY of the owner's Codex conversation continues here as a session (`thread/fork`): it
+        keeps the conversation's history, asks before acting like any session, and the original is
+        never written. Its folder is read HERE from Codex's own record, inside an agent root."""
+        self._require_continue()
+        found = next((item for item in await self._codex_conversations() if item.session_id == request.session_id), None)
+        if found is None:
+            raise PermissionError("this conversation is not one this computer offers to continue (a Codex copy needs the approvals setting on too)")
+        assert self.sessions is not None
+        folder = await asyncio.to_thread(self.folder, found.root, found.path)
+        _, runs = await asyncio.to_thread(self._allowed)
+        if sum(1 for run in runs if run.status in {"running", "waiting"}) >= LIVE_WEB_RUNS:
+            raise PermissionError(f"{LIVE_WEB_RUNS} agents started from the web are already working on this computer; stop one first")
+        route, _, reason = await self.sessions.route()
+        if route is None:
+            raise PermissionError(reason)
+        try:
+            run = await (await self.sessions.host()).fork(str(request.session_id), request.text, folder, route_id=route, model=None)
+        except ConversationRefused as error:
+            raise RuntimeError(str(error)) from error
+        await asyncio.to_thread(self.runs.add, WebRun(run_id=UUID(run.run_id), root=found.root, path=found.path, kind="session"))
+        return MachineAgentAnswer(request_id=request.id, run_id=UUID(run.run_id))
 
     def _editor_file(self, session_id: UUID) -> Path:
         found = [path for path in self.editor_projects.glob(f"*/{session_id}.jsonl") if path.is_file() and not path.is_symlink()]
