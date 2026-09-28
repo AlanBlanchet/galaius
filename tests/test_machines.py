@@ -71,7 +71,7 @@ def test_accelerators_reports_cuda_gpus_from_nvidia_smi(tmp_path: Path, monkeypa
         fake_nvidia_smi.write_text('#!/bin/sh\nprintf "NVIDIA GeForce RTX 2070, 8192\\n"\n')
         fake_nvidia_smi.chmod(0o755)
     monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}")
-    monkeypatch.setattr("interact.machines.sys.platform", "linux")
+    monkeypatch.setattr(MachineRunner, "_mps_accelerator", staticmethod(lambda: ()))  # an Apple host would also report its GPU
 
     accelerators = MachineRunner._accelerators()
 
@@ -80,7 +80,7 @@ def test_accelerators_reports_cuda_gpus_from_nvidia_smi(tmp_path: Path, monkeypa
 
 def test_accelerators_reports_none_when_no_gpu_is_detected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PATH", str(tmp_path))
-    monkeypatch.setattr("interact.machines.sys.platform", "linux")
+    monkeypatch.setattr(MachineRunner, "_mps_accelerator", staticmethod(lambda: ()))
 
     assert MachineRunner._accelerators() == [{"kind": "none", "name": "none", "memory_mb": 0}]
 
@@ -695,7 +695,7 @@ def test_approval_preview_and_runner_agree_on_file_with_declared_packages(tmp_pa
     called = []
     monkeypatch.setattr(runner, "_run_process", lambda argv, *_: called.append(argv) or "ok")
     runner._run_script(command, config)
-    assert Path(called[0][0]).name == "uv" and "--script" in called[0]
+    assert Path(called[0][0]).stem.lower() == "uv" and "--script" in called[0]
 
 
 # The editor writes a script's packages as a PEP 723 header (frontend graph/scriptSource.joinScript).
