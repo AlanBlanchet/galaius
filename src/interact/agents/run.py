@@ -523,6 +523,11 @@ def already_meshed(provider: str, *, cwd: str | None = None) -> bool:
     return isinstance(servers, dict) and "interact" in servers
 
 
+#: How every brief the launcher hands a role begins: a session that opens with it is agent work
+#: the launcher started, whatever registry still records it.
+LAUNCH_STAMP = "Launch policy: role="
+
+
 def mesh_config(*, run_id: str) -> str:
     """The ``--mcp-config`` payload handed to a spawned agent so it can reach back into interact.
 
@@ -1058,7 +1063,7 @@ async def run_agent(
                     "remove the source pin and regenerate instead of bypassing the criterion"
                 )
         brief = (
-            f"Launch policy: role={agent}; model={candidate_model}; reasoning={candidate_effort}; criterion={required_model}.\n"
+            f"{LAUNCH_STAMP}{agent}; model={candidate_model}; reasoning={candidate_effort}; criterion={required_model}.\n"
             f"First progress message: [{agent}] followed by your concrete task; then start immediately.\n"
             "You run headless: ending your turn ends this run, and a background job's completion notice never "
             "reaches it. Wait for a job you started (tests, deploy, generation) with a bounded foreground poll "

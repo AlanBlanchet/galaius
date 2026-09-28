@@ -37,7 +37,7 @@ from interact_core import (
 from interact.agents import registry as reg
 from interact.agents.host import ConversationHost, ConversationRefused
 from interact.agents.providers import PROVIDERS
-from interact.agents.run import launch_editor_turn, load_policy, rank_candidates
+from interact.agents.run import LAUNCH_STAMP, launch_editor_turn, load_policy, rank_candidates
 from interact.file_lock import exclusive
 
 logger = logging.getLogger(__name__)
@@ -521,9 +521,9 @@ class MachineAgents(BaseModel):
             return " ".join(str(block.get("text") or "") for block in value if isinstance(block, dict) and block.get("type") == "text")
         return ""
 
-    def _read_editor(self, path: Path) -> tuple[str, str, str]:
-        """(its folder, its title — Claude's own, else its first prompt — its last reply) from the
-        conversation file's two ends."""
+    def _read_editor(self, path: Path) -> tuple[str, str, str, str]:
+        """(its folder, its title — Claude's own, else its first prompt — its first prompt, its last
+        reply) from the conversation file's two ends."""
         size = path.stat().st_size
         with path.open("rb") as handle:
             head = handle.read(256 * 1024)
@@ -551,7 +551,7 @@ class MachineAgents(BaseModel):
             if value.get("type") == "assistant" and (text := self._said_text((value.get("message") or {}).get("content")).strip()):
                 last = text
                 break
-        return cwd, titled or first, last
+        return cwd, titled or first, first, last
 
     def _editor_sessions(self, request: AgentSessionsRequest) -> MachineAgentAnswer:
         """The owner's editor conversations written in the last two weeks whose folder lies inside
@@ -575,11 +575,11 @@ class MachineAgents(BaseModel):
                 continue
             if path.stem in launched:
                 continue  # a session interact launched (an agent run, a continued copy), not the owner's
-            cwd, first, last = self._read_editor(path)
+            cwd, title, first, last = self._read_editor(path)
             root, where = self._place(cwd)
-            if not root:
+            if not root or first.startswith(LAUNCH_STAMP):
                 continue
-            found.append(MachineAgentSession(session_id=session_id, provider="claude", title=redact(first, self.secrets)[:400], last=redact(last, self.secrets)[:400],
+            found.append(MachineAgentSession(session_id=session_id, provider="claude", title=redact(title, self.secrets)[:400], last=redact(last, self.secrets)[:400],
                                              root=root, path=where, updated_at=updated, live=time.time() - updated < EDITOR_LIVE_SECONDS))
             if len(found) >= EDITOR_SESSIONS_MAX:
                 break
@@ -590,7 +590,7 @@ class MachineAgents(BaseModel):
         fork: the editor's conversation is never written), in the conversation's own folder — read
         HERE from its file, and only when it lies inside an agent root."""
         self._require_continue()
-        cwd, first, _ = self._read_editor(self._editor_file(request.session_id))
+        cwd, first, _, _ = self._read_editor(self._editor_file(request.session_id))
         root, where = self._place(cwd)
         if not root:
             raise PermissionError("this conversation's folder is not one this computer opens to agents")
