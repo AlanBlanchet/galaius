@@ -139,13 +139,11 @@ def _signal_group(process: asyncio.subprocess.Process, sig: signal.Signals) -> N
 
 
 async def stop_process_tree(process: asyncio.subprocess.Process) -> None:
-    """TERM, then KILL the complete process tree of a child spawned with `process_group_options`
-    (Windows: Ctrl-Break to its group, then `taskkill /T /F`)."""
+    """TERM, then KILL the complete process tree of a child spawned with `process_group_options`.
+    Windows: `taskkill /T /F` only. No console event (Ctrl-Break / Ctrl-C) is ever sent: one aimed
+    at a child that does not lead its own group reaches every process on the console, this one and
+    whatever started it included."""
     if os.name == "nt":
-        try:
-            process.send_signal(signal.CTRL_BREAK_EVENT)
-        except (AttributeError, OSError):
-            pass  # no console to raise it through, or already gone: taskkill below still ends it
         try:
             killer = await asyncio.create_subprocess_exec(
                 "taskkill",
