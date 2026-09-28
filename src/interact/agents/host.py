@@ -603,9 +603,11 @@ class _ConversationHost(BaseModel):
         await self._outbound.put(None)
 
     async def _write_output(self) -> None:
+        # Bytes, not text: Windows' console encoding (cp1252) cannot carry every character a
+        # model writes, and its text mode would turn each frame's newline into CRLF.
         while message := await self._outbound.get():
-            sys.stdout.write(message.model_dump_json() + "\n")
-            sys.stdout.flush()
+            sys.stdout.buffer.write(message.model_dump_json().encode() + b"\n")
+            sys.stdout.buffer.flush()
 
 class ConversationRefused(RuntimeError):
     """The host answered a command with an error: `code` is its ConversationErrorCode."""

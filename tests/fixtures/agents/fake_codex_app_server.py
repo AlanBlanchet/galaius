@@ -22,7 +22,10 @@ class _FakeCodexAppServer:
         self.approval_responses = 0
         executable.with_suffix(".pid").write_text(str(os.getpid()))
 
-        if sys.argv[1:] != ["app-server", "--listen", "stdio://"]:
+        arguments = sys.argv[1:]
+        while arguments[:1] == ["-c"]:  # config overrides the launcher adds (on Windows: its sandbox)
+            arguments = arguments[2:]
+        if arguments != ["app-server", "--listen", "stdio://"]:
             raise SystemExit("unexpected app-server transport arguments")
 
     def run(self) -> None:

@@ -80,8 +80,13 @@ def _response_name(params_name: str) -> str:
     return f"{params_name.removesuffix('Params')}Response"
 
 
+def _write(path: Path, text: str) -> None:
+    """UTF-8 with LF on every system: the recorded SHA-256 is of these exact bytes."""
+    path.write_bytes(text.encode("utf-8"))
+
+
 def refresh(source: Path, destination: Path) -> None:
-    root = json.loads((source / "ServerRequest.json").read_text())
+    root = json.loads((source / "ServerRequest.json").read_bytes())
     definitions = root["definitions"]
     destination.mkdir(parents=True, exist_ok=True)
     request_refs: list[dict[str, str]] = []
@@ -96,16 +101,14 @@ def refresh(source: Path, destination: Path) -> None:
             "definitions": definitions,
             **variant,
         }
-        (destination / request_name).write_text(_canonical(request_schema))
+        _write(destination / request_name, _canonical(request_schema))
         request_ref = f"./{request_name}"
         request_refs.append({"$ref": request_ref})
         response_name = _response_name(params_name) + ".json"
         response_source = source / response_name
         if not response_source.is_file():
             raise FileNotFoundError(response_source)
-        (destination / response_name).write_text(
-            _canonical(json.loads(response_source.read_text()))
-        )
+        _write(destination / response_name, _canonical(json.loads(response_source.read_bytes())))
         params = _example(definitions[params_name], definitions)
         values: dict[str, Any]
         if method == "item/tool/requestUserInput":
@@ -134,7 +137,7 @@ def refresh(source: Path, destination: Path) -> None:
         "oneOf": request_refs,
     }
     server_text = _canonical(server_request)
-    (destination / "ServerRequest.json").write_text(server_text)
+    _write(destination / "ServerRequest.json", server_text)
     manifest = {
         "source_version": SOURCE_VERSION,
         "source_executable_sha256": SOURCE_EXECUTABLE_SHA256,
@@ -143,7 +146,7 @@ def refresh(source: Path, destination: Path) -> None:
         "experimental_api": False,
         "server_requests": entries,
     }
-    (destination / "manifest.json").write_text(_canonical(manifest))
+    _write(destination / "manifest.json", _canonical(manifest))
 
 
 def main() -> None:

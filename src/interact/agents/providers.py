@@ -206,6 +206,12 @@ class AgentProvider(ABC):
             # The user bus: `systemd-run --user` (the agent ceiling, `contained`) cannot start the
             # child without it ("Failed to connect to bus"). Session plumbing, never a credential.
             "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS",
+            # Windows' own plumbing: without SYSTEMROOT a child cannot open a socket (WinError
+            # 10106); USERPROFILE / APPDATA are where the CLI finds its login; TEMP where it writes.
+            "SYSTEMROOT", "WINDIR", "SYSTEMDRIVE", "COMSPEC", "PATHEXT", "USERPROFILE", "HOMEDRIVE",
+            "HOMEPATH", "APPDATA", "LOCALAPPDATA", "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)",
+            "PROGRAMW6432", "COMMONPROGRAMFILES", "TEMP", "TMP", "USERNAME", "COMPUTERNAME",
+            "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "OS",
         }
         exact.update(self.auth_home_env)
         env = {
@@ -214,7 +220,7 @@ class AgentProvider(ABC):
             if key in exact or key.startswith("LC_")
         }
         if temp_dir is not None:
-            env["TMPDIR"] = str(temp_dir)
+            env["TMPDIR"] = env["TEMP"] = env["TMP"] = str(temp_dir)
         return env
 
     def auth_command(self) -> list[str]:
@@ -972,7 +978,7 @@ class ClaudeCodeProvider(AgentProvider):
             return []
         try:
             out = subprocess.run(
-                [self.binary, "agents", "--json", "--all"],
+                [self.executable(), "agents", "--json", "--all"],
                 capture_output=True, text=True, timeout=20, check=True,
             ).stdout
             found = json.loads(out)

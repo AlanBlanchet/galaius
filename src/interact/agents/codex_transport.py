@@ -40,6 +40,7 @@ from interact.agents.events import (
 from interact.agents.ceiling import contained
 from interact.agents.providers import CodexProvider
 from interact.agents.registry import AgentRun
+from interact.processes import process_group_options, spawnable, stop_process_tree
 from interact.agents.transport import (
     _ConversationStart,
     _ConversationTransport,
@@ -926,12 +927,7 @@ class _CodexTransport(_ConversationTransport):
         try:
             await asyncio.wait_for(process.wait(), timeout=2)
         except TimeoutError:
-            process.terminate()
-            try:
-                await asyncio.wait_for(process.wait(), timeout=1)
-            except TimeoutError:
-                process.kill()
-                await process.wait()
+            await stop_process_tree(process)
         tasks = tuple(
             task for task in (self._reader, self._stderr_reader)
             if task is not None
@@ -957,14 +953,16 @@ class _CodexTransport(_ConversationTransport):
 
     async def _spawn(self) -> None:
         env = self.provider.subscription_env(dict(os.environ))
+        # Its own process tree (Codex runs tools as children): a failed or closed session stops them all.
         self._process = await asyncio.create_subprocess_exec(
-            *contained(self.provider.app_server_command()),
+            *contained(spawnable(self.provider.app_server_command(), env)),
             cwd=self.workspace_root,
             env=env,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             limit=_PROVIDER_LIMIT + 1,
+            **process_group_options(),
         )
         self._reader = asyncio.create_task(self._read())
         self._stderr_reader = asyncio.create_task(self._drain_stderr())
@@ -1067,12 +1065,7 @@ class _CodexTransport(_ConversationTransport):
             try:
                 await asyncio.wait_for(process.wait(), timeout=1)
             except TimeoutError:
-                process.terminate()
-                try:
-                    await asyncio.wait_for(process.wait(), timeout=1)
-                except TimeoutError:
-                    process.kill()
-                    await process.wait()
+                await stop_process_tree(process)
         elif process is not None:
             await process.wait()
         self._process = None

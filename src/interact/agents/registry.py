@@ -33,6 +33,7 @@ from interact.agents.providers import PROVIDERS, DeniedTool
 from interact.file_lock import exclusive
 from interact.pinned_directory import PinnedDirectory
 from interact.private_files import PRIVATE_FILES
+from interact.processes import end_process_tree
 from interact.server_registry import (
     _alive,  # generic pid liveness (Windows-safe, no signal sent)
 )
@@ -528,16 +529,8 @@ def open_raw_events(run_id: str, *, append: bool) -> BinaryIO:
 
 def _terminate(pid: int) -> bool:
     """Stop a run's whole process tree, best effort. Agent CLIs spawn children (their own tools),
-    so signalling the group is what actually stops the work."""
-    try:
-        killpg, getpgid = getattr(os, "killpg", None), getattr(os, "getpgid", None)
-        if killpg and getpgid:
-            killpg(getpgid(pid), signal.SIGTERM)
-        else:
-            os.kill(pid, signal.SIGTERM)
-        return True
-    except OSError:
-        return False
+    so ending the tree is what actually stops the work."""
+    return end_process_tree(pid)
 
 
 #: Where each agent CLI tells a command it runs which conversation it is in: a run launched from

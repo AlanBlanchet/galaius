@@ -11,6 +11,7 @@ stores or forwards a credential — the CLI authenticates itself with the user's
 
 import json
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from interact.agents.providers import (
     PROVIDERS, ClaudeCodeProvider, CodexProvider, UnsupportedToolPolicy, provider_for,
 )
 from interact.models import Model
+from interact.processes import NpmShim
 
 
 @pytest.mark.parametrize("resume", [False, True])
@@ -1081,3 +1083,36 @@ def test_codex_runs_in_its_windows_sandbox_on_windows(monkeypatch, tmp_path, sys
     assert CodexProvider.platform_flags() == expected
     argv = CodexProvider().command("hi", cwd=str(tmp_path), model=None, mcp_config=None, run_id="r1")
     assert (argv[argv.index("exec") + 1:].count('windows.sandbox="unelevated"') == 1) == bool(expected)
+
+
+NPM_SHIMS = Path(__file__).parent / "fixtures" / "agents" / "npm"
+
+
+@pytest.mark.parametrize(
+    ("shim", "node", "expected"),
+    [
+        ("codex.cmd", "beside", ("node.exe", "node_modules\\@openai\\codex\\bin\\codex.js")),
+        ("codex.cmd", "on-path", ("PATH", "node_modules\\@openai\\codex\\bin\\codex.js")),
+        ("codex.cmd", "absent", None),
+        ("tool.cmd", "absent", ("node_modules\\native\\bin\\tool.exe",)),
+        ("plain.cmd", "on-path", None),
+    ],
+)
+def test_npm_shim_starts_its_script_without_cmd(tmp_path: Path, shim: str, node: str, expected) -> None:
+    """npm's real `.cmd` launchers (cmd-shim 7.0.0 output) are read back to the program they start,
+    so a prompt's line breaks and `&` never pass through cmd.exe; any other batch file is not one."""
+    folder, tools = tmp_path / "bin", tmp_path / "tools"
+    folder.mkdir(), tools.mkdir()
+    (folder / "plain.cmd").write_bytes(b"@ECHO off\r\nsomething.exe %*\r\n")
+    for name in ("codex.cmd", "tool.cmd"):
+        (folder / name).write_bytes((NPM_SHIMS / name).read_bytes())
+    if node == "beside":
+        (folder / "node.exe").write_bytes(b"")
+    on_path = tools / ("node.exe" if sys.platform == "win32" else "node")
+    if node == "on-path":
+        on_path.write_bytes(b"")
+        on_path.chmod(0o755)
+    parsed = NpmShim.read(folder / shim, str(tools))
+    assert (parsed and parsed.argv) == (expected and tuple(
+        str(on_path) if part == "PATH" else str(folder / part) for part in expected
+    ))

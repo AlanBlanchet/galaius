@@ -33,7 +33,11 @@ from interact.agents.protocol import (
 from interact.agents.providers import CodexProvider
 from interact.data import PackageData
 from interact.config import Config
+from interact.private_files import PRIVATE_FILES
+from interact.server_registry import _alive as process_alive
 from tests.support import catalog_json
+from tests.support.agents import install_fake_cli
+from tests.support.private_files import loosen
 
 FIXTURES = Path(__file__).parent / "fixtures" / "agents"
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
@@ -61,15 +65,16 @@ def console_workspace(monkeypatch):
     home = root / "home"
     for path in (workspace, binary_dir, home):
         path.mkdir(parents=True)
-    codex = binary_dir / "codex"
-    shutil.copy2(FIXTURES / "fake_codex_app_server.py", codex)
-    codex.chmod(0o755)
+    install_fake_cli(binary_dir, "codex", FIXTURES / "fake_codex_app_server.py")
     (binary_dir / "codex.json").write_text(json.dumps({
         "mode": "success",
         "models": ["openai/example-model"],
     }))
-    monkeypatch.setenv("PATH", f"{binary_dir.resolve()}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("PATH", os.pathsep.join(
+        (str(binary_dir.resolve()), str(Path(sys.executable).parent), os.environ["PATH"])
+    ))
     monkeypatch.setenv("HOME", str(home.resolve()))
+    monkeypatch.setenv("USERPROFILE", str(home.resolve()))
     monkeypatch.setenv("INTERACT_AGENTS_DIR", str(home.resolve() / ".interact" / "out" / "agents"))
     yield root, workspace.resolve(), binary_dir
     shutil.rmtree(root)
@@ -763,7 +768,9 @@ async def test_console_binds_server_prompt_before_starting_provider(
     monkeypatch.setenv("INTERACT_PROMPT_ACCOUNT", "tenant-a")
     token_file = root / "prompt-token"
     token_file.write_text(token if case != "token-file-oversize" else "x" * 4097)
-    token_file.chmod(0o644 if case == "token-file-mode" else 0o600)
+    PRIVATE_FILES.restrict(token_file)
+    if case == "token-file-mode":
+        loosen(token_file)
     configured_file = token_file
     if case == "token-file-symlink":
         configured_file = root / "prompt-token-link"
@@ -844,7 +851,8 @@ async def test_catalog_reports_session_negative_controls(
 ) -> None:
     _, workspace, binary_dir = console_workspace
     if mode == "missing":
-        (binary_dir / "codex").unlink()
+        for installed in (binary_dir / "codex", binary_dir / "codex.cmd"):
+            installed.unlink(missing_ok=True)
         safe_path = [
             str(binary_dir),
             str(Path(shutil.which("uv") or "uv").parent),
@@ -2284,8 +2292,9 @@ def test_codex_schema_capture_imports_from_an_offline_wheel(wheel_build_cache: P
         imported = subprocess.run(
             [sys.executable, "-m", "interact.agents.codex_schema"],
             cwd=unpacked,
+            # SYSTEMROOT: without it a Windows interpreter cannot even load its socket layer.
             env={
-                "PATH": os.environ["PATH"],
+                **{key: os.environ[key] for key in ("PATH", "SYSTEMROOT") if key in os.environ},
                 "PYTHONDONTWRITEBYTECODE": "1",
             },
             text=True,
@@ -2509,9 +2518,7 @@ async def test_protocol_failure_immediately_reaps_owned_provider_process(
         await _event(process, "error")
         pid = int((binary_dir / "codex.pid").read_text())
         for _ in range(100):
-            try:
-                os.kill(pid, 0)
-            except ProcessLookupError:
+            if not process_alive(pid):
                 break
             await asyncio.sleep(0.02)
         else:

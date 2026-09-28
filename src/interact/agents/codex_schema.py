@@ -15,13 +15,13 @@ from referencing.jsonschema import DRAFT7
 
 _CAPTURE = files("interact.agents").joinpath("codex_app_server_schema")
 _SCHEMA_BASE = "https://schemas.interact.invalid/codex-app-server/"
-_MANIFEST = json.loads((_CAPTURE / "manifest.json").read_text())
-_SERVER_REQUEST = json.loads((_CAPTURE / "ServerRequest.json").read_text())
+_MANIFEST = json.loads((_CAPTURE / "manifest.json").read_bytes())
+_SERVER_REQUEST = json.loads((_CAPTURE / "ServerRequest.json").read_bytes())
 _SERVER_REQUEST["$id"] = _SCHEMA_BASE + "ServerRequest.json"
 _REGISTRY = Registry().with_resources(
     (
         _SCHEMA_BASE + path.name,
-        Resource.from_contents(json.loads(path.read_text()), default_specification=DRAFT7),
+        Resource.from_contents(json.loads(path.read_bytes()), default_specification=DRAFT7),
     )
     for path in _CAPTURE.iterdir()
     if path.name.endswith(".json")
@@ -55,7 +55,7 @@ def encode_supported_response(
     else:
         result = {"decision": values.get("decision", "decline")}
     entry = _ENTRIES[method]
-    response_schema = json.loads((_CAPTURE / entry["response_ref"]).read_text())
+    response_schema = json.loads((_CAPTURE / entry["response_ref"]).read_bytes())
     Draft7Validator(response_schema, registry=_REGISTRY).validate(result)
     return result
 

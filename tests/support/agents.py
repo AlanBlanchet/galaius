@@ -8,8 +8,10 @@ One typed factory covers both call sites; a caller only names what its scenario 
 
 from __future__ import annotations
 
+import shutil
 import sys
 import tempfile
+from pathlib import Path
 
 from interact.agents import registry as reg
 from interact.agents import run as _run_module
@@ -47,6 +49,25 @@ class ScriptedProvider(AgentProvider):
 
     def parse(self, line, ledger=None):
         return ClaudeCodeProvider().parse(line, ledger)
+
+
+#: npm's own launcher for a `#!/usr/bin/env node` bin (cmd-shim 7.0.0, generated, never hand-written).
+NPM_SHIM = Path(__file__).parent.parent / "fixtures" / "agents" / "npm" / "codex.cmd"
+
+
+def install_fake_cli(directory: Path, name: str, script: Path) -> Path:
+    """Put the Python program `script` in `directory` as the command `name`, installed the way that
+    system installs a vendor CLI: POSIX an executable file run by its shebang; Windows beside it the
+    `.cmd` launcher npm writes (here for a `python` bin), which is what `codex` / `claude` are there.
+    `directory` must lead PATH, and on Windows so must this interpreter's folder."""
+    program = directory / name
+    shutil.copy2(script, program)
+    if sys.platform == "win32":
+        shim = NPM_SHIM.read_bytes().replace(rb"node_modules\@openai\codex\bin\codex.js", name.encode())
+        (directory / f"{name}.cmd").write_bytes(shim.replace(b"node", b"python"))
+    else:
+        program.chmod(0o755)
+    return program
 
 
 def install_provider(monkeypatch, provider: AgentProvider) -> None:

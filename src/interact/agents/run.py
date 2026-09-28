@@ -1,6 +1,6 @@
 """Spawn an agent CLI and supervise it: stream its events, persist them, record how it ended.
 
-Child leads its own process group (``start_new_session``): stopping a run must signal the whole
+Child leads its own process tree (``process_group_options``): stopping a run must end the whole
 tree, else killing just the parent orphans its spawned subprocesses. Same reason sandbox does it
 (#92).
 """
@@ -26,6 +26,7 @@ from interact_core import AgentRevisionRef
 from interact.agents import registry as reg
 from interact.agents import quota
 from interact.agents.ceiling import contained
+from interact.processes import process_group_options, spawnable
 from interact.agents.policy import Policy, policy_path
 from interact.agents.profiles import overlay_for, profiles_from
 from interact.agents.providers import PROVIDERS, AgentProvider, CodexProvider, UnsupportedToolPolicy, validate_denied_tools, _safe_process_detail
@@ -721,8 +722,8 @@ def _spawn_turn(
     stderr_file = tempfile.TemporaryFile()
     try:
         process = subprocess.Popen(
-            contained(argv), cwd=run.cwd or ".", env=env, stdout=sink, stderr=stderr_file,
-            start_new_session=True,
+            contained(spawnable(argv, env)), cwd=run.cwd or ".", env=env, stdout=sink, stderr=stderr_file,
+            **process_group_options(),
         )
     except BaseException:
         stderr_file.close()
@@ -1103,9 +1104,9 @@ async def run_agent(
         stderr = reg.open_stderr(run_id, append=False)
         try:
             candidate_process = await asyncio.create_subprocess_exec(
-                *contained(argv), cwd=cwd, env=env,
+                *contained(spawnable(argv, env)), cwd=cwd, env=env,
                 stdout=sink, stderr=stderr,
-                start_new_session=True,  # own process group, so stop() can signal the whole tree
+                **process_group_options(),  # own process tree, so stop() can end the whole of it
             )
         finally:
             sink.close()  # the child holds its own dup of the fd
