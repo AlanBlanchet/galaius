@@ -34,6 +34,7 @@ from interact.agents.providers import CodexProvider
 from interact.data import PackageData
 from interact.config import Config
 from interact.private_files import PRIVATE_FILES
+from interact.processes import process_group_options, stop_process_tree
 from interact.server_registry import _alive as process_alive
 from tests.support import catalog_json
 from tests.support.agents import install_fake_cli
@@ -89,6 +90,7 @@ async def _open_console(workspace: Path):
         stderr=asyncio.subprocess.PIPE,
         env=dict(os.environ),
         cwd=workspace,
+        **process_group_options(),
     )
 
 
@@ -115,11 +117,10 @@ async def _stop_console(process) -> None:
     try:
         await asyncio.wait_for(process.wait(), timeout=5)
     except TimeoutError:
-        process.terminate()
-        await process.wait()
+        await stop_process_tree(process)  # `uv run` and the console under it, never an orphan
     stderr = process.stderr
     assert stderr is not None
-    detail = (await stderr.read()).decode(errors="replace")
+    detail = (await asyncio.wait_for(stderr.read(), timeout=10)).decode(errors="replace")
     assert process.returncode == 0
     assert "Traceback" not in detail
 
