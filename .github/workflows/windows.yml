@@ -227,3 +227,52 @@ jobs:
         if: always()
         run: |
           foreach ($file in 'server.err', 'login.out', 'login.err', "$HOME\.config\interact\machine-service.log") { if (Test-Path $file) { "== $file"; Get-Content $file -Tail 80 } }
+
+  # Installed by the real one-liner, then a newer runtime lands in the store: the installer's own
+  # interact.exe must run it (every command follows the newest runtime); then a running MCP server
+  # and machine connection upgrade N -> N+1 by themselves (tests/test_upgrade_integration.py).
+  upgrade:
+    name: windows (auto-upgrade after install.ps1)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+      - name: Serve install.ps1 over HTTP (what `irm` fetches)
+        run: |
+          Start-Process -FilePath python -ArgumentList '-m', 'http.server', '8799', '--bind', '127.0.0.1' -WindowStyle Hidden
+          foreach ($i in 1..40) { try { Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8799/install.ps1 | Out-Null; break } catch { Start-Sleep -Milliseconds 500 } }
+      - name: Install with the one-liner (this commit's GitHub archive)
+        shell: powershell
+        run: |
+          $env:INTERACT_ARCHIVE = "https://github.com/$env:GITHUB_REPOSITORY/archive/$env:GITHUB_SHA.zip"
+          powershell -ExecutionPolicy ByPass -c "irm http://127.0.0.1:8799/install.ps1 | iex"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: interact-core at the commit this checkout pins
+        run: |
+          $sha = [regex]::Match((Get-Content -Raw pyproject.toml), 'interact-core\.git@([0-9a-f]{40})').Groups[1].Value
+          git clone -q https://github.com/AlanBlanchet/interact-core "$env:RUNNER_TEMP\interact-core"
+          git -C "$env:RUNNER_TEMP\interact-core" checkout -q $sha
+          "INTERACT_CORE_SOURCE=$env:RUNNER_TEMP\interact-core" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+      - name: A newer runtime in the store is what the installer's interact.exe runs
+        run: |
+          uv sync --frozen --quiet
+          $newer = New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\newer"
+          Copy-Item -Recurse src, pyproject.toml, uv.lock, README.md, LICENSE $newer
+          (Get-Content -Raw "$newer\pyproject.toml") -replace '(?m)^version = "[^"]+"', 'version = "9.9.9"' | Set-Content -NoNewline "$newer\pyproject.toml"
+          uv build --wheel --quiet -o "$env:RUNNER_TEMP\wheels" $newer
+          uv build --wheel --quiet -o "$env:RUNNER_TEMP\wheels" $env:INTERACT_CORE_SOURCE
+          $public = (Get-ChildItem "$env:RUNNER_TEMP\wheels\interact-9.9.9-*.whl").FullName
+          $core = (Get-ChildItem "$env:RUNNER_TEMP\wheels\interact_core-*.whl").FullName
+          .venv\Scripts\python.exe scripts\install_runtime.py --public-wheel $public --core-wheel $core --checkout .
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $installed = Join-Path $HOME '.local\bin\interact.exe'
+          $version = (& $installed --version).Trim()
+          "installer's interact.exe runs $version"
+          if ($version -ne '9.9.9') { throw "the installer's interact.exe runs $version, not the active runtime 9.9.9" }
+      - name: Running processes upgrade N -> N+1 (and the handoff / release rules)
+        run: uv run --frozen python -m pytest -v -rfEs -p no:cacheprovider tests/test_upgrade_integration.py tests/test_upgrade_release.py tests/test_handoff.py

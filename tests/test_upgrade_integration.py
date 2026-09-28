@@ -198,9 +198,9 @@ def test_running_mcp_server_and_machine_connection_upgrade_themselves_from_n_to_
 
         after = until(moved, 60, "workers and the machine supervisor on N+1")
         assert mcp.poll() is None and machine.poll() is None
-        assert after.get(mcp.pid) == first.path and not set(after) & (set(before) - {mcp.pid, machine.pid})
-        if sys.platform != "win32":  # replaced in place: the pid a service manager watches never changes
-            assert after[machine.pid] == second.path
+        assert list(after.values()).count(first.path) == 1  # only the relay, holding the client's pipe
+        if sys.platform != "win32":  # replaced in place: the pids a client or service manager holds never change
+            assert after[mcp.pid] == first.path and after[machine.pid] == second.path and before[machine.pid] == first.path
     finally:
         mcp.stdin.close()
         machine.terminate()

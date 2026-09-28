@@ -8,6 +8,7 @@ from cyclopts import App
 from interact import installed_version
 from interact.upgrade.quiet import UpgradeReady
 from interact.upgrade.handoff import Handoff
+from interact.upgrade.release import BuildIdentity
 from interact.upgrade.store import EXIT_UPGRADE, RuntimeStore
 from interact.upgrade.supervisor import Supervisor
 from interact.versioning import force_utf8_io
@@ -103,8 +104,9 @@ app.command(
 
 @app.command
 def version() -> None:
-    """Print the installed interact version."""
-    print(installed_version())
+    """Print the running interact version and, for a released build, which build it is."""
+    build = BuildIdentity.installed()
+    print(installed_version() if build is None else f"{installed_version()} {build.commit[:7]} ({build.released_at:%Y-%m-%d %H:%M} UTC)")
 
 
 def main() -> None:
