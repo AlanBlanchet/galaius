@@ -345,7 +345,9 @@ def test_create_requires_server_without_local_repository_fallback(remote_prompts
     assert remote_prompts["requests"] == []
 
 
-@pytest.mark.parametrize("content", ["", "x" * (MAX_EDITOR_BYTES + 1), "é" * ((MAX_EDITOR_BYTES // 2) + 1)])
+# Named ids: a megabyte of content as a test id was a megabyte line in every log (on Windows CI it
+# took the runner down).
+@pytest.mark.parametrize("content", ["", "x" * (MAX_EDITOR_BYTES + 1), "é" * ((MAX_EDITOR_BYTES // 2) + 1)], ids=["empty", "ascii-over-limit", "multibyte-over-limit"])
 def test_create_rejects_invalid_or_oversized_content_before_http(remote_prompts, capsys, content):
     code, result = invoke(capsys, "create", "instructions/new.md", content=content)
     assert code == 2 and not result["ok"]
