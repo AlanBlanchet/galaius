@@ -163,6 +163,7 @@ jobs:
           tests/test_agent_registry.py::test_public_registry_reads_never_follow_hostile_private_leaves
           tests/test_prompt_cli.py::test_prompt_editor_rejects_a_symlink_out_of_the_source
           tests/test_prompt_cli.py::test_prompt_editor_releases_its_lock_when_post_lock_validation_fails
+          tests/test_prompt_cli.py::test_prompt_editor_stores_the_exact_bytes_it_reports
           tests/test_prompt_contracts.py::test_cache_is_never_opened_through_a_link
           tests/test_prompt_contracts.py::test_cache_owner_check_is_portable_when_getuid_is_unavailable
           tests/test_prompt_projection.py::test_installer_switches_only_declared_consumers_and_rejects_unmanaged_collision

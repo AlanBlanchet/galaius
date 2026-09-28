@@ -10,16 +10,9 @@ import pytest
 
 from interact.file_lock import exclusive
 from interact.private_files import PRIVATE_FILES
+from tests.support.private_files import loosen
 
 WINDOWS = sys.platform == "win32"
-
-
-def loosen(path: Path) -> None:
-    """Let everyone read `path`, the way each system spells it."""
-    if WINDOWS:
-        subprocess.run(["icacls", str(path), "/grant", "*S-1-1-0:R"], check=True, capture_output=True)
-    else:
-        path.chmod(0o644)
 
 
 def test_secret_round_trips_sealed_at_rest_and_private(tmp_path: Path) -> None:

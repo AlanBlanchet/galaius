@@ -22,6 +22,8 @@ from interact import server_workspace
 from interact.cli import machine_command
 from interact.cli.machine_command import _described_step
 from interact.functions import FunctionRegistry, discover_python, discover_shell
+from interact.private_files import PRIVATE_FILES
+from tests.support.private_files import loosen
 from interact.machines import CommandFiles, CommandLogs, MachineConfig, MachineFiles, MachineRunner, SCRIPT_RUNTIMES, ScriptRuntime
 
 
@@ -40,8 +42,9 @@ def test_machine_config_round_trips_token_with_owner_only_permissions(tmp_path: 
     runner.save(config)
 
     assert runner.load() == config
-    assert os.stat(path).st_mode & 0o777 == 0o600
-    assert os.stat(path.parent).st_mode & 0o777 == 0o700
+    PRIVATE_FILES.check(path)
+    PRIVATE_FILES.check(path.parent)
+    assert ("iwm_" in path.read_text()) != (sys.platform == "win32")  # Windows keeps the token DPAPI-sealed on disk
 
 
 from interact.machines import shell_path
@@ -51,6 +54,7 @@ from interact.machines import shell_path
     ('echo "rc noise"\nprintf "__interact_path__/nvm/bin:/usr/bin__interact_path__"\necho "more noise"', "/nvm/bin:/usr/bin:/service/bin"),
     ("exit 1", "/usr/bin:/service/bin"),
 ])
+@pytest.mark.skipif(sys.platform == "win32", reason="no login shell on Windows: the logon task starts with the user's own PATH")
 def test_shell_path_puts_the_shell_path_first_and_survives_a_broken_shell(tmp_path: Path, script: str, expected: str) -> None:
     shell = tmp_path / "shell"
     shell.write_text(f"#!/bin/sh\n{script}\n")
@@ -60,13 +64,13 @@ def test_shell_path_puts_the_shell_path_first_and_survives_a_broken_shell(tmp_pa
 
 
 def test_accelerators_reports_cuda_gpus_from_nvidia_smi(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    fake_nvidia_smi = tmp_path / "nvidia-smi"
-    fake_nvidia_smi.write_text(
-        "#!/bin/sh\n"
-        'printf "NVIDIA GeForce RTX 2070, 8192\\n"\n'
-    )
-    fake_nvidia_smi.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ.get('PATH', '')}")
+    if sys.platform == "win32":
+        (tmp_path / "nvidia-smi.cmd").write_text("@echo NVIDIA GeForce RTX 2070, 8192\r\n", newline="")
+    else:
+        fake_nvidia_smi = tmp_path / "nvidia-smi"
+        fake_nvidia_smi.write_text('#!/bin/sh\nprintf "NVIDIA GeForce RTX 2070, 8192\\n"\n')
+        fake_nvidia_smi.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}")
     monkeypatch.setattr("interact.machines.sys.platform", "linux")
 
     accelerators = MachineRunner._accelerators()
@@ -560,7 +564,7 @@ def test_unreadable_current_config_never_falls_back_to_connected_roots(tmp_path,
     elif state == "corrupt":
         runner.config_path.write_text("{")
     else:
-        runner.config_path.chmod(0o644)
+        loosen(runner.config_path)
     with pytest.raises((OSError, ValueError)):
         runner._current_config(connected)
 
@@ -681,7 +685,7 @@ def test_approval_preview_and_runner_agree_on_file_with_declared_packages(tmp_pa
     runner.save(config)
     script = tmp_path / "scripts" / "job.py"
     script.parent.mkdir()
-    script.write_text(_PEP723)
+    script.write_text(_PEP723, newline="")
     spec = ScriptFile(path="scripts/job.py", file_digest=hashlib.sha256(script.read_bytes()).hexdigest())
     command = _file_script_command(config.machine_id, spec)
     node = WorkflowNode(id=uuid4(), label="Report", x=0, y=0, impl=command.impl, config=command.config,
@@ -748,10 +752,10 @@ def test_script_file_runs_its_pinned_digest_and_refuses_a_changed_file(tmp_path:
     MachineRunner().save(config)
     script = tmp_path / "scripts" / "tools" / "report.py"
     script.parent.mkdir(parents=True)
-    script.write_text("import os, sys\nprint(os.getcwd(), *sys.argv[1:])\n")
+    script.write_text("import os, sys\nprint(os.getcwd(), *sys.argv[1:])\n", newline="")
     spec = ScriptFile(path="scripts/tools/report.py", file_digest=hashlib.sha256(script.read_bytes()).hexdigest(), args=("--week", "39"))
     assert MachineRunner()._run_script(_file_script_command(config.machine_id, spec), config).split() == [str(script.parent.resolve()), "--week", "39"]
-    script.write_text("print('changed')\n")
+    script.write_text("print('changed')\n", newline="")
     with pytest.raises(RuntimeError, match="changed on this machine since it was picked"):
         MachineRunner()._run_script(_file_script_command(config.machine_id, spec), config)
 
@@ -784,10 +788,10 @@ def test_the_program_running_a_script_never_lives_where_file_steps_write(tmp_pat
     config = _scripts_config(tmp_path)
     MachineRunner().save(config)
     (tmp_path / "scripts").mkdir()
-    (tmp_path / "scripts" / "job.py").write_text("print('x')\n")
+    (tmp_path / "scripts" / "job.py").write_text("print('x')\n", newline="")
     planted = tmp_path / "interact-files" / "python"
     planted.parent.mkdir()
-    planted.write_text("#!/bin/sh\necho planted\n")
+    planted.write_text("#!/bin/sh\necho planted\n", newline="")
     planted.chmod(0o755)
     spec = ScriptFile(path="scripts/job.py", file_digest=hashlib.sha256(b"print('x')\n").hexdigest(), interpreter=str(planted))
     with pytest.raises(PermissionError, match="cannot live in a folder workflow file steps write to"):
@@ -837,14 +841,14 @@ def test_approving_a_script_shows_the_file_as_it_is_on_this_machine(tmp_path: Pa
     MachineRunner().save(config)
     script = tmp_path / "scripts" / "job.sh"
     script.parent.mkdir()
-    script.write_text("echo week\n")
+    script.write_text("echo week\n", newline="")
     spec = ScriptFile(path="scripts/job.sh", file_digest=hashlib.sha256(b"echo week\n").hexdigest(), args=("39",))
     command = _file_script_command(config.machine_id, spec, "shell")
     node = WorkflowNode(id=uuid4(), label="Weekly", x=0, y=0, impl=command.impl, config=command.config, placement={"target": "machine", "machine": {"id": str(config.machine_id)}},
                         ports=(PortSpec(name="result", direction="output", value_type="text"),))
     shown = _described_step("Report", node, config.machine_id)
     assert "Language: Shell" in shown and "File: scripts/job.sh" in shown and "Arguments: 39" in shown and "same content as picked" in shown
-    script.write_text("rm -rf /\n")
+    script.write_text("rm -rf /\n", newline="")
     assert "CHANGED since it was picked" in _described_step("Report", node, config.machine_id)
     assert "Not checked here" in _described_step("Report", node, uuid4())
 
@@ -854,7 +858,7 @@ def test_a_script_in_a_git_checkout_shows_its_repository_without_credentials(tmp
     config = _scripts_config(tmp_path)
     repo = tmp_path / "scripts" / "tools"
     repo.mkdir(parents=True)
-    (repo / "job.py").write_text("print('x')\n")
+    (repo / "job.py").write_text("print('x')\n", newline="")
     git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
     # A fixture remote carrying a user and password, assembled here (the commit gate refuses a literal one).
     remote = "https://" + ":".join(("someone", "fixture-password")) + "@git.example.invalid/team/tools.git"
@@ -862,12 +866,12 @@ def test_a_script_in_a_git_checkout_shows_its_repository_without_credentials(tmp
         subprocess.run([*git, *arguments], check=True, capture_output=True)
     origin = MachineFiles(config=config, area="scripts").listing("scripts/tools/job.py").git
     assert origin is not None and (origin.repository, origin.path, origin.clean) == ("https://git.example.invalid/team/tools.git", "job.py", True)
-    (repo / "job.py").write_text("print('edited')\n")
+    (repo / "job.py").write_text("print('edited')\n", newline="")
     assert MachineFiles(config=config, area="scripts").listing("scripts/tools/job.py").git.clean is False
 
 
 
-@pytest.mark.parametrize(("language", "program"), [("python", "interact's own Python"), ("shell", "/bin/sh")])
+@pytest.mark.parametrize(("language", "program"), [("python", "interact's own Python"), ("shell", SCRIPT_RUNTIMES["shell"].label)])
 def test_approving_inline_code_names_its_execution_program(language: str, program: str) -> None:
     source = "echo 39\n"
     node = WorkflowNode(id=uuid4(), label="Weekly", x=0, y=0, impl={"kind": "script", "language": language, "source_digest": hashlib.sha256(source.encode()).hexdigest()},

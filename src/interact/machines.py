@@ -653,7 +653,7 @@ class ScriptExecution(BaseModel):
     #: The program a file names (a command on PATH or an absolute path); only for "custom".
     interpreter: str | None = None
     #: PEP 723 inline script metadata: `# /// script` … `# ///` (the editor writes a script's packages there).
-    METADATA: ClassVar[re.Pattern] = re.compile(r"(?m)^# /// script\r?\n(?:^#(?: .*)?\r?\n)*?^# ///$")
+    METADATA: ClassVar[re.Pattern] = re.compile(r"(?m)^# /// script\r?\n(?:^#(?: .*)?\r?\n)*?^# ///\r?$")  # CRLF too: a file saved on Windows
     UV: ClassVar[tuple[str, ...]] = ("run", "--quiet", "--no-project", "--script")
 
     @model_validator(mode="after")
@@ -1434,12 +1434,13 @@ class MachineRunner:
     @staticmethod
     def _resources(working_directory: Path | None = None) -> dict[str, int]:
         """CPU count, total RAM and free disk on the machine's own working directory — the other
-        half of a placement fit check next to `_accelerators`. POSIX `sysconf` (no `psutil`
-        dependency, no torch import) covers Linux and macOS, the two platforms the runner
-        actually ships on; `cpu_count() or 1` matches the stdlib's own documented fallback."""
+        half of a placement fit check next to `_accelerators`. POSIX `sysconf`, Windows
+        `GlobalMemoryStatusEx` (no `psutil` dependency, no torch import); `cpu_count() or 1`
+        matches the stdlib's own documented fallback."""
         ram_mb = 0
         try:
-            ram_mb = (os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")) // (1024 * 1024)
+            total = win32api.GlobalMemoryStatusEx()["TotalPhys"] if sys.platform == "win32" else os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+            ram_mb = total // (1024 * 1024)
         except (ValueError, OSError, AttributeError):
             pass
         try:
@@ -1463,11 +1464,12 @@ class MachineRunner:
 
     @staticmethod
     def _cuda_accelerators() -> tuple[MachineAccelerator, ...]:
-        if shutil.which("nvidia-smi") is None:
+        found = shutil.which("nvidia-smi")
+        if found is None:
             return ()
         try:
             completed = subprocess.run(
-                ["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"],
+                [found, "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"],
                 stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=5,
             )
         except (OSError, subprocess.SubprocessError):
