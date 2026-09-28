@@ -60,6 +60,25 @@ jobs:
           path: suite.log
           if-no-files-found: warn
 
+  # TEMPORARY bisect: the files of the suite shard whose runner stops answering, one runner each.
+  bisect:
+    name: windows (${{ matrix.file }})
+    runs-on: windows-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        file: [test_action_typing_safety.py, test_agent_providers.py, test_agents_md_single_source.py, test_browser_launch.py, test_clients_status.py, test_dependency_bounds.py, test_device_emulation.py, test_functions.py, test_launch_replace.py, test_media_benchmark_routing.py, test_models.py, test_paths.py, test_private_files.py, test_quality_tiers.py, test_sandbox_orphans.py, test_server_prompts.py, test_settings_schema.py, test_tools_agents.py, test_ui_audit.py, test_video_native.py, test_window_title_resolution.py]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Test one file
+        timeout-minutes: 12
+        run: uv run --frozen python -m pytest -v -rfEs -p no:cacheprovider tests/${{ matrix.file }}
+
   windows:
     name: windows (install.ps1 + login + service)
     runs-on: windows-latest
