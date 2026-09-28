@@ -55,7 +55,7 @@ def _extension_usage_log(base_dir: str, tmp_path: Path) -> Path:
     """Where the EXTENSION thinks the usage log is, for a given ``interact.debug.dir`` value."""
     runner = tmp_path / "resolve.ts"
     runner.write_text(
-        f'import {{ usageLogPathFor }} from {json.dumps(str(PATHS_TS))};\n'
+        f'import {{ usageLogPathFor }} from {json.dumps(PATHS_TS.as_uri())};\n'
         "console.log(usageLogPathFor(process.argv[2] ?? ''));\n"
     )
     out = subprocess.run(
@@ -107,7 +107,7 @@ def _extension_agents_dir(tmp_path: Path) -> Path:
     """Where the EXTENSION thinks the agent registry lives."""
     runner = tmp_path / "resolve_agents.ts"
     runner.write_text(
-        f'import {{ agentsDir }} from {json.dumps(str(PATHS_TS))};\n'
+        f'import {{ agentsDir }} from {json.dumps(PATHS_TS.as_uri())};\n'
         "console.log(agentsDir());\n"
     )
     out = subprocess.run(
@@ -162,7 +162,7 @@ def _extension_policy_path(tmp_path: Path) -> Path:
     """Where the EXTENSION thinks the agents policy is."""
     runner = tmp_path / "policy.ts"
     runner.write_text(
-        f'import {{ agentsPolicyPath }} from {json.dumps(str(AGENT_MODELS_TS))};\n'
+        f'import {{ agentsPolicyPath }} from {json.dumps(AGENT_MODELS_TS.as_uri())};\n'
         "console.log(agentsPolicyPath());\n"
     )
     out = subprocess.run(
