@@ -315,3 +315,22 @@ def test_reused_dispatcher_pid_does_not_stall_on_unrelated_process(monkeypatch):
         if unrelated.poll() is None:
             unrelated.kill()
             unrelated.wait(timeout=10)
+
+
+def test_a_dispatcher_is_trusted_only_while_the_recorded_process_lives():
+    """Its pid + start time name one process on Linux and Windows alike: a live dispatcher is never
+    doubled, and a pid reused by a later process (another start time) or a dead one is not it."""
+    from interact.processes import process_started
+
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        started = process_started(child.pid)
+        assert started is not None
+        recorded = {"dispatcher_pid": child.pid, "dispatcher_token": "queue-token", "dispatcher_started": started}
+        assert agent_queue._dispatcher_matches(recorded)
+        assert not agent_queue._dispatcher_matches({**recorded, "dispatcher_started": started + 1})
+        assert not agent_queue._dispatcher_matches({**recorded, "dispatcher_token": None})
+    finally:
+        child.kill()
+        child.wait(timeout=10)
+    assert not agent_queue._dispatcher_matches(recorded)

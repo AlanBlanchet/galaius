@@ -22,10 +22,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from interact.agents import registry as reg
 from interact.agents.providers import _safe_process_detail
+from interact.processes import process_started
 
 MAX_PENDING = 128
 _POLL_SECONDS = 0.1
 _DISPATCHER_RECOVERY_TIMEOUT = 30.0
+_DETACHED = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 class CorruptQueueStateError(RuntimeError):
@@ -79,6 +81,9 @@ def _state(run_id: str) -> dict:
         raise CorruptQueueStateError("durable agent queue dispatcher identity is corrupt")
     if token is not None and (not isinstance(token, str) or not token or len(token) > 80):
         raise CorruptQueueStateError("durable agent queue dispatcher token is corrupt")
+    started = state.get("dispatcher_started")
+    if started is not None and (type(started) is not int or started < 0):
+        raise CorruptQueueStateError("durable agent queue dispatcher start time is corrupt")
     return state
 
 
@@ -188,37 +193,32 @@ def items(run_id: str) -> list[QueueItem]:
         return _items(_state(run_id))
 
 
-def _set_dispatcher_locked(run_id: str, pid: int | None, token: str | None = None) -> None:
+def _set_dispatcher_locked(
+    run_id: str, pid: int | None, token: str | None = None, started: int | None = None,
+) -> None:
     state = _state(run_id)
     state["dispatcher_pid"] = pid
     state["dispatcher_token"] = token
+    state["dispatcher_started"] = started
     _write_state(run_id, state)
 
 
-def _dispatcher_matches(run_id: str, pid: int, token: str | None) -> bool:
-    """Accept a dispatcher only when its argv carries this queue's stable identity.
-
-    Linux is the supported cross-process queue platform. Other platforms deliberately return
-    false: a bare PID is not enough to distinguish an unrelated process after PID reuse.
-    """
-    if not token or not reg._alive(pid) or not sys.platform.startswith("linux"):
-        return False
-    try:
-        argv = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
-    except OSError:
-        return False
-    values = {part.decode(errors="replace") for part in argv if part}
-    return "--dispatch" in values and run_id in values and token in values
+def _dispatcher_matches(state: dict) -> bool:
+    """Whether the dispatcher `state` records is still that very process: alive, and started when
+    it was recorded to (a bare pid may since name an unrelated process). Where the system keeps no
+    start time (`process_started` is None, macOS) no dispatcher is ever trusted: one is started."""
+    pid, token, started = (state.get(key) for key in ("dispatcher_pid", "dispatcher_token", "dispatcher_started"))
+    return (
+        isinstance(pid, int) and bool(token) and started is not None
+        and reg._alive(pid) and process_started(pid) == started
+    )
 
 
 def ensure_dispatcher_locked(run_id: str, *, cwd: str = ".") -> int:
     """Start exactly one detached dispatcher while the caller owns the run lock."""
     state = _state(run_id)
-    existing = state.get("dispatcher_pid")
-    if isinstance(existing, int) and _dispatcher_matches(
-        run_id, existing, state.get("dispatcher_token")
-    ):
-        return existing
+    if _dispatcher_matches(state):
+        return state["dispatcher_pid"]
     token = uuid.uuid4().hex
     state["dispatcher_pid"] = None
     state["dispatcher_token"] = token
@@ -229,13 +229,16 @@ def ensure_dispatcher_locked(run_id: str, *, cwd: str = ".") -> int:
             cwd=cwd if cwd and Path(cwd).is_dir() else ".",
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL, start_new_session=True,
+            # Windows: outlives the console that asked for it (its own group, a hidden console
+            # its provider children share instead of each opening a window). 0 on POSIX.
+            creationflags=_DETACHED,
         )
     except BaseException:
         current = _state(run_id)
         if current.get("dispatcher_token") == token:
             _set_dispatcher_locked(run_id, None)
         raise
-    _set_dispatcher_locked(run_id, process.pid, token)
+    _set_dispatcher_locked(run_id, process.pid, token, process_started(process.pid))
     return process.pid
 
 
@@ -392,13 +395,7 @@ async def wait_for_item(run_id: str, item_id: str) -> QueueItem | None:
             return current
         try:
             with reg.record_lock(run_id):
-                state = _state(run_id)
-                dispatcher_pid = state.get("dispatcher_pid")
-                dispatcher_token = state.get("dispatcher_token")
-                alive = (
-                    isinstance(dispatcher_pid, int)
-                    and _dispatcher_matches(run_id, dispatcher_pid, dispatcher_token)
-                )
+                alive = _dispatcher_matches(_state(run_id))
             if alive:
                 dispatcher_lost_at = None
                 recovery_attempted = False
