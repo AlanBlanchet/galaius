@@ -42,12 +42,70 @@ class ServiceUnavailable(Exception):
 
 
 class MachineService(BaseModel):
-    """Linux: the systemd user unit."""
+    """The background service keeping the machine connection running, as this system has one: set
+    up by `interact login`, removed by `interact logout`, read and controlled by `interact machine
+    service`; `run` is the restarting connection itself."""
 
     model_config = ConfigDict(frozen=True)
-    name: ClassVar[str] = "interact-machine.service"
-    #: A crash restarts the connection after this long (the unit's RestartSec).
+    #: A crash restarts the connection after this long.
     restart_seconds: ClassVar[float] = 10
+
+    @property
+    def logs(self) -> str:
+        """Where to read what it did, in this operating system's words."""
+        raise NotImplementedError
+
+    def install(self) -> None:
+        """Set up and started; ServiceUnavailable says why it could not."""
+        raise NotImplementedError
+
+    def remove(self) -> None:
+        raise NotImplementedError
+
+    def start(self) -> None:
+        raise NotImplementedError
+
+    def stop(self) -> None:
+        raise NotImplementedError
+
+    def running(self) -> bool:
+        raise NotImplementedError
+
+    def installed(self) -> bool:
+        raise NotImplementedError
+
+    def after_logout(self) -> bool:
+        """Whether it keeps running once this person signs out of the desktop."""
+        return False
+
+    def run(self) -> None:
+        """The connection in this process, restarted after a crash, until the server revokes this
+        computer (then it returns and stays stopped) or the settings forbid it (PermissionError)."""
+        printer = logging.StreamHandler(sys.stderr)
+        printer.setFormatter(JsonLines())
+        package = logging.getLogger("interact")
+        package.addHandler(printer)
+        package.setLevel(logging.INFO)
+        runner = MachineRunner()
+        try:
+            config = runner.load()
+        except (OSError, ValueError) as error:
+            raise ServiceUnavailable(f"cannot read this computer's machine settings ({error}); run  interact login") from None
+        while True:
+            try:
+                asyncio.run(runner.connect(config))
+                return
+            except PermissionError as error:
+                raise ServiceUnavailable(f"connection stopped: {error}") from None
+            except Exception as error:  # noqa: BLE001 - a crash restarts the connection, never the service
+                package.exception("machine connection crashed: %s; restarting in %s s", error, self.restart_seconds)
+                time.sleep(self.restart_seconds)
+
+
+class SystemdMachineService(MachineService):
+    """Linux: the systemd user unit, restarted by systemd itself (`Restart=on-failure`)."""
+
+    name: ClassVar[str] = "interact-machine.service"
 
     @staticmethod
     def executable() -> Path:
@@ -64,7 +122,6 @@ class MachineService(BaseModel):
 
     @property
     def logs(self) -> str:
-        """Where to read what it did, in this operating system's words."""
         return "journalctl --user -u interact-machine"
 
     def unit(self) -> str:
@@ -77,7 +134,7 @@ class MachineService(BaseModel):
             "[Service]\n"
             f'ExecStart="{program}" machine connect\n'
             # A revoked computer exits 0 and stays stopped; a crash or lost network restarts it.
-            "Restart=on-failure\nRestartSec=10\n\n"
+            f"Restart=on-failure\nRestartSec={self.restart_seconds:g}\n\n"
             "[Install]\nWantedBy=default.target\n"
         )
 
@@ -90,7 +147,6 @@ class MachineService(BaseModel):
         return done
 
     def install(self) -> None:
-        """Write, enable and start it; ServiceUnavailable says why it could not."""
         unit = self.unit()
         self._systemctl("--version")
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -117,27 +173,8 @@ class MachineService(BaseModel):
     def installed(self) -> bool:
         return self.path.exists()
 
-    def run(self) -> None:
-        """The connection in this process, restarted after a crash, until the server revokes this
-        computer (then it returns and stays stopped, like systemd's Restart=on-failure)."""
-        printer = logging.StreamHandler(sys.stderr)
-        printer.setFormatter(JsonLines())
-        package = logging.getLogger("interact")
-        package.addHandler(printer)
-        package.setLevel(logging.INFO)
-        runner = MachineRunner()
-        while True:
-            try:
-                asyncio.run(runner.connect(runner.load()))
-                return
-            except (PermissionError, FileNotFoundError, ValueError) as error:
-                raise ServiceUnavailable(f"cannot connect: {error}") from None  # the settings are gone or unreadable: nothing to retry
-            except Exception as error:  # noqa: BLE001 - a crash restarts the connection
-                package.exception("machine connection crashed: %s; restarting in %s s", error, self.restart_seconds)
-                time.sleep(self.restart_seconds)
-
     def after_logout(self) -> bool:
-        """Keep it running after this person signs out of the desktop; some systems refuse."""
+        """Lingering keeps it running after sign-out; some systems refuse."""
         if shutil.which("loginctl") is None:
             return False
         return subprocess.run(["loginctl", "enable-linger", getpass.getuser()], capture_output=True, text=True, timeout=30).returncode == 0
@@ -250,10 +287,6 @@ class WindowsMachineService(MachineService):
     def installed(self) -> bool:
         return self._task() is not None
 
-    def after_logout(self) -> bool:
-        """An interactive-token task runs while its user is signed in (no stored password)."""
-        return False
-
     def run(self) -> None:
         """What the task starts: its programs held in a job that closes with it, its output in
         `log_path` (pythonw has no console), then the restarting connection."""
@@ -281,7 +314,7 @@ class WindowsMachineService(MachineService):
         return job
 
 
-class UnsupportedMachineService(MachineService):
+class TerminalMachineService(MachineService):
     """No background service on this system yet (macOS): the connection runs in a terminal."""
 
     @property
@@ -308,4 +341,4 @@ class UnsupportedMachineService(MachineService):
 
 
 MACHINE_SERVICE: MachineService = (
-    WindowsMachineService() if sys.platform == "win32" else MachineService() if sys.platform.startswith("linux") else UnsupportedMachineService())
+    WindowsMachineService() if sys.platform == "win32" else SystemdMachineService() if sys.platform.startswith("linux") else TerminalMachineService())

@@ -9,9 +9,6 @@ given) is `POST /test/run`; what the server saw is `GET /test/state`.
 
 import argparse
 import asyncio
-import hashlib
-import hmac
-import json
 import secrets
 from datetime import UTC, datetime, timedelta
 from importlib.metadata import version
@@ -27,6 +24,8 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
+
+from interact.machines import MachineRunner
 
 
 class Pending(BaseModel):
@@ -162,9 +161,7 @@ class AccountServer(BaseModel):
             workflow=WorkflowRevisionRef(key=WorkflowKey(id=uuid4()), revision=uuid4()), node_id=uuid4(),
             impl=ScriptImplementation.inline(body["language"], body["source"]), config={"source": body["source"]},
             expires_at=datetime.now(UTC) + timedelta(minutes=2), signature="0" * 64)
-        key = hashlib.sha256(machine.token.encode()).digest()  # the server keeps SHA-256(token): both sides sign with it
-        payload = json.dumps(unsigned.model_dump(mode="json", exclude={"signature"}), sort_keys=True, separators=(",", ":")).encode()
-        command = unsigned.model_copy(update={"signature": hmac.new(key, payload, hashlib.sha256).hexdigest()})
+        command = unsigned.model_copy(update={"signature": MachineRunner.signature(machine.token, unsigned)})
         await self.sockets[machine.id].send_json({"type": "command", "command": command.model_dump(mode="json")})
         for _ in range(600):
             if str(command.id) in machine.results:

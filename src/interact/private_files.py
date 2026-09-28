@@ -34,7 +34,8 @@ if sys.platform == "win32":
 
 
 class PrivateFiles(BaseModel):
-    """POSIX: private = the mode bits and the owner uid."""
+    """What "private to this user" means on this system (`restrict`, `_verify`, `seal`, `unseal`,
+    `_settle`), and everything built on it: atomic private writes, checked reads, one-secret files."""
 
     model_config = ConfigDict(frozen=True)
     #: The largest private file read back (credentials and small JSON settings, never data).
@@ -47,17 +48,17 @@ class PrivateFiles(BaseModel):
         return path
 
     def restrict(self, path: Path) -> None:
-        path.chmod(0o700 if path.is_dir() else 0o600)
+        raise NotImplementedError
 
     def check(self, path: Path) -> None:
         """PermissionError unless `path` is a regular file (or folder) only this user can read."""
         self._verify(path, path.lstat())
 
     def _verify(self, path: Path, info: os.stat_result) -> None:
-        if not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)) or info.st_mode & 0o077 or info.st_uid != os.getuid():
-            raise PermissionError(f"{path} must be private to this user (mode 0600, a folder 0700, owned by you)")
+        raise NotImplementedError
 
     def seal(self, secret: str) -> str:
+        """How a secret is stored at rest (`unseal` reads it back)."""
         return secret
 
     def unseal(self, stored: str) -> str:
@@ -105,7 +106,22 @@ class PrivateFiles(BaseModel):
         return self.unseal(stored)
 
     def _settle(self, folder: Path) -> None:
-        """The rename itself survives a power cut (POSIX: the folder's entry is flushed)."""
+        """The rename itself survives a power cut."""
+        raise NotImplementedError
+
+
+class PosixPrivateFiles(PrivateFiles):
+    """POSIX: private = the mode bits and the owner uid; secrets stored as they are."""
+
+    def restrict(self, path: Path) -> None:
+        path.chmod(0o700 if path.is_dir() else 0o600)
+
+    def _verify(self, path: Path, info: os.stat_result) -> None:
+        if not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)) or info.st_mode & 0o077 or info.st_uid != os.getuid():
+            raise PermissionError(f"{path} must be private to this user (mode 0600, a folder 0700, owned by you)")
+
+    def _settle(self, folder: Path) -> None:
+        """The folder's entry is flushed."""
         descriptor = os.open(folder, os.O_RDONLY)
         try:
             os.fsync(descriptor)
@@ -119,7 +135,8 @@ class WindowsPrivateFiles(PrivateFiles):
     #: Principals that already read every file on the computer: their entries never make a file public.
     trusted: ClassVar[frozenset[str]] = frozenset({"S-1-5-18", "S-1-5-32-544"})
     prefix: ClassVar[str] = "dpapi:"
-    #: Mixed into every sealed value: another program of this user calling DPAPI without it cannot unseal.
+    #: Mixed into every sealed value. Public (it is in this source): it keeps interact's blobs apart
+    #: from other programs' DPAPI data, never from a program of this user that reads this file.
     entropy: ClassVar[bytes] = b"interact.private-files.v1"
 
     @staticmethod
@@ -131,7 +148,7 @@ class WindowsPrivateFiles(PrivateFiles):
         user = self.user()
         inherit = (ntsecuritycon.OBJECT_INHERIT_ACE | ntsecuritycon.CONTAINER_INHERIT_ACE) if path.is_dir() else 0
         dacl = win32security.ACL()
-        dacl.AddAccessAllowedAceEx(ntsecuritycon.ACL_REVISION, inherit, ntsecuritycon.FILE_ALL_ACCESS, user)
+        dacl.AddAccessAllowedAceEx(win32security.ACL_REVISION, inherit, ntsecuritycon.FILE_ALL_ACCESS, user)
         win32security.SetNamedSecurityInfo(
             str(path), win32security.SE_FILE_OBJECT,
             win32security.OWNER_SECURITY_INFORMATION | win32security.DACL_SECURITY_INFORMATION | win32security.PROTECTED_DACL_SECURITY_INFORMATION,
@@ -170,4 +187,4 @@ class WindowsPrivateFiles(PrivateFiles):
         """NTFS journals the rename; a folder cannot be opened as a file to flush it."""
 
 
-PRIVATE_FILES: PrivateFiles = WindowsPrivateFiles() if sys.platform == "win32" else PrivateFiles()
+PRIVATE_FILES: PrivateFiles = WindowsPrivateFiles() if sys.platform == "win32" else PosixPrivateFiles()

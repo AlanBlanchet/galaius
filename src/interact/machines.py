@@ -40,18 +40,14 @@ from interact.agents.events import AgentEvent
 from interact.agents.run import run_agent
 from interact.agents import registry as reg
 from interact.agents.profiles import ALLOWED_ENV
-from interact.functions import FunctionRegistry, invoke as invoke_function
+from interact.functions import FunctionRegistry, PermissionLevel, invoke as invoke_function
 from interact.vision_env import Report, VisionWorker, ensure_vision_env
 from interact import gpu_scrub, user_models
 from interact.sandbox import run_pooled
+from interact.pinned_directory import PinnedDirectory
 
 if sys.platform == "win32":
     import win32api
-
-    # A program a Script step names is found on PATH only, never in the folder the runner happens to
-    # stand in (Windows searches it first otherwise: a file step could plant `pwsh.cmd` there).
-    os.environ["NoDefaultCurrentDirectoryInExePath"] = "1"
-from interact.pinned_directory import PinnedDirectory
 
 
 class MachineConfig(BaseModel):
@@ -60,7 +56,7 @@ class MachineConfig(BaseModel):
     workspace_id: UUID
     machine_id: UUID
     token: SecretStr = Field(min_length=32, max_length=256)
-    permission_ceiling: Literal["read_only", "full_access"]
+    permission_ceiling: PermissionLevel
     working_directory: Path
     #: The only folders a workflow's file ops may read or write, relative to `working_directory`
     #: - set HERE on the machine by its owner (`interact machine file-roots`), never by the
@@ -575,15 +571,82 @@ class EnrollmentChanged(PermissionError):
     than the connection holds: nothing runs under the old one, the runner reconnects as the new."""
 
 
+class ScriptRuntime(BaseModel):
+    """How one Script language (`ScriptLanguage`) runs: its name as the owner reads it, the file its
+    inline code is written to, the program that runs it on each system (tried in order: a name on
+    PATH, or an absolute path; `{system}` is Windows' own system folder) with its options, the
+    program a pooled sandbox runs it with, and what is said where nothing runs it. `SCRIPT_RUNTIMES`
+    holds one per language."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    title: str
+    suffix: str
+    programs: dict[Literal["posix", "windows"], tuple[str, ...]] = {}
+    options: dict[Literal["posix", "windows"], tuple[str, ...]] = {}
+    #: The program inside a pooled (Linux gVisor) sandbox; None: not offered there.
+    pooled: str | None = None
+    #: Said when no program here runs it.
+    missing: str
+    SYSTEM: ClassVar[Literal["posix", "windows"]] = "windows" if sys.platform == "win32" else "posix"
+
+    @property
+    def here(self) -> tuple[str, ...]:
+        """This system's candidates, `{system}` filled in."""
+        system = win32api.GetSystemDirectory() if self.SYSTEM == "windows" else ""
+        return tuple(candidate.format(system=system) for candidate in self.programs.get(self.SYSTEM, ()))
+
+    @property
+    def label(self) -> str:
+        """The program as the owner reads it before approving (`python3`, `/bin/sh`, `pwsh`, `cmd.exe`)."""
+        first = self.programs.get(self.SYSTEM, ())
+        return " ".join((Path(first[0]).name if "{system}" in first[0] else first[0], *self.options.get(self.SYSTEM, ()))) if first else self.title
+
+    def program(self, path: str | None) -> str | None:
+        """The first candidate this computer has; None when it has none."""
+        for candidate in self.here:
+            found = (candidate if Path(candidate).is_file() else None) if Path(candidate).is_absolute() else self.which(candidate, path)
+            if found is not None:
+                return found
+        return None
+
+    @staticmethod
+    def which(name: str, path: str | None) -> str | None:
+        """`name` on PATH only, never in the folder the runner stands in (Windows looks there
+        first: a file step could plant `pwsh.cmd` beside it)."""
+        found = shutil.which(name, path=path)
+        folders = {Path(folder).resolve() for folder in (path or "").split(os.pathsep) if folder}
+        return None if found is None or (Path(found).resolve().parent == Path.cwd().resolve() and Path.cwd().resolve() not in folders) else found
+
+    @staticmethod
+    def languages(path: str | None) -> tuple[ScriptLanguage, ...]:
+        """The Script languages this computer runs, as the runner announces them (`script:<language>`):
+        Python always (the runner's own), each other where its program is found."""
+        return tuple(language for language, runtime in SCRIPT_RUNTIMES.items() if language == "python" or runtime.program(path) is not None)
+
+
+SCRIPT_RUNTIMES: dict[ScriptLanguage, ScriptRuntime] = {
+    # A machine's Python file runs on its own Python: python3, or on Windows the `py -3` launcher.
+    "python": ScriptRuntime(title="Python", suffix=".py", programs={"posix": ("python3",), "windows": ("py",)}, options={"windows": ("-3",)}, pooled="python3",
+                            missing="Python is not on this machine's PATH (python3, or py on Windows): name the interpreter in the step"),
+    "shell": ScriptRuntime(title="Shell", suffix=".sh", programs={"posix": ("/bin/sh",)}, pooled="/bin/sh",
+                           missing="a shell script runs with /bin/sh, which this computer does not have (Windows): write the step in PowerShell or cmd"),
+    # The owner approved this exact code: the execution policy (not a security boundary) never refuses it.
+    "powershell": ScriptRuntime(title="PowerShell", suffix=".ps1", programs={"posix": ("pwsh",), "windows": ("pwsh", "powershell")},
+                                options={system: ("-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File") for system in ("posix", "windows")},
+                                missing="PowerShell is not installed on this machine (pwsh): install PowerShell 7 or place the step on a Windows machine"),
+    # Windows' own cmd.exe, never %COMSPEC% (the environment could name another program).
+    "cmd": ScriptRuntime(title="cmd", suffix=".cmd", programs={"windows": ("{system}\\cmd.exe",)}, options={"windows": ("/d", "/c")},
+                         missing="cmd scripts run on Windows only: place the step on a Windows machine, or write it in shell or PowerShell"),
+}
+
+
 class ScriptExecution(BaseModel):
     """The program a Script step runs through here, chosen from what the owner approves (language,
     code, a file's own `interpreter`): the approval preview shows it, the runner resolves it. A file
     naming its interpreter runs through that; Python declaring its packages (PEP 723) through
     `uv run --script`, which installs them into a cached throwaway environment; other inline Python
-    on the runner's own interpreter, a machine's Python file on its `python3` (Windows: the `py -3`
-    launcher); shell on `/bin/sh` (not on Windows); PowerShell on `pwsh`, else Windows PowerShell;
-    cmd on Windows' own `cmd.exe`. `languages()` says which this computer runs (the server places a
-    step only where its language runs)."""
+    on the runner's own interpreter, a machine's Python file on that machine's Python; every other
+    language on its `SCRIPT_RUNTIMES` program."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
     program: Literal["runner_python", "python3", "uv", "shell", "powershell", "cmd", "custom"]
@@ -591,15 +654,7 @@ class ScriptExecution(BaseModel):
     interpreter: str | None = None
     #: PEP 723 inline script metadata: `# /// script` … `# ///` (the editor writes a script's packages there).
     METADATA: ClassVar[re.Pattern] = re.compile(r"(?m)^# /// script\r?\n(?:^#(?: .*)?\r?\n)*?^# ///$")
-    WINDOWS: ClassVar[bool] = sys.platform == "win32"
-    DESCRIPTIONS: ClassVar[dict[str, str]] = {"runner_python": "interact's own Python", "python3": "py -3" if WINDOWS else "python3", "uv": "uv",
-                                              "shell": "/bin/sh", "powershell": "PowerShell", "cmd": "cmd"}
-    OPTIONS: ClassVar[dict[str, tuple[str, ...]]] = {
-        "uv": ("run", "--quiet", "--no-project", "--script"), "python3": ("-3",) if WINDOWS else (),
-        # The owner approved this exact code: the execution policy (not a security boundary) never refuses it.
-        "powershell": ("-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"), "cmd": ("/d", "/c")}
-    #: The file inline code is written to (PowerShell runs only a .ps1 by -File, cmd only a .cmd / .bat).
-    SUFFIXES: ClassVar[dict[str, str]] = {"python": ".py", "shell": ".sh", "powershell": ".ps1", "cmd": ".cmd"}
+    UV: ClassVar[tuple[str, ...]] = ("run", "--quiet", "--no-project", "--script")
 
     @model_validator(mode="after")
     def custom_interpreter(self) -> Self:
@@ -615,28 +670,20 @@ class ScriptExecution(BaseModel):
             return cls(program=language)
         return cls(program="uv" if cls.METADATA.search(source) else "python3" if file is not None else "runner_python")
 
-    @classmethod
-    def powershell(cls, path: str | None) -> str | None:
-        """PowerShell 7 (`pwsh`) where installed, else the Windows PowerShell every Windows has."""
-        return shutil.which("pwsh", path=path) or (shutil.which("powershell", path=path) if cls.WINDOWS else None)
-
-    @classmethod
-    def shell(cls) -> bool:
-        return not cls.WINDOWS and Path("/bin/sh").exists()
-
-    @classmethod
-    def languages(cls, path: str | None) -> tuple[ScriptLanguage, ...]:
-        """The Script languages this computer can run, as the runner announces them (`script:<language>`)."""
-        found = {"python": True, "shell": cls.shell(), "powershell": cls.powershell(path) is not None, "cmd": cls.WINDOWS}
-        return tuple(language for language, runs in found.items() if runs)
+    @property
+    def runtime(self) -> ScriptRuntime | None:
+        """The table entry whose program runs it (none for the runner's own Python, uv or a named interpreter)."""
+        return SCRIPT_RUNTIMES["python" if self.program == "python3" else self.program] if self.program in {"python3", "shell", "powershell", "cmd"} else None
 
     @property
     def options(self) -> tuple[str, ...]:
-        return self.OPTIONS.get(self.program, ())
+        return self.UV if self.program == "uv" else () if self.runtime is None else self.runtime.options.get(ScriptRuntime.SYSTEM, ())
 
     @property
     def description(self) -> str:
-        return " ".join((self.interpreter if self.program == "custom" else self.DESCRIPTIONS[self.program], *self.options))
+        if self.runtime is not None:
+            return self.runtime.label
+        return " ".join((self.interpreter if self.program == "custom" else {"runner_python": "interact's own Python", "uv": "uv"}[self.program], *self.options))
 
 
 class MachineRunner:
@@ -814,7 +861,14 @@ class MachineRunner:
     @classmethod
     def features(cls) -> list[str]:
         """What this runner answers, and each Script language it runs here (`script:<language>`)."""
-        return [*cls.FEATURES, *(f"script:{language}" for language in ScriptExecution.languages(cls._safe_environment().get("PATH")))]
+        return [*cls.FEATURES, *(f"script:{language}" for language in ScriptRuntime.languages(cls._safe_environment().get("PATH")))]
+
+    @staticmethod
+    def signature(token: str, message: MachineCommand | MachineFileQuery | MachineDataRequest | MachineAgentRequest) -> str:
+        """What the server signs `message` with for the machine holding `token`: HMAC-SHA256 of its
+        canonical JSON (sorted keys, no spaces, `signature` left out) keyed by SHA-256(token)."""
+        unsigned = message.model_dump(mode="json", exclude={"signature"})
+        return hmac.new(hashlib.sha256(token.encode()).digest(), json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode(), hashlib.sha256).hexdigest()
 
     @staticmethod
     def _verify_signed(config: MachineConfig, message: MachineCommand | MachineFileQuery | MachineDataRequest | MachineAgentRequest, what: str) -> None:
@@ -822,10 +876,7 @@ class MachineRunner:
         SHA-256(token), so both sides sign with the same derived key."""
         if message.expires_at.tzinfo is None or message.expires_at <= datetime.now(UTC):
             raise PermissionError(f"{what} expired")
-        unsigned = message.model_dump(mode="json", exclude={"signature"})
-        key = hashlib.sha256(config.token.get_secret_value().encode()).digest()
-        expected = hmac.new(key, json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode(), hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(expected, message.signature):
+        if not hmac.compare_digest(MachineRunner.signature(config.token.get_secret_value(), message), message.signature):
             raise PermissionError(f"{what} signature is invalid")
 
     def _current_config(self, connected: MachineConfig) -> MachineConfig:
@@ -1173,7 +1224,7 @@ class MachineRunner:
         self._audit_script(command)
         logger.info("%s script %s (%d lines), timeout %s s", language, digest[:12], source.count("\n") + 1, timeout)
         with tempfile.TemporaryDirectory(prefix="interact-script-") as scratch:
-            script_path = Path(scratch) / f"script{ScriptExecution.SUFFIXES[language]}"
+            script_path = Path(scratch) / f"script{SCRIPT_RUNTIMES[language].suffix}"
             script_path.write_text(source, encoding="utf-8")
             script_path.chmod(0o700)
             return self._run_process([*self._interpreter(language, source), str(script_path)], config.working_directory, timeout)
@@ -1201,31 +1252,20 @@ class MachineRunner:
             interpreter = execution.interpreter
             if ("/" in interpreter or "\\" in interpreter) and not Path(interpreter).is_absolute():
                 raise RuntimeError(f"{interpreter}: name the program by its full path, or by a name on the machine's PATH")
-            found = interpreter if Path(interpreter).is_absolute() else shutil.which(interpreter, path=path)
+            found = interpreter if Path(interpreter).is_absolute() else ScriptRuntime.which(interpreter, path)
             if found is None or not os.access(found, os.X_OK):
                 raise RuntimeError(f"{interpreter} is not a program this machine can run (not found on its PATH)")
-        elif execution.program == "runner_python":
-            found = sys.executable
-        elif execution.program == "shell":
-            if not ScriptExecution.shell():
-                raise RuntimeError("a shell script runs with /bin/sh, which this computer does not have (Windows): write the step in PowerShell or cmd")
-            found = "/bin/sh"
-        elif execution.program == "powershell":
-            found = ScriptExecution.powershell(path)
-            if found is None:
-                raise RuntimeError("PowerShell is not installed on this machine (pwsh): install PowerShell 7 or place the step on a Windows machine")
-        elif execution.program == "cmd":
-            if not ScriptExecution.WINDOWS:
-                raise RuntimeError("cmd scripts run on Windows only: place the step on a Windows machine, or write it in shell or PowerShell")
-            found = str(Path(win32api.GetSystemDirectory()) / "cmd.exe")  # never %COMSPEC%: the environment could name another program
-        elif execution.program == "python3":
-            found = shutil.which("py" if ScriptExecution.WINDOWS else "python3", path=path)
-            if found is None:
-                raise RuntimeError(f"{ScriptExecution.DESCRIPTIONS['python3']} is not installed on this machine's PATH: name the interpreter in the step")
-        else:
-            found = shutil.which("uv")
+            return [found]
+        if execution.program == "runner_python":
+            return [sys.executable]
+        if execution.program == "uv":
+            found = ScriptRuntime.which("uv", path)
             if found is None:
                 raise RuntimeError("this script declares the packages it needs (PEP 723): install uv on this machine to run it")
+            return [found, *execution.options]
+        found = execution.runtime.program(path)
+        if found is None:
+            raise RuntimeError(execution.runtime.missing)
         return [found, *execution.options]
 
     def _run_script_pooled(self, command: MachineCommand, config: MachineConfig, timeout: float = 120) -> str:
@@ -1245,10 +1285,10 @@ class MachineRunner:
         self._audit_script(command)
         raw_allow = command.config.get("_pool_egress_allow", [])
         policy = EgressPolicy(allow=tuple(EgressAllowEntry.model_validate(entry) for entry in raw_allow)) if isinstance(raw_allow, list) else EgressPolicy()
-        interpreter = {"python": "python3", "shell": "/bin/sh"}.get(language)
-        if interpreter is None:
-            raise RuntimeError(f"pooled machines run Python and shell scripts, not {language}")
-        script_name = f"script{ScriptExecution.SUFFIXES[language]}"
+        runtime = SCRIPT_RUNTIMES[language]
+        if runtime.pooled is None:
+            raise RuntimeError(f"pooled machines do not run {runtime.title} scripts")
+        interpreter, script_name = runtime.pooled, f"script{runtime.suffix}"
         logger.info("pooled %s script %s (%d lines), timeout %s s, egress allow=%d host(s)", language, digest[:12], source.count("\n") + 1, timeout, len(policy.allow))
         result = run_pooled(run_id=command.run_id, command=[interpreter, script_name], input_files={script_name: source.encode()}, egress=policy, timeout=timeout)
         if result.exit_code != 0:
@@ -1381,8 +1421,7 @@ class MachineRunner:
         fixed = {"HOME", "PATH", "USER", "LOGNAME", "SHELL", "LANG", "TERM", "SSL_CERT_FILE", "SSL_CERT_DIR", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS",
                  # Windows: what any program needs to start there (Python needs SYSTEMROOT, cmd COMSPEC), no secret among them.
                  "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP", "USERPROFILE", "USERNAME", "USERDOMAIN", "APPDATA", "LOCALAPPDATA",
-                 "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)", "COMMONPROGRAMFILES", "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS", "OS", "PSMODULEPATH",
-                 "NODEFAULTCURRENTDIRECTORYINEXEPATH"}
+                 "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)", "COMMONPROGRAMFILES", "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS", "OS", "PSMODULEPATH"}
         return {key: value for key, value in os.environ.items() if key in fixed or key in ALLOWED_ENV or key.startswith("LC_")}
 
     @staticmethod
@@ -1487,7 +1526,7 @@ def shell_path(current: str, shell: str | None = None, timeout: float = 10) -> s
     return ":".join(dict.fromkeys(entry for entry in (*found.split(":"), *current.split(":")) if entry))
 
 
-async def connect_command(server_url: str | None, workspace_id: UUID | None, machine_id: UUID | None, token: str | None, permission_ceiling: Literal["read_only", "full_access"], working_directory: Path | None, serve: bool) -> None:
+async def connect_command(server_url: str | None, workspace_id: UUID | None, machine_id: UUID | None, token: str | None, permission_ceiling: PermissionLevel, working_directory: Path | None, serve: bool) -> None:
     runner = MachineRunner()
     try:
         if server_url is None and workspace_id is None and machine_id is None and token is None:

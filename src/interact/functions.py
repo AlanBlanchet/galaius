@@ -24,7 +24,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from interact.private_files import PRIVATE_FILES
 
 FunctionKind = Literal["python", "shell"]
-FunctionPermission = Literal["read_only", "full_access"]
+#: What a step may do on a machine: its permission, and the machine owner's ceiling over every step.
+PermissionLevel = Literal["read_only", "full_access"]
 
 #: Every distinct Python type a function signature may be typed with, mapped onto the wire's
 #: `ValueType`. Anything else (a dataclass, a pydantic model, an untyped `Any`) is carried as
@@ -46,10 +47,10 @@ class FunctionMeta(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
     description: str = Field(min_length=1, max_length=240)
-    permission: FunctionPermission = "read_only"
+    permission: PermissionLevel = "read_only"
 
 
-def function(target: Callable | None = None, *, description: str | None = None, permission: FunctionPermission = "read_only") -> Callable:
+def function(target: Callable | None = None, *, description: str | None = None, permission: PermissionLevel = "read_only") -> Callable:
     """Marks a typed function as callable from a workflow on this machine — bare
     (`@interact.function`) or parameterized (`@interact.function(description=..., permission="full_access")`).
     Without an explicit `description`, the callable's own docstring first line is used; every
@@ -72,7 +73,7 @@ class FunctionEntry(BaseModel):
     name: str = Field(min_length=1, max_length=80, pattern=r"^[a-z][a-z0-9_]*$")
     description: str = Field(min_length=1, max_length=240)
     kind: FunctionKind
-    permission: FunctionPermission
+    permission: PermissionLevel
     ports: tuple[PortSpec, ...] = Field(min_length=1, max_length=32)
     version: str = Field(pattern=r"^[0-9a-f]{64}$")
     path: str | None = None
@@ -205,7 +206,7 @@ def _entry_from_callable(target: Callable, attribute: str, meta: FunctionMeta, p
 _PLACEHOLDER = re.compile(r"\{([a-z][a-z0-9_]*)\}")
 
 
-def discover_shell(name: str, description: str, command: tuple[str, ...], permission: FunctionPermission = "full_access") -> FunctionEntry:
+def discover_shell(name: str, description: str, command: tuple[str, ...], permission: PermissionLevel = "full_access") -> FunctionEntry:
     """A shell command form: `{arg}` tokens anywhere across `command` become typed text input
     ports, filled by `str.format` at call time — never `shell=True`, so an argument value can
     never break out of its own argv slot no matter what characters it holds."""

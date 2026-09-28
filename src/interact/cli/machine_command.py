@@ -11,8 +11,9 @@ from cyclopts import App, Parameter
 
 from interact_core import AgentTouchScope, WorkflowNode
 
+from interact.functions import PermissionLevel
 from interact.machine_service import MACHINE_SERVICE, ServiceUnavailable
-from interact.machines import MachineFiles, MachineRunner, ScriptExecution, connect_command
+from interact.machines import SCRIPT_RUNTIMES, MachineFiles, MachineRunner, ScriptExecution, connect_command
 
 machine_app = App(name="machine", help="Connect this computer as a workflow machine.")
 
@@ -22,7 +23,7 @@ def machine_connect(
     server_url: Annotated[str | None, Parameter(name="--server")] = None,
     workspace_id: Annotated[UUID | None, Parameter(name="--workspace")] = None,
     machine_id: Annotated[UUID | None, Parameter(name="--machine")] = None,
-    permission_ceiling: Literal["read_only", "full_access"] = "read_only",
+    permission_ceiling: PermissionLevel = "read_only",
     working_directory: Annotated[Path | None, Parameter(name="--working-directory")] = None,
     configure_only: bool = False,
 ) -> None:
@@ -63,7 +64,7 @@ def machine_file_roots(*roots: str) -> None:
 
 
 @machine_app.command(name="permission")
-def machine_permission(ceiling: Literal["read_only", "full_access"] | None = None) -> None:
+def machine_permission(ceiling: PermissionLevel | None = None) -> None:
     """Owner-only, on this machine: the most a workflow step may do here. read_only (what
     `interact login` sets): file reads, models, functions marked read-only; full_access: also
     Script steps (each still needs your approval of its exact code) and file writes. No argument
@@ -191,7 +192,7 @@ def _approve(workspace, machine_id: UUID, digest: str, steps: list[tuple[str, Wo
 def _described_step(workflow: str, node: WorkflowNode, machine_id: UUID) -> str:
     """What running `node` does, as the machine owner reads it before approving it."""
     impl = node.impl
-    language = {"python": "Python", "shell": "Shell", "powershell": "PowerShell", "cmd": "cmd"}[impl.language]
+    language = SCRIPT_RUNTIMES[impl.language].title
     lines = [f"Workflow “{workflow}”, step “{node.label}”"]
     if impl.origin == "inline":
         source = str(node.config.get("source", ""))

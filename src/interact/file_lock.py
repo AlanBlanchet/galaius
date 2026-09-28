@@ -2,6 +2,7 @@
 it is opened safely — private folder, no link followed — stays the caller's). POSIX `flock`;
 Windows locks the file's first byte (`msvcrt.locking`), waiting as long as another process holds it."""
 
+import errno
 import os
 import sys
 from collections.abc import Iterator
@@ -16,9 +17,19 @@ else:
 
 
 class FileLock(BaseModel):
-    """POSIX: `flock` on the whole file."""
+    """One exclusive lock on an open file, as this system takes it."""
 
     model_config = ConfigDict(frozen=True)
+
+    def acquire(self, descriptor: int) -> None:
+        raise NotImplementedError
+
+    def release(self, descriptor: int) -> None:
+        raise NotImplementedError
+
+
+class PosixFileLock(FileLock):
+    """POSIX: `flock` on the whole file."""
 
     def acquire(self, descriptor: int) -> None:
         fcntl.flock(descriptor, fcntl.LOCK_EX)
@@ -34,17 +45,18 @@ class WindowsFileLock(FileLock):
         while True:
             os.lseek(descriptor, 0, os.SEEK_SET)
             try:
-                msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)  # gives up after ~10 s: wait again
+                msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)
                 return
-            except OSError:
-                continue
+            except OSError as error:
+                if error.errno != errno.EDEADLOCK:  # LK_LOCK gives up after ~10 s with EDEADLOCK: wait again; anything else is real
+                    raise
 
     def release(self, descriptor: int) -> None:
         os.lseek(descriptor, 0, os.SEEK_SET)
         msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
 
 
-FILE_LOCK: FileLock = WindowsFileLock() if sys.platform == "win32" else FileLock()
+FILE_LOCK: FileLock = WindowsFileLock() if sys.platform == "win32" else PosixFileLock()
 
 
 @contextmanager
