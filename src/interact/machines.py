@@ -710,6 +710,8 @@ class MachineRunner:
         self._executing = 0
         #: Set when supervised: leave for a new runtime once nothing runs (`_leave_when_quiet`).
         self._quiet = QuietPoint.current()
+        #: The server closed the connection to restart (1012): ask for a release check once it is back.
+        self._server_restarted = False
         self._log_ring = LogRing()
         logging.getLogger("interact").addHandler(self._log_ring)
 
@@ -777,6 +779,9 @@ class MachineRunner:
                 ) as socket:
                     delay_index = 0
                     logger.info("connected to %s", endpoint, extra={"machine_id": config.machine_id, "workspace_id": config.workspace_id})
+                    if self._server_restarted:
+                        self._server_restarted = False
+                        RuntimeStore.default().request_check()
                     await socket.send(json.dumps({"type": "hello", "features": self.features(), "runtimes": self._runtimes(config), "accelerators": self._accelerators(), "functions": self._functions(), "resources": self._resources(config.working_directory), "file_roots": self._file_roots(config)}))
                     if await self._serve(socket, config):
                         return
@@ -792,8 +797,8 @@ class MachineRunner:
                     print("Machine token was revoked or rejected; connection stopped.", file=sys.stderr)
                     return
                 logger.warning("connection closed (code %s)", error.code, extra={"machine_id": config.machine_id})
-                if error.code == 1012:  # the server restarted: a deploy may have brought a release
-                    RuntimeStore.default().request_check()
+                # The server restarted: a deploy may have brought a release, checked once it answers again.
+                self._server_restarted = self._server_restarted or error.code == 1012
             except websockets.InvalidStatus as error:
                 # Refused at the handshake: a revoked or unknown token answers 401/403 before the
                 # socket opens (the 4401/4403 close codes above never arrive). Stop, like a close.
