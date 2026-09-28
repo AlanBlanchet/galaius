@@ -68,7 +68,7 @@ def spawnable(argv: Sequence[str], env: Mapping[str, str] | None = None) -> list
     program, *arguments = argv
     resolved = program if Path(program).parent != Path() else shutil.which(program, path=search_path)
     if resolved is None:
-        raise FileNotFoundError(f"{program} is not installed (not found on PATH)")
+        return list(argv)  # not installed: the spawn itself says so, as exec does on POSIX
     if Path(resolved).suffix.lower() not in {".cmd", ".bat"}:
         return [resolved, *arguments]
     shim = NpmShim.read(Path(resolved), search_path)
