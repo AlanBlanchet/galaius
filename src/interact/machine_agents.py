@@ -53,6 +53,7 @@ TAIL_LINES = 4000
 #: most capable first (the order a role's own criterion walks).
 AGENT_PROVIDERS = ("claude", "codex")
 MODEL_RANKING = "aa.intelligence and price.in >= 0"
+MODELS_PER_PROVIDER = 12
 #: Editor conversations offered for continuing: written in the last two weeks, newest first.
 EDITOR_SESSIONS_DAYS, EDITOR_SESSIONS_MAX = 14, 40
 #: An editor conversation written this recently is open in the editor right now.
@@ -443,7 +444,12 @@ class MachineAgents(BaseModel):
         except (OSError, ValueError, RuntimeError) as error:
             logger.warning("agent models unavailable: %s", error)
             ranked = ()
-        found = tuple(dict.fromkeys(MachineAgentModel(provider=item.provider, model=item.model) for item in ranked))[:500]
+        # The strongest few per CLI: the tail of the ranking is models nobody would pick by hand.
+        unique = dict.fromkeys(MachineAgentModel(provider=item.provider, model=item.model) for item in ranked)
+        per_provider: dict[str, list[MachineAgentModel]] = {}
+        for item in unique:
+            per_provider.setdefault(item.provider, []).append(item)
+        found = tuple(item for item in unique if item in per_provider[item.provider][:MODELS_PER_PROVIDER])
         _MODELS = (time.monotonic(), found)
         return found
 

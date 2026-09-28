@@ -894,7 +894,8 @@ class MachineRunner:
                                    runs=WebRuns(path=self.config_path.with_name("machine-agent-runs.json")), environment=self._safe_environment(),
                                    sessions=self._sessions, logs=self._log_ring)
             answer = await agents.answer(request)
-            logger.info("agent %s", request.op)
+            # Reading (the page polls every few seconds) stays out of the owner's log; actions go in.
+            logger.log(logging.INFO if request.action else logging.DEBUG, "agent %s", request.op)
         except (PermissionError, OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
             reason = str(error) if isinstance(error, (PermissionError, ValueError, RuntimeError)) else f"{type(error).__name__}: {error}"
             answer = MachineAgentAnswer(request_id=request.id, error=reason[:400] or type(error).__name__)
