@@ -240,7 +240,8 @@ class _CodexTransport(_ConversationTransport):
         parameters: dict[str, object] = {
             "model": model,
             "cwd": str(workspace),
-            "runtimeWorkspaceRoots": [str(workspace)],
+            # No `runtimeWorkspaceRoots`: codex 0.155.1 refuses it unless the client declares the
+            # experimental API, which this client never does; `cwd` scopes the read-only session.
             "sandbox": "read-only",
             "approvalPolicy": "on-request",
             "approvalsReviewer": "user",
@@ -266,7 +267,6 @@ class _CodexTransport(_ConversationTransport):
             "threadId": conversation_id,
             "model": model,
             "cwd": str(workspace),
-            "runtimeWorkspaceRoots": [str(workspace)],
             "sandbox": "read-only",
             "approvalPolicy": "on-request",
             "approvalsReviewer": "user",

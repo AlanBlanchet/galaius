@@ -677,7 +677,6 @@ async def test_fake_app_server_crosses_catalog_thread_turn_and_stream(console_wo
         assert thread_start["params"] == {
             "model": "openai/example-model",
             "cwd": str(workspace),
-            "runtimeWorkspaceRoots": [str(workspace)],
             "sandbox": "read-only",
             "approvalPolicy": "on-request",
             "approvalsReviewer": "user",

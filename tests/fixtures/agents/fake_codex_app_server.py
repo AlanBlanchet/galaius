@@ -51,7 +51,7 @@ class _FakeCodexAppServer:
             record["params"] = {
                 key: params.get(key)
                 for key in (
-                    "model", "cwd", "runtimeWorkspaceRoots", "sandbox", "approvalPolicy",
+                    "model", "cwd", "sandbox", "approvalPolicy",
                     "approvalsReviewer", "allowProviderModelFallback",
                 )
             }
@@ -230,7 +230,8 @@ class _FakeCodexAppServer:
             return bool(
                 isinstance(params.get("model"), str)
                 and isinstance(params.get("cwd"), str)
-                and params.get("runtimeWorkspaceRoots") == [params.get("cwd")]
+                # codex 0.155.1 refuses this field without the experimental API (never declared).
+                and "runtimeWorkspaceRoots" not in params
                 and params.get("sandbox") == "read-only"
                 and params.get("approvalPolicy") == "on-request"
                 and params.get("approvalsReviewer") == "user"
@@ -240,7 +241,8 @@ class _FakeCodexAppServer:
             return bool(
                 isinstance(params.get("threadId"), str)
                 and isinstance(params.get("cwd"), str)
-                and params.get("runtimeWorkspaceRoots") == [params.get("cwd")]
+                # codex 0.155.1 refuses this field without the experimental API (never declared).
+                and "runtimeWorkspaceRoots" not in params
                 and params.get("sandbox") == "read-only"
                 and params.get("approvalPolicy") == "on-request"
                 and params.get("approvalsReviewer") == "user"
