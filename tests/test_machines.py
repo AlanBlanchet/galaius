@@ -458,6 +458,7 @@ def test_a_machine_saves_text_or_a_received_file_within_its_ceiling(tmp_path: Pa
     assert json.loads((tmp_path / "config/interact/file-audit.log").read_text().splitlines()[-1])["op"] == "write"
 
 
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="no named pipes in this file system")
 def test_a_named_pipe_in_a_root_is_refused_without_hanging(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, directory_backend) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     root = tmp_path / "work"
@@ -473,6 +474,7 @@ def test_a_named_pipe_in_a_root_is_refused_without_hanging(tmp_path: Path, monke
     assert not files.inbox.exists()
 
 
+@pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="descriptors are counted through /proc")
 def test_reading_a_folder_is_refused_and_leaks_no_descriptor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, directory_backend) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     root = tmp_path / "work"
@@ -770,7 +772,7 @@ def test_script_file_outside_the_script_roots_is_refused(tmp_path: Path, monkeyp
     for folder in ("interact-files", "scripts/inbox"):
         (tmp_path / folder).mkdir(parents=True, exist_ok=True)
     for name in ("outside.py", "interact-files/job.py", "scripts/job.py"):
-        (tmp_path / name).write_text("print('x')\n")
+        (tmp_path / name).write_bytes(b"print('x')\n")
     (tmp_path / "scripts" / "linked.py").symlink_to(tmp_path / "outside.py")
     spec = ScriptFile(path=path, file_digest=hashlib.sha256(b"print('x')\n").hexdigest(), interpreter=interpreter)
     with pytest.raises((PermissionError, RuntimeError), match=refusal):
@@ -803,7 +805,7 @@ def test_file_listing_shows_script_roots_folders_and_a_file_digest_only(tmp_path
     (root / "tools").mkdir(parents=True)
     (root / ".secret").mkdir()
     (tmp_path / "interact-files").mkdir()
-    (root / "tools" / "a.sh").write_text("echo a\n")
+    (root / "tools" / "a.sh").write_bytes(b"echo a\n")
     (root / "link.sh").symlink_to(root / "tools" / "a.sh")
     files = MachineFiles(config=config, area="scripts")
     assert [(entry.name, entry.kind) for entry in files.listing("").entries] == [("scripts", "folder")]

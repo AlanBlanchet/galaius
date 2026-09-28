@@ -175,6 +175,10 @@ def _open_descriptors() -> int:
     return len(os.listdir("/proc/self/fd"))
 
 
+_COUNTS_DESCRIPTORS = pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="descriptors are counted through /proc")
+
+
+@_COUNTS_DESCRIPTORS
 @pytest.mark.parametrize("cleanup_fails", [False, True], ids=["cleanup-ok", "cleanup-error"])
 def test_private_replace_closes_directory_handle_when_replacement_open_fails(
     cleanup_fails: bool, monkeypatch: pytest.MonkeyPatch, directory_backend,
@@ -202,6 +206,7 @@ def test_private_replace_closes_directory_handle_when_replacement_open_fails(
     assert not list(reg.agents_dir().glob("*.new"))
 
 
+@_COUNTS_DESCRIPTORS
 def test_private_replace_does_not_unlink_an_exclusive_create_collision(
     monkeypatch: pytest.MonkeyPatch, directory_backend,
 ) -> None:
@@ -233,6 +238,7 @@ def test_private_replace_does_not_unlink_an_exclusive_create_collision(
         replacement.unlink(missing_ok=True)
 
 
+@_COUNTS_DESCRIPTORS
 def test_private_replace_rejects_candidate_substitution_observed_before_publication(
     monkeypatch: pytest.MonkeyPatch, directory_backend,
 ) -> None:

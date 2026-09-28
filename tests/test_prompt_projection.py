@@ -234,7 +234,8 @@ def test_installer_switches_only_declared_consumers_and_rejects_unmanaged_collis
     assert unrelated.read_text() == "keep\n"
     assert json.loads(settings.read_text())["unrelated"] is True
     assert unrelated_stop in json.loads(settings.read_text())["hooks"]["Stop"]
-    assert (home / ".claude" / "hooks" / "hook.sh").stat().st_mode & stat.S_IXUSR
+    # Windows has no execute bit: a hook there runs through its interpreter.
+    assert os.name == "nt" or (home / ".claude" / "hooks" / "hook.sh").stat().st_mode & stat.S_IXUSR
     collision_home = tmp_path / "collision-home"
     collision = collision_home / "AGENTS.md"
     collision.parent.mkdir(parents=True, exist_ok=True)

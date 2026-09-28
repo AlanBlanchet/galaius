@@ -201,8 +201,9 @@ def _write_source(parent: PinnedDirectory, name: str, digest: str, content: str)
             current = stream.read(_MAX_EDITOR_BYTES + 1)
         if hashlib.sha256(current).hexdigest() != digest:
             _editor_error("prompt source changed; preserve the editor buffer and reload", "conflict")
-        with os.fdopen(parent.file(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), "w", encoding="utf-8") as stream:
-            stream.write(content)
+        # Bytes, not text mode: Windows would store \r\n and break the digest the editor holds.
+        with os.fdopen(parent.file(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), "wb") as stream:
+            stream.write(content.encode("utf-8"))
             stream.flush()
             os.fsync(stream.fileno())
         parent.replace(temporary, parent, name)

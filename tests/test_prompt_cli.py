@@ -110,6 +110,20 @@ def test_prompt_editor_releases_its_lock_when_post_lock_validation_fails(
     assert not (source / ".instructions.md.interact.lock").exists()
 
 
+def test_prompt_editor_stores_the_exact_bytes_it_reports(tmp_path: Path, monkeypatch, capsys, directory_backend) -> None:
+    """The digest handed back is the file's own on every OS (text mode would store \r\n on Windows)."""
+    source = tmp_path / "interact" / "prompts"
+    source.mkdir(parents=True)
+    prompt = source / "instructions.md"
+    prompt.write_bytes(b"old\n")
+    content = b"line one\nline two\n"
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(content)))
+    prompt_commands.write("instructions.md", hashlib.sha256(b"old\n").hexdigest())
+    reported = json.loads(capsys.readouterr().out)["digest"]
+    assert (prompt.read_bytes(), reported) == (content, hashlib.sha256(prompt.read_bytes()).hexdigest())
+
+
 def test_prompt_editor_cli_writes_exact_stdin_after_matching_digest(tmp_path: Path) -> None:
     source = tmp_path / "interact" / "prompts"
     source.mkdir(parents=True)

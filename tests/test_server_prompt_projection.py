@@ -59,7 +59,7 @@ def stage(outputs, root):
     for name, content in outputs.items():
         target = root / name
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content)
+        target.write_bytes(content.encode())  # write_text would turn \n into \r\n on Windows
         target.chmod(0o600)
         records.append({'path': name, 'sha256': hashlib.sha256(content.encode()).hexdigest(),
                         'size': len(content.encode()), 'mode': '0600'})
@@ -80,7 +80,7 @@ def test_provider_context_scope_and_immutable_skill_references(tmp_path):
     assert 'Pinned skill body.' not in worker
     reference = next(name for name in outputs if name.startswith('references/'))
     assert str(tmp_path / 'projection' / reference) in worker
-    assert '/RULE.md' in outputs['AGENTS.md']
+    assert f"{os.sep}RULE.md" in outputs['AGENTS.md']
     org = json.loads(outputs['org.json'])
     assert org['agents'][0]['reports_to'] == 'main'
     assert org['agents'][0]['def'] == str(tmp_path / 'home/.claude/scopes/domain/agents/worker.md')
@@ -198,7 +198,7 @@ def test_prompt_only_install_retains_hooks_settings_and_local_edits(tmp_path):
     managed = {}
     for target, content in {**runtime, old_agent: 'old managed role'}.items():
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content)
+        target.write_bytes(content.encode())
         managed[str(target)] = hashlib.sha256(content.encode()).hexdigest()
     state.parent.mkdir(parents=True)
     state.write_text(json.dumps({'managed': managed, 'hook_groups': {'Start': ['unchanged']}}))
