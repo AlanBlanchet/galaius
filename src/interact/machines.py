@@ -895,8 +895,12 @@ class MachineRunner:
                                    sessions=self._sessions, logs=self._log_ring)
             answer = await agents.answer(request)
             # Reading (the page polls every few seconds) stays out of the owner's log; actions go in.
-            said = " ".join(f"{key}={value}" for key, value in (("role", getattr(request, "role", None)), ("folder", "/".join(filter(None, (getattr(request, "root", ""), getattr(request, "path", ""))))),
-                                                                 ("run", answer.run_id or getattr(request, "run_id", None)), ("answer", answer.detail if request.op == "answer" else None)) if value)
+            run_id = answer.run_id or getattr(request, "run_id", None)
+            placed = next((item for item in agents.runs.read() if item.run_id == run_id), None) if run_id else None
+            recorded = reg.get_run(str(run_id)) if run_id else None
+            folder = "/".join(filter(None, (getattr(request, "root", "") or (placed.root if placed else ""), getattr(request, "path", "") or (placed.path if placed else ""))))
+            said = " ".join(f"{key}={value}" for key, value in (("role", getattr(request, "role", None) or (recorded.agent if recorded else None)), ("folder", folder),
+                                                                 ("run", str(run_id)[:8] if run_id else None), ("answer", answer.detail if request.op in {"answer", "send"} else None)) if value)
             logger.log(logging.INFO if request.action else logging.DEBUG, "agent %s %s", request.op, said)
         except (PermissionError, OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
             reason = str(error) if isinstance(error, (PermissionError, ValueError, RuntimeError)) else f"{type(error).__name__}: {error}"

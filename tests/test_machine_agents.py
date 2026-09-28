@@ -358,3 +358,9 @@ def test_codex_conversations_of_the_owner_continue_as_a_session_copy(base: Path,
     started = _answer(agents, _request("continue", session_id=owners, text="- go on"))
     assert forked == [(owners, "- go on", base.resolve() / "project")] and agents.runs.read()[-1].kind == "session"
     assert agents.runs.read()[-1].run_id == started.run_id
+
+
+def test_options_for_a_role_ask_the_pc_what_its_rule_picks(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    agents = _agents(base, tmp_path)
+    monkeypatch.setattr(MachineAgents, "role_models", lambda self, role: (MachineAgentModel(provider="claude", model="claude-sonnet-5"),) if role == "source-validator" else ())
+    assert [(item.provider, item.model) for item in _answer(agents, _request("options", role="source-validator")).models] == [("claude", "claude-sonnet-5")]

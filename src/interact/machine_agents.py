@@ -541,7 +541,32 @@ class MachineAgents(BaseModel):
         _MODELS = (time.monotonic(), found)
         return found
 
+    def role_models(self, role: str) -> tuple[MachineAgentModel, ...]:
+        """What `role`'s own rule picks on each CLI here, best first: the model a start will run on
+        (the first), and no row for a CLI that cannot run the role at all."""
+        try:
+            policy = load_policy()
+            criterion = policy.criterion_for(role)
+            providers = [PROVIDERS[name] for name in AGENT_PROVIDERS if name in PROVIDERS and policy.provider_active(name) and PROVIDERS[name].available()]
+            if not criterion or not providers:
+                return ()
+            best = []
+            for provider in providers:
+                try:
+                    ranked = rank_candidates(criterion, dict(self.environment), providers=[provider], weights=policy.weights_for(role))
+                    provider.validate_tool_policy(policy.tools_for(role), (), coarse_accepted=policy.accepts_coarse_tool_policy(role, provider.name))
+                except (ValueError, RuntimeError):
+                    continue  # this CLI cannot run the role (no model clears its rule, or its tool rules)
+                best.extend(ranked[:1])
+            # In the launcher's own order: the first is what "best available" runs.
+            return tuple(MachineAgentModel(provider=item.provider, model=item.model) for item in sorted(best, key=lambda item: item.rank))
+        except (OSError, ValueError, RuntimeError) as error:
+            logger.warning("role models unavailable for %s: %s", role, error)
+            return ()
+
     async def _options(self, request: AgentOptionsRequest) -> MachineAgentAnswer:
+        if request.role is not None:
+            return MachineAgentAnswer(request_id=request.id, models=await asyncio.to_thread(self.role_models, request.role), permission=self.permission)
         roles, models = await asyncio.to_thread(lambda: (self.roles(), self.models()))
         if not self.answer_approvals:
             route, session_models, reason = None, (), "A session asks you before it runs a command or changes a file; answering from the web is off on this computer (its owner turns it on there with `interact machine agents --approvals on`)."
