@@ -133,7 +133,8 @@ class WindowsPrivateFiles(PrivateFiles):
     """Windows: private = a protected DACL naming only this user, and secrets sealed by DPAPI."""
 
     #: Principals that already read every file on the computer: their entries never make a file public.
-    trusted: ClassVar[frozenset[str]] = frozenset({"S-1-5-18", "S-1-5-32-544"})
+    #: OWNER RIGHTS (S-1-3-4) grants only whoever owns the file, itself checked to be this user or one of these.
+    trusted: ClassVar[frozenset[str]] = frozenset({"S-1-5-18", "S-1-5-32-544", "S-1-3-4"})
     prefix: ClassVar[str] = "dpapi:"
     #: Mixed into every sealed value. Public (it is in this source): it keeps interact's blobs apart
     #: from other programs' DPAPI data, never from a program of this user that reads this file.

@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 import interact
+from interact.private_files import PRIVATE_FILES
 from interact.functions import FunctionRegistry, discover_python, discover_shell, invoke
 
 
@@ -73,7 +74,7 @@ def test_registry_round_trips_as_a_owner_only_file(tmp_path: Path) -> None:
     entry = discover_shell("pwd_like", "Prints the working directory.", ("pwd",))
     registry.add(entry)
     assert [item.name for item in registry.load()] == ["pwd_like"]
-    assert os.stat(registry.config_path).st_mode & 0o777 == 0o600
+    PRIVATE_FILES.check(registry.config_path)
     assert registry.remove("pwd_like") is True
     assert registry.load() == ()
     assert registry.remove("pwd_like") is False

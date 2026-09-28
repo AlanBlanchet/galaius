@@ -29,6 +29,8 @@ from interact.agents.providers import AgentProvider, ClaudeCodeProvider, CodexPr
 from unittest.mock import AsyncMock
 from interact.agents.run import ModelUnavailable, launch_continuation, run_agent
 from interact.config import UserConfig
+from interact.private_files import PRIVATE_FILES
+from tests.support.private_files import loosen
 from interact.cli.app import app
 from interact.cli import app_commands
 
@@ -65,6 +67,39 @@ def catalog_home(monkeypatch, tmp_path):
     monkeypatch.setattr(UserConfig, "PATH", tmp_path / "config.env")
     monkeypatch.delenv("INTERACT_PARENT_RUN_ID", raising=False)
     return tmp_path
+
+
+#: Other processes racing this one: `fork` where the system has it, else `spawn` (Windows), whose
+#: children import their target by name - hence the module-level targets below.
+PROCESSES = multiprocessing.get_context("fork" if "fork" in multiprocessing.get_all_start_methods() else "spawn")
+
+
+def deny_catalog(connection_json: str, value, status: int, config: str) -> None:
+    """Another process whose refresh the server refuses (`status`); `config` is `catalog_home`'s
+    settings file (a spawned child does not inherit the parent's patch)."""
+    UserConfig.PATH = Path(config)
+    fresh = CatalogConnection.model_validate_json(connection_json)
+    with pytest.raises(CatalogAuthenticationError):
+        AgentCatalog.refresh(fresh, transport=catalog_transport(value, status))
+
+
+def share_preview_login(connection_json: str, login_log: str, config: str) -> None:
+    """Another process signing in to the preview: it logs each real login it performs."""
+    UserConfig.PATH = Path(config)
+    fresh = CatalogConnection.model_validate_json(connection_json)
+
+    def respond(request):
+        if request.method == "POST":
+            with open(login_log, "a") as output:
+                output.write("login\n")
+            return httpx.Response(200, headers={"Set-Cookie": "session=fixture-cookie; Path=/; HttpOnly"}, json={})
+        assert request.headers["Cookie"] == "session=fixture-cookie"
+        return httpx.Response(200, json={})
+
+    with fresh.connect(transport=httpx.MockTransport(respond)) as client:
+        fresh.authenticate(client)
+        fresh.authenticate(client)
+        fresh.request(client, "GET", f"/v1/workspaces/{fresh.workspace_id}/agent-catalog")
 
 
 def catalog_transport(value, status=200):
@@ -701,28 +736,12 @@ def test_fifty_concurrent_processes_share_one_preview_login(catalog_home):
     connection = CatalogConnection(endpoint="http://127.0.0.1:8767", auth_mode="preview", workspace_id=uuid4())
     login_log = catalog_home / "login-count"
 
-    def launch():
-        fresh = CatalogConnection.model_validate_json(connection.model_dump_json())
-
-        def respond(request):
-            if request.method == "POST":
-                with login_log.open("a") as output:
-                    output.write("login\n")
-                return httpx.Response(200, headers={"Set-Cookie": "session=fixture-cookie; Path=/; HttpOnly"}, json={})
-            assert request.headers["Cookie"] == "session=fixture-cookie"
-            return httpx.Response(200, json={})
-
-        with fresh.connect(transport=httpx.MockTransport(respond)) as client:
-            fresh.authenticate(client)
-            fresh.authenticate(client)
-            fresh.request(client, "GET", f"/v1/workspaces/{fresh.workspace_id}/agent-catalog")
-
-    children = [multiprocessing.get_context("fork").Process(target=launch) for _ in range(50)]
+    children = [PROCESSES.Process(target=share_preview_login, args=(connection.model_dump_json(), str(login_log), str(UserConfig.PATH))) for _ in range(50)]
     try:
         for child in children:
             child.start()
         for child in children:
-            child.join(timeout=15)
+            child.join(timeout=120)
             assert child.exitcode == 0
     finally:
         for child in children:
@@ -730,8 +749,8 @@ def test_fifty_concurrent_processes_share_one_preview_login(catalog_home):
                 child.terminate()
                 child.join(timeout=5)
     assert login_log.read_text().splitlines() == ["login"]
-    assert connection.session_path().stat().st_mode & 0o777 == 0o600
-    assert connection.session_path().parent.stat().st_mode & 0o777 == 0o700
+    PRIVATE_FILES.check(connection.session_path())
+    PRIVATE_FILES.check(connection.session_path().parent)
 
 
 @pytest.mark.parametrize("status", [401, 403, 404])
@@ -786,9 +805,9 @@ def test_private_session_cache_rejects_unsafe_files_without_printing_cookies(cat
     AgentCatalog.refresh(connection, transport=catalog_transport(value))
     path = connection.session_path()
     if damage == "public-file":
-        path.chmod(0o644)
+        loosen(path)
     elif damage == "public-directory":
-        path.parent.chmod(0o755)
+        loosen(path.parent)
     elif damage == "symlink":
         saved = path.with_suffix(".saved")
         path.rename(saved)
@@ -812,27 +831,22 @@ def test_denial_prevents_older_refresh_restoring_stale_access(catalog_home, stat
     previous = AgentCatalog.cache_path().read_bytes()
     successful = catalog_transport(value)
 
-    def deny():
-        fresh = CatalogConnection.model_validate_json(connection.model_dump_json())
-        with pytest.raises(CatalogAuthenticationError):
-            AgentCatalog.refresh(fresh, transport=catalog_transport(value, status))
-
     def race(request):
         if request.method == "GET":
             # A's successful response began before B denied access, but arrives last.
             response = successful.handle_request(request)
             if separate_process:
-                child = multiprocessing.get_context("fork").Process(target=deny)
+                child = PROCESSES.Process(target=deny_catalog, args=(connection.model_dump_json(), value, status, str(UserConfig.PATH)))
                 child.start()
                 try:
-                    child.join(timeout=10)
+                    child.join(timeout=60)
                     assert child.exitcode == 0
                 finally:
                     if child.is_alive():
                         child.terminate()
                         child.join(timeout=5)
             else:
-                deny()
+                deny_catalog(connection.model_dump_json(), value, status, str(UserConfig.PATH))
             return response
         return successful.handle_request(request)
 

@@ -4,6 +4,7 @@ directory: 'cd'` (hit as the FIRST attempt by two independent sessions driving a
 A command using shell syntax must run via a shell instead of raw exec."""
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -115,7 +116,7 @@ def _dead_pid() -> int:
     """
     import subprocess
 
-    child = subprocess.Popen(["true"])
+    child = subprocess.Popen([sys.executable, "-c", ""])
     child.wait()  # reaped, so the pid is free and provably not running
     return child.pid
 

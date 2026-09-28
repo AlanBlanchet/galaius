@@ -20,6 +20,8 @@ import time
 from dataclasses import dataclass
 
 from interact.desktop.backend import SANDBOX_TITLE
+# Whether a pid is running, sending nothing (on Windows signal 0 would be Ctrl-C): one definition.
+from interact.server_registry import _alive as process_alive
 from pathlib import Path
 
 #: What one of OUR sandbox displays looks like. Re-states flags owned by
@@ -65,21 +67,6 @@ def _list_x_servers() -> list[XServer]:
         except ValueError:
             continue
     return servers
-
-
-def process_alive(pid: int) -> bool:
-    """Whether a pid is running. PermissionError means it EXISTS and isn't ours — alive.
-
-    One definition: the two copies of this used to disagree on exactly that case (one read it
-    as dead), and this one decides whether something gets killed.
-    """
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except OSError:
-        return True
-    return True
 
 
 def _terminate(pid: int) -> bool:

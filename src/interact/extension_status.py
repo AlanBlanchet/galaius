@@ -241,8 +241,10 @@ def _run(argv: list[str], cwd: Path | None = None) -> tuple[int, str]:
     delivery logic can be tested without packaging a real extension."""
     import subprocess
 
+    # By its resolved path: on Windows npm / npx are `.cmd` shims a bare name never starts.
+    program = shutil.which(argv[0]) or argv[0]
     try:
-        done = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=600)
+        done = subprocess.run([program, *argv[1:]], cwd=cwd, capture_output=True, text=True, timeout=600)
         return done.returncode, (done.stdout or "") + (done.stderr or "")
     except (OSError, subprocess.SubprocessError) as e:
         return 1, str(e)

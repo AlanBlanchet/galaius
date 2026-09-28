@@ -7,7 +7,6 @@ import asyncio
 import io
 import json
 import logging
-import os
 import re
 import subprocess
 import tempfile
@@ -22,6 +21,7 @@ from interact.desktop.cursor import Cursor
 from interact.desktop.video import _ffmpeg_grab_args, _VideoSession
 from interact.desktop.input import MULTI_CLICK_GAP_MS, to_xdotool_key
 from interact.parsing import Parse
+from interact.server_registry import _alive as process_alive
 from interact.state import Element, InteractiveElement
 
 _log = logging.getLogger("interact")
@@ -48,17 +48,6 @@ class CaptureError(RuntimeError):
 #: of #113 found unaided after burning two rounds waiting for a window that had already died.
 _SCREEN_FALLBACK = 'Try target="screen": it costs one call and shows what is actually on the '\
     "display, including a crash dialog a per-window grab cannot see."
-
-
-def _pid_alive(pid: int) -> bool:
-    """Is that process still there? Used only to tell a DEAD window from an unreadable one."""
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except OSError:
-        return True  # exists, not ours to signal
-    return True
 
 
 def _window_pid(wid: int) -> int | None:
@@ -112,7 +101,7 @@ def unreadable_window_error(name: str, wid: int) -> "CaptureError":
     is now stale; occasionally X refuses a window it still lists.
     """
     pid = _window_pid(wid)
-    gone = pid is not None and not _pid_alive(pid)
+    gone = pid is not None and not process_alive(pid)
     why = (f"its process (pid {pid}) is no longer running, so the window id is stale"
            if gone else
            "X would not hand over its pixels — it may have closed since it was listed")
@@ -131,7 +120,7 @@ def blank_capture_error(name: str, wid: int) -> "CaptureError":
     path, not about the process.
     """
     pid = _window_pid(wid)
-    if pid is not None and not _pid_alive(pid):
+    if pid is not None and not process_alive(pid):
         return dead_window_error(name, pid)
     return gpu_surface_error(name)
 

@@ -16,6 +16,7 @@ inside a vendor error; the `set` site is the one place the user is watching the 
 from __future__ import annotations
 
 import os
+import sys
 import textwrap
 from pathlib import Path
 
@@ -181,6 +182,7 @@ def test_set_value_breaking_shell_sourcing_warns(_check_env, capsys):
     assert "sources" in out.lower() or "shell" in out.lower() or "quote" in out.lower()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="config.env is sourced by POSIX shells; on Windows only interact reads it")
 def test_written_file_sources_cleanly(_check_env, capsys):
     """Whatever `config set` writes, `bash -c 'source file'` must exit 0."""
     import subprocess

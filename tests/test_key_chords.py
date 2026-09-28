@@ -155,7 +155,7 @@ def test_a_plain_key_costs_only_the_two_frames_hardware_would_send():
 
 
 def test_every_modifier_the_grammar_accepts_is_actually_declared():
-    from evdev import ecodes
+    ecodes = pytest.importorskip("evdev.ecodes", reason="uinput is Linux-only")
 
     from interact.desktop.input import _keyboard_codes, _UINPUT_MODIFIERS
 
@@ -168,7 +168,7 @@ def test_every_modifier_the_grammar_accepts_is_actually_declared():
 
 
 def test_function_keys_are_declared():
-    from evdev import ecodes
+    ecodes = pytest.importorskip("evdev.ecodes", reason="uinput is Linux-only")
 
     from interact.desktop.input import _keyboard_codes
 

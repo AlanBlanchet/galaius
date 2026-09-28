@@ -174,7 +174,7 @@ def _blank_capture(monkeypatch, *, pid: str | None, alive: bool):
         return black
 
     monkeypatch.setattr("interact.desktop.subprocess.check_output", fake)
-    monkeypatch.setattr("interact.desktop.window._pid_alive", lambda _pid: alive)
+    monkeypatch.setattr("interact.desktop.window.process_alive", lambda _pid: alive)
 
 
 def test_a_blank_capture_of_a_DEAD_window_says_the_window_is_gone(monkeypatch):
@@ -245,7 +245,7 @@ def test_a_window_whose_grab_FAILS_outright_is_reported_not_raised_raw(monkeypat
         raise subprocess.CalledProcessError(1, cmd)  # maim cannot read a dead window
 
     monkeypatch.setattr("interact.desktop.subprocess.check_output", fake)
-    monkeypatch.setattr("interact.desktop.window._pid_alive", lambda _pid: False)
+    monkeypatch.setattr("interact.desktop.window.process_alive", lambda _pid: False)
     win = DesktopWindow(name="doomed", wid=123, x=0, y=0, w=300, h=200)
     with pytest.raises(CaptureError) as exc:
         win.capture()

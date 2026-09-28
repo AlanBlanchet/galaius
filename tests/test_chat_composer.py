@@ -5,6 +5,7 @@ transcript patch arriving mid-keystroke.
 """
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -56,7 +57,7 @@ def panel_pages(tmp_path_factory):
     out = tmp_path_factory.mktemp("panels")
     bundle = out / "panels.js"
     build = subprocess.run(
-        ["npx", "esbuild", "webview/dev/panels.ts", "--bundle", f"--outfile={bundle}",
+        [shutil.which("npx") or "npx", "esbuild", "webview/dev/panels.ts", "--bundle", f"--outfile={bundle}",
          "--format=cjs", "--platform=node", "--target=es2022"],
         cwd=ext, capture_output=True, text=True,
     )
