@@ -16,6 +16,7 @@ import time
 
 from interact_core import MACHINE_AGENT_REQUESTS, MachineAgentModel, MachineAgentRequest
 from interact.agents import registry as reg
+from interact.agents.host import ConversationRefused
 from interact.machine_agents import LogRing, MachineAgents, MachineSessions, WebRun, WebRuns, interaction_digest, redact
 from interact.machines import MachineConfig, MachineRunner
 
@@ -262,9 +263,31 @@ def test_sessions_and_unknown_models_are_refused_without_their_setting(base: Pat
     agents = _agents(base, tmp_path)
     with pytest.raises(PermissionError, match="approvals from the web is off"):
         _answer(agents, _request("start", root="project", kind="session", text="hi"))
-    monkeypatch.setattr(MachineAgents, "models", lambda self: (MachineAgentModel(provider="claude", model="claude-sonnet-5"),))
-    with pytest.raises(PermissionError, match="not a model agents can run on here"):
-        _answer(agents, _request("start", root="project", role="app-engineer", provider="codex", model="claude-sonnet-5", text="go"))
+    with pytest.raises(PermissionError, match="runs on the model its rule picks"):
+        _answer(agents, _request("start", root="project", role="app-engineer", provider="claude", model="claude-sonnet-5", text="go"))
+
+
+def test_a_message_to_a_session_on_its_turn_waits_for_the_turn_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    delivered, busy = [], [True, True, False]
+
+    class Host:
+        async def send(self, run_id, text):
+            if busy and busy.pop(0):
+                raise ConversationRefused("conflict", "Conversation already has an active turn.")
+            delivered.append(text)
+
+    sessions = MachineSessions(tmp_path)
+    async def host(self):
+        return Host()
+    monkeypatch.setattr(MachineSessions, "host", host)
+
+    async def scenario():
+        first = await sessions.send("r", "one")
+        second = await sessions.send("r", "two")
+        task = sessions._deliveries["r"]
+        await asyncio.wait_for(task, 20)
+        return first, second
+    assert asyncio.run(scenario()) == ("queued", "queued") and delivered == ["one", "two"]
 
 
 def test_a_continued_copy_stops_taking_turns_once_the_opt_in_is_off(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

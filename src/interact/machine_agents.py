@@ -149,6 +149,44 @@ class MachineSessions:
         self.working_directory = working_directory
         self._host: ConversationHost | None = None
         self._lock = asyncio.Lock()
+        #: Messages to a session that was mid-turn, delivered in order once each turn ends.
+        self._queued: dict[str, list[str]] = {}
+        self._deliveries: dict[str, asyncio.Task] = {}
+
+    async def send(self, run_id: str, text: str) -> str:
+        """"sent", or "queued" when the session is still working on a turn: it gets the message
+        as soon as that turn ends (as in the editor, where you can type while it works)."""
+        if self._queued.get(run_id):
+            self._queued[run_id].append(text)
+            return "queued"
+        try:
+            await (await self.host()).send(run_id, text)
+            return "sent"
+        except ConversationRefused as error:
+            if error.code != "conflict":
+                raise
+        self._queued.setdefault(run_id, []).append(text)
+        if run_id not in self._deliveries:
+            self._deliveries[run_id] = asyncio.get_running_loop().create_task(self._deliver(run_id))
+        return "queued"
+
+    async def _deliver(self, run_id: str, every: float = 2.0) -> None:
+        try:
+            while self._queued.get(run_id):
+                await asyncio.sleep(every)
+                try:
+                    await (await self.host()).send(run_id, self._queued[run_id][0])
+                except ConversationRefused as error:
+                    if error.code == "conflict":
+                        continue  # still on its turn
+                    logger.warning("queued message to session %s not delivered: %s", run_id, error)
+                    self._queued.pop(run_id, None)
+                    return
+                self._queued[run_id].pop(0)
+        finally:
+            self._deliveries.pop(run_id, None)
+            if not self._queued.get(run_id):
+                self._queued.pop(run_id, None)
 
     async def host(self) -> ConversationHost:
         async with self._lock:
@@ -436,8 +474,10 @@ class MachineAgents(BaseModel):
         folder = self.folder(request.root, request.path)
         # The launcher's supervisor window (not the terminal's 20 s): the run shows at once; a
         # quota refusal after it is that run's failure, in the list.
-        if request.model is not None and not any(item.model == request.model and request.provider in {None, item.provider} for item in self.models()):
-            raise PermissionError(f"{request.model} is not a model agents can run on here")
+        if request.model is not None:
+            # The launcher runs a role on what its own rule picks (a per-run model is never
+            # honoured): refused, never silently replaced.
+            raise PermissionError("an agent runs on the model its rule picks; change the rule on its Agents page, or start a session to choose the model")
         options = ["--agent", str(request.role), "--cwd", str(folder), "--permission-mode", self.permission, "--session-id", self.session, "--quota-window", "4",
                    *(["--provider", request.provider] if request.provider is not None else []), *([f"--model={request.model}"] if request.model else [])]
         # "--" ends the options: a brief starting with "-" (a markdown bullet, "--help") is the brief.
@@ -536,8 +576,7 @@ class MachineAgents(BaseModel):
         try:
             match request:
                 case AgentSendRequest():
-                    await host.send(run.run_id, request.text)
-                    detail = "sent"
+                    detail = await self.sessions.send(run.run_id, request.text)
                 case AgentStopRequest():
                     await host.cancel(run.run_id)
                     detail = "stopped"
