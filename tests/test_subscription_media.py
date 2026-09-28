@@ -564,29 +564,25 @@ async def test_malformed_api_response_is_still_logged_as_a_failed_attempt(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("backend", "billing", "expected"),
-    [
-        ("auto", "session_only", "blocked"),
-        ("session", "api_allowed", "blocked"),
-        ("auto", "api_allowed", "api"),
-    ],
+    ("backend", "billing"),
+    [("auto", "session_only"), ("session", "api_allowed"), ("auto", "api_allowed")],
 )
-async def test_session_credit_attestation_fails_closed_before_dispatch(
-    monkeypatch, backend: str, billing: str, expected: str
+async def test_unconfirmed_extra_usage_still_dispatches_the_session(
+    monkeypatch, backend: str, billing: str
 ) -> None:
     calls: list[str] = []
 
-    async def forbidden_session(
+    async def session(
         media, context, config, prompt, response_format, explicit_model, _dispatch_state,
     ):
-        raise AssertionError("unattested session reached a subscription CLI")
+        calls.append("session")
+        return VLMResult(text="session", elapsed=0, backend="session")
 
-    async def api(media, context, config, prompt, max_tokens, response_format, model, _dispatch_state):
-        calls.append("api")
-        return VLMResult(text="api", elapsed=0, backend="api", billing="metered_api")
+    async def forbidden_api(*args, **kwargs):
+        raise AssertionError("unconfirmed extra usage must not reroute to the API")
 
-    monkeypatch.setattr(vision, "subscription_media_completion", forbidden_session)
-    monkeypatch.setattr(vision, "_api_media_completion", api)
+    monkeypatch.setattr(vision, "subscription_media_completion", session)
+    monkeypatch.setattr(vision, "_api_media_completion", forbidden_api)
     monkeypatch.setattr(Model, "is_available", lambda self: True)
     cfg = Config(
         media_backend=backend,
@@ -594,16 +590,38 @@ async def test_session_credit_attestation_fails_closed_before_dispatch(
         media_session_no_extra_usage_confirmed_for=(),
     )
 
-    if expected == "api":
-        result = await analyze_media([], "context", cfg, role="image")
-        assert result.backend == "api" and calls == ["api"]
-    else:
-        with pytest.raises(RuntimeError) as caught:
-            await analyze_media([], "context", cfg, role="image")
-        message = str(caught.value)
-        assert "media.noExtraUsageConfirmedFor" in message
-        assert "claude" in message
-        assert calls == []
+    result = await analyze_media([], "context", cfg, role="image")
+    assert result.backend == "session" and calls == ["session"]
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_provider_runs_and_warns_once_per_process(
+    tmp_path: Path, monkeypatch, caplog
+) -> None:
+    monkeypatch.setattr(ClaudeCodeProvider, "binary", str(_fake_cli(tmp_path / "fake claude", "claude")))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude auth home"))
+    monkeypatch.setattr(vision_session, "_EXTRA_USAGE_WARNED", set())
+    cfg = Config(
+        media_backend="session",
+        media_billing="session_only",
+        media_provider_order=("claude",),
+        media_session_no_extra_usage_confirmed_for=(),
+        media_timeout=5,
+        debug_dir=tmp_path / "debug",
+    )
+    image = [MediaItem.from_bytes(solid_png(12, 8, (0, 0, 128)), "image", "image/png")]
+
+    with caplog.at_level("WARNING", logger=vision_session.__name__):
+        first = await analyze_media(image, "context", cfg, "describe", role="image")
+        second = await analyze_media(image, "context", cfg, "describe", role="image")
+
+    assert first.backend == second.backend == "session"
+    assert first.provider == "claude"
+    [warning] = first.warnings
+    assert warning.startswith("claude session: extra usage not confirmed off — ")
+    assert second.warnings == []
+    assert [r.getMessage() for r in caplog.records if "extra usage" in r.getMessage()] == [warning]
+    assert f"\nwarning: {warning}" in server_vlm._fmt_timing(first)
 
 
 def test_provider_order_expansion_cannot_add_an_unsupported_provider() -> None:

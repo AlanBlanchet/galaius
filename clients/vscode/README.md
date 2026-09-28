@@ -30,8 +30,8 @@ sudo apt install maim
 ## Visual sessions, billing, and models
 
 Image, UI-grounding, review, verification, and sampled-video jobs select an installed Claude Code
-CLI session by default. Selection is fail-closed: no session turn runs until you confirm
-the account-side extra-usage controls for that specific provider.
+CLI session by default. Until you confirm the account-side extra-usage controls for a provider,
+its sessions still run and interact warns once per process.
 
 Before confirming Claude, open **Claude Settings → Usage**, keep Usage credits disabled, set the
 prepaid balance to zero, and turn auto-reload off
@@ -50,7 +50,7 @@ interact config set media.backend auto               # auto | session | api
 interact config set media.billing session_only       # session_only | api_allowed
 interact config set media.providerOrder claude
 
-# Only after checking each provider's controls above:
+# Only after checking each provider's controls above (silences the warning):
 interact config set media.noExtraUsageConfirmedFor claude
 
 # Optional provider-scoped session pins; blank uses the CLI default.
@@ -58,7 +58,7 @@ interact config set media.claudeModel sonnet
 interact config set media.timeout 120
 ```
 
-Without provider confirmation, explicit `session` fails and `auto+api_allowed` skips to the API.
+Without provider confirmation, sessions still run with one warning per process.
 To opt into metered visual API use, set `media.billing=api_allowed` with `media.backend=auto`
 (fallback) or `media.backend=api` (API only), then set the role models (`image.model`,
 `component.model`, `video.model`). Standard provider API-key variables are used only on that

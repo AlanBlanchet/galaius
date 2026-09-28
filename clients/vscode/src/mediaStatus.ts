@@ -8,12 +8,12 @@ export function presentMediaStatus(
   if (billing === "api_allowed" && !apiEnabled) {
     return confirmed
       ? "Session account impact unknown; visual API fallback disabled"
-      : "Session blocked until account credit state is confirmed; visual API fallback disabled";
+      : "Session active; extra usage not confirmed off; visual API fallback disabled";
   }
   if (!confirmed) {
     return billing === "api_allowed"
-      ? "Session blocked; metered API fallback permitted"
-      : "Session blocked until account credit state is confirmed";
+      ? "Session active; extra usage not confirmed off; metered API fallback permitted"
+      : "Session active; extra usage not confirmed off";
   }
   return billing === "api_allowed"
     ? "Session account impact unknown; metered API fallback permitted"

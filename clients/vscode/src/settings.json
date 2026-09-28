@@ -45,7 +45,7 @@
       "key": "media.billing",
       "field": "media_billing",
       "label": "Media billing policy",
-      "description": "Session only prevents interact's metered API fallback; vendor CLI account credits are separate and require the explicit attestation below.",
+      "description": "Session only prevents interact's metered API fallback; vendor CLI account credits are separate \u2014 see the confirmation below.",
       "group": "Models",
       "kind": "enum",
       "role": null,
@@ -68,13 +68,13 @@
       "key": "media.noExtraUsageConfirmedFor",
       "field": "media_session_no_extra_usage_confirmed_for",
       "label": "No-extra-usage confirmed providers",
-      "description": "Claude confirmation: Usage credits disabled, zero prepaid balance, and auto-reload off. interact cannot verify this account state.",
+      "description": "Claude confirmation: Usage credits disabled, zero prepaid balance, and auto-reload off. Unconfirmed providers still run, with one warning per process. interact cannot verify this account state.",
       "group": "Models",
       "kind": "enum",
       "role": null,
       "options": [
         {
-          "label": "None (sessions blocked)",
+          "label": "None (sessions warn)",
           "value": ""
         },
         {

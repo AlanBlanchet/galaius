@@ -182,11 +182,11 @@ One tool per job. The generic ones take a `target` — unset for the browser, a 
 
 Visual jobs select your installed, authenticated **Claude Code session transport by
 default**—including screenshot descriptions, element grounding, `review_ui` / `verify_ui`, and
-sampled video/interaction analysis. Session dispatch is blocked until the explicit operator
-attestation below. No API key is needed, and `session_only` prevents interact from falling through
+sampled video/interaction analysis. Until you confirm the account settings below, each session
+provider still runs and interact logs one warning per process. No API key is needed, and `session_only` prevents interact from falling through
 to a metered API, but vendor CLIs can consume account-side credits after included plan usage.
 
-Before enabling sessions, open Claude **Settings → Usage**, keep Usage credits disabled, ensure the
+To silence that warning, open Claude **Settings → Usage**, keep Usage credits disabled, ensure the
 prepaid balance is zero, and turn auto-reload off ([Anthropic's usage-credit controls](https://support.claude.com/en/articles/12429409-manage-usage-credits-for-paid-claude-plans)). Anthropic's announced Agent SDK /
 `claude -p` monthly-credit change was paused on June 16; `claude -p` continues to draw plan
 usage limits ([Anthropic's paused-change notice](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan)), but the account-side Usage-credit controls still require this guard. CLI authentication cannot verify these account settings, and a later change is a residual race interact cannot detect.
@@ -201,7 +201,7 @@ interact config set media.backend auto               # auto | session | api
 interact config set media.billing session_only       # session_only | api_allowed
 interact config set media.providerOrder claude
 
-# Only after disabling each named provider's account-side credits as described above:
+# Only after disabling each named provider's account-side credits (silences the warning):
 interact config set media.noExtraUsageConfirmedFor claude
 
 # Optional session model pins and process timeout.
@@ -209,9 +209,8 @@ interact config set media.claudeModel <claude-model>
 interact config set media.timeout 120
 ```
 
-Without that attestation, `session` is blocked; `auto+api_allowed` skips sessions and uses the
-explicitly permitted API instead. To opt into metered visual fallback, set
-`media.billing=api_allowed` and keep `media.backend=auto`; set `media.backend=api` to use only
+Without that attestation, sessions still run and warn once per process. To opt into metered
+visual fallback, set `media.billing=api_allowed` and keep `media.backend=auto`; set `media.backend=api` to use only
 the API. An explicit model override must belong to the selected provider—it is never silently
 ignored.
 

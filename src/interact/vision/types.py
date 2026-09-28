@@ -50,6 +50,7 @@ class VLMResult(BaseModel):
     dispatch_eligible: bool | None = None
     dispatch_attempted: bool = False
     dispatch_status: Literal["not_requested", "completed", "unavailable", "failed"] = "not_requested"
+    warnings: list[str] = Field(default_factory=list)
 
     def validated(self, response_format: type[BaseModel] | dict[str, Any] | None) -> Self:
         """Compile and enforce one structured-output contract for every transport."""

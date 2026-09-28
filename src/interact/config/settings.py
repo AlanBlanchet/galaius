@@ -111,8 +111,8 @@ class Config(BaseSettings):
     component_criteria: str = ""
     audio_criteria: str = ""
     # Backend selects transport; billing decides if interact may call a metered API. Vendor
-    # CLIs can consume account credits past plan allowance, so session execution also needs
-    # explicit operator attestation those credits are off.
+    # CLIs can consume account credits past plan allowance; a provider missing from the
+    # confirmation list still runs, with one warning per process.
     media_backend: Literal["auto", "session", "api"] = "auto"
     media_billing: Literal["session_only", "api_allowed"] = "session_only"
     media_session_no_extra_usage_confirmed_for: Annotated[tuple[str, ...], NoDecode] = ()
@@ -296,38 +296,16 @@ class Config(BaseSettings):
     def media_api_enabled(self) -> bool:
         return self.media_backend != "session" and self.media_billing == "api_allowed"
 
-    def require_media_session_confirmation(self, providers: tuple[str, ...]) -> None:
-        """Fail closed for candidate providers lacking a provider-scoped operator confirmation."""
-        confirmed = set(self.media_session_no_extra_usage_confirmed_for)
-        missing = tuple(provider for provider in providers if provider not in confirmed)
-        if not missing:
-            return
-        instructions = "; ".join(
-            f"{provider}: {MEDIA_PROVIDERS[provider].no_extra_usage_guidance}"
-            for provider in missing
+    def extra_usage_warning(self, provider: str) -> str | None:
+        """Why running ``provider``'s session may bill past the plan, or None once the operator
+        confirmed its account-side extra usage off. Advisory only: interact cannot read that
+        account state, so it warns instead of refusing."""
+        if provider in self.media_session_no_extra_usage_confirmed_for:
+            return None
+        return (
+            f"extra usage not confirmed off — {MEDIA_PROVIDERS[provider].no_extra_usage_guidance}; "
+            f"add {provider} to media.noExtraUsageConfirmedFor to silence this warning"
         )
-        raise RuntimeError(
-            f"session media is blocked for unconfirmed provider(s) {', '.join(missing)}. "
-            f"{instructions}; then either call confirm_media_session_for(<provider>) to confirm "
-            "for this session only, or list only those confirmed providers permanently in "
-            "media.noExtraUsageConfirmedFor. interact cannot inspect these account settings or "
-            "eliminate the race if they change later"
-        )
-
-    def confirm_media_session_for(self, provider: str) -> None:
-        """In-product path forward for :meth:`require_media_session_confirmation`'s hard stop:
-        confirm a media provider's session use for the CURRENT process only, so a caller that
-        already has the operator's confirmation is never dead-ended by an error naming a config
-        file it may have no way to edit from inside the product. Not persisted — a fresh process
-        (and the on-disk ``media.noExtraUsageConfirmedFor``) is unaffected; a genuinely durable
-        confirmation still belongs in that setting."""
-        if provider not in MEDIA_PROVIDERS:
-            raise ValueError(f"unknown media provider: {provider}")
-        if provider not in self.media_session_no_extra_usage_confirmed_for:
-            self.media_session_no_extra_usage_confirmed_for = (
-                *self.media_session_no_extra_usage_confirmed_for,
-                provider,
-            )
 
     def criteria_for(self, role: ModelRole) -> str:
         """This role's own requirement, falling back to the bare capability that made it usable

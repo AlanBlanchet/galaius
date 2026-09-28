@@ -58,7 +58,6 @@ def _print_media_transport(config: Config | _LiveConfig, indent: str = "  ") -> 
         f"{indent}media        : backend={config.media_backend} "
         f"billing={config.media_billing}  order={' → '.join(order) or 'none'}"
     )
-    confirmed = set(config.media_session_no_extra_usage_confirmed_for)
     for name in order:
         provider = MEDIA_PROVIDERS[name]
         availability = (
@@ -66,13 +65,10 @@ def _print_media_transport(config: Config | _LiveConfig, indent: str = "  ") -> 
             if provider.available()
             else f"not installed — install and log in with the {provider.binary} CLI"
         )
+        warning = config.extra_usage_warning(name)
         confirmation = (
-            "no-extra-usage confirmed (account state remains unverifiable)"
-            if name in confirmed
-            else (
-                f"SESSION BLOCKED for this provider — {provider.no_extra_usage_guidance}; "
-                f"then add {name} to media.noExtraUsageConfirmedFor"
-            )
+            f"warning: {warning}" if warning
+            else "no-extra-usage confirmed (account state remains unverifiable)"
         )
         print(f"{indent}  · {name:<10} {availability}; {confirmation}")
     if config.media_billing == "session_only":

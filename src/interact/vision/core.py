@@ -568,8 +568,7 @@ async def analyze_media(
         session_providers = [
             MEDIA_PROVIDERS[name]
             for name in config.media_provider_order
-            if name in config.media_session_no_extra_usage_confirmed_for
-            and MEDIA_PROVIDERS[name].available()
+            if MEDIA_PROVIDERS[name].available()
             and MEDIA_PROVIDERS[name].supports_session_media(role)
         ] if config.media_sessions_enabled() else []
         selected = criterion.choose(
@@ -624,14 +623,7 @@ async def analyze_media(
             _dispatch_state=_dispatch_state,
         )
 
-    sessions_enabled = config.media_sessions_enabled()
-    confirmed = set(config.media_session_no_extra_usage_confirmed_for)
-    if sessions_enabled and not confirmed.intersection(config.media_provider_order):
-        if config.media_backend == "auto" and config.media_api_enabled():
-            sessions_enabled = False
-        else:
-            config.require_media_session_confirmation(config.media_provider_order)
-    if sessions_enabled:
+    if config.media_sessions_enabled():
         try:
             result = await subscription_media_completion(
                 media, context, config, prompt, response_format, session_model, _dispatch_state

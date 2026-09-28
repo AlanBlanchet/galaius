@@ -46,6 +46,8 @@ from interact.vision.workspace import (
 )
 
 _log = logging.getLogger(__name__)
+#: Providers already warned about unconfirmed extra usage in this process — one warning each.
+_EXTRA_USAGE_WARNED: set[str] = set()
 _FAILURE_RETENTION_SECONDS = 30 * 24 * 60 * 60
 _MAX_FAILURE_DIAGNOSTICS = 100
 
@@ -350,6 +352,18 @@ def _requested_model(
     return provider.model_id_for(requested)
 
 
+def _warn_extra_usage_once(config: Config, provider_name: str) -> list[str]:
+    """Log and return the provider's unconfirmed-extra-usage warning the first time this process
+    runs it; later runs and confirmed providers return nothing."""
+    warning = config.extra_usage_warning(provider_name)
+    if warning is None or provider_name in _EXTRA_USAGE_WARNED:
+        return []
+    _EXTRA_USAGE_WARNED.add(provider_name)
+    message = f"{provider_name} session: {warning}"
+    _log.warning(message)
+    return [message]
+
+
 async def subscription_media_completion(
     media: list[MediaItem],
     context: str,
@@ -362,6 +376,7 @@ async def subscription_media_completion(
     """Try configured subscription providers in order and return the first valid final result."""
     schema = _compile_response_schema(response_format)
     failures: list[_SessionFailureFact] = []
+    warnings: list[str] = []
     request_id = uuid.uuid4().hex
     deadline = time.monotonic() + config.media_timeout
     with _MediaWorkspace.create(config) as workspace:
@@ -391,16 +406,6 @@ async def subscription_media_completion(
                 failures.append(
                     _SessionFailureFact(provider_name, "unavailable", "CLI missing")
                 )
-                continue
-            if provider_name not in config.media_session_no_extra_usage_confirmed_for:
-                failures.append(_SessionFailureFact(
-                    provider_name,
-                    "unconfirmed_extra_usage",
-                    (
-                        f"{provider.no_extra_usage_guidance}; then add {provider_name} to "
-                        "media.noExtraUsageConfirmedFor"
-                    ),
-                ))
                 continue
             env = provider.subscription_env(temp_dir=stage)
             if not await provider.subscription_authenticated(
@@ -459,6 +464,7 @@ async def subscription_media_completion(
                     f"provider capability preflight failed ({type(exc).__name__})",
                 ))
                 continue
+            warnings += _warn_extra_usage_once(config, provider_name)
             started = time.monotonic()
             events = []
             input_tokens = 0
@@ -560,6 +566,7 @@ async def subscription_media_completion(
                 request_id=request_id,
                 video_sampled=any(item.media_type == "video" for item in media) or None,
                 video_sample_timestamps=sample_timestamps,
+                warnings=warnings,
             )
             log_session_attempt(result, config, "succeeded")
             if failures:
@@ -576,4 +583,5 @@ async def subscription_media_completion(
         "To opt into metered API use, set media.billing=api_allowed and "
         "media.backend=auto (fallback) or media.backend=api."
     )
-    raise RuntimeError(f"subscription media analysis unavailable — {detail}. {guidance}")
+    notes = "".join(f" warning: {warning}." for warning in warnings)
+    raise RuntimeError(f"subscription media analysis unavailable — {detail}. {guidance}{notes}")

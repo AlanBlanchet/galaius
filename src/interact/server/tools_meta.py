@@ -150,9 +150,9 @@ async def list_providers() -> str:
                 "transcription."
             ),
             "session_credit_limit": (
-                "Each installed provider is skipped until its name is listed in "
-                "media.noExtraUsageConfirmedFor after its account-side extra-usage controls are "
-                "disabled. interact cannot inspect those account settings atomically."
+                "Each installed provider runs; one not listed in media.noExtraUsageConfirmedFor "
+                "logs one warning per process that its account-side extra usage may bill past "
+                "the plan. interact cannot inspect those account settings."
             ),
         },
     }

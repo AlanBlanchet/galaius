@@ -89,10 +89,10 @@
             "claude"
           ],
           "enumDescriptions": [
-            "No provider confirmed; session dispatch stays blocked.",
+            "No provider confirmed; sessions run and warn once per process.",
             "Claude only"
           ],
-          "markdownDescription": "Provider-scoped confirmation that extra usage is unavailable. For Claude, check [Settings → Usage](https://claude.ai/settings/usage): Usage credits disabled, zero prepaid balance, auto-reload off. Interact cannot verify these account settings."
+          "markdownDescription": "Provider-scoped confirmation that extra usage is unavailable. For Claude, check [Settings → Usage](https://claude.ai/settings/usage): Usage credits disabled, zero prepaid balance, auto-reload off. Unconfirmed providers still run, with one warning per process. Interact cannot verify these account settings."
         },
         "interact.media.providerOrder": {
           "type": "string",

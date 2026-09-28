@@ -128,7 +128,8 @@ def _fmt_timing(r: VLMResult) -> str:
         if r.backend == "session" and r.provider else ""
     )
     model_tag = f" {identity}" if identity else ""
-    return f"{r.text}\n(VLM:{model_tag} {r.elapsed:.1f}s)"
+    notes = "".join(f"\nwarning: {warning}" for warning in r.warnings)
+    return f"{r.text}\n(VLM:{model_tag} {r.elapsed:.1f}s){notes}"
 
 
 async def _run_observe(screenshot_bytes: bytes, query: str, context: str) -> str:

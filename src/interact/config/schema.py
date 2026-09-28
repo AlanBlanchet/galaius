@@ -119,7 +119,7 @@ SETTINGS: list[Setting] = [
         key="media.billing", field="media_billing", group="Models", kind="enum",
         label="Media billing policy",
         description="Session only prevents interact's metered API fallback; vendor CLI account "
-        "credits are separate and require the explicit attestation below.",
+        "credits are separate — see the confirmation below.",
         options=[
             Option(label="Session only", value="session_only"),
             Option(label="API allowed", value="api_allowed"),
@@ -129,9 +129,10 @@ SETTINGS: list[Setting] = [
         key="media.noExtraUsageConfirmedFor", field="media_session_no_extra_usage_confirmed_for",
         group="Models", kind="enum", label="No-extra-usage confirmed providers",
         description="Claude confirmation: Usage credits disabled, zero prepaid balance, "
-        "and auto-reload off. interact cannot verify this account state.",
+        "and auto-reload off. Unconfirmed providers still run, with one warning per process. "
+        "interact cannot verify this account state.",
         options=[
-            Option(label="None (sessions blocked)", value=""),
+            Option(label="None (sessions warn)", value=""),
             Option(label="Claude", value="claude"),
         ],
     ),
