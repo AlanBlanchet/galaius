@@ -131,13 +131,9 @@ async def _write_stdin(
 
 
 def _signal_group(process: asyncio.subprocess.Process, sig: signal.Signals) -> None:
+    """POSIX only (Windows ends the tree with `taskkill` in `stop_process_tree`)."""
     try:
-        if os.name == "posix":
-            os.killpg(process.pid, sig)
-        elif sig == signal.SIGTERM:
-            process.terminate()
-        else:
-            process.kill()
+        os.killpg(process.pid, sig)
     except (ProcessLookupError, PermissionError):
         pass
 
