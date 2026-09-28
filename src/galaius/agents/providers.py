@@ -564,6 +564,9 @@ def provider_caveat_note(provider: "AgentProvider") -> str:
 #: `other`, so a vendor adding an event cannot vanish silently.
 _HARNESS_BOOKKEEPING = frozenset({"thinking_tokens", "hook_started", "hook_response"})
 
+#: How Claude Code opens the `isSynthetic` user turn carrying a Stop hook's block.
+_STOP_HOOK_FEEDBACK = "Stop hook feedback:"
+
 class ClaudeCodeProvider(AgentProvider):
     """Claude Code, driven through its documented headless mode.
 
@@ -1093,10 +1096,14 @@ class ClaudeCodeProvider(AgentProvider):
                                       status="failed" if block.get("is_error") else "completed",
                                       session_id=sid, raw_type=kind)
                 # Text on a `user` line is what was ASKED of the agent — the other half of the
-                # conversation. Unnamed, an activity view shows only the agent talking.
+                # conversation. Unnamed, an activity view shows only the agent talking. Claude
+                # marks the turns IT wrote there (a Stop-hook block, an image note, a compaction
+                # summary) `isSynthetic`: those are the harness, never the operator.
                 if block.get("type") == "text":
-                    return AgentEvent(kind="prompt", text=_clip(str(block.get("text") or "")),
-                                      session_id=sid, raw_type=kind)
+                    text = str(block.get("text") or "")
+                    said = "prompt" if not raw.get("isSynthetic") else (
+                        "check" if text.startswith(_STOP_HOOK_FEEDBACK) else "injected")
+                    return AgentEvent(kind=said, text=_clip(text), session_id=sid, raw_type=kind)
             return AgentEvent(kind="other", session_id=sid, raw_type=kind)
 
         if kind == "rate_limit_event":

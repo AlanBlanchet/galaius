@@ -1138,3 +1138,22 @@ def test_npm_shim_starts_its_script_without_cmd(tmp_path: Path, shim: str, node:
     assert (parsed and parsed.argv) == (expected and tuple(
         shutil.which("node", path=str(tools)) if part == "PATH" else str(folder / part) for part in expected
     ))
+
+
+@pytest.mark.parametrize(("text", "kind"), [
+    ("Stop hook feedback:\n[Review the turn before it ends. Three checks]: Check 1(c) fires", "check"),
+    ("[Image: original 3200x1010, displayed at 2000x631.]", "injected"),
+    ("This session is being continued from a previous conversation that ran out of context.", "injected"),
+])
+def test_a_harness_injected_user_turn_is_never_an_operator_prompt(text, kind):
+    """Claude Code writes its own turns into a headless stream as `user` lines marked
+    `isSynthetic` (shape read off real run 6af52772): a Stop-hook block, an image note, a
+    compaction summary. Read as `prompt`, the web transcript labelled them "You →"."""
+    from galaius.agents.providers import ClaudeCodeProvider
+
+    event = ClaudeCodeProvider().parse(json.dumps({
+        "type": "user", "session_id": "s", "isSynthetic": True,
+        "message": {"role": "user", "content": [{"type": "text", "text": text}]},
+    }))
+    assert event is not None and event.kind == kind
+    assert event.text == text

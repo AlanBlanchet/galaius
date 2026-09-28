@@ -471,7 +471,9 @@ export function renderTurn(turn: Turn): string {
   // BOTH kinds: what a person or the harness types arrives as "prompt" in the real stream, and
   // "message" only for agent-to-agent mail. Gating on "message" alone meant the fold structurally
   // never fired, and a real stop-hook review rendered verbatim as YOU.
-  if ((turn.kind === "message" || turn.kind === "prompt") && /^(Stop hook feedback:|\[Request interrupted|<system-reminder>)/.test((turn.text ?? "").trim())) {
+  // `check` / `injected`: the parser now names Claude's own turns at the source; the text test
+  // stays for other providers and for runs recorded before it did.
+  if (turn.kind === "check" || turn.kind === "injected" || ((turn.kind === "message" || turn.kind === "prompt") && /^(Stop hook feedback:|\[Request interrupted|<system-reminder>)/.test((turn.text ?? "").trim()))) {
     const words = (turn.text ?? "").trim().split(/\s+/).length;
     return `<details class="turn turn-thinking"><summary>⚙ harness <span class="think-count">${words} words</span>` +
       `</summary><pre class="io-body">${foldLongOutput(turn.text ?? "")}</pre></details>`;

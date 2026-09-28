@@ -26,6 +26,8 @@ EventKind = Literal[
     "done",        # terminal: carries the run's cost and token totals
     "error",       # terminal: it failed
     "prompt",      # what was asked OF the agent — the other half of the conversation
+    "check",       # the harness's own end-of-turn review (a Stop hook block), never the operator
+    "injected",    # other text the harness put in the agent's input (image note, compaction summary)
     "spawn",       # this agent started a subagent — the team growing a branch
     "interaction", # a provider needs typed human input
     "interaction_resolved", # typed human input was returned to the provider
@@ -316,6 +318,10 @@ class AgentEvent(BaseModel):
             return "cancelled"
         if self.kind == "done":
             return "done"
+        if self.kind == "check":
+            return "end-of-turn check"
+        if self.kind == "injected":
+            return ""  # harness bookkeeping says nothing about what the agent is doing
         if self.kind == "error":
             return self.text or "failed"
         return " ".join(self.text.split())[:120]
