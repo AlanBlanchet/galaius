@@ -31,6 +31,7 @@ from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from interact.upgrade.handoff import Handoff
 from interact.upgrade.store import EXIT_UPGRADE, Runtime, RuntimeStore
 
 if sys.platform == "win32":
@@ -41,8 +42,8 @@ elif sys.platform == "linux":
     import ctypes
 
 
-class SupervisorTimings(BaseModel):
-    """Every wait of a supervisor; `INTERACT_SUPERVISOR_<FIELD>` overrides one (tests)."""
+class SupervisorSettings(BaseModel):
+    """How a supervisor waits and behaves; `INTERACT_SUPERVISOR_<FIELD>` overrides one (tests)."""
 
     model_config = ConfigDict(frozen=True)
     #: A switched-to passthrough worker up this long has started.
@@ -57,9 +58,11 @@ class SupervisorTimings(BaseModel):
     tick_seconds: float = 0.5
     #: What a supervisor claims before starting a release check (the check sets the real next one).
     check_claim_seconds: float = 120.0
+    #: When its worker moved to another runtime, the supervisor becomes that runtime's too.
+    replace_itself: bool = True
 
     @classmethod
-    def from_environment(cls) -> "SupervisorTimings":
+    def from_environment(cls) -> "SupervisorSettings":
         """A bad override is said and ignored: it never stops a long-lived command from starting."""
         prefix = "INTERACT_SUPERVISOR_"
         try:
@@ -198,12 +201,12 @@ class Lifecycle:
         """Where a crashed worker restarts, or None to give up: a runtime switched to lately that
         keeps crashing is rolled back; one this supervisor started with is not blamed."""
         now = time.time()
-        self.crashes = [at for at in self.crashes if at > now - self.owner.timings.crash_window_seconds] + [now]
-        if len(self.crashes) < self.owner.timings.crash_limit:
+        self.crashes = [at for at in self.crashes if at > now - self.owner.settings.crash_window_seconds] + [now]
+        if len(self.crashes) < self.owner.settings.crash_limit:
             self.store.record("restarted", f"{worker.runtime.label()} exited {code}; restarting it")
             return worker.runtime
-        if self.switched_at is not None and now - self.switched_at < self.owner.timings.crash_window_seconds:
-            return self.failed_start(worker, f"crashed {len(self.crashes)} times within {self.owner.timings.crash_window_seconds / 60:.0f} min of starting")
+        if self.switched_at is not None and now - self.switched_at < self.owner.settings.crash_window_seconds:
+            return self.failed_start(worker, f"crashed {len(self.crashes)} times within {self.owner.settings.crash_window_seconds / 60:.0f} min of starting")
         self.store.record("failed", f"{worker.runtime.label()} exited {code} {len(self.crashes)} times in a row; stopping")
         return None
 
@@ -215,7 +218,7 @@ class Supervisor(BaseModel):
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
     store: RuntimeStore
     arguments: tuple[str, ...]
-    timings: SupervisorTimings
+    settings: SupervisorSettings
     #: How its workers leave at their quiet point: they report (a relay decides) or exit.
     mode: ClassVar[Literal["report", "exit"]]
     #: Whether this supervisor runs threads while starting workers (no fork hook then).
@@ -227,16 +230,23 @@ class Supervisor(BaseModel):
         return ("_tui",) if not arguments and interactive else arguments
 
     @classmethod
-    def for_arguments(cls, arguments: tuple[str, ...], interactive: bool) -> "Supervisor | None":
-        """The supervisor for this command line, or None: not a long-lived command, already a
-        worker (whether or not it can read its supervisor's contract: never a supervisor inside
-        a supervisor), a development checkout (unless `INTERACT_SUPERVISE=1`) or `INTERACT_SUPERVISE=0`."""
-        command = cls.command(arguments, interactive)
-        make = next((make for member, make in LONG_LIVED.items() if command[: len(member)] == member), None)
+    def eligible(cls) -> bool:
+        """This process may hand off and supervise: not a worker (whether or not it can read its
+        supervisor's contract: never a supervisor inside a supervisor), not `INTERACT_SUPERVISE=0`,
+        not a development checkout unless `INTERACT_SUPERVISE=1`."""
         wanted = os.environ.get("INTERACT_SUPERVISE", "")
-        if make is None or Supervision.variable in os.environ or wanted == "0" or (wanted != "1" and cls.development()):
-            return None
-        return make(store=RuntimeStore.default(), arguments=command, timings=SupervisorTimings.from_environment())
+        return Supervision.variable not in os.environ and wanted != "0" and (wanted == "1" or not cls.development())
+
+    @staticmethod
+    def member(command: tuple[str, ...]) -> "Callable[..., Supervisor] | None":
+        """How this command is supervised, or None: not a long-lived command."""
+        return next((make for member, make in LONG_LIVED.items() if command[: len(member)] == member), None)
+
+    @classmethod
+    def for_command(cls, command: tuple[str, ...]) -> "Supervisor | None":
+        """The supervisor for this (eligible) command line, or None: not a long-lived command."""
+        make = cls.member(command)
+        return None if make is None else make(store=RuntimeStore.default(), arguments=command, settings=SupervisorSettings.from_environment())
 
     @staticmethod
     def development() -> bool:
@@ -275,7 +285,7 @@ class Supervisor(BaseModel):
             return checker
         if time.time() < self.store.next_check():
             return None
-        self.store.schedule(self.timings.check_claim_seconds)
+        self.store.schedule(self.settings.check_claim_seconds)
         with open(self.store.root / "check.log", "ab") as log:
             return subprocess.Popen(self.store.active().command(("upgrade", "check", "--background")), stdin=subprocess.DEVNULL, stdout=log, stderr=log,
                                     env={**os.environ, "INTERACT_RUNTIMES": str(self.store.root)})
@@ -299,24 +309,32 @@ class Passthrough(Supervisor):
                 signal.signal(getattr(signal, name), lambda *_: stop.set())
         previous_interrupt = signal.signal(signal.SIGINT, signal.SIG_IGN)  # the worker takes Ctrl-C
         generation, checker = 0, None
-        worker = self.spawn(self.store.active(), generation, children, probation=False)
+        arrived = self.store.arrived()  # this supervisor replaced an older one: its first worker is on probation
+        if arrived:
+            lifecycle.switched()
+        worker = self.spawn(self.store.active(), generation, children, probation=arrived)
         try:
             while True:
                 if stop.is_set():
                     worker.process.terminate()
-                    return worker.stop(self.timings.stop_seconds)
+                    return worker.stop(self.settings.stop_seconds)
                 checker = self.check_releases(checker)
-                if worker.probation and time.time() - worker.started > self.timings.probation_seconds and (text := lifecycle.started(worker)):
+                if worker.probation and time.time() - worker.started > self.settings.probation_seconds and (text := lifecycle.started(worker)):
                     self.say(text)
                 try:
-                    worker.process.wait(self.timings.tick_seconds)
+                    worker.process.wait(self.settings.tick_seconds)
                 except subprocess.TimeoutExpired:
                     continue
                 code, generation = worker.stop(0), generation + 1
                 if code == EXIT_UPGRADE:
                     target = self.store.active()
-                    lifecycle.switched()
                     self.say(f"switching to {target.label()}")
+                    if self.settings.replace_itself and target.path != Runtime.own().path and (sys.platform != "win32" or os.environ.get(Handoff.child)):
+                        if checker is not None:
+                            checker.wait(30)
+                        signal.signal(signal.SIGINT, previous_interrupt)
+                        Handoff(store=self.store).replace(target, self.arguments)  # this supervisor becomes the new runtime's too
+                    lifecycle.switched()
                 elif worker.probation and code not in self.stopped:
                     target = lifecycle.failed_start(worker, f"failed to start (exited {code} after {time.time() - worker.started:.0f} s)")
                 elif code in self.stopped:
@@ -476,7 +494,7 @@ class _Relay:
     def __init__(self, owner: StdioRelay) -> None:
         self.owner = owner
         self.protocol = owner.protocol
-        self.timings = owner.timings
+        self.settings = owner.settings
         self.lifecycle = Lifecycle(owner)
         self.events: queue.Queue[tuple] = queue.Queue()
         self.children = Children()
@@ -506,7 +524,7 @@ class _Relay:
         self.start(self.owner.store.active(), probation=False)
         while True:
             try:
-                event = self.events.get(timeout=self.timings.tick_seconds)
+                event = self.events.get(timeout=self.settings.tick_seconds)
             except queue.Empty:
                 event = ("tick",)
             if (code := self.handle(event)) is not None:
@@ -565,7 +583,7 @@ class _Relay:
             self.closing = True
             if self.worker is not None:
                 self.worker.process.stdin.close()
-                self.worker.stop(self.timings.stop_seconds)
+                self.worker.stop(self.settings.stop_seconds)
             return 0
         method = self.protocol.method(message)
         if method == self.protocol.handshake and self.initialize is None:
@@ -635,7 +653,7 @@ class _Relay:
 
     def worker_ended(self) -> int | None:
         worker = self.worker
-        code = worker.stop(self.timings.stop_seconds)
+        code = worker.stop(self.settings.stop_seconds)
         if self.closing:
             return 0
         if self.phase == "draining":
@@ -661,8 +679,8 @@ class _Relay:
         self.checker = self.owner.check_releases(self.checker)
         worker = self.worker
         waited = time.time() - self.since
-        if (self.phase == "handshake" and self.handshake_key is not None and worker.probation and waited > self.timings.handshake_seconds) \
-                or (self.phase == "draining" and waited > self.timings.stop_seconds):
+        if (self.phase == "handshake" and self.handshake_key is not None and worker.probation and waited > self.settings.handshake_seconds) \
+                or (self.phase == "draining" and waited > self.settings.stop_seconds):
             worker.process.kill()
         elif self.phase == "serving" and self.quiet() and self.owner.store.active().path != worker.runtime.path:
             self.phase = "draining"  # from here client messages wait in `held`

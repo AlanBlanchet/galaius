@@ -25,7 +25,9 @@ def upgrade_status() -> None:
     if pointer.floor is not None:
         print(f"Newest ever run:  {pointer.floor.label()} (older releases are refused)")
     state = "on" if config.auto_upgrade else "off"
-    print(f"Automatic:        {state}" + (f", holding build {config.upgrade_pin}" if config.upgrade_pin else "") + f", every {config.upgrade_check_seconds} s from {UpgradeCheck.server() or ('GitHub' if config.upgrade_github else 'no server')}")
+    pin = config.upgrade_pin.strip()
+    held = "" if not pin else f", holding build {pin}" if UpgradeCheck.pin_pattern.fullmatch(pin) else f", pin {pin!r} ignored (not a commit)"
+    print(f"Automatic:        {state}" + held + f", every {config.upgrade_check_seconds} s from {UpgradeCheck.server() or ('GitHub' if config.upgrade_github else 'no server')}")
     wait = store.next_check() - time.time()
     print(f"Next check:       {'due now' if wait <= 0 else f'in {wait:.0f} s'}")
     if pointer.failed:

@@ -5,13 +5,9 @@ import os
 import sys
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict
 
-
-class UserPaths(BaseModel):
+class UserPaths:
     """This user's interact folders."""
-
-    model_config = ConfigDict(frozen=True)
 
     @staticmethod
     def config() -> Path:

@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from interact.upgrade.handoff import Handoff
 from interact.upgrade.release import BuildIdentity
 from interact.upgrade.store import Runtime, RuntimeReceipt, RuntimeStore
 
@@ -100,8 +101,9 @@ class Client:
     """An MCP client holding one pipe to `interact mcp` for the whole test."""
 
     def __init__(self, store: RuntimeStore, *arguments: str) -> None:
-        environment = {**os.environ, "INTERACT_SUPERVISE": "1", "INTERACT_RUNTIMES": str(store.root),
-                       "INTERACT_SUPERVISOR_TICK_SECONDS": "0.05", "INTERACT_SUPERVISOR_PROBATION_SECONDS": "2", "INTERACT_SUPERVISOR_STOP_SECONDS": "5"}
+        # The supervisor under test runs this checkout's code, never the (fake) active runtime's.
+        environment = {**os.environ, "INTERACT_SUPERVISE": "1", "INTERACT_RUNTIMES": str(store.root), Handoff.child: "1",
+                       "INTERACT_SUPERVISOR_TICK_SECONDS": "0.05", "INTERACT_SUPERVISOR_PROBATION_SECONDS": "2", "INTERACT_SUPERVISOR_STOP_SECONDS": "5", "INTERACT_SUPERVISOR_REPLACE_ITSELF": "false"}
         environment.pop("INTERACT_SUPERVISED", None)
         self.process = subprocess.Popen([sys.executable, "-m", "interact", *(arguments or ("mcp",))], stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=environment)
         self.lines: queue.Queue[dict] = queue.Queue()

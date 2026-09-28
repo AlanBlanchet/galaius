@@ -42,7 +42,9 @@ class UpgradeCheck(BaseModel):
     @classmethod
     def configured(cls) -> "UpgradeCheck":
         UserConfig.apply(portable=False)
-        return cls(store=RuntimeStore.default(), keys=ReleaseKeys.shipped(), config=Config())
+        store = RuntimeStore.default()
+        store.retire(ReleaseKeys.retired_by_package())
+        return cls(store=store, keys=ReleaseKeys.shipped(set(store.pointer().retired)), config=Config())
 
     @staticmethod
     def server() -> str | None:
@@ -82,6 +84,15 @@ class UpgradeCheck(BaseModel):
         known = [order for order in (floor, own) if order is not None]
         return max(known, key=lambda order: order.key) if known else None
 
+    def running(self, release: Release) -> bool:
+        """The active runtime IS this release: installed from it, or the bootstrap install built as
+        it (an installer's own wheels carry their build)."""
+        active = self.store.active()
+        if (receipt := active.receipt()) is not None:
+            return receipt.identity == release.identity
+        own = BuildIdentity.installed() if active.path == Runtime.own().path else None
+        return own is not None and own.commit == release.commit
+
     def run(self) -> str:
         """What happened, in a sentence (recorded when it changed something or refused)."""
         self.store.schedule(self.config.upgrade_check_seconds)
@@ -99,14 +110,14 @@ class UpgradeCheck(BaseModel):
             return "no Interact server set up (interact login), so no release to check"
         with self.exclusive(), source.client() as http:
             try:
-                release = source.latest(http, self.keys)
+                release = source.latest(http, self.keys.without(set(self.store.pointer().retired)))
             except ReleaseRefused as error:
                 return self.refused(f"{source.base}: {error}")
             except ValidationError as error:
                 return self.refused(f"{source.base}: a signed document that is not a release ({error.error_count()} problems)")
             except httpx.HTTPError as error:
                 return f"{source.base} did not answer ({type(error).__name__}); trying again in {self.config.upgrade_check_seconds} s"
-            if (receipt := self.store.active().receipt()) is not None and receipt.identity == release.identity:
+            if self.running(release):
                 return f"up to date ({release.label()})"
             pinned = bool(pin) and release.commit.startswith(pin)
             if pin and not pinned:

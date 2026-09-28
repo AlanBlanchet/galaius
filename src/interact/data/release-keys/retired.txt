@@ -1,0 +1,3 @@
+# Keys that never sign a release again, by sha256 of their public key (DER). A computer that ran a
+# runtime listing one here keeps refusing it, whichever runtime it rolls back to (RuntimeStore.retire).
+sha256:3314e5ae82205e0e7c2fbaf3a687fd1b1dc90989cc637cfee7c95af137eff4dd interact-release-1: kept on the owner's PC, readable by its agents; replaced by interact-release-2, kept on the Raspberry only

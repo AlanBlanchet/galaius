@@ -5,6 +5,7 @@ The document is verified against the public keys this package itself carries
 local port can hand out files, never make them trusted."""
 
 import base64
+import hashlib
 import re
 from importlib.resources import files
 from pathlib import Path
@@ -22,17 +23,33 @@ from interact.upgrade.release import Release, ReleaseFile, ReleaseRefused
 
 
 class ReleaseKeys(BaseModel):
-    """The ed25519 public keys a release must be signed by: those this package ships, unless a
-    caller names others (tests, a key rotation being prepared)."""
+    """The ed25519 public keys a release must be signed by: those this package ships, minus every
+    key retired (by this package or any runtime this computer ran), unless a caller names others
+    (tests, a key rotation being prepared)."""
 
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
     keys: tuple[Ed25519PublicKey, ...]
+    folder: ClassVar = files("interact") / "data" / "release-keys"
+
+    @staticmethod
+    def fingerprint_of(key: Ed25519PublicKey) -> str:
+        return "sha256:" + hashlib.sha256(key.public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)).hexdigest()
 
     @classmethod
-    def shipped(cls) -> "ReleaseKeys":
-        folder = files("interact") / "data" / "release-keys"
-        found = [entry.read_bytes() for entry in folder.iterdir() if entry.name.endswith(".pub")] if folder.is_dir() else []
-        return cls(keys=tuple(load_pem_public_key(pem) for pem in found))
+    def retired_by_package(cls) -> set[str]:
+        """The keys this package retires (`retired.txt`: one fingerprint per line, then a reason)."""
+        entry = cls.folder / "retired.txt"
+        lines = entry.read_text(encoding="utf-8").splitlines() if entry.is_file() else []
+        return {line.split()[0] for line in lines if line.startswith("sha256:")}
+
+    @classmethod
+    def shipped(cls, retired: set[str] = frozenset()) -> "ReleaseKeys":
+        found = [load_pem_public_key(entry.read_bytes()) for entry in cls.folder.iterdir() if entry.name.endswith(".pub")] if cls.folder.is_dir() else []
+        gone = retired | cls.retired_by_package()
+        return cls(keys=tuple(key for key in found if cls.fingerprint_of(key) not in gone))
+
+    def without(self, retired: set[str]) -> "ReleaseKeys":
+        return self.model_copy(update={"keys": tuple(key for key in self.keys if self.fingerprint_of(key) not in retired)})
 
     def verify(self, document: bytes, signature: bytes) -> Release:
         """The release `document` says, once one of these keys signed exactly these bytes."""
@@ -74,11 +91,17 @@ class ReleaseSigner(BaseModel):
     def keys(self) -> ReleaseKeys:
         return ReleaseKeys(keys=(self.key.public_key(),))
 
+    def fingerprint(self) -> str:
+        return ReleaseKeys.fingerprint_of(self.key.public_key())
+
+    def signature(self, document: bytes) -> bytes:
+        """`release.json.sig` for these exact document bytes."""
+        return base64.b64encode(self.key.sign(document)) + b"\n"
+
     def sign(self, release: Release) -> tuple[bytes, bytes]:
         """(document, signature) exactly as a source serves them."""
-        document = (release.model_dump_json(indent=2) + "\n").encode()
-        return document, base64.b64encode(self.key.sign(document)) + b"\n"
-
+        document = release.document()
+        return document, self.signature(document)
 
 class ReleaseSource(BaseModel):
     """Where releases come from: `document`, `signature` and every signed file under one base

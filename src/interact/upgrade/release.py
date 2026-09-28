@@ -125,6 +125,10 @@ class Release(BuildIdentity):
     def order(self) -> ReleaseOrder:
         return ReleaseOrder(version=self.version, released_at=self.released_at)
 
+    def document(self) -> bytes:
+        """The exact bytes that are signed and served as `release.json`."""
+        return (self.model_dump_json(indent=2) + "\n").encode()
+
     @property
     def identity(self) -> str:
         """What a failed build is remembered by: its interact wheel's sha256."""

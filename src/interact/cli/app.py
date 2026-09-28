@@ -7,7 +7,8 @@ from cyclopts import App
 
 from interact import installed_version
 from interact.upgrade.quiet import UpgradeReady
-from interact.upgrade.store import EXIT_UPGRADE
+from interact.upgrade.handoff import Handoff
+from interact.upgrade.store import EXIT_UPGRADE, RuntimeStore
 from interact.upgrade.supervisor import Supervisor
 from interact.versioning import force_utf8_io
 
@@ -107,16 +108,19 @@ def version() -> None:
 
 
 def main() -> None:
-    """A long-lived command (`mcp`, `machine connect`, the TUI) starts as its supervisor, which
-    runs it again as a worker from the active runtime; a worker at its quiet point exits
-    `EXIT_UPGRADE` for the supervisor to start the new runtime in its place."""
+    """Every command continues in the active runtime (`Handoff`); a long-lived one (`mcp`,
+    `machine connect`, the TUI) then starts as its supervisor, which runs it again as a worker; a
+    worker at its quiet point exits `EXIT_UPGRADE` for the supervisor to start the new runtime."""
     force_utf8_io()
-    arguments, interactive = tuple(sys.argv[1:]), sys.stdout.isatty()
-    supervisor = Supervisor.for_arguments(arguments, interactive)
-    if supervisor is not None:
-        raise SystemExit(supervisor.run())
+    command = Supervisor.command(tuple(sys.argv[1:]), sys.stdout.isatty())
+    if Supervisor.eligible():
+        handoff = Handoff(store=RuntimeStore.default())
+        if (target := handoff.target(command, Supervisor.member(command) is not None)) is not None:
+            handoff.continue_in(target, command)
+        if (supervisor := Supervisor.for_command(command)) is not None:
+            raise SystemExit(supervisor.run())
     try:
-        app(list(Supervisor.command(arguments, interactive)))
+        app(list(command))
     except UpgradeReady:
         raise SystemExit(EXIT_UPGRADE) from None
 

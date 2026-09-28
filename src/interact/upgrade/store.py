@@ -33,6 +33,9 @@ from interact.upgrade.release import BuildIdentity, ReleaseOrder
 #: A worker exits with this at its quiet point when the pointer names another runtime: "start the
 #: active one in my place" (EX_TEMPFAIL, unused by anything else interact exits with).
 EXIT_UPGRADE = 75
+#: A supervisor exits with this to be started again from the active runtime by the process waiting
+#: on it (Windows, where a process cannot replace itself).
+EXIT_HANDOVER = 76
 
 
 class Runtime(BaseModel):
@@ -107,6 +110,8 @@ class Pointer(BaseModel):
     previous: Path | None = None
     floor: ReleaseOrder | None = None
     failed: tuple[str, ...] = ()
+    #: Release keys this computer no longer trusts (fingerprints): only ever grows.
+    retired: tuple[str, ...] = ()
     generation: int = 0
 
 
@@ -163,8 +168,11 @@ class RuntimeStore(BaseModel):
     @classmethod
     def _resolved(cls, root: Path) -> Path:
         return root.resolve()
-    #: Runtimes kept besides the active and previous ones (for `interact upgrade use`).
-    keep: ClassVar[int] = 2
+    #: Runtimes kept besides the active one, for rollback and `interact upgrade use` (owner's choice).
+    keep: ClassVar[int] = 4
+    #: A supervisor that replaced itself with the active runtime's and has not started after this
+    #: long never will: the next launch rolls the pointer back.
+    handover_seconds: ClassVar[float] = 30.0
 
     @classmethod
     def default(cls) -> "RuntimeStore":
@@ -234,7 +242,7 @@ class RuntimeStore(BaseModel):
         launches then start on the active runtime too, and prune never strands it. Any other
         launcher (a bootstrap install's own) is left alone: its supervisor starts the active worker."""
         launcher = UserPaths.launcher()
-        if launcher is None or not launcher.is_symlink() or not Path(os.readlink(launcher)).is_relative_to(self.root) \
+        if launcher is None or not launcher.is_symlink() or not launcher.resolve().is_relative_to(self.root) \
                 or not runtime.path.is_relative_to(self.root) or not (runtime.path / "bin" / "interact").is_file():
             return
         temporary = launcher.with_name(f".{launcher.name}-{os.getpid()}")
@@ -292,6 +300,12 @@ class RuntimeStore(BaseModel):
                 return Runtime(path=path)
         return None
 
+    def retire(self, fingerprints: set[str]) -> None:
+        """Never trust these release keys again here, whatever runtime runs later."""
+        if not fingerprints - set(self.pointer().retired):
+            return
+        self._update(lambda current: current.model_copy(update={"retired": tuple(sorted({*current.retired, *fingerprints}))}))
+
     def failed(self, identity: str) -> bool:
         return identity in self.pointer().failed
 
@@ -338,8 +352,9 @@ class RuntimeStore(BaseModel):
 
     @staticmethod
     def probe(runtime: Runtime) -> dict[str, str]:
-        """Both packages import inside `runtime`, from `runtime` (never a stray path)."""
-        script = ("import json, interact, interact_core; from importlib.metadata import version; "
+        """Both packages and the command entry (supervisor, handoff) import inside `runtime`, from
+        `runtime` (never a stray path): a runtime that cannot start a command is never activated."""
+        script = ("import json, interact, interact_core, interact.cli.app; from importlib.metadata import version; "
                   "print(json.dumps({'interact': version('interact'), 'interact-core': version('interact-core'), "
                   "'sources': [interact.__file__, interact_core.__file__]}))")
         output = subprocess.run([str(runtime.python), "-I", "-c", script], capture_output=True, text=True, check=False, env=Uv.environment())
@@ -361,6 +376,8 @@ class RuntimeStore(BaseModel):
         PRIVATE_FILES.write_text(self.live_path / f"{pid}.json", LiveProcess(pid=pid, runtime=runtime.path, started=time.time()).model_dump_json())
 
     def in_use(self) -> set[Path]:
+        """Runtimes a live process runs: the ones supervisors and dispatchers registered, and on
+        Linux any process whose interpreter lives in the store (older interact that never registered)."""
         used = set()
         for entry in self.live_path.glob("*.json") if self.live_path.is_dir() else ():
             try:
@@ -371,27 +388,81 @@ class RuntimeStore(BaseModel):
                 used.add(live.runtime)
             else:
                 entry.unlink(missing_ok=True)
+        for command in Path("/proc").glob("[0-9]*/cmdline") if sys.platform == "linux" else ():
+            try:
+                interpreter = Path(command.read_bytes().split(b"\0", 1)[0].decode())
+            except (OSError, UnicodeDecodeError):
+                continue
+            if interpreter.is_absolute() and interpreter.is_relative_to(self.root) and interpreter != self.root:
+                used.add(self.root / interpreter.relative_to(self.root).parts[0])
         return used
 
-    def prune(self) -> list[Path]:
-        """Remove installed runtimes nothing needs: never the active, previous or a live one, and
-        the `keep` newest others stay. Only runtimes this store installed (a receipt) go; so do
-        leftovers of an interrupted install or prune (`.staging-*` older than a day, `.trash-*`).
-        A folder that cannot go now (in use on Windows) stays for the next prune."""
+    def runtimes(self) -> list[Runtime]:
+        """Every runtime in the store (whoever installed it), newest first."""
+        found = [Runtime(path=path) for path in self.root.iterdir() if path.is_dir() and not path.name.startswith(".")] if self.root.is_dir() else []
+        return sorted((runtime for runtime in found if runtime.usable()), key=lambda runtime: self._age(runtime.path), reverse=True)
+
+    def prune(self, dry_run: bool = False) -> list[Path]:
+        """Remove runtimes nothing needs: the active one, the `keep` newest others (the previous one
+        among them) and any a live process runs stay. Leftovers of an interrupted install or prune
+        go too (`.staging-*` / `.download-*` older than a day, `.trash-*`). A folder that cannot go
+        now (in use on Windows) stays for the next prune."""
         removed = []
         with self.locked():
             pointer = self.pointer()
-            protected = {pointer.active, pointer.previous, *self.in_use()}
-            managed = sorted((path for path in self.root.iterdir() if path.is_dir() and not path.name.startswith(".") and Runtime(path=path).receipt() is not None), key=self._age, reverse=True)
+            others = [runtime.path for runtime in self.runtimes() if runtime.path != pointer.active]
+            kept = {pointer.active, pointer.previous, *others[: self.keep], *self.in_use()}
             leftovers = [*self.root.glob(".trash-*"), *(path for pattern in (".staging-*", ".download-*") for path in self.root.glob(pattern) if time.time() - self._age(path) > 86400)]
-            for path in [path for path in managed if path not in protected][self.keep:] + leftovers:
-                try:
-                    trash = path if path.name.startswith(".trash-") else path.rename(path.with_name(f".trash-{path.name}"))
-                    shutil.rmtree(trash)
-                except OSError:
-                    continue
+            for path in [path for path in others if path not in kept] + leftovers:
+                if not dry_run:
+                    try:
+                        trash = path if path.name.startswith(".trash-") else path.rename(path.with_name(f".trash-{path.name}"))
+                        shutil.rmtree(trash)
+                    except OSError:
+                        continue
                 removed.append(path)
         return removed
+
+    # ---- a supervisor replacing itself ---------------------------------------------------------
+
+    @property
+    def handover_path(self) -> Path:
+        return self.root / "handover.json"
+
+    def hand_over(self, target: Runtime) -> None:
+        """A supervisor is about to become `target`'s: remembered until that one starts (`handed`)."""
+        PRIVATE_FILES.write_text(self.handover_path, json.dumps({"target": str(target.path), "at": time.time()}) + "\n")
+
+    def handed(self) -> None:
+        self.handover_path.unlink(missing_ok=True)
+
+    def arrived(self) -> bool:
+        """This supervisor is the one a handover started: it did start (marker cleared)."""
+        try:
+            target = Path(json.loads(self.handover_path.read_text(encoding="utf-8"))["target"])
+        except (OSError, ValueError, KeyError):
+            return False
+        if Runtime(path=target).path != Runtime.own().path:
+            return False
+        self.handed()
+        return True
+
+    def failed_handover(self) -> Runtime | None:
+        """A supervisor replaced itself with the active runtime's and that one never started: roll
+        back (the next launch runs the runtime before it). None when no handover failed."""
+        try:
+            marker = json.loads(self.handover_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        if time.time() - float(marker.get("at", 0)) < self.handover_seconds:
+            return None
+        self.handed()
+        target = Runtime(path=Path(marker["target"]))
+        if self.pointer().active != target.path:
+            return None
+        back = self.roll_back(target, "did not start as a supervisor")
+        self.condemn(target)
+        return back
 
     @staticmethod
     def _age(path: Path) -> float:

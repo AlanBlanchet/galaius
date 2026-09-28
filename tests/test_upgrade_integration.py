@@ -4,6 +4,7 @@ client pipe) and a running `interact machine connect` (to a websocket stand-in f
 from N to N+1 by themselves: same supervisor pid, same client pipe, new worker on N+1."""
 
 import asyncio
+import contextlib
 import http.server
 import json
 import os
@@ -24,13 +25,13 @@ from interact.machines import MachineConfig, MachineRunner
 from interact.config.settings import Config
 from interact.upgrade.check import UpgradeCheck
 from interact.upgrade.source import ReleaseSigner
-from interact.upgrade.store import RuntimeStore
+from interact.server_registry import _alive
+from interact.upgrade.store import LiveProcess, Runtime, RuntimeStore
 
 CHECKOUT = Path(__file__).resolve().parents[1]
 CORE = Path(os.environ.get("INTERACT_CORE_SOURCE", CHECKOUT.parent / "interact-core"))
 
 pytestmark = [
-    pytest.mark.skipif(sys.platform != "linux", reason="reads worker processes from /proc"),
     pytest.mark.skipif(shutil.which("uv") is None or not (CORE / "pyproject.toml").is_file(), reason="needs uv and an interact-core checkout (INTERACT_CORE_SOURCE)"),
     pytest.mark.timeout(600),
 ]
@@ -52,12 +53,20 @@ def snapshot(into: Path, version: str, public_pem: bytes) -> Path:
     return into
 
 
-def children(pid: int) -> list[int]:
-    return [int(child) for child in Path(f"/proc/{pid}/task/{pid}/children").read_text().split()]
+def running(store: RuntimeStore) -> dict[int, Path]:
+    """Which runtime each live supervisor and worker runs, as they registered it (any OS)."""
+    found = {}
+    for entry in store.live_path.glob("*.json"):
+        with contextlib.suppress(OSError, ValueError):
+            live = LiveProcess.model_validate_json(entry.read_bytes())
+            if _alive(live.pid):
+                found[live.pid] = live.runtime
+    return found
 
 
-def command_line(pid: int) -> str:
-    return Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode()
+def reported_version(runtime: Runtime, environment: dict[str, str]) -> str:
+    """What `interact --version` prints when started from `runtime`'s own interpreter."""
+    return subprocess.run(runtime.command(("--version",)), env=environment, capture_output=True, text=True, timeout=120).stdout.strip()
 
 
 def until(condition, timeout: float, what: str):
@@ -162,10 +171,9 @@ def test_running_mcp_server_and_machine_connection_upgrade_themselves_from_n_to_
         mcp.stdin.write(b'{"jsonrpc":"2.0","method":"notifications/initialized"}\n')
         mcp.stdin.flush()
         tools_before = request(2, "tools/list", {})["result"]["tools"]
-        (mcp_worker_before,) = children(mcp.pid)
-        assert str(first.path) in command_line(mcp_worker_before)
         until(lambda: channel.hellos == ["interact/0.43.0"], 120, "the machine's hello from N")
-        machine_worker_before = until(lambda: [pid for pid in children(machine.pid) if "machine connect" in command_line(pid)], 30, "machine worker")[0]
+        until(lambda: list(running(store).values()).count(first.path) >= 4, 30, "two supervisors and two workers on N")
+        before = running(store)
 
         # N+1 is published; the next check (due now) installs and activates it with nobody restarting anything.
         publish("0.43.1")
@@ -173,19 +181,26 @@ def test_running_mcp_server_and_machine_connection_upgrade_themselves_from_n_to_
         until(lambda: store.active().path != first.path, 180, "N+1 installed and active")
         second = store.active()
         assert second.receipt().packages["interact"] == "0.43.1"
+        # A command started from N's own interpreter (an installer's `interact`) runs N+1.
+        assert reported_version(first, environment) == "0.43.1"
 
         until(lambda: any(note.get("method") == "notifications/tools/list_changed" for note in notes) or (notes.append(lines.get(timeout=1)) if not lines.empty() else None), 120, "list_changed")
         tools_after = request(3, "tools/list", {})["result"]["tools"]
-        (mcp_worker_after,) = children(mcp.pid)
-        assert mcp.poll() is None and mcp_worker_after != mcp_worker_before
-        assert str(second.path) in command_line(mcp_worker_after)
         assert {tool["name"] for tool in tools_after} == {tool["name"] for tool in tools_before}
         assert any("upgraded from 0.43.0" in note.get("params", {}).get("data", "") and "0.43.1" in note["params"]["data"] for note in notes)
 
         until(lambda: channel.hellos[-1:] == ["interact/0.43.1"], 120, "the machine's hello from N+1")
-        assert machine.poll() is None
-        machine_worker_after = [pid for pid in children(machine.pid) if "machine connect" in command_line(pid)][0]
-        assert machine_worker_after != machine_worker_before and str(second.path) in command_line(machine_worker_after)
+        # The MCP relay keeps its pipe (and its code) until the client reconnects; its worker, the
+        # machine connection's worker AND that connection's supervisor now run N+1.
+        def moved() -> dict[int, Path] | None:
+            found = running(store)
+            return found if list(found.values()).count(second.path) >= 3 else None
+
+        after = until(moved, 60, "workers and the machine supervisor on N+1")
+        assert mcp.poll() is None and machine.poll() is None
+        assert after.get(mcp.pid) == first.path and not set(after) & (set(before) - {mcp.pid, machine.pid})
+        if sys.platform != "win32":  # replaced in place: the pid a service manager watches never changes
+            assert after[machine.pid] == second.path
     finally:
         mcp.stdin.close()
         machine.terminate()

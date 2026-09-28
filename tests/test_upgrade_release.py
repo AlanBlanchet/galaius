@@ -14,7 +14,7 @@ from interact.server_tool_settings import PORTABLE_ENV
 from interact.config.settings import Config
 from interact.upgrade.check import UpgradeCheck
 from interact.upgrade.release import BuildIdentity, Release, ReleaseFile, ReleaseRefused
-from interact.upgrade.source import ReleaseSigner, ReleaseSource
+from interact.upgrade.source import ReleaseKeys, ReleaseSigner, ReleaseSource
 from interact.upgrade.store import RuntimeReceipt, RuntimeStore
 from interact.upgrade.supervisor import Supervision, Supervisor
 
@@ -211,4 +211,27 @@ def test_the_supervisor_contract_v1_is_read_as_written_by_supervisors_already_ru
 def test_a_worker_that_cannot_read_its_contract_never_becomes_a_supervisor_itself(monkeypatch) -> None:
     monkeypatch.setenv("INTERACT_SUPERVISE", "1")
     monkeypatch.setenv(Supervision.variable, '{"version": 2, "something": "newer"}')
-    assert Supervision.current() is None and Supervisor.for_arguments(("mcp",), interactive=False) is None
+    assert Supervision.current() is None and not Supervisor.eligible()
+
+
+def test_a_bootstrap_install_built_as_the_offered_release_is_up_to_date(tmp_path, signer, published, monkeypatch) -> None:
+    document = release("0.44.0", 20, commit="00000aa")
+    published.publish(signer, document)
+    monkeypatch.setattr(BuildIdentity, "installed", classmethod(lambda cls: BuildIdentity.of(document)))
+    assert checker(tmp_path, signer, published, monkeypatch).run() == f"up to date ({document.label()})"
+
+
+def test_a_retired_key_signs_nothing_this_computer_installs_even_after_a_rollback(tmp_path, signer, published, monkeypatch) -> None:
+    check = checker(tmp_path, signer, published, monkeypatch)
+    check.store.retire({signer.fingerprint()})
+    check.store.retire(set())  # never goes back
+    published.publish(signer, release("0.44.0", 30))
+    check.run()
+    assert check.store.events()[-1].kind == "refused" and check.store.pointer().active is None
+    assert check.store.pointer().retired == (signer.fingerprint(),)
+
+
+def test_the_package_retires_the_key_that_was_readable_on_the_owner_pc() -> None:
+    shipped = ReleaseKeys.shipped()
+    assert "sha256:3314e5ae82205e0e7c2fbaf3a687fd1b1dc90989cc637cfee7c95af137eff4dd" in ReleaseKeys.retired_by_package()
+    assert shipped.keys and not {ReleaseKeys.fingerprint_of(key) for key in shipped.keys} & ReleaseKeys.retired_by_package()
