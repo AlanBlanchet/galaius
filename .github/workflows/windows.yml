@@ -49,13 +49,14 @@ jobs:
           $mine = @(for ($i = 0; $i -lt $files.Count; $i++) { if ($i % 8 -eq ${{ matrix.shard }}) { "tests/$($files[$i].Name)" } })
           $mine | Set-Content -Encoding ascii shard.txt
           uv sync --frozen --quiet
-      # The environment's own python under cmd, stdin empty, output kept in a file (uploaded below):
-      # run through `uv run` under PowerShell, a test here once took the whole runner down.
+      # In a console of its own (`start /wait`), stdin empty, output kept in a file (uploaded below): a
+      # console control event a test sends (Ctrl-Break to a pid that leads no process group reaches
+      # every process on the console) then stops pytest, never the runner, and the log names the test.
       - name: Tests
         timeout-minutes: 25
         shell: cmd
         run: |
-          .venv\Scripts\python.exe -m pytest -m "not integration" -v -rfEs -p no:cacheprovider @shard.txt < NUL > suite.log 2>&1
+          start "tests" /wait /min cmd /c ".venv\Scripts\python.exe -m pytest -m "not integration" -v -rfEs -p no:cacheprovider @shard.txt < NUL > suite.log 2>&1"
           set code=%ERRORLEVEL%
           type suite.log
           exit /b %code%
