@@ -1,0 +1,196 @@
+"""A real upgrade: runtime N (0.43.0) and N+1 (0.43.1) are built from this checkout and signed with a
+test key both builds ship, served over loopback, and a running `interact mcp` (real MCP server, real
+client pipe) and a running `interact machine connect` (to a websocket stand-in for the server) move
+from N to N+1 by themselves: same supervisor pid, same client pipe, new worker on N+1."""
+
+import asyncio
+import http.server
+import json
+import os
+import queue
+import re
+import shutil
+import subprocess
+import sys
+import threading
+import time
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+import pytest
+from websockets.asyncio.server import serve
+
+from interact.machines import MachineConfig, MachineRunner
+from interact.upgrade.check import UpgradeCheck, UpgradePolicy
+from interact.upgrade.source import ReleaseSigner
+from interact.upgrade.store import RuntimeStore
+
+CHECKOUT = Path(__file__).resolve().parents[1]
+CORE = Path(os.environ.get("INTERACT_CORE_SOURCE", CHECKOUT.parent / "interact-core"))
+
+pytestmark = [
+    pytest.mark.skipif(sys.platform != "linux", reason="reads worker processes from /proc"),
+    pytest.mark.skipif(shutil.which("uv") is None or not (CORE / "pyproject.toml").is_file(), reason="needs uv and an interact-core checkout (INTERACT_CORE_SOURCE)"),
+    pytest.mark.timeout(600),
+]
+
+
+def snapshot(into: Path, version: str, public_pem: bytes) -> Path:
+    """This checkout as a source snapshot at `version`, trusting only the test key."""
+    ignore = shutil.ignore_patterns("__pycache__", "build.json")
+    into.mkdir(parents=True)
+    for name in ("pyproject.toml", "uv.lock", "README.md", "LICENSE"):
+        shutil.copy2(CHECKOUT / name, into / name)
+    shutil.copytree(CHECKOUT / "src", into / "src", ignore=ignore)
+    keys = into / "src" / "interact" / "data" / "release-keys"
+    shutil.rmtree(keys)
+    keys.mkdir()
+    (keys / "test.pub").write_bytes(public_pem)
+    pyproject = into / "pyproject.toml"
+    pyproject.write_text(re.sub(r'(?m)^version = "[^"]+"', f'version = "{version}"', pyproject.read_text(), count=1))
+    return into
+
+
+def children(pid: int) -> list[int]:
+    return [int(child) for child in Path(f"/proc/{pid}/task/{pid}/children").read_text().split()]
+
+
+def command_line(pid: int) -> str:
+    return Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode()
+
+
+def until(condition, timeout: float, what: str):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if (value := condition()):
+            return value
+        time.sleep(0.2)
+    raise AssertionError(f"timed out waiting for {what}")
+
+
+class MachineChannel:
+    """Stands in for the server's `/v1/machine-channel`: records who says hello, as which build."""
+
+    def __init__(self) -> None:
+        self.hellos: list[str] = []
+        self.loop = asyncio.new_event_loop()
+        ready = threading.Event()
+        threading.Thread(target=self._run, args=(ready,), daemon=True).start()
+        ready.wait(10)
+
+    def _run(self, ready: threading.Event) -> None:
+        async def handler(connection) -> None:
+            async for raw in connection:
+                if json.loads(raw).get("type") == "hello":
+                    self.hellos.append(connection.request.headers["User-Agent"])
+
+        async def main() -> None:
+            async with serve(handler, "127.0.0.1", 0) as server:
+                self.port = server.sockets[0].getsockname()[1]
+                ready.set()
+                await asyncio.Future()
+
+        self.loop.run_until_complete(main())
+
+
+def test_running_mcp_server_and_machine_connection_upgrade_themselves_from_n_to_n_plus_1(tmp_path: Path, monkeypatch) -> None:
+    signer = ReleaseSigner.generated()
+    key = tmp_path / "signing.pem"
+    key.write_bytes(signer.private_pem())
+    core = tmp_path / "core"
+    shutil.copytree(CORE, core, ignore=shutil.ignore_patterns(".git", ".venv", "__pycache__", "tests"))
+    releases = {}
+    for version, minutes in (("0.43.0", 0), ("0.43.1", 5)):
+        out = tmp_path / f"release-{version}"
+        subprocess.run([sys.executable, str(CHECKOUT / "scripts" / "release.py"), "build", "--source", str(snapshot(tmp_path / f"source-{version}", version, signer.public_pem())),
+                        "--core", str(core), "--commit", f"{minutes + 10:07x}", "--released-at", (datetime.now(UTC) - timedelta(minutes=30 - minutes)).isoformat(),
+                        "--key", str(key), "--out", str(out)], check=True)
+        releases[version] = out
+
+    served = tmp_path / "served"
+    published = served / "install" / "release"  # where an Interact server serves its signed release
+    published.mkdir(parents=True)
+    handler = type("Handler", (http.server.SimpleHTTPRequestHandler,), {"log_message": lambda *_: None})
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), lambda *args: handler(*args, directory=str(served)))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    def publish(version: str) -> None:
+        for path in releases[version].iterdir():
+            shutil.copy2(path, published / path.name)
+
+    config = tmp_path / "config"
+    environment = {**os.environ, "XDG_CONFIG_HOME": str(config), "XDG_DATA_HOME": str(tmp_path / "data"), "INTERACT_RUNTIMES": str(tmp_path / "runtimes"),
+                   "INTERACT_AUTO_UPGRADE": "true", "INTERACT_UPGRADE_CHECK_SECONDS": "30", "INTERACT_REFRESH_LIVE_DATA": "false"}
+    for name in ("INTERACT_SUPERVISE", "INTERACT_SUPERVISED", "VIRTUAL_ENV", "PYTHONPATH"):
+        environment.pop(name, None)
+    for name in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "INTERACT_RUNTIMES"):
+        monkeypatch.setenv(name, environment[name])
+    (config / "interact").mkdir(parents=True)
+    (config / "interact" / "login-server").write_text(f"http://127.0.0.1:{server.server_port}\n")
+    channel = MachineChannel()
+    MachineRunner().save(MachineConfig(server_url=f"http://127.0.0.1:{channel.port}", workspace_id="00000000-0000-0000-0000-000000000001",
+                                       machine_id="00000000-0000-0000-0000-000000000002", token="t" * 40, permission_ceiling="read_only", working_directory=tmp_path))
+
+    # This computer's first install: runtime N, from the signed server release (as a bootstrap would).
+    publish("0.43.0")
+    store = RuntimeStore.default()
+    check = UpgradeCheck(store=store, keys=signer.keys(), policy=UpgradePolicy(enabled=True, pin="", every=30, github=False))
+    assert "0.43.0" in check.run()
+    first = store.active()
+    assert first.receipt().packages["interact"] == "0.43.0"
+
+    mcp = subprocess.Popen(first.command(("mcp",)), stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=environment, cwd=tmp_path)
+    machine = subprocess.Popen(first.command(("machine", "connect")), stdin=subprocess.DEVNULL, env=environment, cwd=tmp_path)
+    try:
+        lines: queue.Queue[dict] = queue.Queue()
+        threading.Thread(target=lambda: [lines.put(json.loads(line)) for line in mcp.stdout], daemon=True).start()
+        notes: list[dict] = []
+
+        def request(identifier: int, method: str, params: dict) -> dict:
+            mcp.stdin.write(json.dumps({"jsonrpc": "2.0", "id": identifier, "method": method, "params": params}).encode() + b"\n")
+            mcp.stdin.flush()
+            deadline = time.time() + 120
+            while time.time() < deadline:
+                message = lines.get(timeout=deadline - time.time())
+                if message.get("id") == identifier:
+                    return message
+                notes.append(message)
+            raise AssertionError(f"no answer to {method}")
+
+        request(1, "initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "upgrade-test", "version": "0"}})
+        mcp.stdin.write(b'{"jsonrpc":"2.0","method":"notifications/initialized"}\n')
+        mcp.stdin.flush()
+        tools_before = request(2, "tools/list", {})["result"]["tools"]
+        (mcp_worker_before,) = children(mcp.pid)
+        assert str(first.path) in command_line(mcp_worker_before)
+        until(lambda: channel.hellos == ["interact/0.43.0"], 120, "the machine's hello from N")
+        machine_worker_before = until(lambda: [pid for pid in children(machine.pid) if "machine connect" in command_line(pid)], 30, "machine worker")[0]
+
+        # N+1 is published; the next check (due now) installs and activates it with nobody restarting anything.
+        publish("0.43.1")
+        store.schedule(0)
+        until(lambda: store.active().path != first.path, 180, "N+1 installed and active")
+        second = store.active()
+        assert second.receipt().packages["interact"] == "0.43.1"
+
+        until(lambda: any(note.get("method") == "notifications/tools/list_changed" for note in notes) or (notes.append(lines.get(timeout=1)) if not lines.empty() else None), 120, "list_changed")
+        tools_after = request(3, "tools/list", {})["result"]["tools"]
+        (mcp_worker_after,) = children(mcp.pid)
+        assert mcp.poll() is None and mcp_worker_after != mcp_worker_before
+        assert str(second.path) in command_line(mcp_worker_after)
+        assert {tool["name"] for tool in tools_after} == {tool["name"] for tool in tools_before}
+        assert any("upgraded from 0.43.0" in note.get("params", {}).get("data", "") and "0.43.1" in note["params"]["data"] for note in notes)
+
+        until(lambda: channel.hellos[-1:] == ["interact/0.43.1"], 120, "the machine's hello from N+1")
+        assert machine.poll() is None
+        machine_worker_after = [pid for pid in children(machine.pid) if "machine connect" in command_line(pid)][0]
+        assert machine_worker_after != machine_worker_before and str(second.path) in command_line(machine_worker_after)
+    finally:
+        mcp.stdin.close()
+        machine.terminate()
+        for process in (mcp, machine):
+            try:
+                process.wait(20)
+            except subprocess.TimeoutExpired:
+                process.kill()
+        server.shutdown()

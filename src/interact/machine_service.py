@@ -25,6 +25,7 @@ from pydantic import BaseModel, ConfigDict
 
 from interact.machines import JsonLines, MachineRunner
 from interact.private_files import WindowsPrivateFiles
+from interact.upgrade.quiet import UpgradeReady
 
 if sys.platform == "win32":
     import pythoncom
@@ -96,6 +97,8 @@ class MachineService(BaseModel):
                 return
             except PermissionError as error:
                 raise ServiceUnavailable(f"connection stopped: {error}") from None
+            except UpgradeReady:
+                raise
             except Exception as error:  # noqa: BLE001 - a crash restarts the connection, never the service
                 package.exception("machine connection crashed: %s; restarting in %s s", error, self.restart_seconds)
                 time.sleep(self.restart_seconds)

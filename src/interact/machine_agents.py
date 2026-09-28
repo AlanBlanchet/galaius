@@ -188,6 +188,11 @@ class MachineSessions:
             if not self._queued.get(run_id):
                 self._queued.pop(run_id, None)
 
+    @property
+    def busy(self) -> bool:
+        """A session is on a turn or has messages waiting for one."""
+        return bool(self._queued) or (self._host is not None and self._host.busy)
+
     async def host(self) -> ConversationHost:
         async with self._lock:
             if self._host is None:

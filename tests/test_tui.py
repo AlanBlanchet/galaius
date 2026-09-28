@@ -6,6 +6,8 @@ from textual.widgets import Input, Select, Static, Switch, TabbedContent
 from interact.config import by_key
 from interact.cli.tui import InteractTUI, _field_id, _mask
 from interact.config import UserConfig
+from interact.upgrade.store import EXIT_UPGRADE, RuntimeStore
+from interact.upgrade.supervisor import Supervision
 
 
 def _sid(key: str) -> str:
@@ -249,17 +251,25 @@ async def test_tui_lists_all_connectors_with_install_buttons(temp_config):
             app.query_one(f"#conn-{target.id}")  # status cell present
 
 
-async def test_tui_shows_update_banner_when_newer_release(temp_config, monkeypatch):
-    from interact.cli import update as update_mod
-
-    monkeypatch.setattr(update_mod, "available_update", lambda *a, **k: "9.9.9")
+async def test_supervised_tui_says_a_new_version_waits_and_leaves_for_it_once_idle(temp_config, monkeypatch, tmp_path):
+    store = RuntimeStore(root=tmp_path / "runtimes")
+    newer = tmp_path / "runtimes" / "0.44.0-x"
+    (newer / "bin").mkdir(parents=True)
+    (newer / "bin" / "python").write_text("")
+    store._update(lambda pointer: pointer.model_copy(update={"active": newer}))
+    monkeypatch.setenv("INTERACT_RUNTIMES", str(store.root))
+    monkeypatch.setenv(Supervision.variable, Supervision(runtime=tmp_path / "running", mode="exit").model_dump_json())
     app = InteractTUI()
     async with app.run_test() as pilot:
-        await app.workers.wait_for_complete()
+        app._upgrade_when_idle()
         await pilot.pause()
         banner = app.query_one("#update-banner", Static)
-        assert "9.9.9" in str(banner.render())
-        assert not banner.has_class("hidden")
+        assert "restarts on it" in str(banner.render()) and not banner.has_class("hidden")
+        assert app.return_code is None  # someone used it just now: it stays
+        app._last_input -= InteractTUI.upgrade_idle_seconds
+        app._upgrade_when_idle()
+        await pilot.pause()
+    assert app.return_code == EXIT_UPGRADE
 
 
 async def test_tui_fields_have_descriptions(temp_config):

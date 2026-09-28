@@ -6,6 +6,9 @@ import sys
 from cyclopts import App
 
 from interact import installed_version
+from interact.upgrade.quiet import UpgradeReady
+from interact.upgrade.store import EXIT_UPGRADE
+from interact.upgrade.supervisor import Supervisor
 from interact.versioning import force_utf8_io
 
 app = App(
@@ -40,8 +43,8 @@ app.command(
     help="Summarise local VLM spend, tokens, and calls.",
 )
 app.command(
-    "interact.cli.app_commands:update", name="update",
-    help="Update interact to the latest GitHub release.",
+    "interact.cli.upgrade_command:upgrade_app", name="upgrade",
+    help="Automatic upgrades: status, check now, pin, turn off, go back.",
 )
 app.command(
     "interact.cli.app_commands:report", name="report",
@@ -104,11 +107,18 @@ def version() -> None:
 
 
 def main() -> None:
+    """A long-lived command (`mcp`, `machine connect`, the TUI) starts as its supervisor, which
+    runs it again as a worker from the active runtime; a worker at its quiet point exits
+    `EXIT_UPGRADE` for the supervisor to start the new runtime in its place."""
     force_utf8_io()
-    if len(sys.argv) == 1 and sys.stdout.isatty():
-        app(["_tui"])
-        return
-    app()
+    interactive = sys.stdout.isatty()
+    supervisor = Supervisor.for_arguments(tuple(sys.argv[1:]), interactive)
+    if supervisor is not None:
+        raise SystemExit(supervisor.run())
+    try:
+        app(["_tui"] if len(sys.argv) == 1 and interactive else None)
+    except UpgradeReady:
+        raise SystemExit(EXIT_UPGRADE) from None
 
 
 _DEFERRED_EXPORTS = frozenset({

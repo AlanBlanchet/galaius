@@ -47,6 +47,7 @@ from interact.config import Config
 from interact.prompt_cache import _PromptCache
 from interact.prompt_client import _PromptClient
 from interact.private_files import PRIVATE_FILES
+from interact.upgrade.quiet import QuietPoint
 
 _INPUT_LIMIT = 128 * 1024
 _ENTITY_ID = re.compile(r"^[A-Za-z0-9._:@+-]{1,160}$")
@@ -115,6 +116,21 @@ class _ConversationHost(BaseModel):
             raise failures[0]
         if failures:
             raise BaseExceptionGroup("conversation host failed during shutdown", failures)
+
+    async def serve_supervised(self, quiet: QuietPoint | None) -> None:
+        """`serve`, telling an upgrade relay (when one supervises this console) whether a turn
+        runs: between turns a new host picks every conversation up again on its next send."""
+        reporter = None if quiet is None else asyncio.create_task(self._report_quiet(quiet))
+        try:
+            await self.serve()
+        finally:
+            if reporter is not None:
+                reporter.cancel()
+
+    async def _report_quiet(self, quiet: QuietPoint) -> None:
+        while True:
+            quiet.report(bool(self._active_turns))
+            await asyncio.sleep(0.5)
 
     async def _serve_line(self, line: bytes) -> None:
         self._holding = True
@@ -628,6 +644,11 @@ class ConversationHost:
         self._host = _ConversationHost(workspace_root=resolved, transport_registry=build_transport_registry(resolved), config=Config())
         self._drain = asyncio.get_running_loop().create_task(self._host.discard_output())
 
+    @property
+    def busy(self) -> bool:
+        """A turn is running (swapping this process now would cut it)."""
+        return bool(self._host._active_turns)
+
     async def _run(self, command: BaseModel) -> reg.AgentRun:
         answer = await self._host.dispatch(command)
         if isinstance(answer, ErrorResponse):
@@ -681,11 +702,8 @@ def run_console(workspace_root: Path) -> None:
     resolved = workspace_root.expanduser().resolve(strict=True)
     if not resolved.is_dir():
         raise ValueError("workspace root must be a directory")
-    asyncio.run(_ConversationHost(
-        workspace_root=resolved,
-        transport_registry=build_transport_registry(resolved),
-        config=Config(),
-    ).serve())
+    host = _ConversationHost(workspace_root=resolved, transport_registry=build_transport_registry(resolved), config=Config())
+    asyncio.run(host.serve_supervised(QuietPoint.current()))
 
 
 __all__ = ["ConversationHost", "ConversationRefused", "run_console"]

@@ -44,6 +44,8 @@ from interact.functions import FunctionRegistry, PermissionLevel, invoke as invo
 from interact.vision_env import Report, VisionWorker, ensure_vision_env
 from interact import gpu_scrub, user_models
 from interact.sandbox import run_pooled
+from interact.upgrade.quiet import QuietPoint
+from interact.upgrade.store import RuntimeStore
 from interact.pinned_directory import PinnedDirectory
 
 if sys.platform == "win32":
@@ -119,14 +121,15 @@ class MachineConfig(BaseModel):
 
     def _usable_roots(self, names: tuple[str, ...]) -> tuple[tuple[Path, ...], tuple[str, ...]]:
         """A usable root is strictly below the working directory, never the home folder or above
-        it, never a symlink, never holding the runner's own folders, never under a hidden name."""
+        it, never a symlink, never holding or inside the runner's own folders (its settings, its
+        installed runtimes: code every long-lived process runs), never under a hidden name."""
         base, home = self.working_directory.resolve(), Path.home().resolve()
-        internal = (base / ".interact", MachineRunner.default_config_path().parent.resolve())
+        internal = (base / ".interact", MachineRunner.default_config_path().parent.resolve(), RuntimeStore.data_home().resolve(), RuntimeStore.default().root.resolve())
         usable, refused = [], []
         for name in names:
             declared = base / name
             root = declared.resolve()
-            if declared.is_symlink() or base not in root.parents or root == home or root in home.parents or any(root == folder or root in folder.parents for folder in internal) \
+            if declared.is_symlink() or base not in root.parents or root == home or root in home.parents or any(root == folder or root in folder.parents or folder in root.parents for folder in internal) \
                     or any(part.startswith(".") for part in root.relative_to(base).parts):  # hidden names are never reachable (`CommandFiles.inside`)
                 refused.append(name)
             else:
@@ -702,6 +705,10 @@ class MachineRunner:
         self._agent_requests: dict[UUID, datetime] = {}
         #: The sessions this runner hosts for the web (opened on first use) and its recent log lines.
         self._sessions: MachineSessions | None = None
+        #: Commands being executed now (0 or 1: one worker runs them in order).
+        self._executing = 0
+        #: Set when supervised: leave for a new runtime once nothing runs (`_leave_when_quiet`).
+        self._quiet = QuietPoint.current()
         self._log_ring = LogRing()
         logging.getLogger("interact").addHandler(self._log_ring)
 
@@ -785,6 +792,8 @@ class MachineRunner:
                     print("Machine token was revoked or rejected; connection stopped.", file=sys.stderr)
                     return
                 logger.warning("connection closed (code %s)", error.code, extra={"machine_id": config.machine_id})
+                if error.code == 1012:  # the server restarted: a deploy may have brought a release
+                    RuntimeStore.default().request_check()
             except websockets.InvalidStatus as error:
                 # Refused at the handshake: a revoked or unknown token answers 401/403 before the
                 # socket opens (the 4401/4403 close codes above never arrive). Stop, like a close.
@@ -809,25 +818,40 @@ class MachineRunner:
         receiver = asyncio.create_task(self._receive(socket, config, commands))
         worker = asyncio.create_task(self._command_worker(socket, config, commands))
         heartbeat = asyncio.create_task(self._heartbeat(socket, config))
+        upgrade = asyncio.create_task(self._leave_when_quiet(commands))
         try:
-            done, _ = await asyncio.wait((receiver, worker, heartbeat), return_when=asyncio.FIRST_COMPLETED)
+            done, _ = await asyncio.wait((receiver, worker, heartbeat, upgrade), return_when=asyncio.FIRST_COMPLETED)
             for task in done:
                 task.result()
             return receiver in done and receiver.result()
         finally:
             receiver.cancel()
             heartbeat.cancel()
+            upgrade.cancel()
             while not commands.empty():
                 commands.get_nowait()
             commands.put_nowait(None)
             for query in self._queries:
                 query.cancel()
-            await asyncio.gather(receiver, heartbeat, *self._queries, return_exceptions=True)
+            await asyncio.gather(receiver, heartbeat, upgrade, *self._queries, return_exceptions=True)
             await asyncio.shield(worker)
 
     async def _command_worker(self, socket, config: MachineConfig, commands: asyncio.Queue[MachineCommand | None]) -> None:
         while (command := await commands.get()) is not None:
-            await self._execute(socket, config, command)
+            self._executing += 1
+            try:
+                await self._execute(socket, config, command)
+            finally:
+                self._executing -= 1
+
+    async def _leave_when_quiet(self, commands: asyncio.Queue[MachineCommand | None]) -> None:
+        """Supervised: once another runtime is active and no command, query, agent request or web
+        session turn is in flight, raise `UpgradeReady` (checked on this loop, so nothing starts
+        between the check and the connection closing)."""
+        while self._quiet is not None:
+            await asyncio.sleep(1)
+            self._quiet.leave_if_quiet(commands.empty() and not self._executing and not self._queries and not (self._sessions is not None and self._sessions.busy))
+        await asyncio.Event().wait()
 
     async def _receive(self, socket, config: MachineConfig, commands: asyncio.Queue[MachineCommand | None]) -> bool:
         async for payload in socket:

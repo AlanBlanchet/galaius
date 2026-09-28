@@ -172,6 +172,16 @@ class Config(BaseSettings):
     # never reach those APIs; panels serve last cache and say how old. Override:
     # INTERACT_REFRESH_LIVE_DATA.
     refresh_live_data: bool = True
+    # Automatic upgrades (`interact upgrade`): a signed release from the Interact server this
+    # computer signed in to is installed beside the running one, and every long-lived process moves
+    # to it at its next quiet moment. Local to this computer: never synced from a server (a server
+    # must not be able to turn upgrades back on or hold a computer on an old build).
+    auto_upgrade: bool = True
+    # A version ("0.44.0") or commit prefix to stay on; empty: the newest signed release.
+    upgrade_pin: str = ""
+    upgrade_check_seconds: Annotated[int, Field(ge=30)] = 300
+    # Fall back to GitHub releases when no Interact server is set up (never on a server error).
+    upgrade_github: bool = False
     vlm_max_dim: int = VLM_MAX_DIM_DEFAULT
     vlm_min_dim: int = VLM_MIN_DIM_DEFAULT
     detection_max_retries: int = 3  # judge-driven re-detection passes to recover missed elements

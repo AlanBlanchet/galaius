@@ -33,6 +33,7 @@ from interact.runtime import (  # noqa: F401 — breaker re-exported for tests/v
     breaker,
     config,
 )
+from interact.upgrade.quiet import QuietPoint
 from interact.vision.core import VisionError
 
 _log = logging.getLogger("interact")
@@ -362,9 +363,15 @@ async def _lifespan(_: FastMCP) -> AsyncIterator[None]:
     # The reaper stays HERE: it closes browser sessions owned by this loop, and touching them
     # from another one is a different bug. It never reads the registry.
     reaper = asyncio.create_task(sandbox._idle_session_reaper(config.session_idle_ttl))
+    # Supervised (`interact mcp` under its upgrade relay): once another runtime is active, say
+    # whether swapping this worker would lose an open browser session or sandbox.
+    quiet = QuietPoint.current()
+    reporter = None if quiet is None else _SideLoop("interact-upgrade-report", functools.partial(_report_quiet, quiet))
     try:
         yield
     finally:
+        if reporter is not None:
+            reporter.stop()
         mirror.stop()
         reaper.cancel()
         with suppress(asyncio.CancelledError):
@@ -372,6 +379,14 @@ async def _lifespan(_: FastMCP) -> AsyncIterator[None]:
         await _sessions.close_all()
         sandbox._close_sandbox()
         unregister_server(reg)
+
+
+async def _report_quiet(quiet: QuietPoint, alive) -> None:
+    from interact.server import sandbox  # noqa: PLC0415 - circular: interact.server.sandbox imports this module
+
+    while alive():
+        quiet.report(bool(_sessions.active()) or sandbox._sandbox is not None)
+        await asyncio.sleep(0.5)
 
 
 def _instructions() -> str:
@@ -411,8 +426,8 @@ def _instructions() -> str:
         "— just the binary/command, no env tricks needed (the sandbox forces software GL itself so a "
         "GPU app renders instead of capturing black) — and drive it via `target=\"nested:<title>\"`, an "
         "isolated, occlusion-proof display. If `launch_app` isn't in your tool list, your interact "
-        "server is out of date: ask the user to reconnect/restart the interact MCP server to load it "
-        "(don't fall back to raw shell automation). "
+        "server is out of date: it moves to the newest installed version by itself once no browser "
+        "session or sandbox is open (`interact upgrade` shows its state); don't fall back to raw shell automation. "
         "If sandbox launches start failing (e.g. rc=1 for every app after many launches), the display "
         "is respawned automatically on the next `launch_app`, or call `reset_sandbox` to force a clean "
         "one — keep using the sandbox, don't switch to driving the real desktop. "

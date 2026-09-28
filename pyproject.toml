@@ -21,6 +21,7 @@ dependencies = [
     "pynput>=1.7; sys_platform != 'linux'", # pointer + keyboard for the macOS/Windows desktop backend (#24); on Linux it would pull source-only evdev
     "pywin32>=306; sys_platform == 'win32'", # Windows: owner-only file ACLs + DPAPI for saved credentials (interact/private_files.py)
     "httpx>=0.28.1",
+    "cryptography>=44",  # imported directly: verifies the ed25519 signature on every automatic upgrade (interact/upgrade/source.py)
     "websockets>=14,<16",
     "litellm>=1.83.4,<2",
     "openai>=1.0",  # imported directly (vision/core.py maps its exception tree), not only via litellm

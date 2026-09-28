@@ -39,3 +39,6 @@ vscode-extension/src/settings.json
 *.code-workspace
 
 .recovery/
+
+# Stamped by scripts/release.py into a source snapshot, never committed
+src/interact/data/build.json

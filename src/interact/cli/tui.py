@@ -16,6 +16,7 @@ instantly; the provider/usage details fill in a moment later.
 import asyncio
 import json
 import os
+import time
 import webbrowser
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -48,6 +49,8 @@ from interact.cli.clients import ClientTarget
 from interact.cli.usage import UsageReport
 from interact.config import SETTINGS, Setting, UserConfig, groups
 from interact.server_tool_settings import PORTABLE_ENV, ServerToolSettings
+from interact.upgrade.quiet import QuietPoint, UpgradeReady
+from interact.upgrade.store import EXIT_UPGRADE
 from interact.agents.catalog_connection import CatalogConnectionError
 from interact.server_workspace import AgentEdit, ServerWorkspace, WorkflowConflictError, WorkflowRunRejected, WorkflowRunRequest
 
@@ -575,7 +578,10 @@ class InteractTUI(App):
         self._refresh_usage_basic()
         self.query_one("#status-body", Static).update(self._status_text())
         self.run_worker(self._load_registry_info, thread=True, exclusive=True, group="registry")  # heavy bits, off-thread
-        self.run_worker(self._check_update, thread=True)
+        self._quiet = QuietPoint.current()
+        self._last_input = time.monotonic()
+        if self._quiet is not None:
+            self.set_interval(5, self._upgrade_when_idle)
         self._ensure_focus()  # so the keyboard works immediately, before any click
 
     def _ensure_focus(self) -> None:
@@ -872,25 +878,26 @@ class InteractTUI(App):
                 shown,
             )
 
-    # ── Update banner ────────────────────────────────────────────────────────────
-    def _check_update(self) -> None:
-        from interact.cli.update import available_update
+    # ── Upgrade ──────────────────────────────────────────────────────────────────
+    #: Without a key press or click this long, a waiting upgrade restarts the dashboard on it.
+    upgrade_idle_seconds = 60.0
 
-        newer = available_update()
-        if not newer:
+    async def on_event(self, event: events.Event) -> None:
+        if isinstance(event, (events.Key, events.MouseDown, events.MouseScrollDown, events.MouseScrollUp)):
+            self._last_input = time.monotonic()
+        await super().on_event(event)
+
+    def _upgrade_when_idle(self) -> None:
+        """Say that a new version waits; leave for it once nobody has touched the dashboard."""
+        if self._quiet is None or not self._quiet.waiting():
             return
-
-        def show() -> None:
-            if not self.is_running:
-                return
-            try:
-                banner = self.query_one("#update-banner", Static)
-                banner.update(f"  ⬆ Update available: v{newer} — quit and run `interact update`  ")
-                banner.remove_class("hidden")
-            except NoMatches:
-                pass
-
-        self.call_from_thread(show)
+        banner = self.query_one("#update-banner", Static)
+        banner.update(f"  New Interact version ready: this dashboard restarts on it after {self.upgrade_idle_seconds:.0f} s without a key press  ")
+        banner.remove_class("hidden")
+        try:
+            self._quiet.leave_if_quiet(time.monotonic() - self._last_input >= self.upgrade_idle_seconds)
+        except UpgradeReady:
+            self.exit(return_code=EXIT_UPGRADE)
 
     def action_refresh(self) -> None:
         self._refresh_connectors()
@@ -934,4 +941,7 @@ def _field(label: str, description: str, widget) -> ComposeResult:
 
 
 def run() -> None:
-    InteractTUI().run()
+    app = InteractTUI()
+    app.run()
+    if app.return_code == EXIT_UPGRADE:
+        raise UpgradeReady("the dashboard left for a new version")

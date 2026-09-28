@@ -933,6 +933,7 @@ name = "interact"
 version = "0.43.0"
 source = { editable = "." }
 dependencies = [
+    { name = "cryptography" },
     { name = "cyclopts" },
     { name = "datasets" },
     { name = "evdev", marker = "platform_machine != 'x86_64' and sys_platform == 'linux'" },
@@ -975,6 +976,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cryptography", specifier = ">=44" },
     { name = "cyclopts", specifier = ">=3.0" },
     { name = "datasets", specifier = ">=2.20" },
     { name = "evdev", marker = "platform_machine != 'x86_64' and sys_platform == 'linux'", specifier = ">=1.9" },

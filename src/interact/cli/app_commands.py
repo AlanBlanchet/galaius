@@ -34,7 +34,6 @@ from interact.agents.run import ModelUnavailable, is_criterion, rank_candidates,
 from interact.cli.clients import ClientTarget, MCPServer, Scope
 from interact.cli.command_bootstrap import Config, UserConfig
 from interact.cli.render import CliRenderer
-from interact.cli.update import REPO, available_update, installed_version
 from interact.cli.usage import UsageReport, default_log_path
 from interact.cli.view import View
 from interact.criteria import Criteria, CriteriaError, Variables
@@ -487,36 +486,6 @@ def usage(
                 else f"${group.cost:.4f}"
             )
             print(f"  {group.name:<40} {group.calls:>6} {' ':>10} {' ':>10} {cost:>10}")
-
-
-def update(check: Annotated[bool, Parameter(name=["--check", "-c"])] = False) -> None:
-    """Update interact to the latest GitHub release (or just check with --check).
-
-    Parameters
-    ----------
-    check
-        Only report whether an update is available; don't install it.
-    """
-
-
-    current = installed_version()
-    newer = available_update()
-    if not newer:
-        print(f"interact {current} is up to date.")
-        return
-    print(f"Update available: {current} → {newer}")
-    if check:
-        print("Run `interact update` to install it.")
-        return
-    source = f"git+https://github.com/{REPO}"
-    if shutil.which("uv"):
-        subprocess.run(["uv", "tool", "install", "--force", source], check=True)
-    elif shutil.which("pipx"):
-        subprocess.run(["pipx", "install", "--force", source], check=True)
-    else:
-        print("Need uv or pipx to update. See install.sh.")
-        raise SystemExit(1)
-    print(f"✓ updated to {newer}")
 
 
 def report(
