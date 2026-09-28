@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import httpx
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from interact.config.settings import Config
 from interact.config.user import UserConfig
@@ -83,11 +83,14 @@ class UpgradeCheck(BaseModel):
         return max(known, key=lambda order: order.key) if known else None
 
     def run(self) -> str:
-        """What happened, in a sentence (also recorded when it changed something or refused)."""
+        """What happened, in a sentence (recorded when it changed something or refused)."""
         self.store.schedule(self.policy.every)
         if not self.policy.enabled:
             return "automatic upgrades are off (interact upgrade on)"
-        source = self.source()
+        try:
+            source = self.source()
+        except ValueError as error:
+            return self.refused(f"the remembered Interact server is not a release source: {error}")
         if source is None:
             return "no Interact server set up (interact login), so no release to check"
         with self.exclusive(), source.client() as http:
@@ -95,23 +98,31 @@ class UpgradeCheck(BaseModel):
                 release = source.latest(http, self.keys)
             except ReleaseRefused as error:
                 return self.refused(f"{source.base}: {error}")
-            except (httpx.HTTPError, ValueError) as error:
+            except ValidationError as error:
+                return self.refused(f"{source.base}: a signed document that is not a release ({error.error_count()} problems)")
+            except httpx.HTTPError as error:
                 return f"{source.base} did not answer ({type(error).__name__}); trying again in {self.policy.every} s"
-            if self.policy.pin and release.version != self.policy.pin and not release.commit.startswith(self.policy.pin):
+            pinned = bool(self.policy.pin) and release.commit.startswith(self.policy.pin)
+            if self.policy.pin and not pinned:
                 return f"pinned to {self.policy.pin}; {source.kind} offers {release.label()}"
             if release.expired():
                 return self.refused(f"{release.label()} expired on {release.expires_at:%Y-%m-%d}: the server has not published since")
             running = self.running()
-            if running is not None and release.order <= running and not self.policy.pin:
-                if release.order < running:
+            if (receipt := self.store.active().receipt()) is not None and receipt.identity == release.identity:
+                return f"up to date ({release.label()})"
+            if running is not None and release <= running and not pinned:
+                if release < running:
                     return self.refused(f"{source.kind} offers {release.label()}, older than {running.label()} which this computer already ran")
                 return f"up to date ({running.label()})"
             if self.store.failed(release.identity):
                 return f"{release.label()} failed to start here before; waiting for a newer release"
-            if (receipt := self.store.active().receipt()) is not None and receipt.identity == release.identity:
-                return f"up to date ({release.label()})"
-            runtime = self.install(source, http, release)
-        self.store.activate(runtime, explicit=bool(self.policy.pin))
+            try:
+                runtime = self.install(source, http, release)
+            except ReleaseRefused as error:
+                return self.refused(f"{release.label()}: {error}")
+            except (RuntimeError, OSError, httpx.HTTPError) as error:
+                return self.refused(f"{release.label()} did not install: {error}")
+        self.store.activate(runtime, explicit=pinned)
         self.store.prune()
         return f"{release.label()} installed and active; running processes move to it at their next quiet moment"
 

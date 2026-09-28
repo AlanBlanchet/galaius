@@ -98,7 +98,7 @@ def test_an_older_release_than_this_computer_ran_is_refused_and_said_once(tmp_pa
     assert check.run().startswith("up to date")
 
 
-@pytest.mark.parametrize(("policy", "said"), [({"enabled": False}, "off"), ({"pin": "0.43.0"}, "pinned to 0.43.0")])
+@pytest.mark.parametrize(("policy", "said"), [({"enabled": False}, "off"), ({"pin": "abcdef0"}, "pinned to abcdef0")])
 def test_off_and_pinned_install_nothing_newer(tmp_path, signer, published, monkeypatch, policy, said) -> None:
     published.publish(signer, release("0.44.0", 30))
     assert said in checker(tmp_path, signer, published, monkeypatch, **policy).run()
@@ -128,3 +128,41 @@ def test_a_workflow_file_root_never_reaches_the_installed_runtimes(tmp_path, mon
                            token="t" * 32, permission_ceiling="read_only", working_directory=tmp_path / "work", file_roots=("runtimes/0.44.0-x", "runtimes", "data"))
     usable, refused = config.usable_file_roots()
     assert usable == ((tmp_path / "work" / "data").resolve(),) and set(refused) == {"runtimes/0.44.0-x", "runtimes"}
+
+
+def test_a_pin_names_one_build_and_only_that_build_passes_the_floor(tmp_path, signer, published, monkeypatch) -> None:
+    check = checker(tmp_path, signer, published, monkeypatch, pin="000000a")
+    check.store._update(lambda pointer: pointer.model_copy(update={"floor": release("0.44.0", 20).order}))
+    published.publish(signer, release("0.44.0", 5, commit="000000b"))  # older, not the pinned build
+    assert "pinned to 000000a" in check.run()
+    installed = []
+
+    def install(self, source, http, document):
+        installed.append(document.commit)
+        raise RuntimeError("stopped before installing")
+
+    monkeypatch.setattr(UpgradeCheck, "install", install)
+    published.publish(signer, release("0.44.0", 10, commit="000000a"))  # older, but the one the person pinned
+    check.run()
+    assert installed == ["000000a"]
+
+
+@pytest.mark.parametrize("broken", ["wheel bytes differ", "wheel missing"])
+def test_a_release_file_that_fails_to_download_or_verify_is_recorded_not_raised(tmp_path, signer, published, monkeypatch, broken) -> None:
+    check = UpgradeCheck(store=RuntimeStore(root=tmp_path / "runtimes"), keys=signer.keys(), policy=UpgradePolicy(enabled=True, pin="", every=300, github=False))
+    monkeypatch.setattr(UpgradeCheck, "source", lambda self: published.source)
+    document = release("0.44.0", 10)
+    published.publish(signer, document)
+    if broken == "wheel bytes differ":
+        for wheel in document.files:
+            (published.root / wheel.file).write_bytes(b"tampered")
+    said = check.run()
+    assert check.store.events()[-1].kind == "refused" and document.label() in said
+    assert check.store.pointer().active is None
+
+
+def test_a_remembered_plain_http_server_elsewhere_is_refused_as_a_source(tmp_path, signer, monkeypatch) -> None:
+    check = UpgradeCheck(store=RuntimeStore(root=tmp_path / "runtimes"), keys=signer.keys(), policy=UpgradePolicy(enabled=True, pin="", every=300, github=False))
+    monkeypatch.setattr(UpgradeCheck, "server", staticmethod(lambda: "http://interact.example.com"))
+    assert "not a release source" in check.run()
+    assert check.store.events()[-1].kind == "refused"

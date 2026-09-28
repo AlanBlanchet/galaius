@@ -895,7 +895,7 @@ class InteractTUI(App):
         banner.update(f"  New Interact version ready: this dashboard restarts on it after {self.upgrade_idle_seconds:.0f} s without a key press  ")
         banner.remove_class("hidden")
         try:
-            self._quiet.leave_if_quiet(time.monotonic() - self._last_input >= self.upgrade_idle_seconds)
+            self._quiet.step(time.monotonic() - self._last_input < self.upgrade_idle_seconds)
         except UpgradeReady:
             self.exit(return_code=EXIT_UPGRADE)
 

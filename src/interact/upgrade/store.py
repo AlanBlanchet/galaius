@@ -14,6 +14,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -76,13 +77,19 @@ class Runtime(BaseModel):
         return receipt.build.label() if receipt is not None and receipt.build is not None else self.path.name
 
 
+#: Where a runtime's wheels came from: the signed-in server, GitHub releases, a person's own build.
+ReleaseOrigin = Literal["server", "github", "local"]
+#: What an upgrade event says happened.
+EventKind = Literal["checked", "installed", "activated", "refused", "rolled_back", "failed", "restarted"]
+
+
 class RuntimeReceipt(BaseModel):
     """What was installed into a runtime and from where; `identity` is its interact wheel's sha256."""
 
     model_config = ConfigDict(frozen=True)
     build: BuildIdentity | None
     identity: str
-    source: Literal["server", "github", "local"]
+    source: ReleaseOrigin
     installed_at: datetime
     packages: dict[str, str]
 
@@ -101,7 +108,7 @@ class UpgradeEvent(BaseModel):
 
     model_config = ConfigDict(frozen=True)
     at: datetime
-    kind: Literal["checked", "installed", "activated", "refused", "rolled_back", "failed", "restarted"]
+    kind: EventKind
     text: str
 
 
@@ -228,7 +235,8 @@ class RuntimeStore(BaseModel):
         launches then start on the active runtime too, and prune never strands it. Any other
         launcher (a bootstrap install's own) is left alone: its supervisor starts the active worker."""
         launcher = self.launcher()
-        if launcher is None or not launcher.is_symlink() or not Path(os.readlink(launcher)).is_relative_to(self.root) or not (runtime.path / "bin" / "interact").is_file():
+        if launcher is None or not launcher.is_symlink() or not Path(os.readlink(launcher)).is_relative_to(self.root) \
+                or not runtime.path.is_relative_to(self.root) or not (runtime.path / "bin" / "interact").is_file():
             return
         temporary = launcher.with_name(f".{launcher.name}-{os.getpid()}")
         temporary.unlink(missing_ok=True)
@@ -251,63 +259,69 @@ class RuntimeStore(BaseModel):
         self.record("activated", f"{runtime.label()} is now the active runtime" + (" (chosen locally)" if explicit else ""))
         return pointer
 
-    def roll_back(self, failed: Runtime, reason: str) -> Runtime:
-        """`failed` did not start: remember its build as failed, point back to the previous runtime
-        (else this process's own) and say so."""
-        receipt = failed.receipt()
+    def roll_back(self, suspect: Runtime, reason: str) -> Runtime:
+        """`suspect` did not start: point back to the previous runtime (else this process's own).
+        Its build is only CONDEMNED (`condemn`) once the runtime rolled back to starts: a failure
+        both share is this computer's, not the release's."""
         target: list[Runtime] = []
 
         def change(current: Pointer) -> Pointer:
-            previous = Runtime(path=current.previous) if current.previous is not None and current.previous != failed.path else None
+            previous = Runtime(path=current.previous) if current.previous is not None and current.previous != suspect.path else None
             back = previous if previous is not None and previous.usable() else Runtime.own()
             target.append(back)
-            if current.active not in (None, failed.path):
+            if current.active not in (None, suspect.path):
                 return current  # someone already moved the pointer on: leave their choice
-            failures = (*current.failed, receipt.identity) if receipt is not None and receipt.identity not in current.failed else current.failed
-            return current.model_copy(update={"active": back.path, "previous": None, "failed": failures})
+            return current.model_copy(update={"active": back.path, "previous": None})
 
         self._update(change)
-        self.record("rolled_back", f"{failed.label()} failed to start ({reason}); back on {target[0].label()}")
+        self.record("rolled_back", f"{suspect.label()} did not start ({reason}); back on {target[0].label()}")
         return target[0]
+
+    def condemn(self, runtime: Runtime) -> None:
+        """`runtime`'s build failed where the previous one works: never installed again here."""
+        receipt = runtime.receipt()
+        if receipt is None:
+            return
+        self._update(lambda current: current if receipt.identity in current.failed else current.model_copy(update={"failed": (*current.failed, receipt.identity)}))
+        self.record("failed", f"{runtime.label()} failed to start where the previous runtime works: it will not be installed again")
 
     def failed(self, identity: str) -> bool:
         return identity in self.pointer().failed
 
     # ---- installing --------------------------------------------------------------------------
 
-    def install(self, wheels: dict[str, Path], lock: Path | None, build: BuildIdentity | None, source: Literal["server", "github", "local"], python: str | None = None) -> Runtime:
+    def install(self, wheels: dict[str, Path], lock: Path | None, build: BuildIdentity | None, source: ReleaseOrigin, python: str | None = None) -> Runtime:
         """A new runtime holding `wheels` (`interact`, `interact-core`), not yet active.
 
-        With `lock` (a signed release) every dependency comes from it, each checked by hash, none
-        resolved; without (a person's local build) uv resolves them as `uv tool install` does."""
-        with self.locked():
-            stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
-            version = build.version if build is not None else "local"
-            runtime = Runtime(path=self.root / f"{version}-{stamp}")
-            uv = Uv.find(self.data_home())
-            marker = runtime.path.with_name(runtime.path.name + ".installing")
-            marker.write_text(str(os.getpid()))
-            try:
-                uv.run("venv", "--quiet", "--python", python or f"{sys.version_info.major}.{sys.version_info.minor}", str(runtime.path))
-                requirements = runtime.path / "requirements.txt"
-                pinned = "".join(f"{name} @ {path.resolve().as_uri()} --hash=sha256:{self.digest(path)}\n" for name, path in sorted(wheels.items()))
-                if lock is not None:
-                    requirements.write_text(lock.read_text(encoding="utf-8") + pinned, encoding="utf-8")
-                    uv.run("pip", "install", "--quiet", "--python", str(runtime.python), "--no-config", "--require-hashes", "--no-deps", "-r", str(requirements))
-                else:
-                    overrides = runtime.path / "overrides.txt"
-                    overrides.write_text(f"interact-core @ {wheels['interact-core'].resolve().as_uri()}\n", encoding="utf-8")
-                    uv.run("pip", "install", "--quiet", "--python", str(runtime.python), "--no-config", "--overrides", str(overrides), str(wheels["interact"]))
-                packages = self.probe(runtime)
-                if build is not None and packages.get("interact") != build.version:
-                    raise RuntimeError(f"the runtime imports interact {packages.get('interact')}, the release says {build.version}")
-                receipt = RuntimeReceipt(build=build, identity=self.digest(wheels["interact"]), source=source, installed_at=datetime.now(UTC), packages=packages)
-                (runtime.path / Runtime.receipt_name).write_text(receipt.model_dump_json(indent=2) + "\n", encoding="utf-8")
-            except BaseException:
-                shutil.rmtree(runtime.path, ignore_errors=True)
-                raise
-            finally:
-                marker.unlink(missing_ok=True)
+        Built in a private staging folder (relocatable) and renamed into place only after its import
+        probe passed: a runtime under its final name is always complete. With `lock` (a signed
+        release) every dependency comes from it, each checked by hash, none resolved; without (a
+        person's local build) uv resolves them as `uv tool install` does."""
+        PRIVATE_FILES.directory(self.root)
+        uv = Uv.find(self.data_home())
+        staging = Runtime(path=Path(tempfile.mkdtemp(prefix=".staging-", dir=self.root)))
+        try:
+            uv.run("venv", "--quiet", "--relocatable", "--allow-existing", "--python", python or f"{sys.version_info.major}.{sys.version_info.minor}", str(staging.path))
+            requirements = staging.path / "requirements.txt"
+            pinned = "".join(f"{name} @ {path.resolve().as_uri()} --hash=sha256:{self.digest(path)}\n" for name, path in sorted(wheels.items()))
+            if lock is not None:
+                requirements.write_text(lock.read_text(encoding="utf-8") + pinned, encoding="utf-8")
+                uv.run("pip", "install", "--quiet", "--python", str(staging.python), "--no-config", "--require-hashes", "--no-deps", "-r", str(requirements))
+            else:
+                overrides = staging.path / "overrides.txt"
+                overrides.write_text(f"interact-core @ {wheels['interact-core'].resolve().as_uri()}\n", encoding="utf-8")
+                uv.run("pip", "install", "--quiet", "--python", str(staging.python), "--no-config", "--overrides", str(overrides), str(wheels["interact"]))
+            packages = self.probe(staging)
+            if build is not None and packages.get("interact") != build.version:
+                raise RuntimeError(f"the runtime imports interact {packages.get('interact')}, the release says {build.version}")
+            receipt = RuntimeReceipt(build=build, identity=self.digest(wheels["interact"]), source=source, installed_at=datetime.now(UTC), packages=packages)
+            (staging.path / Runtime.receipt_name).write_text(receipt.model_dump_json(indent=2) + "\n", encoding="utf-8")
+            runtime = Runtime(path=self.root / f"{build.version if build is not None else 'local'}-{datetime.now(UTC):%Y%m%dT%H%M%S%fZ}")
+            with self.locked():
+                staging.path.rename(runtime.path)
+        except BaseException:
+            shutil.rmtree(staging.path, ignore_errors=True)
+            raise
         self.record("installed", f"installed {runtime.label()} from {source}")
         return runtime
 
@@ -351,21 +365,27 @@ class RuntimeStore(BaseModel):
 
     def prune(self) -> list[Path]:
         """Remove installed runtimes nothing needs: never the active, previous or a live one, and
-        the `keep` newest others stay. Only runtimes this store installed (a receipt) go."""
+        the `keep` newest others stay. Only runtimes this store installed (a receipt) go; so do
+        leftovers of an interrupted install or prune (`.staging-*` older than a day, `.trash-*`).
+        A folder that cannot go now (in use on Windows) stays for the next prune."""
+        removed = []
         with self.locked():
             pointer = self.pointer()
             protected = {pointer.active, pointer.previous, *self.in_use()}
             managed = sorted((path for path in self.root.iterdir() if path.is_dir() and not path.name.startswith(".") and Runtime(path=path).receipt() is not None), key=lambda path: path.stat().st_mtime, reverse=True)
-            removable = [path for path in managed if path not in protected][self.keep:]
-            for path in removable:
-                trash = path.with_name(f".trash-{path.name}")
-                path.rename(trash)
-                shutil.rmtree(trash, ignore_errors=True)
-        return removable
+            leftovers = [path for path in self.root.glob(".trash-*")] + [path for path in self.root.glob(".staging-*") if time.time() - path.stat().st_mtime > 86400]
+            for path in [path for path in managed if path not in protected][self.keep:] + leftovers:
+                try:
+                    trash = path if path.name.startswith(".trash-") else path.rename(path.with_name(f".trash-{path.name}"))
+                    shutil.rmtree(trash)
+                except OSError:
+                    continue
+                removed.append(path)
+        return removed
 
     # ---- what happened, and when to look again -----------------------------------------------
 
-    def record(self, kind: str, text: str) -> None:
+    def record(self, kind: EventKind, text: str) -> None:
         PRIVATE_FILES.directory(self.root)
         with open(self.events_path, "a", encoding="utf-8") as stream:
             stream.write(UpgradeEvent(at=datetime.now(UTC), kind=kind, text=text).model_dump_json() + "\n")

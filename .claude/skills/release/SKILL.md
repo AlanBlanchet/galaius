@@ -42,8 +42,10 @@ impact since the last release:
 4. When the user asks to push: `git push origin main`. CI tags `vX.Y.Z` and publishes the
    release. Do **not** `git tag`/`git push --tags` yourself.
 
-5. After a release, `interact update` (and the TUI banner) will offer it to installed users
-   from GitHub.
+5. Installed computers upgrade themselves from their Interact server's signed release
+   (`interact upgrade`, signed by the server's deploy); a GitHub release reaches them only when it
+   carries `release.json` + `release.json.sig` signed with the release key and they turned
+   `upgrade_github` on.
 
 ## Guardrails
 

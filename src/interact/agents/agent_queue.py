@@ -23,6 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from interact.agents import registry as reg
 from interact.agents.providers import _safe_process_detail
 from interact.processes import process_started
+from interact.upgrade.store import Runtime, RuntimeStore
 
 MAX_PENDING = 128
 _POLL_SECONDS = 0.1
@@ -449,6 +450,7 @@ async def wait_for_item(run_id: str, item_id: str) -> QueueItem | None:
 
 def main() -> None:
     if len(sys.argv) in {3, 4} and sys.argv[1] == "--dispatch":
+        RuntimeStore.default().register(Runtime.own(), os.getpid())  # a run can outlive an upgrade: its runtime stays until it ends
         dispatch(sys.argv[2], sys.argv[3] if len(sys.argv) == 4 else None)
         return
     raise SystemExit("usage: python -m interact.agents.agent_queue --dispatch RUN_ID")

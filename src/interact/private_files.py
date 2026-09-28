@@ -16,6 +16,7 @@ folders holding them. One owner of "private" per operating system (`PRIVATE_FILE
 
 import base64
 import os
+import time
 import stat
 import sys
 from pathlib import Path
@@ -75,7 +76,7 @@ class PrivateFiles(BaseModel):
                 stream.write(text.encode("utf-8"))
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.replace(temporary, path)
+            self._replace(temporary, path)
             self._settle(path.parent)
         finally:
             temporary.unlink(missing_ok=True)
@@ -109,6 +110,9 @@ class PrivateFiles(BaseModel):
         """The rename itself survives a power cut."""
         raise NotImplementedError
 
+    def _replace(self, temporary: Path, path: Path) -> None:
+        os.replace(temporary, path)
+
 
 class PosixPrivateFiles(PrivateFiles):
     """POSIX: private = the mode bits and the owner uid; secrets stored as they are."""
@@ -139,6 +143,18 @@ class WindowsPrivateFiles(PrivateFiles):
     #: Mixed into every sealed value. Public (it is in this source): it keeps interact's blobs apart
     #: from other programs' DPAPI data, never from a program of this user that reads this file.
     entropy: ClassVar[bytes] = b"interact.private-files.v1"
+
+    def _replace(self, temporary: Path, path: Path) -> None:
+        """A file another process has open (a supervisor reading the upgrade pointer) refuses the
+        rename for that instant: try again for up to 2 s before failing."""
+        for attempt in range(40):
+            try:
+                os.replace(temporary, path)
+                return
+            except PermissionError:
+                if attempt == 39:
+                    raise
+                time.sleep(0.05)
 
     @staticmethod
     def user():

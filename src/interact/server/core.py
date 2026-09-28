@@ -366,7 +366,7 @@ async def _lifespan(_: FastMCP) -> AsyncIterator[None]:
     # Supervised (`interact mcp` under its upgrade relay): once another runtime is active, say
     # whether swapping this worker would lose an open browser session or sandbox.
     quiet = QuietPoint.current()
-    reporter = None if quiet is None else _SideLoop("interact-upgrade-report", functools.partial(_report_quiet, quiet))
+    reporter = None if quiet is None else _SideLoop("interact-upgrade-report", lambda alive: quiet.watch(lambda: bool(_sessions.active()) or sandbox._sandbox is not None, alive=alive))
     try:
         yield
     finally:
@@ -379,14 +379,6 @@ async def _lifespan(_: FastMCP) -> AsyncIterator[None]:
         await _sessions.close_all()
         sandbox._close_sandbox()
         unregister_server(reg)
-
-
-async def _report_quiet(quiet: QuietPoint, alive) -> None:
-    from interact.server import sandbox  # noqa: PLC0415 - circular: interact.server.sandbox imports this module
-
-    while alive():
-        quiet.report(bool(_sessions.active()) or sandbox._sandbox is not None)
-        await asyncio.sleep(0.5)
 
 
 def _instructions() -> str:

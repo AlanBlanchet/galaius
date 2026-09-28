@@ -1,10 +1,13 @@
 """The worker's side of an upgrade: noticing that the pointer moved, and saying when it can go.
 
-A relayed worker (MCP) REPORTS whether it holds something a swap would lose; its supervisor picks
-the moment. Any other worker LEAVES by itself: it raises `UpgradeReady` at a point where it holds
-nothing (no command running, no key pressed lately) and the CLI exits `EXIT_UPGRADE`."""
+Every supervised member supplies one predicate, "do I hold something a swap would lose?", and
+calls `step` on its own beat (or runs `watch`). A relayed worker (MCP, console) REPORTS the answer:
+its supervisor picks the moment. Any other worker LEAVES: `step` raises `UpgradeReady` once it
+holds nothing, and the CLI exits `EXIT_UPGRADE`."""
 
+import asyncio
 import time
+from collections.abc import Callable
 
 from pydantic import BaseModel, ConfigDict
 
@@ -36,12 +39,24 @@ class QuietPoint(BaseModel):
             self.seen = (signature, self.store.active().path != self.supervision.runtime)
         return self.seen[1]
 
-    def report(self, holds: bool) -> None:
-        """Relay mode: tell the supervisor, once an upgrade waits, whether a swap would lose state."""
-        if self.supervision.state is not None and self.waiting():
+    def step(self, holds: bool) -> None:
+        """Once an upgrade waits: report `holds` to the relay, or leave (`UpgradeReady`) when this
+        worker holds nothing. A report that cannot be written now (a Windows reader holding the
+        file) is simply the next beat's."""
+        if not self.waiting():
+            return
+        if self.supervision.mode == "exit":
+            if not holds:
+                raise UpgradeReady(f"another runtime is active; leaving {self.supervision.runtime}")
+            return
+        try:
             PRIVATE_FILES.write_text(self.supervision.state, WorkerState(holds=holds, at=time.time()).model_dump_json())
+        except OSError:
+            pass
 
-    def leave_if_quiet(self, quiet: bool) -> None:
-        """Exit mode: raise `UpgradeReady` when an upgrade waits and this worker holds nothing."""
-        if self.supervision.mode == "exit" and quiet and self.waiting():
-            raise UpgradeReady(f"another runtime is active; leaving {self.supervision.runtime}")
+    async def watch(self, holds: Callable[[], bool], every: float = 0.5, alive: Callable[[], bool] = lambda: True) -> None:
+        """`step` every `every` seconds on this event loop (so nothing starts between the look and
+        the leaving) while `alive()`."""
+        while alive():
+            self.step(holds())
+            await asyncio.sleep(every)

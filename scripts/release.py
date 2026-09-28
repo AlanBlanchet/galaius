@@ -12,6 +12,7 @@ import argparse
 import os
 import shutil
 import subprocess
+import tomllib
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -51,7 +52,7 @@ class Publisher:
     def build(self, commit: str, released_at: datetime, signer: ReleaseSigner) -> Release:
         self.out.mkdir(parents=True, exist_ok=True)
         stamped = self.source / "src" / "interact" / "data" / BuildIdentity.path
-        version = next(line.split('"')[1] for line in (self.source / "pyproject.toml").read_text().splitlines() if line.startswith("version"))
+        version = tomllib.loads((self.source / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
         stamped.write_text(BuildIdentity(version=version, released_at=released_at, commit=commit).model_dump_json() + "\n", encoding="utf-8")
         wheels = (self.wheel(self.source), self.wheel(self.core))
         release = Release.described(wheels, self.lock(), commit, released_at, self.lifetime)

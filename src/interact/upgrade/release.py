@@ -76,11 +76,31 @@ class ReleaseOrder(BaseModel):
         return f"{self.version} ({self.released_at:%Y-%m-%d %H:%M} UTC)"
 
 
-class Release(ReleaseOrder):
-    """The signed document. `wheels` holds exactly the `interact` and `interact-core` wheels."""
+class BuildIdentity(ReleaseOrder):
+    """One build: its order and the commit it was built from. An installed wheel carries its own
+    (`interact/data/build.json`, written by the publisher before building); a plain checkout none."""
+
+    commit: str = Field(pattern=r"^[0-9a-f]{7,64}$")
+    path: ClassVar[str] = "build.json"
+
+    @classmethod
+    def installed(cls) -> "BuildIdentity | None":
+        entry = files("interact") / "data" / cls.path
+        return cls.model_validate_json(entry.read_bytes()) if entry.is_file() else None
+
+    def label(self) -> str:
+        return f"{self.version} {self.commit[:7]} ({self.released_at:%Y-%m-%d %H:%M} UTC)"
+
+    @classmethod
+    def of(cls, release: "BuildIdentity") -> "BuildIdentity":
+        return cls(version=release.version, released_at=release.released_at, commit=release.commit)
+
+
+class Release(BuildIdentity):
+    """The signed document: one build and every file installing it takes. `wheels` holds exactly
+    the `interact` and `interact-core` wheels."""
 
     schema_version: Literal[1] = 1
-    commit: str = Field(pattern=r"^[0-9a-f]{7,64}$")
     expires_at: datetime
     wheels: tuple[ReleaseFile, ...]
     lock: ReleaseFile
@@ -119,20 +139,3 @@ class Release(ReleaseOrder):
 
     def expired(self, now: datetime | None = None) -> bool:
         return (now or datetime.now(UTC)) >= self.expires_at
-
-
-class BuildIdentity(ReleaseOrder):
-    """The release an installed wheel was built as (`interact/data/build.json`, written by the
-    publisher before building); None for a build from a plain checkout."""
-
-    commit: str
-    path: ClassVar[str] = "build.json"
-
-    @classmethod
-    def installed(cls) -> "BuildIdentity | None":
-        entry = files("interact") / "data" / cls.path
-        return cls.model_validate_json(entry.read_bytes()) if entry.is_file() else None
-
-    @classmethod
-    def of(cls, release: Release) -> "BuildIdentity":
-        return cls(version=release.version, released_at=release.released_at, commit=release.commit)

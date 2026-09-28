@@ -6,6 +6,7 @@ from pathlib import Path
 
 from cyclopts import App
 
+from interact.config.settings import Config
 from interact.config.user import UserConfig
 from interact.upgrade.check import UpgradeCheck, UpgradePolicy
 from interact.upgrade.store import Runtime, RuntimeStore
@@ -51,8 +52,8 @@ def upgrade_use(runtime: Path | None = None) -> None:
             print(f"{'*' if path == store.active().path else ' '} {Runtime(path=path).label():<40} {path}")
         return
     chosen = Runtime(path=runtime.expanduser().resolve())
-    if not chosen.usable():
-        print(f"{chosen.path} is not an installed runtime (run: interact upgrade use)", file=sys.stderr)
+    if not chosen.usable() or not (chosen.path.is_relative_to(store.root.resolve()) or chosen.path == Runtime.own().path):
+        print(f"{chosen.path} is not a runtime of this computer's store (run: interact upgrade use)", file=sys.stderr)
         raise SystemExit(1)
     store.activate(chosen, explicit=True)
     print(f"{chosen.label()} is active; running processes move to it at their next quiet moment")
@@ -73,11 +74,13 @@ def upgrade_on() -> None:
 
 
 @upgrade_app.command(name="pin")
-def upgrade_pin(version: str | None = None) -> None:
-    """Stay on one release (a version like 0.44.0, or a commit prefix). No argument: unpin."""
-    if version:
-        UserConfig.set("INTERACT_UPGRADE_PIN", version)
+def upgrade_pin(commit: str | None = None) -> None:
+    """Stay on one release, named by its commit (7+ hex characters, shown by `interact upgrade`);
+    older than what ran here is allowed: your choice, recorded. No argument: unpin."""
+    if commit:
+        Config.model_validate({"upgrade_pin": commit})
+        UserConfig.set("INTERACT_UPGRADE_PIN", commit)
     else:
         UserConfig.unset("INTERACT_UPGRADE_PIN")
     RuntimeStore.default().schedule(0)
-    print(f"Pinned to {version}." if version else "Unpinned: the newest signed release is used.")
+    print(f"Pinned to {commit}." if commit else "Unpinned: the newest signed release is used.")

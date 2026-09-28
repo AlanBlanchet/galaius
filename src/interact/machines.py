@@ -846,12 +846,11 @@ class MachineRunner:
 
     async def _leave_when_quiet(self, commands: asyncio.Queue[MachineCommand | None]) -> None:
         """Supervised: once another runtime is active and no command, query, agent request or web
-        session turn is in flight, raise `UpgradeReady` (checked on this loop, so nothing starts
-        between the check and the connection closing)."""
-        while self._quiet is not None:
-            await asyncio.sleep(1)
-            self._quiet.leave_if_quiet(commands.empty() and not self._executing and not self._queries and not (self._sessions is not None and self._sessions.busy))
-        await asyncio.Event().wait()
+        session turn is in flight, raise `UpgradeReady` (looked at on this loop, so nothing starts
+        between the look and the connection closing)."""
+        if self._quiet is None:
+            await asyncio.Event().wait()
+        await self._quiet.watch(lambda: not commands.empty() or bool(self._executing) or bool(self._queries) or (self._sessions is not None and self._sessions.busy), every=1)
 
     async def _receive(self, socket, config: MachineConfig, commands: asyncio.Queue[MachineCommand | None]) -> bool:
         async for payload in socket:

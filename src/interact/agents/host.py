@@ -120,17 +120,17 @@ class _ConversationHost(BaseModel):
     async def serve_supervised(self, quiet: QuietPoint | None) -> None:
         """`serve`, telling an upgrade relay (when one supervises this console) whether a turn
         runs: between turns a new host picks every conversation up again on its next send."""
-        reporter = None if quiet is None else asyncio.create_task(self._report_quiet(quiet))
+        reporter = None if quiet is None else asyncio.create_task(quiet.watch(lambda: self.busy))
         try:
             await self.serve()
         finally:
             if reporter is not None:
                 reporter.cancel()
 
-    async def _report_quiet(self, quiet: QuietPoint) -> None:
-        while True:
-            quiet.report(bool(self._active_turns))
-            await asyncio.sleep(0.5)
+    @property
+    def busy(self) -> bool:
+        """A turn is running (swapping this process now would cut it)."""
+        return bool(self._active_turns)
 
     async def _serve_line(self, line: bytes) -> None:
         self._holding = True
@@ -646,8 +646,7 @@ class ConversationHost:
 
     @property
     def busy(self) -> bool:
-        """A turn is running (swapping this process now would cut it)."""
-        return bool(self._host._active_turns)
+        return self._host.busy
 
     async def _run(self, command: BaseModel) -> reg.AgentRun:
         answer = await self._host.dispatch(command)

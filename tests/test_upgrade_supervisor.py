@@ -36,14 +36,14 @@ WORKER = textwrap.dedent('''\
     if quiet.supervision.mode == "exit":
         while True:
             try:
-                quiet.leave_if_quiet(True)
+                quiet.step(False)
             except UpgradeReady:
                 sys.exit(75)
             time.sleep(0.05)
     holds = [False]
     def report():
         while True:
-            quiet.report(holds[0])
+            quiet.step(holds[0])
             time.sleep(0.05)
     threading.Thread(target=report, daemon=True).start()
     def send(body):
@@ -208,8 +208,50 @@ def test_relay_rolls_back_a_runtime_that_fails_to_start_and_says_so(store: Runti
     pointer = store.pointer()
     assert pointer.active == old.path
     assert broken.receipt().identity in pointer.failed
-    assert any(event.kind == "rolled_back" for event in store.events())
+    assert [event.kind for event in store.events()][-2:] == ["rolled_back", "failed"]
+    assert not any(note.get("method") == "notifications/tools/list_changed" or "upgraded" in str(note) for note in client.notifications)
     client.close()
+
+
+@pytest.mark.parametrize("arguments", [("mcp",), ("machine", "connect")])
+def test_a_runtime_this_supervisor_started_with_is_never_blamed_for_exiting_early(store: RuntimeStore, arguments) -> None:
+    previous, active = fake_runtime(store, "0.1.0", 1), fake_runtime(store, "0.2.0", 2, mode="crash-on-start")
+    store.activate(previous)
+    store.activate(active)  # e.g. not signed in yet: exits at once, whatever the build
+    client = Client(store, *arguments)
+    if arguments == ("mcp",):
+        client.send("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}})
+    assert client.process.wait(20) == 3
+    assert store.pointer().active == active.path and store.pointer().failed == ()
+
+
+def test_a_failure_the_previous_runtime_shares_condemns_no_build(store: RuntimeStore) -> None:
+    old, new = fake_runtime(store, "0.1.0", 1), fake_runtime(store, "0.2.0", 2, mode="crash-on-start")
+    store.activate(old)
+    client = Client(store, "machine", "connect")
+    deadline = time.time() + 10
+    while not (store.root / "starts.log").exists() and time.time() < deadline:
+        time.sleep(0.05)
+    (old.path / "mode").write_text("crash-on-start")  # from now on this computer breaks both
+    store.activate(new)
+    assert client.process.wait(20) == 3
+    assert store.pointer().failed == ()
+    assert "both failed to start" in store.events()[-1].text
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="parent-death signal is Linux")
+def test_a_passthrough_worker_ends_with_a_killed_supervisor(store: RuntimeStore) -> None:
+    store.activate(fake_runtime(store, "0.1.0", 1))
+    client = Client(store, "machine", "connect")
+    log = store.root / "starts.log"
+    deadline = time.time() + 10
+    while not log.exists() and time.time() < deadline:
+        time.sleep(0.05)
+    worker = int(log.read_text().split()[1])
+    client.process.kill()
+    while Path(f"/proc/{worker}").exists() and time.time() < deadline + 5:
+        time.sleep(0.05)
+    assert not Path(f"/proc/{worker}").exists() or "Z" in Path(f"/proc/{worker}/stat").read_text().split()[2]
 
 
 def test_relay_answers_a_call_whose_worker_crashed_and_never_runs_it_twice(store: RuntimeStore) -> None:
