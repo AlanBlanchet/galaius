@@ -26,7 +26,9 @@ import pytest
 
 from interact.agents import registry as reg
 from interact.agents.events import TOKEN_FIELDS, AgentEvent
+from interact.private_files import PRIVATE_FILES
 from tests.support import register_run
+from tests.support.private_files import loosen
 
 
 @pytest.fixture(autouse=True)
@@ -100,7 +102,7 @@ def test_registry_storage_is_private_despite_a_permissive_umask():
     parents = (registry.parents[1], registry.parent, registry)
     for directory in parents:
         directory.mkdir(exist_ok=True)
-        directory.chmod(0o775)
+        loosen(directory)
 
     existing = (
         registry / "r1.json",
@@ -123,10 +125,10 @@ def test_registry_storage_is_private_despite_a_permissive_umask():
     finally:
         os.umask(previous_umask)
 
-    assert [stat.S_IMODE(path.stat().st_mode) for path in parents] == [0o700] * len(parents)
     registry_files = [path for path in registry.iterdir() if path.is_file()]
     assert registry_files
-    assert {stat.S_IMODE(path.stat().st_mode) for path in registry_files} == {0o600}
+    for path in (*parents, *registry_files):
+        PRIVATE_FILES.check(path)
     assert not list(registry.glob("*.new")), "an atomic replacement escaped its write boundary"
 
 
@@ -171,8 +173,10 @@ def test_registry_refuses_hostile_writes_through_a_leaf_link(
     assert hashlib.sha256(external.read_bytes()).digest() == original_digest
 
 
-def _open_descriptors() -> int:
-    return len(os.listdir("/proc/self/fd"))
+def _open_descriptors() -> int | None:
+    """How many descriptors this process holds, where the system lists them (/proc); else None."""
+    listed = Path("/proc/self/fd")
+    return len(os.listdir(listed)) if listed.is_dir() else None
 
 
 _COUNTS_DESCRIPTORS = pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="descriptors are counted through /proc")
@@ -333,7 +337,7 @@ def test_private_read_preserves_primary_failure_and_closes_descriptor_once(
     path = reg.agents_dir() / "failed-read.json"
     original = path.read_bytes()
     original_mode = stat.S_IMODE(path.stat().st_mode)
-    descriptor_count = len(os.listdir("/proc/self/fd"))
+    descriptor_count = _open_descriptors()
     real_close = os.close
     failure = OSError(errno.EIO, "primary read failure")
     descriptor: int | None = None
@@ -374,7 +378,7 @@ def test_private_read_preserves_primary_failure_and_closes_descriptor_once(
     with pytest.raises(OSError) as closed:
         os.fstat(descriptor)
     assert closed.value.errno == errno.EBADF
-    assert len(os.listdir("/proc/self/fd")) == descriptor_count
+    assert _open_descriptors() == descriptor_count
     assert path.read_bytes() == original
     assert stat.S_IMODE(path.stat().st_mode) == original_mode
     assert not list(reg.agents_dir().glob("*.new"))

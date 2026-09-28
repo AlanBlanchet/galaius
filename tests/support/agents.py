@@ -9,6 +9,7 @@ One typed factory covers both call sites; a caller only names what its scenario 
 from __future__ import annotations
 
 import sys
+import tempfile
 
 from interact.agents import registry as reg
 from interact.agents import run as _run_module
@@ -79,7 +80,7 @@ def register_run(
     provider: str = "claude",
     name: str = "tester",
     task: str = "do it",
-    cwd: str = "/tmp",
+    cwd: str = tempfile.gettempdir(),
     agent: str | None = None,
     provider_session_id: str | None = None,
     **rest,

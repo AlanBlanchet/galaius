@@ -32,6 +32,7 @@ from interact.agents.catalog_connection import CatalogConnection
 from interact.agents.providers import PROVIDERS, DeniedTool
 from interact.file_lock import exclusive
 from interact.pinned_directory import PinnedDirectory
+from interact.private_files import PRIVATE_FILES
 from interact.server_registry import (
     _alive,  # generic pid liveness (Windows-safe, no signal sent)
 )
@@ -295,18 +296,27 @@ def _ensure_registry_directory() -> Path:
         relative = directory.relative_to(home)
     except ValueError:
         directory.mkdir(parents=True, mode=0o700, exist_ok=True)
-        if directory.is_symlink() or not directory.is_dir():
-            raise OSError(f"unsafe agent registry directory: {directory}")
-        directory.chmod(0o700)
+        _keep_private(directory)
     else:
         current = home
         for part in relative.parts:
             current /= part
             current.mkdir(mode=0o700, exist_ok=True)
-            if current.is_symlink() or not current.is_dir():
-                raise OSError(f"unsafe agent registry directory: {current}")
-            current.chmod(0o700)
+            _keep_private(current)
     return directory
+
+
+def _keep_private(directory: Path) -> None:
+    """`directory` made private to this user when it is not (POSIX: mode 0700; Windows: a protected
+    DACL naming only this user, which its files inherit). Refused when it is a link or junction:
+    making it private would change whatever it points at."""
+    info = directory.lstat()
+    if PinnedDirectory.link_like(info) or not stat.S_ISDIR(info.st_mode):
+        raise OSError(f"unsafe agent registry directory: {directory}")
+    try:
+        PRIVATE_FILES.check(directory)
+    except PermissionError:
+        PRIVATE_FILES.restrict(directory)
 
 
 def _open_private(path: Path, flags: int, *, create: bool = True) -> int:
