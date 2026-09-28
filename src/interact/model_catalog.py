@@ -22,7 +22,7 @@ from pathlib import Path
 
 import httpx
 
-from interact.ttl_cache import TTL_SECONDS, TTLCache, age_of
+from interact.ttl_cache import TTL_SECONDS, RefreshFailed, TTLCache, age_of, describe_age
 
 _log = logging.getLogger(__name__)
 
@@ -67,23 +67,13 @@ class Catalog:
         return f"{len(self.models)} models · {self.source} · {describe_age(self.age_seconds)}"
 
 
-def describe_age(seconds: float) -> str:
-    if seconds < 60:
-        return "just now"
-    if seconds < 3600:
-        return f"{int(seconds // 60)}m ago"
-    if seconds < 86400:
-        return f"{int(seconds // 3600)}h ago"
-    return f"{int(seconds // 86400)}d ago"
-
-
 #: Beside the agent registry, fixed path — CLI and extension both read it, must not move with
 #: ``INTERACT_DEBUG_DIR``.
-_CACHE = TTLCache("model_catalog.json", TTL_SECONDS)
+CACHE = TTLCache("model_catalog.json", TTL_SECONDS)
 
 
 def cache_path() -> Path:
-    return _CACHE.path
+    return CACHE.path
 
 
 def _num(value) -> float | None:
@@ -345,7 +335,7 @@ def _with_scores(models: list[ModelInfo]) -> list[ModelInfo]:
 
 
 def _read_cache() -> Catalog | None:
-    raw = _CACHE.read()
+    raw = CACHE.read()
     if raw is None:
         return None
     try:
@@ -366,7 +356,7 @@ def _read_cache() -> Catalog | None:
 
 
 def _write_cache(catalog: Catalog) -> None:
-    _CACHE.write({
+    CACHE.write({
         "source": catalog.source,
         "fetched_at": catalog.fetched_at,
         "models": [vars(m) | {"input_modalities": list(m.input_modalities)} for m in catalog.models],
@@ -381,24 +371,29 @@ def load_catalog(*, refresh: bool = False) -> Catalog:
     as current.
 
     ``refresh`` skips the TTL and re-fetches — what the periodic refresher passes, so a
-    long-lived server doesn't keep serving what it read at startup. (Used to be
+    long-lived server doesn't keep serving what it read at startup — and raises
+    :class:`RefreshFailed` instead of quietly returning the old copy. (Used to be
     ``@lru_cache``d, making any refresher a silent no-op after its first call.)
     """
     cached = _read_cache()
     if not refresh and cached is not None and cached.age_seconds <= TTL_SECONDS:
         return cached
-
     try:
-        response = httpx.get(_OPENROUTER_URL, timeout=_FETCH_TIMEOUT)
-        response.raise_for_status()
-        models = _from_openrouter(response.json())
-        if models:
-            fresh = Catalog(models=_with_scores(models), source="openrouter", fetched_at=time.time())
-            _write_cache(fresh)
-            return fresh
-    except Exception:
-        pass  # offline, rate-limited, or the shape changed — fall through, never raise
+        fresh = CACHE.refetch("OpenRouter", _fetch)
+    except RefreshFailed:
+        if refresh:
+            raise  # an asked-for refresh that did not happen is said, never passed off as done
+        if cached is not None:
+            return cached  # stale beats nothing; `is_live` already says it's stale
+        return Catalog(models=_with_scores(_from_litellm()), source="litellm", fetched_at=0.0)
+    _write_cache(fresh)
+    return fresh
 
-    if cached is not None:
-        return cached  # stale beats nothing; `is_live` already says it's stale
-    return Catalog(models=_with_scores(_from_litellm()), source="litellm", fetched_at=0.0)
+
+def _fetch() -> Catalog:
+    response = httpx.get(_OPENROUTER_URL, timeout=_FETCH_TIMEOUT)
+    response.raise_for_status()
+    models = _from_openrouter(response.json())
+    if not models:
+        raise RefreshFailed("OpenRouter returned nothing usable")
+    return Catalog(models=_with_scores(models), source="openrouter", fetched_at=time.time())

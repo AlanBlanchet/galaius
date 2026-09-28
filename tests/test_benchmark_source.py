@@ -297,9 +297,9 @@ def test_refresh_bypasses_the_ttl(monkeypatch):
 def test_an_unreachable_upstream_serves_the_stale_cache_rather_than_nothing(monkeypatch):
     monkeypatch.setattr("interact.benchmarks.upstream.fetch_all", lambda *a, **k: {"mmmu": _table()})
     bt.load_tables()
-    raw = bt._CACHE.read()
+    raw = bt.CACHE.read()
     raw["fetched_at"] = time.time() - (bt.TTL_SECONDS * 10)
-    bt._CACHE.write(raw)
+    bt.CACHE.write(raw)
 
     def _boom(*a, **k):
         raise RuntimeError("offline")
@@ -328,7 +328,7 @@ def test_legacy_mmmu_snapshot_is_never_resurrected_from_cache(monkeypatch):
             ("Gemini 3.1 Pro", 0.84), ("Qwen3.5", 0.77),
         )],
     )
-    bt._CACHE.write({"fetched_at": time.time(), "tables": {
+    bt.CACHE.write({"fetched_at": time.time(), "tables": {
         "mmmu_pro": legacy.model_dump(mode="json"),
     }})
 
@@ -346,7 +346,7 @@ def test_legacy_mmmu_snapshot_is_never_resurrected_from_cache(monkeypatch):
 def test_unreceipted_persisted_fallbacks_are_rejected(
     benchmark_id: str, source_url: str, models: tuple[str, ...],
 ) -> None:
-    bt._CACHE.write({"schema_version": 1, "fetched_at": time.time(), "tables": {
+    bt.CACHE.write({"schema_version": 1, "fetched_at": time.time(), "tables": {
         benchmark_id: {"source_url": source_url, "retrieved": "2026-06-07",
                        "entries": [{"model_name": model, "score": 0.8} for model in models]},
     }})
@@ -377,9 +377,9 @@ def test_one_corrupt_table_does_not_blank_the_others(monkeypatch):
     monkeypatch.setattr("interact.benchmarks.upstream.fetch_all",
                         lambda *a, **k: {"mmmu": _table(), "video_mme": _table("Other")})
     bt.load_tables()
-    raw = bt._CACHE.read()
+    raw = bt.CACHE.read()
     raw["tables"]["mmmu"] = {"nonsense": True}
-    bt._CACHE.write(raw)
+    bt.CACHE.write(raw)
     tables = bt.load_tables()
     assert "mmmu" not in tables and tables["video_mme"].entries[0].model_name == "Other"
 
@@ -444,3 +444,59 @@ def test_non_authoritative_scores_never_qualify(
     )
     monkeypatch.setattr("interact.criteria.benchmark_tables.load_tables", lambda: {"mmmu_pro": table})
     assert Criteria.parse("aa.mmmu_pro > 0.9").choose(available_only=False) is None
+
+
+def _stale_board(hours: float) -> None:
+    bs.cache_path().parent.mkdir(parents=True, exist_ok=True)
+    bs.cache_path().write_text(json.dumps({
+        "source": "artificial_analysis",
+        "fetched_at": time.time() - hours * 3600,
+        "scores": [{"name": "Old", "creator": "X", "intelligence": 1.0}],
+    }))
+
+
+def _answer(status: int, headers: dict | None = None, payload: dict | None = None):
+    import httpx
+
+    def get(url, **_):
+        return httpx.Response(status, headers=headers or {}, json=payload or {},
+                              request=httpx.Request("GET", url))
+    return get
+
+
+def _unreachable(url, **_):
+    import httpx
+
+    raise httpx.ConnectError("no route", request=httpx.Request("GET", url))
+
+
+@pytest.mark.parametrize(("get", "reason", "defers"), [
+    (_answer(429, {"retry-after": "3600"}), "rate-limited by Artificial Analysis (HTTP 429), retry in 1h", True),
+    (_answer(429), "rate-limited by Artificial Analysis (HTTP 429), retry in 15m", True),
+    (_answer(503), "Artificial Analysis answered HTTP 503", False),
+    (_unreachable, "Artificial Analysis unreachable (ConnectError: no route)", False),
+    (_answer(200, payload={"data": []}), "Artificial Analysis returned nothing usable", False),
+])
+def test_a_refresh_that_did_not_happen_says_why_and_how_old_the_board_is(monkeypatch, get, reason, defers):
+    """`interact refresh` printed "Refreshed" while AA answered 429 and the board stayed 8 h old."""
+    from interact.ttl_cache import RefreshFailed
+
+    monkeypatch.setenv("ARTIFICIAL_ANALYSIS_API_KEY", "k")
+    _stale_board(8)
+    calls = []
+    monkeypatch.setattr(bs.httpx, "get", lambda url, **kw: calls.append(url) or get(url, **kw))
+    with pytest.raises(RefreshFailed) as failed:
+        bs.load_scores(refresh=True)
+    assert failed.value.describe("board") == f"{reason}, board from 8h ago"
+    with pytest.raises(RefreshFailed):
+        bs.load_scores(refresh=True)
+    # Retry-After is honoured: inside the window AA is not asked again, by this or any process.
+    assert len(calls) == (1 if defers else 2)
+    assert bs.load_scores().scores, "a panel read still gets the aged board, never an exception"
+
+
+def test_no_key_is_a_named_reason_too(monkeypatch):
+    from interact.ttl_cache import RefreshFailed
+
+    with pytest.raises(RefreshFailed, match="no ARTIFICIAL_ANALYSIS_API_KEY set"):
+        bs.load_scores(refresh=True)

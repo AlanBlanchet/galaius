@@ -146,7 +146,7 @@ async def test_expired_cached_table_reloads_stale_and_stops_before_dispatch(monk
     monkeypatch.setattr(Model, "is_available", lambda self: True)
     now = 2_000_000_000.0
     monkeypatch.setattr(benchmark_tables.time, "time", lambda: now)
-    benchmark_tables._CACHE.write({
+    benchmark_tables.CACHE.write({
         "schema_version": 1,
         "fetched_at": now - benchmark_tables.TTL_SECONDS - 1,
         "tables": {"mmmu_pro": fixture["after"]},

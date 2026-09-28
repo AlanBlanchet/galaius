@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from interact import model_catalog as mc
+from interact.ttl_cache import describe_age
 from tests.support.models import catalog_of
 
 
@@ -130,9 +131,9 @@ def test_garbage_entries_are_skipped_not_fatal(monkeypatch):
 
 
 def test_freshness_renders_for_a_human():
-    assert "just now" in mc.describe_age(2).lower()
-    assert "h" in mc.describe_age(7200) or "hour" in mc.describe_age(7200)
-    assert "d" in mc.describe_age(86400 * 3) or "day" in mc.describe_age(86400 * 3)
+    assert "just now" in describe_age(2).lower()
+    assert "h" in describe_age(7200) or "hour" in describe_age(7200)
+    assert "d" in describe_age(86400 * 3) or "day" in describe_age(86400 * 3)
 
 
 def test_the_catalog_carries_each_model_s_capability_score_for_the_pickers():

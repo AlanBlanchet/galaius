@@ -17,11 +17,11 @@ import time
 
 from interact.benchmarks.published import PublishedTable
 from interact.models import Model
-from interact.ttl_cache import TTL_SECONDS, TTLCache, age_of
+from interact.ttl_cache import TTL_SECONDS, RefreshFailed, TTLCache, age_of
 
 #: Leaderboards move slowly, but the cost of being wrong here is showing a stale model as best,
 #: so this shares the catalog's TTL rather than inventing a longer one.
-_CACHE = TTLCache("benchmark_tables.json", TTL_SECONDS)
+CACHE = TTLCache("benchmark_tables.json", TTL_SECONDS)
 
 _REJECTED_SOURCES = {
     ("mmmu_pro", "https://mmmu-benchmark.github.io/"),
@@ -30,31 +30,44 @@ _REJECTED_SOURCES = {
 
 
 def cache_path():
-    return _CACHE.path
+    return CACHE.path
 
 
 def load_tables(*, refresh: bool = False) -> dict[str, PublishedTable]:
     """The freshest per-benchmark tables available, keyed by benchmark id; ``{}`` when none.
 
-    Never raises: a panel that cannot reach a leaderboard must still render, falling back to the
-    packaged snapshot, which carries its own retrieved date.
+    A panel read never raises: one that cannot reach a leaderboard must still render, falling back
+    to the packaged snapshot, which carries its own retrieved date. ``refresh=True`` raises
+    :class:`RefreshFailed` instead of passing the old tables off as refreshed.
     """
-    cached = _CACHE.read()
+    cached = CACHE.read()
     if not refresh and cached and age_of(float(cached.get("fetched_at", 0))) <= TTL_SECONDS:
         return _parse(cached)
-
-    from interact.benchmarks.upstream import fetch_all
-
     try:
-        fetched = fetch_all()
-    except Exception:
+        usable = CACHE.refetch("the benchmark leaderboards", _fetch)
+    except RefreshFailed:
+        if refresh:
+            raise
         return _parse(cached) if cached else {}
+    CACHE.write({
+        "schema_version": 1,
+        "fetched_at": time.time(),
+        "tables": {bid: table.model_dump(mode="json") for bid, table in usable.items()},
+    })
+    return usable
+
+
+def _fetch() -> dict[str, PublishedTable]:
+    # Circular at module level: interact.config → agents → criteria → this module → upstream →
+    # interact.config.
+    from interact.benchmarks import upstream
+
     # An upstream that answers with NO entries carries no information — observed live, where the
     # OpenVLM sources returned 200 and zero rows for MMMU and Video-MME. Letting that through
     # would replace a real (if old) packaged snapshot with an empty panel: stale data traded for
     # no data, which is the same mistake pointing the other way.
     usable = {}
-    for bid, table in fetched.items():
+    for bid, table in upstream.fetch_all().items():
         if not table.entries:
             continue
         entries = []
@@ -66,12 +79,7 @@ def load_tables(*, refresh: bool = False) -> dict[str, PublishedTable]:
             }))
         usable[bid] = table.model_copy(update={"freshness": "current", "entries": entries})
     if not usable:
-        return _parse(cached) if cached else {}
-    _CACHE.write({
-        "schema_version": 1,
-        "fetched_at": time.time(),
-        "tables": {bid: table.model_dump(mode="json") for bid, table in usable.items()},
-    })
+        raise RefreshFailed("every benchmark leaderboard answered empty or failed")
     return usable
 
 

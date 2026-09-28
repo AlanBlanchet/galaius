@@ -30,9 +30,10 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from interact.model_catalog import describe_age
+import httpx
+
 from interact.models import Benchmark
-from interact.ttl_cache import TTL_SECONDS, TTLCache, age_of
+from interact.ttl_cache import TTL_SECONDS, RefreshFailed, TTLCache, age_of, describe_age
 
 #: Pro tier returns every registered metric (`terminalbench_hard`, `scicode`, `aa_lcr`,
 #: `ifbench`, the omniscience trio, ...); Free tier's wire shape only ever carries
@@ -44,6 +45,7 @@ from interact.ttl_cache import TTL_SECONDS, TTLCache, age_of
 _ENDPOINT_PRO = "https://artificialanalysis.ai/api/v2/language/models"
 _ENDPOINT_FREE = "https://artificialanalysis.ai/api/v2/language/models/free"
 _KEY_ENV = "ARTIFICIAL_ANALYSIS_API_KEY"
+_VENDOR = "Artificial Analysis"
 
 
 @dataclass
@@ -92,11 +94,11 @@ class Board:
 
 
 #: Never inside the package — these scores are not redistributable (see the licensing note).
-_CACHE = TTLCache("benchmark_scores.json", TTL_SECONDS)
+CACHE = TTLCache("benchmark_scores.json", TTL_SECONDS)
 
 
 def cache_path() -> Path:
-    return _CACHE.path
+    return CACHE.path
 
 
 def _num(value) -> float | None:
@@ -141,7 +143,7 @@ def _from_artificial_analysis(payload: dict) -> list[Score]:
 
 
 def _read_cache() -> Board | None:
-    raw = _CACHE.read()
+    raw = CACHE.read()
     if raw is None:
         return None
     try:
@@ -162,7 +164,7 @@ def _read_cache() -> Board | None:
 
 
 def _write_cache(board: Board) -> None:
-    _CACHE.write({
+    CACHE.write({
         "source": board.source,
         "fetched_at": board.fetched_at,
         "scores": [{"name": s.name, "creator": s.creator, "intelligence": s.intelligence,
@@ -171,26 +173,21 @@ def _write_cache(board: Board) -> None:
     })
 
 
-def _fetch() -> Board | None:
+def _fetch() -> Board:
     key = os.environ.get(_KEY_ENV, "").strip()
     if not key:
-        return None
-    try:
-        import httpx
-
-        for endpoint in (_ENDPOINT_PRO, _ENDPOINT_FREE):
-            response = httpx.get(endpoint, headers={"x-api-key": key}, timeout=20)
-            if response.status_code in (401, 403):
-                continue  # this key isn't entitled to Pro — the free tier still answers
-            response.raise_for_status()
-            scores = _from_artificial_analysis(response.json())
-            break
-        else:
-            return None
-    except Exception:
-        return None  # offline / rate-limited / changed schema → fall back, never raise at a panel
+        raise RefreshFailed(f"no {_KEY_ENV} set")
+    for endpoint in (_ENDPOINT_PRO, _ENDPOINT_FREE):
+        response = httpx.get(endpoint, headers={"x-api-key": key}, timeout=20)
+        if response.status_code in (401, 403):
+            continue  # this key isn't entitled to Pro — the free tier still answers
+        response.raise_for_status()
+        break
+    else:
+        raise RefreshFailed.from_response(_VENDOR, response)
+    scores = _from_artificial_analysis(response.json())
     if not scores:
-        return None
+        raise RefreshFailed(f"{_VENDOR} returned nothing usable")
     return Board(scores=scores, source="artificial_analysis", fetched_at=time.time())
 
 
@@ -199,13 +196,17 @@ def load_scores(*, refresh: bool = False) -> Board:
 
     A stale board is still RETURNED — old numbers beat no numbers when offline — but `is_live`
     is false and :meth:`Board.describe` says how old it is, so the UI can never present it as
-    today's truth.
+    today's truth. ``refresh=True`` is the one exception: a refresh that did not happen raises
+    :class:`RefreshFailed` saying why, instead of handing back the old board as if it were new.
     """
     cached = _read_cache()
     if not refresh and cached is not None and cached.age_seconds <= TTL_SECONDS:
         return cached
-    fetched = _fetch()
-    if fetched is not None:
-        _write_cache(fetched)
-        return fetched
-    return cached if cached is not None else Board()
+    try:
+        fetched = CACHE.refetch(_VENDOR, _fetch)
+    except RefreshFailed:
+        if refresh:
+            raise
+        return cached if cached is not None else Board()
+    _write_cache(fetched)
+    return fetched

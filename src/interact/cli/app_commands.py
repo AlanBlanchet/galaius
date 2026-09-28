@@ -920,11 +920,19 @@ def refresh_live_data() -> None:
 
     Python is the SOLE writer of those cache files — the extension used to fetch and write the
     catalog itself with a narrower schema, so whichever side wrote last decided whether prices
-    existed. Now the extension asks for this instead.
+    existed. Now the extension asks for this instead. A source that did not refresh is printed
+    with its reason and the age of the copy still served, and the command exits 1.
     """
 
-    done = live_sources.refresh_all()
-    print("Refreshed: " + ", ".join(done) if done else "Nothing refreshed (offline, or no API key).")
+    outcomes = live_sources.refresh_all()
+    done = [name for name, why in outcomes.items() if why is None]
+    if done:
+        print("Refreshed: " + ", ".join(done))
+    for name, why in outcomes.items():
+        if why is not None:
+            print(f"{name} NOT refreshed: {why}")
+    if len(done) < len(outcomes):
+        raise SystemExit(1)
 
 
 @agents_app.command(name="send")

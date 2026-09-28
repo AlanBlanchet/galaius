@@ -14,49 +14,104 @@ none. Refreshing is nobody's job unless it is somebody's job, so it is this modu
 the MCP server, the process alive whenever the user is working, and reachable on demand as
 ``interact refresh``, which is what the extension calls when its cache has aged out.
 
+The server's refresher fetches a source only when it is DUE — its cache past the TTL, or the
+vendor's ``Retry-After`` window over — never on every startup: one server runs per editor window,
+and forcing every source at each start spent Artificial Analysis's 100-calls-a-day free tier by
+mid-afternoon. A source that fails is retried after its ``Retry-After`` or
+:data:`FAILURE_RETRY_SECONDS`, not after the full TTL.
+
 Python is the SOLE WRITER of these files. The extension used to fetch and write the catalog
 itself with a narrower schema (no output prices), so whichever side wrote last decided whether
 prices existed at all.
 
-Adding a third source means one entry in ``SOURCES`` — never a new call site.
+Adding a source means one entry in ``SOURCES`` — never a new call site.
 """
 
+import logging
 import threading
-from collections.abc import Callable, Mapping
+import time
+from collections.abc import Callable, Sequence
 
-from interact.benchmark_source import load_scores
-from interact.benchmark_tables import load_tables
-from interact.model_catalog import load_catalog
+from pydantic import BaseModel, ConfigDict
 
-#: name → refresh it. Each loader does fresh-cache → fetch → stale-cache internally; `refresh=True`
-#: is what makes the call an actual REFRESH rather than a cache read, which matters because this
-#: runs inside a server that may live for days.
-SOURCES: Mapping[str, Callable[[], object]] = {
-    "model catalog": lambda: load_catalog(refresh=True),
-    "benchmark scores": lambda: load_scores(refresh=True),
-    "benchmark tables": lambda: load_tables(refresh=True),
-}
+from interact import benchmark_source, benchmark_tables, model_catalog
+from interact.ttl_cache import RefreshFailed, TTLCache
+
+_log = logging.getLogger(__name__)
+
+#: How soon a source that failed WITHOUT a vendor-given retry time is tried again.
+FAILURE_RETRY_SECONDS = 15 * 60
+#: Floor on the refresher's sleep, so a clock oddity can never make it spin.
+_MIN_WAIT_SECONDS = 60
 
 
-def refresh_all(sources: Mapping[str, Callable[[], object]] | None = None) -> list[str]:
-    """Refresh every source; returns the names that succeeded, sorted.
+class LiveSource(BaseModel):
+    """One live external source: how to refresh it and the cache that says when it is due."""
 
-    Best-effort per source: one that cannot reach its API keeps serving its stale cache, which is
-    the honest fallback both loaders already implement, and never blocks the others.
-    """
-    done = []
-    for name, refresh in (SOURCES if sources is None else sources).items():
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    name: str
+    #: What the copy standing in is called in a NOT-refreshed line ("board from 8h ago").
+    noun: str
+    #: The source's loader; called with ``refresh=True``, raises :class:`RefreshFailed`.
+    load: Callable[..., object]
+    cache: TTLCache
+
+    def refresh(self) -> str | None:
+        """Refresh now; None when it happened, else the one-line reason it did not."""
         try:
-            refresh()
-        except Exception:
-            continue  # offline / rate-limited / no key → the stale cache stands
-        done.append(name)
-    return sorted(done)
+            self.load(refresh=True)
+        except RefreshFailed as failure:
+            return failure.describe(self.noun)
+        except Exception as error:  # a loader bug is still a refresh that did not happen
+            return f"{type(error).__name__}: {error}"
+        return None
 
 
-def refresh_in_background() -> threading.Thread:
-    """Refresh off the caller's thread — this runs at MCP server startup, where two HTTP round
-    trips must not delay the first tool call. Daemon, so it never holds up shutdown."""
-    thread = threading.Thread(target=refresh_all, name="interact-live-sources", daemon=True)
+SOURCES: Sequence[LiveSource] = (
+    LiveSource(name="model catalog", noun="catalog",
+               load=model_catalog.load_catalog, cache=model_catalog.CACHE),
+    LiveSource(name="benchmark scores", noun="board",
+               load=benchmark_source.load_scores, cache=benchmark_source.CACHE),
+    LiveSource(name="benchmark tables", noun="tables",
+               load=benchmark_tables.load_tables, cache=benchmark_tables.CACHE),
+)
+
+
+def refresh_all(sources: Sequence[LiveSource] | None = None) -> dict[str, str | None]:
+    """Refresh every source now; name → None when refreshed, else why not.
+
+    Best-effort per source: one that cannot reach its API keeps serving its stale cache and never
+    blocks the others — but it is REPORTED, never counted as refreshed.
+    """
+    return {source.name: source.refresh() for source in (SOURCES if sources is None else sources)}
+
+
+def refresh_when_due(stop: threading.Event, sources: Sequence[LiveSource] | None = None) -> None:
+    """Refresh each source whenever it falls due, until ``stop`` is set."""
+    sources = SOURCES if sources is None else sources
+    retry_at: dict[str, float] = {}
+
+    def due(source: LiveSource) -> float:
+        return max(source.cache.due_at(), retry_at.get(source.name, 0.0))
+
+    while not stop.is_set():
+        for source in sources:
+            if due(source) > time.time():
+                continue
+            if (why := source.refresh()) is None:
+                retry_at.pop(source.name, None)
+            else:
+                _log.warning("%s NOT refreshed: %s", source.name, why)
+                retry_at[source.name] = time.time() + FAILURE_RETRY_SECONDS
+        wait = min(due(source) for source in sources) - time.time()
+        stop.wait(max(_MIN_WAIT_SECONDS, wait))
+
+
+def refresh_in_background(stop: threading.Event | None = None) -> threading.Thread:
+    """Run :func:`refresh_when_due` off the caller's thread — it starts with the MCP server, where
+    an HTTP round trip must not delay the first tool call. Daemon, so it never holds up shutdown."""
+    thread = threading.Thread(target=refresh_when_due, args=(stop or threading.Event(),),
+                              name="interact-live-sources", daemon=True)
     thread.start()
     return thread

@@ -8,28 +8,74 @@ They are two instances of one shape — a live external source behind a TTL cach
 reads — so they refresh through one path, and adding a third source must not need a new call site.
 """
 
+import threading
+import time
+
+import pytest
+
 import interact.live_sources as live
+from interact.ttl_cache import RefreshFailed, TTLCache
 
 
-def test_every_registered_source_is_refreshed():
-    called = []
-    sources = {"catalog": lambda: called.append("catalog"), "board": lambda: called.append("board")}
-    assert live.refresh_all(sources) == ["board", "catalog"]
-    assert sorted(called) == ["board", "catalog"]
+def _source(name, load=lambda **_: None, filename=None):
+    return live.LiveSource(name=name, noun="copy", load=load, cache=TTLCache(filename or f"{name}.json"))
 
 
-def test_one_failing_source_never_stops_the_others():
-    """Best-effort by construction: this runs at server startup, where a network blip must not
-    take the server down, and a source that cannot refresh simply keeps serving its stale cache."""
-    def boom():
-        raise RuntimeError("offline")
-
-    assert live.refresh_all({"broken": boom, "ok": lambda: None}) == ["ok"]
+def _rate_limited(**_):
+    raise RefreshFailed("rate-limited by Vendor (HTTP 429)", retry_at=time.time() + 3600,
+                        cached_at=time.time() - 8 * 3600)
 
 
-def test_the_real_sources_are_both_registered():
-    """The regression this file exists for: a producer nobody calls. Both loaders must be here."""
-    assert set(live.SOURCES) == {"model catalog", "benchmark scores", "benchmark tables"}
+def test_a_failing_source_is_reported_with_its_reason_and_never_stops_the_others():
+    """Best-effort by construction — but a source that did not refresh is SAID, never counted:
+    `interact refresh` once printed "Refreshed" while every call to the vendor answered 429."""
+    outcomes = live.refresh_all([_source("broken", _rate_limited), _source("ok")])
+    assert outcomes == {
+        "broken": "rate-limited by Vendor (HTTP 429), retry in 1h, copy from 8h ago",
+        "ok": None,
+    }
+
+
+def test_interact_refresh_prints_why_a_source_did_not_refresh(monkeypatch, capsys):
+    from interact.cli.app_commands import refresh_live_data
+
+    monkeypatch.setattr(live, "SOURCES", (_source("benchmark scores", _rate_limited), _source("model catalog")))
+    with pytest.raises(SystemExit) as exited:
+        refresh_live_data()
+    assert exited.value.code == 1
+    assert capsys.readouterr().out.splitlines() == [
+        "Refreshed: model catalog",
+        "benchmark scores NOT refreshed: rate-limited by Vendor (HTTP 429), retry in 1h, copy from 8h ago",
+    ]
+
+
+def test_the_real_sources_are_all_registered():
+    """The regression this file exists for: a producer nobody calls. Every loader must be here."""
+    assert {s.name for s in live.SOURCES} == {"model catalog", "benchmark scores", "benchmark tables"}
+
+
+def test_the_refresher_fetches_only_what_is_due_and_retries_a_failure_before_the_ttl(monkeypatch):
+    """One server runs per editor window; forcing every source at each startup spent the vendor's
+    daily quota. A fresh cache is left alone; a failed source comes back after its retry window."""
+    calls = []
+    fresh = _source("fresh", lambda **_: calls.append("fresh"))
+    fresh.cache.write({"fetched_at": time.time()})
+    failing = _source("failing", lambda **_: calls.append("failing") or 1 / 0)
+    stop, waits = threading.Event(), []
+    monkeypatch.setattr(stop, "wait", lambda seconds: waits.append(seconds) or stop.set())
+    live.refresh_when_due(stop, [fresh, failing])
+    assert calls == ["failing"]
+    assert waits and waits[0] == pytest.approx(live.FAILURE_RETRY_SECONDS, abs=5)
+
+
+def test_a_vendor_retry_after_is_shared_through_the_cache(tmp_path):
+    cache = TTLCache("vendor.json")
+    cache.write({"fetched_at": time.time() - 10 * 24 * 3600})
+    with pytest.raises(RefreshFailed):
+        cache.refetch("Vendor", lambda: (_ for _ in ()).throw(
+            RefreshFailed("rate-limited by Vendor (HTTP 429)", retry_at=time.time() + 600)))
+    assert cache.due_at() == pytest.approx(time.time() + 600, abs=5)
+    assert TTLCache("vendor.json").deferral() is not None, "another process must see the wait too"
 
 
 def test_refreshing_actually_WRITES_every_cache(monkeypatch, tmp_path):
@@ -37,8 +83,6 @@ def test_refreshing_actually_WRITES_every_cache(monkeypatch, tmp_path):
     no-op (it was: `load_catalog` was `@lru_cache`d, so the refresher re-read memory and never
     refetched). The only evidence that counts is both cache files on disk, freshly stamped.
     """
-    import time
-
     import interact.benchmark_source as bs
     import interact.benchmark_tables as bt
     import interact.model_catalog as mc
@@ -53,7 +97,7 @@ def test_refreshing_actually_WRITES_every_cache(monkeypatch, tmp_path):
         "interact.benchmarks.upstream.fetch_all",
         lambda *a, **k: {"mmmu": _published_table()},
     )
-    assert live.refresh_all() == ["benchmark scores", "benchmark tables", "model catalog"]
+    assert live.refresh_all() == {"model catalog": None, "benchmark scores": None, "benchmark tables": None}
     for path in (mc.cache_path(), bs.cache_path(), bt.cache_path()):
         assert path.exists(), f"{path.name} was never written — the producer did not run"
 
@@ -70,8 +114,10 @@ class _Response:
 
 
 def test_refresh_in_background_does_not_raise_when_a_source_fails(monkeypatch):
-    monkeypatch.setattr(live, "SOURCES", {"broken": lambda: 1 / 0})
-    thread = live.refresh_in_background()
+    monkeypatch.setattr(live, "SOURCES", (_source("broken", lambda **_: 1 / 0),))
+    stop = threading.Event()
+    thread = live.refresh_in_background(stop)
+    stop.set()
     thread.join(timeout=5)
     assert not thread.is_alive()
 
