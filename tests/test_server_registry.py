@@ -114,7 +114,7 @@ def test_a_server_that_ignores_SIGTERM_is_killed(monkeypatch):
     monkeypatch.setattr(sr, "_runtime_dir", lambda: Path("/nonexistent"))
 
     assert sr.kill_stale_servers() == [4242]
-    assert [sig for _, sig in sent] == [signal.SIGTERM, signal.SIGKILL]
+    assert [sig for _, sig in sent] == [signal.SIGTERM, sr.HARD_KILL]
 
 
 def test_a_server_that_stops_politely_is_not_killed(monkeypatch):

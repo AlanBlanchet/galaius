@@ -16,6 +16,7 @@ import pytest
 
 from interact.desktop import orphans
 from interact.desktop.backend import nested_server_command
+from interact.server_registry import HARD_KILL
 
 
 @pytest.fixture(autouse=True)
@@ -213,7 +214,7 @@ def test_a_client_that_ignores_SIGTERM_is_killed(monkeypatch, source, sweep):
     # Without this the grace loop calls the REAL os.kill(31, 0) and then SIGKILLs pid 31.
     monkeypatch.setattr(orphans, "_still_alive", lambda pid: len(sent) < 2)
     assert sweep() == [31]
-    assert [sig for _, sig in sent] == [signal.SIGTERM, signal.SIGKILL]
+    assert [sig for _, sig in sent] == [signal.SIGTERM, HARD_KILL]
 
 
 # ── Never sweep a display we no longer own ──────────────────────────────────────────────────

@@ -21,7 +21,7 @@ from dataclasses import dataclass
 
 from interact.desktop.backend import SANDBOX_TITLE
 # Whether a pid is running, sending nothing (on Windows signal 0 would be Ctrl-C): one definition.
-from interact.server_registry import _alive as process_alive
+from interact.server_registry import HARD_KILL, _alive as process_alive
 from pathlib import Path
 
 #: What one of OUR sandbox displays looks like. Re-states flags owned by
@@ -285,7 +285,7 @@ def _kill_escalating(pids: list[int], grace: float) -> list[int]:
     stubborn = _await_exit(signalled, grace)
     for pid in stubborn:
         try:
-            os.kill(pid, signal.SIGKILL)
+            os.kill(pid, HARD_KILL)
         except OSError:
             pass
     _await_exit(stubborn, grace)

@@ -14,6 +14,7 @@ the latest — naming the pid so the user knows exactly which editor connection 
 import ctypes
 import json
 import os
+import signal
 import time
 from contextlib import suppress
 import sys
@@ -82,6 +83,11 @@ def unregister_server(path: Path | None) -> None:
             path.unlink()
         except OSError:
             pass
+
+
+#: The signal a process cannot ignore. Windows has no SIGKILL: there os.kill with SIGTERM is
+#: already TerminateProcess, the hard stop.
+HARD_KILL = signal.SIGTERM if sys.platform == "win32" else signal.SIGKILL
 
 
 def _still_running(pid: int) -> bool:
@@ -182,7 +188,7 @@ def kill_stale_servers() -> list[int]:
     for pid in signalled:
         if _still_running(pid):
             with suppress(OSError):
-                os.kill(pid, signal.SIGKILL)
+                os.kill(pid, HARD_KILL)
     deadline = time.monotonic() + 1.0
     while time.monotonic() < deadline and any(_still_running(pid) for pid in signalled):
         time.sleep(0.05)
