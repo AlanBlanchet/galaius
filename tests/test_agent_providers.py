@@ -10,6 +10,7 @@ stores or forwards a credential — the CLI authenticates itself with the user's
 """
 
 import json
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -161,7 +162,9 @@ def test_codex_projects_mesh_without_changing_permissions(resume):
     overrides = [argv[i + 1] for i, value in enumerate(argv) if value == "-c"]
     data = tomllib.loads("\n".join(overrides))
     assert data["mcp_servers"]["interact"] == json.loads(config)["mcpServers"]["interact"]
-    assert set(data) == {"features", "mcp_servers"}
+    # Beside the mesh only the system's own table (Windows: the sandbox Codex runs in).
+    platform = tomllib.loads("\n".join(CodexProvider.platform_flags()[1::2]))
+    assert set(data) == {"features", "mcp_servers", *platform}
 
 
 # --- Mapping a role's NATIVE tool policy onto codex's OWN mechanisms -------------------------
@@ -1114,5 +1117,5 @@ def test_npm_shim_starts_its_script_without_cmd(tmp_path: Path, shim: str, node:
         on_path.chmod(0o755)
     parsed = NpmShim.read(folder / shim, str(tools))
     assert (parsed and parsed.argv) == (expected and tuple(
-        str(on_path) if part == "PATH" else str(folder / part) for part in expected
+        shutil.which("node", path=str(tools)) if part == "PATH" else str(folder / part) for part in expected
     ))

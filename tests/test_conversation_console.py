@@ -2293,9 +2293,9 @@ def test_codex_schema_capture_imports_from_an_offline_wheel(wheel_build_cache: P
         imported = subprocess.run(
             [sys.executable, "-m", "interact.agents.codex_schema"],
             cwd=unpacked,
-            # SYSTEMROOT: without it a Windows interpreter cannot even load its socket layer.
+            # Windows needs SYSTEMROOT to load its socket layer and USERPROFILE to name a home.
             env={
-                **{key: os.environ[key] for key in ("PATH", "SYSTEMROOT") if key in os.environ},
+                **{key: os.environ[key] for key in ("PATH", "SYSTEMROOT", "USERPROFILE") if key in os.environ},
                 "PYTHONDONTWRITEBYTECODE": "1",
             },
             text=True,
