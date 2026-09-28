@@ -12,6 +12,8 @@ from interact_core import MachineDataRequest, MachineRef
 
 from interact.machines import MachineConfig, MachineDataFiles
 
+pytestmark = pytest.mark.usefixtures("directory_backend")
+
 
 @pytest.fixture
 def files(tmp_path: Path) -> MachineDataFiles:

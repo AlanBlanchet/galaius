@@ -142,7 +142,7 @@ def test_cache_database_is_private(tmp_path: Path, preexisting: bool) -> None:
 
 
 def test_cache_rejects_path_substitution_before_sqlite_uses_the_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, directory_backend,
 ) -> None:
     path = tmp_path / "prompts.sqlite3"
     foreign = tmp_path / "foreign.sqlite3"
@@ -160,11 +160,20 @@ def test_cache_rejects_path_substitution_before_sqlite_uses_the_file(
 
 
 def test_cache_owner_check_is_portable_when_getuid_is_unavailable(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, directory_backend,
 ) -> None:
-    monkeypatch.delattr(os, "getuid")
+    monkeypatch.delattr(os, "getuid", raising=False)
     cache = _PromptCache(tmp_path / "prompts.sqlite3")
     cache.close()
+
+
+def test_cache_is_never_opened_through_a_link(tmp_path: Path, directory_backend) -> None:
+    foreign = tmp_path / "foreign.sqlite3"
+    foreign.write_bytes(b"")
+    (tmp_path / "prompts.sqlite3").symlink_to(foreign)
+    with pytest.raises(OSError):
+        _PromptCache(tmp_path / "prompts.sqlite3")
+    assert foreign.read_bytes() == b""
 
 
 def test_cache_validates_revision_identity_and_applies_catalog_delta(tmp_path: Path) -> None:

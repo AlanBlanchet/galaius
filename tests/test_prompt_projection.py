@@ -17,6 +17,8 @@ from interact.prompt_projection import (
 )
 from tests.support import commit_all, init_repo, run_git
 
+pytestmark = pytest.mark.usefixtures("directory_backend")
+
 
 LEGACY = Path.home() / "dev" / "my-prompts"
 LEGACY_COMMIT = "f9b6cca2f01172beac30876c4d39fd479ca9fb4b"

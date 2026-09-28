@@ -69,30 +69,38 @@ def test_prompt_editor_cli_catalog_read_and_cas_conflict_preserve_disk_and_buffe
     assert prompt.read_text() == "other client"
 
 
-def test_prompt_editor_rejects_a_symlinked_parent_outside_the_source(tmp_path: Path) -> None:
+@pytest.mark.parametrize("linked", ["folder", "file"])
+def test_prompt_editor_rejects_a_symlink_out_of_the_source(tmp_path: Path, monkeypatch, directory_backend, linked) -> None:
     source = tmp_path / "interact" / "prompts"
     outside = tmp_path / "outside"
     source.mkdir(parents=True)
     outside.mkdir()
     (outside / "escaped.md").write_text("private")
-    (source / "linked").symlink_to(outside, target_is_directory=True)
-
-    for command in (("read", "linked/escaped.md"),
-                    ("write", "linked/escaped.md", hashlib.sha256(b"private").hexdigest())):
-        result = _prompt_cli(tmp_path, *command, stdin="replacement")
-        assert result.returncode == 2
+    if linked == "folder":
+        (source / "linked").symlink_to(outside, target_is_directory=True)
+        path = "linked/escaped.md"
+    else:
+        (source / "escaped.md").symlink_to(outside / "escaped.md")
+        path = "escaped.md"
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"replacement")))
+    for command in (lambda: prompt_commands.read(path),
+                    lambda: prompt_commands.write(path, hashlib.sha256(b"private").hexdigest())):
+        with pytest.raises(SystemExit) as raised:
+            command()
+        assert raised.value.code == 2
     assert (outside / "escaped.md").read_text() == "private"
 
 
 def test_prompt_editor_releases_its_lock_when_post_lock_validation_fails(
-    tmp_path: Path, monkeypatch,
+    tmp_path: Path, monkeypatch, directory_backend,
 ) -> None:
     source = tmp_path / "interact" / "prompts"
     source.mkdir(parents=True)
     target = source / "instructions.md"
     target.write_text("old")
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
-    monkeypatch.setattr(prompt_commands.os, "rename", lambda *args, **kwargs: (_ for _ in ()).throw(
+    monkeypatch.setattr(prompt_commands.os, "replace", lambda *args, **kwargs: (_ for _ in ()).throw(
         OSError("path changed after lock")
     ))
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"new")))
@@ -135,7 +143,7 @@ def test_two_overlapping_prompt_writes_have_one_winner_and_one_typed_conflict(tm
     assert not list(source.glob(".*.interact-*"))
 
 
-def test_contenders_never_remove_the_active_editor_lock(tmp_path: Path, monkeypatch) -> None:
+def test_contenders_never_remove_the_active_editor_lock(tmp_path: Path, monkeypatch, directory_backend) -> None:
     source = tmp_path / "interact" / "prompts"
     source.mkdir(parents=True)
     prompt = source / "instructions.md"

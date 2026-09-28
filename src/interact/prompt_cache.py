@@ -15,30 +15,32 @@ from interact_core import (
     PromptRevision,
 )
 
+from interact.pinned_directory import PinnedDirectory
+
 
 class _PromptCache:
     """Persist verified prompt revisions and resolve only an exact published digest."""
 
     def __init__(self, path: Path) -> None:
-        flags = os.O_RDWR | os.O_CREAT
-        if hasattr(os, "O_NOFOLLOW"):
-            flags |= os.O_NOFOLLOW
-        descriptor = os.open(path, flags, 0o600)
-        try:
-            metadata = os.fstat(descriptor)
-            owner = getattr(os, "getuid", None)
-            if not stat.S_ISREG(metadata.st_mode) or (
-                owner is not None and metadata.st_uid != owner()
-            ):
-                raise OSError("prompt cache must be an owned regular file")
-            os.fchmod(descriptor, 0o600)
-            database = sqlite3.connect(path)
-            current = os.stat(path, follow_symlinks=False)
-            if (current.st_dev, current.st_ino) != (metadata.st_dev, metadata.st_ino):
-                database.close()
-                raise OSError("prompt cache changed before SQLite opened it")
-        finally:
-            os.close(descriptor)
+        # Its folder is resolved (links above it are the owner's layout), then pinned: the file
+        # itself is never reached through a link.
+        with PinnedDirectory.open(path.parent.resolve()) as folder:
+            descriptor = folder.file(path.name, os.O_RDWR | os.O_CREAT, 0o600)
+            try:
+                metadata = os.fstat(descriptor)
+                owner = getattr(os, "getuid", None)
+                if not stat.S_ISREG(metadata.st_mode) or (
+                    owner is not None and metadata.st_uid != owner()
+                ):
+                    raise OSError("prompt cache must be an owned regular file")
+                folder.chmod(descriptor, 0o600)
+                database = sqlite3.connect(path)
+                current = folder.stat(path.name)
+                if (current.st_dev, current.st_ino) != (metadata.st_dev, metadata.st_ino):
+                    database.close()
+                    raise OSError("prompt cache changed before SQLite opened it")
+            finally:
+                os.close(descriptor)
         self._database = database
         self._database.execute(
             "CREATE TABLE IF NOT EXISTS revisions (account TEXT NOT NULL, digest TEXT NOT NULL, namespace TEXT NOT NULL, slug TEXT NOT NULL, revision TEXT NOT NULL, content TEXT NOT NULL, PRIMARY KEY(account, namespace, slug, digest))"

@@ -43,6 +43,7 @@ from interact.functions import FunctionRegistry, invoke as invoke_function
 from interact.vision_env import Report, VisionWorker, ensure_vision_env
 from interact import gpu_scrub, user_models
 from interact.sandbox import run_pooled
+from interact.pinned_directory import PinnedDirectory
 
 
 class MachineConfig(BaseModel):
@@ -208,7 +209,7 @@ class MachineFiles(BaseModel):
         if stat.S_ISDIR(facts.st_mode):
             entries = []
             for child in sorted(target.iterdir(), key=lambda item: item.name.lower()):
-                if child.name.startswith(".") or self.FORBIDDEN.search(child.name) or child.is_symlink():
+                if child.name.startswith(".") or self.FORBIDDEN.search(child.name) or PinnedDirectory.link_like(child.lstat()):
                     continue
                 info = child.stat()
                 if stat.S_ISDIR(info.st_mode):
@@ -222,7 +223,8 @@ class MachineFiles(BaseModel):
 
     def script_bytes(self, target: Path) -> bytes:
         """The bytes of a plain file of the roots (no link, no pipe, no hard-linked twin)."""
-        descriptor = os.open(target, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+        with PinnedDirectory.open(target.parent) as folder:
+            descriptor = folder.file(target.name, os.O_RDONLY | PinnedDirectory.NONBLOCK)
         with os.fdopen(descriptor, "rb") as stream:
             facts = os.fstat(stream.fileno())
             if not stat.S_ISREG(facts.st_mode) or facts.st_nlink > 1:
@@ -256,9 +258,9 @@ class MachineFiles(BaseModel):
 
 class MachineDataFiles(BaseModel):
     """The owner's FILE ROOTS as the Data screen and the agents its owner allowed read them
-    (MachineDataRequest): beneath ONE named root, walked part by part from that root's own
-    descriptor with O_NOFOLLOW — a link anywhere on the way, a hidden name, anything but a folder or
-    a plain single-link file is refused, even when it would land inside another root. Read-only."""
+    (MachineDataRequest): beneath ONE named root, walked part by part without following a link
+    (`PinnedDirectory`) — a link anywhere on the way, a hidden name, anything but a folder or a
+    plain single-link file is refused, even when it would land inside another root. Read-only."""
 
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
     config: MachineConfig
@@ -279,34 +281,13 @@ class MachineDataFiles(BaseModel):
             raise PermissionError(f"{path}: hidden names, '.', '..', ':' '\\' and trailing dots or spaces are never reachable")
         return parts
 
-    def _open(self, root: str, path: str, directory: bool) -> int:
-        """A descriptor of `path` beneath `root` (a folder when `directory`), opened part by part."""
+    def _folder(self, root: str, parts: tuple[str, ...]):
+        """The folder `parts` beneath `root`, reached without following a link."""
         try:
             top = self.roots()[root]
         except KeyError:
             raise PermissionError(f"{root} is not one of this machine's file roots; its owner sets them with `interact machine file-roots`") from None
-        parts = self._parts(path)
-        nofollow, flags_dir = getattr(os, "O_NOFOLLOW", 0), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-        if os.open not in os.supports_dir_fd:
-            # No descriptor walk on this system (Windows): every part is checked to be no link first.
-            current = top
-            for part in parts:
-                current = current / part
-                if current.is_symlink() or getattr(os.lstat(current), "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0):
-                    raise PermissionError(f"{path}: links are never followed")
-            return os.open(current, flags_dir if directory else os.O_RDONLY | getattr(os, "O_BINARY", 0))
-        descriptor = os.open(top, flags_dir | nofollow)
-        try:
-            for index, part in enumerate(parts):
-                last = index == len(parts) - 1
-                flags = (flags_dir if directory or not last else os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)) | nofollow
-                following = os.open(part, flags, dir_fd=descriptor)
-                os.close(descriptor)
-                descriptor = following
-            return descriptor
-        except BaseException:
-            os.close(descriptor)
-            raise
+        return PinnedDirectory.open(top, *parts)
 
     @staticmethod
     def _identity(facts: os.stat_result) -> str:
@@ -315,29 +296,32 @@ class MachineDataFiles(BaseModel):
     def answer(self, request: MachineDataRequest) -> MachineDataAnswer:
         if request.op == "list" and not request.root:
             return MachineDataAnswer(request_id=request.id, kind="folder", entries=tuple(MachineFileEntry(name=name, kind="folder") for name in self.roots()))
+        parts = self._parts(request.path)
         if request.op == "list":
-            descriptor = self._open(request.root, request.path, directory=True)
-            try:
+            with self._folder(request.root, parts) as folder:
                 entries, truncated = [], False
-                names = sorted(os.listdir(descriptor), key=str.lower)
-                for name in names:
+                for name in sorted(folder.names(), key=str.lower):
                     if name.startswith(".") or MachineFiles.FORBIDDEN.search(name):
                         continue
-                    facts = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+                    facts = folder.stat(name)
+                    if folder.link_like(facts):
+                        continue
                     if stat.S_ISDIR(facts.st_mode) or (stat.S_ISREG(facts.st_mode) and facts.st_nlink == 1):
                         if len(entries) == self.MAX_ENTRIES:
                             truncated = True
                             break
                         entries.append(MachineFileEntry(name=name, kind="folder" if stat.S_ISDIR(facts.st_mode) else "file", size=None if stat.S_ISDIR(facts.st_mode) else facts.st_size))
-                entries.sort(key=lambda entry: (entry.kind != "folder", entry.name.lower()))
-                return MachineDataAnswer(request_id=request.id, kind="folder", entries=tuple(entries), truncated=truncated)
-            finally:
-                os.close(descriptor)
-        descriptor = self._open(request.root, request.path, directory=False)
+            entries.sort(key=lambda entry: (entry.kind != "folder", entry.name.lower()))
+            return MachineDataAnswer(request_id=request.id, kind="folder", entries=tuple(entries), truncated=truncated)
+        with self._folder(request.root, parts[:-1]) as folder:
+            facts = folder.stat(parts[-1]) if parts else folder.stat()
+            if stat.S_ISDIR(facts.st_mode) and not folder.link_like(facts):
+                if request.op != "stat":
+                    raise PermissionError(f"{request.path}: only plain files are read")
+                return MachineDataAnswer(request_id=request.id, kind="folder", modified_at=datetime.fromtimestamp(facts.st_mtime, UTC), identity=self._identity(facts))
+            descriptor = folder.file(parts[-1], os.O_RDONLY | PinnedDirectory.NONBLOCK)
         try:
             facts = os.fstat(descriptor)
-            if stat.S_ISDIR(facts.st_mode) and request.op == "stat":
-                return MachineDataAnswer(request_id=request.id, kind="folder", modified_at=datetime.fromtimestamp(facts.st_mtime, UTC), identity=self._identity(facts))
             if not stat.S_ISREG(facts.st_mode) or facts.st_nlink != 1:
                 raise PermissionError(f"{request.path}: only plain files are read")
             facts_answer = {"request_id": request.id, "kind": "file", "size": facts.st_size, "modified_at": datetime.fromtimestamp(facts.st_mtime, UTC), "identity": self._identity(facts)}
@@ -455,20 +439,24 @@ class CommandFiles(MachineFiles):
     def _replace(target: Path, content: bytes) -> None:
         """Written beside `target`, then moved over it in one step: never through a symlink or a
         hard link planted at the destination (the link would carry the write elsewhere)."""
-        try:
-            existing = os.lstat(target)
-        except FileNotFoundError:
-            existing = None
-        if existing is not None and (stat.S_ISLNK(existing.st_mode) or not stat.S_ISREG(existing.st_mode) or existing.st_nlink > 1):
-            raise PermissionError(f"{target.name} is a link or not a plain file: it is never overwritten")
-        partial = target.with_name(f".{target.name}.{uuid4().hex}.part")
-        descriptor = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
-        try:
-            with os.fdopen(descriptor, "wb") as stream:
-                stream.write(content)
-            os.replace(partial, target)
-        finally:
-            partial.unlink(missing_ok=True)
+        with PinnedDirectory.open(target.parent) as folder:
+            try:
+                existing = folder.stat(target.name)
+            except FileNotFoundError:
+                existing = None
+            if existing is not None and (folder.link_like(existing) or not stat.S_ISREG(existing.st_mode) or existing.st_nlink > 1):
+                raise PermissionError(f"{target.name} is a link or not a plain file: it is never overwritten")
+            partial = f".{target.name}.{uuid4().hex}.part"
+            descriptor = folder.file(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+            try:
+                with os.fdopen(descriptor, "wb") as stream:
+                    stream.write(content)
+                folder.replace(partial, folder, target.name)
+            finally:
+                try:
+                    folder.unlink(partial)
+                except FileNotFoundError:
+                    pass
 
     def write(self) -> dict[str, object]:
         """Saves the `value` input as a file (a received file copied as is, any other value as its
@@ -499,7 +487,8 @@ class CommandFiles(MachineFiles):
         """Uploads one file of a file root, streamed; answers the `ArtifactRef` the server stored."""
         source = self._path()
         # Non-blocking: a named pipe planted in a root must not hang the step (refused just below).
-        descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with PinnedDirectory.open(source.parent) as folder:
+            descriptor = folder.file(source.name, os.O_RDONLY | PinnedDirectory.NONBLOCK)
         facts = os.fstat(descriptor)
         if not stat.S_ISREG(facts.st_mode) or facts.st_nlink > 1:
             os.close(descriptor)

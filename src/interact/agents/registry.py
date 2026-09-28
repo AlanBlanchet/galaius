@@ -31,6 +31,7 @@ from interact.agents.events import TOKEN_FIELDS, AgentEvent, UsageLedger
 from interact.agents.catalog_connection import CatalogConnection
 from interact.agents.providers import PROVIDERS, DeniedTool
 from interact.file_lock import exclusive
+from interact.pinned_directory import PinnedDirectory
 from interact.server_registry import (
     _alive,  # generic pid liveness (Windows-safe, no signal sent)
 )
@@ -312,66 +313,30 @@ def _open_private(path: Path, flags: int, *, create: bool = True) -> int:
     directory = _ensure_registry_directory()
     if path.parent != directory:
         raise OSError("agent registry file escaped its private directory")
-    directory_descriptor = _registry_directory_descriptor()
-    try:
-        creation_flags = os.O_CREAT if create else 0
-        descriptor = os.open(
-            path.name, flags | creation_flags | _no_follow_flags(), 0o600,
-            dir_fd=directory_descriptor,
-        )
-    finally:
-        os.close(directory_descriptor)
+    with _registry_directory() as folder:
+        descriptor = folder.file(path.name, flags | (os.O_CREAT if create else 0), 0o600)
     try:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
             raise OSError("agent registry path is not a regular file")
-        os.fchmod(descriptor, 0o600)
+        folder.chmod(descriptor, 0o600)
     except OSError:
         os.close(descriptor)
         raise
     return descriptor
 
 
-def _no_follow_flags() -> int:
-    no_follow = getattr(os, "O_NOFOLLOW", None)
-    directory = getattr(os, "O_DIRECTORY", None)
-    if (
-        not isinstance(no_follow, int) or no_follow <= 0
-        or not isinstance(directory, int) or directory <= 0
-        or os.open not in os.supports_dir_fd
-        or os.rename not in os.supports_dir_fd
-        or os.unlink not in os.supports_dir_fd
-    ):
-        raise OSError("agent registry requires effective O_NOFOLLOW and dir_fd support")
-    return no_follow
-
-
-def _registry_directory_descriptor() -> int:
-    no_follow = _no_follow_flags()
-    directory_flag = os.O_DIRECTORY
+def _registry_directory():
+    """The registry folder pinned from the user home: no link on the way, the home included."""
     directory = _ensure_registry_directory()
     home = Path.home()
     try:
         relative = directory.relative_to(home)
     except ValueError as error:
         raise OSError("agent registry directory must be anchored beneath the user home") from error
-    descriptor = os.open(home, os.O_RDONLY | directory_flag | no_follow)
-    try:
-        for part in relative.parts:
-            child = os.open(
-                part, os.O_RDONLY | directory_flag | no_follow, dir_fd=descriptor,
-            )
-            os.close(descriptor)
-            descriptor = child
-        if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
-            raise OSError("agent registry directory handle is not a directory")
-        return descriptor
-    except BaseException:
-        os.close(descriptor)
-        raise
+    return PinnedDirectory.open(home, *relative.parts)
 
 
 def _read_private(path: Path) -> bytes | None:
-    _no_follow_flags()
     try:
         descriptor = _open_private(path, os.O_RDONLY, create=False)
     except OSError:
@@ -403,16 +368,12 @@ def _append_private(path: Path, payload: bytes) -> None:
         os.close(descriptor)
 
 
-def _private_leaf_matches(
-    name: str, directory_descriptor: int, identity: tuple[int, int],
-) -> bool:
+def _private_leaf_matches(name: str, folder: PinnedDirectory, identity: tuple[int, int]) -> bool:
     """Check identity already visible before publication, without promising atomic same-UID
     defence for the final check-to-rename window. Directory mode 0700 excludes other OS users;
     another process under the same account remains inside this bounded trust boundary."""
     try:
-        comparison = os.open(
-            name, os.O_RDONLY | _no_follow_flags(), dir_fd=directory_descriptor,
-        )
+        comparison = folder.file(name)
     except OSError:
         return False
     matches = False
@@ -441,35 +402,32 @@ def _replace_private(path: Path, payload: bytes) -> None:
     directory = _ensure_registry_directory()
     if path.parent != directory:
         raise OSError("agent registry file escaped its private directory")
-    directory_descriptor = _registry_directory_descriptor()
+    with _registry_directory() as folder:
+        _replace_in(folder, path.name, payload)
+
+
+def _replace_in(folder: PinnedDirectory, name: str, payload: bytes) -> None:
     descriptor = -1
     replacement_name: str | None = None
     owned_identity: tuple[int, int] | None = None
     try:
-        candidate_name = f".{path.name}.{secrets.token_hex(8)}.new"
-        descriptor = os.open(
-            candidate_name,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | _no_follow_flags(),
-            0o600,
-            dir_fd=directory_descriptor,
-        )
+        candidate_name = f".{name}.{secrets.token_hex(8)}.new"
+        descriptor = folder.file(candidate_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         replacement_name = candidate_name
         created = os.fstat(descriptor)
         owned_identity = (created.st_dev, created.st_ino)
-        os.fchmod(descriptor, 0o600)
+        folder.chmod(descriptor, 0o600)
         if os.write(descriptor, payload) != len(payload):
             raise OSError("short agent-registry write")
         os.fsync(descriptor)
         written = os.fstat(descriptor)
         owned_identity = (written.st_dev, written.st_ino)
-        if not _private_leaf_matches(
-            replacement_name, directory_descriptor, owned_identity,
-        ):
+        # Closed before the rename: Windows refuses to rename a file this process holds open.
+        closing, descriptor = descriptor, -1
+        os.close(closing)
+        if not _private_leaf_matches(replacement_name, folder, owned_identity):
             raise OSError("agent registry replacement identity changed before publication")
-        os.replace(
-            replacement_name, path.name,
-            src_dir_fd=directory_descriptor, dst_dir_fd=directory_descriptor,
-        )
+        folder.replace(replacement_name, folder, name)
     finally:
         primary_error = sys.exception()
         cleanup_error: OSError | None = None
@@ -479,18 +437,14 @@ def _replace_private(path: Path, payload: bytes) -> None:
             except OSError as error:
                 cleanup_error = error
         if replacement_name is not None and owned_identity is not None and _private_leaf_matches(
-            replacement_name, directory_descriptor, owned_identity,
+            replacement_name, folder, owned_identity,
         ):
             try:
-                os.unlink(replacement_name, dir_fd=directory_descriptor)
+                folder.unlink(replacement_name)
             except FileNotFoundError:
                 pass
             except OSError as error:
                 cleanup_error = cleanup_error or error
-        try:
-            os.close(directory_descriptor)
-        except OSError as error:
-            cleanup_error = cleanup_error or error
         if primary_error is None and cleanup_error is not None:
             raise cleanup_error
 
@@ -765,7 +719,6 @@ def stop(run_id: str, *, expected_lifecycle_token: str | None = None) -> bool:
 
 
 def _read_record(run_id: str) -> AgentRun | None:
-    _no_follow_flags()
     try:
         payload = _read_private(_record_path(run_id))
         if payload is None:
@@ -1135,7 +1088,6 @@ def record_message_event(
     *, from_run: str, to_run: str, text: str, event_id: str | None = None,
 ) -> str | None:
     """Record one exchange and return its stable id for delivery metadata."""
-    _no_follow_flags()
     with ExitStack() as stack:
         for side in sorted({from_run, to_run}):
             stack.enter_context(record_lock(side))
@@ -1252,7 +1204,6 @@ def read_events(run_id: str) -> list[AgentEvent]:
     parser. A corrupt or half-written line is skipped, never fatal — a truncated write during a
     crash must not make the whole run unreadable.
     """
-    _no_follow_flags()
     stored = _read_record(run_id)
     provider = PROVIDERS.get(stored.provider) if stored else None
     try:

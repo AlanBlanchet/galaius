@@ -413,7 +413,7 @@ def _file_command(machine: UUID, op: str, path: str, inputs: dict) -> MachineCom
 
 
 @pytest.mark.parametrize("path", ("../escape.txt", "/etc/passwd", "a/../../escape.txt", "interact-files/link/out.txt", "outside-the-roots.txt", ".bashrc", "interact-files/.ssh/id_ed25519", ".config/interact/machine.json"))
-def test_a_file_op_never_leaves_the_working_directory(tmp_path: Path, path: str, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_file_op_never_leaves_the_working_directory(tmp_path: Path, path: str, monkeypatch: pytest.MonkeyPatch, directory_backend) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     root = tmp_path / "work"
     root.mkdir()
@@ -434,7 +434,7 @@ def test_a_file_op_never_leaves_the_working_directory(tmp_path: Path, path: str,
     ("full_access", "RECEIVED", True, b"received bytes"),
     ("read_only", "plain text", False, None),
 ))
-def test_a_machine_saves_text_or_a_received_file_within_its_ceiling(tmp_path: Path, ceiling: str, value: object, fetched: bool, written: bytes | None, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_machine_saves_text_or_a_received_file_within_its_ceiling(tmp_path: Path, ceiling: str, value: object, fetched: bool, written: bytes | None, monkeypatch: pytest.MonkeyPatch, directory_backend) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     root = tmp_path / "work"
     root.mkdir()
@@ -453,7 +453,7 @@ def test_a_machine_saves_text_or_a_received_file_within_its_ceiling(tmp_path: Pa
     assert json.loads((tmp_path / "config/interact/file-audit.log").read_text().splitlines()[-1])["op"] == "write"
 
 
-def test_a_named_pipe_in_a_root_is_refused_without_hanging(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_named_pipe_in_a_root_is_refused_without_hanging(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, directory_backend) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     root = tmp_path / "work"
     (root / "interact-files").mkdir(parents=True)
@@ -468,7 +468,7 @@ def test_a_named_pipe_in_a_root_is_refused_without_hanging(tmp_path: Path, monke
     assert not files.inbox.exists()
 
 
-def test_reading_a_folder_is_refused_and_leaks_no_descriptor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_reading_a_folder_is_refused_and_leaks_no_descriptor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, directory_backend) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     root = tmp_path / "work"
     (root / "interact-files" / "folder").mkdir(parents=True)
@@ -789,7 +789,7 @@ def test_hidden_script_paths_never_pass_the_wire_contract() -> None:
         ScriptFile(path="scripts/.hidden/x.py", file_digest="0" * 64)
 
 
-def test_file_listing_shows_script_roots_folders_and_a_file_digest_only(tmp_path: Path) -> None:
+def test_file_listing_shows_script_roots_folders_and_a_file_digest_only(tmp_path: Path, directory_backend) -> None:
     config = _scripts_config(tmp_path, file_roots=("interact-files",))
     root = tmp_path / "scripts"
     (root / "tools").mkdir(parents=True)

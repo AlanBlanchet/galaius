@@ -17,6 +17,7 @@ from interact.agents.catalog_connection import CatalogConnection, CatalogConnect
 from interact.prompt_projection import compile_prompt_projection, install_prompt_projection
 from interact.prompt_publisher import publish_projection
 from interact.prompt_secret import read_prompt_token
+from interact.pinned_directory import PinnedDirectory
 from interact.server_prompts import MAX_EDITOR_BYTES, PromptConflictError, ServerPrompts
 
 prompts_app = App(name="prompts", help="Edit server prompts when configured, or author through local Git.")
@@ -162,43 +163,23 @@ def _require_clean(repository: Path) -> None:
         raise SystemExit(2)
 
 
-def _source_parent(value: str) -> tuple[Path, int, str]:
-    if not hasattr(os, "O_NOFOLLOW") or not all(
-        function in os.supports_dir_fd for function in (os.open, os.rename, os.unlink)
-    ):
-        raise OSError("secure prompt source access is unavailable on this platform")
+def _source_parent(value: str):
+    """The source file's folder pinned inside the worktree (no link on the way), and its name."""
     relative = PurePosixPath(value)
     repository = _repository().resolve(strict=True)
     if relative.is_absolute() or not relative.parts or ".." in relative.parts:
         raise ValueError("prompt path is outside the source worktree")
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | os.O_NOFOLLOW
-    parent = os.open(repository, flags)
-    try:
-        for component in relative.parts[:-1]:
-            child = os.open(component, flags, dir_fd=parent)
-            os.close(parent)
-            parent = child
-    except BaseException:
-        os.close(parent)
-        raise
-    return repository.joinpath(*relative.parts), parent, relative.parts[-1]
+    return PinnedDirectory.open(repository, *relative.parts[:-1]), relative.parts[-1]
 
 
 def _source_file(value: str) -> tuple[Path, str]:
-    target, parent, name = _source_parent(value)
-    descriptor: int | None = None
-    try:
-        descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent)
-        metadata = os.fstat(descriptor)
-        if not stat.S_ISREG(metadata.st_mode):
-            raise ValueError("prompt path is not a regular source file")
-        with os.fdopen(descriptor, "rb") as stream:
-            descriptor = None
+    opened, name = _source_parent(value)
+    with opened as parent:
+        target = parent.path / name
+        with os.fdopen(parent.file(name), "rb") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                raise ValueError("prompt path is not a regular source file")
             data = stream.read(_MAX_EDITOR_BYTES + 1)
-    finally:
-        if descriptor is not None:
-            os.close(descriptor)
-        os.close(parent)
     if len(data) > _MAX_EDITOR_BYTES:
         raise ValueError("prompt source is too large")
     try:
@@ -206,6 +187,35 @@ def _source_file(value: str) -> tuple[Path, str]:
     except UnicodeError as error:
         raise ValueError("prompt path is not a regular source file")
     return target, content
+
+
+def _write_source(parent: PinnedDirectory, name: str, digest: str, content: str) -> None:
+    """CAS-replace `name` in its pinned folder under an exclusive editor lock file."""
+    lock_name, temporary = f".{name}.interact.lock", f".{name}.interact-{os.getpid()}"
+    try:
+        descriptor = parent.file(lock_name, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        _editor_error("prompt source has a competing editor; preserve the buffer and reload", "conflict")
+    try:
+        with os.fdopen(parent.file(name), "rb") as stream:
+            current = stream.read(_MAX_EDITOR_BYTES + 1)
+        if hashlib.sha256(current).hexdigest() != digest:
+            _editor_error("prompt source changed; preserve the editor buffer and reload", "conflict")
+        with os.fdopen(parent.file(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), "w", encoding="utf-8") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        parent.replace(temporary, parent, name)
+    finally:
+        try:
+            parent.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        os.close(descriptor)
+        try:
+            parent.unlink(lock_name)
+        except FileNotFoundError:
+            pass
 
 
 def _editor_error(message: str, code: str = "invalid") -> None:
@@ -295,49 +305,13 @@ def write(path: str, digest: str) -> None:
             _editor_error("Server save failed; preserve the editor buffer. Check access and connection, or save in the signed-in server prompt editor. No local write was made.")
         print(json.dumps({"ok": True, "path": path, "digest": saved.digest}, separators=(",", ":")))
         return
-    parent: int | None = None
-    descriptor: int | None = None
-    temporary: str | None = None
-    lock_name: str | None = None
-    owns_lock = False
     try:
         content = data.decode("utf-8")
-        target, parent, name = _source_parent(path)
-        lock_name = f".{name}.interact.lock"
-        try:
-            descriptor = os.open(lock_name, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600, dir_fd=parent)
-            owns_lock = True
-        except FileExistsError:
-            _editor_error("prompt source has a competing editor; preserve the buffer and reload", "conflict")
-        current_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent)
-        with os.fdopen(current_fd, "rb") as stream:
-            current = stream.read(_MAX_EDITOR_BYTES + 1)
-        if hashlib.sha256(current).hexdigest() != digest:
-            _editor_error("prompt source changed; preserve the editor buffer and reload", "conflict")
-        temporary = f".{name}.interact-{os.getpid()}"
-        temporary_fd = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600, dir_fd=parent)
-        with os.fdopen(temporary_fd, "w", encoding="utf-8") as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.rename(temporary, name, src_dir_fd=parent, dst_dir_fd=parent)
+        opened, name = _source_parent(path)
+        with opened as parent:
+            _write_source(parent, name, digest, content)
     except (OSError, UnicodeError, ValueError) as error:
         _editor_error(str(error))
-    finally:
-        if parent is not None and temporary is not None:
-            try:
-                os.unlink(temporary, dir_fd=parent)
-            except FileNotFoundError:
-                pass
-        if descriptor is not None:
-            os.close(descriptor)
-        if parent is not None and lock_name is not None and owns_lock:
-            try:
-                os.unlink(lock_name, dir_fd=parent)
-            except FileNotFoundError:
-                pass
-        if parent is not None:
-            os.close(parent)
     print(json.dumps({"ok": True, "path": path, "digest": hashlib.sha256(data).hexdigest()}, separators=(",", ":")))
 
 

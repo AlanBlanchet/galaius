@@ -1,5 +1,6 @@
 """Server projections preserve pinned content and never replace runtime hook ownership."""
 
+import errno
 import hashlib
 import json
 import os
@@ -17,10 +18,13 @@ from interact_core import AgentCatalogSnapshot, AgentRevision, AgentRevisionRef,
 
 from interact.agents.catalog import AgentCatalog, CatalogSnapshot
 from interact.agents.catalog_connection import CatalogAuthenticationError, CatalogConnection
+from interact.pinned_directory import PathDirectory
 from interact.prompt_projection import (
     MANIFEST_NAME, _server_outputs, compile_server_prompt_projection, install_prompt_projection,
     install_server_prompt_projection,
 )
+
+pytestmark = pytest.mark.usefixtures("directory_backend")
 
 
 def catalog_fixture(skill_description=True, prompt_headers=None, worker_tools=()):
@@ -306,6 +310,25 @@ def test_intervening_operator_write_is_never_overwritten(tmp_path, monkeypatch, 
         assert (transaction / "recovery.json").is_file()
         with pytest.raises(ValueError, match="recovery"):
             install_prompt_projection(projection, home, vscode, state)
+
+
+def test_install_copies_where_the_file_system_has_no_hard_links(tmp_path, monkeypatch, directory_backend):
+    if directory_backend is not PathDirectory:
+        pytest.skip("the POSIX backend publishes by hard link only")
+    home, projection = tmp_path / "home", tmp_path / "projection"
+    state, vscode = tmp_path / "state/installed.json", tmp_path / "vscode"
+
+    def no_hard_links(*_args, **_kwargs):
+        raise OSError(errno.EOPNOTSUPP, "this file system has no hard links")
+
+    monkeypatch.setattr(os, "link", no_hard_links)
+    for revision in ("first", "second"):
+        outputs = _server_outputs(catalog_fixture(), home, projection)
+        outputs["AGENTS.md"] = f"{revision} projection\n"
+        stage(outputs, projection)
+        install_prompt_projection(projection, home, vscode, state)
+        assert [(home / name).read_text() for name in ("AGENTS.md", ".codex/AGENTS.md")] == [f"{revision} projection\n"] * 2
+    assert not (state.parent / ".prompt-install-transaction").exists()
 
 
 @pytest.mark.parametrize("race", [False, True])

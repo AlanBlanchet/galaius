@@ -1,9 +1,9 @@
 """Compile exact committed prompt sources into verified provider projections."""
 
+import errno
 import hashlib
 import json
 import os
-from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 import shutil
 import stat
@@ -21,6 +21,7 @@ from interact.agents.catalog import AgentCatalog, AgentInstructionSet
 from interact.agents.catalog_connection import CatalogConnection
 from interact.agents.policy import TOOL_PREFIX
 from interact.file_lock import exclusive
+from interact.pinned_directory import PinnedDirectory
 
 
 MANIFEST_NAME = "projection-manifest.json"
@@ -43,8 +44,8 @@ def compile_server_prompt_projection(connection: CatalogConnection, installed_ro
             _verified_server_cache(destination, outputs)
             return destination
     staging = root / f".compile-{uuid4().hex}"
-    with _directory_handle(root) as parent:
-        os.mkdir(staging.name, mode=0o700, dir_fd=parent)
+    with PinnedDirectory.at(root) as parent:
+        parent.mkdir(staging.name)
     try:
         for relative, content in outputs.items():
             path = staging / _safe_path(relative)
@@ -71,8 +72,8 @@ def compile_server_prompt_projection(connection: CatalogConnection, installed_ro
         return destination
     finally:
         if staging.exists():
-            with _directory_handle(root) as parent:
-                shutil.rmtree(staging.name, dir_fd=parent)
+            with PinnedDirectory.at(root) as parent:
+                parent.rmtree(staging.name)
 
 
 def _verified_server_cache(destination: Path, outputs: dict[str, str]) -> None:
@@ -375,8 +376,8 @@ def install_prompt_projection(
     # consumer state even when two different connections install into it.
     _safe_directory(state_path.parent, create=True)
     lock = state_path.with_name(f".{state_path.name}.lock")
-    with _directory_handle(lock.parent) as parent:
-        descriptor = os.open(lock.name, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600, dir_fd=parent)
+    with PinnedDirectory.at(lock.parent) as parent:
+        descriptor = parent.file(lock.name, os.O_CREAT | os.O_RDWR, 0o600)
     with exclusive(descriptor):
         _install_prompt_projection(projection_root, home, vscode_root, state_path, adoption_path)
 
@@ -439,8 +440,8 @@ def _install_prompt_projection(
             raise ValueError("unmanaged prompt target collision")
         if expected is not None and current != expected and target not in mergeable:
             raise ValueError("managed prompt target changed locally")
-    with _directory_handle(transaction.parent) as parent:
-        os.mkdir(transaction.name, mode=0o700, dir_fd=parent)
+    with PinnedDirectory.at(transaction.parent) as parent:
+        parent.mkdir(transaction.name)
     backups: dict[Path, Path] = {}
     installed = {}
     created_directories = []
@@ -463,8 +464,8 @@ def _install_prompt_projection(
             if _entry_identity(backup, symlink_parent=directory.parent,
                                symlink_target=adoption[directory][0]) != observed[directory]:
                 raise ValueError("adopted prompt directory changed during install")
-            with _directory_handle(directory.parent) as parent:
-                os.mkdir(directory.name, mode=0o700, dir_fd=parent)
+            with PinnedDirectory.at(directory.parent) as parent:
+                parent.mkdir(directory.name)
             created_directories.append(directory)
         for index, target in enumerate(ordered):
             _require_safe_parent(target, home, vscode_root)
@@ -483,8 +484,9 @@ def _install_prompt_projection(
                 # Hard-link publication fails if another writer filled the gap;
                 # replace() would silently destroy that writer's new file.
                 identity = _entry_identity(staged)
-                _publish_prompt(staged, target)
-                installed[target] = identity
+                copied = _publish_prompt(staged, target)
+                installed[target] = identity if copied is None else (
+                    copied.st_dev, copied.st_ino, copied.st_mode, identity[-1])
         if any(_entry_identity(path) != identity for path, identity in installed.items()):
             raise ValueError("managed prompt target changed during install")
         if any(_entry_identity(backup, symlink_parent=path.parent,
@@ -526,14 +528,14 @@ def _install_prompt_projection(
                     _restore_prompt_backup(removed, target)
                     preserve = True
                 else:
-                    with _directory_handle(removed.parent) as parent:
-                        os.unlink(removed.name, dir_fd=parent)
+                    with PinnedDirectory.at(removed.parent) as parent:
+                        parent.unlink(removed.name)
             except (OSError, ValueError):
                 preserve = True
         for directory in reversed(created_directories):
             try:
-                with _directory_handle(directory.parent) as parent:
-                    os.rmdir(directory.name, dir_fd=parent)  # Never remove concurrent children.
+                with PinnedDirectory.at(directory.parent) as parent:
+                    parent.rmdir(directory.name)  # Never remove concurrent children.
             except (OSError, ValueError):
                 preserve = True
         for target, backup in reversed(backups.items()):
@@ -548,48 +550,33 @@ def _install_prompt_projection(
         raise
     finally:
         if transaction.exists() and not preserve:
-            with _directory_handle(transaction.parent) as parent:
-                shutil.rmtree(transaction.name, dir_fd=parent)
+            with PinnedDirectory.at(transaction.parent) as parent:
+                parent.rmtree(transaction.name)
 
 
 def _restore_prompt_backup(backup: Path, target: Path) -> None:
     _publish_prompt(backup, target)
-    with _directory_handle(backup.parent) as parent:
-        os.unlink(backup.name, dir_fd=parent)
+    with PinnedDirectory.at(backup.parent) as parent:
+        parent.unlink(backup.name)
 
 
-def _publish_prompt(source: Path, target: Path) -> None:
-    with _directory_handle(source.parent) as source_parent, _directory_handle(target.parent) as target_parent:
-        os.link(source.name, target.name, src_dir_fd=source_parent,
-                dst_dir_fd=target_parent, follow_symlinks=False)
+def _publish_prompt(source: Path, target: Path) -> os.stat_result | None:
+    """None: `target` is `source` under a second name; else the facts of the copy made instead."""
+    with PinnedDirectory.at(source.parent) as source_parent, PinnedDirectory.at(target.parent) as target_parent:
+        return source_parent.link(source.name, target_parent, target.name)
 
 
 def _write_prompt(path: Path, content: bytes, mode: int) -> None:
-    with _directory_handle(path.parent) as parent:
-        descriptor = os.open(path.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                             mode, dir_fd=parent)
+    with PinnedDirectory.at(path.parent) as parent:
+        descriptor = parent.file(path.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
         with os.fdopen(descriptor, "wb") as stream:
             stream.write(content)
-            os.fchmod(stream.fileno(), mode)
+            parent.chmod(stream.fileno(), mode)
 
 
 def _move_prompt_backup(source: Path, backup: Path) -> None:
-    with _directory_handle(source.parent) as source_parent, _directory_handle(backup.parent) as backup_parent:
-        os.replace(source.name, backup.name, src_dir_fd=source_parent, dst_dir_fd=backup_parent)
-
-
-@contextmanager
-def _directory_handle(path: Path):
-    """Pin each directory component so a swapped parent cannot redirect writes."""
-    descriptor = os.open(path.absolute().anchor, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        for part in path.absolute().parts[1:]:
-            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor)
-            os.close(descriptor)
-            descriptor = child
-        yield descriptor
-    finally:
-        os.close(descriptor)
+    with PinnedDirectory.at(source.parent) as source_parent, PinnedDirectory.at(backup.parent) as backup_parent:
+        source_parent.replace(source.name, backup_parent, backup.name)
 
 
 def _entry_identity(path: Path, *, symlink_parent: Path | None = None, symlink_target: str | None = None):
@@ -606,29 +593,26 @@ def _entry_identity(path: Path, *, symlink_parent: Path | None = None, symlink_t
         return (info.st_dev, info.st_ino, info.st_mode, link, content)
     if not stat.S_ISREG(info.st_mode):
         raise ValueError("managed prompt target is not a regular file")
-    with _directory_handle(path.parent) as parent:
-        descriptor = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent)
-        with os.fdopen(descriptor, "rb") as stream:
+    with PinnedDirectory.at(path.parent) as parent:
+        with os.fdopen(parent.file(path.name), "rb") as stream:
             info = os.fstat(stream.fileno())
             content = stream.read()
     return (info.st_dev, info.st_ino, info.st_mode, hashlib.sha256(content).hexdigest())
 
 
 def _safe_directory(path: Path, *, create: bool = False) -> list[Path]:
-    created = []
-    for directory in reversed((path.absolute(), *path.absolute().parents)):
+    """The folders made (outermost first); ValueError when a link or a file stands on `path`."""
+    try:
+        with PinnedDirectory.at(path, create=create) as directory:
+            return list(directory.created)
+    except FileNotFoundError:
         if create:
-            try:
-                if directory == directory.parent:
-                    continue
-                with _directory_handle(directory.parent) as parent:
-                    os.mkdir(directory.name, mode=0o700, dir_fd=parent)
-                created.append(directory)
-            except FileExistsError:
-                pass
-        if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
-            raise ValueError(f"prompt path is not a safe directory: {directory}")
-    return created
+            raise
+        return []
+    except OSError as error:
+        if error.errno in {errno.ELOOP, errno.ENOTDIR}:
+            raise ValueError(f"prompt path is not a safe directory: {path}") from error
+        raise
 
 
 def _validated_manifest_outputs(projection_root: Path) -> dict[str, Path]:
@@ -916,7 +900,7 @@ def _compiled_outputs(root: Path) -> dict[str, tuple[int, bytes]]:
         key = relative.as_posix().casefold()
         if key in folded:
             raise ValueError("compiled projection has a case-fold collision")
-        mode = stat.S_IMODE(path.stat().st_mode)
+        mode = PinnedDirectory.permissions(path.stat())
         if mode not in {0o600, 0o644, 0o755}:
             raise ValueError("compiled projection has an unsafe mode")
         folded.add(key)

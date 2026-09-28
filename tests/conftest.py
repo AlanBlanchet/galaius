@@ -35,6 +35,7 @@ os.environ.setdefault("INTERACT_MEDIA_BILLING", "api_allowed")
 from interact.config import UserConfig, load_dotenv_for_cli
 from interact.agents.providers import AgentProvider, ClaudeCodeProvider
 from interact.models import Model
+from interact.pinned_directory import PinnedDirectory
 
 
 @pytest.fixture
@@ -59,6 +60,15 @@ def desktop_gate_open(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr("interact.desktop.backend.desktop_supported", lambda: True)
     monkeypatch.setattr(srv.targets, "_desktop_unsupported", lambda *a, **k: None)
+
+
+@pytest.fixture(params=PinnedDirectory.backends(), ids=lambda backend: backend.__name__)
+def directory_backend(request: pytest.FixtureRequest):
+    """Run on every file-system backend this computer has (`PinnedDirectory.backends`): POSIX
+    descriptors and the Windows full-path walk, so the Windows code runs on Linux too. Opt in by
+    name, or `pytestmark = pytest.mark.usefixtures("directory_backend")`."""
+    with PinnedDirectory.using(request.param):
+        yield request.param
 
 
 @pytest.fixture(autouse=True)
