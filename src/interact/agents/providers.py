@@ -19,7 +19,9 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
+import tomllib
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -1162,6 +1164,23 @@ class CodexProvider(AgentProvider):
     #: ChatGPT session or real OpenAI key; reusing them here would risk that credential reaching a
     #: third-party box or HF's router instead of OpenAI itself).
     _OPENAI_COMPAT_PROVIDER_ID = "interact_openai_compat"
+    #: Codex's own Windows sandbox, set by interact on every start on Windows unless the owner's
+    #: `~/.codex/config.toml` names one (e.g. "elevated", which needs a one-time administrator
+    #: setup). Unset, Codex has no OS sandbox there and refuses commands and edits instead;
+    #: "unelevated" (a restricted token + folder ACLs) needs no administrator and no prompt.
+    WINDOWS_SANDBOX: ClassVar[str] = "unelevated"
+
+    @classmethod
+    def platform_flags(cls) -> tuple[str, ...]:
+        """What every Codex start on this system adds: on Windows, the sandbox it runs in."""
+        if sys.platform != "win32":
+            return ()
+        config = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "config.toml"
+        try:
+            chosen = tomllib.loads(config.read_text(encoding="utf-8")).get("windows", {}).get("sandbox")
+        except (OSError, tomllib.TOMLDecodeError):
+            chosen = None
+        return () if chosen else ("-c", f'windows.sandbox="{cls.WINDOWS_SANDBOX}"')
 
     def can_run(self, model: Model, env: dict[str, str]) -> bool:
         if super().can_run(model, env):
@@ -1234,7 +1253,7 @@ class CodexProvider(AgentProvider):
 
     def app_server_command(self) -> list[str]:
         """The installed local-session protocol entry point, resolved before spawning."""
-        return [self.executable(), "app-server", "--listen", "stdio://"]
+        return [self.executable(), *self.platform_flags(), "app-server", "--listen", "stdio://"]
 
     def auth_command(self) -> list[str]:
         return [self.executable(), "login", "status"]
@@ -1348,7 +1367,7 @@ class CodexProvider(AgentProvider):
                 base_url: str | None = None) -> list[str]:
         self.validate_tool_policy(allowed_tools or [], denied_tools, coarse_accepted=coarse_accepted)
         task = self._inject_definition(agent, task, agent_prompt)
-        argv = [self.binary, "exec", "--json", *self.native_delegation_flags]
+        argv = [self.binary, "exec", "--json", *self.native_delegation_flags, *self.platform_flags()]
         argv += self.mesh_arguments(mcp_config)
         argv += self._mcp_tool_scope_arguments(allowed_tools or [], denied_tools)
         argv += self._native_sandbox_arguments(allowed_tools or [], denied_tools,
@@ -1408,7 +1427,7 @@ class CodexProvider(AgentProvider):
         self.validate_tool_policy(allowed_tools or [], denied_tools, coarse_accepted=coarse_accepted)
         if agent:
             self.validate_agent_name(agent)
-        argv = [self.binary, "exec", "resume", "--json", *self.native_delegation_flags]
+        argv = [self.binary, "exec", "resume", "--json", *self.native_delegation_flags, *self.platform_flags()]
         argv += self.mesh_arguments(mcp_config)
         argv += self._mcp_tool_scope_arguments(allowed_tools or [], denied_tools)
         argv += self._openai_compat_arguments(base_url)

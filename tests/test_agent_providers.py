@@ -1065,3 +1065,19 @@ def test_claude_resumes_an_editor_conversation_into_a_copy():
     assert "--fork-session" in argv and argv[-2:] == ["--", "- go on"]
     with pytest.raises(ValueError, match="cannot resume into a copy"):
         CodexProvider().resume_command("thread", "x", fork_to="copy-id")
+
+
+@pytest.mark.parametrize(("system", "config", "expected"), [
+    ("win32", None, ("-c", 'windows.sandbox="unelevated"')),                 # nothing chosen: interact sets it
+    ("win32", '[windows]\nsandbox = "elevated"\n', ()),                      # the owner's own choice stands
+    ("win32", "not toml [", ("-c", 'windows.sandbox="unelevated"')),         # unreadable config: still sandboxed
+    ("linux", None, ()),
+])
+def test_codex_runs_in_its_windows_sandbox_on_windows(monkeypatch, tmp_path, system, config, expected):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    if config is not None:
+        (tmp_path / "config.toml").write_text(config)
+    monkeypatch.setattr("interact.agents.providers.sys.platform", system)
+    assert CodexProvider.platform_flags() == expected
+    argv = CodexProvider().command("hi", cwd=str(tmp_path), model=None, mcp_config=None, run_id="r1")
+    assert (argv[argv.index("exec") + 1:].count('windows.sandbox="unelevated"') == 1) == bool(expected)
