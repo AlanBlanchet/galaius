@@ -54,6 +54,8 @@ TAIL_LINES = 4000
 AGENT_PROVIDERS = ("claude", "codex")
 MODEL_RANKING = "aa.intelligence and price.in >= 0"
 MODELS_PER_PROVIDER = 12
+#: A release date closing a model id: -20260416 or -2026-04-16.
+_DATED = re.compile(r"-(?:\d{8}|\d{4}-\d{2}-\d{2})$")
 #: Editor conversations offered for continuing: written in the last two weeks, newest first.
 EDITOR_SESSIONS_DAYS, EDITOR_SESSIONS_MAX = 14, 40
 #: An editor conversation written this recently is open in the editor right now.
@@ -483,7 +485,11 @@ class MachineAgents(BaseModel):
             logger.warning("agent models unavailable: %s", error)
             ranked = ()
         # The strongest few per CLI: the tail of the ranking is models nobody would pick by hand.
-        unique = dict.fromkeys(MachineAgentModel(provider=item.provider, model=item.model) for item in ranked)
+        # A dated release beside its own alias ("claude-opus-4-7-20260416" next to "claude-opus-4-7")
+        # is the same model twice: the alias stays.
+        ids = {item.model for item in ranked}
+        unique = dict.fromkeys(MachineAgentModel(provider=item.provider, model=item.model) for item in ranked
+                               if (base := _DATED.sub("", item.model)) == item.model or base not in ids)
         per_provider: dict[str, list[MachineAgentModel]] = {}
         for item in unique:
             per_provider.setdefault(item.provider, []).append(item)

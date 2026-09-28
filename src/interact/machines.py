@@ -895,7 +895,9 @@ class MachineRunner:
                                    sessions=self._sessions, logs=self._log_ring)
             answer = await agents.answer(request)
             # Reading (the page polls every few seconds) stays out of the owner's log; actions go in.
-            logger.log(logging.INFO if request.action else logging.DEBUG, "agent %s", request.op)
+            said = " ".join(f"{key}={value}" for key, value in (("role", getattr(request, "role", None)), ("folder", "/".join(filter(None, (getattr(request, "root", ""), getattr(request, "path", ""))))),
+                                                                 ("run", answer.run_id or getattr(request, "run_id", None)), ("answer", answer.detail if request.op == "answer" else None)) if value)
+            logger.log(logging.INFO if request.action else logging.DEBUG, "agent %s %s", request.op, said)
         except (PermissionError, OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
             reason = str(error) if isinstance(error, (PermissionError, ValueError, RuntimeError)) else f"{type(error).__name__}: {error}"
             answer = MachineAgentAnswer(request_id=request.id, error=reason[:400] or type(error).__name__)
