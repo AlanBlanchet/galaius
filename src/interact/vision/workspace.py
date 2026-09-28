@@ -70,7 +70,9 @@ def _prune(root: Path) -> None:
         elif stat.S_ISDIR(info.st_mode):
             try:
                 shutil.rmtree(candidate)
-            except FileNotFoundError:
+            except (FileNotFoundError, PermissionError):
+                # Another pruner got there first: gone, or (Windows) pending deletion, which reports
+                # as access denied. Housekeeping: the next prune sees it gone.
                 continue
 
 

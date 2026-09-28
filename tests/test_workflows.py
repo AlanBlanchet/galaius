@@ -185,7 +185,7 @@ def test_a_file_is_saved_only_where_and_as_recorded(server, tmp_path, served, ex
     with pytest.raises(CatalogConnectionError, match=refusal):
         run.download(run.files["report"].model_copy(update={"path": path}), downloads)
 
-    assert sorted(str(item.relative_to(downloads)) for item in downloads.rglob("*") if item.is_file()) == (["reports/q3.txt"] if existing else [])
+    assert sorted(item.relative_to(downloads).as_posix() for item in downloads.rglob("*") if item.is_file()) == (["reports/q3.txt"] if existing else [])
     assert not (tmp_path / "escape.txt").exists()
 
 

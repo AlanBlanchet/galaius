@@ -45,6 +45,7 @@ def sandbox(monkeypatch, tmp_path):
     home.mkdir()
     cwd.mkdir()
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))  # Windows' home (Path.home, ~)
     monkeypatch.setattr(config, "debug_dir", out)
     monkeypatch.chdir(cwd)
     return {"home": home, "out": out, "tmp": tmp_path, "cwd": cwd}
