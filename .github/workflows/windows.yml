@@ -53,7 +53,8 @@ jobs:
       - name: Start the server double
         run: |
           uv sync --frozen --quiet
-          Start-Process -FilePath uv -ArgumentList 'run', '--frozen', 'python', 'tests/support/account_server.py', '--port', '8765' -RedirectStandardError server.err -WindowStyle Hidden
+          # The environment's own python, not `uv run`: a process uv starts ends with uv, and this one must outlive the step.
+          Start-Process -FilePath .venv\Scripts\python.exe -ArgumentList 'tests/support/account_server.py', '--port', '8765' -RedirectStandardError server.err -WindowStyle Hidden
           foreach ($i in 1..120) { try { irm "$env:SERVER/v1/version"; exit 0 } catch { Start-Sleep -Milliseconds 500 } }
           Get-Content server.err; exit 1
 
