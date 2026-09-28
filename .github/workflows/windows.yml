@@ -25,7 +25,7 @@ jobs:
   suite:
     name: windows (full suite)
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
@@ -35,8 +35,18 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # Kept in a file as it runs and uploaded whatever happens: a hang is cut by the step's own
+      # timeout, and the file still says which test was running.
       - name: Tests
-        run: uv run --frozen python -m pytest -m "not integration" -q -rfEs -p no:cacheprovider
+        timeout-minutes: 30
+        run: uv run --frozen python -m pytest -m "not integration" -v -rfEs -p no:cacheprovider 2>&1 | Tee-Object -FilePath suite.log
+      - name: Upload the test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-suite-log
+          path: suite.log
+          if-no-files-found: warn
 
   windows:
     name: windows (install.ps1 + login + service)
