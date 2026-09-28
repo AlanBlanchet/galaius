@@ -235,8 +235,8 @@ class MachineAgents(BaseModel):
 
     @staticmethod
     def own_cli() -> tuple[str, ...]:
-        beside = Path(sys.executable).with_name("interact")
-        found = str(beside) if beside.is_file() else shutil.which("interact")
+        # `which` reads PATHEXT: beside the interpreter on Windows it is `interact.exe`.
+        found = shutil.which("interact", path=str(Path(sys.executable).parent)) or shutil.which("interact")
         if found is None:
             raise RuntimeError("the interact command is not installed beside this runner")
         return (found,)
