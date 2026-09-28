@@ -22,9 +22,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import ClassVar, Literal
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from interact.file_lock import exclusive
+from interact.paths import UserPaths
 from interact.private_files import PRIVATE_FILES
 from interact.server_registry import _alive
 from interact.upgrade.release import BuildIdentity, ReleaseOrder
@@ -40,6 +41,12 @@ class Runtime(BaseModel):
     model_config = ConfigDict(frozen=True)
     path: Path
     receipt_name: ClassVar[str] = "installation.json"
+
+    @field_validator("path")
+    @classmethod
+    def _resolved(cls, path: Path) -> Path:
+        """One spelling per runtime (a data folder behind a symlink still compares equal)."""
+        return path.resolve()
 
     @classmethod
     def own(cls) -> "Runtime":
@@ -151,21 +158,18 @@ class Uv(BaseModel):
 class RuntimeStore(BaseModel):
     model_config = ConfigDict(frozen=True)
     root: Path
+
+    @field_validator("root")
+    @classmethod
+    def _resolved(cls, root: Path) -> Path:
+        return root.resolve()
     #: Runtimes kept besides the active and previous ones (for `interact upgrade use`).
     keep: ClassVar[int] = 2
-
-    @staticmethod
-    def data_home() -> Path:
-        if sys.platform == "win32":
-            return Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "interact"
-        if sys.platform == "darwin":
-            return Path.home() / "Library" / "Application Support" / "interact"
-        return Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share") / "interact"
 
     @classmethod
     def default(cls) -> "RuntimeStore":
         override = os.environ.get("INTERACT_RUNTIMES")
-        return cls(root=Path(override) if override else cls.data_home() / "runtimes")
+        return cls(root=Path(override) if override else UserPaths.data() / "runtimes")
 
     @property
     def pointer_path(self) -> Path:
@@ -225,16 +229,11 @@ class RuntimeStore(BaseModel):
                 self.follow(Runtime(path=updated.active))
             return updated
 
-    @staticmethod
-    def launcher() -> Path | None:
-        """Where new launches start (`~/.local/bin/interact`); None on Windows (uv's own entry)."""
-        return None if sys.platform == "win32" else Path(os.environ.get("XDG_BIN_HOME") or Path.home() / ".local" / "bin") / "interact"
-
     def follow(self, runtime: Runtime) -> None:
         """Point the launcher at `runtime` when this store manages it (a link into the store): new
         launches then start on the active runtime too, and prune never strands it. Any other
         launcher (a bootstrap install's own) is left alone: its supervisor starts the active worker."""
-        launcher = self.launcher()
+        launcher = UserPaths.launcher()
         if launcher is None or not launcher.is_symlink() or not Path(os.readlink(launcher)).is_relative_to(self.root) \
                 or not runtime.path.is_relative_to(self.root) or not (runtime.path / "bin" / "interact").is_file():
             return
@@ -274,7 +273,7 @@ class RuntimeStore(BaseModel):
             return current.model_copy(update={"active": back.path, "previous": None})
 
         self._update(change)
-        self.record("rolled_back", f"{suspect.label()} did not start ({reason}); back on {target[0].label()}")
+        self.record("rolled_back", f"{suspect.label()} {reason}; back on {target[0].label()}")
         return target[0]
 
     def condemn(self, runtime: Runtime) -> None:
@@ -284,6 +283,14 @@ class RuntimeStore(BaseModel):
             return
         self._update(lambda current: current if receipt.identity in current.failed else current.model_copy(update={"failed": (*current.failed, receipt.identity)}))
         self.record("failed", f"{runtime.label()} failed to start where the previous runtime works: it will not be installed again")
+
+    def installed(self, identity: str) -> Runtime | None:
+        """A complete runtime already holding the build with this interact wheel sha256."""
+        for path in self.root.iterdir() if self.root.is_dir() else ():
+            receipt = Runtime(path=path).receipt() if path.is_dir() and not path.name.startswith(".") else None
+            if receipt is not None and receipt.identity == identity and Runtime(path=path).usable():
+                return Runtime(path=path)
+        return None
 
     def failed(self, identity: str) -> bool:
         return identity in self.pointer().failed
@@ -298,10 +305,10 @@ class RuntimeStore(BaseModel):
         release) every dependency comes from it, each checked by hash, none resolved; without (a
         person's local build) uv resolves them as `uv tool install` does."""
         PRIVATE_FILES.directory(self.root)
-        uv = Uv.find(self.data_home())
+        uv = Uv.find(UserPaths.data())
         staging = Runtime(path=Path(tempfile.mkdtemp(prefix=".staging-", dir=self.root)))
         try:
-            uv.run("venv", "--quiet", "--relocatable", "--allow-existing", "--python", python or f"{sys.version_info.major}.{sys.version_info.minor}", str(staging.path))
+            uv.run("venv", "--quiet", "--no-config", "--relocatable", "--allow-existing", "--python", python or f"{sys.version_info.major}.{sys.version_info.minor}", str(staging.path))
             requirements = staging.path / "requirements.txt"
             pinned = "".join(f"{name} @ {path.resolve().as_uri()} --hash=sha256:{self.digest(path)}\n" for name, path in sorted(wheels.items()))
             if lock is not None:
@@ -338,8 +345,11 @@ class RuntimeStore(BaseModel):
         output = subprocess.run([str(runtime.python), "-I", "-c", script], capture_output=True, text=True, check=False, env=Uv.environment())
         if output.returncode != 0:
             raise RuntimeError(f"the new runtime does not import: {output.stderr.strip()[-2000:]}")
-        loaded = json.loads(output.stdout)
-        root = runtime.path.resolve()
+        try:
+            loaded = json.loads(output.stdout)
+        except ValueError as error:
+            raise RuntimeError(f"the new runtime's import probe said something unreadable: {output.stdout[:200]!r}") from error
+        root = runtime.path
         if any(not Path(source).resolve().is_relative_to(root) for source in loaded.pop("sources")):
             raise RuntimeError("the new runtime imports interact from outside itself")
         return loaded
@@ -372,8 +382,8 @@ class RuntimeStore(BaseModel):
         with self.locked():
             pointer = self.pointer()
             protected = {pointer.active, pointer.previous, *self.in_use()}
-            managed = sorted((path for path in self.root.iterdir() if path.is_dir() and not path.name.startswith(".") and Runtime(path=path).receipt() is not None), key=lambda path: path.stat().st_mtime, reverse=True)
-            leftovers = [path for path in self.root.glob(".trash-*")] + [path for path in self.root.glob(".staging-*") if time.time() - path.stat().st_mtime > 86400]
+            managed = sorted((path for path in self.root.iterdir() if path.is_dir() and not path.name.startswith(".") and Runtime(path=path).receipt() is not None), key=self._age, reverse=True)
+            leftovers = [*self.root.glob(".trash-*"), *(path for pattern in (".staging-*", ".download-*") for path in self.root.glob(pattern) if time.time() - self._age(path) > 86400)]
             for path in [path for path in managed if path not in protected][self.keep:] + leftovers:
                 try:
                     trash = path if path.name.startswith(".trash-") else path.rename(path.with_name(f".trash-{path.name}"))
@@ -382,6 +392,13 @@ class RuntimeStore(BaseModel):
                     continue
                 removed.append(path)
         return removed
+
+    @staticmethod
+    def _age(path: Path) -> float:
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return 0.0
 
     # ---- what happened, and when to look again -----------------------------------------------
 
@@ -395,7 +412,13 @@ class RuntimeStore(BaseModel):
             lines = self.events_path.read_text(encoding="utf-8").splitlines()[-limit:]
         except FileNotFoundError:
             return []
-        return [UpgradeEvent.model_validate_json(line) for line in lines if line.strip()]
+        events = []
+        for line in lines:
+            try:
+                events.append(UpgradeEvent.model_validate_json(line))
+            except ValidationError:
+                continue  # a line cut short by a crash mid-write
+        return events
 
     def next_check(self) -> float:
         try:

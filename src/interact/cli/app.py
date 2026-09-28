@@ -111,12 +111,12 @@ def main() -> None:
     runs it again as a worker from the active runtime; a worker at its quiet point exits
     `EXIT_UPGRADE` for the supervisor to start the new runtime in its place."""
     force_utf8_io()
-    interactive = sys.stdout.isatty()
-    supervisor = Supervisor.for_arguments(tuple(sys.argv[1:]), interactive)
+    arguments, interactive = tuple(sys.argv[1:]), sys.stdout.isatty()
+    supervisor = Supervisor.for_arguments(arguments, interactive)
     if supervisor is not None:
         raise SystemExit(supervisor.run())
     try:
-        app(["_tui"] if len(sys.argv) == 1 and interactive else None)
+        app(list(Supervisor.command(arguments, interactive)))
     except UpgradeReady:
         raise SystemExit(EXIT_UPGRADE) from None
 

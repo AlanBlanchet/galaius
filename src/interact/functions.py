@@ -10,7 +10,6 @@ import hashlib
 import importlib.util
 import inspect
 import json
-import os
 import re
 import shutil
 from concurrent.futures import ThreadPoolExecutor
@@ -21,6 +20,7 @@ from uuid import uuid4
 from interact_core import MachineFunctionSummary, PortSpec, ValueType
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from interact.paths import UserPaths
 from interact.private_files import PRIVATE_FILES
 
 FunctionKind = Literal["python", "shell"]
@@ -115,8 +115,7 @@ class FunctionRegistry:
 
     @staticmethod
     def default_config_path() -> Path:
-        base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-        return base / "interact" / "functions.json"
+        return UserPaths.config() / "functions.json"
 
     def load(self) -> tuple[FunctionEntry, ...]:
         if not self.config_path.exists():

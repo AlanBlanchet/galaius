@@ -11,10 +11,12 @@ import pytest
 
 from interact.machines import MachineConfig, MachineRunner
 from interact.server_tool_settings import PORTABLE_ENV
-from interact.upgrade.check import UpgradeCheck, UpgradePolicy
-from interact.upgrade.release import Release, ReleaseFile, ReleaseRefused
+from interact.config.settings import Config
+from interact.upgrade.check import UpgradeCheck
+from interact.upgrade.release import BuildIdentity, Release, ReleaseFile, ReleaseRefused
 from interact.upgrade.source import ReleaseSigner, ReleaseSource
-from interact.upgrade.store import RuntimeStore
+from interact.upgrade.store import RuntimeReceipt, RuntimeStore
+from interact.upgrade.supervisor import Supervision, Supervisor
 
 WHEEL = b"not really a wheel"
 LOCK = b"# nothing\n"
@@ -59,9 +61,12 @@ def signer() -> ReleaseSigner:
     return ReleaseSigner.generated()
 
 
-def checker(tmp_path: Path, signer: ReleaseSigner, published: Published, monkeypatch, **policy) -> UpgradeCheck:
-    check = UpgradeCheck(store=RuntimeStore(root=tmp_path / "runtimes"), keys=signer.keys(),
-                         policy=UpgradePolicy(**{"enabled": True, "pin": "", "every": 300, "github": False, **policy}))
+def settings(**changes) -> Config:
+    return Config(**{"auto_upgrade": True, "upgrade_pin": "", "upgrade_check_seconds": 300, "upgrade_github": False, **changes})
+
+
+def checker(tmp_path: Path, signer: ReleaseSigner, published: Published, monkeypatch, **changes) -> UpgradeCheck:
+    check = UpgradeCheck(store=RuntimeStore(root=tmp_path / "runtimes"), keys=signer.keys(), config=settings(**changes))
     monkeypatch.setattr(UpgradeCheck, "source", lambda self: published.source)
     monkeypatch.setattr(UpgradeCheck, "install", lambda self, *args: pytest.fail("nothing may be installed"))
     return check
@@ -94,14 +99,34 @@ def test_an_older_release_than_this_computer_ran_is_refused_and_said_once(tmp_pa
     assert "older than" in check.run()
     assert "older than" in check.run()
     assert [event.kind for event in check.store.events()] == ["refused"]
-    published.publish(signer, release("0.44.0", 20))
-    assert check.run().startswith("up to date")
 
 
-@pytest.mark.parametrize(("policy", "said"), [({"enabled": False}, "off"), ({"pin": "abcdef0"}, "pinned to abcdef0")])
-def test_off_and_pinned_install_nothing_newer(tmp_path, signer, published, monkeypatch, policy, said) -> None:
+@pytest.mark.parametrize(("changes", "said"), [({"auto_upgrade": False}, "off"), ({"upgrade_pin": "abcdef0"}, "holding the pinned build abcdef0")])
+def test_off_and_pinned_install_nothing_newer(tmp_path, signer, published, monkeypatch, changes, said) -> None:
     published.publish(signer, release("0.44.0", 30))
-    assert said in checker(tmp_path, signer, published, monkeypatch, **policy).run()
+    assert said in checker(tmp_path, signer, published, monkeypatch, **changes).run()
+
+
+def test_a_pin_that_is_not_a_commit_is_reported_and_ignored_never_fatal(tmp_path, signer, published, monkeypatch) -> None:
+    published.publish(signer, release("0.44.0", 30))
+    check = checker(tmp_path, signer, published, monkeypatch, upgrade_pin="0.44.0")
+    monkeypatch.setattr(UpgradeCheck, "install", lambda self, *args: (_ for _ in ()).throw(RuntimeError("reached install")))
+    assert "did not install: reached install" in check.run()  # the bad pin did not hold anything back
+    assert any("is not a commit" in event.text for event in check.store.events())
+
+
+def test_the_newest_build_is_activated_again_after_a_rollback_or_an_unpin(tmp_path, signer, published, monkeypatch) -> None:
+    document = release("0.44.0", 20)
+    check = checker(tmp_path, signer, published, monkeypatch)
+    older, newest = (tmp_path / "runtimes" / name for name in ("0.44.0-older", "0.44.0-newest"))
+    for path, identity in ((older, "0" * 64), (newest, document.identity)):
+        (path / "bin").mkdir(parents=True)
+        (path / "bin" / "python").write_text("")
+        (path / "installation.json").write_text(RuntimeReceipt(build=BuildIdentity.of(document), identity=identity, source="server", installed_at=datetime.now(UTC), packages={}).model_dump_json())
+    check.store._update(lambda pointer: pointer.model_copy(update={"active": older, "floor": document.order}))
+    published.publish(signer, document)
+    assert "installed and active" in check.run()  # found installed, activated, nothing downloaded
+    assert check.store.pointer().active == newest.resolve()
 
 
 def test_an_expired_release_is_refused(tmp_path, signer, published, monkeypatch) -> None:
@@ -131,10 +156,10 @@ def test_a_workflow_file_root_never_reaches_the_installed_runtimes(tmp_path, mon
 
 
 def test_a_pin_names_one_build_and_only_that_build_passes_the_floor(tmp_path, signer, published, monkeypatch) -> None:
-    check = checker(tmp_path, signer, published, monkeypatch, pin="000000a")
+    check = checker(tmp_path, signer, published, monkeypatch, upgrade_pin="000000a")
     check.store._update(lambda pointer: pointer.model_copy(update={"floor": release("0.44.0", 20).order}))
     published.publish(signer, release("0.44.0", 5, commit="000000b"))  # older, not the pinned build
-    assert "pinned to 000000a" in check.run()
+    assert "holding the pinned build 000000a" in check.run()
     installed = []
 
     def install(self, source, http, document):
@@ -149,7 +174,7 @@ def test_a_pin_names_one_build_and_only_that_build_passes_the_floor(tmp_path, si
 
 @pytest.mark.parametrize("broken", ["wheel bytes differ", "wheel missing"])
 def test_a_release_file_that_fails_to_download_or_verify_is_recorded_not_raised(tmp_path, signer, published, monkeypatch, broken) -> None:
-    check = UpgradeCheck(store=RuntimeStore(root=tmp_path / "runtimes"), keys=signer.keys(), policy=UpgradePolicy(enabled=True, pin="", every=300, github=False))
+    check = UpgradeCheck(store=RuntimeStore(root=tmp_path / "runtimes"), keys=signer.keys(), config=settings())
     monkeypatch.setattr(UpgradeCheck, "source", lambda self: published.source)
     document = release("0.44.0", 10)
     published.publish(signer, document)
@@ -162,7 +187,7 @@ def test_a_release_file_that_fails_to_download_or_verify_is_recorded_not_raised(
 
 
 def test_a_remembered_plain_http_server_elsewhere_is_refused_as_a_source(tmp_path, signer, monkeypatch) -> None:
-    check = UpgradeCheck(store=RuntimeStore(root=tmp_path / "runtimes"), keys=signer.keys(), policy=UpgradePolicy(enabled=True, pin="", every=300, github=False))
+    check = UpgradeCheck(store=RuntimeStore(root=tmp_path / "runtimes"), keys=signer.keys(), config=settings())
     monkeypatch.setattr(UpgradeCheck, "server", staticmethod(lambda: "http://interact.example.com"))
     assert "not a release source" in check.run()
     assert check.store.events()[-1].kind == "refused"
@@ -176,3 +201,14 @@ def test_a_computer_enrolled_before_logins_were_remembered_upgrades_from_its_mac
     assert UpgradeCheck.server() == "http://127.0.0.1:8817"
     (tmp_path / "config" / "interact" / "login-server").write_text("https://interact.example.com\n")
     assert UpgradeCheck.server() == "https://interact.example.com"
+
+
+def test_the_supervisor_contract_v1_is_read_as_written_by_supervisors_already_running() -> None:
+    written_by_14aba97 = '{"runtime":"/r/0.43.0-x","mode":"report","state":"/r/live/1-1.state.json"}'
+    assert Supervision.model_validate_json(written_by_14aba97) == Supervision(version=1, runtime=Path("/r/0.43.0-x"), mode="report", state=Path("/r/live/1-1.state.json"))
+
+
+def test_a_worker_that_cannot_read_its_contract_never_becomes_a_supervisor_itself(monkeypatch) -> None:
+    monkeypatch.setenv("INTERACT_SUPERVISE", "1")
+    monkeypatch.setenv(Supervision.variable, '{"version": 2, "something": "newer"}')
+    assert Supervision.current() is None and Supervisor.for_arguments(("mcp",), interactive=False) is None

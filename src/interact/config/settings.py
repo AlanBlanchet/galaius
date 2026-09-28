@@ -177,9 +177,11 @@ class Config(BaseSettings):
     # to it at its next quiet moment. Local to this computer: never synced from a server (a server
     # must not be able to turn upgrades back on or hold a computer on an old build).
     auto_upgrade: bool = True
-    # The commit (7+ hex characters of it) of the one release to stay on; empty: the newest signed
-    # release. A commit, not a version: one version number spans many releases.
-    upgrade_pin: Annotated[str, Field(pattern=r"^([0-9a-f]{7,40})?$")] = ""
+    # Hold this computer on the build with this commit (7+ hex characters of it): installed when
+    # the server offers it, otherwise the running build stays. Empty: the newest signed release. A
+    # commit, not a version: one version number spans many releases. Checked where it is used
+    # (`UpgradeCheck`): a bad value is reported there, never stops a process from starting.
+    upgrade_pin: str = ""
     upgrade_check_seconds: Annotated[int, Field(ge=30)] = 300
     # Fall back to GitHub releases when no Interact server is set up (never on a server error).
     upgrade_github: bool = False

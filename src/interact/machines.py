@@ -44,6 +44,7 @@ from interact.functions import FunctionRegistry, PermissionLevel, invoke as invo
 from interact.vision_env import Report, VisionWorker, ensure_vision_env
 from interact import gpu_scrub, user_models
 from interact.sandbox import run_pooled
+from interact.paths import UserPaths
 from interact.upgrade.quiet import QuietPoint
 from interact.upgrade.store import RuntimeStore
 from interact.pinned_directory import PinnedDirectory
@@ -124,7 +125,7 @@ class MachineConfig(BaseModel):
         it, never a symlink, never holding or inside the runner's own folders (its settings, its
         installed runtimes: code every long-lived process runs), never under a hidden name."""
         base, home = self.working_directory.resolve(), Path.home().resolve()
-        internal = (base / ".interact", MachineRunner.default_config_path().parent.resolve(), RuntimeStore.data_home().resolve(), RuntimeStore.default().root.resolve())
+        internal = (base / ".interact", MachineRunner.default_config_path().parent.resolve(), UserPaths.data().resolve(), RuntimeStore.default().root.resolve())
         usable, refused = [], []
         for name in names:
             declared = base / name
@@ -729,8 +730,7 @@ class MachineRunner:
 
     @staticmethod
     def default_config_path() -> Path:
-        base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-        return base / "interact" / "machine.json"
+        return UserPaths.config() / "machine.json"
 
     def _config_lock(self):
         """Held by every writer of the machine file (`machine.lock` beside it, never replaced)."""

@@ -236,7 +236,7 @@ def test_a_failure_the_previous_runtime_shares_condemns_no_build(store: RuntimeS
     store.activate(new)
     assert client.process.wait(20) == 3
     assert store.pointer().failed == ()
-    assert "both failed to start" in store.events()[-1].text
+    assert "both failed to start" in store.events()[-1].text and "no build is blamed" in store.events()[-1].text
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="parent-death signal is Linux")

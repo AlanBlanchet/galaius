@@ -8,10 +8,12 @@ not the signed one, a release older than the newest this computer ran (never a s
 downgrade), an expired one, a build that already failed to start here."""
 
 import os
+import re
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import ClassVar
 
 import httpx
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -26,31 +28,21 @@ from interact.upgrade.source import ReleaseKeys, ReleaseSource
 from interact.upgrade.store import Runtime, RuntimeStore
 
 
-class UpgradePolicy(BaseModel):
-    """The local-only upgrade settings (`Config.auto_upgrade`, `upgrade_*`)."""
-
-    model_config = ConfigDict(frozen=True)
-    enabled: bool
-    pin: str
-    every: int
-    github: bool
-
-    @classmethod
-    def configured(cls) -> "UpgradePolicy":
-        UserConfig.apply(portable=False)
-        config = Config()
-        return cls(enabled=config.auto_upgrade, pin=config.upgrade_pin.strip(), every=config.upgrade_check_seconds, github=config.upgrade_github)
-
-
 class UpgradeCheck(BaseModel):
+    """`config` carries the local-only settings (`auto_upgrade`, `upgrade_pin`,
+    `upgrade_check_seconds`, `upgrade_github`)."""
+
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
     store: RuntimeStore
     keys: ReleaseKeys
-    policy: UpgradePolicy
+    config: Config
+    #: A pin names one build by its commit: 7 to 40 lowercase hex characters.
+    pin_pattern: ClassVar[re.Pattern[str]] = re.compile(r"[0-9a-f]{7,40}")
 
     @classmethod
     def configured(cls) -> "UpgradeCheck":
-        return cls(store=RuntimeStore.default(), keys=ReleaseKeys.shipped(), policy=UpgradePolicy.configured())
+        UserConfig.apply(portable=False)
+        return cls(store=RuntimeStore.default(), keys=ReleaseKeys.shipped(), config=Config())
 
     @staticmethod
     def server() -> str | None:
@@ -73,7 +65,7 @@ class UpgradeCheck(BaseModel):
         server = self.server()
         if server is not None:
             return ReleaseSource.server(server)
-        return ReleaseSource.github() if self.policy.github else None
+        return ReleaseSource.github() if self.config.upgrade_github else None
 
     @contextmanager
     def exclusive(self) -> Iterator[None]:
@@ -82,18 +74,23 @@ class UpgradeCheck(BaseModel):
         with exclusive(os.open(self.store.root / "check.lock", os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)):
             yield
 
-    def running(self) -> ReleaseOrder | None:
-        """The newest of: the active runtime, the floor (newest ever activated here)."""
-        active = self.store.active()
-        own = active.order() or (BuildIdentity.installed() if active.path == Runtime.own().path else None)
-        known = [order for order in (own, self.store.pointer().floor) if order is not None]
+    def floor(self) -> ReleaseOrder | None:
+        """Nothing older than this is installed unasked: the newest build this computer ever ran
+        (a bootstrap install's own build counts before the store has one)."""
+        floor = self.store.pointer().floor
+        own = BuildIdentity.installed() if self.store.active().path == Runtime.own().path else None
+        known = [order for order in (floor, own) if order is not None]
         return max(known, key=lambda order: order.key) if known else None
 
     def run(self) -> str:
         """What happened, in a sentence (recorded when it changed something or refused)."""
-        self.store.schedule(self.policy.every)
-        if not self.policy.enabled:
+        self.store.schedule(self.config.upgrade_check_seconds)
+        if not self.config.auto_upgrade:
             return "automatic upgrades are off (interact upgrade on)"
+        pin = self.config.upgrade_pin.strip()
+        if pin and not self.pin_pattern.fullmatch(pin):
+            self.refused(f"upgrade_pin {pin!r} is not a commit (7 to 40 hex characters): ignored; interact upgrade pin <commit> sets one")
+            pin = ""
         try:
             source = self.source()
         except ValueError as error:
@@ -108,29 +105,26 @@ class UpgradeCheck(BaseModel):
             except ValidationError as error:
                 return self.refused(f"{source.base}: a signed document that is not a release ({error.error_count()} problems)")
             except httpx.HTTPError as error:
-                return f"{source.base} did not answer ({type(error).__name__}); trying again in {self.policy.every} s"
-            pinned = bool(self.policy.pin) and release.commit.startswith(self.policy.pin)
-            if self.policy.pin and not pinned:
-                return f"pinned to {self.policy.pin}; {source.kind} offers {release.label()}"
-            if release.expired():
-                return self.refused(f"{release.label()} expired on {release.expires_at:%Y-%m-%d}: the server has not published since")
-            running = self.running()
+                return f"{source.base} did not answer ({type(error).__name__}); trying again in {self.config.upgrade_check_seconds} s"
             if (receipt := self.store.active().receipt()) is not None and receipt.identity == release.identity:
                 return f"up to date ({release.label()})"
-            if running is not None and release <= running and not pinned:
-                if release < running:
-                    return self.refused(f"{source.kind} offers {release.label()}, older than {running.label()} which this computer already ran")
-                return f"up to date ({running.label()})"
+            pinned = bool(pin) and release.commit.startswith(pin)
+            if pin and not pinned:
+                return f"holding the pinned build {pin}; {source.kind} offers {release.label()}"
+            if release.expired():
+                return self.refused(f"{release.label()} expired on {release.expires_at:%Y-%m-%d}: the server has not published since")
+            if not pinned and (floor := self.floor()) is not None and release < floor:
+                return self.refused(f"{source.kind} offers {release.label()}, older than {floor.label()} which this computer already ran")
             if self.store.failed(release.identity):
                 return f"{release.label()} failed to start here before; waiting for a newer release"
             try:
-                runtime = self.install(source, http, release)
+                runtime = self.store.installed(release.identity) or self.install(source, http, release)
             except ReleaseRefused as error:
                 return self.refused(f"{release.label()}: {error}")
             except (RuntimeError, OSError, httpx.HTTPError) as error:
                 return self.refused(f"{release.label()} did not install: {error}")
-        self.store.activate(runtime, explicit=pinned)
-        self.store.prune()
+            self.store.activate(runtime, explicit=pinned)
+            self.store.prune()
         return f"{release.label()} installed and active; running processes move to it at their next quiet moment"
 
     def install(self, source: ReleaseSource, http: httpx.Client, release: Release) -> Runtime:

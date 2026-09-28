@@ -6,6 +6,7 @@ its supervisor picks the moment. Any other worker LEAVES: `step` raises `Upgrade
 holds nothing, and the CLI exits `EXIT_UPGRADE`."""
 
 import asyncio
+import os
 import time
 from collections.abc import Callable
 
@@ -28,8 +29,11 @@ class QuietPoint(BaseModel):
 
     @classmethod
     def current(cls) -> "QuietPoint | None":
-        """None when this process is not a supervised worker."""
+        """None when this process is not a supervised worker, or cannot read its supervisor's
+        contract (recorded: it then keeps running and upgrades only when restarted)."""
         supervision = Supervision.current()
+        if supervision is None and Supervision.variable in os.environ:
+            RuntimeStore.default().record("failed", f"a worker (pid {os.getpid()}) cannot read its supervisor's {Supervision.variable}: it upgrades only when restarted")
         return None if supervision is None else cls(supervision=supervision, store=RuntimeStore.default())
 
     def waiting(self) -> bool:

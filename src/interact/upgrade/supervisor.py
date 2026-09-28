@@ -25,7 +25,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
-from importlib.metadata import distribution
+from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 from typing import ClassVar, Literal
 
@@ -60,15 +60,23 @@ class SupervisorTimings(BaseModel):
 
     @classmethod
     def from_environment(cls) -> "SupervisorTimings":
+        """A bad override is said and ignored: it never stops a long-lived command from starting."""
         prefix = "INTERACT_SUPERVISOR_"
-        return cls.model_validate({name.removeprefix(prefix).lower(): value for name, value in os.environ.items() if name.startswith(prefix)})
+        try:
+            return cls.model_validate({name.removeprefix(prefix).lower(): value for name, value in os.environ.items() if name.startswith(prefix)})
+        except ValidationError as error:
+            print(f"interact: ignoring {prefix}* settings ({error.error_count()} invalid); using the defaults", file=sys.stderr)
+            return cls()
 
 
 class Supervision(BaseModel):
     """What a worker learns from `INTERACT_SUPERVISED`: the runtime it was started from, where to
-    report its state (relay) and how it leaves at its quiet point."""
+    report its state (relay) and how it leaves at its quiet point. This is the contract between a
+    supervisor (which may run old code for days) and newer workers: versioned, and a worker only
+    ever ADDS optional fields to it."""
 
     model_config = ConfigDict(frozen=True)
+    version: Literal[1] = 1
     runtime: Path
     mode: Literal["report", "exit"]
     state: Path | None = None
@@ -153,6 +161,7 @@ class Lifecycle:
         self.owner = owner
         self.store = owner.store
         self.suspect: Runtime | None = None
+        self.reason = ""
         self.switched_at: float | None = None
         self.crashes: list[float] = []
 
@@ -164,13 +173,13 @@ class Lifecycle:
         """A worker on probation ended before it started: roll back to the runtime before it. None:
         nothing left to try (the runtime rolled back to failed too: this computer, not a release)."""
         if self.suspect is not None:
-            self.store.record("failed", f"{self.suspect.label()} and {worker.runtime.label()} both failed to start ({reason}): the cause is on this computer")
+            self.store.record("failed", f"{self.suspect.label()} and {worker.runtime.label()} both {reason}: the cause is on this computer, no build is blamed")
             self.suspect = None
             return None
         back = self.store.roll_back(worker.runtime, reason)
         if back.path == worker.runtime.path:
             return None
-        self.suspect = worker.runtime
+        self.suspect, self.reason = worker.runtime, reason
         self.switched()
         return back
 
@@ -181,7 +190,7 @@ class Lifecycle:
         if self.suspect is None:
             return None
         self.store.condemn(self.suspect)
-        text = f"{self.suspect.label()} failed to start; back on {worker.runtime.label()}"
+        text = f"{self.suspect.label()} {self.reason}; back on {worker.runtime.label()}"
         self.suspect = None
         return text
 
@@ -194,7 +203,7 @@ class Lifecycle:
             self.store.record("restarted", f"{worker.runtime.label()} exited {code}; restarting it")
             return worker.runtime
         if self.switched_at is not None and now - self.switched_at < self.owner.timings.crash_window_seconds:
-            return self.failed_start(worker, f"crashed {len(self.crashes)} times")
+            return self.failed_start(worker, f"crashed {len(self.crashes)} times within {self.owner.timings.crash_window_seconds / 60:.0f} min of starting")
         self.store.record("failed", f"{worker.runtime.label()} exited {code} {len(self.crashes)} times in a row; stopping")
         return None
 
@@ -212,14 +221,20 @@ class Supervisor(BaseModel):
     #: Whether this supervisor runs threads while starting workers (no fork hook then).
     threaded: ClassVar[bool] = False
 
+    @staticmethod
+    def command(arguments: tuple[str, ...], interactive: bool) -> tuple[str, ...]:
+        """The command a command line means: bare `interact` in a terminal is the dashboard."""
+        return ("_tui",) if not arguments and interactive else arguments
+
     @classmethod
     def for_arguments(cls, arguments: tuple[str, ...], interactive: bool) -> "Supervisor | None":
         """The supervisor for this command line, or None: not a long-lived command, already a
-        worker, a development checkout (unless `INTERACT_SUPERVISE=1`) or `INTERACT_SUPERVISE=0`."""
-        command = ("_tui",) if not arguments and interactive else arguments
+        worker (whether or not it can read its supervisor's contract: never a supervisor inside
+        a supervisor), a development checkout (unless `INTERACT_SUPERVISE=1`) or `INTERACT_SUPERVISE=0`."""
+        command = cls.command(arguments, interactive)
         make = next((make for member, make in LONG_LIVED.items() if command[: len(member)] == member), None)
         wanted = os.environ.get("INTERACT_SUPERVISE", "")
-        if make is None or Supervision.current() is not None or wanted == "0" or (wanted != "1" and cls.development()):
+        if make is None or Supervision.variable in os.environ or wanted == "0" or (wanted != "1" and cls.development()):
             return None
         return make(store=RuntimeStore.default(), arguments=command, timings=SupervisorTimings.from_environment())
 
@@ -228,9 +243,12 @@ class Supervisor(BaseModel):
         """Running from an editable checkout: it tracks its source, nothing to upgrade."""
         try:
             raw = distribution("interact").read_text("direct_url.json")
+        except PackageNotFoundError:
+            return True  # a source tree nobody installed
+        try:
             return bool(raw) and json.loads(raw).get("dir_info", {}).get("editable", False)
-        except Exception:  # noqa: BLE001 - no metadata: a source tree, same as editable
-            return True
+        except ValueError:
+            return False
 
     def run(self) -> int:
         raise NotImplementedError
@@ -300,7 +318,7 @@ class Passthrough(Supervisor):
                     lifecycle.switched()
                     self.say(f"switching to {target.label()}")
                 elif worker.probation and code not in self.stopped:
-                    target = lifecycle.failed_start(worker, f"exited {code} after {time.time() - worker.started:.0f} s")
+                    target = lifecycle.failed_start(worker, f"failed to start (exited {code} after {time.time() - worker.started:.0f} s)")
                 elif code in self.stopped:
                     return code
                 else:
@@ -629,7 +647,7 @@ class _Relay:
             self.to_client(self.protocol.interrupted(request, f"interact's worker stopped (exit {code}) before answering; the call may or may not have run"))
         self.pending = {}
         if worker.probation:
-            target = self.lifecycle.failed_start(worker, f"exited {code} before answering the handshake")
+            target = self.lifecycle.failed_start(worker, f"failed to start (exited {code} before answering the handshake)")
         elif self.phase == "handshake" or code == 0:
             return code  # it never served, or it ended on its own: as an unsupervised server would
         else:

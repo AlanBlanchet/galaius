@@ -21,7 +21,8 @@ import pytest
 from websockets.asyncio.server import serve
 
 from interact.machines import MachineConfig, MachineRunner
-from interact.upgrade.check import UpgradeCheck, UpgradePolicy
+from interact.config.settings import Config
+from interact.upgrade.check import UpgradeCheck
 from interact.upgrade.source import ReleaseSigner
 from interact.upgrade.store import RuntimeStore
 
@@ -134,7 +135,7 @@ def test_running_mcp_server_and_machine_connection_upgrade_themselves_from_n_to_
     # This computer's first install: runtime N, from the signed server release (as a bootstrap would).
     publish("0.43.0")
     store = RuntimeStore.default()
-    check = UpgradeCheck(store=store, keys=signer.keys(), policy=UpgradePolicy(enabled=True, pin="", every=30, github=False))
+    check = UpgradeCheck(store=store, keys=signer.keys(), config=Config(auto_upgrade=True, upgrade_pin="", upgrade_check_seconds=30, upgrade_github=False))
     assert "0.43.0" in check.run()
     first = store.active()
     assert first.receipt().packages["interact"] == "0.43.0"
