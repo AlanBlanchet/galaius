@@ -599,6 +599,11 @@ def session_runs(*, session_id: str | None = None, all_sessions: bool = False, i
     return list_runs(session_id=identity)
 
 
+def _process_identity(pid: int | None) -> dict:
+    """A run's process as recorded: its pid and when that process started (see `AgentRun.pid_started`)."""
+    return {"pid": pid, "pid_started": process_started(pid) if pid else None}
+
+
 def register(*, run_id: str, pid: int | None, provider: str, name: str, task: str = "",
              cwd: str = "", model: str | None = None, parent_run_id: str | None = None,
              agent: str | None = None, permission_mode: str | None = None,
@@ -614,7 +619,7 @@ def register(*, run_id: str, pid: int | None, provider: str, name: str, task: st
     definition = definition_path
     if definition is None and agent_ref is None:
         definition = provider_impl.definition_path(agent) if (provider_impl and agent) else None
-    run = AgentRun(run_id=run_id, pid=pid, pid_started=process_started(pid) if pid else None, provider=provider, name=name, task=task, cwd=cwd,
+    run = AgentRun(run_id=run_id, **_process_identity(pid), provider=provider, name=name, task=task, cwd=cwd,
                    project=project_for(cwd), model=model, parent_run_id=parent_run_id,
                    session_id=resolve_session_id(session_id, parent_run_id=parent_run_id),
                    agent=agent, agent_ref=agent_ref, definition_path=str(definition) if definition else None,
@@ -826,7 +831,7 @@ def begin_turn(
 ) -> AgentRun | None:
     """Move one stopped run back to active state for a newly spawned provider turn."""
     updates = {
-        "pid": pid, "pid_started": process_started(pid), "lifecycle_token": secrets.token_hex(16),
+        **_process_identity(pid), "lifecycle_token": secrets.token_hex(16),
         "exit_code": None, "finished_at": None, "status": "running",
         "pending_model": None, "pending_criterion": None, "pending_reasoning": None,
     }
@@ -845,7 +850,7 @@ def begin_turn_locked(
 ) -> AgentRun | None:
     """Same transition for a caller already holding ``record_lock(run_id)``."""
     updates = {
-        "pid": pid, "pid_started": process_started(pid), "lifecycle_token": secrets.token_hex(16),
+        **_process_identity(pid), "lifecycle_token": secrets.token_hex(16),
         "exit_code": None, "finished_at": None, "status": "running",
         "pending_model": None, "pending_criterion": None, "pending_reasoning": None,
     }

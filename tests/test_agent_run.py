@@ -173,7 +173,8 @@ def test_the_mesh_config_carries_no_credential():
 @pytest.fixture
 def codex_configuration(monkeypatch):
     """Provider-resolved entries, with no duplicate interpretation of config layers."""
-    monkeypatch.setattr(CodexProvider, "executable", lambda self: "fixture-codex")
+    # An installed program's full path: Windows resolves a bare name on PATH before spawning.
+    monkeypatch.setattr(CodexProvider, "executable", lambda self: sys.executable)
 
     def configure(entry):
         rows = [] if entry is None else [entry]
