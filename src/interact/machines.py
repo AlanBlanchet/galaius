@@ -29,11 +29,12 @@ from uuid import UUID, uuid4
 import websockets
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator, model_validator
 
-from interact_core import MACHINE_AGENT_REQUESTS, MACHINE_MODELS, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, MachineAgentAnswer, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachineRuntime, ScriptFile, UserModelOrigin
+from interact_core import MACHINE_AGENT_REQUESTS, MACHINE_MODELS, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, MachineAgentAnswer, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachineRuntime, ScriptFile, ScriptLanguage, UserModelOrigin
 from interact import USER_AGENT
 from interact.agents.catalog import AgentCatalog
 from interact.agents import providers as agent_providers
 from interact.file_lock import exclusive
+from interact.private_files import PRIVATE_FILES
 from interact.machine_agents import LogRing, MachineAgents, MachineSessions, WebRuns, secret_values
 from interact.agents.events import AgentEvent
 from interact.agents.run import run_agent
@@ -43,6 +44,13 @@ from interact.functions import FunctionRegistry, invoke as invoke_function
 from interact.vision_env import Report, VisionWorker, ensure_vision_env
 from interact import gpu_scrub, user_models
 from interact.sandbox import run_pooled
+
+if sys.platform == "win32":
+    import win32api
+
+    # A program a Script step names is found on PATH only, never in the folder the runner happens to
+    # stand in (Windows searches it first otherwise: a file step could plant `pwsh.cmd` there).
+    os.environ["NoDefaultCurrentDirectoryInExePath"] = "1"
 from interact.pinned_directory import PinnedDirectory
 
 
@@ -523,19 +531,20 @@ def level_word(record: logging.LogRecord) -> str:
 
 
 class JsonLines(logging.Formatter):
-    """One JSON object per line (journald keeps it): the server's record fields, `source=machine`,
-    plus whatever the call site bound in `extra` (machine, workspace, command, run, node)."""
+    """One JSON object per line (journald, or the Windows service's log file, keeps it): the
+    server's record fields, `source=machine`, plus whatever the call site bound in `extra`
+    (machine, workspace, command, run, node); credential shapes masked (`redact`)."""
 
     _BOUND = ("machine_id", "workspace_id", "command_id", "run_id", "node_id", "action", "status", "duration_ms")
 
     def format(self, record: logging.LogRecord) -> str:
         payload: dict[str, object] = {
             "ts": datetime.fromtimestamp(record.created, UTC).isoformat(), "level": level_word(record),
-            "source": "machine", "name": record.name, "message": record.getMessage(),
+            "source": "machine", "name": record.name, "message": redact(record.getMessage()),
         }
         payload.update({key: str(getattr(record, key)) for key in self._BOUND if getattr(record, key, None) is not None})
         if record.exc_info and record.exc_info[1] is not None:
-            payload["exception"] = f"{type(record.exc_info[1]).__name__}: {record.exc_info[1]}"
+            payload["exception"] = redact(f"{type(record.exc_info[1]).__name__}: {record.exc_info[1]}")
         return json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
 
 
@@ -571,15 +580,26 @@ class ScriptExecution(BaseModel):
     code, a file's own `interpreter`): the approval preview shows it, the runner resolves it. A file
     naming its interpreter runs through that; Python declaring its packages (PEP 723) through
     `uv run --script`, which installs them into a cached throwaway environment; other inline Python
-    on the runner's own interpreter, a machine's Python file on its `python3`; shell on `/bin/sh`."""
+    on the runner's own interpreter, a machine's Python file on its `python3` (Windows: the `py -3`
+    launcher); shell on `/bin/sh` (not on Windows); PowerShell on `pwsh`, else Windows PowerShell;
+    cmd on Windows' own `cmd.exe`. `languages()` says which this computer runs (the server places a
+    step only where its language runs)."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
-    program: Literal["runner_python", "python3", "uv", "shell", "custom"]
+    program: Literal["runner_python", "python3", "uv", "shell", "powershell", "cmd", "custom"]
     #: The program a file names (a command on PATH or an absolute path); only for "custom".
     interpreter: str | None = None
     #: PEP 723 inline script metadata: `# /// script` … `# ///` (the editor writes a script's packages there).
     METADATA: ClassVar[re.Pattern] = re.compile(r"(?m)^# /// script\r?\n(?:^#(?: .*)?\r?\n)*?^# ///$")
-    DESCRIPTIONS: ClassVar[dict[str, str]] = {"runner_python": "interact's own Python", "python3": "python3", "uv": "uv", "shell": "/bin/sh"}
+    WINDOWS: ClassVar[bool] = sys.platform == "win32"
+    DESCRIPTIONS: ClassVar[dict[str, str]] = {"runner_python": "interact's own Python", "python3": "py -3" if WINDOWS else "python3", "uv": "uv",
+                                              "shell": "/bin/sh", "powershell": "PowerShell", "cmd": "cmd"}
+    OPTIONS: ClassVar[dict[str, tuple[str, ...]]] = {
+        "uv": ("run", "--quiet", "--no-project", "--script"), "python3": ("-3",) if WINDOWS else (),
+        # The owner approved this exact code: the execution policy (not a security boundary) never refuses it.
+        "powershell": ("-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"), "cmd": ("/d", "/c")}
+    #: The file inline code is written to (PowerShell runs only a .ps1 by -File, cmd only a .cmd / .bat).
+    SUFFIXES: ClassVar[dict[str, str]] = {"python": ".py", "shell": ".sh", "powershell": ".ps1", "cmd": ".cmd"}
 
     @model_validator(mode="after")
     def custom_interpreter(self) -> Self:
@@ -588,16 +608,31 @@ class ScriptExecution(BaseModel):
         return self
 
     @classmethod
-    def select(cls, language: Literal["python", "shell"], source: str, file: ScriptFile | None = None) -> Self:
+    def select(cls, language: ScriptLanguage, source: str, file: ScriptFile | None = None) -> Self:
         if file is not None and file.interpreter is not None:
             return cls(program="custom", interpreter=file.interpreter)
-        if language == "shell":
-            return cls(program="shell")
+        if language != "python":
+            return cls(program=language)
         return cls(program="uv" if cls.METADATA.search(source) else "python3" if file is not None else "runner_python")
+
+    @classmethod
+    def powershell(cls, path: str | None) -> str | None:
+        """PowerShell 7 (`pwsh`) where installed, else the Windows PowerShell every Windows has."""
+        return shutil.which("pwsh", path=path) or (shutil.which("powershell", path=path) if cls.WINDOWS else None)
+
+    @classmethod
+    def shell(cls) -> bool:
+        return not cls.WINDOWS and Path("/bin/sh").exists()
+
+    @classmethod
+    def languages(cls, path: str | None) -> tuple[ScriptLanguage, ...]:
+        """The Script languages this computer can run, as the runner announces them (`script:<language>`)."""
+        found = {"python": True, "shell": cls.shell(), "powershell": cls.powershell(path) is not None, "cmd": cls.WINDOWS}
+        return tuple(language for language, runs in found.items() if runs)
 
     @property
     def options(self) -> tuple[str, ...]:
-        return ("run", "--quiet", "--no-project", "--script") if self.program == "uv" else ()
+        return self.OPTIONS.get(self.program, ())
 
     @property
     def description(self) -> str:
@@ -645,7 +680,7 @@ class MachineRunner:
 
     def _config_lock(self):
         """Held by every writer of the machine file (`machine.lock` beside it, never replaced)."""
-        self.config_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        PRIVATE_FILES.directory(self.config_path.parent)
         return exclusive(os.open(self.config_path.with_suffix(".lock"), os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600))
 
     def save(self, config: MachineConfig) -> None:
@@ -660,33 +695,15 @@ class MachineRunner:
             return config
 
     def _save(self, config: MachineConfig) -> None:
-        self.config_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        self.config_path.parent.chmod(0o700)
-        temporary = self.config_path.with_name(f".{self.config_path.name}.{uuid4().hex}.tmp")
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
-        try:
-            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-                values = config.model_dump(mode="json")
-                values["token"] = config.token.get_secret_value()
-                stream.write(json.dumps(values, separators=(",", ":")))
-                stream.write("\n")
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, self.config_path)
-            self.config_path.parent.chmod(0o700)
-            directory = os.open(self.config_path.parent, os.O_RDONLY)
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
-        finally:
-            temporary.unlink(missing_ok=True)
+        """The token sealed as `PRIVATE_FILES` stores secrets (as is on POSIX, DPAPI on Windows)."""
+        values = config.model_dump(mode="json")
+        values["token"] = PRIVATE_FILES.seal(config.token.get_secret_value())
+        PRIVATE_FILES.write_text(self.config_path, json.dumps(values, separators=(",", ":")) + "\n")
 
     def load(self) -> MachineConfig:
-        info = self.config_path.lstat()
-        if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600:
-            raise PermissionError(f"machine config must be a regular 0600 file: {self.config_path}")
-        return MachineConfig.model_validate_json(self.config_path.read_text(encoding="utf-8"))
+        values = json.loads(PRIVATE_FILES.read_text(self.config_path))
+        values["token"] = PRIVATE_FILES.unseal(values["token"])
+        return MachineConfig.model_validate(values)
 
     async def connect(self, config: MachineConfig) -> None:
         # Exact secrets masked in every kept log line from the first one on (`LogRing`).
@@ -706,7 +723,7 @@ class MachineRunner:
                 ) as socket:
                     delay_index = 0
                     logger.info("connected to %s", endpoint, extra={"machine_id": config.machine_id, "workspace_id": config.workspace_id})
-                    await socket.send(json.dumps({"type": "hello", "features": list(self.FEATURES), "runtimes": self._runtimes(config), "accelerators": self._accelerators(), "functions": self._functions(), "resources": self._resources(config.working_directory), "file_roots": self._file_roots(config)}))
+                    await socket.send(json.dumps({"type": "hello", "features": self.features(), "runtimes": self._runtimes(config), "accelerators": self._accelerators(), "functions": self._functions(), "resources": self._resources(config.working_directory), "file_roots": self._file_roots(config)}))
                     if await self._serve(socket, config):
                         return
             except EnrollmentChanged:
@@ -793,6 +810,11 @@ class MachineRunner:
     #: What this runner can do beyond the base protocol (the server's `MachineChannel.require_feature`):
     #: file queries browse the owner's script roots; a script file runs from them.
     FEATURES: ClassVar[tuple[str, ...]] = ("file_query", "script_file", "file_read", "agent_control", "agent_settings")
+
+    @classmethod
+    def features(cls) -> list[str]:
+        """What this runner answers, and each Script language it runs here (`script:<language>`)."""
+        return [*cls.FEATURES, *(f"script:{language}" for language in ScriptExecution.languages(cls._safe_environment().get("PATH")))]
 
     @staticmethod
     def _verify_signed(config: MachineConfig, message: MachineCommand | MachineFileQuery | MachineDataRequest | MachineAgentRequest, what: str) -> None:
@@ -1151,7 +1173,7 @@ class MachineRunner:
         self._audit_script(command)
         logger.info("%s script %s (%d lines), timeout %s s", language, digest[:12], source.count("\n") + 1, timeout)
         with tempfile.TemporaryDirectory(prefix="interact-script-") as scratch:
-            script_path = Path(scratch) / ("script.py" if language == "python" else "script.sh")
+            script_path = Path(scratch) / f"script{ScriptExecution.SUFFIXES[language]}"
             script_path.write_text(source, encoding="utf-8")
             script_path.chmod(0o700)
             return self._run_process([*self._interpreter(language, source), str(script_path)], config.working_directory, timeout)
@@ -1170,24 +1192,36 @@ class MachineRunner:
         return completed.stdout
 
     @classmethod
-    def _interpreter(cls, language: Literal["python", "shell"], source: str, spec: ScriptFile | None = None) -> list[str]:
-        """Resolve the same execution description the owner sees before approval."""
+    def _interpreter(cls, language: ScriptLanguage, source: str, spec: ScriptFile | None = None) -> list[str]:
+        """Resolve the same execution description the owner sees before approval; a language this
+        computer cannot run is refused in plain words, never run by another program."""
         execution = ScriptExecution.select(language, source, spec)
+        path = cls._safe_environment().get("PATH")
         if execution.program == "custom":
             interpreter = execution.interpreter
-            if "/" in interpreter and not Path(interpreter).is_absolute():
+            if ("/" in interpreter or "\\" in interpreter) and not Path(interpreter).is_absolute():
                 raise RuntimeError(f"{interpreter}: name the program by its full path, or by a name on the machine's PATH")
-            found = interpreter if Path(interpreter).is_absolute() else shutil.which(interpreter, path=cls._safe_environment().get("PATH"))
+            found = interpreter if Path(interpreter).is_absolute() else shutil.which(interpreter, path=path)
             if found is None or not os.access(found, os.X_OK):
                 raise RuntimeError(f"{interpreter} is not a program this machine can run (not found on its PATH)")
         elif execution.program == "runner_python":
             found = sys.executable
         elif execution.program == "shell":
+            if not ScriptExecution.shell():
+                raise RuntimeError("a shell script runs with /bin/sh, which this computer does not have (Windows): write the step in PowerShell or cmd")
             found = "/bin/sh"
-        elif execution.program == "python3":
-            found = shutil.which("python3", path=cls._safe_environment().get("PATH"))
+        elif execution.program == "powershell":
+            found = ScriptExecution.powershell(path)
             if found is None:
-                raise RuntimeError("python3 is not installed on this machine's PATH: name the interpreter in the step")
+                raise RuntimeError("PowerShell is not installed on this machine (pwsh): install PowerShell 7 or place the step on a Windows machine")
+        elif execution.program == "cmd":
+            if not ScriptExecution.WINDOWS:
+                raise RuntimeError("cmd scripts run on Windows only: place the step on a Windows machine, or write it in shell or PowerShell")
+            found = str(Path(win32api.GetSystemDirectory()) / "cmd.exe")  # never %COMSPEC%: the environment could name another program
+        elif execution.program == "python3":
+            found = shutil.which("py" if ScriptExecution.WINDOWS else "python3", path=path)
+            if found is None:
+                raise RuntimeError(f"{ScriptExecution.DESCRIPTIONS['python3']} is not installed on this machine's PATH: name the interpreter in the step")
         else:
             found = shutil.which("uv")
             if found is None:
@@ -1211,8 +1245,10 @@ class MachineRunner:
         self._audit_script(command)
         raw_allow = command.config.get("_pool_egress_allow", [])
         policy = EgressPolicy(allow=tuple(EgressAllowEntry.model_validate(entry) for entry in raw_allow)) if isinstance(raw_allow, list) else EgressPolicy()
-        script_name = "script.py" if language == "python" else "script.sh"
-        interpreter = "python3" if language == "python" else "/bin/sh"
+        interpreter = {"python": "python3", "shell": "/bin/sh"}.get(language)
+        if interpreter is None:
+            raise RuntimeError(f"pooled machines run Python and shell scripts, not {language}")
+        script_name = f"script{ScriptExecution.SUFFIXES[language]}"
         logger.info("pooled %s script %s (%d lines), timeout %s s, egress allow=%d host(s)", language, digest[:12], source.count("\n") + 1, timeout, len(policy.allow))
         result = run_pooled(run_id=command.run_id, command=[interpreter, script_name], input_files={script_name: source.encode()}, egress=policy, timeout=timeout)
         if result.exit_code != 0:
@@ -1342,7 +1378,11 @@ class MachineRunner:
 
     @staticmethod
     def _safe_environment() -> dict[str, str]:
-        fixed = {"HOME", "PATH", "USER", "LOGNAME", "SHELL", "LANG", "TERM", "SSL_CERT_FILE", "SSL_CERT_DIR", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"}
+        fixed = {"HOME", "PATH", "USER", "LOGNAME", "SHELL", "LANG", "TERM", "SSL_CERT_FILE", "SSL_CERT_DIR", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS",
+                 # Windows: what any program needs to start there (Python needs SYSTEMROOT, cmd COMSPEC), no secret among them.
+                 "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP", "USERPROFILE", "USERNAME", "USERDOMAIN", "APPDATA", "LOCALAPPDATA",
+                 "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)", "COMMONPROGRAMFILES", "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS", "OS", "PSMODULEPATH",
+                 "NODEFAULTCURRENTDIRECTORYINEXEPATH"}
         return {key: value for key, value in os.environ.items() if key in fixed or key in ALLOWED_ENV or key.startswith("LC_")}
 
     @staticmethod

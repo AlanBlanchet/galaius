@@ -13,7 +13,6 @@ import json
 import os
 import re
 import shutil
-import stat
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable, Literal, get_type_hints
@@ -21,6 +20,8 @@ from uuid import uuid4
 
 from interact_core import MachineFunctionSummary, PortSpec, ValueType
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from interact.private_files import PRIVATE_FILES
 
 FunctionKind = Literal["python", "shell"]
 FunctionPermission = Literal["read_only", "full_access"]
@@ -105,8 +106,8 @@ class FunctionEntry(BaseModel):
 
 
 class FunctionRegistry:
-    """`~/.config/interact/functions.json`, 0600 — the same atomic-write discipline as
-    `MachineRunner`'s config, so a partial write never leaves a corrupt or world-readable file."""
+    """`~/.config/interact/functions.json`, private (`PRIVATE_FILES`) like `MachineRunner`'s config,
+    written atomically: a partial write never leaves a corrupt or world-readable file."""
 
     def __init__(self, config_path: Path | None = None) -> None:
         self.config_path = config_path or self.default_config_path()
@@ -119,27 +120,11 @@ class FunctionRegistry:
     def load(self) -> tuple[FunctionEntry, ...]:
         if not self.config_path.exists():
             return ()
-        info = self.config_path.lstat()
-        if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600:
-            raise PermissionError(f"function registry must be a regular 0600 file: {self.config_path}")
-        payload = json.loads(self.config_path.read_text(encoding="utf-8"))
+        payload = json.loads(PRIVATE_FILES.read_text(self.config_path))
         return tuple(FunctionEntry.model_validate(item) for item in payload)
 
     def save(self, entries: tuple[FunctionEntry, ...]) -> None:
-        self.config_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        self.config_path.parent.chmod(0o700)
-        temporary = self.config_path.with_name(f".{self.config_path.name}.{uuid4().hex}.tmp")
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
-        try:
-            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-                stream.write(json.dumps([entry.model_dump(mode="json") for entry in entries], separators=(",", ":")))
-                stream.write("\n")
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, self.config_path)
-            self.config_path.parent.chmod(0o700)
-        finally:
-            temporary.unlink(missing_ok=True)
+        PRIVATE_FILES.write_text(self.config_path, json.dumps([entry.model_dump(mode="json") for entry in entries], separators=(",", ":")) + "\n")
 
     def add(self, entry: FunctionEntry) -> FunctionEntry:
         """A python entry's `path` still names wherever `discover_python` read it FROM (often a
@@ -150,10 +135,9 @@ class FunctionRegistry:
         if entry.kind == "python":
             stored_source = self.config_path.parent / "sources" / f"{entry.name}-{entry.version}.py"
             if Path(entry.path).resolve() != stored_source.resolve():
-                stored_source.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-                stored_source.parent.chmod(0o700)
+                PRIVATE_FILES.directory(stored_source.parent)
                 shutil.copyfile(entry.path, stored_source)
-                stored_source.chmod(0o600)
+                PRIVATE_FILES.restrict(stored_source)
             entry = entry.model_copy(update={"path": str(stored_source)})
         entries = {item.name: item for item in self.load()}
         entries[entry.name] = entry

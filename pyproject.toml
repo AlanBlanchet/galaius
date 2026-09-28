@@ -9,7 +9,7 @@ license-files = ["LICENSE"]
 keywords = ["mcp", "automation", "browser", "desktop", "playwright", "vision", "agent", "llm"]
 requires-python = ">=3.11"
 dependencies = [
-    "interact-core @ git+https://github.com/AlanBlanchet/interact-core.git@ed3302a5b3a2323a6c7aebe9b545b4f64e54d1a2",
+    "interact-core @ git+https://github.com/AlanBlanchet/interact-core.git@9b047fa5d0c5f84c7712c46e961aa26f40dc269d",
     "cyclopts>=3.0",
     "rich>=13.0",
     # /dev/uinput absolute input (X11 + Wayland). Same `evdev` import either way: prebuilt wheels
@@ -19,6 +19,7 @@ dependencies = [
     "python-xlib>=0.33; sys_platform == 'linux'", # enumerate override-redirect popups to composite into captures (#31)
     "mss>=9.0", # cross-platform screen capture for the macOS/Windows desktop backend (#24)
     "pynput>=1.7; sys_platform != 'linux'", # pointer + keyboard for the macOS/Windows desktop backend (#24); on Linux it would pull source-only evdev
+    "pywin32>=306; sys_platform == 'win32'", # Windows: owner-only file ACLs + DPAPI for saved credentials (interact/private_files.py)
     "httpx>=0.28.1",
     "websockets>=14,<16",
     "litellm>=1.83.4,<2",

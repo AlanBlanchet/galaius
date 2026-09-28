@@ -81,6 +81,7 @@ The same tools drive a **real desktop app** — `launch_app` puts it in an isola
 ```bash
 # 1. install the `interact` command (installs uv if missing)
 curl -LsSf https://raw.githubusercontent.com/AlanBlanchet/interact/main/install.sh | sh
+# Windows (PowerShell): powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/AlanBlanchet/interact/main/install.ps1 | iex"
 
 # 2. register it with Codex
 interact install codex
@@ -101,7 +102,7 @@ Other hosts use the same bootstrap: `interact install claude`, `cursor`, `vscode
 <summary>Other install routes (Windows, no-install, VS Code)</summary>
 
 ```bash
-uv tool install git+https://github.com/AlanBlanchet/interact             # any platform, incl. Windows
+uv tool install git+https://github.com/AlanBlanchet/interact             # any platform, without the installer
 uvx --from git+https://github.com/AlanBlanchet/interact interact mcp     # run without installing
 ```
 
@@ -111,7 +112,9 @@ with Copilot's agent mode; no extension needed.
 
 ## Install and connect
 
-Linux (a systemd user service keeps the computer connected; macOS and Windows: not yet).
+Linux and Windows. A background service keeps the computer connected: a systemd user service on
+Linux, a task started at your logon on Windows (your own rights, no administrator). macOS: not yet —
+`interact machine connect` in a terminal keeps it connected while it runs.
 
 1. **Install**
 
@@ -119,8 +122,14 @@ Linux (a systemd user service keeps the computer connected; macOS and Windows: n
    curl -LsSf https://raw.githubusercontent.com/AlanBlanchet/interact/main/install.sh | sh
    ```
 
-   Needs only `curl` (or `wget -qO-` in its place): it brings uv and Python. Run from a terminal, it
-   goes straight on to step 2.
+   Windows, in PowerShell:
+
+   ```powershell
+   powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/AlanBlanchet/interact/main/install.ps1 | iex"
+   ```
+
+   Needs only `curl` (or `wget -qO-` in its place) on Linux, nothing on Windows: it brings uv and
+   Python. Run from a terminal, it goes straight on to step 2.
 
 2. **Sign in**
 
@@ -141,7 +150,10 @@ default no); `--agents` / `--no-agents`, `--agent-folder <name>`, `--continue-co
 (already connected, it asks only these questions, Enter keeping each current answer; nothing to
 restart), or `interact machine agent-roots <folder…>`, `interact machine agents on|off --continue on|off --approvals on|off`. Workflows reach no folder until you
 share one: `interact machine file-roots <folder under home>`.
-`interact logout` removes it from your account and stops the service.
+`interact logout` removes it from your account and stops the service. `interact machine service
+status|start|stop|restart` reads or controls that service. On Windows the saved machine token and
+CLI key are sealed with Windows' own encryption for your user (DPAPI) in files only you may read;
+Script steps run in Python, PowerShell or cmd there (shell scripts need Linux or macOS).
 
 ## Ask your agent
 
@@ -229,6 +241,8 @@ in `~/.interact/config.env` and are also exposed by the VS Code extension.
 | | Linux | macOS | Windows |
 | --- | :-: | :-: | :-: |
 | Browser, MCP server, CLI, TUI | ✅ | ✅ | ✅ |
+| Install one-liner, `interact login`, background machine | ✅ (systemd user service) | ⏳ (runs in a terminal) | ✅ (task at logon) |
+| Script steps | Python, shell, PowerShell if `pwsh` is installed | Python, shell, PowerShell if `pwsh` is installed | Python, PowerShell, cmd |
 | Desktop control (real windows) | ✅ (X11; uinput input also on Wayland) | ⏳ | ⏳ |
 
 Browser automation works everywhere. Native desktop control is Linux/X11 today; off Linux the desktop

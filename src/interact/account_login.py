@@ -2,20 +2,17 @@
 
 The CLI asks the server for a short code, the signed-in owner allows this computer on the server's
 /link page, and the CLI collects what the approval issued (`interact_core.DeviceLoginIssued`): the
-machine token — saved where `interact machine connect` reads it, then kept connected by a systemd
-user service — and a read-only workspace key the CLI's `agents` / `workflows` commands use. Nothing
+machine token — saved where `interact machine connect` reads it, then kept connected by this
+computer's background service (`MACHINE_SERVICE`) — and a read-only workspace key the CLI's `agents` / `workflows` commands use. Nothing
 on this computer is reachable by a workflow until its owner names a folder (`interact machine
 file-roots`). Whether agents may run here, and the folders the web may start them in, is asked
 once right after the approval (`AgentChoice`; off and none unless said). On a computer already
 connected to the same server, `interact login` signs nothing in again: it asks the same agent
 questions, the current settings as defaults."""
 
-import getpass
 import os
 import platform
-import shutil
 import socket
-import subprocess
 import sys
 import time
 import webbrowser
@@ -35,76 +32,13 @@ from interact.agents.catalog import AgentCatalog
 from interact.agents.catalog_connection import CatalogConnection
 from interact.cli.prompts import PromptMode
 from interact.server_prompts import ServerPrompts
+from interact.machine_service import MACHINE_SERVICE, ServiceUnavailable
 from interact.machines import MachineConfig, MachineRunner
-from interact.prompt_secret import read_prompt_token
+from interact.private_files import PRIVATE_FILES
 
 
 class LoginError(Exception):
     """Something the person can act on, said in their words."""
-
-
-class UserService(BaseModel):
-    """The systemd user unit that keeps `interact machine connect` running (Linux only today)."""
-
-    model_config = ConfigDict(frozen=True)
-    name: str = "interact-machine.service"
-
-    @property
-    def path(self) -> Path:
-        return MachineRunner.default_config_path().parent.parent / "systemd" / "user" / self.name
-
-    @staticmethod
-    def executable() -> Path:
-        """This install's own `interact` (the service must run the same build as this CLI)."""
-        beside = Path(sys.executable).with_name("interact")
-        found = beside if beside.is_file() else Path(shutil.which("interact") or "")
-        if not found.is_file():
-            raise LoginError("cannot find the interact program to start at boot; install it with the line from your Interact page")
-        return found.absolute()
-
-    def unit(self) -> str:
-        """Nothing the server sent goes in here: a unit line is a command line."""
-        program = str(self.executable()).replace("%", "%%").replace("\\", "\\\\").replace('"', '\\"')
-        return (
-            "[Unit]\n"
-            "Description=Interact: this computer as a machine of your account\n"
-            "After=network-online.target\nWants=network-online.target\n\n"
-            "[Service]\n"
-            f'ExecStart="{program}" machine connect\n'
-            # A revoked computer exits 0 and stays stopped; a crash or lost network restarts it.
-            "Restart=on-failure\nRestartSec=10\n\n"
-            "[Install]\nWantedBy=default.target\n"
-        )
-
-    @staticmethod
-    def _systemctl(*arguments: str) -> subprocess.CompletedProcess:
-        return subprocess.run(["systemctl", "--user", *arguments], capture_output=True, text=True, timeout=30)
-
-    def install(self) -> str | None:
-        """Write, enable and start the unit; the reason it could not, else None."""
-        if shutil.which("systemctl") is None:
-            return "this computer has no systemd"
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(self.unit(), encoding="utf-8")
-        for arguments in (("daemon-reload",), ("enable", "--now", self.name)):
-            done = self._systemctl(*arguments)
-            if done.returncode != 0:
-                return (done.stderr or done.stdout).strip() or f"systemctl --user {' '.join(arguments)} failed"
-        return None
-
-    @staticmethod
-    def linger() -> bool:
-        """Keep it running after this person signs out of the desktop; some systems refuse."""
-        if shutil.which("loginctl") is None:
-            return False
-        return subprocess.run(["loginctl", "enable-linger", getpass.getuser()], capture_output=True, text=True, timeout=30).returncode == 0
-
-    def remove(self) -> None:
-        if shutil.which("systemctl") is not None and self.path.exists():
-            self._systemctl("disable", "--now", self.name)
-        self.path.unlink(missing_ok=True)
-        if shutil.which("systemctl") is not None:
-            self._systemctl("daemon-reload")
 
 
 class AccountLogin(BaseModel):
@@ -489,7 +423,7 @@ def _login(account: AccountLogin, *, allow_runs: bool, yes: bool, open_browser: 
         started = account.start(http, allow_runs)
         print(f"To connect this computer, open this page and allow it:\n\n    {started.verification_uri_complete}\n")
         print(f"Check the page shows the code  {started.user_code}  (expires in {started.expires_in // 60} min).")
-        if open_browser and (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY") or sys.platform == "darwin"):
+        if open_browser and (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY") or sys.platform in {"darwin", "win32"}):
             webbrowser.open(started.verification_uri_complete)
         print("Waiting for approval…", flush=True)
         issued = account.wait(http, started)
@@ -505,17 +439,18 @@ def _login(account: AccountLogin, *, allow_runs: bool, yes: bool, open_browser: 
             agents = AgentChoice.asked(runner.load()) if sys.stdin.isatty() and not yes else AgentChoice()
         machine = agents.applied(runner)
         synced = account.synced(CatalogConnection.load())
-        service = UserService()
-        refused = service.install()
-        if refused is not None:
+        try:
+            MACHINE_SERVICE.install()
+        except ServiceUnavailable as refused:
             print(f"Could not start it in the background ({refused}). Keep it connected with:  interact machine connect", file=sys.stderr)
-        elif not account.online(http, issued):
-            print("Started, but the server does not see it online yet. Check:  systemctl --user status interact-machine", file=sys.stderr)
         else:
-            print(f"Connected: {issued.machine.name} is now a machine in {workspace}")
-            print(synced)
-            if not service.linger():
-                print("It runs while you are signed in to this computer.")
+            if not account.online(http, issued):
+                print(f"Started, but the server does not see it online yet. Check:  interact machine service status  (its log: {MACHINE_SERVICE.logs})", file=sys.stderr)
+            else:
+                print(f"Connected: {issued.machine.name} is now a machine in {workspace}")
+                print(synced)
+                if not MACHINE_SERVICE.after_logout():
+                    print("It runs while you are signed in to this computer.")
         print("Workflows can reach no folder here yet. To share one:  interact machine file-roots <folder under your home>")
         print(AgentChoice.described(machine))
 
@@ -527,7 +462,7 @@ def logout() -> None:
         raise LoginError("this computer is not signed in")
     account = AccountLogin.at(connection.endpoint)
     try:
-        key = read_prompt_token(connection.token_file)
+        key = PRIVATE_FILES.read_secret(connection.token_file)
     except ValueError:
         key = None  # already gone: nothing to revoke from here
     try:
@@ -535,7 +470,7 @@ def logout() -> None:
             revoked = account.revoke(http, key) if key is not None else {}
     except httpx.HTTPError as error:
         raise LoginError(f"cannot reach {account.server} ({type(error).__name__}); nothing was removed here, run it again") from None
-    UserService().remove()
+    MACHINE_SERVICE.remove()
     if machine is not None and machine.server_url == account.server:
         MachineRunner.default_config_path().unlink(missing_ok=True)
     connection.token_file.unlink(missing_ok=True)

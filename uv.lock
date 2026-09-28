@@ -951,6 +951,7 @@ dependencies = [
     { name = "pydantic-settings" },
     { name = "pynput", marker = "sys_platform != 'linux'" },
     { name = "python-xlib", marker = "sys_platform == 'linux'" },
+    { name = "pywin32", marker = "sys_platform == 'win32'" },
     { name = "pyyaml" },
     { name = "rich" },
     { name = "textual" },
@@ -980,7 +981,7 @@ requires-dist = [
     { name = "evdev-binary", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = ">=2.0" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "huggingface-hub", specifier = ">=0.35" },
-    { name = "interact-core", git = "https://github.com/AlanBlanchet/interact-core.git?rev=ed3302a5b3a2323a6c7aebe9b545b4f64e54d1a2" },
+    { name = "interact-core", git = "https://github.com/AlanBlanchet/interact-core.git?rev=9b047fa5d0c5f84c7712c46e961aa26f40dc269d" },
     { name = "jsonschema", specifier = ">=4.23,<5" },
     { name = "litellm", specifier = ">=1.83.4,<2" },
     { name = "mcp", extras = ["cli"], specifier = ">=1.27.0,<2" },
@@ -994,6 +995,7 @@ requires-dist = [
     { name = "pynput", marker = "sys_platform != 'linux'", specifier = ">=1.7" },
     { name = "pytesseract", marker = "extra == 'e2e'", specifier = ">=0.3.10" },
     { name = "python-xlib", marker = "sys_platform == 'linux'", specifier = ">=0.33" },
+    { name = "pywin32", marker = "sys_platform == 'win32'", specifier = ">=306" },
     { name = "pyyaml", specifier = ">=6.0,<7" },
     { name = "rich", specifier = ">=13.0" },
     { name = "textual", specifier = ">=8.2.7" },
@@ -1013,7 +1015,7 @@ dev = [
 [[package]]
 name = "interact-core"
 version = "0.44.0"
-source = { git = "https://github.com/AlanBlanchet/interact-core.git?rev=ed3302a5b3a2323a6c7aebe9b545b4f64e54d1a2#ed3302a5b3a2323a6c7aebe9b545b4f64e54d1a2" }
+source = { git = "https://github.com/AlanBlanchet/interact-core.git?rev=9b047fa5d0c5f84c7712c46e961aa26f40dc269d#9b047fa5d0c5f84c7712c46e961aa26f40dc269d" }
 dependencies = [
     { name = "pydantic" },
 ]

@@ -7,8 +7,6 @@ content. Standard authentication uses the existing protected token-file reader.
 import hashlib
 import ipaddress
 import os
-import stat
-import tempfile
 import warnings
 from contextlib import ExitStack, contextmanager
 from http.cookiejar import LWPCookieJar, LoadError
@@ -23,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, model_validator
 
 from interact import USER_AGENT
 from interact.file_lock import exclusive
-from interact.prompt_secret import read_prompt_token
+from interact.private_files import PRIVATE_FILES
 
 
 class CatalogConnectionError(ValueError):
@@ -115,17 +113,8 @@ class CatalogConnection(BaseModel):
 
     @staticmethod
     def replace_text(path: Path, payload: str) -> None:
-        """Atomically replace one local document; a failed write keeps its predecessor."""
-        path.parent.mkdir(parents=True, exist_ok=True)
-        descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-        try:
-            with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as output:
-                output.write(payload)
-                output.flush()
-                os.fsync(output.fileno())
-            os.replace(temporary, path)
-        finally:
-            Path(temporary).unlink(missing_ok=True)
+        """Atomically replace one local document, private to this user; a failed write keeps its predecessor."""
+        PRIVATE_FILES.write_text(path, payload)
 
     def save(self, path: Path | None = None) -> None:
         if self.workspace_id is None:
@@ -135,7 +124,7 @@ class CatalogConnection(BaseModel):
     def connect(self, *, transport: httpx.BaseTransport | None = None) -> httpx.Client:
         headers = {"Origin": self.endpoint.rstrip("/"), "User-Agent": USER_AGENT}
         if self.token_file is not None:
-            headers["Authorization"] = f"Bearer {read_prompt_token(self.token_file)}"
+            headers["Authorization"] = f"Bearer {PRIVATE_FILES.read_secret(self.token_file)}"
         return httpx.Client(
             base_url=self.endpoint.rstrip("/"), headers=headers,
             timeout=5, follow_redirects=False, trust_env=False, transport=transport,
@@ -181,20 +170,22 @@ class CatalogConnection(BaseModel):
 
     @staticmethod
     def check_private_file(path: Path) -> None:
-        info = path.lstat()
-        if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077 or info.st_uid != os.getuid():
-            raise CatalogConnectionError("catalog session file must be private and owned by the current user")
-        if info.st_size > 64 * 1024:
+        try:
+            PRIVATE_FILES.check(path)
+        except PermissionError as error:
+            raise CatalogConnectionError("catalog session file must be private and owned by the current user") from error
+        if path.lstat().st_size > 64 * 1024:
             raise LoadError("catalog session exceeds its size limit")
 
     @contextmanager
     def session_lock(self, *, suffix: Literal[".lock", ".access-lock"] = ".lock"):
         path = self.session_path()
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        info = path.parent.lstat()
-        if not stat.S_ISDIR(info.st_mode) or info.st_mode & 0o077 or info.st_uid != os.getuid():
-            raise CatalogConnectionError("catalog session directory must be private and owned by the current user")
-        with exclusive(os.open(path.with_suffix(suffix), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)):
+        try:
+            PRIVATE_FILES.check(path.parent)
+        except PermissionError as error:
+            raise CatalogConnectionError("catalog session directory must be private and owned by the current user") from error
+        with exclusive(os.open(path.with_suffix(suffix), os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)):
             yield
 
     @contextmanager

@@ -20,7 +20,7 @@ def login(
     answer_approvals: bool | None = None,
 ) -> None:
     """Connect this computer to your Interact account: approve it in the browser, then it runs as
-    one of your machines (Linux user service), with your agents and prompts synced. --server defaults to
+    one of your machines (kept connected by a background service: Linux systemd, Windows logon task), with your agents and prompts synced. --server defaults to
     the server you installed from or last signed in to, else it is asked once;
     --allow-runs lets this CLI start workflow runs (default: read only); --yes skips the final
     question; --no-browser only prints the page to open. Right after the approval it asks once

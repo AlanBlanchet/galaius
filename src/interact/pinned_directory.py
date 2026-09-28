@@ -170,7 +170,8 @@ class DescriptorDirectory(PinnedDirectory):
 class PathDirectory(PinnedDirectory):
     """Windows (any system without `*at()` calls): full paths, each entry checked before use."""
 
-    SEPARATORS: ClassVar[frozenset[str]] = frozenset("/\\")
+    #: ':' too: "D:x" is relative to another drive's folder, "name:stream" an NTFS alternate stream.
+    SEPARATORS: ClassVar[frozenset[str]] = frozenset("/\\:")
     FLAGS: ClassVar[int] = getattr(os, "O_BINARY", 0) | getattr(os, "O_NOINHERIT", 0)
     #: IsReparseTagNameSurrogate: the reparse point names another entry (symlink, junction, mount).
     SURROGATE: ClassVar[int] = 0x20000000

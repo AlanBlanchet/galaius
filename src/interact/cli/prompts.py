@@ -16,8 +16,8 @@ from interact import prompt_projection
 from interact.agents.catalog_connection import CatalogConnection, CatalogConnectionError
 from interact.prompt_projection import compile_prompt_projection, install_prompt_projection
 from interact.prompt_publisher import publish_projection
-from interact.prompt_secret import read_prompt_token
 from interact.pinned_directory import PinnedDirectory
+from interact.private_files import PRIVATE_FILES
 from interact.server_prompts import MAX_EDITOR_BYTES, PromptConflictError, ServerPrompts
 
 prompts_app = App(name="prompts", help="Edit server prompts when configured, or author through local Git.")
@@ -483,7 +483,7 @@ def publish(endpoint: str, token_file: Path) -> None:
     if head != upstream:
         print("ERROR: prompt HEAD is not exactly pushed to its upstream", file=sys.stderr)
         raise SystemExit(2)
-    token = read_prompt_token(token_file)
+    token = PRIVATE_FILES.read_secret(token_file)
     publish_projection(_compile(repository), endpoint, token)
     print(head)
 

@@ -22,7 +22,7 @@ from interact import server_workspace
 from interact.cli import machine_command
 from interact.cli.machine_command import _described_step
 from interact.functions import FunctionRegistry, discover_python, discover_shell
-from interact.machines import CommandFiles, CommandLogs, MachineConfig, MachineFiles, MachineRunner
+from interact.machines import CommandFiles, CommandLogs, MachineConfig, MachineFiles, MachineRunner, ScriptExecution
 
 
 def test_machine_config_round_trips_token_with_owner_only_permissions(tmp_path: Path) -> None:
@@ -215,15 +215,20 @@ def test_run_script_rejects_a_source_that_does_not_match_its_digest(tmp_path: Pa
         MachineRunner()._run_script(command, config)
 
 
-def test_run_script_executes_python_under_the_working_directory_and_audits_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+#: A script printing the folder it runs in, in each language (cmd wants CRLF lines).
+_WHERE_AM_I = {"python": "import os\nprint(os.getcwd())\n", "shell": "pwd\n", "powershell": "(Get-Location).Path\n", "cmd": "@echo off\r\ncd\r\n"}
+
+
+@pytest.mark.parametrize("language", ScriptExecution.languages(os.environ.get("PATH")))
+def test_run_script_executes_each_language_under_the_working_directory_and_audits_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, language: str) -> None:
+    """Every language this computer announces really runs here (Windows CI: PowerShell and cmd)."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     config = _config(tmp_path, "full_access")
-    source = "import os\nprint(os.getcwd())\n"
-    command = _script_command(config.machine_id, "python", source)
+    command = _script_command(config.machine_id, language, _WHERE_AM_I[language])
 
     result = MachineRunner()._run_script(command, config)
 
-    assert result.strip() == str(tmp_path)
+    assert Path(result.strip()).resolve() == tmp_path.resolve()
     audit = json.loads(Path(FunctionRegistry().config_path.parent / "script-audit.log").read_text().strip().splitlines()[-1])
     assert audit["source_digest"] == command.impl.source_digest
     assert audit["node_id"] == str(command.node_id)
@@ -694,19 +699,23 @@ _PEP723 = '# /// script\n# dependencies = [\n#   "six",\n# ]\n# ///\n\nimport si
 @pytest.mark.parametrize(("language", "source", "uv", "expected"), [
     ("python", "print(1)\n", "/usr/bin/uv", "interpreter"),
     ("python", _PEP723, "/usr/bin/uv", "uv"),
-    ("shell", _PEP723, "/usr/bin/uv", "sh"),
+    ("shell", _PEP723, "/usr/bin/uv", "refused" if sys.platform == "win32" else "sh"),
     ("python", _PEP723, None, "refused"),
+    ("powershell", "Write-Output 1\n", None, "pwsh"),
+    ("cmd", "@echo 1\n", None, "cmd" if sys.platform == "win32" else "refused"),
 ])
-def test_interpreter_runs_declared_packages_through_uv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, language: str, source: str, uv: str | None, expected: str) -> None:
-    monkeypatch.setattr(shutil, "which", lambda name: uv if name == "uv" else None)
-    path = tmp_path / "script"
+def test_interpreter_runs_each_language_with_its_own_program(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, language: str, source: str, uv: str | None, expected: str) -> None:
+    """Each Script language runs by its own program on this OS, or is refused in plain words
+    (shell on Windows, cmd off Windows); never run by another program."""
+    monkeypatch.setattr(shutil, "which", lambda name, path=None: {"uv": uv, "pwsh": "/opt/pwsh"}.get(name))
+    monkeypatch.setenv("COMSPEC", "C:\\Windows\\system32\\cmd.exe")
     if expected == "refused":
-        with pytest.raises(RuntimeError, match="install uv"):
+        with pytest.raises(RuntimeError, match="install uv|Windows"):
             MachineRunner._interpreter(language, source)
         return
     argv = MachineRunner._interpreter(language, source)
-    assert argv[0] == {"interpreter": sys.executable, "uv": "/usr/bin/uv", "sh": "/bin/sh"}[expected]
-    assert ("--script" in argv) == (expected == "uv")
+    assert argv[0] == {"interpreter": sys.executable, "uv": "/usr/bin/uv", "sh": "/bin/sh", "pwsh": "/opt/pwsh", "cmd": "C:\\Windows\\system32\\cmd.exe"}[expected]
+    assert ("--script" in argv) == (expected == "uv") and ("-File" in argv) == (expected == "pwsh")
 
 
 @pytest.mark.skipif(shutil.which("uv") is None, reason="uv is not installed on this machine")

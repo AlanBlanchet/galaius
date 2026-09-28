@@ -46,7 +46,7 @@ from interact.criteria import Variables
 from interact.config import Config
 from interact.prompt_cache import _PromptCache
 from interact.prompt_client import _PromptClient
-from interact.prompt_secret import read_prompt_token
+from interact.private_files import PRIVATE_FILES
 
 _INPUT_LIMIT = 128 * 1024
 _ENTITY_ID = re.compile(r"^[A-Za-z0-9._:@+-]{1,160}$")
@@ -297,7 +297,7 @@ class _ConversationHost(BaseModel):
         if self.config.prompt_token and self.config.prompt_token_file is not None:
             raise ValueError("prompt token configuration is ambiguous")
         token = (
-            read_prompt_token(self.config.prompt_token_file)
+            PRIVATE_FILES.read_secret(self.config.prompt_token_file)
             if self.config.prompt_token_file is not None else self.config.prompt_token
         )
         cache = _PromptCache(self.config.prompt_cache)

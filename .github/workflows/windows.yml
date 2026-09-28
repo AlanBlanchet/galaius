@@ -1,0 +1,168 @@
+name: windows
+
+# The Windows path a new user takes, end to end on a real Windows runner: the README's PowerShell
+# one-liner (install.ps1, Windows PowerShell 5.1), `interact login` approved like the owner does on
+# /link (against tests/support/account_server.py, a server double speaking the real wire models),
+# the background logon task running and stopped / started from the CLI, credentials sealed and
+# private, `interact logout` undoing it all; then the Windows-specific unit tests.
+
+on:
+  push:
+    paths: [install.ps1, pyproject.toml, uv.lock, "src/**", "tests/**", .github/workflows/windows.yml]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUTF8: "1"
+  SERVER: http://127.0.0.1:8765
+
+jobs:
+  windows:
+    name: windows (install.ps1 + login + service)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Serve install.ps1 over HTTP (what `irm` fetches)
+        run: |
+          Start-Process -FilePath python -ArgumentList '-m', 'http.server', '8799', '--bind', '127.0.0.1' -WindowStyle Hidden
+          foreach ($i in 1..40) { try { Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8799/install.ps1 | Out-Null; break } catch { Start-Sleep -Milliseconds 500 } }
+
+      - name: Install with the one-liner (Windows PowerShell 5.1, this commit's source)
+        shell: powershell
+        run: |
+          $uv = Get-Command uv -ErrorAction SilentlyContinue
+          Write-Host "uv before install: $(if ($uv) { $uv.Source } else { 'none (install.ps1 installs it)' })"
+          $env:INTERACT_REPO = "$PWD"
+          powershell -ExecutionPolicy ByPass -c "irm http://127.0.0.1:8799/install.ps1 | iex"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $bin = Join-Path $HOME '.local\bin'
+          & "$bin\interact.exe" version
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $bin | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+
+      - name: Start the server double
+        run: |
+          uv sync --frozen --quiet
+          Start-Process -FilePath uv -ArgumentList 'run', '--frozen', 'python', 'tests/support/account_server.py', '--port', '8765' -RedirectStandardError server.err -WindowStyle Hidden
+          foreach ($i in 1..120) { try { irm "$env:SERVER/v1/version"; exit 0 } catch { Start-Sleep -Milliseconds 500 } }
+          Get-Content server.err; exit 1
+
+      - name: interact login, approved on the double like the owner on /link
+        run: |
+          $login = Start-Process -FilePath interact -ArgumentList 'login', '--server', $env:SERVER, '--yes', '--no-browser', '--no-agents' `
+            -RedirectStandardOutput login.out -RedirectStandardError login.err -PassThru -WindowStyle Hidden
+          $code = $null
+          foreach ($i in 1..120) { $code = (Select-String -Path login.out -Pattern '[B-Z]{4}-[B-Z]{4}' -ErrorAction SilentlyContinue | Select-Object -First 1).Matches.Value; if ($code) { break }; Start-Sleep -Milliseconds 500 }
+          if (-not $code) { Get-Content login.out, login.err; throw 'no sign-in code printed' }
+          irm -Method Post "$env:SERVER/test/approve" -ContentType application/json -Body (@{ user_code = $code } | ConvertTo-Json) | ConvertTo-Json -Compress
+          if (-not $login.WaitForExit(180000)) { throw 'interact login did not finish' }
+          Get-Content login.out, login.err
+          if ($login.ExitCode -ne 0 -or -not (Select-String -Path login.out -Pattern '^Connected: ' -Quiet)) { throw "interact login failed (exit $($login.ExitCode))" }
+
+      - name: The logon task runs; the machine is online with Windows' script languages
+        run: |
+          interact machine service status | Tee-Object -Variable status
+          if ("$status" -notmatch 'Background service: running') { throw 'service not running' }
+          Get-ScheduledTask -TaskName 'Interact machine *' | Format-List TaskName, State, Principal, Triggers, Actions
+          $machine = (irm "$env:SERVER/test/state").machines[0]
+          $machine | ConvertTo-Json -Compress
+          if (-not $machine.online) { throw 'machine not online' }
+          foreach ($want in 'script:python', 'script:powershell', 'script:cmd') { if ($machine.features -notcontains $want) { throw "missing $want" } }
+          if ($machine.features -contains 'script:shell') { throw 'announces shell, which Windows cannot run' }
+
+      - name: Credentials are DPAPI-sealed and private to this user
+        run: |
+          $files = @("$HOME\.config\interact\machine.json") + (Get-ChildItem "$HOME\.interact\credentials\*.key").FullName
+          $token = (Get-Content -Raw $files[0] | ConvertFrom-Json).token
+          if (-not $token.StartsWith('dpapi:')) { throw 'machine token stored unsealed' }
+          foreach ($file in $files[1..($files.Length - 1)]) { if (-not (Get-Content -Raw $file).StartsWith('dpapi:')) { throw "$file stored unsealed" } }
+          foreach ($file in $files) {
+            icacls $file
+            if ((icacls $file) -match 'Everyone|BUILTIN\\Users|Authenticated Users') { throw "$file readable by others" }
+          }
+
+      - name: Stop and start it from the CLI
+        run: |
+          interact machine service stop
+          foreach ($i in 1..60) { if (-not (irm "$env:SERVER/test/state").machines[0].online) { break }; Start-Sleep -Milliseconds 500 }
+          if ((irm "$env:SERVER/test/state").machines[0].online) { throw 'still online after stop' }
+          interact machine service status | Tee-Object -Variable status
+          if ("$status" -notmatch 'stopped') { throw 'status does not say stopped' }
+          interact machine service start
+          foreach ($i in 1..60) { $m = (irm "$env:SERVER/test/state").machines[0]; if ($m.online -and $m.connections -ge 2) { break }; Start-Sleep -Milliseconds 500 }
+          if (-not $m.online -or $m.connections -lt 2) { throw 'not reconnected after start' }
+          "reconnected: connections=$($m.connections)"
+
+      - name: Script steps run through the logon task (PowerShell, cmd, Python; shell refused), barred from the clipboard
+        run: |
+          interact machine permission full_access
+          Set-Clipboard -Value 'clipboard-secret'
+          if ((Get-Clipboard) -ne 'clipboard-secret') { throw 'this session has no clipboard: the clipboard check would prove nothing' }
+          function Step($language, $source) { irm -Method Post "$env:SERVER/test/run" -ContentType application/json -Body (@{ language = $language; source = $source } | ConvertTo-Json) }
+          $steps = [ordered]@{
+            powershell = Step powershell "`"ps-ok `$(`$PSVersionTable.PSEdition) `$PWD`""
+            cmd = Step cmd "@echo off`r`necho cmd-ok %CD%`r`n"
+            python = Step python "import sys; print('py-ok', sys.platform)`n"
+            shell = Step shell "echo sh`n"
+            clipboard = Step powershell "Get-Clipboard"
+          }
+          $steps.GetEnumerator() | ForEach-Object { "$($_.Key): $($_.Value | ConvertTo-Json -Compress)" }
+          foreach ($ok in 'powershell', 'cmd', 'python') { if ($steps[$ok].status -ne 'succeeded') { throw "$ok step failed" } }
+          if ($steps.powershell.result -notmatch 'ps-ok' -or $steps.cmd.result -notmatch 'cmd-ok' -or $steps.python.result -notmatch 'py-ok win32') { throw 'unexpected step output' }
+          if ($steps.shell.status -ne 'failed' -or $steps.shell.error -notmatch 'PowerShell or cmd') { throw 'shell was not refused in plain words' }
+          if ("$($steps.clipboard.result)" -match 'clipboard-secret') { throw 'a step read the signed-in user''s clipboard' }
+
+      - name: A non-administrator can register the same logon task
+        run: |
+          $password = "Aa1!" + [Guid]::NewGuid().ToString('N')
+          $secure = ConvertTo-SecureString $password -AsPlainText -Force
+          New-LocalUser -Name interacttest -Password $secure -AccountNeverExpires | Out-Null
+          # interact's own definition, from the installed build, naming the test user instead of this one.
+          $python = Join-Path (uv tool dir).Trim() 'interact\Scripts\python.exe'
+          & $python -c "from interact.machine_service import WindowsMachineService as S; print(S().definition().replace(S.user(), r'$env:COMPUTERNAME\interacttest'))" |
+            Out-File -Encoding unicode "$env:PUBLIC\task-user.xml"
+          Get-Content "$env:PUBLIC\task-user.xml"
+          $script = "try { Register-ScheduledTask -TaskName 'Interact machine test' -Xml (Get-Content -Raw '$env:PUBLIC\task-user.xml') | Out-Null; " +
+                    "`$admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole('Administrators'); " +
+                    "'registered by ' + [Environment]::UserName + ', administrator: ' + `$admin | Out-File '$env:PUBLIC\result.txt'; " +
+                    "Unregister-ScheduledTask -TaskName 'Interact machine test' -Confirm:`$false } catch { 'refused: ' + `$_ | Out-File '$env:PUBLIC\result.txt' }"
+          $credential = New-Object System.Management.Automation.PSCredential("$env:COMPUTERNAME\interacttest", $secure)
+          Start-Process -FilePath powershell -ArgumentList '-NoProfile', '-Command', $script -Credential $credential -Wait -WorkingDirectory $env:PUBLIC
+          Get-Content "$env:PUBLIC\result.txt" | Tee-Object -Variable result
+          if ("$result" -notmatch '^registered by interacttest, administrator: False') { throw "unelevated registration: $result" }
+
+      - name: interact logout removes the task and the credentials
+        run: |
+          interact logout
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if (Get-ScheduledTask -TaskName 'Interact machine *' -ErrorAction SilentlyContinue) { throw 'logon task still registered' }
+          if (Test-Path "$HOME\.config\interact\machine.json") { throw 'machine credential left behind' }
+          $machine = (irm "$env:SERVER/test/state").machines[0]
+          if (-not $machine.revoked -or $machine.online) { throw 'server did not see the logout' }
+
+      - name: Windows unit tests (private files, lock, scripts in PowerShell and cmd, login, safe folders)
+        run: >-
+          uv run --frozen pytest -q -rs tests/test_private_files.py tests/test_account_login.py tests/test_machines.py
+          tests/test_pinned_directory.py tests/test_machine_data.py tests/test_server_prompt_projection.py
+          tests/test_agent_registry.py::test_registry_refuses_hostile_writes_through_a_leaf_link
+          tests/test_agent_registry.py::test_registry_record_reads_never_follow_a_link_swapped_in_during_open
+          tests/test_agent_registry.py::test_public_registry_reads_never_follow_hostile_private_leaves
+          tests/test_prompt_cli.py::test_prompt_editor_rejects_a_symlink_out_of_the_source
+          tests/test_prompt_cli.py::test_prompt_editor_releases_its_lock_when_post_lock_validation_fails
+          tests/test_prompt_contracts.py::test_cache_is_never_opened_through_a_link
+          tests/test_prompt_contracts.py::test_cache_owner_check_is_portable_when_getuid_is_unavailable
+          tests/test_prompt_projection.py::test_installer_switches_only_declared_consumers_and_rejects_unmanaged_collision
+          --deselect tests/test_server_prompt_projection.py::test_independent_connection_processes_lock_before_reading_shared_install_state
+
+      - name: Logs
+        if: always()
+        run: |
+          foreach ($file in 'server.err', 'login.out', 'login.err', "$HOME\.config\interact\machine-service.log") { if (Test-Path $file) { "== $file"; Get-Content $file -Tail 80 } }

@@ -11,6 +11,7 @@ from cyclopts import App, Parameter
 
 from interact_core import AgentTouchScope, WorkflowNode
 
+from interact.machine_service import MACHINE_SERVICE, ServiceUnavailable
 from interact.machines import MachineFiles, MachineRunner, ScriptExecution, connect_command
 
 machine_app = App(name="machine", help="Connect this computer as a workflow machine.")
@@ -29,6 +30,27 @@ def machine_connect(
     asyncio.run(connect_command(server_url, workspace_id, machine_id, None, permission_ceiling, working_directory, not configure_only))
 
 
+@machine_app.command(name="service")
+def machine_service(action: Literal["status", "start", "stop", "restart", "run"] = "status") -> None:
+    """The background service keeping this computer connected after `interact login` (Linux: a
+    systemd user unit; Windows: a task started at your logon; macOS: none yet). status (default)
+    says whether it runs and where its log is; start / stop / restart act on it; run is what the
+    Windows task itself starts."""
+    try:
+        if action == "run":
+            MACHINE_SERVICE.run()
+            return
+        if action in {"stop", "restart"}:
+            MACHINE_SERVICE.stop()
+        if action in {"start", "restart"}:
+            MACHINE_SERVICE.start()
+    except ServiceUnavailable as error:
+        print(f"interact machine service: {error}", file=sys.stderr)
+        raise SystemExit(1) from None
+    state = "running" if MACHINE_SERVICE.running() else "stopped" if MACHINE_SERVICE.installed() else "not set up (run: interact login)"
+    print(f"Background service: {state}. Log: {MACHINE_SERVICE.logs}")
+
+
 @machine_app.command(name="file-roots")
 def machine_file_roots(*roots: str) -> None:
     """Owner-only, on this machine: the folders (relative to its working directory) workflow file
@@ -38,6 +60,17 @@ def machine_file_roots(*roots: str) -> None:
     if roots:
         config = runner.update(lambda current: current.model_copy(update={"file_roots": tuple(roots)}))
     print(json.dumps({"working_directory": str(config.working_directory), "file_roots": list(config.file_roots)}))
+
+
+@machine_app.command(name="permission")
+def machine_permission(ceiling: Literal["read_only", "full_access"] | None = None) -> None:
+    """Owner-only, on this machine: the most a workflow step may do here. read_only (what
+    `interact login` sets): file reads, models, functions marked read-only; full_access: also
+    Script steps (each still needs your approval of its exact code) and file writes. No argument
+    prints it; the server can never raise it."""
+    runner = MachineRunner()
+    config = runner.update(lambda current: current.model_copy(update={"permission_ceiling": ceiling})) if ceiling else runner.load()
+    print(json.dumps({"permission_ceiling": config.permission_ceiling}))
 
 
 @machine_app.command(name="agents")
@@ -158,7 +191,7 @@ def _approve(workspace, machine_id: UUID, digest: str, steps: list[tuple[str, Wo
 def _described_step(workflow: str, node: WorkflowNode, machine_id: UUID) -> str:
     """What running `node` does, as the machine owner reads it before approving it."""
     impl = node.impl
-    language = {"python": "Python", "shell": "Shell"}[impl.language]
+    language = {"python": "Python", "shell": "Shell", "powershell": "PowerShell", "cmd": "cmd"}[impl.language]
     lines = [f"Workflow “{workflow}”, step “{node.label}”"]
     if impl.origin == "inline":
         source = str(node.config.get("source", ""))
@@ -175,7 +208,7 @@ def _described_step(workflow: str, node: WorkflowNode, machine_id: UUID) -> str:
     except Exception:
         config = None
     if config is None or config.machine_id != machine_id:
-        lines.append("Program: " + (ScriptExecution.select(impl.language, "", spec).description if spec.interpreter or impl.language == "shell" else "not checked here; python3 or uv, depending on the file's declared packages"))
+        lines.append("Program: " + (ScriptExecution.select(impl.language, "", spec).description if spec.interpreter or impl.language != "python" else "not checked here; python3 or uv, depending on the file's declared packages"))
         lines.append("Not checked here: run this on that machine to compare the file as it is now.")
         return "\n".join(lines)
     try:

@@ -12,26 +12,12 @@ import pytest
 
 from interact.prompt_publisher import publish_projection
 from interact.prompt_projection import MANIFEST_NAME
-from interact.prompt_secret import read_prompt_token
 from interact_core import (
     PromptCatalogPage,
     PromptChannelEntry,
     PromptKey,
     PromptPublicationRequest,
 )
-
-
-@pytest.mark.parametrize("case", ["mode", "symlink", "oversize"])
-def test_publication_token_file_is_bounded_private_and_regular(tmp_path: Path, case: str) -> None:
-    token = tmp_path / "token"
-    token.write_text("test-token\n" if case != "oversize" else "x" * 4097)
-    token.chmod(0o600 if case != "mode" else 0o644)
-    candidate = token
-    if case == "symlink":
-        candidate = tmp_path / "linked"
-        candidate.symlink_to(token)
-    with pytest.raises(ValueError, match="token file"):
-        read_prompt_token(candidate)
 
 
 def test_real_prompt_service_publishes_exact_projection_idempotently(tmp_path: Path) -> None:

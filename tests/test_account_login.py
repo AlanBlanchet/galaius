@@ -9,8 +9,9 @@ import pytest
 from pydantic import SecretStr
 
 from interact import account_login
-from interact.account_login import AccountLogin, LoginError, UserService
+from interact.account_login import AccountLogin, LoginError
 from interact.agents.catalog_connection import CatalogConnection
+from interact.machine_service import MACHINE_SERVICE
 from interact.machines import MachineRunner
 
 PUBLIC = "https://interact.example.org"
@@ -53,8 +54,8 @@ def joining(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
                         "wait": lambda self, http, started: issued, "online": lambda self, http, issued: True, "revoke": lambda self, http, key: {}}.items():
         monkeypatch.setattr(account_login.AccountLogin, name, value)
     monkeypatch.setattr(account_login.AccountLogin, "synced", staticmethod(lambda connection: "Synced: nothing"))
-    monkeypatch.setattr(UserService, "install", lambda self: None)
-    monkeypatch.setattr(UserService, "linger", staticmethod(lambda: True))
+    monkeypatch.setattr(type(MACHINE_SERVICE), "install", lambda self: None)
+    monkeypatch.setattr(type(MACHINE_SERVICE), "after_logout", lambda self: True)
     return home
 
 
