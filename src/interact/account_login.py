@@ -6,7 +6,9 @@ machine token — saved where `interact machine connect` reads it, then kept con
 user service — and a read-only workspace key the CLI's `agents` / `workflows` commands use. Nothing
 on this computer is reachable by a workflow until its owner names a folder (`interact machine
 file-roots`). Whether agents may run here, and the folders the web may start them in, is asked
-once right after the approval (`AgentChoice`; off and none unless said)."""
+once right after the approval (`AgentChoice`; off and none unless said). On a computer already
+connected to the same server, `interact login` signs nothing in again: it asks the same agent
+questions, the current settings as defaults."""
 
 import getpass
 import os
@@ -282,6 +284,23 @@ class AccountLogin(BaseModel):
             time.sleep(2)
         return False
 
+    def connected_name(self, machine: MachineConfig) -> str:
+        """This computer's name among the server's machines (asked as the CLI is signed in), its id
+        when the server cannot be asked; LoginError when the server answers it no longer has it."""
+        connection = CatalogConnection.load()
+        if connection is None or connection.endpoint.rstrip("/") != self.server:
+            return f"machine {machine.machine_id}"
+        try:
+            with connection.connect() as http:
+                payload = connection.authenticate(http).request(http, "GET", f"/v1/workspaces/{machine.workspace_id}/machines")
+            machines = TypeAdapter(tuple[MachineSummary, ...]).validate_json(payload)
+        except (OSError, ValueError, httpx.HTTPError):  # a refused or broken catalog answer is a ValueError
+            return f"machine {machine.machine_id}"
+        found = next((item for item in machines if item.id == machine.machine_id and item.state != "revoked"), None)
+        if found is None:
+            raise LoginError(f"this computer was removed from the machines of {self.server}; run `interact logout`, then `interact login`")
+        return found.name
+
     def revoke(self, http: httpx.Client, secret: str) -> dict[str, object]:
         answer = http.post("/v1/device/logout", headers={"Authorization": f"Bearer {secret}"})
         if answer.status_code == 401:
@@ -294,8 +313,9 @@ class AccountLogin(BaseModel):
 class AgentChoice(BaseModel):
     """Whether agents may run on this computer, and the folders the web may start them in (names
     under the machine's working directory, checked by `MachineConfig.usable_agent_roots`): asked
-    once by `interact login`, or given as flags; off and none unless said. With agents on, each
-    `opt_ins` question follows (default no); the fields share `MachineConfig`'s names."""
+    by `interact login`, or given as flags, over the machine's current settings (`of`: off and none
+    on a joining computer). With agents on, each `opt_ins` question follows; the fields share
+    `MachineConfig`'s names."""
 
     model_config = ConfigDict(frozen=True)
     run_agents: bool = False
@@ -304,50 +324,62 @@ class AgentChoice(BaseModel):
     answer_approvals: bool = False
     #: The yes / no questions asked after the folders, by field (a flag answers each ahead).
     opt_ins: ClassVar[dict[str, str]] = {
-        "continue_conversations": "Let the web continue your editor (Claude Code) conversations here? A copy continues; the editor's own is never written to. [y/N] ",
-        "answer_approvals": "Let the web answer the approvals a session asks for (run this command? apply this change?). [y/N] ",
+        "continue_conversations": "Let the web continue your editor (Claude Code) conversations here? A copy continues; the editor's own is never written to.",
+        "answer_approvals": "Let the web answer the approvals a session asks for (run this command? apply this change?).",
     }
     rules: ClassVar[str] = ("a folder must be strictly below {base}, not hidden (.name), not a symlink, not Interact's own folder, "
                             "and not inside or around a folder shared with workflows")
 
     @staticmethod
     def joining() -> MachineConfig:
-        """The machine `AccountLogin.save` writes, as far as the folder rules read it (no server yet)."""
-        return MachineConfig.model_construct(working_directory=Path.home(), file_roots=(), script_roots=())
+        """The machine `AccountLogin.save` writes, as far as the folder rules and `of` read it (no server yet)."""
+        return MachineConfig.model_construct(working_directory=Path.home(), file_roots=(), script_roots=(), run_agents=False)
 
     @classmethod
-    def given(cls, agents: bool | None, folders: Iterable[str], opt_ins: Mapping[str, bool | None]) -> "AgentChoice | None":
-        """From `--agents/--no-agents`, `--agent-folder` and the `opt_ins` flags, checked before any
-        sign-in starts; None when none was given (then asked). A folder or a yes alone means agents
-        on; an opt-in not given stays off."""
+    def of(cls, machine: MachineConfig) -> "AgentChoice":
+        """The machine's current settings: the defaults every question and flag starts from."""
+        return cls(run_agents=machine.run_agents, folders=machine.agent_roots, **{field: getattr(machine, field) for field in cls.opt_ins})
+
+    @classmethod
+    def given(cls, agents: bool | None, folders: Iterable[str], opt_ins: Mapping[str, bool | None], machine: MachineConfig) -> "AgentChoice | None":
+        """From `--agents/--no-agents`, `--agent-folder` and the `opt_ins` flags over `machine`'s
+        current settings, checked before anything is saved; None when none was given (then asked).
+        Each flag changes only what it names; a folder or a yes alone means agents on."""
         folders, opt_ins = tuple(folders), {field: answer for field, answer in opt_ins.items() if answer is not None}
         if agents is None and not folders and not opt_ins:
             return None
         if agents is False and (folders or any(opt_ins.values())):
             raise LoginError("--no-agents contradicts --agent-folder, --continue-conversations and --answer-approvals: pick one")
-        machine = cls.joining()
-        choice, refused = cls(run_agents=agents is not False, folders=cls.named(folders, machine.working_directory), **opt_ins).checked(machine)
-        if refused:
-            raise LoginError(f"cannot let agents start in {', '.join(refused)}: {cls.rules.format(base=machine.working_directory)}")
+        current = cls.of(machine)
+        on = False if agents is False else bool(agents or folders or any(opt_ins.values())) or current.run_agents
+        choice = current.model_copy(update={"run_agents": on, **opt_ins})
+        if folders:
+            choice, refused = choice.model_copy(update={"folders": cls.named(folders, machine.working_directory)}).checked(machine)
+            if refused:
+                raise LoginError(f"cannot let agents start in {', '.join(refused)}: {cls.rules.format(base=machine.working_directory)}")
         return choice
 
     @classmethod
     def asked(cls, machine: MachineConfig) -> "AgentChoice":
-        """Asked in the terminal: agents on?, then the folders (refused ones said with the rules and
-        asked once more, then left out), then each `opt_ins` question."""
-        if not _confirmed("Let agents run on this computer from the web? [y/N] "):
-            return cls()
+        """Asked in the terminal, each answer defaulting to `machine`'s current one (Enter keeps it):
+        agents on?, then the folders (refused ones said with the rules and asked once more, then
+        left out; `-` = none), then each `opt_ins` question."""
+        current = cls.of(machine)
+        if not _confirmed("Let agents run on this computer from the web?", current.run_agents):
+            return current.model_copy(update={"run_agents": False})
         base = machine.working_directory
         print(f"Working directory: {base}")
+        kept = f"Enter = keep {', '.join(current.folders)}; - = none" if current.folders else "Enter = none"
         for attempt in range(2):
-            answer = _answered(f"Which folders may they start in? (names under {base}, comma-separated; Enter = none) ")
-            choice, refused = cls(run_agents=True, folders=cls.named(answer.split(","), base)).checked(machine)
+            answer = _answered(f"Which folders may they start in? (names under {base}, comma-separated; {kept}) ").strip()
+            typed = current.folders if not answer else () if answer == "-" else answer.split(",")
+            choice, refused = current.model_copy(update={"run_agents": True, "folders": cls.named(typed, base)}).checked(machine)
             if not refused:
                 break
             print(f"Refused: {', '.join(refused)} ({cls.rules.format(base=base)}).")
         else:
             print(f"Left out: {', '.join(refused)}.")
-        return choice.model_copy(update={field: _confirmed(question) for field, question in cls.opt_ins.items()})
+        return choice.model_copy(update={field: _confirmed(question, getattr(current, field)) for field, question in cls.opt_ins.items()})
 
     @staticmethod
     def named(folders: Iterable[str], base: Path) -> tuple[str, ...]:
@@ -377,7 +409,7 @@ class AgentChoice(BaseModel):
     def described(config: MachineConfig) -> str:
         """The result line, and how to change it later."""
         if not config.run_agents:
-            return "Agents: off here. To allow them:  interact machine agents on  then  interact machine agent-roots <folder…>"
+            return "Agents: off here. To allow them, run  interact login  again (it asks only the agent questions)."
         folders = list(config.agent_roots_by_name())
         extras = (f"\nEditor conversations continued from the web: {'on' if config.continue_conversations else 'off'}; approvals answered from the web: "
                   f"{'on' if config.answer_approvals else 'off'}. To change:  interact machine agents on --continue on|off --approvals on|off")
@@ -399,15 +431,16 @@ def _shown(value: str) -> str:
     return "".join(character if character.isprintable() else "?" for character in value)
 
 
-def _confirmed(question: str) -> bool:
-    """Yes only for an explicit y; no terminal, Ctrl-D or Ctrl-C answer no."""
+def _confirmed(question: str, default: bool = False) -> bool:
+    """y / n as typed; Enter, no terminal, Ctrl-D or Ctrl-C answer `default`."""
     if not sys.stdin.isatty():
-        return False
+        return default
     try:
-        return input(question).strip().lower() in {"y", "yes"}
+        answer = input(f"{question} {'[Y/n]' if default else '[y/N]'} ").strip().lower()
     except (EOFError, KeyboardInterrupt):
         print()
-        return False
+        return default
+    return default if not answer else answer in {"y", "yes"}
 
 
 def _answered(question: str) -> str:
@@ -423,18 +456,33 @@ def login(server: str | None, *, allow_runs: bool, yes: bool, open_browser: bool
           agent_opt_ins: Mapping[str, bool | None] = MappingProxyType({})) -> None:
     """`agents` / `agent_folders` / `agent_opt_ins` (by `AgentChoice.opt_ins` field) answer the
     agents questions ahead (scripts, the install line); unsaid and in a terminal without `yes`, they
-    are asked; else agents stay off."""
+    are asked; else they stay as they are (off on a joining computer). Already connected to this
+    server (the one remembered when `server` is None): nothing is signed in again, only the agent
+    settings are asked or applied; connected to another server: refused."""
+    existing = _existing_machine()
     try:
-        _login(server, allow_runs=allow_runs, yes=yes, open_browser=open_browser, agents=AgentChoice.given(agents, agent_folders, agent_opt_ins))
+        account = AccountLogin.parsed(existing.server_url) if existing is not None and server is None else AccountLogin.at(server)
+        if existing is None:
+            _login(account, allow_runs=allow_runs, yes=yes, open_browser=open_browser, agents=AgentChoice.given(agents, agent_folders, agent_opt_ins, AgentChoice.joining()))
+        elif AccountLogin.parsed(existing.server_url) != account:
+            raise LoginError(f"this computer is already connected (machine {existing.machine_id} on {existing.server_url}); run `interact logout` first")
+        else:
+            _reconfigured(account, existing, yes=yes, agents=AgentChoice.given(agents, agent_folders, agent_opt_ins, existing))
     except httpx.HTTPError as error:
         raise LoginError(f"cannot reach the server ({type(error).__name__}); check the address and your network, then run it again") from None
 
 
-def _login(server: str | None, *, allow_runs: bool, yes: bool, open_browser: bool, agents: AgentChoice | None) -> None:
-    account = AccountLogin.at(server)
-    existing = _existing_machine()
-    if existing is not None:
-        raise LoginError(f"this computer is already connected (machine {existing.machine_id} on {existing.server_url}); run `interact logout` first")
+def _reconfigured(account: AccountLogin, existing: MachineConfig, *, yes: bool, agents: AgentChoice | None) -> None:
+    """This computer stays connected as it is; only its agent settings change."""
+    print(f"This computer is already connected to {account.server} as {_shown(account.connected_name(existing))}.")
+    if agents is None and sys.stdin.isatty() and not yes:
+        agents = AgentChoice.asked(existing)
+    machine = existing if agents is None else agents.applied(MachineRunner())
+    print(AgentChoice.described(machine))
+    print("Nothing to restart: the connected service reads these settings on each request.")
+
+
+def _login(account: AccountLogin, *, allow_runs: bool, yes: bool, open_browser: bool, agents: AgentChoice | None) -> None:
     with account.client() as http:
         if (skew := account.skew(http)) is not None:
             print(f"Note: {skew}.", file=sys.stderr)
@@ -447,7 +495,7 @@ def _login(server: str | None, *, allow_runs: bool, yes: bool, open_browser: boo
         issued = account.wait(http, started)
         workspace, approver = _shown(issued.workspace.name), _shown(issued.approved_by)
         print(f"\nApproved by {approver} for the workspace “{workspace}”.")
-        if not yes and not _confirmed(f"Connect this computer to “{workspace}”? [y/N] "):
+        if not yes and not _confirmed(f"Connect this computer to “{workspace}”?"):
             account.revoke(http, issued.api_key.secret.get_secret_value())
             raise LoginError("not connected; the approval was withdrawn" if sys.stdin.isatty() else "confirm in a terminal, or pass --yes (the approval was withdrawn)")
         account.save(issued)

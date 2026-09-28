@@ -29,7 +29,8 @@ def login(
     answer the approvals a session asks for. --agents / --no-agents, --agent-folder NAME
     (repeatable), --continue-conversations and --answer-approvals (each with --no-…; a folder or a
     yes implies --agents) answer them ahead; without them and without a terminal (or with --yes)
-    agents stay off."""
+    agents stay off. On a computer already connected to this server it signs nothing in again and
+    asks the same questions (or applies the same flags), the current settings as defaults."""
     try:
         sign_in(server, allow_runs=allow_runs, yes=yes, open_browser=browser, agents=agents, agent_folders=agent_folder,
                 agent_opt_ins={"continue_conversations": continue_conversations, "answer_approvals": answer_approvals})

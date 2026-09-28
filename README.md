@@ -137,8 +137,9 @@ Right after, it asks once whether agents may run on this computer from the web (
 in which folders under your home they may start (default none), then whether the web may continue
 your editor conversations here (as a copy) and answer the approvals a session asks for (both
 default no); `--agents` / `--no-agents`, `--agent-folder <name>`, `--continue-conversations` and
-`--answer-approvals` answer ahead. Change it later on that computer: `interact machine
-agent-roots <folder…>`, `interact machine agents on|off --continue on|off --approvals on|off`. Workflows reach no folder until you
+`--answer-approvals` answer ahead. Change it later on that computer: run `interact login` again
+(already connected, it asks only these questions, Enter keeping each current answer; nothing to
+restart), or `interact machine agent-roots <folder…>`, `interact machine agents on|off --continue on|off --approvals on|off`. Workflows reach no folder until you
 share one: `interact machine file-roots <folder under home>`.
 `interact logout` removes it from your account and stops the service.
 

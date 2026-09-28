@@ -102,3 +102,57 @@ def test_login_flags_parse(monkeypatch: pytest.MonkeyPatch) -> None:
         app(["login", "--server", "x.org", "--agent-folder", "dev", "--agent-folder", "work", "--no-agents",
              "--continue-conversations", "--no-answer-approvals"])
     assert (seen["agents"], seen["agent_folders"], seen["agent_opt_ins"]) == (False, ("dev", "work"), {"continue_conversations": True, "answer_approvals": False})
+
+
+# ---- already connected: only the agent questions, the current settings as defaults ----------
+
+@pytest.fixture
+def connected(joining: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """`joining`, signed in once with agents on in dev and conversations continued; a second sign-in
+    would fail loudly, and the server lists this computer as pc2."""
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    account_login.login(PUBLIC, allow_runs=False, yes=True, open_browser=False, agent_folders=("dev",), agent_opt_ins={"continue_conversations": True})
+    machine = MachineRunner().load()
+
+    def refused(*_: object) -> None:
+        raise AssertionError("signed in again")
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == f"/v1/workspaces/{machine.workspace_id}/machines" and request.headers["Authorization"].startswith("Bearer ")
+        return httpx.Response(200, json=[{"id": str(machine.machine_id), "name": "pc2", "state": "online"}])
+
+    connect = CatalogConnection.connect
+    monkeypatch.setattr(AccountLogin, "start", refused)
+    monkeypatch.setattr(CatalogConnection, "connect", lambda self, transport=None: connect(self, transport=httpx.MockTransport(answer)))
+    return joining
+
+
+@pytest.mark.parametrize("tty, answers, flags, saved", [
+    # (run_agents, agent_roots, continue_conversations, answer_approvals)
+    (True, ["", "", "", ""], {}, (True, ["dev"], True, False)),                    # Enter keeps every current answer
+    (True, ["", "work", "n", "y"], {}, (True, ["work"], False, True)),             # changed: folder replaced, opt-ins flipped
+    (True, ["", "-", "", ""], {}, (True, [], True, False)),                       # - clears the folders
+    (True, ["n"], {}, (False, ["dev"], True, False)),                             # agents off, the rest kept for later
+    (False, [], {"agent_opt_ins": {"answer_approvals": True}}, (True, ["dev"], True, True)),  # a flag changes only what it names
+    (False, [], {"agents": False}, (False, ["dev"], True, False)),
+    (False, [], {}, (True, ["dev"], True, False)),                                # no terminal, no flag: unchanged
+])
+def test_connected_login_asks_only_agents(connected: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+                                          tty: bool, answers: list[str], flags: dict, saved: tuple) -> None:
+    capsys.readouterr()
+    replies = iter(answers)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: tty)
+    monkeypatch.setattr("builtins.input", lambda question: next(replies))
+    account_login.login(None, allow_runs=False, open_browser=False, **{"yes": False, **flags})
+    machine = MachineRunner().load()
+    assert (machine.run_agents, list(machine.agent_roots), machine.continue_conversations, machine.answer_approvals) == saved
+    assert next(replies, None) is None
+    out = capsys.readouterr().out
+    assert f"already connected to {PUBLIC} as pc2." in out and "Nothing to restart" in out and "Agents: " in out
+
+
+def test_connected_to_another_server_refused(connected: Path) -> None:
+    before = MachineRunner.default_config_path().read_bytes()
+    with pytest.raises(LoginError, match="run `interact logout` first"):
+        account_login.login("https://other.example.org", allow_runs=False, yes=True, open_browser=False, agents=True)
+    assert MachineRunner.default_config_path().read_bytes() == before
