@@ -1541,6 +1541,16 @@ def trees(root_run_ids: frozenset[str]) -> list[AgentRun]:
     return sorted((current(run) for run in records if run.run_id in members), key=lambda run: run.started_at, reverse=True)
 
 
+def session_ids() -> frozenset[str]:
+    """Every provider session interact launched or continued: its runs' ids and the vendor session
+    ids they recorded (one `stat()` per record, cached)."""
+    d = agents_dir()
+    if not d.exists():
+        return frozenset()
+    records = [run for run in (_stat_cached_record(path) for path in d.glob("*.json")) if run is not None]
+    return frozenset(value for run in records for value in (run.run_id, run.provider_session_id) if value)
+
+
 #: path -> (mtime_ns, size, record). A settled record never changes, so a poller re-reads only
 #: the files written since its last tick.
 _RECORD_CACHE: dict[str, tuple[int, int, AgentRun | None]] = {}

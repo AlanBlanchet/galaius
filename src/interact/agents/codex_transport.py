@@ -202,11 +202,11 @@ class _CodexTransport(_ConversationTransport):
         account = _ACCOUNT.validate_python(await self.request("account/read", {
             "refreshToken": False,
         }))
-        return bool(
-            not account["requiresOpenaiAuth"]
-            and account["account"] is not None
-            and account["account"]["type"] == "chatgpt"
-        )
+        # Signed in = a ChatGPT account is present. `requiresOpenaiAuth` says the configured model
+        # provider needs OpenAI auth (true for the default provider even when signed in, codex
+        # 0.155.1): reading it as "not signed in" made every signed-in owner's session route
+        # "unauthenticated".
+        return bool(account["account"] is not None and account["account"]["type"] == "chatgpt")
 
     async def models(self) -> tuple[list[str], str | None]:
         cursor: str | None = None

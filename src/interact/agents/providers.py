@@ -201,6 +201,9 @@ class AgentProvider(ABC):
             "SSL_CERT_FILE", "SSL_CERT_DIR", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
             "http_proxy", "https_proxy", "no_proxy", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
             "XDG_CACHE_HOME",
+            # The user bus: `systemd-run --user` (the agent ceiling, `contained`) cannot start the
+            # child without it ("Failed to connect to bus"). Session plumbing, never a credential.
+            "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS",
         }
         exact.update(self.auth_home_env)
         env = {

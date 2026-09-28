@@ -48,9 +48,10 @@ LIVE_WEB_RUNS = 4
 COLD_TAIL = 48 * 1024
 #: Lines one `tail` answer carries at most (`MachineAgentAnswer.lines`); the cursor stops after the last.
 TAIL_LINES = 4000
-#: The CLIs agents and sessions run on here, and a criterion every model clears (the model list).
+#: The CLIs agents run on here, and the ranking the model list follows: every benchmarked model,
+#: most capable first (the order a role's own criterion walks).
 AGENT_PROVIDERS = ("claude", "codex")
-ANY_MODEL = "price.in >= 0"
+MODEL_RANKING = "aa.intelligence and price.in >= 0"
 #: Editor conversations offered for continuing: written in the last two weeks, newest first.
 EDITOR_SESSIONS_DAYS, EDITOR_SESSIONS_MAX = 14, 40
 #: An editor conversation written this recently is open in the editor right now.
@@ -432,7 +433,7 @@ class MachineAgents(BaseModel):
         try:
             policy = load_policy()
             providers = [PROVIDERS[name] for name in AGENT_PROVIDERS if name in PROVIDERS and policy.provider_active(name) and PROVIDERS[name].available()]
-            ranked = rank_candidates(ANY_MODEL, dict(self.environment), providers=providers) if providers else ()
+            ranked = rank_candidates(MODEL_RANKING, dict(self.environment), providers=providers) if providers else ()
         except (OSError, ValueError, RuntimeError) as error:
             logger.warning("agent models unavailable: %s", error)
             ranked = ()
@@ -521,24 +522,26 @@ class MachineAgents(BaseModel):
         return ""
 
     def _read_editor(self, path: Path) -> tuple[str, str, str]:
-        """(its folder, its first prompt, its last reply) from the conversation file's two ends."""
+        """(its folder, its title — Claude's own, else its first prompt — its last reply) from the
+        conversation file's two ends."""
         size = path.stat().st_size
         with path.open("rb") as handle:
             head = handle.read(256 * 1024)
             handle.seek(max(0, size - 256 * 1024))
             tail = handle.read()
-        cwd, first, last = "", "", ""
+        cwd, first, last, titled = "", "", "", ""
         for line in head.splitlines():
             try:
                 value = json.loads(line)
             except ValueError:
                 continue
+            titled = titled or (str(value.get("aiTitle") or "") if value.get("type") == "ai-title" else "")
             cwd = cwd or str(value.get("cwd") or "")
             message = value.get("message") or {}
             text = self._said_text(message.get("content")) if value.get("type") == "user" and not value.get("isMeta") else ""
             if not first and text.strip() and not text.lstrip().startswith("<"):
                 first = text.strip()
-            if cwd and first:
+            if cwd and first and titled:
                 break
         for line in reversed(tail.splitlines()):
             try:
@@ -548,7 +551,7 @@ class MachineAgents(BaseModel):
             if value.get("type") == "assistant" and (text := self._said_text((value.get("message") or {}).get("content")).strip()):
                 last = text
                 break
-        return cwd, first, last
+        return cwd, titled or first, last
 
     def _editor_sessions(self, request: AgentSessionsRequest) -> MachineAgentAnswer:
         """The owner's editor conversations written in the last two weeks whose folder lies inside
@@ -564,13 +567,14 @@ class MachineAgents(BaseModel):
             if stat.S_ISREG(facts.st_mode) and facts.st_mtime >= since:
                 files.append((facts.st_mtime, path))
         found = []
+        launched = reg.session_ids()
         for updated, path in sorted(files, reverse=True):
             try:
                 session_id = UUID(path.stem)
             except ValueError:
                 continue
-            if reg.get_run(path.stem) is not None:
-                continue  # a run interact started (its session id is its run id), not an editor conversation
+            if path.stem in launched:
+                continue  # a session interact launched (an agent run, a continued copy), not the owner's
             cwd, first, last = self._read_editor(path)
             root, where = self._place(cwd)
             if not root:

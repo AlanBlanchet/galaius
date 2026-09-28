@@ -116,7 +116,8 @@ class _FakeCodexAppServer:
                         "email": None,
                         "planType": "plus",
                     } if auth else None,
-                    "requiresOpenaiAuth": not auth,
+                    # What codex 0.155.1 answers on the default OpenAI provider, signed in or not.
+                    "requiresOpenaiAuth": True,
                 },
             })
             return
