@@ -53,8 +53,9 @@ jobs:
       - name: Start the server double
         run: |
           uv sync --frozen --quiet
-          # The environment's own python, not `uv run`: a process uv starts ends with uv, and this one must outlive the step.
-          Start-Process -FilePath .venv\Scripts\python.exe -ArgumentList 'tests/support/account_server.py', '--port', '8765' -RedirectStandardError server.err -WindowStyle Hidden
+          # Started through WMI: a process a step starts itself ends with that step, and this one serves every later step.
+          $command = "cmd /c `"`"$PWD\.venv\Scripts\python.exe`" tests\support\account_server.py --port 8765 2> `"$PWD\server.err`"`""
+          Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $command; CurrentDirectory = "$PWD" } | Format-List ProcessId, ReturnValue
           foreach ($i in 1..120) { try { irm "$env:SERVER/v1/version"; exit 0 } catch { Start-Sleep -Milliseconds 500 } }
           Get-Content server.err; exit 1
 
