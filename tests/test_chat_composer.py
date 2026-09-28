@@ -56,10 +56,12 @@ def panel_pages(tmp_path_factory):
     ext = Path(__file__).resolve().parent.parent / "clients" / "vscode"
     out = tmp_path_factory.mktemp("panels")
     bundle = out / "panels.js"
+    # The extension's own esbuild (`npm ci` there), never one npx would fetch: `--no-install`, and no
+    # stdin, so it can never wait on an install prompt (on Windows that hung the whole suite).
     build = subprocess.run(
-        [shutil.which("npx") or "npx", "esbuild", "webview/dev/panels.ts", "--bundle", f"--outfile={bundle}",
+        [shutil.which("npx") or "npx", "--no-install", "esbuild", "webview/dev/panels.ts", "--bundle", f"--outfile={bundle}",
          "--format=cjs", "--platform=node", "--target=es2022"],
-        cwd=ext, capture_output=True, text=True,
+        cwd=ext, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120,
     )
     if build.returncode != 0:
         _unavailable(f"could not build the panel fixture: {build.stderr[-300:]}")

@@ -35,6 +35,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Extension toolchain (the webview fixtures build with its own esbuild)
+        working-directory: clients/vscode
+        run: npm ci
       # Kept in a file as it runs and uploaded whatever happens: a hang is cut by the step's own
       # timeout, and the file still says which test was running.
       - name: Tests
