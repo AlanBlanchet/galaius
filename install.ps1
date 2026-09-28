@@ -10,28 +10,34 @@
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'  # Invoke-WebRequest's progress bar slows downloads tenfold on 5.1
 
+# A native program's own verdict is its exit code: Windows PowerShell 5.1 under 'Stop' would turn any
+# line it writes to stderr (uv's "already in PATH") into a terminating error.
+function Invoke-Tool([string]$What, [scriptblock]$Command) {
+    $ErrorActionPreference = 'Continue'
+    & $Command
+    if ($LASTEXITCODE -ne 0) { throw "$What failed (exit $LASTEXITCODE); see the lines above" }
+}
+
 function Install-Interact {
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
     $uvBin = Join-Path $HOME '.local\bin'
     if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
         Write-Host 'Installing uv (Python tool manager)...'
         # Its own process: uv's installer ends with `exit`, which would close this window.
-        & powershell -NoProfile -ExecutionPolicy ByPass -Command 'irm https://astral.sh/uv/install.ps1 | iex'
-        if ($LASTEXITCODE -ne 0) { throw 'uv did not install; see the lines above' }
+        Invoke-Tool 'installing uv' { powershell -NoProfile -ExecutionPolicy ByPass -Command 'irm https://astral.sh/uv/install.ps1 | iex' }
         $env:Path = "$uvBin;$env:Path"  # uv edits the user PATH for new windows, not this one
     }
 
     if ($env:INTERACT_REPO) {
         Write-Host "Installing interact from $($env:INTERACT_REPO)..."
-        & uv tool install --force $env:INTERACT_REPO
-        if ($LASTEXITCODE -ne 0) { throw 'interact did not install; see the lines above' }
+        Invoke-Tool 'installing interact' { uv tool install --force $env:INTERACT_REPO }
     } else {
         Install-FromArchives
     }
 
     # Put uv's tool folder on PATH for future windows, so `interact` is found there.
-    & uv tool update-shell *> $null
-    $bin = (& uv tool dir --bin).Trim()
+    Invoke-Tool 'adding interact to PATH' { uv tool update-shell 2>&1 | Out-Null }
+    $bin = (Invoke-Tool 'finding interact' { uv tool dir --bin }).Trim()
     $interact = Join-Path $bin 'interact.exe'
 
     Write-Host ''
@@ -67,8 +73,9 @@ function Install-FromArchives {
         $overrides = Join-Path $work 'overrides.txt'
         [IO.File]::WriteAllText($overrides, "interact-core @ https://github.com/AlanBlanchet/interact-core/archive/$($pin.Groups[1].Value).tar.gz`n")
         Write-Host 'Installing interact (this takes a minute the first time)...'
-        & uv tool install --force --quiet --overrides $overrides $source
-        if ($LASTEXITCODE -ne 0) { throw 'interact did not install; see the lines above' }
+        # From its own folder: uv refuses an --overrides path holding a space (a user name often does).
+        Push-Location $work
+        try { Invoke-Tool 'installing interact' { uv tool install --force --quiet --overrides overrides.txt $source } } finally { Pop-Location }
     } finally {
         Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
     }

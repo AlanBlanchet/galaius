@@ -153,7 +153,9 @@ share one: `interact machine file-roots <folder under home>`.
 `interact logout` removes it from your account and stops the service. `interact machine service
 status|start|stop|restart` reads or controls that service. On Windows the saved machine token and
 CLI key are sealed with Windows' own encryption for your user (DPAPI) in files only you may read;
-Script steps run in Python, PowerShell or cmd there (shell scripts need Linux or macOS).
+Script steps run in Python, PowerShell or cmd there (shell scripts need Linux or macOS). Codex
+agents on a Windows PC need Codex's own Windows sandbox set up (`[windows] sandbox` in
+`~/.codex/config.toml`); without it Codex refuses to run commands or edit files.
 
 ## Ask your agent
 
@@ -241,7 +243,7 @@ in `~/.interact/config.env` and are also exposed by the VS Code extension.
 | | Linux | macOS | Windows |
 | --- | :-: | :-: | :-: |
 | Browser, MCP server, CLI, TUI | ✅ | ✅ | ✅ |
-| Install one-liner, `interact login`, background machine | ✅ (systemd user service) | ⏳ (runs in a terminal) | ✅ (task at logon) |
+| Install one-liner, `interact login`, background machine | ✅ (systemd user service) | ✅ install; the machine runs in a terminal (no background service yet) | ✅ (task at logon) |
 | Script steps | Python, shell, PowerShell if `pwsh` is installed | Python, shell, PowerShell if `pwsh` is installed | Python, PowerShell, cmd |
 | Desktop control (real windows) | ✅ (X11; uinput input also on Wayland) | ⏳ | ⏳ |
 

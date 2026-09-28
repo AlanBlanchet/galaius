@@ -35,12 +35,14 @@ jobs:
           Start-Process -FilePath python -ArgumentList '-m', 'http.server', '8799', '--bind', '127.0.0.1' -WindowStyle Hidden
           foreach ($i in 1..40) { try { Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8799/install.ps1 | Out-Null; break } catch { Start-Sleep -Milliseconds 500 } }
 
-      - name: Install with the one-liner (Windows PowerShell 5.1, this commit's source)
+      - name: Install with the one-liner (Windows PowerShell 5.1, this commit's GitHub archive, a temp folder with a space)
         shell: powershell
         run: |
           $uv = Get-Command uv -ErrorAction SilentlyContinue
           Write-Host "uv before install: $(if ($uv) { $uv.Source } else { 'none (install.ps1 installs it)' })"
-          $env:INTERACT_REPO = "$PWD"
+          # The default route (source archive + pinned interact-core, no git), at this commit.
+          $env:INTERACT_ARCHIVE = "https://github.com/$env:GITHUB_REPOSITORY/archive/$env:GITHUB_SHA.zip"
+          $env:TEMP = $env:TMP = New-Item -ItemType Directory -Force (Join-Path $env:RUNNER_TEMP 'user name')
           powershell -ExecutionPolicy ByPass -c "irm http://127.0.0.1:8799/install.ps1 | iex"
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $bin = Join-Path $HOME '.local\bin'
