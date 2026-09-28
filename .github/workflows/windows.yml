@@ -42,16 +42,23 @@ jobs:
       - name: Extension toolchain (the webview fixtures build with its own esbuild)
         working-directory: clients/vscode
         run: npm ci
-      # Kept in a file as it runs and uploaded whatever happens: a hang is cut by the step's own
-      # timeout, and the file still says which test was running.
-      - name: Tests
-        timeout-minutes: 30
+      - name: This runner's share of the test files
         run: |
-          # Every test file, sorted, dealt round-robin to 8 runners: one that stops answering names its files.
+          # Every test file, sorted, dealt round-robin to 8 runners (pytest reads them from @shard.txt).
           $files = @(Get-ChildItem tests -Filter 'test_*.py' | Sort-Object Name)
           $mine = @(for ($i = 0; $i -lt $files.Count; $i++) { if ($i % 8 -eq ${{ matrix.shard }}) { "tests/$($files[$i].Name)" } })
-          "shard ${{ matrix.shard }}: $($mine -join ' ')"
-          uv run --frozen python -m pytest -m "not integration" -v -rfEs -p no:cacheprovider @mine 2>&1 | Tee-Object -FilePath suite.log
+          $mine | Set-Content -Encoding ascii shard.txt
+          uv sync --frozen --quiet
+      # The environment's own python under cmd, stdin empty, output kept in a file (uploaded below):
+      # run through `uv run` under PowerShell, a test here once took the whole runner down.
+      - name: Tests
+        timeout-minutes: 25
+        shell: cmd
+        run: |
+          .venv\Scripts\python.exe -m pytest -m "not integration" -v -rfEs -p no:cacheprovider @shard.txt < NUL > suite.log 2>&1
+          set code=%ERRORLEVEL%
+          type suite.log
+          exit /b %code%
       - name: Upload the test log
         if: always()
         uses: actions/upload-artifact@v4
@@ -59,25 +66,6 @@ jobs:
           name: windows-suite-log-${{ matrix.shard }}
           path: suite.log
           if-no-files-found: warn
-
-  # TEMPORARY bisect: the files of the suite shard whose runner stops answering, one runner each.
-  bisect:
-    name: windows (${{ matrix.file }})
-    runs-on: windows-latest
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        file: [test_action_typing_safety.py, test_agent_providers.py, test_agents_md_single_source.py, test_browser_launch.py, test_clients_status.py, test_dependency_bounds.py, test_device_emulation.py, test_functions.py, test_launch_replace.py, test_media_benchmark_routing.py, test_models.py, test_paths.py, test_private_files.py, test_quality_tiers.py, test_sandbox_orphans.py, test_server_prompts.py, test_settings_schema.py, test_tools_agents.py, test_ui_audit.py, test_video_native.py, test_window_title_resolution.py]
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install uv
-        uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
-      - name: Test one file
-        timeout-minutes: 12
-        run: uv run --frozen python -m pytest -v -rfEs -p no:cacheprovider tests/${{ matrix.file }}
 
   windows:
     name: windows (install.ps1 + login + service)
