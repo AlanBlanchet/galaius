@@ -18,6 +18,8 @@ import hashlib
 import json
 import os
 import stat
+import subprocess
+import sys
 import threading
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -658,6 +660,7 @@ def test_stopping_records_the_outcome(monkeypatch):
     register_run()
     killed = []
     monkeypatch.setattr(reg, "_terminate", lambda pid: killed.append(pid) or True)
+    monkeypatch.setattr(reg, "_alive", lambda pid: True)
     assert reg.stop("r1") is True
     monkeypatch.setattr(reg, "_alive", lambda pid: False)
     assert reg.list_runs()[0].status == "stopped"
@@ -1412,3 +1415,30 @@ def test_polling_live_runs_rereads_only_records_written_since(monkeypatch):
     reads.clear()
     assert reg.running_runs() == []
     assert reads == ["live"]
+
+
+def test_a_pid_given_to_another_process_is_neither_the_run_nor_stopped_with_it():
+    """A run's pid names its process only with the start time recorded beside it: once the system
+    gives that pid to another program (Windows reuses pids within minutes), the run reads crashed
+    and stopping it leaves that program alone. The run's own process is still stopped, whole tree."""
+    from interact.processes import process_group_options
+
+    def sleeper() -> subprocess.Popen:
+        return subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], **process_group_options())
+
+    stranger, own = sleeper(), sleeper()
+    try:
+        register_run("reused", pid=stranger.pid)
+        record = reg.get_run("reused")
+        record.pid_started += 1  # the recorded process started earlier than the one holding the pid now
+        reg.save_run(record)
+        register_run("own", pid=own.pid)
+
+        assert {run.run_id: run.status for run in reg.list_runs()} == {"reused": "crashed", "own": "running"}
+        assert reg.stop("reused") and reg.stop("own")
+        assert own.wait(timeout=10) is not None
+        assert stranger.poll() is None
+    finally:
+        for process in (stranger, own):
+            process.kill()
+            process.wait(timeout=10)

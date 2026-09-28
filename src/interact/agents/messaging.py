@@ -165,7 +165,7 @@ def deliver_message(run_id: str, message: str, *, sender: str | None = None) -> 
                 state="error", text=f"ERROR: could not record the message to {run_id!r}.",
                 run_id=run.run_id,
             )
-        if run.status in ("running", "waiting") and run.pid and reg._alive(run.pid):
+        if run.status in ("running", "waiting") and run.process_running():
             if run.model != model or run.requested_criterion != criterion or run.reasoning != reasoning:
                 # Informational only. Effective values change when dispatcher starts the turn.
                 reg._merge_record_locked(run.run_id, {

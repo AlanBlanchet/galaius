@@ -248,7 +248,7 @@ def ensure_dispatcher(run_id: str, *, cwd: str = ".") -> int:
 
 
 def _active(run: reg.AgentRun) -> bool:
-    return bool(run.status in ("running", "waiting") and run.pid and reg._alive(run.pid))
+    return run.status in ("running", "waiting") and run.process_running()
 
 
 def _fresh_policy(run: reg.AgentRun):

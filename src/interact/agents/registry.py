@@ -33,7 +33,7 @@ from interact.agents.providers import PROVIDERS, DeniedTool
 from interact.file_lock import exclusive
 from interact.pinned_directory import PinnedDirectory
 from interact.private_files import PRIVATE_FILES
-from interact.processes import end_process_tree
+from interact.processes import end_process_tree, process_started
 from interact.server_registry import (
     _alive,  # generic pid liveness (Windows-safe, no signal sent)
 )
@@ -116,6 +116,10 @@ class AgentRun(BaseModel):
     #: so it survives even if the directory is later moved or deleted.
     project: str = ""
     pid: int | None = None
+    #: When `pid`'s process started (`process_started`), recorded with it: a pid the system has since
+    #: given to another process is not this run's (Windows reuses pids within minutes). None when
+    #: unknown (a record from before it was kept, or a system without start times).
+    pid_started: int | None = None
     lifecycle_token: str | None = Field(
         default_factory=lambda: secrets.token_hex(16), min_length=1, max_length=80,
     )
@@ -183,6 +187,12 @@ class AgentRun(BaseModel):
     cached_input_tokens: int | None = None
     cache_write_input_tokens: int | None = None
     last: str = ""
+
+    def process_running(self) -> bool:
+        """Its recorded process still runs and is still that process, not a later one given its pid."""
+        return bool(self.pid) and _alive(self.pid) and (
+            self.pid_started is None or process_started(self.pid) == self.pid_started
+        )
 
     def handoff_header(self) -> str:
         """Registry-owned origin for an agent message or returned report."""
@@ -604,7 +614,7 @@ def register(*, run_id: str, pid: int | None, provider: str, name: str, task: st
     definition = definition_path
     if definition is None and agent_ref is None:
         definition = provider_impl.definition_path(agent) if (provider_impl and agent) else None
-    run = AgentRun(run_id=run_id, pid=pid, provider=provider, name=name, task=task, cwd=cwd,
+    run = AgentRun(run_id=run_id, pid=pid, pid_started=process_started(pid) if pid else None, provider=provider, name=name, task=task, cwd=cwd,
                    project=project_for(cwd), model=model, parent_run_id=parent_run_id,
                    session_id=resolve_session_id(session_id, parent_run_id=parent_run_id),
                    agent=agent, agent_ref=agent_ref, definition_path=str(definition) if definition else None,
@@ -711,7 +721,7 @@ def stop(run_id: str, *, expected_lifecycle_token: str | None = None) -> bool:
             agent_queue.cancel_pending_locked(run_id)
         except (ImportError, OSError, ValueError, RuntimeError):
             return False
-        if stored.pid:
+        if stored.process_running():
             _terminate(stored.pid)
         updated = _merge_record_locked(run_id, {
             "finished_at": time.time(),
@@ -816,7 +826,7 @@ def begin_turn(
 ) -> AgentRun | None:
     """Move one stopped run back to active state for a newly spawned provider turn."""
     updates = {
-        "pid": pid, "lifecycle_token": secrets.token_hex(16),
+        "pid": pid, "pid_started": process_started(pid), "lifecycle_token": secrets.token_hex(16),
         "exit_code": None, "finished_at": None, "status": "running",
         "pending_model": None, "pending_criterion": None, "pending_reasoning": None,
     }
@@ -835,7 +845,7 @@ def begin_turn_locked(
 ) -> AgentRun | None:
     """Same transition for a caller already holding ``record_lock(run_id)``."""
     updates = {
-        "pid": pid, "lifecycle_token": secrets.token_hex(16),
+        "pid": pid, "pid_started": process_started(pid), "lifecycle_token": secrets.token_hex(16),
         "exit_code": None, "finished_at": None, "status": "running",
         "pending_model": None, "pending_criterion": None, "pending_reasoning": None,
     }
@@ -1326,13 +1336,13 @@ def _status_for(run: AgentRun) -> RunStatus:
     if run.kind == "conversation":
         if run.status in ("waiting", "done", "failed", "cancelled", "stopped"):
             return run.status
-        if run.pid and _alive(run.pid):
+        if run.process_running():
             return run.status
         return "crashed"
     if run.exit_code is not None:
         return ("stopped" if run.exit_code == -signal.SIGTERM
                 else "done" if run.exit_code == 0 else "failed")
-    if run.pid and _alive(run.pid):
+    if run.process_running():
         return "running"
     # It never recorded an ending and its process is gone — it died without saying so.
     return "crashed"
