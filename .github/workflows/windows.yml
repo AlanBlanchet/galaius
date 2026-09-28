@@ -23,9 +23,13 @@ jobs:
   # The whole suite on Windows (integration and live-desktop tests auto-skip): every agent, console
   # and provider path a Windows PC runs, not only the install one. -rf names each failure.
   suite:
-    name: windows (full suite)
+    name: windows (suite ${{ matrix.shard }}/8)
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
@@ -42,12 +46,17 @@ jobs:
       # timeout, and the file still says which test was running.
       - name: Tests
         timeout-minutes: 30
-        run: uv run --frozen python -m pytest -m "not integration" -v -rfEs -p no:cacheprovider 2>&1 | Tee-Object -FilePath suite.log
+        run: |
+          # Every test file, sorted, dealt round-robin to 8 runners: one that stops answering names its files.
+          $files = @(Get-ChildItem tests -Filter 'test_*.py' | Sort-Object Name)
+          $mine = @(for ($i = 0; $i -lt $files.Count; $i++) { if ($i % 8 -eq ${{ matrix.shard }}) { "tests/$($files[$i].Name)" } })
+          "shard ${{ matrix.shard }}: $($mine -join ' ')"
+          uv run --frozen python -m pytest -m "not integration" -v -rfEs -p no:cacheprovider @mine 2>&1 | Tee-Object -FilePath suite.log
       - name: Upload the test log
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: windows-suite-log
+          name: windows-suite-log-${{ matrix.shard }}
           path: suite.log
           if-no-files-found: warn
 
