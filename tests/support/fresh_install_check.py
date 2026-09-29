@@ -1,7 +1,7 @@
 """Run by an INSTALLED interact's own interpreter (CI, right after an installer): offered a signed
 release built from the very commit it was installed from, the install says it is up to date and
 installs nothing. The release is signed by a key made here for the run (the real release key never
-leaves the Raspberry), trusted by this check only; everything else is the installed code."""
+leaves the release host), trusted by this check only; everything else is the installed code."""
 
 import http.server
 import sys

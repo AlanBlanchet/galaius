@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# This repository is PUBLIC: refuse a commit whose message names private material.
+set -uo pipefail
+. "$(dirname "$0")/private-terms.sh"
+
+hits="$(grep -v '^#' "$1" | private_hits "$(private_terms)")"
+if [ -n "$hits" ]; then
+    echo "[hook] FAIL: private term in the commit message (<git-common-dir>/info/private-terms):" >&2
+    echo "$hits" >&2
+    exit 1
+fi

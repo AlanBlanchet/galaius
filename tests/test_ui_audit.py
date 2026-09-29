@@ -9,7 +9,7 @@ asks a model's opinion.
 
 Each test below is a MINIMAL fixture reproducing exactly one defect class the owner named, built
 with ``page.set_content`` so the defect is deterministic and the assertion is unambiguous — a real
-corpus proof (the server app, pre-fix commit) is exercised separately and reported, but
+corpus proof (a production app, pre-fix commit) is exercised separately and reported, but
 these are the fast, hermetic ground-truth cases for every category the detector claims.
 """
 

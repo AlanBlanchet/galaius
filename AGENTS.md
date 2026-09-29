@@ -11,16 +11,14 @@ durable paradigms already carry — `bs-detector` verdicts an edit here before i
 - CLI — terminal workflows.
 - VS Code extension and its webviews.
 - Website — what it does, and how to install it on each platform.
-- Web platform — served by the separate half, not in this repository.
+- Web platform — served by the hosted server, not in this repository.
 
-Public and private halves:
+Client and server:
 
-- This repository is the PUBLIC half: it parses, asks the server for what it needs, and puts the
+- This repository is the client: it parses, asks the server for what it needs, and puts the
   answer to work across the surfaces above.
-- The server is PRIVATE: `the hosted server` — tenants, auth, billing, secrets, queues,
-  retention, deployment, web gateway. It consumes a released public schema version and is never
-  imported here. In the combined `workspace` workspace it is the sibling checkout at
-  `the server`; the parent workspace opens all three repositories.
+- The hosted server consumes a released public schema version and is never imported here. This
+  repository never names or describes it beyond that.
 - User feedback arrives as GitHub issues on the public repo — `.github/ISSUE_TEMPLATE/` shapes the
   human ones, interact's own `report_issue` tool files the agent ones.
 
@@ -42,7 +40,7 @@ Tool target routing is defined by `_instructions()` in
 
 ## Prompts
 
-The Raspberry server is the only source of truth for personal prompts and agent configuration.
+The server is the only source of truth for personal prompts and agent configuration.
 Clients read and write through its APIs; local catalogs and installed provider files are derived
 caches. Preserve `${XDG_DATA_HOME:-~/.local/share}/interact/prompts` and its Git history as recovery
 evidence only. `prompts/` in this repository holds distributable defaults. After server save, update affected agent bindings to returned revisions before syncing; follow librarian’s authenticated read/save/bind/sync workflow.

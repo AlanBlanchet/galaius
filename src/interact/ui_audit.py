@@ -552,7 +552,7 @@ def _surface_findings(trigger_rect: dict, surfaces: list[dict], state: str) -> l
 # defect — it needs a markup-validity linter, a different instrument, to diagnose the CAUSE. But
 # its SYMPTOM — switching to one sibling view produces real content, switching to another produces
 # almost none — is exactly the shape a click-and-measure walker CAN catch, generically, with no
-# assumption about aria-controls/role=tab (the server app this was found in uses NEITHER:
+# assumption about aria-controls/role=tab (the app this was found in uses NEITHER:
 # its own page-switcher is same-parent sibling buttons that vary only in one data-* attribute).
 _TAB_GROUPS_JS = r"""
 () => {

@@ -11,8 +11,8 @@ produces a local weights directory — the image itself is the artifact):
 - `huggingface_repo`: `huggingface_hub.snapshot_download`, restricted by `allow_patterns` to the
   pinned `.safetensors` file(s) plus safe (JSON/text) architecture metadata — never any other file
   in the repo, closing the "repo also ships a pickle fallback" path structurally rather than by
-  trusting the Hub's file list a second time (the registration-time check, `server`'s
-  `own_models.py`, already trusted it once; this is the machine's OWN independent fetch).
+  trusting the Hub's file list a second time (the server's registration-time check already
+  trusted it once; this is the machine's OWN independent fetch).
 - `uploaded_weights` / `object_storage`: the bytes live on the SERVER (its own upload store, or a
   connection whose credentials only the server holds) — fetched over a plain HTTPS GET the runner
   already has a bearer token for (the same `iwm_...` token `interact machine connect` uses for the
@@ -79,8 +79,7 @@ def _fetch_huggingface(origin: UserModelOrigin, cache_root: Path) -> Path:
 
 def _fetch_from_server(origin: UserModelOrigin, model_id: str, cache_root: Path, server_url: str, token: str) -> Path:
     """`uploaded_weights`/`object_storage`: the server reads the bytes (its own upload store, or
-    the connection it alone holds credentials for — `server`'s
-    `machines/routes.py::model_weights`) and answers a plain authenticated GET; this machine never
+    the connection it alone holds credentials for) and answers a plain authenticated GET; this machine never
     receives or needs the connection's own secret."""
     directory = cache_root / "user" / model_id
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)

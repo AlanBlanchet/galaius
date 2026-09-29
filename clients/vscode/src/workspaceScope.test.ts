@@ -62,17 +62,17 @@ test("a parent workspace includes runs from repositories below its folders", () 
   const root = mkdtempSync(join(tmpdir(), "ws-"));
   const parent = join(root, "workspace");
   mkdirSync(join(parent, "interact"), { recursive: true });
-  mkdirSync(join(parent, "server"), { recursive: true });
+  mkdirSync(join(parent, "service"), { recursive: true });
   mkdirSync(join(root, "sheets"), { recursive: true });
   const runs = [
     run({ run_id: "public", project: "interact", cwd: join(parent, "interact") }),
-    run({ run_id: "private", project: "server", cwd: join(parent, "server") }),
+    run({ run_id: "sibling", project: "service", cwd: join(parent, "service") }),
     run({ run_id: "outside", project: "sheets", cwd: join(root, "sheets") }),
   ];
 
   assert.deepEqual(
     scopeRuns(runs, { kind: "current" }, "workspace", [parent]).map((r) => r.run_id),
-    ["public", "private"],
+    ["public", "sibling"],
   );
   assert.deepEqual(
     scopeRuns(runs, { kind: "project", name: "interact" }, "workspace", [parent])

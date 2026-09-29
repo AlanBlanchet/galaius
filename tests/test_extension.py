@@ -207,7 +207,7 @@ def test_it_reuses_the_process_start_helper():
 def test_it_does_not_crash_where_proc_does_not_exist(monkeypatch, tmp_path):
     """`/proc` is Linux-only. Reading it unguarded means `interact doctor` — a DIAGNOSTIC, the
     command someone runs precisely when things are wrong — tracebacks for every macOS and Windows
-    user with the extension installed. The server side already carries a platform guard; this one
+    user with the extension installed. The Python side already carries a platform guard; this one
     did not, which is the same class the project has been bitten by in CI before."""
     ext = tmp_path / "alanblanchet.interact-0.28.0"
     (ext / "out").mkdir(parents=True)

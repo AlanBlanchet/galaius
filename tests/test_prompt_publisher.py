@@ -1,11 +1,6 @@
 import hashlib
 import json
-import os
 from pathlib import Path
-import socket
-import subprocess
-import time
-import urllib.request
 from uuid import UUID
 
 import pytest
@@ -18,66 +13,6 @@ from interact_core import (
     PromptKey,
     PromptPublicationRequest,
 )
-
-
-def test_real_prompt_service_publishes_exact_projection_idempotently(tmp_path: Path) -> None:
-    server = Path(__file__).resolve().parents[2] / "server" / "backend"
-    python = server / ".venv" / "bin" / "python"
-    if not python.exists():
-        pytest.skip("private prompt service environment unavailable")
-    database, ready = tmp_path / "server.sqlite3", tmp_path / "ready.json"
-    token = "test-token"
-    setup = subprocess.run(
-        [str(python), "-c", (
-            "from pathlib import Path; from server.repository import _PromptRepository; "
-            f"r=_PromptRepository(Path({str(database)!r})); "
-            f"r.grant({token!r},'tenant-a',('read','librarian')); r.close()"
-        )], cwd=server, capture_output=True, text=True,
-    )
-    assert setup.returncode == 0, setup.stderr
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
-        listener.bind(("127.0.0.1", 0))
-        port = listener.getsockname()[1]
-    process = subprocess.Popen(
-        [
-            str(python), "-m", "server", "serve", "--database", str(database),
-            "--ready", str(ready), "--port", str(port),
-        ],
-        cwd=server, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        env=os.environ | {"PYTHONDONTWRITEBYTECODE": "1"},
-    )
-    try:
-        deadline = time.monotonic() + 5
-        while not ready.exists() and time.monotonic() < deadline:
-            time.sleep(0.01)
-        endpoint = f"http://127.0.0.1:{json.loads(ready.read_text())['port']}"
-        projection = tmp_path / "projection"
-        projection.mkdir()
-        content = "published exact projection\n"
-        digest = hashlib.sha256(content.encode()).hexdigest()
-        (projection / "AGENTS.md").write_text(content)
-        (projection / "AGENTS.md").chmod(0o644)
-        (projection / MANIFEST_NAME).write_text(json.dumps({
-            "version": 1, "source_commit": "a" * 40,
-            "source_timestamp": "2026-09-05T12:00:00+00:00",
-            "outputs": [{
-                "path": "AGENTS.md", "sha256": digest, "size": len(content.encode()),
-                "mode": "0644", "consumers": ["home-agents"],
-            }],
-        }))
-
-        publish_projection(projection, endpoint, token)
-        publish_projection(projection, endpoint, token)
-
-        request = urllib.request.Request(
-            endpoint + "/v1/catalog", headers={"Authorization": f"Bearer {token}"}
-        )
-        with urllib.request.urlopen(request, timeout=2) as response:
-            page = PromptCatalogPage.model_validate(json.loads(response.read()))
-        assert len(page.entries) == 1 and page.entries[0].digest == digest
-    finally:
-        process.terminate()
-        process.wait(timeout=3)
 
 
 def test_publication_request_requires_one_commit_and_unique_keys() -> None:

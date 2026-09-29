@@ -1,5 +1,5 @@
-"""Build acceptance for the post-split public/separate repository pair: the public wheel must
-carry only the public import plus its pinned `interact-core` git dependency (never a local
+"""Build acceptance for the split packages: the `interact` wheel must
+carry only its own import plus its pinned `interact-core` git dependency (never a local
 `interact_core` package folded in), and the client codegen script that runs before it must
 resolve that same split deterministically (pinned git dep vs an editable sibling checkout).
 """

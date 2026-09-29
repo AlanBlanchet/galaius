@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 # This repository is PUBLIC: refuse a push whose commits add private material: machine-local home
-#    paths, recorded agent sessions, private notes/research, or any term listed (one regex per
-#    line) in .git/info/private-terms, a file git never tracks.
+#    paths, recorded agent sessions, private notes/research, or any term listed in
+#    <git-common-dir>/info/private-terms (.githooks/private-terms.sh) in a diff, a commit message
+#    or the pushed ref's name.
 set -uo pipefail
-
-terms_file="$(git rev-parse --path-format=absolute --git-common-dir)/info/private-terms"
-terms=""
-[ -f "$terms_file" ] && terms="$(grep -Ev '^[[:space:]]*(#|$)' "$terms_file" | paste -sd '|' -)"
+. "$(dirname "$0")/private-terms.sh"
+terms="$(private_terms)"
 
 zero=0000000000000000000000000000000000000000
 status=0
@@ -27,10 +26,15 @@ while read -r _local_ref local_sha _remote_ref remote_sha; do
   hits="$(printf '%s\n' "$paths" | grep -E '^\.github/(memory|research)/' | head -5)"
   [ -n "$hits" ] && { echo "pre-push: private notes/research files:" >&2; echo "$hits" >&2; status=1; }
 
-  if [ -n "$terms" ]; then
-    hits="$(printf '%s\n' "$added" | grep -iE "$terms" | head -5)"
-    [ -n "$hits" ] && { echo "pre-push: private term (.git/info/private-terms):" >&2; echo "$hits" | cut -c1-160 >&2; status=1; }
-  fi
+  hits="$(printf '%s\n' "$added" | private_hits "$terms")"
+  [ -n "$hits" ] && { echo "pre-push: private term in a diff (info/private-terms):" >&2; echo "$hits" >&2; status=1; }
+
+  # shellcheck disable=SC2086
+  hits="$(git log --format=%B $range | private_hits "$terms")"
+  [ -n "$hits" ] && { echo "pre-push: private term in a commit message (info/private-terms):" >&2; echo "$hits" >&2; status=1; }
+
+  hits="$(printf '%s\n%s\n' "$_local_ref" "$_remote_ref" | private_hits "$terms")"
+  [ -n "$hits" ] && { echo "pre-push: private term in a branch name (info/private-terms):" >&2; echo "$hits" >&2; status=1; }
 done
 
 [ "$status" = 0 ] || echo "pre-push: nothing was pushed. Remove the material above (or rewrite those commits) first." >&2

@@ -6,20 +6,16 @@
 
 ## Repository boundaries
 
-Interact has a public client, a shared public contracts package, and a separate server:
+Interact has a public client, a shared public contracts package, and a hosted server:
 
 - `src/interact` — the `interact` Python import, CLI, MCP server, automation, local
   sessions, and explicit API routes.
 - `interact-core` — the standalone dependency-light contracts package and its generated JSON Schema,
-  shared by every surface; `clients/vscode` consumes the generated TypeScript form. In the private
-  parent workspace, its development checkout sits beside this repository under `worktrees/`.
+  shared by every surface; `clients/vscode` consumes the generated TypeScript form.
 - `clients/vscode` owns the VS Code extension, and `site` owns the static public website.
 - `prompts/` contains distributable product defaults and their manifest. Personal prompts live in the configured account's server catalog and never enter this repository.
 
-`the hosted server` is private and holds the server side — tenants, authentication,
-billing, secrets, queues, retention, deployment, and the web gateway. It consumes a released public
-schema version and is never imported here. In the combined `workspace` workspace it is checked
-out as the sibling `the server`; the parent workspace opens all three repositories.
+The hosted server consumes a released public schema version; nothing here imports it.
 
 The public package depends on the exact public `interact-core` Git revision declared in `pyproject.toml`.
 It installs without a sibling checkout. To work on both packages locally, use

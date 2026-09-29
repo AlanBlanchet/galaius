@@ -4,8 +4,8 @@
 
 Stamps the snapshot's `interact/data/build.json`, builds both wheels, exports the snapshot's uv.lock
 with hashes (interact-core comes as its wheel, not from the lock) and writes `release.json`: every
-file a client verifies before installing. The release key lives on the Raspberry only and signs
-there (server's release signer); `--key` signs here, for tests with their own key.
+file a client verifies before installing. The release key lives on the release host only and signs
+there; `--key` signs here, for tests with their own key.
 """
 
 import argparse
@@ -73,7 +73,7 @@ def main() -> None:
     build.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     release = Publisher(args.source, args.core, args.out).build(args.commit, args.released_at, ReleaseSigner.load(args.key) if args.key else None)
-    print(f"release {release.label()} {release.commit[:12]} into {args.out}" + (" (signed)" if args.key else " (unsigned: signed on the Raspberry)"))
+    print(f"release {release.label()} {release.commit[:12]} into {args.out}" + (" (signed)" if args.key else " (unsigned: signed on the release host)"))
 
 
 if __name__ == "__main__":

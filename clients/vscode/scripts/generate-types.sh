@@ -20,7 +20,7 @@ export PATH="$EXT_DIR/node_modules/.bin:$PATH"
 export LITELLM_LOCAL_MODEL_COST_MAP="True"
 export OLLAMA_DISCOVERY="0"
 
-# Prefer the sibling checkout while developing in the separate parent. A public checkout without
+# Prefer a sibling interact-core checkout while developing both. A checkout without
 # that sibling must resolve the released dependency instead of treating a missing local path as
 # the package source.
 CORE_SOURCE_DIR="$REPO_DIR/../interact-core"
@@ -34,8 +34,8 @@ if ! "${UV_RUN[@]}" python -c "import pydantic2ts" >/dev/null 2>&1; then
     exit 0
 fi
 
-# The public repository consumes the released package. When both repositories are checked out
-# under the separate parent, regenerate the sibling's checked-in schema artifacts; an installed
+# This repository consumes the released package. When a sibling interact-core checkout exists,
+# regenerate the sibling's checked-in schema artifacts; an installed
 # core package is read-only and already carries its release schemas.
 CORE_SCHEMA_DIR="${INTERACT_CORE_SCHEMA_DIR:-$CORE_SOURCE_DIR/src/interact_core/schema}"
 if [ ! -f "$CORE_SOURCE_DIR/pyproject.toml" ] || [ ! -d "$CORE_SCHEMA_DIR" ]; then

@@ -299,8 +299,8 @@ async def test_a_details_summary_is_a_detected_trigger():
 @pytest.mark.asyncio
 async def test_a_tabindex_only_hover_marker_is_a_detected_trigger():
     """A hover/focus explanation marker with no button/link/[role=button] — just `tabindex="0"`
-    and a non-interactive-sounding ARIA role like `role="note"` — is a real shipped shape (the
-    server hint-spot marker: `<span tabindex="0" role="note">?</span>`, opened on hover
+    and a non-interactive-sounding ARIA role like `role="note"` — is a real shipped shape (a
+    hint-spot marker: `<span tabindex="0" role="note">?</span>`, opened on hover
     AND keyboard focus). Before this it was invisible to every scan-based tool (get_interactive_
     elements, run_actions by ref, audit_ui): a tag/role allowlist with no bare-tabindex fallback
     means a real keyboard-operable control is silently never offered as a ref."""

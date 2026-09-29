@@ -36,7 +36,7 @@ def test_public_prompt_contracts_are_exported_to_schema_and_vscode() -> None:
     assert all(f"export interface {name}" in typescript for name in PROMPT_CONTRACTS)
 
 
-def test_public_python_has_no_private_cloud_dependency() -> None:
+def test_public_python_imports_no_interact_package_but_core() -> None:
     public_roots = (
         ROOT / "src",
     )
@@ -50,7 +50,8 @@ def test_public_python_has_no_private_cloud_dependency() -> None:
             names = (
                 alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names
             )
-            assert not any((name or "").split(".")[0] in {"cloud", "server"} for name in (*imports, *names))
+            roots = {(name or "").split(".")[0] for name in (*imports, *names)}
+            assert {root for root in roots if root.startswith("interact_")} <= {"interact_core"}, source
 
 
 def test_precommit_hook_targets_only_the_relocated_release_graph() -> None:

@@ -3,13 +3,11 @@
 set -e
 
 # 0) Public repository: no private material in a commit (the pre-push hook re-checks at push time).
-#    Added lines only; terms live in <git-common-dir>/info/private-terms, which git never tracks.
+#    Added lines only; terms live in <git-common-dir>/info/private-terms (.githooks/private-terms.sh).
+. "$(dirname "$0")/private-terms.sh"
 _added="$(git diff --cached --no-color -U0 | grep -E '^\+' | grep -Ev '^\+\+\+' || true)"
-_terms_file="$(git rev-parse --path-format=absolute --git-common-dir)/info/private-terms"
-_terms=""
-[ -f "$_terms_file" ] && _terms="$(grep -Ev '^[[:space:]]*(#|$)' "$_terms_file" | paste -sd '|' -)"
 _private="$(printf '%s\n' "$_added" | grep -E '/ho''me/[a-z_][a-z0-9_-]*/|"slash''_commands"' || true)"
-[ -n "$_terms" ] && _private="${_private}$(printf '%s\n' "$_added" | grep -iE "$_terms" || true)"
+_private="${_private}$(printf '%s\n' "$_added" | private_hits "$(private_terms)")"
 if [ -n "$(printf '%s' "$_private" | tr -d '[:space:]')" ]; then
     echo "[hook] FAIL: private material in a public repository commit:"
     printf '%s\n' "$_private" | head -5 | cut -c1-160

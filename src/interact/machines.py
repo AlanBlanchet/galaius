@@ -1134,9 +1134,8 @@ class MachineRunner:
     def _run_user_model(self, command: MachineCommand, config: MachineConfig, report: Report = lambda phase, detail: None) -> dict[str, object]:
         """Run one workspace-registered model (`interact_core.UserModel`, `impl.provider ==
         "workspace"`): the server resolved its CURRENT `origin` at dispatch time and signed it
-        into `command.config["_user_model"]` (`server.machines.channel.MachineChannel.
-        _dispatch_sync`, never stale — a later edit to the registration is read on the NEXT run,
-        same as every other resource this app resolves at dispatch time). This machine
+        into `command.config["_user_model"]` (never stale — a later edit to the registration is read
+        on the NEXT run, same as every other resource this app resolves at dispatch time). This machine
         independently re-validates that shape (`UserModelOrigin.model_validate`, never a bare dict
         trusted as-is), fetches the weights (`interact.user_models`, byte-verified safetensors-only
         inside that call) and only then hands a LOCAL path to the same isolated `vision_env`
