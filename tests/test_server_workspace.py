@@ -342,7 +342,6 @@ def test_success_status_with_wrong_edit_is_not_accepted(workspace_server):
 
 async def test_tui_keyboard_saves_server_and_retains_conflict_draft(workspace_server, monkeypatch):
     monkeypatch.setattr(InteractTUI, "_load_registry_info", lambda self: None)
-    monkeypatch.setattr(InteractTUI, "_check_update", lambda self: None)
     app = InteractTUI()
     async with app.run_test(size=(120, 55)) as pilot:
         app.query_one(TabbedContent).active = "tab-workspace"

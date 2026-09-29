@@ -217,7 +217,6 @@ async def test_tui_keyboard_save_conflict_retains_draft(settings_server, monkeyp
     from interact.cli.tui import InteractTUI, WorkspacePane
     from textual.widgets import Button, Input, Static, TabbedContent
     monkeypatch.setattr(InteractTUI, "_load_registry_info", lambda self: None)
-    monkeypatch.setattr(InteractTUI, "_check_update", lambda self: None)
     monkeypatch.setattr(WorkspacePane, "on_mount", lambda self: None)
     app = InteractTUI()
     async with app.run_test(size=(120, 48)) as pilot:
