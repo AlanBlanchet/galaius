@@ -120,9 +120,9 @@ def _app(tmp_path) -> subprocess.Popen:
 
 
 @pytest.fixture(autouse=True)
-def _keep_what_ocr_read(monkeypatch):
-    """Every frame a text wait OCRs is also written to out/live-lastread-<os>.png, so a failed CI
-    run shows exactly what the engine was given (CI uploads out/ on failure)."""
+def _keep_what_ocr_read(monkeypatch, request):
+    """Every frame a text wait OCRs is also written to out/live-lastread-<test>-<os>.png, so a
+    failed CI run shows exactly what the engine was given (CI uploads out/ on failure)."""
     from galaius.desktop import ocr
 
     real = ocr.text_reader() if _has_text_reader() else None
@@ -132,7 +132,7 @@ def _keep_what_ocr_read(monkeypatch):
 
     class Keeping(ocr.TextReader):
         def read(self, png: bytes) -> str:
-            shot = Path("out") / f"live-lastread-{sys.platform}.png"
+            shot = Path("out") / f"live-lastread-{request.node.name}-{sys.platform}.png"
             shot.parent.mkdir(exist_ok=True)
             shot.write_bytes(png)
             return real.read(png)
@@ -182,11 +182,13 @@ def test_open_wait_type_close_capture(live_display, tmp_path):
         # No region: the default reads the ACTIVE window (this one). The first wait's needle is the
         # typed query itself: the field's echo shows at once and must not count, only the result
         # row that follows 1.2 s later does. The second reads the whole (dark) screen.
+        # Two batches, so a failed read leaves its screen in out/ while the window is still open.
         report = _run_keeping_evidence([
             ClickAction(x=cx, y=cy),
             TypeTextAction(text="whispering", clear_first=False),
             WaitForAction(text="whispering", timeout=20000),
             WaitForAction(text="Results for whispering", region="screen", timeout=20000),
+        ]) + _run_keeping_evidence([
             KeyPressAction(key="Return"),
             WaitForAction(window=TITLE, state="hidden", timeout=10000),
             WaitForAction(text="Results for whispering", state="hidden", timeout=10000),
