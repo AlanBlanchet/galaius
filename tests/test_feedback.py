@@ -256,3 +256,34 @@ def test_report_prepends_the_stale_banner(monkeypatch):
     fb.report("clicks dropped after N actions", "repro steps", "bug")
     body = captured["cmd"][captured["cmd"].index("--body") + 1]
     assert body.lstrip().startswith(">") and "may already be fixed" in body  # banner leads the body
+
+
+@pytest.mark.parametrize(
+    ("title", "body"),
+    [
+        ("crash near the Sample-Private host", "steps"),  # title, any case
+        ("crash", "seen while zz-hidden-term was running"),  # body
+        ("crash", "path ~/src/SAMPLE_PRIVATE/app"),  # second regex line
+    ],
+)
+def test_a_report_naming_a_listed_private_term_is_refused_before_any_delivery(monkeypatch, tmp_path, title, body):
+    """The tracker is public: nothing that names material the user lists as private (one regex per
+    line in the untracked private-terms file) may leave, neither filed, nor saved, nor as a link."""
+    terms = tmp_path / "private-terms"
+    terms.write_text("# private\nsample[-_]private\nzz-hidden-term\n")
+    monkeypatch.setattr(fb, "PRIVATE_TERMS", terms)
+    monkeypatch.setattr(fb, "FEEDBACK_DIR", tmp_path / "feedback")
+    monkeypatch.setattr(fb.shutil, "which", lambda c: "/usr/bin/gh")
+    monkeypatch.setattr(fb.subprocess, "run", lambda *a, **k: pytest.fail("a private report reached gh"))
+    out = fb.report(title, body, "bug")
+    assert out.startswith("Not reported") and str(terms) in out and "github.com" not in out
+    assert not (tmp_path / "feedback").exists()
+
+
+def test_a_clean_report_still_files_when_a_private_terms_list_exists(monkeypatch, tmp_path):
+    terms = tmp_path / "private-terms"
+    terms.write_text("sample[-_]private\n")
+    monkeypatch.setattr(fb, "PRIVATE_TERMS", terms)
+    monkeypatch.setattr(fb.shutil, "which", lambda c: "/usr/bin/gh")
+    monkeypatch.setattr(fb.subprocess, "run", lambda *a, **k: _Ok())
+    assert "issues/42" in fb.report("click times out", "steps", "bug")

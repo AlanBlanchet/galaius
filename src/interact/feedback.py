@@ -5,20 +5,44 @@ Deliberately AGENT-INITIATED, not automatic telemetry: the caller composes the r
 surprise data collection and no secret leakage by default. Delivery ladder: a GitHub issue via
 `gh` when available + authed; otherwise save locally and return a prefilled new-issue link the
 user may explicitly open. interact's version + platform append automatically (safe, useful
-triage context).
+triage context). The tracker is public: a report naming anything listed in the user's untracked
+private-terms file (one case-insensitive regex per line) is refused before it leaves.
 """
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from interact.paths import UserPaths
+
 REPO = "AlanBlanchet/interact"
 KINDS = ("bug", "limitation", "feedback")
 FEEDBACK_DIR = Path.home() / ".interact" / "out" / "feedback"
+PRIVATE_TERMS = UserPaths.config() / "private-terms"
+
+
+def _private_matches(text: str) -> list[str]:
+    """The distinct strings in ``text`` matching a line of ``PRIVATE_TERMS`` (none when the file is
+    absent). A line that is not a valid regex is matched literally, so a typo never lets it pass."""
+    try:
+        lines = PRIVATE_TERMS.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    found: dict[str, None] = {}
+    for line in (entry.strip() for entry in lines):
+        if not line or line.startswith("#"):
+            continue
+        try:
+            pattern = re.compile(line, re.IGNORECASE)
+        except re.error:
+            pattern = re.compile(re.escape(line), re.IGNORECASE)
+        found.update(dict.fromkeys(match.group(0) for match in pattern.finditer(text)))
+    return list(found)
 
 
 def _footer() -> str:
@@ -159,6 +183,13 @@ def report(title: str, body: str, kind: str = "bug") -> str:
     kind = kind if kind in KINDS else "feedback"
     title = f"[{kind}] {title.strip()}" if not title.lower().startswith(f"[{kind}]") else title.strip()
     full = _stale_warning() + body.strip() + _footer()
+    private = _private_matches(f"{title}\n{full}")
+    if private:
+        return (
+            f"Not reported: interact's issue tracker is public and this report names private material "
+            f"listed in {PRIVATE_TERMS} ({', '.join(repr(term) for term in private)}). Reword it with "
+            f"neutral terms (for instance 'the server') and report again."
+        )
 
     url, reason = _gh_create(title, full)
     if url:
