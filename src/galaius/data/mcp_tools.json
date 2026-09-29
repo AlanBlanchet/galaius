@@ -75,7 +75,7 @@
   "server": "galaius",
   "name": "list_desktop_windows",
   "category": "desktop",
-  "description": "List desktop targets for the `target` param: each connected monitor (target=\"screen\" for the whole desktop, target=\"screen:<name>\" e.g. screen:DP-1, or target=\"screen:<index>\") and each open window. Target a window by its title, or \u2014 when a title isn't unique \u2014 by its id shown here as target=\"wid:<id>\" (the unambiguous selector)."
+  "description": "List desktop targets for the `target` param, on Linux, Windows and macOS: each monitor with its geometry (target=\"screen\" for the whole desktop, target=\"screen:<index>\" or \"screen:<name>\" for one) and each open window. On Linux target a window by its title, or \u2014 when a title isn't unique \u2014 by target=\"wid:<id>\". On Windows / macOS windows are listed (for wait_for window=\u2026 and for screenshot region=\u2026) but driven through the screen target."
  },
  {
   "server": "galaius",
