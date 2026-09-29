@@ -55,12 +55,18 @@ Coordinates: one image pixel = one input unit on every OS. macOS Retina captures
 (c) Waiting on a condition instead of sleep
 
 - CURRENT: on a desktop target `wait_for` was only a fixed pause.
-- TARGET all three: `wait_for` takes `window="<title substring>"` (`state="visible"` appears,
-  `"hidden"` gone), polled until `timeout` ms, failing with the windows it saw.
-- NEXT (own review rounds): `screen="changes"` / `"settles"` — wait on the pixels. A first version
-  failed review: real carets blink 530-600 ms, longer than the 250 ms poll, so a blink passed as a
-  change (1 false change in 5 idle runs, Return missed 2 in 7). The rebuild ignores any cell that
-  returns to how it looked before and requires a change to hold ~0.8 s.
+- TARGET all three: `wait_for` takes `window="<title substring>"` or `text="<words>"`
+  (`state="visible"` appears, `"hidden"` gone; `region=[x,y,w,h]` reads one rectangle), polled
+  until `timeout` ms, failing with the windows / the text it last saw. `text` is READ by OCR
+  (`ocr.py`): Windows `Windows.Media.Ocr`, macOS Vision, Linux `tesseract` (also the fallback
+  anywhere it is installed). Matching ignores case / punctuation / spacing and tolerates one OCR
+  slip per word (0.85 similarity), but a prefix still being typed ("notep") is not "Notepad".
+- Rejected method: pixel-difference waits (`screen="changes"` / `"settles"`). Real carets blink
+  530-600 ms, longer than a poll plus a grab, so a blink passed as a change (5 false in 14 idle
+  runs, Return missed 4 in 14) through two redesigns. A caret is not text: a text wait cannot be
+  fooled by it.
+- Accessibility trees (AT-SPI / UIA / AX) are not read: a launcher is shell UI that OCR reads the
+  same way on every OS; AT-SPI stays the element source for Linux window targets.
 
 ## Not covered (stated)
 

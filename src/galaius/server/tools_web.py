@@ -96,7 +96,8 @@ async def run_actions(
       key_press / type_text there go to the desktop itself (the focused window, the OS launcher;
       "super" is the Windows key / Linux launcher, "cmd+space" Spotlight on macOS):
       [{"type":"key_press","key":"super"}, {"type":"type_text","text":"settings","clear_first":false},
-       {"type":"key_press","key":"Return"}, {"type":"wait_for","window":"Settings"}].
+       {"type":"wait_for","text":"Settings"}, {"type":"key_press","key":"Return"},
+       {"type":"wait_for","window":"Settings"}].
     A desktop `target` and a `session` you named are mutually exclusive. For a website, leave
     `target` unset.
 
@@ -153,7 +154,9 @@ async def run_actions(
     Any action can include 'wait' to wait after execution (networkidle, load, domcontentloaded, or a CSS selector — browser only).
     wait_for blocks until ONE condition holds — prefer it over `sleep`. Browser: a `selector`
       reaches `state`, or a `text` substring appears. Desktop (any OS): `window="<title substring>"`
-      appears (state "visible") or is gone ("hidden"). No condition = a pause of `timeout` ms.
+      appears (state "visible") or is gone ("hidden"); `text="<words>"` is READ on screen (OCR, this
+      OS's own engine) until it appears / is gone — `region=[x,y,w,h]` reads only that part, faster
+      and without false hits elsewhere. No condition = a pause of `timeout` ms.
     Any action can include 'observe' (a VLM query string) to capture a screenshot after execution and analyze it. The snapshot is stored by step index for later compare actions.
 
     scope: CSS selector to restrict the final capture to a page sub-tree (browser only).

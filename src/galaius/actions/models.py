@@ -524,12 +524,16 @@ class WaitForAction(ObservationAction):
 
     Browser: ``selector`` reaches ``state``, or ``text`` appears in the page.
     Desktop (any OS): ``window`` — a window whose title contains it appears (``state="visible"``)
-    or is gone (``"hidden"``). No condition at all = a pause of ``timeout`` ms, on any target."""
+    or is gone (``"hidden"``); ``text`` — the words are READ on the target by OCR (this OS's own
+    engine) until they appear / are gone, optionally only inside ``region`` (x, y, w, h in the
+    target's pixels): a launcher's result row, a dialog's message. No condition = a pause of
+    ``timeout`` ms, on any target."""
 
     type: Literal["wait_for"] = "wait_for"
     selector: str | None = None
-    text: str | None = None  # wait until this substring appears in the page's visible text
+    text: str | None = None  # browser: in the page's visible text; desktop: read on screen (OCR)
     window: str | None = None
+    region: tuple[int, int, int, int] | None = None  # desktop text waits: read only this rectangle
     state: Literal["visible", "hidden", "attached", "detached"] = "visible"
     timeout: int = 10000
 
@@ -551,9 +555,15 @@ class WaitForAction(ObservationAction):
 
     @property
     def runs_on_desktop(self) -> bool:
-        """Every form but the DOM ones (``selector`` / ``text``) runs on a desktop target (see
-        ``BROWSER_ONLY_ACTIONS``)."""
-        return self.selector is None and self.text is None
+        """Every form but a ``selector`` runs on a desktop target (see ``BROWSER_ONLY_ACTIONS``)."""
+        return self.selector is None
+
+    @field_validator("region")
+    @classmethod
+    def _positive_region(cls, region):
+        if region is not None and (region[2] <= 0 or region[3] <= 0):
+            raise ValueError(f"region {list(region)} needs a positive width and height — [x, y, w, h]")
+        return region
 
     @model_validator(mode="after")
     def _require_condition(self):
@@ -564,8 +574,10 @@ class WaitForAction(ObservationAction):
             raise ValueError(
                 f"wait_for takes one condition, got {', '.join(self._conditions)} — split it into steps"
             )
-        if self.window is not None and self.state not in ("visible", "hidden"):
-            raise ValueError("a window wait takes state='visible' (appears) or 'hidden' (gone)")
+        if (self.window is not None or self.text is not None) and self.state not in ("visible", "hidden"):
+            raise ValueError("a window / text wait takes state='visible' (appears) or 'hidden' (gone)")
+        if self.region is not None and self.text is None:
+            raise ValueError("region narrows a text wait — give text= with it")
         return self
 
     async def execute(self, page: Page):
@@ -579,6 +591,8 @@ class WaitForAction(ObservationAction):
                 "wait_for window= watches the desktop — run it with a desktop target "
                 '(target="screen", a window title, or "nested:<title>")'
             )
+        if self.region is not None:
+            raise ValueError("region= reads part of a desktop screen — a browser page has no region")
         if self.text is not None:
             await page.wait_for_function(
                 "t => !!document.body && document.body.innerText.includes(t)",

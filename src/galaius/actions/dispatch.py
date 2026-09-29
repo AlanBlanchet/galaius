@@ -36,7 +36,9 @@ from galaius.browser import BrowserManager
 from galaius.debug_utils import Debug
 from galaius.desktop import DesktopWindow
 from galaius.desktop import host as desktop_host
-from galaius.desktop.waits import until_window
+from galaius.desktop import ocr as desktop_ocr
+from galaius.desktop.frames import Framing
+from galaius.desktop.waits import until_text, until_window
 from galaius.vision.detect import _desktop_context
 from galaius.state import DesktopState, PageState, StateChange, ref_locator
 
@@ -672,12 +674,18 @@ def _desktop_windows(win: DesktopWindow):
 
 @_handles("wait_for")
 async def _d_wait_for(c: _DesktopCtx) -> None:
-    # The DOM-bearing forms (selector / text) never get here: the runner's browser-only guard.
+    # A `selector` wait never gets here: it needs a DOM (the runner's browser-only guard).
     action, seconds = c.action, c.action.timeout / 1000
+    present = action.state == "visible"
     if action.window is not None:
         c.say(await until_window(
-            _desktop_windows(c.win), action.window,
-            present=action.state == "visible", timeout_s=seconds,
+            _desktop_windows(c.win), action.window, present=present, timeout_s=seconds,
+        ))
+    elif action.text is not None:
+        reader, framing = desktop_ocr.text_reader(), Framing(region=action.region)
+        c.say(await until_text(
+            lambda: reader.read(framing.apply(c.win.capture())[0]), action.text,
+            present=present, timeout_s=seconds,
         ))
     else:
         c.say(await action.execute(None))
@@ -951,8 +959,8 @@ async def _run_actions_desktop(
                 and not is_bridged_js
             ):
                 hint = (
-                    "a selector/text wait needs a DOM — on a desktop target wait on "
-                    "window=\"<title>\" instead"
+                    "a selector wait needs a DOM — on a desktop target wait on "
+                    "window=\"<title>\" or text=\"<words on screen>\" instead"
                     if isinstance(action, WaitForAction)
                     else "use a session instead of window (or relaunch with "
                          "--remote-debugging-port for a nested Electron/VS Code target)"

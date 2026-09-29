@@ -1,8 +1,8 @@
 """The host-desktop tools on a REAL display, end to end through the MCP tool functions — the
 session an agent ran with raw xdotool, redone with galaius only:
 
-    open a window → wait for it (no sleep) → click it → type into it with OS-level keys → Return
-    → wait for it to be gone
+    open a window → wait for it (no sleep) → click it → type into it with OS-level keys → wait until
+    its result row READS "Results for whispering" (OCR) → Return → wait for it to be gone
     → list monitors → capture one monitor, one region, downscaled.
 
 Linux: a PRIVATE Xvfb started here; DISPLAY is repointed for the test, so the user's own session
@@ -18,7 +18,6 @@ import subprocess
 import sys
 import textwrap
 
-import numpy as np
 import pytest
 from PIL import Image
 
@@ -26,8 +25,6 @@ from galaius import server as srv
 from galaius.actions.models import (
     ClickAction,
     KeyPressAction,
-    ScreenshotAction,
-    SleepAction,
     TypeTextAction,
     WaitForAction,
 )
@@ -38,16 +35,24 @@ pytestmark = pytest.mark.timeout(120)
 
 TITLE = "galaius-live-host"
 
-# A Text widget filling the window, so a click at the window's centre lands in it on every OS
-# (Windows' GetWindowRect includes the title bar). Return prints what was typed and exits.
+# A tiny launcher: a Text field filling the top half (a click at the window's centre lands in it on
+# every OS — Windows' GetWindowRect includes the title bar), and under it a result row that shows
+# "Results for <query>" a moment after typing, the way a launcher lists its hits. Return prints
+# the query and exits.
 _APP = textwrap.dedent(
     """
     import sys, tkinter as tk
     root = tk.Tk()
     root.title(sys.argv[1])
-    root.geometry("420x240+60+60")
-    text = tk.Text(root, bg="white")
+    root.geometry("520x300+60+60")
+    text = tk.Text(root, bg="white", height=4)
     text.pack(fill="both", expand=True)
+    row = tk.Label(root, text="", font=("Helvetica", 22), bg="white", fg="black", anchor="w")
+    row.pack(fill="x", ipady=12)
+    def show(_=None):
+        query = text.get("1.0", "end").strip()
+        row.configure(text=f"Results for {query}" if len(query) >= 3 else "")
+    text.bind("<KeyRelease>", lambda _: root.after(300, show))
     def done(_):
         print(text.get("1.0", "end").strip(), flush=True)
         root.destroy()
@@ -128,13 +133,17 @@ def test_open_wait_type_close_capture(live_display, tmp_path):
         whole = srv.DesktopWindow.screen("screen", host.host_desktop())
         cx = window.x + window.w // 2 - whole.x
         cy = window.y + window.h // 2 - whole.y
+        # Only this window's rectangle is read: a launcher's list, not the whole desktop.
+        region = (max(window.x - whole.x, 0), max(window.y - whole.y, 0), window.w, window.h)
         report = _run([
             ClickAction(x=cx, y=cy),
             TypeTextAction(text="whispering", clear_first=False),
+            WaitForAction(text="Results for whispering", region=region, timeout=20000),
             KeyPressAction(key="Return"),
             WaitForAction(window=TITLE, state="hidden", timeout=10000),
+            WaitForAction(text="Results for whispering", state="hidden", timeout=10000),
         ])
-        assert "gone" in report, report
+        assert "appeared" in report and report.count("gone") == 2, report
         stdout, stderr = app.communicate(timeout=10)
         assert stdout.strip() == "whispering", (stdout, stderr)
     finally:
@@ -152,18 +161,27 @@ def test_open_wait_type_close_capture(live_display, tmp_path):
     assert "scale 2" in reply, reply
 
 
-@pytest.mark.skipif(sys.platform.startswith("linux"), reason="Xvfb has no OS launcher to open")
-def test_os_launcher_opens_and_closes(live_display, tmp_path):
-    """The pasted session's first move: the OS key opens the launcher (Start menu / Spotlight), so
-    the screen changes; Escape closes it."""
-    chord = "cmd+space" if sys.platform == "darwin" else "super"
-    before, opened = tmp_path / "before.png", tmp_path / "opened.png"
-    assert not asyncio.run(srv.screenshot(target="screen", path=str(before))).startswith("ERROR")
+# (chord, query typed, a result title that differs from the query): the wait must see the RESULT
+# row, not just echo the typed text back.
+_LAUNCHERS = {
+    "win32": ("super", "notep", "Notepad"),
+    "darwin": ("cmd+space", "calcul", "Calculator"),
+}
+
+
+@pytest.mark.skipif(sys.platform not in _LAUNCHERS, reason="Xvfb has no OS launcher to open")
+def test_os_launcher_search_shows_a_result(live_display):
+    """The pasted session, end to end: the OS key opens the launcher, a query is typed, the wait
+    reads the screen until the result row shows — no sleep — and Escape closes it again."""
+    chord, query, result = _LAUNCHERS[sys.platform]
     try:
-        _run([KeyPressAction(key=chord), SleepAction(duration=2), ScreenshotAction(path=str(opened))])
+        report = _run([
+            KeyPressAction(key=chord),
+            WaitForAction(timeout=1500),  # the launcher's own open animation
+            TypeTextAction(text=query, clear_first=False),
+            WaitForAction(text=result, timeout=30000),
+        ])
+        assert "appeared" in report, report
     finally:
         _run([KeyPressAction(key="Escape")])
-    a = np.asarray(Image.open(before).convert("L"), dtype=np.int16)
-    b = np.asarray(Image.open(opened).convert("L"), dtype=np.int16)
-    moved = float((np.abs(a - b) > 24).mean()) if a.shape == b.shape else 1.0
-    assert moved > 0.005, f"the launcher did not appear: {moved:.3%} of pixels changed"
+    assert "gone" in _run([WaitForAction(text=result, state="hidden", timeout=15000)])
