@@ -47,3 +47,10 @@ jobs:
         env:
           GALAIUS_LIVE_DESKTOP: "1"
         run: uv run pytest tests/test_host_desktop.py tests/test_text_waits.py tests/test_host_desktop_live.py tests/test_screen_target.py -v -rs -p no:cacheprovider
+      - name: Screens a live test failed on
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-failure-${{ matrix.os }}
+          path: out/live-failure-*.png
+          if-no-files-found: ignore

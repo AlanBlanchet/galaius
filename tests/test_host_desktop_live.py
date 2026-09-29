@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+from pathlib import Path
 
 import pytest
 from PIL import Image
@@ -45,7 +46,7 @@ _APP = textwrap.dedent(
     root = tk.Tk()
     root.title(sys.argv[1])
     root.geometry("520x300+60+60")
-    text = tk.Text(root, bg="white", height=4)
+    text = tk.Text(root, bg="white", fg="black", insertbackground="black", height=4)
     text.pack(fill="both", expand=True)
     row = tk.Label(root, text="", font=("Helvetica", 22), bg="white", fg="black", anchor="w")
     row.pack(fill="x", ipady=12)
@@ -116,6 +117,17 @@ def _app(tmp_path) -> subprocess.Popen:
     )
 
 
+def _run_keeping_evidence(actions) -> str:
+    """`_run`, but a failed step leaves the screen it failed on in out/ (CI uploads it)."""
+    out = asyncio.run(srv.run_actions(actions=actions, target="screen"))
+    if "ERROR" in out or "SKIPPED" in out:
+        shot = Path("out") / f"live-failure-{sys.platform}.png"
+        shot.parent.mkdir(exist_ok=True)
+        asyncio.run(srv.screenshot(target="screen", path=str(shot.resolve())))
+        pytest.fail(f"{out}\n(screen saved to {shot})")
+    return out
+
+
 def _run(actions) -> str:
     out = asyncio.run(srv.run_actions(actions=actions, target="screen"))
     assert "ERROR" not in out and "SKIPPED" not in out, out
@@ -135,7 +147,7 @@ def test_open_wait_type_close_capture(live_display, tmp_path):
         cy = window.y + window.h // 2 - whole.y
         # Only this window's rectangle is read: a launcher's list, not the whole desktop.
         region = (max(window.x - whole.x, 0), max(window.y - whole.y, 0), window.w, window.h)
-        report = _run([
+        report = _run_keeping_evidence([
             ClickAction(x=cx, y=cy),
             TypeTextAction(text="whispering", clear_first=False),
             WaitForAction(text="Results for whispering", region=region, timeout=20000),
