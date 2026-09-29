@@ -3,6 +3,7 @@ this computer ran, and the upgrade settings are this computer's alone."""
 
 import hashlib
 import http.server
+import sys
 import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -15,7 +16,7 @@ from interact.config.settings import Config
 from interact.upgrade.check import UpgradeCheck
 from interact.upgrade.release import BuildIdentity, Release, ReleaseFile, ReleaseRefused
 from interact.upgrade.source import ReleaseKeys, ReleaseSigner, ReleaseSource
-from interact.upgrade.store import RuntimeReceipt, RuntimeStore
+from interact.upgrade.store import RuntimeReceipt, RuntimeStore, Uv
 from interact.upgrade.supervisor import Supervision, Supervisor
 
 WHEEL = b"not really a wheel"
@@ -239,3 +240,15 @@ def test_the_package_retires_the_key_that_was_readable_on_the_owner_pc() -> None
 
 def test_a_server_offering_no_release_says_so(tmp_path, signer, published, monkeypatch) -> None:
     assert "offers no release (HTTP 404)" in checker(tmp_path, signer, published, monkeypatch).run()
+
+
+@pytest.mark.parametrize("folder", [".local/bin", ".cargo/bin"])
+def test_uv_is_found_where_its_installers_put_it_even_off_a_service_path(tmp_path, monkeypatch, folder) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("PATH", "/usr/bin")
+    monkeypatch.delenv("XDG_BIN_HOME", raising=False)
+    installed = tmp_path / folder / ("uv.exe" if sys.platform == "win32" else "uv")
+    installed.parent.mkdir(parents=True)
+    installed.write_text("")
+    assert Uv.find(tmp_path / "data").path == installed

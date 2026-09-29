@@ -135,7 +135,8 @@ class LiveProcess(BaseModel):
 
 class Uv(BaseModel):
     """The uv that installs runtimes, by absolute path: the installer's own pinned copy first, then
-    one on an absolute PATH entry (never the working directory). Its environment carries no
+    one on an absolute PATH entry (never the working directory), then where uv's own installers put
+    it (a service started at boot may not have those on its PATH yet). Its environment carries no
     `UV_*` / `PIP_*` variable: an index, config or cache redirection never reaches an install."""
 
     model_config = ConfigDict(frozen=True)
@@ -144,7 +145,10 @@ class Uv(BaseModel):
     @classmethod
     def find(cls, data: Path) -> "Uv":
         name = "uv.exe" if sys.platform == "win32" else "uv"
-        candidates = [data / "uv" / name, *(Path(entry) / name for entry in os.environ.get("PATH", "").split(os.pathsep) if entry and Path(entry).is_absolute())]
+        path = [Path(entry) for entry in os.environ.get("PATH", "").split(os.pathsep) if entry and Path(entry).is_absolute()]
+        standard = [Path(os.environ["XDG_BIN_HOME"])] if os.environ.get("XDG_BIN_HOME") else []
+        standard += [Path.home() / ".local" / "bin", Path.home() / ".cargo" / "bin"]
+        candidates = [data / "uv" / name, *(folder / name for folder in (*path, *standard))]
         found = next((candidate for candidate in candidates if candidate.is_file()), None)
         if found is None:
             raise FileNotFoundError("uv is needed to install an Interact runtime (the installer puts its own copy beside Interact's data)")
