@@ -18,7 +18,9 @@ from interact_core import MACHINE_AGENT_REQUESTS, MachineAgentModel, MachineAgen
 from interact.agents import registry as reg
 from interact.agents.host import ConversationRefused
 from interact.machine_agents import LogRing, MachineAgents, MachineSessions, WebRun, WebRuns, interaction_digest, redact
+from interact.fence import Fence
 from interact.machines import MachineConfig, MachineRunner
+from interact.place_reviews import PlaceReviews
 
 
 @pytest.fixture
@@ -55,13 +57,13 @@ def _request(op: str, config: MachineConfig | None = None, **fields) -> MachineA
 
 @pytest.mark.parametrize(("roots", "usable", "refused"), [
     (("project",), ["project"], []),
-    (("interact-files",), [], ["interact-files"]),          # the same folder as a file root
-    ((".",), [], ["."]),                                     # around the file root (and the working directory itself)
+    (("interact-files",), [], ["interact-files"]),          # the same folder as a sandbox
+    ((".",), [], ["."]),                                     # around the sandbox (and the working directory itself)
     (("project/.secret",), [], ["project/.secret"]),         # hidden
     (("../",), [], ["../"]),                                 # above the working directory
 ])
-def test_agent_roots_never_touch_file_roots(base: Path, tmp_path: Path, roots, usable, refused) -> None:
-    config = _config(base).model_copy(update={"agent_roots": roots})
+def test_agent_roots_never_touch_a_sandbox(base: Path, tmp_path: Path, roots, usable, refused) -> None:
+    config = _config(base, places={"interact-files": "sandbox"}).model_copy(update={"agent_roots": roots})
     found, refusals = config.usable_agent_roots()
     assert [path.relative_to(base.resolve()).as_posix() for path in found] == usable
     assert list(refusals) == refused
@@ -403,3 +405,46 @@ def test_a_rule_that_cannot_be_read_says_why_instead_of_resolving(monkeypatch: p
     assert roles["audio"]["configured"] and roles["audio"]["models"] == [] and roles["audio"]["reason"]
     assert not roles["sovereign"]["configured"] and roles["sovereign"]["criterion"] == "cap.vlm"
     assert set(roles) == {"image", "component", "video", "audio", "sovereign"}
+
+
+def _fenced_agents(base: Path, tmp_path: Path, cli: tuple[str, ...], **levels) -> MachineAgents:
+    config = _config(base, places=levels, fence_agents=True)
+    return _agents(base, tmp_path, cli=cli).model_copy(update={
+        "places": config.place_map(), "fence_agents": True, "reviews": PlaceReviews(root=tmp_path / "reviews")})
+
+
+def test_with_the_fence_on_a_web_start_carries_the_fence_built_from_the_levels(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("interact.machine_agents.available", lambda: (True, ""))
+    held = tmp_path / "fence.json"
+    recorder = ("python3", "-c", f"import shutil,sys; shutil.copy(sys.argv[sys.argv.index('--fence') + 1], {str(held)!r}); print({str(uuid4())!r})")
+    agents = _fenced_agents(base, tmp_path, recorder, other="read")
+    answer = _answer(agents, _request("start", root="project", role="app-engineer", text="tidy"))
+    fence = Fence.model_validate_json(held.read_text())
+    binds = {(bind.target.relative_to(base.resolve()).as_posix(), bind.writable) for bind in fence.binds if bind.target.is_relative_to(base.resolve())}
+    assert {("project", True), ("other", False)} <= binds and ("interact-files", True) not in binds  # its agent root writable, the rest as levelled
+    assert answer.fenced is True and agents.runs.read()[-1].fenced is True
+
+
+def test_with_the_fence_on_an_agent_never_starts_unfenced(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("interact.machine_agents.available", lambda: (False, "bubblewrap (bwrap) is not installed"))
+    agents = _fenced_agents(base, tmp_path, ("false",))
+    with pytest.raises(PermissionError, match="cannot be built: bubblewrap"):
+        _answer(agents, _request("start", root="project", role="app-engineer", text="tidy"))
+    with pytest.raises(PermissionError, match="not fenced yet"):
+        _answer(agents, _request("start", root="project", kind="session", text="hello"))
+    assert agents.runs.read() == ()
+
+
+def test_in_a_write_after_review_folder_the_agent_works_in_a_staging_copy(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("interact.machine_agents.available", lambda: (True, ""))
+    held = tmp_path / "fence.json"
+    run_id = uuid4()
+    recorder = ("python3", "-c", f"import shutil,sys; shutil.copy(sys.argv[sys.argv.index('--fence') + 1], {str(held)!r}); print({str(run_id)!r})")
+    agents = _fenced_agents(base, tmp_path, recorder, project="write_on_review")
+    _answer(agents, _request("start", root="project", role="app-engineer", text="tidy"))
+    [bind] = [bind for bind in Fence.model_validate_json(held.read_text()).binds if bind.target == base.resolve() / "project"]
+    assert bind.writable and bind.source.is_relative_to(tmp_path / "reviews")
+    (bind.source / "src" / "new.txt").write_text("from the agent")
+    [review] = agents.reviews.list()
+    assert review.run_id == run_id and [(item.path, item.change) for item in review.files] == [("src/new.txt", "added")]
+    assert not (base / "project" / "src" / "new.txt").exists()

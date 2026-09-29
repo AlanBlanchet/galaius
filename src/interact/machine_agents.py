@@ -39,7 +39,10 @@ from interact.agents import registry as reg
 from interact.agents.host import ConversationHost, ConversationRefused
 from interact.agents.providers import PROVIDERS
 from interact.agents.run import LAUNCH_STAMP, launch_editor_turn, load_policy, rank_candidates
+from interact.fence import TOOL_STATE, Fence, available
 from interact.file_lock import exclusive
+from interact.place_reviews import PlaceReviews
+from interact.places import LEVEL_RANK, PlaceMap, split
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +115,8 @@ class WebRun(BaseModel):
     kind: AgentRunKind = "agent"
     #: A continued copy: the editor conversation it copies (its history opens the copy's transcript).
     source: UUID | None = None
+    #: Started inside the machine's OS fence (`interact.fence`).
+    fenced: bool = False
 
 
 class WebRuns(BaseModel):
@@ -237,6 +242,11 @@ class MachineAgents(BaseModel):
     editor_projects: Path = Field(default_factory=lambda: Path.home() / ".claude" / "projects")
     #: How to run this installation's own CLI (the `interact` beside this interpreter).
     cli: tuple[str, ...] = Field(default_factory=lambda: MachineAgents.own_cli())
+    #: The owner's levels, and whether agents must start inside the fence built from them (set on the
+    #: machine only); staged copies for `write_on_review` folders live in `reviews`.
+    places: PlaceMap | None = None
+    fence_agents: bool = False
+    reviews: PlaceReviews | None = None
 
     @staticmethod
     def own_cli() -> tuple[str, ...]:
@@ -253,6 +263,9 @@ class MachineAgents(BaseModel):
             raise PermissionError("agents are off on this computer; its owner turns them on there with `interact machine agents on`")
         if not self.roots:
             raise PermissionError("no agent folders on this computer yet; its owner adds some there with `interact machine agent-roots <folder>`")
+        if self.fence_agents and isinstance(request, (AgentStartRequest, AgentContinueRequest)) and (request.kind == "session" if isinstance(request, AgentStartRequest) else True):
+            raise PermissionError("sessions and continued conversations are not fenced yet, and the agent fence is on here: start an agent (a role), "
+                                  "or its owner switches the fence off there with `interact machine fence off`")
         match request:
             case AgentFoldersRequest():
                 return await asyncio.to_thread(self._folders, request)
@@ -340,6 +353,8 @@ class MachineAgents(BaseModel):
 
     def _runs(self, request: AgentRunsRequest) -> MachineAgentAnswer:
         started, runs = self._allowed()
+        # A run launched inside a fenced run is inside the same fence.
+        fenced = {run.run_id for run in runs if run.fence is not None}
         found = []
         for run in runs[:200]:
             placed = started.get(run.run_id)
@@ -351,6 +366,7 @@ class MachineAgents(BaseModel):
                 last=redact(run.last, self.secrets)[:400], started_at=run.started_at, finished_at=run.finished_at, cost_usd=run.cost_usd,
                 parent_run_id=UUID(run.parent_run_id) if run.parent_run_id and run.run_id not in started else None,
                 kind=kind, pending=self.pending(run.run_id) if kind == "session" and run.status == "waiting" else (),
+                fenced=bool({run.run_id, run.root_run_id, run.parent_run_id} & fenced),
             ))
         return MachineAgentAnswer(request_id=request.id, runs=tuple(found))
 
@@ -493,17 +509,53 @@ class MachineAgents(BaseModel):
             raise PermissionError("an agent runs on the model its rule picks; change the rule on its Agents page, or start a session to choose the model")
         options = ["--agent", str(request.role), "--cwd", str(folder), "--permission-mode", self.permission, "--session-id", self.session, "--quota-window", "4",
                    *(["--provider", request.provider] if request.provider is not None else []), *([f"--model={request.model}"] if request.model else [])]
-        # "--" ends the options: a brief starting with "-" (a markdown bullet, "--help") is the brief.
-        done = self._run_cli("agents", "spawn", *options, "--", request.text, timeout=120)
+        fence, review = self._fence(request.root, folder) if self.fence_agents else (None, None)
+        with tempfile.TemporaryDirectory(prefix="interact-fence-") as held:
+            if fence is not None:
+                (Path(held) / "fence.json").write_text(fence.model_dump_json())
+                options += ["--fence", str(Path(held) / "fence.json")]
+            # "--" ends the options: a brief starting with "-" (a markdown bullet, "--help") is the brief.
+            done = self._run_cli("agents", "spawn", *options, "--", request.text, timeout=120)
         output = done.stdout.strip().splitlines()
         try:
             run_id = UUID(output[-1].strip()) if done.returncode == 0 and output else None
         except ValueError:
             run_id = None
         if run_id is None:
+            if review is not None:
+                self.reviews.discard(review)
             raise RuntimeError(self._said(done.stderr) or f"the agent did not start (exit {done.returncode})")
-        self.runs.add(WebRun(run_id=run_id, root=request.root, path=request.path))
-        return MachineAgentAnswer(request_id=request.id, run_id=run_id)
+        if review is not None:
+            self.reviews.attach(review, run_id)
+        self.runs.add(WebRun(run_id=run_id, root=request.root, path=request.path, fenced=fence is not None))
+        return MachineAgentAnswer(request_id=request.id, run_id=run_id, fenced=fence is not None)
+
+    def _fence(self, root: str, folder: Path) -> tuple[Fence, UUID | None]:
+        """The fence an agent starting in `folder` (beneath agent root `root`) runs inside, and the
+        review holding its staging copy when that folder is write-after-review. An agent root
+        with no level of its own opens as the permission agents start with says (read_only: read;
+        else write), so agents keep working where they always did, and nowhere else."""
+        ready, reason = available()
+        if not ready:
+            raise PermissionError(f"the agent fence is on here but cannot be built: {reason}; its owner switches it off there with `interact machine fence off` to start agents unfenced")
+        if self.places is None or self.reviews is None:
+            raise PermissionError("the agent fence is on but this runner holds no levels")
+        places, base = self.places, self.places.base
+        root_path = self.roots[root].relative_to(base).as_posix()
+        if LEVEL_RANK[places.reach(split(root_path))] < LEVEL_RANK["read"]:
+            places = places.model_copy(update={"levels": {**places.levels, root_path: "read" if self.permission == "read_only" else "write"}})
+        parts = folder.relative_to(base).parts
+        staging, review = {}, None
+        if places.reach(parts) == "write_on_review":
+            place, _ = places.place_of(parts)
+            review, staging[place] = self.reviews.stage_copy(place, base.joinpath(*split(place)), origin="agent", run_id=None)
+        try:
+            programs = tuple(Path(found) for found in (*(shutil.which(name) for name in AGENT_PROVIDERS), *self.cli) if found)
+            return Fence.build(places, start=folder, staging=staging, tool_state=tuple(Path.home() / name for name in TOOL_STATE), programs=programs), review
+        except BaseException:
+            if review is not None:
+                self.reviews.discard(review)
+            raise
 
     def _send(self, request: AgentSendRequest) -> MachineAgentAnswer:
         run = self._require_run(request.run_id)

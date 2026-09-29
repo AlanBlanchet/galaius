@@ -26,6 +26,7 @@ from interact_core import AgentRevisionRef
 from interact.agents import registry as reg
 from interact.agents import quota
 from interact.agents.ceiling import contained
+from interact.fence import Fence, fenced
 from interact.processes import process_group_options, spawnable
 from interact.agents.policy import Policy, policy_path
 from interact.agents.profiles import overlay_for, profiles_from
@@ -722,7 +723,7 @@ def _spawn_turn(
     stderr_file = tempfile.TemporaryFile()
     try:
         process = subprocess.Popen(
-            contained(spawnable(argv, env)), cwd=run.cwd or ".", env=env, stdout=sink, stderr=stderr_file,
+            contained(fenced(spawnable(argv, env), run.fence)), cwd=run.cwd or ".", env=env, stdout=sink, stderr=stderr_file,
             **process_group_options(),
         )
     except BaseException:
@@ -855,6 +856,7 @@ async def run_agent(
     denied_tools: tuple[str, ...] = (),
     provider_modes: dict[str, str] | None = None,
     quota_window: float | None = None,
+    fence: Fence | None = None,
 ) -> RunHandle:
     """Spawn an agent run and register it, returning as soon as it is alive.
 
@@ -872,6 +874,9 @@ async def run_agent(
     stays frontier. Resolves through :mod:`interact.agents.profiles` to a fixed, allow-listed
     overlay; a caller cannot hand over an environment, because a model that can set
     ``LD_PRELOAD`` or ``PATH`` on the process it spawns has escaped every other guard here.
+
+    ``fence`` starts every turn of the run inside that OS fence (:mod:`interact.fence`), recorded on
+    the run so a resumed turn gets the same one; the machine runner builds it from its levels.
 
     ``parent_run_id`` defaults to ``INTERACT_PARENT_RUN_ID`` — set on a spawned agent's own MCP
     server by :func:`mesh_config` — so an agent spawning an agent produces a connected tree with
@@ -1104,7 +1109,7 @@ async def run_agent(
         stderr = reg.open_stderr(run_id, append=False)
         try:
             candidate_process = await asyncio.create_subprocess_exec(
-                *contained(spawnable(argv, env)), cwd=cwd, env=env,
+                *contained(fenced(spawnable(argv, env), fence)), cwd=cwd, env=env,
                 stdout=sink, stderr=stderr,
                 **process_group_options(),  # own process tree, so stop() can end the whole of it
             )
@@ -1122,7 +1127,7 @@ async def run_agent(
             mesh_enabled=mesh, reasoning=candidate_effort,
             candidates=candidates, skipped=tuple(skipped), denied_tools=denied_tools,
             provider_session_id=vendor_session if candidate_provider.name == "claude" else None,
-            agent_ref=selected_ref, definition_path=definition_path,
+            agent_ref=selected_ref, definition_path=definition_path, fence=fence,
         )
         quota_reason = await _quota_probe(
             run_id, candidate_process,
@@ -1168,7 +1173,7 @@ async def run_agent(
         reasoning=effort,
         candidates=candidates, skipped=tuple(skipped), denied_tools=denied_tools,
         provider_session_id=run_id if provider.name == "claude" else None,
-        agent_ref=selected_ref, definition_path=definition_path,
+        agent_ref=selected_ref, definition_path=definition_path, fence=fence,
     )
     pump = asyncio.create_task(_reap(run_id, process, registered.lifecycle_token))
     # Keep the panel's copy of the stream current WHILE it works: a running agent can be watched,

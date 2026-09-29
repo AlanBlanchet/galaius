@@ -1,5 +1,6 @@
-"""A machine's file roots as Data reads them (MachineDataRequest): beneath one named root, walked
-without following links; hidden names, hard links, '..' and other roots are unreachable."""
+"""A machine's folders as Data reads them (MachineDataRequest): each folder set to `see` or later is a
+root; beneath one named root, walked without following links; hidden and credential names, hard
+links, '..' and other roots are unreachable; `see` lists names only, a deeper `hidden` is left out."""
 
 import base64
 import os
@@ -25,8 +26,11 @@ def files(tmp_path: Path) -> MachineDataFiles:
     (private / "salaries.csv").write_bytes(b"name,salary")
     (shared / "to-private").symlink_to(private)  # a link from one root into another
     (shared / "copy.csv").hardlink_to(private / "salaries.csv")  # a second name for a private file
+    (shared / "credentials.json").write_bytes(b"{}")
+    (private / "notes.txt").write_bytes(b"private notes")
+    (shared / "drafts").mkdir()
     config = MachineConfig(server_url="http://127.0.0.1:8817", workspace_id=uuid4(), machine_id=uuid4(), token="iwm_" + "x" * 48,
-                           permission_ceiling="read_only", working_directory=tmp_path, file_roots=("shared", "private"))
+                           permission_ceiling="read_only", working_directory=tmp_path, places={"shared": "read", "shared/drafts": "hidden", "private": "see"})
     return MachineDataFiles(config=config)
 
 
@@ -37,8 +41,15 @@ def _ask(files: MachineDataFiles, op: str, root: str = "", path: str = "", offse
 
 
 def test_lists_roots_and_visible_plain_entries_only(files) -> None:
-    assert [entry.name for entry in _ask(files, "list").entries] == ["shared", "private"]
-    assert [(entry.name, entry.kind) for entry in _ask(files, "list", "shared").entries] == [("reports", "folder")]  # no link, no hidden, no hard link
+    assert [entry.name for entry in _ask(files, "list").entries] == ["private", "shared"]
+    # no link, no hidden, no hard link, no credential store, no folder set hidden
+    assert [(entry.name, entry.kind) for entry in _ask(files, "list", "shared").entries] == [("reports", "folder")]
+
+
+def test_a_folder_set_to_see_lists_names_and_sizes_never_bytes(files) -> None:
+    assert [(entry.name, entry.size) for entry in _ask(files, "list", "private").entries] == [("notes.txt", 13)]  # salaries.csv: hard-linked
+    with pytest.raises(PermissionError, match="only names are listed"):
+        _ask(files, "read", "private", "notes.txt", 0, 10)
 
 
 def test_reads_a_file_by_slices_with_its_identity(files) -> None:

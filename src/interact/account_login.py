@@ -4,8 +4,8 @@ The CLI asks the server for a short code, the signed-in owner allows this comput
 /link page, and the CLI collects what the approval issued (`interact_core.DeviceLoginIssued`): the
 machine token — saved where `interact machine connect` reads it, then kept connected by this
 computer's background service (`MACHINE_SERVICE`) — and a read-only workspace key the CLI's `agents` / `workflows` commands use. Nothing
-on this computer is reachable by a workflow until its owner names a folder (`interact machine
-file-roots`). Whether agents may run here, and the folders the web may start them in, is asked
+on this computer is reachable by a workflow until its owner sets a level on a folder (`interact machine
+places`). Whether agents may run here, and the folders the web may start them in, is asked
 once right after the approval (`AgentChoice`; off and none unless said). On a computer already
 connected to the same server, `interact login` signs nothing in again: it asks the same agent
 questions, the current settings as defaults."""
@@ -199,7 +199,7 @@ class AccountLogin(BaseModel):
         CatalogConnection(endpoint=self.server, workspace_id=issued.workspace.id, auth_mode="token", token_file=self.key_path.absolute()).save()
         MachineRunner().save(MachineConfig(
             server_url=self.server, workspace_id=issued.workspace.id, machine_id=issued.machine.id, token=issued.machine_token,
-            permission_ceiling="read_only", working_directory=Path.home(), file_roots=(), script_roots=(), run_agents=False,
+            permission_ceiling="read_only", working_directory=Path.home(), script_roots=(), run_agents=False,
         ))
 
     def online(self, http: httpx.Client, issued: DeviceLoginIssued, within: float = 30) -> bool:
@@ -264,7 +264,7 @@ class AgentChoice(BaseModel):
     @staticmethod
     def joining() -> MachineConfig:
         """The machine `AccountLogin.save` writes, as far as the folder rules and `of` read it (no server yet)."""
-        return MachineConfig.model_construct(working_directory=Path.home(), file_roots=(), script_roots=(), run_agents=False)
+        return MachineConfig.model_construct(working_directory=Path.home(), script_roots=(), run_agents=False)
 
     @classmethod
     def of(cls, machine: MachineConfig) -> "AgentChoice":
@@ -448,7 +448,7 @@ def _login(account: AccountLogin, *, allow_runs: bool, yes: bool, open_browser: 
                 print(synced)
                 if not MACHINE_SERVICE.after_logout():
                     print("It runs while you are signed in to this computer.")
-        print("Workflows can reach no folder here yet. To share one:  interact machine file-roots <folder under your home>")
+        print("Every folder here is hidden from workflows, Data and agents. To open one:  interact machine places <folder under your home> <level>  (e.g. interact-files sandbox)")
         print(AgentChoice.described(machine))
 
 
