@@ -6,6 +6,7 @@ motion); the capture-error types stay here beside :meth:`DesktopWindow.capture`.
 import asyncio
 import io
 import json
+import os
 import logging
 import re
 import subprocess
@@ -143,10 +144,10 @@ class DesktopWindow(BaseModel):
     x: int
     y: int
 
-    # Set for a whole-screen / single-monitor target: capture via `maim` geometry instead of a
-    # window id, and treat detected coords as screen-relative (no window to activate, no
-    # decoration offset). "" = the whole virtual screen; "WxH+X+Y" = one monitor's region.
-    screen_geometry: str | None = None
+    # A whole-screen / single-monitor target (built by :meth:`screen`, bound to the host desktop
+    # backend): x/y/w/h are the desktop rectangle it covers, detected coords are relative to it,
+    # and there is no window to activate and no decoration offset.
+    is_screen: bool = False
 
     # When bound (e.g. to a nested sandbox backend), input/capture route through the
     # DesktopBackend instead of the default real-display xdotool path. Left unset for the
@@ -159,67 +160,40 @@ class DesktopWindow(BaseModel):
         return self.w * self.h
 
     @property
-    def is_screen(self) -> bool:
-        return self.screen_geometry is not None
+    def backend(self):
+        """The desktop backend this target is bound to (the sandbox, the host desktop behind a
+        screen target), or None for a real-session window driven through xdotool directly."""
+        return self._backend
 
     @classmethod
-    def monitors(cls) -> list[dict]:
-        """Connected monitors via ``xrandr --listmonitors`` — index, output name, and pixel
-        geometry — so an agent can target a specific screen on a multi-monitor setup."""
-        try:
-            out = subprocess.check_output(
-                ["xrandr", "--listmonitors"], text=True, timeout=5
-            )
-        except (FileNotFoundError, subprocess.SubprocessError):
-            return []
-        # `xrandr --listmonitors` line, e.g.:
-        #   " 0: +*DP-1 2560/598x1440/336+0+0  DP-1"
-        # The first token after the index carries flags (+*); the clean output name is the LAST
-        # token. Capture: index, WxH+X+Y from the geometry token, and the trailing output name.
-        mons: list[dict] = []
-        for line in out.splitlines():
-            m = re.match(
-                r"\s*(\d+):\s+\S+\s+(\d+)/\d+x(\d+)/\d+\+(\d+)\+(\d+)\s+(\S+)", line
-            )
-            if m:
-                mons.append(
-                    {
-                        "index": int(m.group(1)),
-                        "name": m.group(6),
-                        "w": int(m.group(2)),
-                        "h": int(m.group(3)),
-                        "x": int(m.group(4)),
-                        "y": int(m.group(5)),
-                    }
-                )
-        return mons
-
-    @classmethod
-    def screen(cls, spec: str = "screen") -> "DesktopWindow | str":
-        """Build a capture target for the whole virtual screen (``spec="screen"``) or a single
-        monitor (``"screen:0"`` by index, or ``"screen:HDMI-1"`` by output name). Returns an
-        error string listing the monitors if the requested one isn't found."""
+    def screen(cls, spec: str, host) -> "DesktopWindow | str":
+        """The whole desktop (``spec="screen"``) or one monitor (``"screen:0"`` by index,
+        ``"screen:DP-1"`` by name) of ``host`` — the backend of the desktop this process sits on
+        (``galaius.desktop.host.host_desktop()``), bound so capture and input go through it on
+        every OS. Returns an error string listing the monitors when the requested one is absent."""
         rest = spec.split(":", 1)[1].strip() if ":" in spec else ""
-        mons = cls.monitors()
-        if not rest:  # whole virtual screen = bounding box of every monitor; bare `maim` captures it
-            w = max((mm["x"] + mm["w"] for mm in mons), default=0)
-            h = max((mm["y"] + mm["h"] for mm in mons), default=0)
-            return cls(name="screen", wid=_SCREEN_WID, x=0, y=0, w=w, h=h, screen_geometry="")
-        mon = next((mm for mm in mons if rest.isdigit() and mm["index"] == int(rest)), None)
-        if mon is None:
-            mon = next((mm for mm in mons if mm["name"].lower() == rest.lower()), None)
-        if mon is None:
-            listing = ", ".join(f"{mm['index']}:{mm['name']}" for mm in mons) or "none detected"
-            return f"No monitor '{rest}'. Available monitors: {listing}"
-        return cls(
-            name=f"screen:{mon['index']} ({mon['name']})",
-            wid=_SCREEN_WID - 1 - mon["index"],  # distinct per monitor → no ref-cache collision
-            x=mon["x"],
-            y=mon["y"],
-            w=mon["w"],
-            h=mon["h"],
-            screen_geometry=f"{mon['w']}x{mon['h']}+{mon['x']}+{mon['y']}",
-        )
+        mons = host.monitors()
+        if not rest:
+            # The whole virtual screen = bounding box of every monitor. Its origin can be negative
+            # (a monitor left of the primary on Windows / macOS); image (0, 0) maps there.
+            x0 = min((m.x for m in mons), default=0)
+            y0 = min((m.y for m in mons), default=0)
+            w = max((m.x + m.w for m in mons), default=0) - x0
+            h = max((m.y + m.h for m in mons), default=0) - y0
+            win = cls(name="screen", wid=_SCREEN_WID, x=x0, y=y0, w=w, h=h, is_screen=True)
+        else:
+            mon = next((m for m in mons if rest.isdigit() and m.index == int(rest)), None)
+            mon = mon or next((m for m in mons if m.name.lower() == rest.lower()), None)
+            if mon is None:
+                listing = ", ".join(f"{m.index}:{m.name}" for m in mons) or "none detected"
+                return f"No monitor '{rest}'. Available monitors: {listing}"
+            win = cls(
+                name=f"screen:{mon.index} ({mon.name})",
+                wid=_SCREEN_WID - 1 - mon.index,  # distinct per monitor → no ref-cache collision
+                x=mon.x, y=mon.y, w=mon.w, h=mon.h, is_screen=True,
+            )
+        win._backend = host
+        return win
 
     @classmethod
     def find_in(cls, backend, title: str) -> Self | None:
@@ -294,7 +268,7 @@ class DesktopWindow(BaseModel):
         record. Without this a window the user moved or buried hands back occluded pixels — the
         bug that made a consumer abandon galaius and raise windows by hand. No-op for screen
         targets (no window) and the nested backend (isolated, nothing can occlude)."""
-        if self.is_screen or self._backend is not None:
+        if self._backend is not None:
             return
         try:
             subprocess.run(
@@ -308,31 +282,30 @@ class DesktopWindow(BaseModel):
             pass  # raising is best-effort; capture still attempts
 
     def capture(self) -> bytes:
+        if self.is_screen:
+            if self._backend is None:
+                raise CaptureError(f"{self.name!r} was built without a desktop backend — use DesktopWindow.screen()")
+            return self._backend.capture_region(self.x, self.y, self.w, self.h)
         if self._backend is not None:
             return self._backend.capture_window(self.name)
-        if self.screen_geometry is not None:
-            # whole virtual screen → bare `maim`; a single monitor → `maim -g WxH+X+Y`.
-            cmd = ["maim", "-g", self.screen_geometry] if self.screen_geometry else ["maim"]
-            img = subprocess.check_output(cmd, timeout=10)
-        else:
-            self._raise_window()  # a moved/buried window must come to the front first
-            try:
-                img = subprocess.check_output(["maim", "-i", str(self.wid)], timeout=10)
-            except subprocess.CalledProcessError:
-                # A window that is genuinely GONE does not grab black — the grab FAILS. Killing a
-                # real window and capturing it is what showed this: every actual dead-window case
-                # lands here rather than on the uniform-colour path below, and what reached the
-                # agent was a raw traceback naming a numeric window id and nothing else.
-                raise unreadable_window_error(self.name, self.wid) from None
-            if _is_blank_png(img):
-                # window-id capture of a hardware-accelerated surface can come back blank; retry by
-                # geometry (reads the framebuffer region) — recovers non-GPU cases.
-                geom = self._geometry_now()
-                if geom:
-                    try:
-                        img = subprocess.check_output(["maim", "-g", geom], timeout=10)
-                    except subprocess.SubprocessError:
-                        pass
+        self._raise_window()  # a moved/buried window must come to the front first
+        try:
+            img = subprocess.check_output(["maim", "-i", str(self.wid)], timeout=10)
+        except subprocess.CalledProcessError:
+            # A window that is genuinely GONE does not grab black — the grab FAILS. Killing a
+            # real window and capturing it is what showed this: every actual dead-window case
+            # lands here rather than on the uniform-colour path below, and what reached the
+            # agent was a raw traceback naming a numeric window id and nothing else.
+            raise unreadable_window_error(self.name, self.wid) from None
+        if _is_blank_png(img):
+            # window-id capture of a hardware-accelerated surface can come back blank; retry by
+            # geometry (reads the framebuffer region) — recovers non-GPU cases.
+            geom = self._geometry_now()
+            if geom:
+                try:
+                    img = subprocess.check_output(["maim", "-g", geom], timeout=10)
+                except subprocess.SubprocessError:
+                    pass
         if _is_blank_png(img):
             # Still uniform → an X screen-grab genuinely can't read this surface. Don't hand back a
             # black image the model will misread as a broken UI; say what it is and how to capture it.
@@ -368,8 +341,21 @@ class DesktopWindow(BaseModel):
         p = dict(ln.split("=", 1) for ln in out.strip().splitlines() if "=" in ln)
         return int(p["WIDTH"]), int(p["HEIGHT"]), max(0, int(p["X"])), max(0, int(p["Y"]))
 
+    def _grab_display(self) -> str:
+        """The X display ffmpeg's x11grab records from: a screen target's own (the host backend's
+        ``display``), else the session this process runs in."""
+        if not self.is_screen:
+            return os.environ.get("DISPLAY", ":0")
+        display = getattr(self._backend, "display", None)
+        if display is None:
+            raise CaptureError(
+                "Recording target=\"screen\" needs an X11 session (ffmpeg x11grab); on this OS "
+                "take screenshots with wait_for between them, or record a browser session."
+            )
+        return display
+
     def capture_video(self, duration: float = 3.0, fps: int = 10) -> bytes:
-        if self._backend is not None:
+        if self._backend is not None and not self.is_screen:
             # A sandbox window lives on the backend's display (:N), not :0 — record there, or every
             # frame is a black grab of the wrong display (#18). Mirrors capture()'s backend dispatch.
             return self._backend.capture_video(self.name, duration, fps)
@@ -391,7 +377,7 @@ class DesktopWindow(BaseModel):
                     "-framerate",
                     str(fps),
                     "-i",
-                    f":0+{grab_x},{grab_y}",
+                    f"{self._grab_display()}+{grab_x},{grab_y}",
                     "-c:v",
                     "libx264",
                     "-preset",
@@ -416,7 +402,7 @@ class DesktopWindow(BaseModel):
         """Begin a non-blocking recording of this window — returns at once so the agent can drive
         actions during capture, then :meth:`stop_video` to export (#61/#62). Routes to the bound
         backend for a nested window, else records the real-display (``:0``) window region."""
-        if self._backend is not None:
+        if self._backend is not None and not self.is_screen:
             self._backend.start_video(self.name, fps)
             return
         if self.wid in _LOCAL_VIDEO_SESSIONS:
@@ -426,13 +412,13 @@ class DesktopWindow(BaseModel):
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
             out = f.name
         _LOCAL_VIDEO_SESSIONS[self.wid] = _VideoSession(
-            _ffmpeg_grab_args(":0", grab_x, grab_y, grab_w, grab_h, fps, out, duration=None), out
+            _ffmpeg_grab_args(self._grab_display(), grab_x, grab_y, grab_w, grab_h, fps, out, duration=None), out
         )
 
     def stop_video(self) -> bytes | None:
         """Stop the session started by :meth:`start_video` and return its mp4 bytes, or None if none
         is open for this target."""
-        if self._backend is not None:
+        if self._backend is not None and not self.is_screen:
             return self._backend.stop_video(self.name)
         session = _LOCAL_VIDEO_SESSIONS.pop(self.wid, None)
         return session.stop() if session else None
@@ -441,39 +427,21 @@ class DesktopWindow(BaseModel):
         return CoordTransform.get(self.wid).screenshot_to_xdotool(x, y)
 
     def _input_xy(self, x: int, y: int) -> tuple[int, int]:
-        """Capture-space (x, y) → absolute screen coords for xdotool. A screen/monitor target's
-        detected coords are relative to the captured region, so map by the region origin; a
-        window target maps through its stored CoordTransform (decoration/shadow offsets)."""
-        if self.is_screen:
-            return self.x + x, self.y + y
+        """Capture-space (x, y) → absolute screen coords for xdotool, through the window's stored
+        CoordTransform (decoration/shadow offsets). Screen targets are bound to a backend and map
+        by :meth:`to_screen` instead."""
         return self._to_xdotool(x, y)
 
     async def _mousemove(self, x: int, y: int):
-        """Position the pointer. A window target moves window-relative (``--window <wid>``); a
-        screen/monitor target has no window, so move to the absolute screen coordinate — using
-        ``--window`` with its synthetic wid would fail."""
-        if self.is_screen:
-            await self._run("xdotool", "mousemove", str(x), str(y))
-        else:
-            await self._xdo(self.wid, "mousemove", str(x), str(y))
+        await self._xdo(self.wid, "mousemove", str(x), str(y))
 
     async def _clickbtn(self, button: str):
-        """Press a mouse button — window-scoped for a window target, absolute for a screen
-        target (no window to scope to)."""
-        if self.is_screen:
-            await self._run("xdotool", "click", button)
-        else:
-            await self._xdo(self.wid, "click", button)
+        await self._xdo(self.wid, "click", button)
 
     async def _activate(self):
-        """Raise the target window before input — a no-op for a screen target (no window to
-        raise; the local pointer is already absolute over the whole root)."""
-        if not self.is_screen:
-            await self._run("xdotool", "windowactivate", "--sync", str(self.wid))
+        await self._run("xdotool", "windowactivate", "--sync", str(self.wid))
 
     async def _focus(self):
-        if self.is_screen:
-            return
         await self._run("xdotool", "windowactivate", "--sync", str(self.wid))
         await self._run("xdotool", "windowfocus", "--sync", str(self.wid))
         await self._assert_focused()
@@ -486,7 +454,7 @@ class DesktopWindow(BaseModel):
         to WHATEVER holds focus — how a command aimed at one editor landed in another and killed
         the session issuing it. Keystrokes are unrecoverable once delivered, so this refuses
         rather than hoping."""
-        if self.is_screen or not self.wid:
+        if not self.wid:
             return
         try:
             raw = await self._run("xdotool", "getwindowfocus")

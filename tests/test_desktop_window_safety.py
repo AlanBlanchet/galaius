@@ -107,7 +107,7 @@ def test_resize_sets_the_window_size():
 
 
 def test_resize_refuses_a_screen_target():
-    screen = DesktopWindow(name="screen", wid=-1, x=0, y=0, w=1920, h=1080, screen_geometry="")
+    screen = DesktopWindow(name="screen", wid=-1, x=0, y=0, w=1920, h=1080, is_screen=True)
     assert asyncio.run(screen.resize(500, 900)) is False
 
 

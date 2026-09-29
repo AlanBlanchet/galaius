@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field, field_validator
 from galaius.desktop import orphans
 
 from galaius.desktop.backend import (
-    DesktopBackend,
+    _exit_reason,
     _gl_unrendered,
     _rects_overlap,
     _tail_file,
@@ -22,13 +22,9 @@ from galaius.desktop.backend import (
     sandbox_child_env,
     write_sandbox_url_shims,
 )
-from galaius.desktop.input import (
-    MULTI_CLICK_GAP_MS,
-    _BUTTONS,
-    check_xdotool_key_output,
-    to_xdotool_key,
-)
+from galaius.desktop.geometry import HostWindow
 from galaius.desktop.video import _VideoSession, _ffmpeg_grab_args
+from galaius.desktop.x11 import X11Display
 
 
 class KillReport(BaseModel):
@@ -58,7 +54,7 @@ class KillReport(BaseModel):
         return ", ".join(f"pid {pid} `{command}`" for pid, command in self.survivors.items())
 
 
-class NestedBackend(DesktopBackend):
+class NestedBackend(X11Display):
     """An isolated nested X display the agent owns end to end.
 
     Starts its own X server — **Xephyr** (visible: rendered as one window on the real
@@ -67,7 +63,9 @@ class NestedBackend(DesktopBackend):
     Input goes to the *nested* pointer (not the user's), capture grabs only the nested
     screen. Use :meth:`spawn` to launch the app under test inside it. This is the
     "VM-like" target: reproducible, non-intrusive, and the basis of the desktop test
-    suite. Needs ``xdotool`` + ``maim`` plus the chosen server (``apt install
+    suite. Input, capture, monitors and windows are :class:`X11Display`'s, scoped by the
+    ``env`` built here (its ``__init__`` is not called: the display number is only known once a
+    server claims one). Needs ``xdotool`` + ``maim`` plus the chosen server (``apt install
     xserver-xephyr`` / ``xvfb``)."""
 
     # The sandbox's private audio sink (#47) — class-level defaults so a partially-constructed
@@ -489,30 +487,9 @@ class NestedBackend(DesktopBackend):
         display in a launch error. Empty if the proc isn't tracked."""
         return _tail_file(self._logs.get(proc.pid), limit)
 
-    def _xdotool(self, *args: str) -> None:
-        subprocess.run(["xdotool", *args], env=self.env, check=True)
-
-    def _xdotool_ok(self, *args: str) -> None:
-        """Best-effort xdotool that never raises — for repaint/focus nudges where a transient
-        failure must not crash a capture."""
-        subprocess.run(
-            ["xdotool", *args], env=self.env, check=False,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-
     def capture(self) -> bytes:
         self._reap()  # drop apps that exited since the last spawn so zombies don't accumulate (#11)
-        return subprocess.run(["maim", "--hidecursor"], env=self.env, capture_output=True, check=True).stdout
-
-    def _maim_window(self, wid: str) -> bytes:
-        return subprocess.run(["maim", "--hidecursor", "-i", wid], env=self.env, capture_output=True, check=True).stdout
-
-    def _maim_region(self, x: int, y: int, w: int, h: int) -> bytes:
-        # --hidecursor: a region grab reads the live root framebuffer, into which maim otherwise
-        # superimposes the X pointer sprite — it would land mid-screenshot (parked at screen centre).
-        return subprocess.run(
-            ["maim", "--hidecursor", "-g", f"{w}x{h}+{x}+{y}"], env=self.env, capture_output=True, check=True
-        ).stdout
+        return super().capture()
 
     def _overlay_rects(self) -> list[tuple[int, int, int, int]]:
         """Absolute ``(x, y, w, h)`` of mapped override-redirect windows on the nested display —
@@ -784,70 +761,6 @@ class NestedBackend(DesktopBackend):
         except Exception:  # any X error → the hint is simply not set; keys still go via XTEST
             return
 
-    def move(self, x: float, y: float) -> None:
-        self._xdotool("mousemove", "--sync", str(round(x)), str(round(y)))
-
-    def mouse_down(self, button: str = "left") -> None:
-        self._xdotool("mousedown", str(_BUTTONS[button]))
-
-    def mouse_up(self, button: str = "left") -> None:
-        self._xdotool("mouseup", str(_BUTTONS[button]))
-
-    def click(self, x: float, y: float, button: str = "left", count: int = 1) -> None:
-        if count == 1:
-            super().click(x, y, button)
-            return
-        # A multi-click must COALESCE, so it is ONE xdotool process with an explicit inter-click
-        # delay — the rule `scroll` follows below (#88): presses fired as separate mousedown/mouseup
-        # processes arrive as unevenly spaced as process start-up, and a toolkit reads two of them
-        # as one double-click only by luck (#116).
-        self.move(x, y)
-        self._xdotool(
-            "click", "--repeat", str(count), "--delay", str(MULTI_CLICK_GAP_MS),
-            str(_BUTTONS[button]),
-        )
-
-    def type_text(self, text: str) -> None:
-        self._xdotool("type", "--delay", "20", text)
-
-    # Milliseconds between synthesised wheel clicks. A wheel "click" is a press+release pair, and
-    # firing several as fast as separate processes can start them gave a toolkit interleaved or
-    # out-of-order button events — which is the shape behind the non-deterministic side effects
-    # reported for repeated scrolls over one widget: a dock tab switching, a splitter jumping, and
-    # once a context menu opening as if a different button had been pressed (#88). One xdotool
-    # process with an explicit inter-click delay makes the sequence ordered and evenly spaced.
-    _WHEEL_DELAY_MS = 25
-
-    def scroll(self, clicks: int, horizontal: bool = False) -> None:
-        # X11 wheel buttons: 4=up, 5=down, 6=left, 7=right. Horizontal scroll has to use 6/7 — a
-        # left/right request used to fall through to a vertical button, so a Flutter horizontal
-        # ListView/carousel never moved (#54).
-        if horizontal:
-            button = "7" if clicks > 0 else "6"
-        else:
-            button = "4" if clicks > 0 else "5"
-        n = abs(clicks)
-        if not n:
-            return
-        self._xdotool(
-            "click", "--repeat", str(n), "--delay", str(self._WHEEL_DELAY_MS), button
-        )
-
-    def key(self, name: str) -> None:
-        """Press a key or chord on the nested display.
-
-        Two things stand between a caller and a keystroke that actually lands. The name must be one
-        X knows — ``enter`` is not a keysym, ``Return`` is — and xdotool ANSWERS AN UNKNOWN NAME BY
-        IGNORING IT AND EXITING 0, so a plain returncode check reads a dropped key as a success.
-        That silent no-op is the confusing half of #115: nothing happens and nothing says why.
-        """
-        spec = to_xdotool_key(name)
-        proc = subprocess.run(
-            ["xdotool", "key", spec], env=self.env, check=True,
-            capture_output=True, text=True,
-        )
-        check_xdotool_key_output(name, (proc.stderr or "") + (proc.stdout or ""))
-
     def _window_id(self, name: str) -> str | None:
         """The wid of the window titled ``name``. A toolkit spawns several same-/substring-titled
         top-levels: a Flutter app exposes both its app-id window (``com.example.aino``) and the
@@ -894,12 +807,7 @@ class NestedBackend(DesktopBackend):
         wid = self._window_id(name)
         if wid is None:
             return None
-        info = subprocess.run(
-            ["xdotool", "getwindowgeometry", "--shell", wid],
-            env=self.env, capture_output=True, text=True, check=True,
-        ).stdout
-        vals = dict(line.split("=", 1) for line in info.splitlines() if "=" in line)
-        return int(vals["X"]), int(vals["Y"]), int(vals["WIDTH"]), int(vals["HEIGHT"])
+        return self._geometry_of(wid)
 
     def _search_ids(self) -> list[str]:
         """Window ids on the nested display, preferring visible ones. Falls back to non-visible
@@ -930,10 +838,26 @@ class NestedBackend(DesktopBackend):
                 dims[key] = int(val)
         return dims.get("WIDTH", 0), dims.get("HEIGHT", 0)
 
-    # Below this, a window is a utility artifact (Qt's 1x1 "Qt Selection Owner for <app>"), never
-    # a drive/capture target. During a slow startup (a JIT warm) these are the ONLY windows for
-    # tens of seconds — reporting them made launch_app advertise them as the app.
-    _MIN_APP_WINDOW_PX = 20
+    def windows(self) -> list[HostWindow]:
+        """The sandbox's windows through the SAME enumeration launch_app polls (:meth:`list_windows`
+        — xdotool's recursive search, unviewable windows included while an app starts), with
+        geometry, so a ``wait_for window=`` and a launch agree on what is open."""
+        found: list[HostWindow] = []
+        for wid, title in self.list_windows():
+            try:
+                x, y, w, h = self._geometry_of(str(wid))
+            except (subprocess.SubprocessError, KeyError, ValueError):
+                continue  # closed between the listing and the geometry query
+            found.append(HostWindow(handle=wid, title=title, x=x, y=y, w=w, h=h))
+        return found
+
+    def _geometry_of(self, wid: str) -> tuple[int, int, int, int]:
+        info = subprocess.run(
+            ["xdotool", "getwindowgeometry", "--shell", wid],
+            env=self.env, capture_output=True, text=True, check=True,
+        ).stdout
+        vals = dict(line.split("=", 1) for line in info.splitlines() if "=" in line)
+        return int(vals["X"]), int(vals["Y"]), int(vals["WIDTH"]), int(vals["HEIGHT"])
 
     def list_windows(self) -> list[tuple[int, str]]:
         """``(wid, title)`` of the DRIVABLE named windows on the nested display, one per distinct
@@ -946,7 +870,7 @@ class NestedBackend(DesktopBackend):
             if not name or name in seen:
                 continue
             w, h = self._window_size(wid)
-            if 0 < w < self._MIN_APP_WINDOW_PX or 0 < h < self._MIN_APP_WINDOW_PX:
+            if 0 < w < HostWindow.MIN_SIDE or 0 < h < HostWindow.MIN_SIDE:
                 continue
             seen.add(name)
             out.append((int(wid), name))

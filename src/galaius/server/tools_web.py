@@ -92,7 +92,11 @@ async def run_actions(
     - A NATIVE desktop app (not a web page — e.g. a terminal, editor, Electron/GTK/Qt window):
       set `target=<window title substring>`. Call list_desktop_windows FIRST to discover titles.
     - The whole desktop: `target="screen"` (all monitors combined) or `target="screen:<index>"`
-      for one monitor (list_desktop_windows shows the monitor indexes).
+      for one monitor (list_desktop_windows shows the monitor indexes) — Linux, Windows, macOS.
+      key_press / type_text there go to the desktop itself (the focused window, the OS launcher;
+      "super" is the Windows key / Linux launcher, "cmd+space" Spotlight on macOS):
+      [{"type":"key_press","key":"super"}, {"type":"type_text","text":"settings","clear_first":false},
+       {"type":"key_press","key":"Return"}, {"type":"wait_for","window":"Settings"}].
     A desktop `target` and a `session` you named are mutually exclusive. For a website, leave
     `target` unset.
 
@@ -147,9 +151,9 @@ async def run_actions(
     Browser-only actions (navigate, evaluate_js, wait_for, upload_file, new_tab, switch_tab, close_tab, emulate_device, select_text) error when used with a desktop target.
 
     Any action can include 'wait' to wait after execution (networkidle, load, domcontentloaded, or a CSS selector — browser only).
-    wait_for blocks until a `selector` reaches a state OR a `text` substring appears — prefer it over `sleep` for content/navigation.
-      With NEITHER selector nor text it is simply a pause of `timeout` ms, and that bare form works
-      on a desktop target too (the selector/text forms are browser-only).
+    wait_for blocks until ONE condition holds — prefer it over `sleep`. Browser: a `selector`
+      reaches `state`, or a `text` substring appears. Desktop (any OS): `window="<title substring>"`
+      appears (state "visible") or is gone ("hidden"). No condition = a pause of `timeout` ms.
     Any action can include 'observe' (a VLM query string) to capture a screenshot after execution and analyze it. The snapshot is stored by step index for later compare actions.
 
     scope: CSS selector to restrict the final capture to a page sub-tree (browser only).

@@ -184,7 +184,9 @@ def to_xdotool_key(name: str) -> str:
     bare letter stays as-is, since `A` means shift+a to X while `a` means the letter.
     """
     mods, final = _parse_chord(name)
-    mapped = _XDOTOOL_KEYSYMS.get(final.lower())
+    # A lone modifier is a key too: `super` opens the launcher. `cmd` / `win` / `meta` pressed
+    # alone are not X names, so xdotool dropped them while exiting 0.
+    mapped = _XDOTOOL_KEYSYMS.get(final.lower()) or _XDOTOOL_MODS.get(final.lower())
     if mapped is None:
         # F1-F12 and friends are already keysyms; a single character is one too.
         mapped = final

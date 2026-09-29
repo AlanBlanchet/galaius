@@ -10,7 +10,6 @@ import signal
 from contextlib import suppress
 from dataclasses import dataclass
 
-from galaius.desktop import DesktopWindow
 from galaius.server.core import _sessions, config
 
 _log = logging.getLogger("galaius")
@@ -126,31 +125,6 @@ def install_teardown_handlers() -> None:
         if sig is not None:
             with suppress(OSError, ValueError):  # not the main thread, or no such signal here
                 signal.signal(sig, _close_sandbox_on_signal)
-
-
-_portable: "object | None" = None  # the macOS/Windows real-desktop backend (mss + pynput)
-
-
-def _get_portable():
-    """The cross-platform real-desktop backend used for ``target="screen"`` on macOS/Windows,
-    created on first use (verified on real mac/win CI runners, #24)."""
-    global _portable
-    if _portable is None:
-        from galaius.desktop.backend import PortableBackend
-
-        _portable = PortableBackend()
-    return _portable
-
-
-def _resolve_portable_screen() -> DesktopWindow:
-    """A whole-screen DesktopWindow bound to the portable backend — capture (mss) + input (pynput)
-    route through it, so ``target="screen"`` drives the real macOS/Windows desktop (#24)."""
-    from galaius.desktop import _SCREEN_WID
-
-    pb = _get_portable()
-    win = DesktopWindow(name="screen", wid=_SCREEN_WID, x=0, y=0, w=pb.screen_w, h=pb.screen_h)
-    win._backend = pb
-    return win
 
 
 def _reap_sandbox(ttl: int = 0) -> None:

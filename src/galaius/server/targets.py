@@ -7,16 +7,18 @@ from pathlib import Path
 from galaius.desktop.atspi import AtSpi
 from galaius.browser import BrowserManager
 from galaius.desktop import DesktopElement, DesktopWindow
+from galaius.desktop.backend import DesktopUnsupportedError
+from galaius.desktop.host import host_desktop
 from galaius.server import core, sandbox
 from galaius.server.core import _NO_WINDOWS_MSG, config
 
 
 def _desktop_unsupported(is_screen: bool = False) -> str | None:
     """``"ERROR: …"`` when the requested desktop target isn't available on this OS; ``None`` when it
-    is. On Linux everything works. Off Linux (macOS/Windows) the cross-platform PortableBackend
-    drives the whole screen, so a ``screen`` target works — but window-title targets (no window
-    enumeration yet) and the nested Xephyr sandbox (Linux-only) don't, so those get one clear
-    actionable message steering to ``target="screen"`` or the browser tools (#24)."""
+    is. On Linux everything works. Off Linux (macOS/Windows) the host desktop backend drives the
+    screen and its monitors, so ``screen`` / ``screen:<n>`` work — but per-window targets and the
+    nested Xephyr sandbox (Linux-only) don't, so those get one clear actionable message steering
+    to ``target="screen:<n>"`` + ``region`` or the browser tools (#24)."""
     from galaius.desktop.backend import desktop_supported
 
     if desktop_supported() or is_screen:
@@ -24,9 +26,10 @@ def _desktop_unsupported(is_screen: bool = False) -> str | None:
     import platform as _pf
 
     return (
-        f"ERROR: on {_pf.system()} only target=\"screen\" desktop automation is available (the "
-        "portable mss/pynput backend drives the whole screen); window-title targets and the nested "
-        "sandbox (launch_app) are Linux-only. Browser automation works fully — omit `target`. "
+        f"ERROR: on {_pf.system()} the desktop is driven as target=\"screen\" or one monitor "
+        "target=\"screen:<n>\" (list_desktop_windows lists monitors and windows; screenshot takes "
+        "region= to crop one window's area); per-window targets and the nested sandbox "
+        "(launch_app) are Linux-only. Browser automation works fully — omit `target`. "
         "Track native per-window macOS/Windows support: "
         "https://github.com/AlanBlanchet/galaius/issues/24"
     )
@@ -191,14 +194,13 @@ def _resolve_target(
         is_screen = t.lower() == "screen" or t.lower().startswith("screen:")
         if unsupported := _desktop_unsupported(is_screen):
             return None, None, unsupported
-        from galaius.desktop.backend import desktop_supported
-
-        if is_screen and not desktop_supported():
-            return sandbox._resolve_portable_screen(), None, None  # macOS/Windows whole-screen
         if t.lower() == "nested" or t.lower().startswith("nested:"):
             return _resolve_nested_target(t)
         if is_screen:
-            result = DesktopWindow.screen(t)
+            try:
+                result = DesktopWindow.screen(t, host_desktop())
+            except DesktopUnsupportedError as exc:
+                return None, None, f"ERROR: {exc}"
         else:
             result = _find_desktop_window(t)
         if isinstance(result, str):

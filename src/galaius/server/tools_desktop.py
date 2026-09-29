@@ -19,6 +19,8 @@ from galaius import desktop
 from galaius.browser import BrowserManager
 from galaius.config.settings import Config
 from galaius.desktop import DesktopWindow
+from galaius.desktop import backend as desktop_backend
+from galaius.desktop import host as desktop_host
 from galaius.desktop.nested import KillReport
 from galaius.launch import (
     _resolve_nested_size, apply_launch_rewrites, needs_shell, split_env_assignments,
@@ -196,38 +198,60 @@ def _sampling_caveat(
     )
 
 
+def _capture_regions(windows, whole: DesktopWindow) -> str:
+    """Windows as ``region=`` values for ``target="screen"``: a region counts from the CAPTURE's
+    top-left, which sits at the leftmost / topmost monitor edge — negative desktop coordinates
+    when a monitor is left of or above the primary — so the desktop rectangle is shifted by that
+    origin and clipped to the capture here, not left for the agent to get wrong."""
+    lines = []
+    for w in windows:
+        x0, y0 = max(w.x - whole.x, 0), max(w.y - whole.y, 0)
+        x1, y1 = min(w.x + w.w - whole.x, whole.w), min(w.y + w.h - whole.y, whole.h)
+        region = f"region=[{x0}, {y0}, {x1 - x0}, {y1 - y0}]" if x1 > x0 and y1 > y0 else "off-screen"
+        lines.append(f"  {w.title!r} — {w.w}x{w.h} at {w.x},{w.y}; target=\"screen\" {region}")
+    return (
+        "Windows (listed, not targetable one by one on this OS: capture one with the region shown, "
+        'wait on one with wait_for window="<title>"):\n' + "\n".join(lines)
+    )
+
+
 @mcp.tool(category="desktop")
 async def list_desktop_windows() -> str:
-    """List desktop targets for the `target` param: each connected monitor (target="screen" for
-    the whole desktop, target="screen:<name>" e.g. screen:DP-1, or target="screen:<index>") and
-    each open window. Target a window by its title, or — when a title isn't unique — by its id
-    shown here as target="wid:<id>" (the unambiguous selector)."""
-    from galaius.desktop.backend import desktop_supported
-
-    if not desktop_supported():
-        # macOS/Windows: the portable backend drives the whole screen; per-window enum is Linux-only.
-        pb = sandbox._get_portable()
-        return (
-            f'Screen (the only desktop target on this OS): target="screen" — {pb.screen_w}x'
-            f"{pb.screen_h}. Per-window targeting + the launch_app sandbox are Linux-only (#24); "
-            "browser automation works fully (omit `target`)."
-        )
-    monitors = DesktopWindow.monitors()
-    windows = DesktopWindow.all()
-    if not monitors and not windows:
-        return _NO_WINDOWS_MSG
+    """List desktop targets for the `target` param, on Linux, Windows and macOS: each monitor with
+    its geometry (target="screen" for the whole desktop, target="screen:<index>" or
+    "screen:<name>" for one) and each open window. On Linux target a window by its title, or — when
+    a title isn't unique — by target="wid:<id>". On Windows / macOS windows are listed (for
+    wait_for window=… and for screenshot region=…) but driven through the screen target."""
+    try:
+        host = desktop_host.host_desktop()
+        monitors = await asyncio.to_thread(host.monitors)
+    except desktop_backend.DesktopUnsupportedError as exc:
+        host, monitors = None, []
+        host_error = str(exc)
+    else:
+        host_error = ""
     parts = []
     if monitors:
-        # Offer the connector name (DP-1, eDP-1) as the target: indices reorder across
-        # sessions/display-manager restarts, connector is stable (#1.6).
+        # The index and, where the OS has one, the connector name (DP-1, eDP-1): indices reorder
+        # across sessions/display-manager restarts, a connector name is stable (#1.6).
         mon_lines = "\n".join(
-            f"  target=\"screen:{m['name']}\" (or screen:{m['index']}) — {m['w']}x{m['h']} at {m['x']},{m['y']}"
+            f'  target="screen:{m.index}" (or screen:{m.name}) — {m.w}x{m.h} at {m.x},{m.y}'
             for m in monitors
         )
         parts.append(
-            f'Screens (target="screen" = all {len(monitors)} combined; screen:<name> is stable '
-            f"across sessions):\n{mon_lines}"
+            f'Screens (target="screen" = all {len(monitors)} combined; keys and typing on a screen '
+            f"target go to the desktop itself — the focused window, the OS launcher):\n{mon_lines}"
         )
+    elif host_error:
+        parts.append(f"Screens: none — {host_error}")
+    if not desktop_backend.desktop_supported():
+        listed = await asyncio.to_thread(host.windows) if host is not None else []
+        if listed:
+            parts.append(_capture_regions(listed, DesktopWindow.screen("screen", host)))
+        return "\n\n".join(parts) or _NO_WINDOWS_MSG
+    windows = DesktopWindow.all()
+    if not monitors and not windows:
+        return _NO_WINDOWS_MSG
     if windows:
         parts.append(f"Windows (target=<title>):\n{DesktopWindow.listing(windows)}")
     if sandbox._sandbox is not None:

@@ -157,7 +157,7 @@ async def test_bare_wait_for_pauses_for_the_timeout():
     with patch("galaius.actions.models.asyncio.sleep", new_callable=AsyncMock) as sleep:
         result = await WaitForAction(timeout=2000).execute(MagicMock())
     sleep.assert_awaited_once_with(2.0)
-    assert result == "waited 2000ms (no selector/text given)"
+    assert result == "waited 2000ms (no condition given)"
 
 
 @pytest.mark.asyncio

@@ -1,0 +1,49 @@
+name: desktop-host
+
+# The user's own desktop as a target, on a REAL display per OS (src/galaius/desktop/host_desktop.md):
+# open a window, wait for it, click, wait for its pixels to change and settle, type with OS-level
+# keys, wait for it to go, list monitors, capture one monitor / region / downscaled. Windows and
+# macOS runners are genuine GUI sessions; Linux gets a private Xvfb started by the test itself.
+# Runs on any pushed branch touching the desktop path, so it is proven before main.
+
+on:
+  push:
+    paths:
+      - "src/galaius/desktop/**"
+      - "src/galaius/actions/**"
+      - "src/galaius/server/**"
+      - "tests/test_host_desktop*.py"
+      - ".github/workflows/desktop-host.yml"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUTF8: "1"
+
+jobs:
+  live:
+    name: host desktop (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: X tools (the test starts its own Xvfb)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb xdotool maim x11-utils x11-xserver-utils
+      - name: Host desktop — unit + live
+        env:
+          GALAIUS_LIVE_DESKTOP: "1"
+        run: uv run pytest tests/test_host_desktop.py tests/test_host_desktop_live.py tests/test_screen_target.py -v -rs -p no:cacheprovider

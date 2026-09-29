@@ -14,9 +14,11 @@ window manager, resize factor from the VLM transform); everything OS-specific st
 in the backend, coordinate math stays here.
 """
 
+import io
 from typing import Self
 
-from pydantic import BaseModel
+from PIL import Image
+from pydantic import BaseModel, Field, field_validator
 
 
 class Frame(BaseModel):
@@ -78,3 +80,54 @@ class Frame(BaseModel):
     def convert(self, x: float, y: float, to: "Frame") -> tuple[float, float]:
         """Convert a point in this frame to ``to``'s coordinate space (shared root)."""
         return to.from_root(*self.to_root(x, y))
+
+
+class RegionOutsideCapture(ValueError):
+    """A requested region does not lie inside the image it should crop."""
+
+
+class Framing(BaseModel):
+    """Which part of a capture to hand back, and how big: crop to ``region`` (``x, y, w, h`` in the
+    capture's own pixels), then shrink to ``max_width`` keeping the aspect ratio. A 5760-wide
+    three-monitor grab becomes one readable monitor without a trip through ImageMagick.
+
+    ``apply`` returns the new PNG and a one-line note mapping image points back to capture points
+    (the coordinates click / hover take), empty when nothing changed."""
+
+    region: tuple[int, int, int, int] | None = None
+    max_width: int | None = Field(None, gt=0)
+
+    @field_validator("region")
+    @classmethod
+    def _positive_size(cls, region):
+        if region is not None and (region[2] <= 0 or region[3] <= 0):
+            raise ValueError(f"region {list(region)} needs a positive width and height — [x, y, w, h]")
+        return region
+
+    def apply(self, png: bytes) -> tuple[bytes, str]:
+        if self.region is None and self.max_width is None:
+            return png, ""
+        img = Image.open(io.BytesIO(png))
+        width, height = img.size
+        x, y, w, h = self.region or (0, 0, width, height)
+        if x < 0 or y < 0 or x + w > width or y + h > height:
+            raise RegionOutsideCapture(
+                f"region {w}x{h}+{x}+{y} is not inside the {width}x{height} capture — give "
+                "x, y, w, h in the captured image's pixels"
+            )
+        cropped = (x, y, w, h) != (0, 0, width, height)
+        if cropped:
+            img = img.crop((x, y, x + w, y + h))
+        scale = w / self.max_width if self.max_width and self.max_width < w else 1.0
+        if scale == 1.0 and not cropped:
+            return png, ""
+        if scale != 1.0:
+            img = img.resize((self.max_width, max(1, round(h / scale))), Image.Resampling.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        note = (
+            f"(image {img.width}x{img.height} = capture region {w}x{h}+{x}+{y}"
+            + (f", downscaled scale {scale:g}" if scale != 1.0 else "")
+            + f"; an image point (u, v) is capture point ({x} + u*{scale:g}, {y} + v*{scale:g}))"
+        )
+        return buf.getvalue(), note

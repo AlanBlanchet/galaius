@@ -5,10 +5,7 @@ the whole ubuntu/macos/windows CI matrix and keep the promise honest."""
 
 import importlib
 
-import pytest
-
 from galaius.desktop import backend as db
-from galaius.config import Config
 from tests.support import browser_manager
 
 
@@ -32,20 +29,6 @@ def test_desktop_supported_is_linux_only(monkeypatch):
     for plat in ("darwin", "win32"):
         monkeypatch.setattr(db.sys, "platform", plat)
         assert db.desktop_supported() is False
-
-
-@pytest.mark.parametrize("plat", ["darwin", "win32"])
-def test_select_backend_off_linux(monkeypatch, plat):
-    monkeypatch.setattr(db.sys, "platform", plat)
-    # `local` → the cross-platform PortableBackend (pynput/mss), so macOS/Windows can drive the
-    # screen. (Construction is mocked to avoid touching a real display in the headless unit job.)
-    monkeypatch.setattr(db, "PortableBackend", lambda: "PORTABLE")
-    assert db.select_desktop_backend(Config(desktop_target="local")) == "PORTABLE"
-    # `nested` needs an X server (Xephyr/Xvfb) → still unsupported off Linux, with an actionable msg.
-    with pytest.raises(db.DesktopUnsupportedError) as exc:
-        db.select_desktop_backend(Config(desktop_target="nested"))
-    msg = str(exc.value).lower()
-    assert "browser" in msg and "issues/24" in msg
 
 
 def test_server_desktop_guard_off_linux(monkeypatch):

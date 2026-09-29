@@ -9,7 +9,7 @@ of each algorithm.
 
 from __future__ import annotations
 
-from typing import Self
+from typing import ClassVar, Self
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, PrivateAttr
@@ -203,3 +203,44 @@ class BoxArray(BaseModel):
         return np.array_equal(self._data, other._data)
 
     __hash__ = None  # type: ignore[assignment]
+
+
+class ScreenRect(BaseModel):
+    """An integer rectangle in desktop pixels (the unit input is sent in), origin top-left of the
+    primary monitor — so a monitor left of it has a negative ``x``."""
+
+    model_config = ConfigDict(frozen=True)
+
+    x: int
+    y: int
+    w: int
+    h: int
+
+    @property
+    def geometry(self) -> str:
+        """``WxH+X+Y``, the X11 geometry spelling agents and maim already read."""
+        return f"{self.w}x{self.h}{self.x:+d}{self.y:+d}"
+
+
+class Monitor(ScreenRect):
+    """One physical monitor: ``index`` is its position in the OS's own list (``screen:<index>``),
+    ``name`` the connector (``DP-1``) where the OS has one, else ``monitor<index>``."""
+
+    index: int
+    name: str
+
+
+class HostWindow(ScreenRect):
+    """A top-level window on the desktop: the OS's own handle (X window id, HWND, CGWindowNumber)
+    and the title the user reads."""
+
+    #: Below this a window is a utility artifact (Qt's 1x1 "Qt Selection Owner for <app>"), never
+    #: a drive/capture target — listing one made a wait or a launch believe the app had appeared.
+    MIN_SIDE: ClassVar[int] = 20
+
+    handle: int
+    title: str
+
+    @classmethod
+    def drivable(cls, w: int, h: int) -> bool:
+        return w >= cls.MIN_SIDE and h >= cls.MIN_SIDE

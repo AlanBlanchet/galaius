@@ -34,7 +34,6 @@ from galaius.desktop.backend import (  # noqa: F401
     desktop_supported,
     desktop_unsupported_message,
     nested_server_command,
-    select_desktop_backend,
 )
 from galaius.desktop.nested import NestedBackend  # noqa: F401
 from galaius.desktop.cursor import Cursor, _XFixesCursorImage  # noqa: F401

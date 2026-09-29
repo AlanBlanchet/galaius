@@ -47,14 +47,12 @@ from galaius.server.core import (  # noqa: F401
     undispatchable_tools,
 )
 
-# --- Sandbox / portable backend lifecycle ---
+# --- Sandbox lifecycle ---
 from galaius.server.sandbox import (  # noqa: F401
     _close_sandbox,
-    _get_portable,
     _get_sandbox,
     _idle_session_reaper,
     _reap_sandbox,
-    _resolve_portable_screen,
 )
 
 # --- Target resolution ---

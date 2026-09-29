@@ -20,14 +20,13 @@ import math
 import os
 import shutil
 import subprocess
-import sys
 import time
 from pathlib import Path
 
 import pytest
 
 from galaius.desktop import DesktopBackend, DesktopWindow, NestedBackend
-from tests.support.desktop import RecordingBackend
+from tests.support.desktop import RecordingBackend, tk_python
 
 FIXTURE = Path(__file__).parent / "fixtures" / "drag_window.py"
 PANEL = Path(__file__).parent / "fixtures" / "panel.py"
@@ -64,20 +63,6 @@ def test_click_count_repeats_the_press_release_pair(count: int) -> None:
     assert be.calls[1:] == [("down", "left"), ("up", "left")] * count
 
 
-def _tk_python() -> str | None:
-    """A Python whose tkinter starts a Tk() under X (uv's standalone Tk aborts on XCB)."""
-    for exe in ("/usr/bin/python3", sys.executable):
-        if not exe or not Path(exe).exists():
-            continue
-        probe = subprocess.run(
-            [exe, "-c", "import tkinter; tkinter.Tk().destroy()"],
-            capture_output=True,
-        )
-        if probe.returncode == 0:
-            return exe
-    return None
-
-
 def _skip_reason() -> str | None:
     import os
 
@@ -86,7 +71,7 @@ def _skip_reason() -> str | None:
     for tool in ("Xephyr", "xdotool", "maim"):
         if not shutil.which(tool):
             return f"{tool} not installed"
-    if _tk_python() is None:
+    if tk_python() is None:
         return "no Tk-capable Python (apt install python3-tk)"
     return None
 
@@ -99,7 +84,7 @@ def test_drag_window_in_circle(tmp_path: Path) -> None:
 
     backend = NestedBackend(display=98, size="700x600")
     try:
-        backend.spawn([_tk_python(), str(FIXTURE), str(pos_file), start_geom])
+        backend.spawn([tk_python(), str(FIXTURE), str(pos_file), start_geom])
 
         deadline = time.monotonic() + 8
         geom = None
@@ -160,7 +145,7 @@ def test_panel_interactions_nested(tmp_path: Path) -> None:
     state_path.write_text("{}")
     backend = NestedBackend(display=98, size="700x600")
     try:
-        backend.spawn([_tk_python(), str(PANEL), str(state_path), "360x420+120+90"])
+        backend.spawn([tk_python(), str(PANEL), str(state_path), "360x420+120+90"])
 
         state = _wait_for_state(state_path, lambda s: "widgets" in s)
         assert "widgets" in state, "panel never reported its widget geometry"
@@ -221,7 +206,7 @@ def test_a_ctrl_chord_reaches_the_app_through_the_nested_path(tmp_path: Path) ->
     state_path.write_text("{}")
     backend = NestedBackend(display=97, size="700x600")
     try:
-        backend.spawn([_tk_python(), str(PANEL), str(state_path), "360x420+120+90"])
+        backend.spawn([tk_python(), str(PANEL), str(state_path), "360x420+120+90"])
         state = _wait_for_state(state_path, lambda s: "widgets" in s)
         wx, wy, ww, wh = state["widgets"]["Enter text"]
         backend.click(wx + ww // 2, wy + wh // 2)  # focus, so the toplevel has the keyboard
@@ -251,8 +236,8 @@ def test_window_id_prefers_the_largest_same_titled_window(tmp_path):
     the exact bug that made `target="nested:aino"` grab the wrong window."""
     backend = NestedBackend(display=98, size="900x900")
     try:
-        backend.spawn([_tk_python(), str(PANEL), str(tmp_path / "small.json"), "200x200+0+0"])
-        backend.spawn([_tk_python(), str(PANEL), str(tmp_path / "big.json"), "640x760+150+80"])
+        backend.spawn([tk_python(), str(PANEL), str(tmp_path / "small.json"), "200x200+0+0"])
+        backend.spawn([tk_python(), str(PANEL), str(tmp_path / "big.json"), "640x760+150+80"])
         chosen = None
         for _ in range(60):
             ids = subprocess.run(
@@ -287,7 +272,7 @@ def test_desktop_window_drives_nested_backend(tmp_path: Path) -> None:
     state_path.write_text("{}")
     backend = NestedBackend(display=98, size="700x600")
     try:
-        backend.spawn([_tk_python(), str(PANEL), str(state_path), "360x420+120+90"])
+        backend.spawn([tk_python(), str(PANEL), str(state_path), "360x420+120+90"])
         widgets = _wait_for_state(state_path, lambda s: "widgets" in s)["widgets"]
 
         win = DesktopWindow.find_in(backend, "galaius-panel")
@@ -321,7 +306,7 @@ def test_double_click_fires_the_apps_dblclick_binding_in_the_nested_sandbox(tmp_
     state_path.write_text("{}")
     backend = NestedBackend(display=98, size="700x600")
     try:
-        backend.spawn([_tk_python(), str(PANEL), str(state_path), "360x420+120+90"])
+        backend.spawn([tk_python(), str(PANEL), str(state_path), "360x420+120+90"])
         widgets = _wait_for_state(state_path, lambda s: "widgets" in s)["widgets"]
         win = DesktopWindow.find_in(backend, "galaius-panel")
         assert win is not None
@@ -340,7 +325,7 @@ def _local_skip_reason() -> str | None:
         return "no real X display"
     if not os.access("/dev/uinput", os.W_OK):
         return "/dev/uinput not writable (needs a udev rule + the `input` group)"
-    if _tk_python() is None:
+    if tk_python() is None:
         return "no Tk-capable Python"
     return None
 
@@ -391,7 +376,7 @@ def test_local_backend_drives_real_panel(tmp_path: Path) -> None:
     state_path = tmp_path / "state.json"
     state_path.write_text("{}")
     proc = subprocess.Popen(
-        [_tk_python(), str(PANEL), str(state_path), "360x420+60+60"],
+        [tk_python(), str(PANEL), str(state_path), "360x420+60+60"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     backend = LocalBackend()

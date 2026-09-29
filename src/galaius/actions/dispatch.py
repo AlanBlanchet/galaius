@@ -35,6 +35,8 @@ from galaius.actions.models import (
 from galaius.browser import BrowserManager
 from galaius.debug_utils import Debug
 from galaius.desktop import DesktopWindow
+from galaius.desktop import host as desktop_host
+from galaius.desktop.waits import until_window
 from galaius.vision.detect import _desktop_context
 from galaius.state import DesktopState, PageState, StateChange, ref_locator
 
@@ -661,10 +663,24 @@ async def _d_sleep(c: _DesktopCtx) -> None:
     c.say(f"waited {c.action.duration}s")
 
 
+def _desktop_windows(win: DesktopWindow):
+    """The window lister for the desktop ``win`` lives on: its bound backend (the sandbox, or the
+    host desktop behind a screen target), else the host desktop."""
+    backend = win.backend if win.backend is not None else desktop_host.host_desktop()
+    return backend.windows
+
+
 @_handles("wait_for")
 async def _d_wait_for(c: _DesktopCtx) -> None:
-    # Bare pause only — the DOM-bearing forms are rejected by the runner's browser-only guard.
-    c.say(await c.action.execute(None))
+    # The DOM-bearing forms (selector / text) never get here: the runner's browser-only guard.
+    action, seconds = c.action, c.action.timeout / 1000
+    if action.window is not None:
+        c.say(await until_window(
+            _desktop_windows(c.win), action.window,
+            present=action.state == "visible", timeout_s=seconds,
+        ))
+    else:
+        c.say(await action.execute(None))
 
 
 @_handles("resize")
@@ -931,12 +947,12 @@ async def _run_actions_desktop(
             is_bridged_js = action.type == "evaluate_js" and await cdp_slot.available()
             if (
                 action.type in BROWSER_ONLY_ACTIONS
-                and not getattr(action, "is_pause", False)
+                and not getattr(action, "runs_on_desktop", False)
                 and not is_bridged_js
             ):
                 hint = (
-                    "a selector/text wait needs a DOM — on a desktop target use a bare wait_for "
-                    "(timeout only) to pause, then screenshot to check the state"
+                    "a selector/text wait needs a DOM — on a desktop target wait on "
+                    "window=\"<title>\" instead"
                     if isinstance(action, WaitForAction)
                     else "use a session instead of window (or relaunch with "
                          "--remote-debugging-port for a nested Electron/VS Code target)"

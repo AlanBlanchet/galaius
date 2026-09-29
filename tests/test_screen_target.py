@@ -1,8 +1,9 @@
 """`target="screen"` / `"screen:<n>"` — whole-desktop and per-monitor capture/detection/input.
 
-Multi-monitor correctness is the crux: a monitor target captures only its region (maim -g) and
-its detected coords are region-relative, so input must add the monitor origin to land on the
-right screen. These are display-free unit tests (xrandr/maim mocked); the real e2e is opt-in.
+Multi-monitor correctness is the crux: a monitor target captures only its region and its
+detected coords are region-relative, so input must add the monitor origin to land on the right
+screen. Display-free: the host desktop backend is a double; the real run is
+tests/test_host_desktop_live.py.
 """
 
 import subprocess
@@ -12,56 +13,75 @@ import pytest
 
 from galaius import server as srv
 from galaius.desktop import DesktopWindow, _SCREEN_WID
+from galaius.desktop.geometry import Monitor
 
 pytestmark = pytest.mark.usefixtures("desktop_gate_open")
 
 
-_XRANDR = """Monitors: 2
- 0: +*DP-1 2560/598x1440/336+0+0  DP-1
- 1: +HDMI-1 1920/509x1080/286+2560+0  HDMI-1
-"""
-_MONS = [
-    {"index": 0, "name": "DP-1", "w": 2560, "h": 1440, "x": 0, "y": 0},
-    {"index": 1, "name": "HDMI-1", "w": 1920, "h": 1080, "x": 2560, "y": 0},
-]
+class _Host:
+    """A host-desktop backend double: two monitors side by side, every call recorded."""
 
+    display = ":0"
 
-def test_monitors_parses_index_geometry_and_clean_output_name():
-    with patch("galaius.desktop.subprocess.check_output", return_value=_XRANDR):
-        assert DesktopWindow.monitors() == _MONS
+    def __init__(self):
+        self.calls: list[tuple] = []
 
+    def monitors(self):
+        return [
+            Monitor(index=0, name="DP-1", x=0, y=0, w=2560, h=1440),
+            Monitor(index=1, name="HDMI-1", x=2560, y=0, w=1920, h=1080),
+        ]
 
-def test_monitors_empty_when_xrandr_missing():
-    with patch("galaius.desktop.subprocess.check_output", side_effect=FileNotFoundError):
-        assert DesktopWindow.monitors() == []
+    def capture(self):
+        self.calls.append(("capture",))
+        return b"PNG"
+
+    def capture_region(self, x, y, w, h):
+        self.calls.append(("capture_region", x, y, w, h))
+        return b"PNG"
+
+    def click(self, x, y, button="left", count=1):
+        self.calls.append(("click", x, y, button, count))
+
+    def move(self, x, y):
+        self.calls.append(("move", x, y))
 
 
 def test_screen_whole_is_bounding_box_of_all_monitors():
-    with patch.object(DesktopWindow, "monitors", return_value=_MONS):
-        whole = DesktopWindow.screen("screen")
-    assert whole.is_screen and whole.screen_geometry == ""  # "" → bare maim, the full root
+    whole = DesktopWindow.screen("screen", _Host())
+    assert whole.is_screen
     assert (whole.w, whole.h) == (4480, 1440) and whole.wid == _SCREEN_WID
 
 
 @pytest.mark.parametrize("spec", ["screen:1", "screen:HDMI-1"])
 def test_screen_by_index_or_output_name(spec):
-    with patch.object(DesktopWindow, "monitors", return_value=_MONS):
-        mon = DesktopWindow.screen(spec)
-    assert mon.screen_geometry == "1920x1080+2560+0"
+    mon = DesktopWindow.screen(spec, _Host())
+    assert (mon.x, mon.y, mon.w, mon.h) == (2560, 0, 1920, 1080)
     assert mon.wid != _SCREEN_WID  # distinct cache key per monitor (no ref-cache collision)
 
 
 def test_screen_unknown_monitor_lists_available():
-    with patch.object(DesktopWindow, "monitors", return_value=_MONS):
-        err = DesktopWindow.screen("screen:9")
+    err = DesktopWindow.screen("screen:9", _Host())
     assert isinstance(err, str) and "0:DP-1" in err and "1:HDMI-1" in err
 
 
-def test_monitor_input_maps_by_region_origin():
-    """A coord detected at (10,10) on the right-hand monitor must click at absolute (2570,10)."""
-    with patch.object(DesktopWindow, "monitors", return_value=_MONS):
-        mon = DesktopWindow.screen("screen:1")
-    assert mon._input_xy(10, 10) == (2570, 10)
+@pytest.mark.parametrize(
+    "spec, expected",
+    [("screen", ("capture_region", 0, 0, 4480, 1440)), ("screen:1", ("capture_region", 2560, 0, 1920, 1080))],
+)
+def test_screen_capture_goes_through_the_host_backend(spec, expected):
+    host = _Host()
+    DesktopWindow.screen(spec, host).capture()
+    assert host.calls == [expected]
+
+
+@pytest.mark.asyncio
+async def test_monitor_input_maps_by_region_origin():
+    """A coord detected at (10,10) on the right-hand monitor must click at absolute (2570,10),
+    through the backend — never `xdotool --window <synthetic-wid>`."""
+    host = _Host()
+    await DesktopWindow.screen("screen:1", host).click(10, 10)
+    assert host.calls == [("click", 2570, 10, "left", 1)]
 
 
 def test_window_input_unaffected_uses_coordtransform():
@@ -70,20 +90,12 @@ def test_window_input_unaffected_uses_coordtransform():
     assert win._input_xy(10, 10) == win._to_xdotool(10, 10)  # window path unchanged
 
 
-@pytest.mark.parametrize(
-    "win_kwargs, expected_cmd",
-    [
-        ({"screen_geometry": ""}, ["maim"]),  # whole virtual screen
-        ({"screen_geometry": "1920x1080+2560+0"}, ["maim", "-g", "1920x1080+2560+0"]),  # monitor
-        ({}, ["maim", "-i", "123"]),  # ordinary window
-    ],
-)
-def test_capture_command_per_target(win_kwargs, expected_cmd):
-    win = DesktopWindow(name="t", wid=123, x=0, y=0, w=10, h=10, **win_kwargs)
+def test_window_capture_grabs_by_window_id():
+    win = DesktopWindow(name="t", wid=123, x=0, y=0, w=10, h=10)
     with patch("galaius.desktop.subprocess.run", return_value=MagicMock(returncode=0)), \
          patch("galaius.desktop.subprocess.check_output", return_value=b"PNG") as co:
         win.capture()
-    assert co.call_args.args[0] == expected_cmd
+    assert co.call_args.args[0] == ["maim", "-i", "123"]
 
 
 def _nonblank_png() -> bytes:
@@ -117,36 +129,6 @@ def test_capture_raises_window_before_grabbing(monkeypatch):
     assert raise_i < grab_i, f"window must be raised before maim grabs it; order={order}"
 
 
-def test_screen_target_capture_does_not_activate(monkeypatch):
-    """A screen/monitor target has no window to raise — never call windowactivate for it."""
-    with patch.object(DesktopWindow, "monitors", return_value=_MONS):
-        mon = DesktopWindow.screen("screen:1")
-    run = MagicMock(returncode=0)
-    with patch("galaius.desktop.subprocess.run", return_value=run) as r, \
-         patch("galaius.desktop.subprocess.check_output", return_value=_nonblank_png()):
-        mon.capture()
-    assert not any("windowactivate" in " ".join(map(str, c.args[0])) for c in r.call_args_list)
-
-
-@pytest.mark.asyncio
-async def test_screen_target_input_is_absolute_not_window_scoped(monkeypatch):
-    """A screen/monitor target has no real window — input must use absolute pointer positioning,
-    never `xdotool --window <synthetic-wid>` (which fails). Regression for the screen-input bug."""
-    from unittest.mock import AsyncMock
-
-    with patch.object(DesktopWindow, "monitors", return_value=_MONS):
-        mon = DesktopWindow.screen("screen:1")
-    run, xdo = AsyncMock(), AsyncMock()
-    monkeypatch.setattr(DesktopWindow, "_run", run)
-    monkeypatch.setattr(DesktopWindow, "_xdo", xdo)
-
-    await mon.click(10, 10)
-
-    assert not xdo.called, "screen target must not scope input to a (synthetic) window id"
-    moves = [c.args for c in run.call_args_list if "mousemove" in c.args]
-    assert moves == [("xdotool", "mousemove", "2570", "10")]  # absolute, region-origin mapped
-
-
 @pytest.mark.asyncio
 async def test_window_target_input_stays_window_relative(monkeypatch):
     """A real window keeps window-relative input (--window <wid>) — unchanged behaviour."""
@@ -167,8 +149,9 @@ async def test_window_target_input_stays_window_relative(monkeypatch):
 
 
 def test_resolve_target_routes_screen_to_screen_builder(monkeypatch):
-    sentinel = DesktopWindow(name="screen", wid=_SCREEN_WID, x=0, y=0, w=1, h=1, screen_geometry="")
-    monkeypatch.setattr(DesktopWindow, "screen", classmethod(lambda cls, spec: sentinel))
+    sentinel = DesktopWindow(name="screen", wid=_SCREEN_WID, x=0, y=0, w=1, h=1, is_screen=True)
+    monkeypatch.setattr(srv.targets, "host_desktop", lambda: _Host())
+    monkeypatch.setattr(DesktopWindow, "screen", classmethod(lambda cls, spec, host: sentinel))
     win, mgr, err = srv._resolve_target("screen", "default")
     assert win is sentinel and mgr is None and err is None
     win, mgr, err = srv._resolve_target("screen:0", "default")
@@ -199,14 +182,15 @@ def _run_capture_video(win):
 
 
 def test_capture_video_screen_target_uses_known_geometry(monkeypatch):
-    with patch.object(DesktopWindow, "monitors", return_value=_MONS):
-        mon = DesktopWindow.screen("screen:1")  # 1920x1080 at +2560,0
+    mon = DesktopWindow.screen("screen:1", _Host())  # 1920x1080 at +2560,0
     ff = _run_capture_video(mon)
     assert "x11grab" in ff and "1920x1080" in ff
     assert ff[ff.index("-i") + 1] == ":0+2560,0"  # region origin = monitor origin
 
 
-def test_capture_video_window_target_still_queries_xdotool():
+def test_capture_video_window_target_still_queries_xdotool(monkeypatch):
+    """A window is recorded on the session's own display, not a hard-coded ``:0``."""
+    monkeypatch.setenv("DISPLAY", ":7")
     win = DesktopWindow(name="App", wid=4242, x=0, y=0, w=100, h=100)
     run_cmds: list[list[str]] = []
 
@@ -218,7 +202,7 @@ def test_capture_video_window_target_still_queries_xdotool():
          patch("galaius.desktop.subprocess.check_output", fake_co):
         win.capture_video(duration=1, fps=5)
     ff = next(c for c in run_cmds if c[0] == "ffmpeg")  # skip the pre-record window-raise
-    assert "800x600" in ff and ff[ff.index("-i") + 1] == ":0+10,20"
+    assert "800x600" in ff and ff[ff.index("-i") + 1] == ":7+10,20"
 
 
 # --- headless/dedicated env: target="nested[:title]" drives an app in the isolated sandbox,

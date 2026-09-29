@@ -2,7 +2,40 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 from galaius.desktop import DesktopBackend, DesktopWindow, NestedBackend
+
+
+def tk_env(env: dict[str, str] | None = None) -> dict[str, str]:
+    """``env`` (default: this process's) with Tcl/Tk pointed at the base interpreter's libraries:
+    a venv over a standalone CPython (uv's) looks for Tcl beside the VENV and fails with "Can't find
+    a usable init.tcl"."""
+    out = dict(os.environ if env is None else env)
+    base = Path(sys.base_prefix)
+    for var, pattern, marker in (("TCL_LIBRARY", "tcl8.*", "init.tcl"), ("TK_LIBRARY", "tk8.*", "tk.tcl")):
+        found = [d for sub in ("lib", "tcl") for d in sorted((base / sub).glob(pattern)) if (d / marker).exists()]
+        if found and var not in out:
+            out[var] = str(found[0])
+    return out
+
+
+def tk_python(env: dict[str, str] | None = None) -> str | None:
+    """A Python whose tkinter starts a Tk() on ``env``'s display, or None. The system one first:
+    uv's standalone Tk aborts on XCB under X ("Unknown sequence number")."""
+    for exe in ("/usr/bin/python3", sys.executable):
+        if not exe or not Path(exe).exists():
+            continue
+        probe = subprocess.run(
+            [exe, "-c", "import tkinter; tkinter.Tk().destroy()"],
+            capture_output=True, env=tk_env(env), timeout=30,
+        )
+        if probe.returncode == 0:
+            return exe
+    return None
 
 
 def desktop_window(

@@ -17,6 +17,10 @@ import tempfile
 import time
 from abc import ABC, abstractmethod
 
+from PIL import Image
+
+from galaius.desktop.frames import Framing
+from galaius.desktop.geometry import HostWindow, Monitor
 from galaius.desktop.input import (
     ABS_MAX,
     MULTI_CLICK_GAP_MS,
@@ -192,13 +196,16 @@ def _x11_root_size(env: dict | None = None) -> tuple[int, int]:
 class DesktopBackend(ABC):
     """One desktop the agent drives: capture a frame, inject pointer/keyboard.
 
-    Two interchangeable implementations, selected by ``config.desktop_target``:
+    Implementations:
 
-    * :class:`LocalBackend` — the user's **real** session. Input via the system-wide
-      :class:`UinputPointer` (X11 + Wayland), capture via ``maim``.
-    * :class:`NestedBackend` — an **isolated** ``Xephyr`` display the agent owns. Input
-      and capture are scoped to that display (``xdotool``/``maim`` with ``DISPLAY=:N``),
-      so a test — or a VM-like sandbox — never touches the user's real windows or cursor.
+    * the host desktop (``galaius.desktop.host.host_desktop()``) — the user's own screen:
+      :class:`~galaius.desktop.x11.X11Display` on Linux X11, ``WindowsDesktop`` / ``MacDesktop``
+      (:class:`PortableBackend`: pynput + mss) elsewhere. What ``target="screen"`` drives.
+    * :class:`NestedBackend` — an **isolated** ``Xephyr`` display the agent owns (an
+      ``X11Display`` that starts its own server), so a test — or a VM-like sandbox — never
+      touches the user's real windows or cursor.
+    * :class:`LocalBackend` — the real session through a ``/dev/uinput`` device (X11 + Wayland),
+      used by the input probe.
 
     Coordinates are pixels in the *target's* screen space; convert other spaces in via
     :class:`galaius.frames.Frame`. ``click``/``drag``/``drag_circle`` are defined here
@@ -208,6 +215,19 @@ class DesktopBackend(ABC):
     @abstractmethod
     def capture(self) -> bytes:
         """PNG bytes of the whole target screen."""
+
+    def capture_region(self, x: int, y: int, w: int, h: int) -> bytes:
+        """PNG of one rectangle of the screen, in the same pixels input is sent in. Backends that
+        can grab a region directly override this; the default crops a full grab."""
+        return Framing(region=(x, y, w, h)).apply(self.capture())[0]
+
+    def monitors(self) -> list[Monitor]:
+        """The monitors of this desktop with their geometry — ``screen:<index>`` targets."""
+        raise NotImplementedError(f"{type(self).__name__} cannot list monitors")
+
+    def windows(self) -> list[HostWindow]:
+        """The titled top-level windows on this desktop, for listing and ``wait_for window=``."""
+        raise NotImplementedError(f"{type(self).__name__} cannot list windows")
 
     @abstractmethod
     def move(self, x: float, y: float) -> None: ...
@@ -397,14 +417,18 @@ class PortableBackend(DesktopBackend):
     behaviour is exercised in CI on real runners."""
 
     _BUTTONS = ("left", "right", "middle")
-    # chord tokens → pynput Key attribute names
+    # chord tokens → pynput Key attribute names. The X names (`Prior`, `Next`, `BackSpace`) are
+    # here too: `DesktopWindow.press_key` translates every key to X spelling before any backend
+    # sees it, so without them pageup raised on Windows / macOS.
     _KEYS = {
         "return": "enter", "enter": "enter", "tab": "tab", "esc": "esc", "escape": "esc",
         "space": "space", "backspace": "backspace", "delete": "delete", "del": "delete",
         "up": "up", "down": "down", "left": "left", "right": "right", "home": "home", "end": "end",
-        "pageup": "page_up", "pagedown": "page_down", "ctrl": "ctrl", "control": "ctrl",
-        "alt": "alt", "option": "alt", "shift": "shift", "cmd": "cmd", "super": "cmd",
-        "meta": "cmd", "win": "cmd",
+        "pageup": "page_up", "pagedown": "page_down", "prior": "page_up", "next": "page_down",
+        "insert": "insert", "menu": "menu", "print": "print_screen", "pause": "pause",
+        "capslock": "caps_lock", "ctrl": "ctrl", "control": "ctrl",
+        "alt": "alt", "option": "alt", "shift": "shift", "cmd": "cmd", "command": "cmd",
+        "super": "cmd", "meta": "cmd", "win": "cmd",
     }
 
     def __init__(self):
@@ -429,14 +453,32 @@ class PortableBackend(DesktopBackend):
         return True  # the real desktop is always there (no nested server to die)
 
     def capture(self) -> bytes:
-        from PIL import Image  # noqa: PLC0415
-
         with self._mss.mss() as sct:
-            shot = sct.grab(sct.monitors[0])  # [0] = the full virtual screen across all monitors
+            whole = sct.monitors[0]  # [0] = the full virtual screen across all monitors
+        return self.capture_region(whole["left"], whole["top"], whole["width"], whole["height"])
+
+    def capture_region(self, x: int, y: int, w: int, h: int) -> bytes:
+        """Grab a rectangle given in input units. On a Retina Mac mss returns 2x the pixels asked
+        for while pynput positions in points, so the image is scaled back to ``w`` x ``h``: one
+        image pixel = one pointer unit on every OS, or every click lands at twice the distance."""
+        with self._mss.mss() as sct:
+            shot = sct.grab({"left": x, "top": y, "width": w, "height": h})
         img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+        if img.size != (w, h):
+            img = img.resize((w, h), Image.Resampling.LANCZOS)
         buf = io.BytesIO()
         img.save(buf, format="PNG")
         return buf.getvalue()
+
+    def monitors(self) -> list[Monitor]:
+        """mss's physical monitors (its [0] is the virtual union), numbered from 0 in mss's order.
+        The OS gives mss no connector names, so each is called ``monitor<index>``."""
+        with self._mss.mss() as sct:
+            physical = sct.monitors[1:]
+        return [
+            Monitor(index=i, name=f"monitor{i}", x=m["left"], y=m["top"], w=m["width"], h=m["height"])
+            for i, m in enumerate(physical)
+        ]
 
     def move(self, x: float, y: float) -> None:
         self._mouse.position = (int(x), int(y))
@@ -624,23 +666,3 @@ def nested_server_command(display: str, size: str, headless: bool) -> list[str]:
     # someone types by hand, so they could never tell our display from anyone else's.
     return ["Xephyr", display, "-title", f"{SANDBOX_TITLE} {display}",
             "-screen", size, "-br", "-ac", "-noreset", "-no-host-grab"]
-
-
-
-
-def select_desktop_backend(config) -> DesktopBackend:
-    """Build the backend named by ``config.desktop_target`` (``local`` | ``nested``).
-
-    - ``nested`` → an isolated Xephyr/Xvfb display (Linux-only; raises
-      :class:`DesktopUnsupportedError` elsewhere — the nested sandbox needs an X server).
-    - ``local`` → the real session: :class:`LocalBackend` (uinput/maim) on Linux, the
-      cross-platform :class:`PortableBackend` (pynput/mss) on macOS/Windows so ``target="screen"``
-      automation works there too.
-    """
-    if config.desktop_target == "nested":
-        if not desktop_supported():
-            raise DesktopUnsupportedError(desktop_unsupported_message())
-        return NestedBackend(
-            config.nested_display, config.nested_size, headless=config.nested_headless
-        )
-    return LocalBackend() if desktop_supported() else PortableBackend()

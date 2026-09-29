@@ -11,6 +11,7 @@ from mcp.server.fastmcp.utilities.types import Image
 
 from galaius.config import DEFAULT_LIMIT
 from galaius.debug_utils import Debug
+from galaius.desktop.frames import Framing, RegionOutsideCapture
 from galaius.desktop import DesktopElement
 from galaius.models import is_audio_model, is_transcription_only_model
 from galaius.server import capture, core, targets, vlm
@@ -54,6 +55,8 @@ async def screenshot(
     target: str | None = None,
     session: str = _AUTO_SESSION,
     model: str | None = None,
+    region: tuple[int, int, int, int] | None = None,
+    max_width: int | None = None,
 ):
     """Capture the current page or a desktop window.
 
@@ -82,17 +85,44 @@ async def screenshot(
         target="file:<path>", not path.
     return_image: when True, return the raw screenshot bytes as an MCP ImageContent alongside the text,
         so the calling agent can SEE the pixels directly (not just a VLM summary).
+    region: [x, y, w, h] — keep only this rectangle of the capture (in the capture's own pixels:
+        monitor-relative for screen:<n>, window-relative for a window). Applied before query/path.
+    max_width: shrink the (cropped) image to at most this many pixels wide, aspect kept — a
+        5760-wide multi-monitor grab stays readable and cheap. With region/max_width the reply
+        states how an image point maps back to the capture coordinates click/hover take.
     model: override the configured VLM model for this call. Uses the VS Code configured model when not set.
     """
     inv = Debug.inv()
     Debug.dump_input(inv, {"tool": "screenshot", "query": query, "scope": scope, "selector": selector,
                            "element": element, "target": target, "session": session, "model": model},
                      vlm._resolved_config(model, "image"))
+    try:
+        framing = Framing(region=region, max_width=max_width)
+    except ValueError as exc:
+        return f"ERROR: {exc}"
     # target="file:<path>" analyzes an EXISTING image instead of capturing (no clobber, #44).
     file_bytes, ferr = targets._resolve_image_source(target)
     if ferr:
         return ferr
+    try:
+        return await _screenshot(
+            inv=inv, framing=framing, file_bytes=file_bytes, query=query, scope=scope,
+            selector=selector, element=element, path=path, return_image=return_image,
+            target=target, session=session, model=model,
+        )
+    except RegionOutsideCapture as exc:  # named with the capture's real size, so it can be fixed
+        return f"ERROR: {exc}"
+
+
+async def _screenshot(
+    *, inv, framing, file_bytes, query, scope, selector, element, path, return_image, target,
+    session, model,
+):
+    """The body of :func:`screenshot`, after its arguments are parsed. ``framing`` crops/shrinks
+    every captured image before it is analysed, saved or returned."""
+    frame_note = ""
     if file_bytes is not None:
+        file_bytes, frame_note = framing.apply(file_bytes)
         src = target.strip()[5:]
         label = f"Image file: {src}"
         media_mime = MediaItem.detect_mime(file_bytes)
@@ -108,6 +138,7 @@ async def screenshot(
             from PIL import Image as _PILImage
             w, h = _PILImage.open(_io.BytesIO(file_bytes)).size
             text = f"{label} ({w}x{h}) — pass query=… to analyze it, or use measure_ui for exact pixels."
+        text += f"\n{frame_note}" if frame_note else ""
         Debug.save("capture", file_bytes, ext=media_format, invocation_id=inv)
         out = [text, Image(data=file_bytes, format=media_format)] if return_image else text
         return out
@@ -119,6 +150,8 @@ async def screenshot(
     # target="file:<path>" above — `path` is an OUTPUT sink.
     overwrote_path = bool(path) and core._resolve_save_path(path).exists()
     img_bytes: bytes | None = None
+    if (element is not None or selector is not None) and not win and framing != Framing():
+        return "ERROR: region/max_width apply to page, window and screen captures, not to a browser element"
     if win:
         if element is not None:
             raw = win.capture()
@@ -126,7 +159,7 @@ async def screenshot(
             if el is None:
                 nf = core._not_found(f"Element {element}")
                 return nf
-            img_bytes = _crop_image(raw, el.x, el.y, el.w, el.h)
+            img_bytes, frame_note = framing.apply(_crop_image(raw, el.x, el.y, el.w, el.h))
             geometry = f"({el.w}x{el.h} at {el.x},{el.y})"
             # The LABEL is what must not survive a screen change. Cropping the live frame at a
             # ref's coordinates is what was asked for; telling the model those pixels are a widget
@@ -149,19 +182,22 @@ async def screenshot(
             )
             text = f"{core._desktop_label(win)}\n{result.text or meta}{note}"
         elif query:
-            img_bytes, description = await capture._capture_desktop(win, query, path, model_override=model)
+            img_bytes, description = await capture._capture_desktop(
+                win, query, path, model_override=model, framing=framing
+            )
             text = f"{core._desktop_label(win)}\n{description}"
         else:
             # No query → just capture. screenshot NEVER runs VLM grounding (get_interactive_elements'
             # job; a VLM call here would be slow + wrong). If a detection already exists for this
             # window, surface those refs so the capture is actionable; otherwise return metadata
             # and point the agent at the detect tool.
-            img_bytes = win.capture()
+            raw = win.capture()
+            img_bytes, frame_note = framing.apply(raw)
             dest = core._save_to_path(path, img_bytes) if path else None
             # Surface cached refs ONLY if they belong to the frame just captured — after a navigation
             # the live frame's signature differs, so we don't list a prior screen's refs on a screen
             # that's no longer shown (the screenshot↔elements desync, #19).
-            cached = DesktopElement.cached_for(win.wid, _page_signature(img_bytes))
+            cached = DesktopElement.cached_for(win.wid, _page_signature(raw))
             if cached:
                 text = f"{core._desktop_label(win)}\n{DesktopElement.format_list(cached)}"
             else:
@@ -177,7 +213,9 @@ async def screenshot(
         )
     else:
         state = await capture._capture(mgr, scope)
-        img_bytes = base64.b64decode(state.screenshot_base64)
+        img_bytes, frame_note = framing.apply(base64.b64decode(state.screenshot_base64))
+        if frame_note:  # the VLM must read the same pixels the caller gets back
+            state.screenshot_base64 = base64.b64encode(img_bytes).decode()
         dest = core._save_to_path(path, img_bytes) if path else None
         if query:
             text = _session_response(session, await vlm._analyze(state, query, model_override=model))
@@ -194,6 +232,8 @@ async def screenshot(
             text = _session_response(session, state.text_summary() + refs)
         if dest is not None:
             text += f"\n{core._saved_note(dest, img_bytes)}"
+    if frame_note:
+        text += f"\n{frame_note}"
     if overwrote_path:
         text += "\n(note: overwrote existing file with this capture)"
     # An empty frame is indistinguishable from "still loading", so a caller retries and waits

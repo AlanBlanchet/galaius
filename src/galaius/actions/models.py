@@ -520,9 +520,16 @@ class ScreenshotAction(ObservationAction):
 
 
 class WaitForAction(ObservationAction):
+    """Block until ONE condition holds, instead of a guessed sleep.
+
+    Browser: ``selector`` reaches ``state``, or ``text`` appears in the page.
+    Desktop (any OS): ``window`` — a window whose title contains it appears (``state="visible"``)
+    or is gone (``"hidden"``). No condition at all = a pause of ``timeout`` ms, on any target."""
+
     type: Literal["wait_for"] = "wait_for"
     selector: str | None = None
     text: str | None = None  # wait until this substring appears in the page's visible text
+    window: str | None = None
     state: Literal["visible", "hidden", "attached", "detached"] = "visible"
     timeout: int = 10000
 
@@ -534,18 +541,31 @@ class WaitForAction(ObservationAction):
         return v
 
     @property
+    def _conditions(self) -> list[str]:
+        return [k for k in ("selector", "text", "window") if getattr(self, k) is not None]
+
+    @property
     def is_pause(self) -> bool:
-        """A bare ``wait_for`` — a timeout and nothing else — means "pause for ``timeout`` ms".
-        No DOM is involved, so this form runs on ANY surface (see ``BROWSER_ONLY_ACTIONS``)."""
+        """A bare ``wait_for`` — a timeout and nothing else — means "pause for ``timeout`` ms"."""
+        return not self._conditions
+
+    @property
+    def runs_on_desktop(self) -> bool:
+        """Every form but the DOM ones (``selector`` / ``text``) runs on a desktop target (see
+        ``BROWSER_ONLY_ACTIONS``)."""
         return self.selector is None and self.text is None
 
     @model_validator(mode="after")
     def _require_condition(self):
-        # Only BOTH is ambiguous (wait for which?). Neither is the obvious "just pause" intent —
+        # Two conditions are ambiguous (wait for which?). None is the obvious "just pause" intent —
         # agents send `{"type":"wait_for","timeout":2000,"selector":null}` and used to get a
         # hard validation error (twice in 24h of client logs); it now pauses, as they meant.
-        if self.selector is not None and self.text is not None:
-            raise ValueError("Provide `selector` or `text` to wait for, not both")
+        if len(self._conditions) > 1:
+            raise ValueError(
+                f"wait_for takes one condition, got {', '.join(self._conditions)} — split it into steps"
+            )
+        if self.window is not None and self.state not in ("visible", "hidden"):
+            raise ValueError("a window wait takes state='visible' (appears) or 'hidden' (gone)")
         return self
 
     async def execute(self, page: Page):
@@ -553,7 +573,12 @@ class WaitForAction(ObservationAction):
         # (an element reaches a state, or text appears), then continue — no fixed duration to tune.
         if self.is_pause:
             await asyncio.sleep(self.timeout / 1000)
-            return f"waited {self.timeout}ms (no selector/text given)"
+            return f"waited {self.timeout}ms (no condition given)"
+        if self.window is not None:
+            raise ValueError(
+                "wait_for window= watches the desktop — run it with a desktop target "
+                '(target="screen", a window title, or "nested:<title>")'
+            )
         if self.text is not None:
             await page.wait_for_function(
                 "t => !!document.body && document.body.innerText.includes(t)",
