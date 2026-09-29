@@ -267,7 +267,8 @@ def test_an_older_runtime_rewriting_the_pointer_never_brings_a_retired_key_back(
 
 
 @pytest.mark.parametrize("direct_url", ['{"url": "https://github.com/AlanBlanchet/interact/archive/%s.zip", "archive_info": {}}',
-                                        '{"url": "https://github.com/AlanBlanchet/interact", "vcs_info": {"vcs": "git", "commit_id": "%s"}}'])
+                                        '{"url": "https://github.com/AlanBlanchet/interact", "vcs_info": {"vcs": "git", "commit_id": "%s"}}',
+                                        '{"url": "file:///D:/a/_temp/interact-install/source/interact-%s", "dir_info": {}}'])
 def test_an_install_from_a_github_archive_or_checkout_knows_its_commit_and_is_up_to_date(tmp_path, signer, published, monkeypatch, direct_url) -> None:
     commit = "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567"
     document = release("0.44.0", 20, commit=commit)

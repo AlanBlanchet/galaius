@@ -101,8 +101,8 @@ class BuildIdentity(ReleaseOrder):
 
     @classmethod
     def installed_commit(cls) -> str | None:
-        """The commit this install was built from: its stamped build, else the GitHub archive or
-        git commit an installer installed it from (the public install scripts)."""
+        """The commit this install was built from: its stamped build, else the GitHub archive (or
+        its unpacked folder) or git commit the public install scripts installed it from."""
         if (build := cls.installed()) is not None:
             return build.commit
         try:
@@ -111,7 +111,8 @@ class BuildIdentity(ReleaseOrder):
             return None
         if commit := made.get("vcs_info", {}).get("commit_id"):
             return commit
-        archive = re.search(r"/archive/([0-9a-f]{40})\.(?:zip|tar\.gz)$", made.get("url", ""))
+        # A GitHub archive of a commit, as downloaded, or as unpacked (GitHub names the folder <repo>-<sha>).
+        archive = re.search(r"(?:/archive/|/interact-)([0-9a-f]{40})(?:\.zip|\.tar\.gz)?/?$", made.get("url", ""))
         return archive.group(1) if archive else None
 
     def label(self) -> str:

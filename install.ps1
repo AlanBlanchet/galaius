@@ -75,7 +75,10 @@ function Install-FromArchives {
     New-Item -ItemType Directory -Path $work | Out-Null
     try {
         Write-Host 'Downloading interact...'
-        $archive = if ($env:INTERACT_ARCHIVE) { $env:INTERACT_ARCHIVE } else { 'https://github.com/AlanBlanchet/interact/archive/refs/heads/main.zip' }
+        # main's exact commit: the archive's folder then names it, and the install knows which build it
+        # is (an automatic upgrade never re-installs it). No answer from GitHub's API: main as is.
+        $commit = try { (Invoke-RestMethod -UseBasicParsing -Uri 'https://api.github.com/repos/AlanBlanchet/interact/commits/main').sha } catch { $null }
+        $archive = if ($env:INTERACT_ARCHIVE) { $env:INTERACT_ARCHIVE } elseif ($commit -match '^[0-9a-f]{40}$') { "https://github.com/AlanBlanchet/interact/archive/$commit.zip" } else { 'https://github.com/AlanBlanchet/interact/archive/refs/heads/main.zip' }
         $zip = Join-Path $work 'interact.zip'
         Invoke-WebRequest -UseBasicParsing -Uri $archive -OutFile $zip
         Expand-Archive -Path $zip -DestinationPath (Join-Path $work 'source')

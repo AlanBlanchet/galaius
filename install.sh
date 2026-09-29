@@ -58,7 +58,11 @@ install_from_archives() {
   work="$(mktemp -d)"
   trap 'rm -rf "$work"' EXIT INT TERM
   echo "Downloading interact…"
-  fetch "${INTERACT_ARCHIVE:-https://github.com/AlanBlanchet/interact/archive/refs/heads/main.tar.gz}" | tar -xz -C "$work"
+  # main's exact commit: the archive's folder then names it, and the install knows which build it is
+  # (an automatic upgrade never re-installs it). No answer from GitHub's API: main as is.
+  commit="$(fetch https://api.github.com/repos/AlanBlanchet/interact/commits/main 2>/dev/null | sed -n 's/^  "sha": "\([0-9a-f]\{40\}\)".*/\1/p' | head -n 1 || true)"
+  default="https://github.com/AlanBlanchet/interact/archive/${commit:-refs/heads/main}.tar.gz"
+  fetch "${INTERACT_ARCHIVE:-$default}" | tar -xz -C "$work"
   source_dir="$(find "$work" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
   core="$(sed -n 's/.*interact-core\.git@\([0-9a-f]\{40\}\).*/\1/p' "$source_dir/pyproject.toml")"
   [ -n "$core" ] || { echo "interact: cannot read the pinned interact-core version" >&2; exit 1; }
