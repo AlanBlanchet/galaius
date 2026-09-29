@@ -270,7 +270,7 @@ jobs:
           $core = (Get-ChildItem "$env:RUNNER_TEMP\wheels\interact_core-*.whl").FullName
           .venv\Scripts\python.exe scripts\install_runtime.py --public-wheel $public --core-wheel $core --checkout .
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          $installed = Join-Path $HOME '.local\bin\interact.exe'
+          $installed = Join-Path (uv tool dir --bin).Trim() 'interact.exe'  # where the one-liner put it
           $version = (& $installed --version).Trim()
           "installer's interact.exe runs $version"
           if ($version -ne '9.9.9') { throw "the installer's interact.exe runs $version, not the active runtime 9.9.9" }
