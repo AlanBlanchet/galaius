@@ -35,7 +35,7 @@ def base(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 def _config(base: Path, **settings) -> MachineConfig:
     return MachineConfig(server_url="http://127.0.0.1:8817", workspace_id=uuid4(), machine_id=uuid4(), token="t" * 40, permission_ceiling="full_access",
-                         working_directory=base, agent_roots=("project",), **settings)
+                         working_directory=base, agent_roots=("project",), **{"run_agents": True, **settings})
 
 
 def _agents(base: Path, tmp_path: Path, cli: tuple[str, ...] = ("false",), **settings) -> MachineAgents:

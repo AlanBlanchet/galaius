@@ -23,7 +23,7 @@ started before it. Linux only, from parts no process inside can loosen:
 Residual, stated: the CLI's sign-in file is readable inside (it needs it); the model API itself is
 an exit; folders deeper than `SCAN_DEPTH` below an opened folder are not checked for credential
 files or repositories; a steering file created by the agent exists in the folder for up to half a second
-before it is moved out; macOS and Windows have no fence here yet."""
+before it is moved out (an instruction file in a subfolder: until the turn ends); macOS and Windows have no fence here yet."""
 
 import ctypes
 import fnmatch
@@ -65,6 +65,13 @@ EGRESS: dict[str, tuple[str, ...]] = {
 #: obeys or runs later: never created or changed there by a fenced agent.
 STEERING = frozenset({".claude", ".mcp.json", ".vscode", ".envrc", ".githooks", ".husky", ".cursor", ".idea", ".devcontainer", ".gitmodules",
                       "claude.md", "agents.md", "gemini.md", "claude.local.md"})
+#: Instruction files an agent CLI or direnv reads in whichever folder it works in: read-only at
+#: any depth of a writable folder, and one created there is held for review when the turn ends.
+INSTRUCTIONS = frozenset({"claude.md", "claude.local.md", "agents.md", "gemini.md", ".envrc"})
+#: Per CLI: the variables holding its own key (the only secrets from the environment it keeps);
+#: every other variable that looks like a secret (`SECRET_SUFFIXES`) is unset inside.
+KEYS: dict[str, tuple[str, ...]] = {"claude": ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"), "codex": ("OPENAI_API_KEY", "CODEX_API_KEY")}
+SECRET_SUFFIXES = ("_API_KEY", "_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_PASS", "_CREDENTIALS")
 #: Hidden names that hold credentials: read as empty inside an opened folder.
 DOT_SECRETS = frozenset({".env", ".netrc", ".npmrc", ".pypirc", ".pgpass", ".git-credentials", ".ssh", ".gnupg", ".aws", ".kube", ".docker",
                          ".password-store", ".vault-token", ".terraform.d"})
@@ -149,6 +156,8 @@ class Fence(BaseModel):
     #: for new `STEERING` names, held in the review store `reviews`.
     guards: tuple[tuple[Path, str, Path], ...] = ()
     reviews: Path | None = None
+    #: Variables unset inside besides `UNSET`: secrets that are not the run's own CLI key.
+    secrets: tuple[str, ...] = ()
     MODULE: ClassVar[str] = "interact.fence"
 
     def command(self, argv: list[str]) -> list[str]:
@@ -171,7 +180,7 @@ class Fence(BaseModel):
         for link, target in self.links:
             view += ["--symlink", str(target), str(link)]
         view += ["--setenv", "HOME", str(self.home)]
-        for name in UNSET:
+        for name in (*UNSET, *self.secrets):
             view += ["--unsetenv", name]
         view += ["--chdir", str(self.cwd)]
         inner = [sys.executable, "-I", "-c", INNER, f"{EGRESS_MOUNT}/egress.sock", *argv]
@@ -186,6 +195,7 @@ class Scan(BaseModel):
     repositories: list[Path] = Field(default_factory=list)
     secret_files: list[Path] = Field(default_factory=list)
     secret_folders: list[Path] = Field(default_factory=list)
+    instructions: list[Path] = Field(default_factory=list)
 
     @classmethod
     def of(cls, folder: Path) -> "Scan":
@@ -213,6 +223,8 @@ class Scan(BaseModel):
                         stack.append((Path(entry.path), depth + 1))
                 elif secret and entry.is_file():
                     found.secret_files.append(Path(entry.path))
+                elif name in INSTRUCTIONS and entry.is_file():
+                    found.instructions.append(Path(entry.path))
         return found
 
 
@@ -271,6 +283,7 @@ class FenceSpec(BaseModel):
                               if child.name.casefold() in STEERING and not child.is_symlink()]
                     binds += [FenceBind(source=top / ".git" / name, target=top / ".git" / name, writable=False)
                               for name in ("hooks", "config", "info") if (top / ".git" / name).exists() and not (top / ".git" / name).is_symlink()]
+                binds += [FenceBind(source=found, target=found, writable=False) for found in scan.instructions]
             emptied += [folder / found.relative_to(source) for found in scan.secret_folders]
             blanked += [folder / found.relative_to(source) for found in scan.secret_files]
         # A folder set below `read` inside one set at `read` or later: empty inside.
@@ -283,7 +296,13 @@ class FenceSpec(BaseModel):
             if not any(root.is_relative_to(folder) for folder in SYSTEM) and not home.is_relative_to(root) and not any(bind.target == root for bind in binds):
                 binds.append(FenceBind(source=root, target=root, writable=False))
         return Fence(home=home, cwd=self.start.resolve(), binds=tuple(binds), emptied=tuple(emptied), blanked=tuple(blanked), links=links, egress=self.egress,
-                     guards=tuple(guards), reviews=self.reviews)
+                     guards=tuple(guards), reviews=self.reviews, secrets=self._foreign_secrets())
+
+    def _foreign_secrets(self) -> tuple[str, ...]:
+        """Variables of the launching environment that look like secrets and are not the key of a
+        CLI this run uses (a model key of another provider, a cloud token): unset inside."""
+        own = {name for provider in self.providers for name in KEYS.get(provider, ())}
+        return tuple(sorted(name for name in os.environ if name.upper().endswith(SECRET_SUFFIXES) and name not in own))
 
     def _tool_state(self, home: Path) -> list[FenceBind]:
         """Each CLI's state as a private copy: an empty folder, its sign-in / settings / owner
@@ -435,14 +454,24 @@ class SteeringGuard(BaseModel):
                 found.add(top / ".git" / "hooks")
         return found
 
-    def sweep(self, before: set[Path]) -> None:
+    def nested(self) -> set[Path]:
+        """Instruction files at any depth of the guarded folders (walked once, when a turn starts and ends)."""
+        found = set()
+        for folder in {folder for _, _, folder in self.guards}:
+            try:
+                found |= set(Scan.of(folder).instructions)
+            except PermissionError:
+                continue
+        return found
+
+    def sweep(self, before: set[Path], deep: bool = False) -> None:
         if self.reviews is None:
             return
         # registry → fence → place_reviews → registry: the store is loaded where it is used.
         from interact.place_reviews import PlaceReviews
         store = PlaceReviews(root=self.reviews)
-        for path in sorted(self.candidates() - before):
-            top, place, folder = next(guard for guard in self.guards if path.parent == guard[0] or path.parent.parent == guard[0])
+        for path in sorted((self.candidates() | (self.nested() if deep else set())) - before):
+            top, place, folder = next(guard for guard in self.guards if path.is_relative_to(guard[2]))
             try:
                 store.hold(place, folder, path)
                 print(f"interact fence: {path.relative_to(folder)} held for the owner's review (interact machine reviews)", file=sys.stderr)
@@ -454,7 +483,7 @@ def outer(hosts: tuple[str, ...], guard: SteeringGuard, argv: list[str]) -> int:
     """Outside the view: scopes, the egress proxy on a fresh socket, bwrap as a child (signals
     passed on), steering names swept while it runs and once it ended; its exit code returned."""
     scope_self()
-    before = guard.candidates()
+    before = guard.candidates() | guard.nested()
     with tempfile.TemporaryDirectory(prefix="ifence-") as folder:
         threading.Thread(target=EgressProxy(hosts=hosts).serve, args=(os.path.join(folder, "egress.sock"),), daemon=True).start()
         child = subprocess.Popen([part.replace("{egress}", folder) for part in argv])
@@ -466,7 +495,7 @@ def outer(hosts: tuple[str, ...], guard: SteeringGuard, argv: list[str]) -> int:
                 break
             except subprocess.TimeoutExpired:
                 guard.sweep(before)
-        guard.sweep(before)
+        guard.sweep(before, deep=True)
         return code
 
 

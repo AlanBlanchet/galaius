@@ -37,6 +37,7 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         "work/app/.git/config": "[core]\n",
         "work/app/.git/HEAD": "ref: refs/heads/main\n",
         "work/app/CLAUDE.md": "the owner's instructions",
+        "work/app/src/AGENTS.md": "the owner's nested instructions",
         "sandbox/app/.git/hooks/pre-commit.sample": "#!/bin/sh\n",
         "sandbox/app/.git/config": "[core]\n",
         ".claude/settings.json": "{}",
@@ -172,6 +173,10 @@ print(json.dumps({
     "folder_mcp_json": attempt(write("work/.mcp.json")),
     "folder_claude_md": attempt(write("work/CLAUDE.md")),
     "existing_claude_md": attempt(write("work/app/CLAUDE.md", "obey me")),
+    "existing_nested_agents_md": attempt(write("work/app/src/AGENTS.md", "obey me")),
+    "nested_claude_md": attempt(write("work/app/src/deep/CLAUDE.md", "obey me")),
+    "other_key": os.environ.get("GEMINI_API_KEY", ""),
+    "own_key": os.environ.get("ANTHROPIC_API_KEY", ""),
     "sandbox_top": attempt(write("sandbox/anything.txt")),
     "sandbox_git_hook": attempt(write("sandbox/app/.git/hooks/post-checkout")),
     "review_write": attempt(write("review/draft.txt", "edited")),
@@ -209,11 +214,11 @@ def test_a_fenced_agent_cannot_leave_anything_that_runs_after_it(home: Path, tmp
     tool state, hooks / settings in a Write folder, localhost, secrets below an open folder."""
     fence = _spec(home, tmp_path).build()
     done = subprocess.run(fence.command([sys.executable, "-c", PROBE, str(listener)]), cwd=fence.cwd, capture_output=True, text=True, timeout=60,
-                          env={**os.environ, "DISPLAY": ":0"})
+                          env={**os.environ, "DISPLAY": ":0", "GEMINI_API_KEY": "other-provider-key", "ANTHROPIC_API_KEY": "own-key"})
     assert done.returncode == 0, done.stderr
     seen = json.loads(done.stdout)
     refused = ("hidden", "see_level", "read_write", "key_in_open_folder", "pem_in_open_folder", "env_in_open_folder", "git_hook", "git_config",
-               "existing_claude_md", "sandbox_git_hook", "config_env", "claude_settings", "localhost", "x11")
+               "existing_claude_md", "existing_nested_agents_md", "sandbox_git_hook", "config_env", "claude_settings", "localhost", "x11")
     assert {name: seen[name] for name in refused if seen[name] == "ok"} == {}
     assert seen["read"] == seen["write_existing"] == seen["write_new_below"] == seen["sandbox_top"] == seen["own_transcript"] == seen["credentials"] == "ok"
     assert seen["claude_bin"] is seen["claude_ide"] is seen["other_transcripts"] is seen["bus"] is False
@@ -229,7 +234,10 @@ def test_a_fenced_agent_cannot_leave_anything_that_runs_after_it(home: Path, tmp
     assert not any((home / name).exists() for name in ("work/CLAUDE.md", "work/.mcp.json", "work/app/.claude"))
     from interact.place_reviews import PlaceReviews
     held = {item.path for review in PlaceReviews(root=tmp_path / "reviews").list() for item in review.files}
-    assert {"CLAUDE.md", ".mcp.json", "app/.claude/settings.json"} <= held
+    assert {"CLAUDE.md", ".mcp.json", "app/.claude/settings.json", "app/src/deep/CLAUDE.md"} <= held
+    assert not (home / "work/app/src/deep/CLAUDE.md").exists()
+    # Only the keys of the CLI the run uses reach it.
+    assert seen["other_key"] == "" and seen["own_key"] == "own-key"
 
 
 @pytest.mark.asyncio

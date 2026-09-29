@@ -942,3 +942,8 @@ def test_approve_script_pending_asks_once_per_waiting_version_on_this_machine(tm
     machine_command.machine_approve_script(pending=True)
     result = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert calls == [ScriptImplementation.inline_digest("python", "print(1)\n")] and result["skipped"] == [ScriptImplementation.inline_digest("shell", "rm x\n")]
+
+
+def test_agents_stay_off_until_the_owner_turns_them_on_there(tmp_path: Path) -> None:
+    """An agent CLI can read what its user can: no path that saves a machine turns them on for him."""
+    assert _config(tmp_path, "read_only").run_agents is False

@@ -84,7 +84,7 @@ class MachineConfig(BaseModel):
     #: Whether agent steps run here. An agent CLI on this computer can read any file its user can,
     #: whatever the file roots, so `interact login` asks its owner once (default off); changed here
     #: later (`interact machine agents on|off`), never from the server.
-    run_agents: bool = True
+    run_agents: bool = False
     #: The folders the owner lets agents be STARTED in from the web (any plain folder beneath one),
     #: relative to `working_directory` - set here (`interact machine agent-roots`), none by default.
     #: A file root's rules, and never overlapping a file or script root: no workflow file step can
