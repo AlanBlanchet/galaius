@@ -16,7 +16,7 @@ from interact.config.settings import Config
 from interact.upgrade.check import UpgradeCheck
 from interact.upgrade.release import BuildIdentity, Release, ReleaseFile, ReleaseRefused
 from interact.upgrade.source import ReleaseKeys, ReleaseSigner, ReleaseSource
-from interact.upgrade.store import RuntimeReceipt, RuntimeStore, Uv
+from interact.upgrade.store import Runtime, RuntimeReceipt, RuntimeStore, Uv
 from interact.upgrade.supervisor import Supervision, Supervisor
 
 WHEEL = b"not really a wheel"
@@ -121,8 +121,8 @@ def test_the_newest_build_is_activated_again_after_a_rollback_or_an_unpin(tmp_pa
     check = checker(tmp_path, signer, published, monkeypatch)
     older, newest = (tmp_path / "runtimes" / name for name in ("0.44.0-older", "0.44.0-newest"))
     for path, identity in ((older, "0" * 64), (newest, document.identity)):
-        (path / "bin").mkdir(parents=True)
-        (path / "bin" / "python").write_text("")
+        Runtime(path=path).python.parent.mkdir(parents=True)
+        Runtime(path=path).python.write_text("")
         (path / "installation.json").write_text(RuntimeReceipt(build=BuildIdentity.of(document), identity=identity, source="server", installed_at=datetime.now(UTC), packages={}).model_dump_json())
     check.store._update(lambda pointer: pointer.model_copy(update={"active": older, "floor": document.order}))
     published.publish(signer, document)

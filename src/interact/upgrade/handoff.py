@@ -8,6 +8,7 @@ when a supervisor in it asks to become a newer runtime's (`EXIT_HANDOVER`). `int
 hands off: it is how a person repairs a broken active runtime."""
 
 import os
+import signal
 import subprocess
 import sys
 from typing import ClassVar, NoReturn
@@ -15,6 +16,39 @@ from typing import ClassVar, NoReturn
 from pydantic import BaseModel, ConfigDict
 
 from interact.upgrade.store import EXIT_HANDOVER, Runtime, RuntimeStore
+
+if sys.platform == "win32":
+    import win32api
+    import win32con
+    import win32job
+elif sys.platform == "linux":
+    import ctypes
+
+
+class Children:
+    """Workers never outlive their supervisor. Windows: each sits in a job closed with this process.
+    Linux: a passthrough worker gets SIGTERM when its parent dies (a relayed one ends on its closed
+    input). macOS: a killed supervisor can leave a passthrough worker running."""
+
+    def __init__(self) -> None:
+        self.job = None
+        if sys.platform == "win32":
+            self.job = win32job.CreateJobObject(None, "")
+            limits = win32job.QueryInformationJobObject(self.job, win32job.JobObjectExtendedLimitInformation)
+            limits["BasicLimitInformation"]["LimitFlags"] |= win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            win32job.SetInformationJobObject(self.job, win32job.JobObjectExtendedLimitInformation, limits)
+
+    @staticmethod
+    def options(threaded: bool) -> dict:
+        """Popen options binding the child to this process (never a fork hook in a threaded one)."""
+        if sys.platform != "linux" or threaded:
+            return {}
+        return {"preexec_fn": lambda: ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGTERM)}  # PR_SET_PDEATHSIG
+
+    def hold(self, process: subprocess.Popen) -> None:
+        if self.job is not None:
+            handle = win32api.OpenProcess(win32con.PROCESS_SET_QUOTA | win32con.PROCESS_TERMINATE, False, process.pid)
+            win32job.AssignProcessToJobObject(self.job, handle)
 
 
 class Handoff(BaseModel):
@@ -37,15 +71,22 @@ class Handoff(BaseModel):
             return active
         return active if long_lived and sys.platform == "win32" else None
 
+    @staticmethod
+    def flushed() -> None:
+        """Pending output written before this process is replaced (none under pythonw: no streams)."""
+        for stream in (sys.stdout, sys.stderr):
+            if stream is not None:
+                stream.flush()
+
     def continue_in(self, runtime: Runtime, command: tuple[str, ...]) -> NoReturn:
-        sys.stdout.flush()
-        sys.stderr.flush()
+        self.flushed()
         if sys.platform != "win32":
             os.execv(runtime.python, runtime.command(command))
-        environment = {**os.environ, self.child: "1"}
+        environment, children = {**os.environ, self.child: "1"}, Children()
         while True:
-            code = subprocess.call(runtime.command(command), env=environment)
-            if code != EXIT_HANDOVER:
+            process = subprocess.Popen(runtime.command(command), env=environment)
+            children.hold(process)  # stopping this process (a logon task stop) stops the child too
+            if (code := process.wait()) != EXIT_HANDOVER:
                 raise SystemExit(code)
             runtime = self.store.active()
 
@@ -53,8 +94,7 @@ class Handoff(BaseModel):
         """A running supervisor becomes `runtime`'s: in place on POSIX, through its waiting parent
         on Windows. Remembered until the new one starts (`RuntimeStore.failed_handover`)."""
         self.store.hand_over(runtime)
-        sys.stdout.flush()
-        sys.stderr.flush()
+        self.flushed()
         if sys.platform != "win32":
             os.execv(runtime.python, runtime.command(command))
         raise SystemExit(EXIT_HANDOVER)

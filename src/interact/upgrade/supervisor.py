@@ -31,16 +31,8 @@ from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from interact.upgrade.handoff import Handoff
+from interact.upgrade.handoff import Children, Handoff
 from interact.upgrade.store import EXIT_UPGRADE, Runtime, RuntimeStore
-
-if sys.platform == "win32":
-    import win32api
-    import win32con
-    import win32job
-elif sys.platform == "linux":
-    import ctypes
-
 
 class SupervisorSettings(BaseModel):
     """How a supervisor waits and behaves; `INTERACT_SUPERVISOR_<FIELD>` overrides one (tests)."""
@@ -102,32 +94,6 @@ class WorkerState(BaseModel):
     model_config = ConfigDict(frozen=True)
     holds: bool
     at: float
-
-
-class Children:
-    """Workers never outlive their supervisor. Windows: each sits in a job closed with this process.
-    Linux: a passthrough worker gets SIGTERM when its parent dies (a relayed one ends on its closed
-    input). macOS: a killed supervisor can leave a passthrough worker running."""
-
-    def __init__(self) -> None:
-        self.job = None
-        if sys.platform == "win32":
-            self.job = win32job.CreateJobObject(None, "")
-            limits = win32job.QueryInformationJobObject(self.job, win32job.JobObjectExtendedLimitInformation)
-            limits["BasicLimitInformation"]["LimitFlags"] |= win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-            win32job.SetInformationJobObject(self.job, win32job.JobObjectExtendedLimitInformation, limits)
-
-    @staticmethod
-    def options(threaded: bool) -> dict:
-        """Popen options binding the child to this process (never a fork hook in a threaded one)."""
-        if sys.platform != "linux" or threaded:
-            return {}
-        return {"preexec_fn": lambda: ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGTERM)}  # PR_SET_PDEATHSIG
-
-    def hold(self, process: subprocess.Popen) -> None:
-        if self.job is not None:
-            handle = win32api.OpenProcess(win32con.PROCESS_SET_QUOTA | win32con.PROCESS_TERMINATE, False, process.pid)
-            win32job.AssignProcessToJobObject(self.job, handle)
 
 
 class Worker:
@@ -482,8 +448,7 @@ class StdioRelay(Supervisor):
         """Never returns: the client-reader thread may sit in `stdin.readline` holding the buffer
         lock, which aborts a normal interpreter shutdown; the exit code leaves directly instead."""
         code = _Relay(self).serve()
-        sys.stdout.flush()
-        sys.stderr.flush()
+        Handoff.flushed()
         os._exit(code)
 
 

@@ -114,7 +114,7 @@ def main() -> None:
     `machine connect`, the TUI) then starts as its supervisor, which runs it again as a worker; a
     worker at its quiet point exits `EXIT_UPGRADE` for the supervisor to start the new runtime."""
     force_utf8_io()
-    command = Supervisor.command(tuple(sys.argv[1:]), sys.stdout.isatty())
+    command = Supervisor.command(tuple(sys.argv[1:]), sys.stdout is not None and sys.stdout.isatty())  # pythonw: no stdout
     if Supervisor.eligible():
         handoff = Handoff(store=RuntimeStore.default())
         if (target := handoff.target(command, Supervisor.member(command) is not None)) is not None:
