@@ -105,13 +105,12 @@ class RuntimeReceipt(BaseModel):
 
 
 class Pointer(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    #: Fields a newer runtime adds survive this one rewriting the pointer.
+    model_config = ConfigDict(frozen=True, extra="allow")
     active: Path | None = None
     previous: Path | None = None
     floor: ReleaseOrder | None = None
     failed: tuple[str, ...] = ()
-    #: Release keys this computer no longer trusts (fingerprints): only ever grows.
-    retired: tuple[str, ...] = ()
     generation: int = 0
 
 
@@ -304,11 +303,24 @@ class RuntimeStore(BaseModel):
                 return Runtime(path=path)
         return None
 
+    @property
+    def retired_path(self) -> Path:
+        """Release keys this computer no longer trusts: their own file, which runtimes from before
+        it existed never rewrite (they drop pointer fields they do not know)."""
+        return self.root / "retired-keys.json"
+
+    def retired(self) -> set[str]:
+        try:
+            return set(json.loads(PRIVATE_FILES.read_text(self.retired_path)))
+        except FileNotFoundError:
+            return set()
+
     def retire(self, fingerprints: set[str]) -> None:
-        """Never trust these release keys again here, whatever runtime runs later."""
-        if not fingerprints - set(self.pointer().retired):
-            return
-        self._update(lambda current: current.model_copy(update={"retired": tuple(sorted({*current.retired, *fingerprints}))}))
+        """Never trust these release keys again here, whatever runtime runs later: only ever grows."""
+        with self.locked():
+            known = self.retired()
+            if fingerprints - known:
+                PRIVATE_FILES.write_text(self.retired_path, json.dumps(sorted(known | fingerprints)) + "\n")
 
     def failed(self, identity: str) -> bool:
         return identity in self.pointer().failed

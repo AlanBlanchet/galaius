@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from interact.machines import MachineConfig, MachineRunner
+from interact.private_files import PRIVATE_FILES
 from interact.server_tool_settings import PORTABLE_ENV
 from interact.config.settings import Config
 from interact.upgrade.check import UpgradeCheck
@@ -229,7 +230,7 @@ def test_a_retired_key_signs_nothing_this_computer_installs_even_after_a_rollbac
     published.publish(signer, release("0.44.0", 30))
     check.run()
     assert check.store.events()[-1].kind == "refused" and check.store.pointer().active is None
-    assert check.store.pointer().retired == (signer.fingerprint(),)
+    assert check.store.retired() == {signer.fingerprint()}
 
 
 def test_the_package_retires_the_key_that_was_readable_on_the_owner_pc() -> None:
@@ -252,3 +253,12 @@ def test_uv_is_found_where_its_installers_put_it_even_off_a_service_path(tmp_pat
     installed.parent.mkdir(parents=True)
     installed.write_text("")
     assert Uv.find(tmp_path / "data").path == installed
+
+
+def test_an_older_runtime_rewriting_the_pointer_never_brings_a_retired_key_back(tmp_path) -> None:
+    store = RuntimeStore(root=tmp_path / "runtimes")
+    store.retire({"sha256:" + "a" * 64})
+    PRIVATE_FILES.write_text(store.pointer_path, '{"active": null, "previous": null, "floor": null, "failed": [], "generation": 7}\n')  # as 75cc731 writes it
+    store._update(lambda pointer: pointer.model_copy(update={"failed": ("b" * 64,)}))
+    assert store.retired() == {"sha256:" + "a" * 64}
+    assert "failed" in store.pointer_path.read_text() and store.pointer().generation == 8

@@ -44,7 +44,7 @@ class UpgradeCheck(BaseModel):
         UserConfig.apply(portable=False)
         store = RuntimeStore.default()
         store.retire(ReleaseKeys.retired_by_package())
-        return cls(store=store, keys=ReleaseKeys.shipped(set(store.pointer().retired)), config=Config())
+        return cls(store=store, keys=ReleaseKeys.shipped(store.retired()), config=Config())
 
     @staticmethod
     def server() -> str | None:
@@ -110,7 +110,7 @@ class UpgradeCheck(BaseModel):
             return "no Interact server set up (interact login), so no release to check"
         with self.exclusive(), source.client() as http:
             try:
-                release = source.latest(http, self.keys.without(set(self.store.pointer().retired)))
+                release = source.latest(http, self.keys.without(self.store.retired()))
             except ReleaseRefused as error:
                 return self.refused(f"{source.base}: {error}")
             except ValidationError as error:
