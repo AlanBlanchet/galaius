@@ -61,6 +61,14 @@ _APP = textwrap.dedent(
         root.destroy()
         return "break"
     text.bind("<Return>", done)
+    if sys.platform == "darwin":
+        # This Tk build paints nothing but the title bar on a CI macOS session (seen on the
+        # runner's own screen, keys still arriving); a 1-px resize forces it to repaint.
+        def nudge(flip=[0]):
+            flip[0] ^= 1
+            root.geometry(f"{520 + flip[0]}x300")
+            root.after(400, nudge)
+        root.after(400, nudge)
     root.after(60000, root.destroy)
     root.mainloop()
     """
