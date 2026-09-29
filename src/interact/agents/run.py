@@ -26,7 +26,7 @@ from interact_core import AgentRevisionRef
 from interact.agents import registry as reg
 from interact.agents import quota
 from interact.agents.ceiling import contained
-from interact.fence import Fence, fenced
+from interact.fence import FenceSpec, fenced
 from interact.processes import process_group_options, spawnable
 from interact.agents.policy import Policy, policy_path
 from interact.agents.profiles import overlay_for, profiles_from
@@ -856,7 +856,7 @@ async def run_agent(
     denied_tools: tuple[str, ...] = (),
     provider_modes: dict[str, str] | None = None,
     quota_window: float | None = None,
-    fence: Fence | None = None,
+    fence: FenceSpec | None = None,
 ) -> RunHandle:
     """Spawn an agent run and register it, returning as soon as it is alive.
 
@@ -875,8 +875,8 @@ async def run_agent(
     overlay; a caller cannot hand over an environment, because a model that can set
     ``LD_PRELOAD`` or ``PATH`` on the process it spawns has escaped every other guard here.
 
-    ``fence`` starts every turn of the run inside that OS fence (:mod:`interact.fence`), recorded on
-    the run so a resumed turn gets the same one; the machine runner builds it from its levels.
+    ``fence`` starts every turn of the run inside the OS fence that spec builds (:mod:`interact.fence`),
+    recorded on the run and built again at each turn from the machine's levels as they are then.
 
     ``parent_run_id`` defaults to ``INTERACT_PARENT_RUN_ID`` — set on a spawned agent's own MCP
     server by :func:`mesh_config` — so an agent spawning an agent produces a connected tree with

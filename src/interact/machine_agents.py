@@ -39,7 +39,7 @@ from interact.agents import registry as reg
 from interact.agents.host import ConversationHost, ConversationRefused
 from interact.agents.providers import PROVIDERS
 from interact.agents.run import LAUNCH_STAMP, launch_editor_turn, load_policy, rank_candidates
-from interact.fence import TOOL_STATE, Fence, available
+from interact.fence import EGRESS, FenceSpec, available
 from interact.file_lock import exclusive
 from interact.place_reviews import PlaceReviews
 from interact.places import LEVEL_RANK, PlaceMap, split
@@ -247,6 +247,10 @@ class MachineAgents(BaseModel):
     places: PlaceMap | None = None
     fence_agents: bool = False
     reviews: PlaceReviews | None = None
+    #: The machine file the fence reads the levels from at each turn; extra hosts agents reach (this
+    #: machine's server).
+    levels_file: Path | None = None
+    egress: tuple[str, ...] = ()
 
     @staticmethod
     def own_cli() -> tuple[str, ...]:
@@ -530,28 +534,31 @@ class MachineAgents(BaseModel):
         self.runs.add(WebRun(run_id=run_id, root=request.root, path=request.path, fenced=fence is not None))
         return MachineAgentAnswer(request_id=request.id, run_id=run_id, fenced=fence is not None)
 
-    def _fence(self, root: str, folder: Path) -> tuple[Fence, UUID | None]:
-        """The fence an agent starting in `folder` (beneath agent root `root`) runs inside, and the
-        review holding its staging copy when that folder is write-after-review. An agent root
-        with no level of its own opens as the permission agents start with says (read_only: read;
-        else write), so agents keep working where they always did, and nowhere else."""
+    def _fence(self, root: str, folder: Path) -> tuple[FenceSpec, UUID | None]:
+        """What the fence of an agent starting in `folder` is built from, and the review holding its
+        staging copy when that folder is write-after-review. The folder needs a level its owner set
+        (read or later): an agent folder never opens on its own. Built once here so a start that
+        cannot be fenced is refused before anything runs; every turn builds it again."""
         ready, reason = available()
         if not ready:
             raise PermissionError(f"the agent fence is on here but cannot be built: {reason}; its owner switches it off there with `interact machine fence off` to start agents unfenced")
         if self.places is None or self.reviews is None:
             raise PermissionError("the agent fence is on but this runner holds no levels")
         places, base = self.places, self.places.base
-        root_path = self.roots[root].relative_to(base).as_posix()
-        if LEVEL_RANK[places.reach(split(root_path))] < LEVEL_RANK["read"]:
-            places = places.model_copy(update={"levels": {**places.levels, root_path: "read" if self.permission == "read_only" else "write"}})
         parts = folder.relative_to(base).parts
+        if LEVEL_RANK[places.reach(parts)] < LEVEL_RANK["read"]:
+            raise PermissionError(f"no level opens {'/'.join(parts)} to agents; with the fence on, its owner sets one there first (`interact machine places {root} write`)")
         staging, review = {}, None
         if places.reach(parts) == "write_on_review":
             place, _ = places.place_of(parts)
             review, staging[place] = self.reviews.stage_copy(place, base.joinpath(*split(place)), origin="agent", run_id=None)
         try:
             programs = tuple(Path(found) for found in (*(shutil.which(name) for name in AGENT_PROVIDERS), *self.cli) if found)
-            return Fence.build(places, start=folder, staging=staging, tool_state=tuple(Path.home() / name for name in TOOL_STATE), programs=programs), review
+            spec = FenceSpec(working_directory=places.working_directory, levels_file=self.levels_file, levels=places.levels, internal=places.internal, start=folder,
+                             staging=staging, providers=AGENT_PROVIDERS, programs=programs, state=self.reviews.root.parent / "fence-state" / str(uuid4()), reviews=self.reviews.root,
+                             egress=(*(host for provider in AGENT_PROVIDERS for host in EGRESS[provider]), *self.egress))
+            spec.build()
+            return spec, review
         except BaseException:
             if review is not None:
                 self.reviews.discard(review)

@@ -1,68 +1,106 @@
-"""The agent fence (`interact.fence.Fence`): an agent CLI started from this PC's levels sees only
-the folders set to read or later (read-only below `write_on_review`, its staging copy for that
-level), its own tool state, and the system; never the rest of the home folder, the desktop's
-sockets or the user's session bus. Live checks run where this PC can build the fence (Linux with
+"""The agent fence (`interact.fence`): an agent CLI started from this PC's levels sees only the
+folders set to read or later, gets a private copy of its tool state, reaches only its model API
+through the runner's egress proxy, and cannot leave anything that runs later outside the fence
+(its run record, the owner's tool config, git hooks, editor / Claude settings). Every level is
+read again at each turn. Live checks run where this PC can build the fence (Linux with
 bubblewrap and Landlock scopes); elsewhere the fence says why it is unavailable."""
 
 import json
 import os
+import socket
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
 
-from interact.fence import Fence, available
-from interact.places import PlaceMap
+from interact.fence import EgressProxy, FenceSpec, available
+
+AGENT_HOSTS = ("api.anthropic.com",)
 
 
 @pytest.fixture
 def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     home = tmp_path / "home"
-    for folder in ("docs", "work", "review", "private", ".ssh", ".claude", "interact-files"):
-        (home / folder).mkdir(parents=True)
-    (home / ".ssh" / "id_ed25519").write_text("PRIVATE KEY")
-    (home / "private" / "diary.txt").write_text("dear diary")
-    (home / "docs" / "plan.txt").write_text("the plan")
-    (home / "review" / "draft.txt").write_text("draft")
-    (home / ".claude" / "settings.json").write_text("{}")
+    files = {
+        ".ssh/id_ed25519": "PRIVATE KEY",
+        "private/diary.txt": "dear diary",
+        "docs/plan.txt": "the plan",
+        "docs/id_ed25519": "KEY IN AN OPEN FOLDER",
+        "docs/keys/server.pem": "PEM",
+        "docs/.env": "TOKEN=1",
+        "review/draft.txt": "draft",
+        "work/notes.txt": "notes",
+        "work/app/src/main.py": "print(1)\n",
+        "work/app/.git/hooks/pre-commit.sample": "#!/bin/sh\n",
+        "work/app/.git/config": "[core]\n",
+        "work/app/.git/HEAD": "ref: refs/heads/main\n",
+        "work/app/CLAUDE.md": "the owner's instructions",
+        "sandbox/app/.git/hooks/pre-commit.sample": "#!/bin/sh\n",
+        "sandbox/app/.git/config": "[core]\n",
+        ".claude/settings.json": "{}",
+        ".claude/.credentials.json": "{\"token\": 1}",
+        ".claude/bin/claude-watch": "#!/bin/sh\n",
+        ".claude/ide/50442.lock": "{\"authToken\": \"secret\"}",
+        ".claude/projects/other-session/log.jsonl": "someone else's transcript",
+        ".claude.json": "{\"mcpServers\": {}}",
+        ".interact/out/agents/run-1.json": "{\"fence\": \"recorded\"}",
+        ".interact/config.env": "OPENAI_API_KEY=x",
+    }
+    for name, content in files.items():
+        (home / name).parent.mkdir(parents=True, exist_ok=True)
+        (home / name).write_text(content)
     monkeypatch.setenv("HOME", str(home))
     return home
 
 
-def _fence(home: Path, staging: Path | None = None) -> Fence:
-    places = PlaceMap(working_directory=home, levels={"docs": "read", "work": "write", "review": "write_on_review", "private": "see"})
-    return Fence.build(places, start=home / "work", staging={"review": staging} if staging else {}, tool_state=(home / ".claude",))
+LEVELS = {"docs": "read", "work": "write", "sandbox": "sandbox", "review": "write_on_review", "private": "see"}
+
+
+def _spec(home: Path, tmp_path: Path, start: str = "work", levels: dict | None = None, **fields) -> FenceSpec:
+    staging = tmp_path / "staging-review"
+    staging.mkdir(exist_ok=True)
+    (staging / "draft.txt").write_text("draft")
+    return FenceSpec(working_directory=home, levels=LEVELS if levels is None else levels, start=home / start, staging={"review": staging},
+                     providers=("claude",), state=tmp_path / "state", egress=AGENT_HOSTS, reviews=tmp_path / "reviews", **fields)
 
 
 def test_binds_follow_the_levels_and_nothing_else_of_home(home: Path, tmp_path: Path) -> None:
-    staging = tmp_path / "staging-review"
-    staging.mkdir()
-    fence = _fence(home, staging)
+    fence = _spec(home, tmp_path).build()
     binds = {(bind.source, bind.target, bind.writable) for bind in fence.binds}
     assert (home / "docs", home / "docs", False) in binds
-    assert (home / "work", home / "work", True) in binds
-    assert (staging, home / "review", True) in binds  # writes land in the staging copy, never the folder
-    assert not any(bind.target in {home / "private", home / ".ssh", home} for bind in fence.binds)  # see / hidden / home itself
-    assert (home / ".claude" / "settings.json", home / ".claude" / "settings.json", False) in binds  # the tool's own settings stay read-only
+    assert (tmp_path / "staging-review", home / "review", True) in binds  # writes land in the staging copy, never the folder
+    assert not any(bind.target in {home / "private", home / ".ssh", home, home / ".interact"} for bind in fence.binds)
 
 
-def test_a_write_on_review_folder_without_its_staging_copy_is_refused(home: Path) -> None:
-    places = PlaceMap(working_directory=home, levels={"review": "write_on_review"})
+def test_a_write_on_review_folder_without_its_staging_copy_is_refused(home: Path, tmp_path: Path) -> None:
     with pytest.raises(PermissionError, match="staging copy"):
-        Fence.build(places, start=home / "review", staging={}, tool_state=())
+        FenceSpec(working_directory=home, levels={"review": "write_on_review"}, start=home / "review", state=tmp_path / "state").build()
 
 
-def test_the_start_folder_must_be_open_to_agents(home: Path) -> None:
+def test_the_start_folder_must_have_a_level_the_owner_set(home: Path, tmp_path: Path) -> None:
     with pytest.raises(PermissionError, match="no level"):
-        Fence.build(PlaceMap(working_directory=home, levels={"docs": "read"}), start=home / "private", staging={}, tool_state=())
+        _spec(home, tmp_path, start="private").build()
 
 
-def test_the_desktop_and_session_sockets_are_unset_inside(home: Path) -> None:
-    command = Fence.build(PlaceMap(working_directory=home, levels={"work": "write"}), start=home / "work", staging={}, tool_state=()).command(["true"])
+def test_the_desktop_and_session_sockets_are_unset_inside(home: Path, tmp_path: Path) -> None:
+    command = _spec(home, tmp_path).build().command(["true"])
     for name in ("DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "SSH_AUTH_SOCK", "XDG_RUNTIME_DIR"):
         assert command[command.index(name) - 1] == "--unsetenv"
-    assert command[:3] == [sys.executable, "-m", "interact.fence"]
+    assert command[:4] == [sys.executable, "-m", "interact.fence", "outer"] and "--unshare-net" in command
+
+
+def test_each_turn_reads_the_levels_as_they_are_now(home: Path, tmp_path: Path) -> None:
+    """A narrowing reaches the next turn of a run started before it."""
+    levels_file = tmp_path / "machine.json"
+    levels_file.write_text(json.dumps({"working_directory": str(home), "places": LEVELS}))
+    spec = FenceSpec(working_directory=home, levels_file=levels_file, start=home / "work", staging={"review": tmp_path}, state=tmp_path / "state")
+    assert any(bind.target == home / "docs" for bind in spec.build().binds)
+    levels_file.write_text(json.dumps({"working_directory": str(home), "places": {**LEVELS, "docs": "hidden"}}))
+    assert not any(bind.target == home / "docs" for bind in spec.build().binds)
+    levels_file.write_text(json.dumps({"working_directory": str(home), "places": {**LEVELS, "work": "read"}}))
+    assert not any(bind.target == home / "work" and bind.writable for bind in spec.build().binds)
 
 
 def test_off_linux_the_fence_says_why_it_is_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -73,10 +111,22 @@ def test_off_linux_the_fence_says_why_it_is_unavailable(monkeypatch: pytest.Monk
     assert not ok and "Linux" in reason
 
 
+@pytest.mark.parametrize(("request_line", "allowed"), [
+    ("CONNECT api.anthropic.com:443 HTTP/1.1", True),
+    ("CONNECT api.anthropic.com:80 HTTP/1.1", False),
+    ("CONNECT 127.0.0.1:443 HTTP/1.1", False),
+    ("CONNECT evil.example:443 HTTP/1.1", False),
+    ("GET http://api.anthropic.com/ HTTP/1.1", False),
+])
+def test_the_egress_proxy_opens_only_the_model_api(request_line: str, allowed: bool) -> None:
+    assert EgressProxy(hosts=AGENT_HOSTS).target(request_line) == (("api.anthropic.com", 443) if allowed else None)
+
+
 live = pytest.mark.skipif(not available()[0], reason=f"no fence on this PC: {available()[1]}")
 
 
-def _inside(fence: Fence, script: str) -> dict:
+def _inside(spec: FenceSpec, script: str) -> dict:
+    fence = spec.build()
     done = subprocess.run(fence.command([sys.executable, "-c", script]), cwd=fence.cwd, capture_output=True, text=True, timeout=60,
                           env={**os.environ, "DISPLAY": ":0"})
     assert done.returncode == 0, done.stderr
@@ -84,49 +134,108 @@ def _inside(fence: Fence, script: str) -> dict:
 
 
 PROBE = r"""
-import json, os, socket
+import json, os, socket, sys
+home = os.environ["HOME"]
 def attempt(action):
     try:
         action(); return "ok"
     except OSError as error:
         return type(error).__name__
-home = os.environ["HOME"]
+def read(path):
+    return lambda: open(os.path.join(home, path)).read()
+def write(path, text="x"):
+    def act():
+        os.makedirs(os.path.dirname(os.path.join(home, path)), exist_ok=True)
+        with open(os.path.join(home, path), "w") as stream:
+            stream.write(text)
+    return act
+def connect(port):
+    def act():
+        s = socket.create_connection(("127.0.0.1", port), timeout=2); s.close()
+    return act
 def x11():
     s = socket.socket(socket.AF_UNIX); s.connect("\0/tmp/.X11-unix/X0")
+port = int(sys.argv[1]) if len(sys.argv) > 1 else 0
 print(json.dumps({
-    "hidden": attempt(lambda: open(os.path.join(home, ".ssh", "id_ed25519")).read()),
-    "see_level": attempt(lambda: open(os.path.join(home, "private", "diary.txt")).read()),
-    "read": attempt(lambda: open(os.path.join(home, "docs", "plan.txt")).read()),
-    "read_write": attempt(lambda: open(os.path.join(home, "docs", "new.txt"), "w").write("x")),
-    "write": attempt(lambda: open(os.path.join(home, "work", "out.txt"), "w").write("done")),
-    "review_write": attempt(lambda: open(os.path.join(home, "review", "draft.txt"), "w").write("edited")),
-    "tool_settings_write": attempt(lambda: open(os.path.join(home, ".claude", "settings.json"), "w").write("{\"hooks\":1}")),
-    "home": sorted(os.listdir(home)),
+    "hidden": attempt(read(".ssh/id_ed25519")),
+    "see_level": attempt(read("private/diary.txt")),
+    "read": attempt(read("docs/plan.txt")),
+    "read_write": attempt(write("docs/new.txt")),
+    "key_in_open_folder": attempt(read("docs/id_ed25519")),
+    "pem_in_open_folder": attempt(read("docs/keys/server.pem")),
+    "env_in_open_folder": attempt(read("docs/.env")),
+    "write_existing": attempt(write("work/app/src/main.py", "print(2)\n")),
+    "write_new_below": attempt(write("work/app/src/new.py")),
+    "git_hook": attempt(write("work/app/.git/hooks/post-checkout")),
+    "git_config": attempt(write("work/app/.git/config", "[core]\n\tfsmonitor = sh -c evil\n")),
+    "repo_claude_settings": attempt(write("work/app/.claude/settings.json")),
+    "folder_mcp_json": attempt(write("work/.mcp.json")),
+    "folder_claude_md": attempt(write("work/CLAUDE.md")),
+    "existing_claude_md": attempt(write("work/app/CLAUDE.md", "obey me")),
+    "sandbox_top": attempt(write("sandbox/anything.txt")),
+    "sandbox_git_hook": attempt(write("sandbox/app/.git/hooks/post-checkout")),
+    "review_write": attempt(write("review/draft.txt", "edited")),
+    "run_record": attempt(write(".interact/out/agents/run-1.json", "{\"fence\": null}")),
+    "config_env": attempt(read(".interact/config.env")),
+    "claude_json": attempt(write(".claude.json", "{\"mcpServers\": {\"x\": {\"command\": \"sh\"}}}")),
+    "claude_settings": attempt(write(".claude/settings.json", "{\"hooks\": 1}")),
+    "claude_bin": os.path.exists(os.path.join(home, ".claude/bin/claude-watch")),
+    "claude_ide": os.path.exists(os.path.join(home, ".claude/ide")),
+    "other_transcripts": os.path.exists(os.path.join(home, ".claude/projects/other-session")),
+    "own_transcript": attempt(write(".claude/projects/this-run/log.jsonl")),
+    "credentials": attempt(read(".claude/.credentials.json")),
+    "localhost": attempt(connect(port)),
     "bus": os.path.exists("/run/user/%d/bus" % os.getuid()),
     "x11": attempt(x11),
+    "proxy": os.environ.get("HTTPS_PROXY", ""),
 }))
 """
 
 
+@pytest.fixture
+def listener():
+    """A service on the host's loopback (an IDE server, a database, a local model)."""
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen()
+    threading.Thread(target=lambda: [server.accept()[0].close() for _ in iter(int, 1)], daemon=True).start()
+    yield server.getsockname()[1]
+    server.close()
+
+
 @live
-def test_a_fenced_process_reads_and_writes_only_what_the_levels_open(home: Path, tmp_path: Path) -> None:
-    staging = tmp_path / "staging-review"
-    staging.mkdir()
-    (staging / "draft.txt").write_text("draft")
-    seen = _inside(_fence(home, staging), PROBE)
-    assert seen["hidden"] != "ok" and seen["see_level"] != "ok"  # M3: a hidden file is not readable under the fence
-    assert seen["read"] == "ok" and seen["read_write"] != "ok"
-    assert seen["write"] == "ok" and (home / "work" / "out.txt").read_text() == "done"
-    assert seen["review_write"] == "ok" and (home / "review" / "draft.txt").read_text() == "draft" and (staging / "draft.txt").read_text() == "edited"
-    assert seen["tool_settings_write"] != "ok"
-    assert set(seen["home"]) <= {"docs", "work", "review", ".claude"}
-    assert seen["bus"] is False and seen["x11"] != "ok"
+def test_a_fenced_agent_cannot_leave_anything_that_runs_after_it(home: Path, tmp_path: Path, listener: int) -> None:
+    """The review's exploit paths, each tried from inside: its run record, ~/.claude.json and
+    tool state, hooks / settings in a Write folder, localhost, secrets below an open folder."""
+    fence = _spec(home, tmp_path).build()
+    done = subprocess.run(fence.command([sys.executable, "-c", PROBE, str(listener)]), cwd=fence.cwd, capture_output=True, text=True, timeout=60,
+                          env={**os.environ, "DISPLAY": ":0"})
+    assert done.returncode == 0, done.stderr
+    seen = json.loads(done.stdout)
+    refused = ("hidden", "see_level", "read_write", "key_in_open_folder", "pem_in_open_folder", "env_in_open_folder", "git_hook", "git_config",
+               "existing_claude_md", "sandbox_git_hook", "config_env", "claude_settings", "localhost", "x11")
+    assert {name: seen[name] for name in refused if seen[name] == "ok"} == {}
+    assert seen["read"] == seen["write_existing"] == seen["write_new_below"] == seen["sandbox_top"] == seen["own_transcript"] == seen["credentials"] == "ok"
+    assert seen["claude_bin"] is seen["claude_ide"] is seen["other_transcripts"] is seen["bus"] is False
+    assert seen["proxy"].startswith("http://127.0.0.1:")
+    # Its run record is not there (a write lands in the fence's own empty home); what it wrote
+    # to its tool config stays in its private copy. The owner's files are untouched.
+    assert seen["claude_json"] == "ok" and json.loads((home / ".claude.json").read_text()) == {"mcpServers": {}}
+    assert (home / ".interact/out/agents/run-1.json").read_text() == "{\"fence\": \"recorded\"}"
+    assert (home / "work/app/src/main.py").read_text() == "print(2)\n" and (home / "review/draft.txt").read_text() == "draft"
+    assert not (home / "work/app/.git/hooks/post-checkout").exists() and (home / "work/app/CLAUDE.md").read_text() == "the owner's instructions"
+    # Steering files it created at the top of a writable folder or repository left the folder
+    # for a review the owner reads on the PC.
+    assert not any((home / name).exists() for name in ("work/CLAUDE.md", "work/.mcp.json", "work/app/.claude"))
+    from interact.place_reviews import PlaceReviews
+    held = {item.path for review in PlaceReviews(root=tmp_path / "reviews").list() for item in review.files}
+    assert {"CLAUDE.md", ".mcp.json", "app/.claude/settings.json"} <= held
 
 
 @pytest.mark.asyncio
-async def test_a_fenced_launch_starts_inside_the_fence_and_its_run_keeps_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The launcher wraps the CLI in the fence, and the run's record keeps it for every later turn
-    (the chosen candidate is registered twice: the second write must not drop it)."""
+async def test_a_fenced_launch_starts_inside_the_fence_and_its_run_keeps_the_spec(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The launcher wraps the CLI in the fence, and the run's record keeps what the fence is built
+    from (the chosen candidate is registered twice: the second write must not drop it)."""
     import asyncio
 
     from interact.agents import registry as reg
@@ -139,8 +248,8 @@ async def test_a_fenced_launch_starts_inside_the_fence_and_its_run_keeps_it(tmp_
     started: list[list[str]] = []
     monkeypatch.setattr(run_module, "contained", lambda argv: started.append(list(argv)) or [sys.executable, "-c", "pass"])
     (tmp_path / "work").mkdir()
-    fence = Fence.build(PlaceMap(working_directory=tmp_path, levels={"work": "write"}), start=tmp_path / "work", staging={}, tool_state=())
-    run = await run_module.run_agent(_FakeProvider(), "t", agent="tester", name="w", cwd=str(tmp_path / "work"), fence=fence)
+    spec = FenceSpec(working_directory=tmp_path, levels={"work": "write"}, start=tmp_path / "work", state=tmp_path / "state")
+    run = await run_module.run_agent(_FakeProvider(), "t", agent="tester", name="w", cwd=str(tmp_path / "work"), fence=spec)
     await asyncio.wait_for(run.wait(), timeout=30)
-    assert started[0][:3] == [sys.executable, "-m", "interact.fence"]
-    assert reg.get_run(run.run_id).fence == fence
+    assert started[0][:4] == [sys.executable, "-m", "interact.fence", "outer"]
+    assert reg.get_run(run.run_id).fence == spec

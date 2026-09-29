@@ -3,12 +3,12 @@
 From the web (a request signed by the server, `interact_core.PlaceLevelRequest` and siblings):
 an earlier level applies at once; a later one only waits in `MachineConfig.pending_places` until
 the owner confirms it HERE (`interact machine approve`): the server holds the key that signs
-requests, so its signature alone never opens a folder further (M1 without a passkey). Whole-PC
-browsing answers only while the owner switched it on here (M4), within a page budget (M6). A
-review of staged writes can be read or dropped from the web; only the PC accepts one (M9).
+requests, so its signature alone never opens a folder further (there is no passkey path). Whole-PC
+browsing answers only while the owner switched it on here, within a page budget. A
+review of staged writes can be read or dropped from the web; only the PC accepts one.
 
 Every change, confirm, refusal, browse page and review outcome lands in the PC's own append-only
-`places.log` with its digest (M10); the server's audit keeps the digest only."""
+`places.log` with its digest; the server's audit keeps the digest only."""
 
 import hashlib
 import json
@@ -23,6 +23,7 @@ from interact_core import (
     PlaceDiscardRequest, PlaceLevel, PlaceLevelRequest, PlaceReviewRequest, PlaceReviewsRequest, PlacesRequest,
 )
 
+from interact.agents import registry as reg
 from interact.fence import available
 from interact.places import SUGGESTED_SANDBOX, split
 
@@ -73,7 +74,16 @@ class PlaceDesk:
         self.runner.update(change)
         waiting, digest, previous = outcome[0]
         self._log("level", path=path, level=level, previous=previous, method="web-request" if waiting else "web-narrow", initiator_account=initiator, digest=digest)
+        if waiting is None:
+            self._stop_fenced()
         return waiting, digest
+
+    def _stop_fenced(self) -> None:
+        """After a narrowing: every fenced agent turn running now stops (a turn keeps the view it
+        started with); its next turn is built from the narrowed levels."""
+        stopped = [run.run_id for run in reg.running_runs() if run.fence is not None and reg.stop(run.run_id)]
+        if stopped:
+            self._log("stopped", runs=stopped, reason="a folder level was narrowed")
 
     def cancel(self, change_id: UUID, initiator: UUID | None) -> str:
         found: list[MachinePlaceChange] = []
@@ -113,9 +123,12 @@ class PlaceDesk:
 
     def set_here(self, path: str, level: PlaceLevel) -> "MachineConfig":
         """The owner sets a level on this PC itself: applied at once, whichever way it goes."""
-        before = self.runner.load().place_map().level(split(path))
+        places = self.runner.load().place_map()
+        before, widens = places.level(split(path)), places.widens(path, level)
         config = self.runner.update(lambda current: current.with_place(path, level))
         self._log("level", path=path, level=level, previous=before, method="pc", digest=self.digest(config, uuid4(), path, level, before))
+        if not widens:
+            self._stop_fenced()
         return config
 
     def accept(self, review_id: UUID, digest: str) -> MachinePlaceReview:

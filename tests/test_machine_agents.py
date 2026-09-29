@@ -18,7 +18,7 @@ from interact_core import MACHINE_AGENT_REQUESTS, MachineAgentModel, MachineAgen
 from interact.agents import registry as reg
 from interact.agents.host import ConversationRefused
 from interact.machine_agents import LogRing, MachineAgents, MachineSessions, WebRun, WebRuns, interaction_digest, redact
-from interact.fence import Fence
+from interact.fence import FenceSpec
 from interact.machines import MachineConfig, MachineRunner
 from interact.place_reviews import PlaceReviews
 
@@ -413,16 +413,25 @@ def _fenced_agents(base: Path, tmp_path: Path, cli: tuple[str, ...], **levels) -
         "places": config.place_map(), "fence_agents": True, "reviews": PlaceReviews(root=tmp_path / "reviews")})
 
 
-def test_with_the_fence_on_a_web_start_carries_the_fence_built_from_the_levels(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_with_the_fence_on_a_web_start_carries_the_spec_its_turns_are_fenced_by(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("interact.machine_agents.available", lambda: (True, ""))
     held = tmp_path / "fence.json"
     recorder = ("python3", "-c", f"import shutil,sys; shutil.copy(sys.argv[sys.argv.index('--fence') + 1], {str(held)!r}); print({str(uuid4())!r})")
-    agents = _fenced_agents(base, tmp_path, recorder, other="read")
+    agents = _fenced_agents(base, tmp_path, recorder, project="write", other="read")
     answer = _answer(agents, _request("start", root="project", role="app-engineer", text="tidy"))
-    fence = Fence.model_validate_json(held.read_text())
-    binds = {(bind.target.relative_to(base.resolve()).as_posix(), bind.writable) for bind in fence.binds if bind.target.is_relative_to(base.resolve())}
-    assert {("project", True), ("other", False)} <= binds and ("interact-files", True) not in binds  # its agent root writable, the rest as levelled
+    spec = FenceSpec.model_validate_json(held.read_text())
+    assert spec.start == base.resolve() / "project" and spec.levels == {"project": "write", "other": "read"} and spec.state.is_relative_to(tmp_path)
+    binds = {(bind.target.relative_to(base.resolve()).as_posix(), bind.writable) for bind in spec.build().binds if bind.target.is_relative_to(base.resolve())}
+    assert ("other", False) in binds and not any(target.startswith("interact-files") for target, _ in binds)
     assert answer.fenced is True and agents.runs.read()[-1].fenced is True
+
+
+def test_with_the_fence_on_an_agent_folder_never_opens_on_its_own(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The agent folder gets no level the owner did not set (it used to open as Write)."""
+    monkeypatch.setattr("interact.machine_agents.available", lambda: (True, ""))
+    agents = _fenced_agents(base, tmp_path, ("false",), other="read")
+    with pytest.raises(PermissionError, match="no level opens project"):
+        _answer(agents, _request("start", root="project", role="app-engineer", text="tidy"))
 
 
 def test_with_the_fence_on_an_agent_never_starts_unfenced(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -442,7 +451,7 @@ def test_in_a_write_after_review_folder_the_agent_works_in_a_staging_copy(base: 
     recorder = ("python3", "-c", f"import shutil,sys; shutil.copy(sys.argv[sys.argv.index('--fence') + 1], {str(held)!r}); print({str(run_id)!r})")
     agents = _fenced_agents(base, tmp_path, recorder, project="write_on_review")
     _answer(agents, _request("start", root="project", role="app-engineer", text="tidy"))
-    [bind] = [bind for bind in Fence.model_validate_json(held.read_text()).binds if bind.target == base.resolve() / "project"]
+    [bind] = [bind for bind in FenceSpec.model_validate_json(held.read_text()).build().binds if bind.target == base.resolve() / "project"]
     assert bind.writable and bind.source.is_relative_to(tmp_path / "reviews")
     (bind.source / "src" / "new.txt").write_text("from the agent")
     [review] = agents.reviews.list()

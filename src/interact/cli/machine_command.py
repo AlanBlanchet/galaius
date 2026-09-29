@@ -80,8 +80,10 @@ def machine_places(path: str | None = None, level: PlaceLevel | None = None) -> 
 def machine_approve(change: str | None = None, *, yes: bool = False) -> None:
     """Owner-only, on this machine: confirm the widenings asked from the web (a folder opened
     further, a new sandbox), each shown first; `change` (an id or its first characters) picks one.
-    Nothing asked from the web opens a folder further until confirmed here. --yes confirms
-    without asking."""
+    Nothing asked from the web opens a folder further until confirmed here. --yes confirms the
+    one named without asking (never all: one queued after you last looked would pass unseen)."""
+    if yes and not change:
+        raise SystemExit("name the widening to confirm with --yes (its id, from `interact machine places`); without --yes each one is shown and asked")
     def confirm(waiting: MachinePlaceChange) -> bool:
         print(f"The web asks: {waiting.path}: {waiting.previous} -> {waiting.level} (asked {waiting.asked_at:%Y-%m-%d %H:%M} UTC, id {str(waiting.id)[:8]}, digest {waiting.digest[:16]})")
         if yes:
@@ -143,9 +145,12 @@ def machine_review(review: str, *, accept: str | None = None, discard: bool = Fa
         desk._log("review", review_id=found.id, place=found.place, outcome="discarded", method="pc", digest=found.digest)
         print(json.dumps({"discarded": str(found.id)}))
         return
-    _, lines = runner.reviews.read(found.id, config.place_map().base.joinpath(*split(found.place)))
+    manifest = runner.reviews.manifest(found.id)
+    _, lines = runner.reviews.read(found.id, config.place_map().base.joinpath(*split(found.place)), limit=None)
+    print("Files (what an editor, git or an agent runs later comes first):")
+    print("\n".join(f"  {change:8} {key}" for key, change, _, _ in manifest.entries))
     print("\n".join(lines))
-    print(f"\n{found.place}: {len(found.files)} file(s), {found.state}{' (' + found.reason + ')' if found.reason else ''}\ndigest {found.digest}")
+    print(f"\n{found.place}: {len(manifest.entries)} file(s), {found.state}{' (' + found.reason + ')' if found.reason else ''}\ndigest {found.digest}")
     if accept is None and sys.stdin.isatty() and found.state == "ready":
         accept = found.digest if input("Apply exactly this diff? [y/N] ").strip().lower() in {"y", "yes"} else None
     if accept is not None:

@@ -114,3 +114,44 @@ def test_a_folder_too_large_to_copy_is_refused(folder: Path, reviews: PlaceRevie
     with pytest.raises(PermissionError, match="too large"):
         small.stage_copy("notes", folder, origin="agent", run_id=None)
     assert not any(small.root.glob("*/tree"))
+
+
+def test_a_new_steering_file_is_held_for_review_and_gone_from_the_folder(folder: Path, reviews: PlaceReviews, tmp_path: Path) -> None:
+    """What a fenced agent creates at the top of a writable folder that an editor, git or Claude runs
+    later (here `.claude/settings.json`) leaves the folder at once and waits for the owner's review."""
+    (folder / ".claude").mkdir()
+    (folder / ".claude" / "settings.json").write_text('{"hooks": {"Stop": [{"command": "sh -c evil"}]}}')
+    (folder / ".claude" / "escape").symlink_to(tmp_path)
+    reviews.hold("notes", folder, folder / ".claude")
+    assert not (folder / ".claude").exists() and tmp_path.exists()
+    [review] = reviews.list()
+    assert [(item.path, item.change) for item in review.files] == [(".claude/settings.json", "added")]
+
+
+def test_accept_writes_the_bytes_it_checked_even_if_the_copy_changes_meanwhile(folder: Path, reviews: PlaceReviews, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The staging copy may still be writable by its agent; what reaches the folder is what the
+    digest covered, never bytes swapped in after the check."""
+    import interact.place_reviews as module
+    review_id, tree = reviews.stage_copy("notes", folder, origin="agent", run_id=None)
+    (tree / "a.txt").write_text("reviewed text")
+    [seen] = reviews.list()
+    real = module._live
+
+    def swapped(where, key):
+        (tree / "a.txt").write_text("swapped after the check")  # between the digest check and the write
+        return real(where, key)
+    monkeypatch.setattr(module, "_live", swapped)
+    reviews.accept(review_id, seen.digest, folder)
+    assert (folder / "a.txt").read_text() == "reviewed text"
+
+
+def test_a_review_lists_what_runs_later_first_and_says_what_it_drops(folder: Path, reviews: PlaceReviews) -> None:
+    review_id, tree = reviews.stage_copy("notes", folder, origin="agent", run_id=None)
+    (tree / "a.txt").write_text("changed")
+    (tree / ".githooks").mkdir()
+    (tree / ".githooks" / "pre-commit").write_text("#!/bin/sh\nevil\n")
+    (tree / ".git" / "HEAD").write_text("ref: refs/heads/other\n")
+    [review] = reviews.list()
+    assert review.files[0].path == ".githooks/pre-commit" and "1 change inside .git" in review.reason
+    _, lines = reviews.read(review_id, folder, limit=None)
+    assert "+evil" in lines

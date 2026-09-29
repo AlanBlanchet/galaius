@@ -21,7 +21,7 @@ from interact.agents import providers as agent_providers
 from interact.agents import registry as reg
 from interact.agents.catalog import AgentCatalog
 from interact.agents.catalog_connection import CatalogConnection
-from interact.fence import Fence
+from interact.fence import FenceSpec
 from interact.agents.host import run_console
 from interact.agents.policy import ParadigmProjection, Policy, PolicyError, policy_path
 from interact.agents.providers import (
@@ -1438,8 +1438,8 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
     --quota-window is how many seconds the new child is watched for a vendor quota refusal
     before the id is printed (a refusal inside it falls through to the next candidate); a
     supervisor that shows the run at once passes a short one.
-    --fence names a file holding the OS fence (`interact.fence.Fence` JSON) every turn of the run
-    starts inside; the machine runner writes it from its levels.
+    --fence names a file holding what the run's OS fence is built from (`interact.fence.FenceSpec`
+    JSON); every turn builds it again from the machine's levels. The machine runner writes it.
     """
 
 
@@ -1454,7 +1454,7 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
             denied_tools=tuple(denied_tools or ()),
             provider_modes=_provider_modes(provider_modes),
             quota_window=quota_window,
-            fence=Fence.model_validate_json(fence.read_text()) if fence is not None else None,
+            fence=FenceSpec.model_validate_json(fence.read_text()) if fence is not None else None,
         )
         # Give the child a moment to be alive before this process exits out from under it.
         await asyncio.sleep(0.2)

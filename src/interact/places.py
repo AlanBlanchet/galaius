@@ -6,6 +6,7 @@ Every path is walked part by part from the working directory without following a
 part is checked against `NEVER_GRANTABLE` (credential and configuration stores, casefolded, per
 OS) and the runner's own folders: no level opens them, whatever an ancestor's level says."""
 
+import fnmatch
 import re
 import stat
 import sys
@@ -25,7 +26,7 @@ IN_PLACE_WRITES: frozenset[PlaceLevel] = frozenset({"sandbox", "write"})
 #: The folder offered as the first sandbox ("a folder where it can do things").
 SUGGESTED_SANDBOX = "interact-files"
 #: Files an agent or an editor starting in a folder obeys: a workflow never writes them in place
-#: (M8); a review shows them to the owner first.
+#:; a review shows them to the owner first.
 INSTRUCTION_NAMES = frozenset({"claude.md", "agents.md", "gemini.md", "copilot-instructions.md"})
 #: Characters no reachable name holds: Windows streams / separators, trailing dots or spaces.
 FORBIDDEN = re.compile(r"[:\\]|[. ]$")
@@ -41,6 +42,7 @@ class NeverGrantable(BaseModel):
     home: dict[str, tuple[str, ...]]
     names: frozenset[str]
     suffixes: tuple[str, ...]
+    patterns: tuple[str, ...] = ()
 
     def refusal(self, parts: tuple[str, ...], below_home: tuple[str, ...] | None, platform: str = sys.platform) -> str | None:
         """Why `parts` (walked from the working directory; `below_home`: the same folder relative to
@@ -49,7 +51,7 @@ class NeverGrantable(BaseModel):
             folded = part.casefold()
             if folded.startswith("."):
                 return f"{part}: hidden files and folders are never opened"
-            if folded in self.names or folded.endswith(self.suffixes):
+            if folded in self.names or folded.endswith(self.suffixes) or any(fnmatch.fnmatch(folded, pattern) for pattern in self.patterns):
                 return f"{part}: credential stores are never opened"
         if below_home:
             joined = "/".join(part.casefold() for part in below_home)
@@ -71,8 +73,10 @@ NEVER_GRANTABLE = NeverGrantable(
         "linux": ("snap",),
     },
     names=frozenset({"id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "id_ecdsa_sk", "id_ed25519_sk", "authorized_keys", "known_hosts",
-                     "credentials", "credentials.json", "keychain", "keychains", "keyrings", "password-store", "wallets"}),
-    suffixes=(".kdbx", ".kdb", ".keychain", ".keychain-db", ".ppk", ".p12", ".pfx", ".pem", ".gpg", ".asc", ".ovpn"),
+                     "credentials", "credentials.json", "keychain", "keychains", "keyrings", "password-store", "wallets", "kubeconfig"}),
+    suffixes=(".kdbx", ".kdb", ".keychain", ".keychain-db", ".ppk", ".p12", ".pfx", ".pem", ".key", ".jks", ".keystore", ".gpg", ".asc", ".ovpn",
+              ".tfstate", ".tfstate.backup"),
+    patterns=("service-account*.json", "*-service-account*.json", "client_secret*.json"),
 )
 
 
@@ -125,7 +129,7 @@ class PlaceMap(BaseModel):
         return self.level(parts[:-1]) if parts else "hidden"
 
     def refusal(self, parts: tuple[str, ...]) -> str | None:
-        """Why no level opens `parts`: a never-grantable part (M7), a link on the way, a runner
+        """Why no level opens `parts`: a never-grantable part, a link on the way, a runner
         folder, the working directory itself. None: it may be opened."""
         if not parts:
             return "the whole working directory never takes a level; set one on a folder inside it"
@@ -193,9 +197,11 @@ class PlaceMap(BaseModel):
         if parts and (said := self.refusal(parts)) is not None:
             raise PermissionError(said)
         entries = []
+        home = Path.home().resolve()
         with PinnedDirectory.open(self.base, *parts) as folder:
             for name in folder.names():
-                if NEVER_GRANTABLE.refusal((name,), None) is not None or FORBIDDEN.search(name):
+                target = self.base.joinpath(*parts, name)
+                if NEVER_GRANTABLE.refusal((name,), target.relative_to(home).parts if target.is_relative_to(home) else None) is not None or FORBIDDEN.search(name):
                     continue
                 try:
                     facts = folder.stat(name)
@@ -210,7 +216,7 @@ class PlaceMap(BaseModel):
 
 
 class BrowseBudget:
-    """How many browse pages the web may read in a window (M6): one session cannot mirror the
+    """How many browse pages the web may read in a window: one session cannot mirror the
     whole tree quickly. Held by the runner for as long as it runs."""
 
     def __init__(self, pages: int = 240, window: float = 600.0) -> None:

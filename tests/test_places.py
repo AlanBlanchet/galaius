@@ -115,3 +115,15 @@ def test_the_browse_budget_refuses_past_its_window() -> None:
     budget.take()
     with pytest.raises(PermissionError, match="limited to 2 pages"):
         budget.take()
+
+
+def test_browsing_the_home_folder_leaves_out_this_systems_credential_stores(home: Path) -> None:
+    """`snap` (browser and password-manager profiles on Linux) is not listed at the top of home."""
+    (home / "snap").mkdir()
+    names = {entry.name for entry in PlaceMap(working_directory=home).browse("", 0)[0]}
+    assert "snap" not in names and "Documents" in names
+
+
+@pytest.mark.parametrize("name", ["server.key", "release.jks", "app.keystore", "terraform.tfstate", "kubeconfig", "service-account-prod.json"])
+def test_more_credential_files_are_never_grantable(name: str) -> None:
+    assert NEVER_GRANTABLE.refusal((name,), None) is not None

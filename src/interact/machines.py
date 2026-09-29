@@ -49,7 +49,7 @@ from interact.paths import UserPaths
 from interact.upgrade.quiet import QuietPoint
 from interact.upgrade.store import RuntimeStore
 from interact.pinned_directory import PinnedDirectory
-from interact.fence import TOOL_STATE, Fence, available
+from interact.fence import EGRESS, FenceSpec, available
 from interact.places import BrowseBudget, IN_PLACE_WRITES, INSTRUCTION_NAMES, LEVEL_RANK, PlaceMap, split
 from interact.place_reviews import PlaceReviews, write_plain
 
@@ -128,7 +128,7 @@ class MachineConfig(BaseModel):
     def with_place(self, path: str, level: PlaceLevel) -> Self:
         """This configuration with `level` on `path` (and no widening pending for it any more).
         Refused: a folder no level opens; anything writable around a script root; a sandbox
-        around an agent root (M8: nothing a workflow writes lands where an agent starts)."""
+        around an agent root (nothing a workflow writes lands where an agent starts)."""
         levels = self.place_map().with_level(path, level)
         folder = self.working_directory.resolve().joinpath(*split(path))
         def overlaps(roots: tuple[Path, ...]) -> bool:
@@ -765,7 +765,7 @@ class MachineRunner:
         self._server_restarted = False
         self._log_ring = LogRing()
         logging.getLogger("interact").addHandler(self._log_ring)
-        #: Staged writes waiting for the owner's review, and the web's whole-PC browse budget (M6).
+        #: Staged writes waiting for the owner's review, and the web's whole-PC browse budget.
         self.reviews = PlaceReviews.default()
         self.browse_budget = BrowseBudget()
 
@@ -1044,7 +1044,8 @@ class MachineRunner:
             agents = MachineAgents(roots=current.agent_roots_by_name(), permission=current.agent_permission, run_agents=current.run_agents,
                                    continue_conversations=current.continue_conversations, answer_approvals=current.answer_approvals, session=f"web-{current.machine_id}",
                                    runs=WebRuns(path=self.config_path.with_name("machine-agent-runs.json")), environment=self._safe_environment(),
-                                   sessions=self._sessions, logs=self._log_ring, places=current.place_map(), fence_agents=current.fence_agents, reviews=self.reviews)
+                                   sessions=self._sessions, logs=self._log_ring, places=current.place_map(), fence_agents=current.fence_agents, reviews=self.reviews,
+                                   levels_file=self.config_path, egress=(urlsplit(current.server_url).hostname or "",))
             answer = await agents.answer(request)
             # Reading (the page polls every few seconds) stays out of the owner's log; actions go in.
             run_id = answer.run_id or getattr(request, "run_id", None)
@@ -1462,7 +1463,7 @@ class MachineRunner:
                 agent_ref=AgentCatalog.reference(agent.id, agent.revision),
                 cwd=str(config.working_directory),
                 permission_mode=config.permission_ceiling,
-                fence=self._agent_fence(config),
+                fence=await asyncio.to_thread(self._agent_fence, config),
             )
             logger.info("agent run %s started", handle.run_id, extra={"machine_id": config.machine_id, "command_id": command_id})
             await self._event(socket, command_id, "progress", {"kind": "log", "level": "info", "logger": __name__, "text": f"agent run {handle.run_id} started", "agent_run_id": handle.run_id})
@@ -1498,17 +1499,21 @@ class MachineRunner:
             os.environ.clear()
             os.environ.update(original_environment)
 
-    @staticmethod
-    def _agent_fence(config: MachineConfig) -> Fence | None:
-        """The fence a workflow's agent step runs inside (its levels, starting in the working
-        directory, which shows only the folders they open), None when its owner left it off."""
+    def _agent_fence(self, config: MachineConfig) -> FenceSpec | None:
+        """What a workflow's agent step is fenced by (its levels, starting in the working directory,
+        which shows only the folders they open), None when its owner left the fence off."""
         if not config.fence_agents:
             return None
         ready, reason = available()
         if not ready:
             raise PermissionError(f"the agent fence is on here but cannot be built: {reason}; its owner switches it off there with `interact machine fence off`")
-        programs = tuple(Path(found) for found in (shutil.which("claude"), shutil.which("codex")) if found)
-        return Fence.build(config.place_map(), start=config.working_directory, staging={}, tool_state=tuple(Path.home() / name for name in TOOL_STATE), programs=programs)
+        places, providers = config.place_map(), ("claude", "codex")
+        programs = tuple(Path(found) for found in (shutil.which(name) for name in providers) if found)
+        spec = FenceSpec(working_directory=config.working_directory, levels_file=self.config_path, levels=places.levels, internal=places.internal,
+                         start=config.working_directory, providers=providers, programs=programs, state=self.reviews.root.parent / "fence-state" / str(uuid4()), reviews=self.reviews.root,
+                         egress=(*(host for provider in providers for host in EGRESS[provider]), urlsplit(config.server_url).hostname or ""))
+        spec.build()
+        return spec
 
     @staticmethod
     def _final_text(events: list[AgentEvent]) -> str:

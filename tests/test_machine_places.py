@@ -1,7 +1,7 @@
 """Levels from the web, as the PC answers signed requests (`interact.machine_places.PlaceDesk`):
-narrowing applies at once, widening waits on the PC until its owner confirms it there (M1 without
-a passkey), every change lands in the PC's own log with its digest (M10), browsing needs the PC's
-opt-in (M4), and a review can be read or dropped from the web, never accepted."""
+narrowing applies at once, widening waits on the PC until its owner confirms it there (no passkey
+here), every change lands in the PC's own log with its digest, browsing needs the PC's
+opt-in, and a review can be read or dropped from the web, never accepted."""
 
 import asyncio
 import hashlib
@@ -132,3 +132,29 @@ def test_a_machine_file_from_before_levels_keeps_its_folders_as_sandboxes(runner
     values["file_roots"] = ["notes"]
     runner.config_path.write_text(json.dumps(values))
     assert runner.load().places == {"notes": "sandbox"}
+
+
+def test_a_narrowing_stops_every_fenced_agent_turn_running_now(runner: MachineRunner, home: Path, logged: list[dict], monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Its next turn is built from the narrowed levels; the turn running now is not left with the
+    old ones. A widening waits on the PC and stops nothing."""
+    from interact.agents import registry as reg
+    from interact.fence import FenceSpec
+    spec = FenceSpec(working_directory=home, levels_file=runner.config_path, start=home / "docs", state=tmp_path / "state")
+    fenced, loose = reg.AgentRun(run_id="fenced", provider="claude", name="a", fence=spec), reg.AgentRun(run_id="loose", provider="claude", name="b")
+    stopped: list[str] = []
+    monkeypatch.setattr(reg, "running_runs", lambda: [fenced, loose])
+    monkeypatch.setattr(reg, "stop", lambda run_id, **_: stopped.append(run_id) or True)
+    _ask(runner, "place_level", path="notes", level="read")
+    assert stopped == []
+    _ask(runner, "place_level", path="docs", level="read")
+    assert stopped == ["fenced"] and logged[-1]["op"] == "stopped" and logged[-1]["runs"] == ["fenced"]
+
+
+def test_confirming_without_asking_names_the_widening(runner: MachineRunner, logged: list[dict], monkeypatch: pytest.MonkeyPatch) -> None:
+    """`--yes` alone would also confirm widenings queued after the owner last looked."""
+    from interact.cli.machine_command import machine_approve
+    _ask(runner, "place_level", path="notes", level="read")
+    monkeypatch.setattr(MachineRunner, "default_config_path", staticmethod(lambda: runner.config_path))
+    with pytest.raises(SystemExit, match="name the widening"):
+        machine_approve(None, yes=True)
+    assert "notes" not in runner.load().places
