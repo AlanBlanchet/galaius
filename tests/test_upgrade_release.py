@@ -3,7 +3,9 @@ this computer ran, and the upgrade settings are this computer's alone."""
 
 import hashlib
 import http.server
+import os
 import sys
+import subprocess
 import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -262,3 +264,24 @@ def test_an_older_runtime_rewriting_the_pointer_never_brings_a_retired_key_back(
     store._update(lambda pointer: pointer.model_copy(update={"failed": ("b" * 64,)}))
     assert store.retired() == {"sha256:" + "a" * 64}
     assert "failed" in store.pointer_path.read_text() and store.pointer().generation == 8
+
+
+@pytest.mark.parametrize("direct_url", ['{"url": "https://github.com/AlanBlanchet/interact/archive/%s.zip", "archive_info": {}}',
+                                        '{"url": "https://github.com/AlanBlanchet/interact", "vcs_info": {"vcs": "git", "commit_id": "%s"}}'])
+def test_an_install_from_a_github_archive_or_checkout_knows_its_commit_and_is_up_to_date(tmp_path, signer, published, monkeypatch, direct_url) -> None:
+    commit = "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567"
+    document = release("0.44.0", 20, commit=commit)
+    published.publish(signer, document)
+    monkeypatch.setattr(BuildIdentity, "installed", classmethod(lambda cls: None))
+    monkeypatch.setattr(BuildIdentity, "direct_url", staticmethod(lambda: direct_url % commit))
+    assert BuildIdentity.installed_commit() == commit
+    assert checker(tmp_path, signer, published, monkeypatch).run() == f"up to date ({document.label()})"
+
+
+def test_registering_a_process_forgets_the_ones_that_ended(tmp_path) -> None:
+    store = RuntimeStore(root=tmp_path / "runtimes")
+    ended = subprocess.Popen([sys.executable, "-c", "pass"])
+    ended.wait()
+    store.register(Runtime(path=tmp_path / "old"), ended.pid)
+    store.register(Runtime(path=tmp_path / "new"), os.getpid())
+    assert sorted(entry.name for entry in store.live_path.glob("*.json")) == [f"{os.getpid()}.json"]

@@ -8,8 +8,11 @@ rebuilt older commit never reads as newer. Verification and fetching live in `so
 httpx and cryptography, which a supervisor never needs)."""
 
 import hashlib
+import json
+import re
 from datetime import UTC, datetime, timedelta
 from email.parser import BytesParser
+from importlib.metadata import PackageNotFoundError, distribution
 from importlib.resources import files
 from pathlib import Path
 from typing import ClassVar, Literal
@@ -87,6 +90,29 @@ class BuildIdentity(ReleaseOrder):
     def installed(cls) -> "BuildIdentity | None":
         entry = files("interact") / "data" / cls.path
         return cls.model_validate_json(entry.read_bytes()) if entry.is_file() else None
+
+    @staticmethod
+    def direct_url() -> str:
+        """How this install was made (PEP 610 `direct_url.json`; empty from an index or source tree)."""
+        try:
+            return distribution("interact").read_text("direct_url.json") or ""
+        except PackageNotFoundError:
+            return ""
+
+    @classmethod
+    def installed_commit(cls) -> str | None:
+        """The commit this install was built from: its stamped build, else the GitHub archive or
+        git commit an installer installed it from (the public install scripts)."""
+        if (build := cls.installed()) is not None:
+            return build.commit
+        try:
+            made = json.loads(cls.direct_url() or "{}")
+        except ValueError:
+            return None
+        if commit := made.get("vcs_info", {}).get("commit_id"):
+            return commit
+        archive = re.search(r"/archive/([0-9a-f]{40})\.(?:zip|tar\.gz)$", made.get("url", ""))
+        return archive.group(1) if archive else None
 
     def label(self) -> str:
         return f"{self.version} {self.commit[:7]} ({self.released_at:%Y-%m-%d %H:%M} UTC)"

@@ -252,6 +252,11 @@ jobs:
           $env:INTERACT_ARCHIVE = "https://github.com/$env:GITHUB_REPOSITORY/archive/$env:GITHUB_SHA.zip"
           powershell -ExecutionPolicy ByPass -c "irm http://127.0.0.1:8799/install.ps1 | iex"
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Offered a release of the commit it was installed from, the fresh install is up to date
+        run: |
+          $python = Join-Path (uv tool dir).Trim() 'interact\Scripts\python.exe'
+          & $python -I tests\support\fresh_install_check.py
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: interact-core at the commit this checkout pins
         run: |
           $sha = [regex]::Match((Get-Content -Raw pyproject.toml), 'interact-core\.git@([0-9a-f]{40})').Groups[1].Value

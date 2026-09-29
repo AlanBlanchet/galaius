@@ -388,7 +388,10 @@ class RuntimeStore(BaseModel):
     # ---- processes using runtimes ------------------------------------------------------------
 
     def register(self, runtime: Runtime, pid: int) -> None:
-        """Record that process `pid` runs `runtime` (ignored once that process is gone)."""
+        """Record that process `pid` runs `runtime`; entries of processes that ended go."""
+        for entry in self.live_path.glob("*.json") if self.live_path.is_dir() else ():
+            if entry.stem.isdigit() and not _alive(int(entry.stem)):
+                entry.unlink(missing_ok=True)
         PRIVATE_FILES.write_text(self.live_path / f"{pid}.json", LiveProcess(pid=pid, runtime=runtime.path, started=time.time()).model_dump_json())
 
     def in_use(self) -> set[Path]:

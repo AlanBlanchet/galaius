@@ -85,13 +85,12 @@ class UpgradeCheck(BaseModel):
         return max(known, key=lambda order: order.key) if known else None
 
     def running(self, release: Release) -> bool:
-        """The active runtime IS this release: installed from it, or the bootstrap install built as
-        it (an installer's own wheels carry their build)."""
+        """The active runtime IS this release: installed from it, or the bootstrap install built from
+        its commit (a server installer's wheels carry their build; a GitHub one names its commit)."""
         active = self.store.active()
         if (receipt := active.receipt()) is not None:
             return receipt.identity == release.identity
-        own = BuildIdentity.installed() if active.path == Runtime.own().path else None
-        return own is not None and own.commit == release.commit
+        return active.path == Runtime.own().path and BuildIdentity.installed_commit() == release.commit
 
     def run(self) -> str:
         """What happened, in a sentence (recorded when it changed something or refused)."""
