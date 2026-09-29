@@ -52,5 +52,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: live-failure-${{ matrix.os }}
-          path: out/live-failure-*.png
+          path: out/live-*.png
           if-no-files-found: ignore

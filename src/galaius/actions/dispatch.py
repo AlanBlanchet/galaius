@@ -5,6 +5,7 @@ import inspect
 import json
 import logging
 import re
+import time
 from typing import Callable, NamedTuple
 
 from playwright.async_api import Error as PlaywrightError, TimeoutError as PlaywrightTimeout
@@ -665,6 +666,49 @@ async def _d_sleep(c: _DesktopCtx) -> None:
     c.say(f"waited {c.action.duration}s")
 
 
+# What galaius itself typed into each target lately, newest first: its echo in the focused field
+# must never satisfy a text wait (typing "calculator" is not Spotlight finding Calculator).
+_TYPED: dict[str, list[tuple[float, str]]] = {}
+_TYPED_TTL_S = 300.0
+
+
+def _remember_typed(win: DesktopWindow, text: str) -> None:
+    now = time.monotonic()
+    fresh = [(t, s) for t, s in _TYPED.get(win.name, []) if now - t < _TYPED_TTL_S]
+    _TYPED[win.name] = [(now, text), *fresh][:3]
+
+
+def _typed_into(win: DesktopWindow) -> list[str]:
+    now = time.monotonic()
+    return [s for t, s in _TYPED.get(win.name, []) if now - t < _TYPED_TTL_S]
+
+
+def _text_region(win: DesktopWindow, region) -> tuple[str, Framing]:
+    """What a text wait reads, as a description and the crop of ``win.capture()`` that gives it.
+
+    ``"window"`` on a screen target = the host's ACTIVE window (the launcher that just opened, not
+    the editor beside it), clipped to the capture; with no active window it falls back to the whole
+    target and says so. On a window target the capture already IS the window."""
+    if isinstance(region, tuple):
+        return f"region {region[2]}x{region[3]}+{region[0]}+{region[1]}", Framing(region=region)
+    if region == "screen" or not win.is_screen:
+        return f"{win.name} {win.w}x{win.h}", Framing()
+    try:
+        active = win.backend.active_window()
+    except NotImplementedError:
+        active = None
+    if active is None:
+        return f"{win.name} {win.w}x{win.h} (no active window found)", Framing()
+    x0, y0 = max(active.x - win.x, 0), max(active.y - win.y, 0)
+    x1, y1 = min(active.x + active.w - win.x, win.w), min(active.y + active.h - win.y, win.h)
+    if x1 <= x0 or y1 <= y0:
+        return f"{win.name} {win.w}x{win.h} (active window off this target)", Framing()
+    return (
+        f"active window {active.title!r} {x1 - x0}x{y1 - y0}+{x0}+{y0}",
+        Framing(region=(x0, y0, x1 - x0, y1 - y0)),
+    )
+
+
 def _desktop_windows(win: DesktopWindow):
     """The window lister for the desktop ``win`` lives on: its bound backend (the sandbox, or the
     host desktop behind a screen target), else the host desktop."""
@@ -682,11 +726,13 @@ async def _d_wait_for(c: _DesktopCtx) -> None:
             _desktop_windows(c.win), action.window, present=present, timeout_s=seconds,
         ))
     elif action.text is not None:
-        reader, framing = desktop_ocr.text_reader(), Framing(region=action.region)
-        c.say(await until_text(
+        reader = desktop_ocr.text_reader()
+        area, framing = await asyncio.to_thread(_text_region, c.win, action.region)
+        found = await until_text(
             lambda: reader.read(framing.apply(c.win.capture())[0]), action.text,
-            present=present, timeout_s=seconds,
-        ))
+            present=present, timeout_s=seconds, typed=_typed_into(c.win),
+        )
+        c.say(f"{found} (read {area})")
     else:
         c.say(await action.execute(None))
 
@@ -783,6 +829,7 @@ async def _d_type_text(c: _DesktopCtx) -> None:
                 await bridge.page.keyboard.press("Control+A")
                 await bridge.page.keyboard.press("Delete")
             await bridge.page.keyboard.type(action.text)
+            _remember_typed(win, action.text)
             step.text = f"typed {len(action.text)} chars (via CDP)"
             return
         if err:
@@ -791,6 +838,7 @@ async def _d_type_text(c: _DesktopCtx) -> None:
             await win.press_key("ctrl+a")
             await win.press_key("Delete")
         undelivered = await _type_desktop(win, action.text, fx, fy)
+        _remember_typed(win, action.text)
         step.text = f"typed {len(action.text)} chars (via synthetic input)"
         if undelivered:  # a verified drop must not read as a success (#93)
             step.suffix = f"\n  {undelivered}"

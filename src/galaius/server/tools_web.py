@@ -155,8 +155,9 @@ async def run_actions(
     wait_for blocks until ONE condition holds — prefer it over `sleep`. Browser: a `selector`
       reaches `state`, or a `text` substring appears. Desktop (any OS): `window="<title substring>"`
       appears (state "visible") or is gone ("hidden"); `text="<words>"` is READ on screen (OCR, this
-      OS's own engine) until it appears / is gone — `region=[x,y,w,h]` reads only that part, faster
-      and without false hits elsewhere. No condition = a pause of `timeout` ms.
+      OS's own engine) until it appears / is gone, as whole words, never counting the echo of text
+      galaius typed there. What is read: `region="window"` (default: the ACTIVE window of a screen
+      target), `"screen"`, or `[x,y,w,h]`. No condition = a pause of `timeout` ms.
     Any action can include 'observe' (a VLM query string) to capture a screenshot after execution and analyze it. The snapshot is stored by step index for later compare actions.
 
     scope: CSS selector to restrict the final capture to a page sub-tree (browser only).

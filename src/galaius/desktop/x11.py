@@ -93,47 +93,72 @@ class X11Display(DesktopBackend):
     def windows(self) -> list[HostWindow]:
         """Titled top-level windows: the window manager's ``_NET_CLIENT_LIST`` when one runs, else
         (no WM — Xvfb, the sandbox) the viewable children of the root. One X connection per call."""
-        from Xlib import X, Xatom  # noqa: PLC0415 — Linux-only dependency
+        from Xlib import X  # noqa: PLC0415 — Linux-only dependency
+        from Xlib import display as xdisplay  # noqa: PLC0415
+
+        disp = xdisplay.Display(self.display)
+        try:
+            root = disp.screen().root
+            clients = root.get_full_property(disp.intern_atom("_NET_CLIENT_LIST"), X.AnyPropertyType)
+            if clients is not None and len(clients.value) > 0:
+                candidates = [disp.create_resource_object("window", wid) for wid in clients.value]
+            else:
+                candidates = root.query_tree().children
+            found = (self._describe(disp, root, win) for win in candidates)
+            return [w for w in found if w is not None and w.title]
+        finally:
+            disp.close()
+
+    def active_window(self) -> HostWindow | None:
+        """The window keys go to: the WM's ``_NET_ACTIVE_WINDOW``, else (no WM) the top-level
+        ancestor of the input focus — and under ``PointerRoot`` focus (keys follow the pointer,
+        the default without a WM) the top-level window under the pointer. None over bare root."""
+        from Xlib import X  # noqa: PLC0415 — Linux-only dependency
         from Xlib import display as xdisplay  # noqa: PLC0415
         from Xlib import error as xerror  # noqa: PLC0415
 
         disp = xdisplay.Display(self.display)
         try:
             root = disp.screen().root
-            clients = root.get_full_property(disp.intern_atom("_NET_CLIENT_LIST"), X.AnyPropertyType)
-            managed = clients is not None and len(clients.value) > 0
-            if managed:
-                candidates = [disp.create_resource_object("window", wid) for wid in clients.value]
+            active = root.get_full_property(disp.intern_atom("_NET_ACTIVE_WINDOW"), X.AnyPropertyType)
+            if active is not None and len(active.value) and active.value[0]:
+                win = disp.create_resource_object("window", active.value[0])
             else:
-                candidates = root.query_tree().children
-            utf8 = disp.intern_atom("UTF8_STRING")
-            net_name = disp.intern_atom("_NET_WM_NAME")
-            out: list[HostWindow] = []
-            for win in candidates:
-                try:
-                    # Minimised (iconic) and other-workspace windows are unmapped: not "visible".
-                    if win.get_attributes().map_state != X.IsViewable:
-                        continue
-                    prop = win.get_full_property(net_name, utf8) or win.get_full_property(
-                        Xatom.WM_NAME, X.AnyPropertyType
-                    )
-                    raw = prop.value if prop is not None else b""
-                    title = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
-                    if not title:
-                        continue
-                    geom = win.get_geometry()
-                    if not HostWindow.drivable(geom.width, geom.height):
-                        continue
-                    origin = root.translate_coords(win, 0, 0)
-                    out.append(HostWindow(
-                        handle=win.id, title=title, x=origin.x, y=origin.y,
-                        w=geom.width, h=geom.height,
-                    ))
-                except xerror.XError:
-                    continue  # the window closed while it was being listed
-            return out
+                win = disp.get_input_focus().focus
+                if isinstance(win, int):  # PointerRoot (or None): keys go to the window under the pointer
+                    win = root.query_pointer().child
+                    if not win:
+                        return None
+                while (parent := win.query_tree().parent) is not None and parent.id != root.id:
+                    win = parent
+            return self._describe(disp, root, win)
+        except xerror.XError:
+            return None
         finally:
             disp.close()
+
+    @staticmethod
+    def _describe(disp, root, win) -> HostWindow | None:
+        """A viewable, drivable window as a :class:`HostWindow` (title may be empty), else None —
+        also when it closed while being read."""
+        from Xlib import X, Xatom  # noqa: PLC0415 — Linux-only dependency
+        from Xlib import error as xerror  # noqa: PLC0415
+
+        try:
+            # Minimised (iconic) and other-workspace windows are unmapped: not "visible".
+            if win.get_attributes().map_state != X.IsViewable:
+                return None
+            prop = win.get_full_property(disp.intern_atom("_NET_WM_NAME"), disp.intern_atom("UTF8_STRING")) \
+                or win.get_full_property(Xatom.WM_NAME, X.AnyPropertyType)
+            raw = prop.value if prop is not None else b""
+            title = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+            geom = win.get_geometry()
+            if not HostWindow.drivable(geom.width, geom.height):
+                return None
+            origin = root.translate_coords(win, 0, 0)
+            return HostWindow(handle=win.id, title=title, x=origin.x, y=origin.y, w=geom.width, h=geom.height)
+        except xerror.XError:
+            return None
 
     # --- input ---------------------------------------------------------------------------------
 

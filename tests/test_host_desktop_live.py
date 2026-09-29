@@ -14,6 +14,7 @@ import asyncio
 import io
 import os
 import shutil
+import re
 import subprocess
 import sys
 import textwrap
@@ -38,7 +39,8 @@ TITLE = "galaius-live-host"
 
 # A tiny launcher: a Text field filling the top half (a click at the window's centre lands in it on
 # every OS — Windows' GetWindowRect includes the title bar), and under it a result row that shows
-# "Results for <query>" a moment after typing, the way a launcher lists its hits. Return prints
+# "Results for <query>" 1.2 s after typing, the way a launcher lists its hits — later than the
+# field's own echo of the query, which a text wait must not take for the result. Return prints
 # the query and exits.
 _APP = textwrap.dedent(
     """
@@ -53,7 +55,7 @@ _APP = textwrap.dedent(
     def show(_=None):
         query = text.get("1.0", "end").strip()
         row.configure(text=f"Results for {query}" if len(query) >= 3 else "")
-    text.bind("<KeyRelease>", lambda _: root.after(300, show))
+    text.bind("<KeyRelease>", lambda _: root.after(1200, show))
     def done(_):
         print(text.get("1.0", "end").strip(), flush=True)
         root.destroy()
@@ -117,6 +119,38 @@ def _app(tmp_path) -> subprocess.Popen:
     )
 
 
+@pytest.fixture(autouse=True)
+def _keep_what_ocr_read(monkeypatch):
+    """Every frame a text wait OCRs is also written to out/live-lastread-<os>.png, so a failed CI
+    run shows exactly what the engine was given (CI uploads out/ on failure)."""
+    from galaius.desktop import ocr
+
+    real = ocr.text_reader() if _has_text_reader() else None
+    if real is None:
+        yield
+        return
+
+    class Keeping(ocr.TextReader):
+        def read(self, png: bytes) -> str:
+            shot = Path("out") / f"live-lastread-{sys.platform}.png"
+            shot.parent.mkdir(exist_ok=True)
+            shot.write_bytes(png)
+            return real.read(png)
+
+    monkeypatch.setattr(ocr, "text_reader", lambda: Keeping())
+    yield
+
+
+def _has_text_reader() -> bool:
+    from galaius.desktop import ocr
+
+    try:
+        ocr.text_reader()
+    except ocr.NoTextReader:
+        return False
+    return True
+
+
 def _run_keeping_evidence(actions) -> str:
     """`_run`, but a failed step leaves the screen it failed on in out/ (CI uploads it)."""
     out = asyncio.run(srv.run_actions(actions=actions, target="screen"))
@@ -145,17 +179,22 @@ def test_open_wait_type_close_capture(live_display, tmp_path):
         whole = srv.DesktopWindow.screen("screen", host.host_desktop())
         cx = window.x + window.w // 2 - whole.x
         cy = window.y + window.h // 2 - whole.y
-        # Only this window's rectangle is read: a launcher's list, not the whole desktop.
-        region = (max(window.x - whole.x, 0), max(window.y - whole.y, 0), window.w, window.h)
+        # No region: the default reads the ACTIVE window (this one). The first wait's needle is the
+        # typed query itself: the field's echo shows at once and must not count, only the result
+        # row that follows 1.2 s later does. The second reads the whole (dark) screen.
         report = _run_keeping_evidence([
             ClickAction(x=cx, y=cy),
             TypeTextAction(text="whispering", clear_first=False),
-            WaitForAction(text="Results for whispering", region=region, timeout=20000),
+            WaitForAction(text="whispering", timeout=20000),
+            WaitForAction(text="Results for whispering", region="screen", timeout=20000),
             KeyPressAction(key="Return"),
             WaitForAction(window=TITLE, state="hidden", timeout=10000),
             WaitForAction(text="Results for whispering", state="hidden", timeout=10000),
         ])
-        assert "appeared" in report and report.count("gone") == 2, report
+        assert report.count("appeared") == 2 and report.count("gone") == 2, report
+        assert f"active window {TITLE!r}" in report, report
+        first = float(re.search(r"text 'whispering' appeared after ([0-9.]+)s", report).group(1))
+        assert first >= 0.8, f"matched the typed echo before the result row existed: {report}"
         stdout, stderr = app.communicate(timeout=10)
         assert stdout.strip() == "whispering", (stdout, stderr)
     finally:

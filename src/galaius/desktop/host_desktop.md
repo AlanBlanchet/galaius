@@ -56,11 +56,20 @@ Coordinates: one image pixel = one input unit on every OS. macOS Retina captures
 
 - CURRENT: on a desktop target `wait_for` was only a fixed pause.
 - TARGET all three: `wait_for` takes `window="<title substring>"` or `text="<words>"`
-  (`state="visible"` appears, `"hidden"` gone; `region=[x,y,w,h]` reads one rectangle), polled
-  until `timeout` ms, failing with the windows / the text it last saw. `text` is READ by OCR
-  (`ocr.py`): Windows `Windows.Media.Ocr`, macOS Vision, Linux `tesseract` (also the fallback
-  anywhere it is installed). Matching ignores case / punctuation / spacing and tolerates one OCR
-  slip per word (0.85 similarity), but a prefix still being typed ("notep") is not "Notepad".
+  (`state="visible"` appears, `"hidden"` gone), polled until `timeout` ms, failing with the
+  windows / the text it last saw. `text` is READ by OCR (`ocr.py`): Windows `Windows.Media.Ocr`,
+  macOS Vision, Linux `tesseract` (two page modes, psm 11 + psm 6; also the fallback anywhere).
+  - What is read (`region`): `"window"` (default) = the host's ACTIVE window — X11
+    `_NET_ACTIVE_WINDOW`, else the focus's top-level, else under `PointerRoot` the window under the
+    pointer; Windows `GetForegroundWindow`; macOS the front `CGWindowList` window below the Dock
+    layer (Spotlight's panel while open). `"screen"` = everything; `[x, y, w, h]` = one rectangle.
+  - Matching: whole tokens only, case / punctuation ignored, OCR look-alikes folded (0/o, 1/l/i,
+    5/s, 8/b); read tokens may join ("whisper ing") but only boundary to boundary — "notepa" is not
+    "Notepad", "Disconnected" is not "Connected", "Saved" is not "Save".
+  - Galaius's own typing never satisfies a wait: the text a `type_text` step sent to this target
+    (last 3, 5 min) is struck where the field echoes it — verbatim, exact case, alone on its OCR
+    line but for icon glyphs. Element geometry of the focused field would need AT-SPI / UIA / AX,
+    which this round leaves out.
 - Rejected method: pixel-difference waits (`screen="changes"` / `"settles"`). Real carets blink
   530-600 ms, longer than a poll plus a grab, so a blink passed as a change (5 false in 14 idle
   runs, Return missed 4 in 14) through two redesigns. A caret is not text: a text wait cannot be

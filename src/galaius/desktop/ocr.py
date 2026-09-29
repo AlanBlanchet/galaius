@@ -44,7 +44,12 @@ def _grey_dark_on_light(png: bytes, min_height: int) -> Image.Image:
 
 
 class TesseractOcr(TextReader):
-    """The ``tesseract`` binary, sparse-text mode (``--psm 11``: scattered labels, not a page)."""
+    """The ``tesseract`` binary, two page-segmentation passes: ``--psm 11`` (sparse text, scattered
+    labels) and ``--psm 6`` (one uniform block). Measured on a launcher over a dark or coloured
+    desktop, psm 11 alone dropped the result row that psm 6 read; the passes come back form-feed
+    separated so words of different passes never join into one match."""
+
+    _PAGE_MODES = ("11", "6")
 
     _MIN_HEIGHT = 1200  # ~2x a typical screen region; small UI text below this reads poorly
 
@@ -60,11 +65,13 @@ class TesseractOcr(TextReader):
     def read(self, png: bytes) -> str:
         buf = io.BytesIO()
         _grey_dark_on_light(png, self._MIN_HEIGHT).save(buf, format="PNG")
-        done = subprocess.run(
-            [self.binary, "stdin", "stdout", "--psm", "11", "-l", "eng"],
-            input=buf.getvalue(), capture_output=True, timeout=60, check=True,
+        return "\f".join(
+            subprocess.run(
+                [self.binary, "stdin", "stdout", "--psm", mode, "-l", "eng"],
+                input=buf.getvalue(), capture_output=True, timeout=60, check=True,
+            ).stdout.decode("utf-8", "replace")
+            for mode in self._PAGE_MODES
         )
-        return done.stdout.decode("utf-8", "replace")
 
 
 class WindowsOcr(TextReader):

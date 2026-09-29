@@ -525,15 +525,16 @@ class WaitForAction(ObservationAction):
     Browser: ``selector`` reaches ``state``, or ``text`` appears in the page.
     Desktop (any OS): ``window`` — a window whose title contains it appears (``state="visible"``)
     or is gone (``"hidden"``); ``text`` — the words are READ on the target by OCR (this OS's own
-    engine) until they appear / are gone, optionally only inside ``region`` (x, y, w, h in the
-    target's pixels): a launcher's result row, a dialog's message. No condition = a pause of
-    ``timeout`` ms, on any target."""
+    engine) until they appear / are gone, as whole words, never counting the echo of what galaius
+    itself typed there. ``region`` picks what is read: ``"window"`` (default: the ACTIVE window of
+    a screen target — the launcher, not the editor beside it), ``"screen"``, or ``[x, y, w, h]``
+    in the target's pixels. No condition = a pause of ``timeout`` ms, on any target."""
 
     type: Literal["wait_for"] = "wait_for"
     selector: str | None = None
     text: str | None = None  # browser: in the page's visible text; desktop: read on screen (OCR)
     window: str | None = None
-    region: tuple[int, int, int, int] | None = None  # desktop text waits: read only this rectangle
+    region: tuple[int, int, int, int] | Literal["window", "screen"] = "window"  # desktop text waits
     state: Literal["visible", "hidden", "attached", "detached"] = "visible"
     timeout: int = 10000
 
@@ -561,7 +562,7 @@ class WaitForAction(ObservationAction):
     @field_validator("region")
     @classmethod
     def _positive_region(cls, region):
-        if region is not None and (region[2] <= 0 or region[3] <= 0):
+        if isinstance(region, tuple) and (region[2] <= 0 or region[3] <= 0):
             raise ValueError(f"region {list(region)} needs a positive width and height — [x, y, w, h]")
         return region
 
@@ -576,8 +577,8 @@ class WaitForAction(ObservationAction):
             )
         if (self.window is not None or self.text is not None) and self.state not in ("visible", "hidden"):
             raise ValueError("a window / text wait takes state='visible' (appears) or 'hidden' (gone)")
-        if self.region is not None and self.text is None:
-            raise ValueError("region narrows a text wait — give text= with it")
+        if self.region != "window" and self.text is None:
+            raise ValueError("region picks what a text wait reads — give text= with it")
         return self
 
     async def execute(self, page: Page):
@@ -591,7 +592,7 @@ class WaitForAction(ObservationAction):
                 "wait_for window= watches the desktop — run it with a desktop target "
                 '(target="screen", a window title, or "nested:<title>")'
             )
-        if self.region is not None:
+        if self.region != "window":
             raise ValueError("region= reads part of a desktop screen — a browser page has no region")
         if self.text is not None:
             await page.wait_for_function(

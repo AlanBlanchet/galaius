@@ -229,6 +229,10 @@ class DesktopBackend(ABC):
         """The titled top-level windows on this desktop, for listing and ``wait_for window=``."""
         raise NotImplementedError(f"{type(self).__name__} cannot list windows")
 
+    def active_window(self) -> HostWindow | None:
+        """The window keyboard input goes to (the launcher that just opened), or None."""
+        raise NotImplementedError(f"{type(self).__name__} cannot tell the active window")
+
     @abstractmethod
     def move(self, x: float, y: float) -> None: ...
 

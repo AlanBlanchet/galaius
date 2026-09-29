@@ -25,47 +25,64 @@ class WindowsDesktop(PortableBackend):
     # desktop, is "visible" to IsWindowVisible yet nowhere on screen.
     _DWMWA_CLOAKED = 14
 
-    def windows(self) -> list[HostWindow]:
+    @functools.cached_property
+    def _win32(self):
+        """user32 + dwmapi with explicit argtypes: without them ctypes passes an HWND as a 32-bit C
+        int and truncates it."""
         import ctypes  # noqa: PLC0415 — Windows-only API surface
         from ctypes import wintypes  # noqa: PLC0415
 
         user32 = ctypes.WinDLL("user32", use_last_error=True)
         dwmapi = ctypes.WinDLL("dwmapi")
-        # Explicit argtypes: without them ctypes passes an HWND as a 32-bit C int and truncates it.
         user32.IsWindowVisible.argtypes = [wintypes.HWND]
         user32.IsIconic.argtypes = [wintypes.HWND]
         user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
         user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
         user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+        user32.GetForegroundWindow.restype = wintypes.HWND
         dwmapi.DwmGetWindowAttribute.argtypes = [
             wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD,
         ]
+        return ctypes, wintypes, user32, dwmapi
+
+    def _describe(self, hwnd) -> HostWindow | None:
+        """A visible, not minimised, not cloaked, drivable window, else None (title may be empty)."""
+        ctypes, wintypes, user32, dwmapi = self._win32
+        # A minimised window is "visible" to Windows, parked at about (-32000, -32000).
+        if not hwnd or not user32.IsWindowVisible(hwnd) or user32.IsIconic(hwnd):
+            return None
+        cloaked = wintypes.DWORD()
+        if dwmapi.DwmGetWindowAttribute(
+            hwnd, self._DWMWA_CLOAKED, ctypes.byref(cloaked), ctypes.sizeof(cloaked)
+        ) == 0 and cloaked.value:
+            return None
+        length = user32.GetWindowTextLengthW(hwnd)
+        title = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, title, length + 1)
+        rect = wintypes.RECT()
+        user32.GetWindowRect(hwnd, ctypes.byref(rect))
+        w, h = rect.right - rect.left, rect.bottom - rect.top
+        if not HostWindow.drivable(w, h):
+            return None
+        return HostWindow(handle=int(hwnd), title=title.value, x=rect.left, y=rect.top, w=w, h=h)
+
+    def windows(self) -> list[HostWindow]:
+        ctypes, wintypes, user32, _ = self._win32
         found: list[HostWindow] = []
 
         @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
         def visit(hwnd, _lparam):
-            # A minimised window is "visible" to Windows, parked at about (-32000, -32000).
-            if not user32.IsWindowVisible(hwnd) or user32.IsIconic(hwnd):
-                return True
-            length = user32.GetWindowTextLengthW(hwnd)
-            if not length:
-                return True
-            cloaked = wintypes.DWORD()
-            if dwmapi.DwmGetWindowAttribute(
-                hwnd, self._DWMWA_CLOAKED, ctypes.byref(cloaked), ctypes.sizeof(cloaked)
-            ) == 0 and cloaked.value:
-                return True
-            title = ctypes.create_unicode_buffer(length + 1)
-            user32.GetWindowTextW(hwnd, title, length + 1)
-            rect = wintypes.RECT()
-            user32.GetWindowRect(hwnd, ctypes.byref(rect))
-            w, h = rect.right - rect.left, rect.bottom - rect.top
-            if HostWindow.drivable(w, h):
-                found.append(HostWindow(handle=int(hwnd), title=title.value, x=rect.left, y=rect.top, w=w, h=h))
+            window = self._describe(hwnd)
+            if window is not None and window.title:
+                found.append(window)
             return True
 
         user32.EnumWindows(visit, 0)
         return found
+
+    def active_window(self) -> HostWindow | None:
+        """``GetForegroundWindow``: the Start menu while it is open, else the window keys go to."""
+        return self._describe(self._win32[2].GetForegroundWindow())
 
 
 class MacDesktop(PortableBackend):
@@ -93,14 +110,47 @@ class MacDesktop(PortableBackend):
             ))
         return found
 
-    def windows(self) -> list[HostWindow]:
+    # Window layers below the Dock (20); the menu bar sits at 24/25. Spotlight and other launcher
+    # panels float above normal windows (layer 0) but below these.
+    _BELOW_DOCK = 20
+    _NOT_WINDOWS = frozenset({"Window Server", "Dock", "SystemUIServer", "Control Center", "Notification Center"})
+
+    @staticmethod
+    def _rows() -> list[dict]:
         import Quartz  # noqa: PLC0415 — pyobjc, installed with pynput on macOS only
 
         rows = Quartz.CGWindowListCopyWindowInfo(
             Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements,
             Quartz.kCGNullWindowID,
         )
-        return self.windows_from_quartz([dict(row) for row in rows or []])
+        return [dict(row) for row in rows or []]
+
+    def windows(self) -> list[HostWindow]:
+        return self.windows_from_quartz(self._rows())
+
+    @classmethod
+    def topmost_from_quartz(cls, entries: list[dict]) -> HostWindow | None:
+        """The front window in ``CGWindowList``'s front-to-back order that is a real window or a
+        launcher panel (below the Dock's layer, not a system chrome owner) — Spotlight while it is
+        open, else the frontmost app's window."""
+        for entry in entries:
+            if not 0 <= entry.get("kCGWindowLayer", 0) < cls._BELOW_DOCK:
+                continue
+            if str(entry.get("kCGWindowOwnerName") or "") in cls._NOT_WINDOWS:
+                continue
+            bounds = dict(entry.get("kCGWindowBounds") or {})
+            w, h = int(bounds.get("Width", 0)), int(bounds.get("Height", 0))
+            if not HostWindow.drivable(w, h):
+                continue
+            name, owner = str(entry.get("kCGWindowName") or ""), str(entry.get("kCGWindowOwnerName") or "")
+            return HostWindow(
+                handle=int(entry["kCGWindowNumber"]), title=f"{name} — {owner}" if name and owner else name or owner,
+                x=int(bounds.get("X", 0)), y=int(bounds.get("Y", 0)), w=w, h=h,
+            )
+        return None
+
+    def active_window(self) -> HostWindow | None:
+        return self.topmost_from_quartz(self._rows())
 
 
 _WAYLAND = (

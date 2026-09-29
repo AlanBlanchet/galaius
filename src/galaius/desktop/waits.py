@@ -11,8 +11,7 @@ Both poll plain callables until a deadline and fail with what they last saw, so 
 import asyncio
 import re
 import time
-from collections.abc import Callable
-from difflib import SequenceMatcher
+from collections.abc import Callable, Sequence
 
 from galaius.desktop.geometry import HostWindow
 
@@ -49,28 +48,75 @@ async def until_window(
         await asyncio.sleep(poll_s)
 
 
-#: How alike the read words must be to the wanted ones: one OCR slip in a word ("whisperlng",
-#: "0pen") passes, a prefix still being typed ("notep" for "Notepad") does not.
-TEXT_SIMILARITY = 0.85
 _WORD = re.compile(r"\w+")
+#: Characters OCR confuses with each other, folded onto one form before comparing. A look-alike is
+#: the only slack: no edit distance, so "notepa" is never "Notepad" and "Saved" never "Save".
+_LOOKALIKES = str.maketrans({"0": "o", "1": "l", "i": "l", "|": "l", "5": "s", "8": "b"})
 
 
-def text_matches(needle: str, seen: str, similarity: float = TEXT_SIMILARITY) -> bool:
-    """Do the words of ``needle`` occur, in order, among the words read in ``seen``?
+def _tokens(text: str) -> list[str]:
+    return _WORD.findall(text)
 
-    Case, punctuation and spacing are ignored, and OCR noise is tolerated: runs of n-1 to n+1 read
-    words are compared to the n wanted ones with spaces removed (OCR splits and merges words), and
-    pass at ``similarity``. Words match words, never letters inside a longer word."""
-    want = _WORD.findall(needle.lower())
-    got = _WORD.findall(seen.lower())
+
+def _fold(token: str) -> str:
+    return token.lower().translate(_LOOKALIKES)
+
+
+#: Tokens this short may share a line with the echo: a search icon read as "Q", a glyph as "x".
+_GLYPH = 2
+
+
+def _echo_mask(lines: list[list[str]], typed: Sequence[str]) -> list[list[bool]]:
+    """Tokens that are galaius's own typing echoed by the field it typed into. A field shows what
+    was typed verbatim (exact case) as its whole line, give or take an icon glyph; a launcher's
+    result row usually spells the name its own way or says more ("Results for …"). For each typed
+    string only the FIRST such line is masked."""
+    masked = [[False] * len(line) for line in lines]
+    for text in typed:
+        want = _tokens(text)
+        n = len(want)
+        for li, line in enumerate(lines):
+            hit = next(
+                (i for i in range(len(line) - n + 1)
+                 if line[i:i + n] == want and not any(masked[li][i:i + n])
+                 and all(len(t) <= _GLYPH for t in line[:i] + line[i + n:])),
+                None,
+            )
+            if hit is not None:
+                masked[li][hit:hit + n] = [True] * n
+                break
+    return masked
+
+
+def text_matches(needle: str, seen: str, typed: Sequence[str] = ()) -> bool:
+    """Do the words of ``needle`` occur, as whole tokens and in order, in the text ``seen``?
+
+    Case and punctuation are ignored; OCR look-alikes (0/o, 1/l/i, 5/s, 8/b) are folded; a run of
+    read tokens may join into the wanted ones (OCR splits "whisper ing" and merges "Resultsfor"),
+    but always from a token boundary to a token boundary. ``typed`` is text galaius typed into
+    this target: its echo in the focused field never satisfies the wait."""
+    want = "".join(_fold(t) for t in _tokens(needle))
     if not want:
         return False
-    target = "".join(want)
-    for size in {max(1, len(want) - 1), len(want), len(want) + 1}:
-        for i in range(len(got) - size + 1):
-            window = "".join(got[i:i + size])
-            if window == target or SequenceMatcher(None, target, window).ratio() >= similarity:
+    # Form feeds separate independent reads of one frame (two OCR passes): never join across one.
+    return any(_matches_in(want, block, typed) for block in seen.split("\f"))
+
+
+def _matches_in(want: str, block: str, typed: Sequence[str]) -> bool:
+    lines = [_tokens(line) for line in block.splitlines()]
+    masks = _echo_mask(lines, typed)
+    got = [t for line in lines for t in line]
+    masked = [m for mask in masks for m in mask]
+    for start in range(len(got)):
+        joined = ""
+        for end in range(start, len(got)):
+            if masked[end]:
+                break
+            joined += _fold(got[end])
+            if joined == want:
                 return True
+            if len(joined) >= len(want) or not want.startswith(joined):
+                break
     return False
 
 
@@ -81,15 +127,16 @@ async def until_text(
     present: bool,
     timeout_s: float,
     poll_s: float = 0.25,
+    typed: Sequence[str] = (),
 ) -> str:
     """Poll ``read`` (an OCR pass over the target, seconds each) until ``needle`` is there
-    (``present``) or is not. Returns the report line; raises :class:`DesktopWaitTimeout` quoting
-    the last text read."""
+    (``present``) or is not — never counting the echo of ``typed``. Returns the report line;
+    raises :class:`DesktopWaitTimeout` quoting the last text read."""
     start = time.monotonic()
     while True:
         seen = await asyncio.to_thread(read)
         elapsed = time.monotonic() - start
-        if text_matches(needle, seen) == present:
+        if text_matches(needle, seen, typed) == present:
             return f"text {needle!r} {'appeared' if present else 'gone'} after {elapsed:.1f}s"
         if elapsed >= timeout_s:
             snippet = " ".join(seen.split())[:200] or "(no text)"
