@@ -93,6 +93,19 @@ ReleaseOrigin = Literal["server", "github", "local"]
 EventKind = Literal["checked", "installed", "activated", "refused", "rolled_back", "failed", "restarted"]
 
 
+def active_interpreter() -> str:
+    """The interpreter a NEW long-lived interact process must run: the ACTIVE runtime's, never this
+    process's. A process that outlives a swap (a dispatcher, a service) would otherwise pin whatever
+    build happened to start it — that is how old runtimes stayed alive after an upgrade. Falls back to
+    this interpreter when there is no usable store (a checkout, a test, a broken runtime).
+    """
+    try:
+        active = RuntimeStore.default().active()
+        return str(active.python) if active.usable() else sys.executable
+    except (OSError, ValueError):
+        return sys.executable
+
+
 class RuntimeReceipt(BaseModel):
     """What was installed into a runtime and from where; `identity` is its interact wheel's sha256."""
 

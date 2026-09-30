@@ -27,11 +27,12 @@ import time
 from collections.abc import Callable
 from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
-from typing import ClassVar, Literal
+from typing import ClassVar, Literal, NoReturn
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from interact.upgrade.handoff import Children, Handoff
+from interact.private_files import PRIVATE_FILES
 from interact.upgrade.store import EXIT_UPGRADE, Runtime, RuntimeStore
 
 class SupervisorSettings(BaseModel):
@@ -435,6 +436,39 @@ class ConsoleProtocol(RelayProtocol):
 
 
 
+class RelayHandover(BaseModel):
+    """What a relay supervisor carries across becoming a newer runtime's (`os.execv` keeps the client's
+    pipe but no memory): the client's handshake, whether the client already saw its answer, and the
+    messages held during the drain. Without this the client would be left in a session whose
+    `initialize` no worker ever saw."""
+
+    model_config = ConfigDict(frozen=True)
+    variable: ClassVar[str] = "INTERACT_RELAY_HANDOVER"
+    initialize: str
+    initialized: str | None
+    client_initialized: bool
+    held: tuple[str, ...]
+    from_runtime: str
+
+    @classmethod
+    def taken(cls) -> "RelayHandover | None":
+        """The handover this supervisor was started with, read once and removed."""
+        path = os.environ.pop(cls.variable, "")
+        if not path:
+            return None
+        try:
+            return cls.model_validate_json(Path(path).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        finally:
+            Path(path).unlink(missing_ok=True)
+
+    def left(self, store: RuntimeStore) -> Path:
+        path = store.live_path / f"{os.getpid()}.handover.json"
+        PRIVATE_FILES.write_text(path, self.model_dump_json())
+        return path
+
+
 class StdioRelay(Supervisor):
     """A client's pipe kept across workers. The relay decides the quiet point itself (it sees every
     request and answer) and replays the client's handshake into each new worker."""
@@ -447,7 +481,7 @@ class StdioRelay(Supervisor):
     def run(self) -> int:
         """Never returns: the client-reader thread may sit in `stdin.readline` holding the buffer
         lock, which aborts a normal interpreter shutdown; the exit code leaves directly instead."""
-        code = _Relay(self).serve()
+        code = _Relay(self, RelayHandover.taken()).serve()
         Handoff.flushed()
         os._exit(code)
 
@@ -456,7 +490,7 @@ class _Relay:
     """One relay's state, driven by one thread: every input (client line, worker line, worker
     exit, tick) is an event on one queue, so no two decisions race."""
 
-    def __init__(self, owner: StdioRelay) -> None:
+    def __init__(self, owner: StdioRelay, handover: RelayHandover | None = None) -> None:
         self.owner = owner
         self.protocol = owner.protocol
         self.settings = owner.settings
@@ -481,12 +515,21 @@ class _Relay:
         self.closing = False
         #: When the current handshake was sent, or the current drain began.
         self.since = 0.0
+        if handover is not None:  # this supervisor replaced an older runtime's: pick its client up
+            self.initialize = Message.parsed(handover.initialize.encode())
+            self.initialized = Message.parsed(handover.initialized.encode()) if handover.initialized else None
+            self.client_initialized = handover.client_initialized
+            self.held = [Message.parsed(raw.encode()) for raw in handover.held]
+            self.swapping_from = Runtime(path=Path(handover.from_runtime))
 
     # ---- plumbing ----------------------------------------------------------------------------
 
     def serve(self) -> int:
         threading.Thread(target=self._read, args=(sys.stdin.buffer, ("client",)), daemon=True, name="relay-client").start()
-        self.start(self.owner.store.active(), probation=False)
+        arrived = self.owner.store.arrived()   # this supervisor replaced an older one: its worker is on probation
+        if arrived:
+            self.lifecycle.switched()
+        self.start(self.owner.store.active(), probation=arrived)
         while True:
             try:
                 event = self.events.get(timeout=self.settings.tick_seconds)
@@ -624,8 +667,14 @@ class _Relay:
         if self.phase == "draining":
             self.swapping_from = worker.runtime
             self.lifecycle.switched()
-            self.start(self.owner.store.active(), probation=True)
+            target = self.owner.store.active()
+            # Nothing is in flight and the client's messages are held: the ONE moment this supervisor
+            # can become the new runtime's too, so no interact process is left running the old code.
+            if self.owner.settings.replace_itself and target.path != Runtime.own().path and (sys.platform != "win32" or os.environ.get(Handoff.child)):
+                self.handing_over(target)
+            self.start(target, probation=True)
             return None
+
         for request in self.pending.values():  # received, maybe run: answered, never replayed
             self.to_client(self.protocol.interrupted(request, f"interact's worker stopped (exit {code}) before answering; the call may or may not have run"))
         self.pending = {}
@@ -640,6 +689,16 @@ class _Relay:
         self.start(target, probation=self.lifecycle.suspect is not None)
         return None
 
+    def handing_over(self, target: Runtime) -> NoReturn:
+        """Become `target`'s supervisor in place, with the client's session carried over."""
+        handover = RelayHandover(initialize=self.initialize.raw.decode(), initialized=self.initialized.raw.decode() if self.initialized else None,
+                                 client_initialized=self.client_initialized, held=tuple(message.raw.decode() for message in self.held),
+                                 from_runtime=str(self.swapping_from.path if self.swapping_from else Runtime.own().path))
+        if self.checker is not None:
+            self.checker.wait(30)
+        os.environ[RelayHandover.variable] = str(handover.left(self.owner.store))
+        self.owner.say(f"switching to {target.label()}")
+        Handoff(store=self.owner.store).replace(target, self.owner.arguments)
     def tick(self) -> int | None:
         self.checker = self.owner.check_releases(self.checker)
         worker = self.worker

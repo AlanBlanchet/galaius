@@ -17,7 +17,8 @@ import pytest
 
 from interact.upgrade.handoff import Handoff
 from interact.upgrade.release import BuildIdentity
-from interact.upgrade.store import Runtime, RuntimeReceipt, RuntimeStore
+from interact.upgrade.store import Runtime, RuntimeReceipt, RuntimeStore, active_interpreter
+from interact.upgrade.supervisor import RelayHandover
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="fake runtimes are shebang scripts")
 
@@ -322,3 +323,35 @@ def test_console_relay_swaps_between_turns_on_the_same_extension_pipe(store: Run
         time.sleep(0.1)
     assert console.process.poll() is None
     console.close()
+
+
+def test_a_relay_carries_its_clients_session_across_becoming_a_newer_runtimes(store: RuntimeStore, monkeypatch) -> None:
+    """The relay supervisor replaces itself in place, so its memory is gone: the client's handshake and
+    whatever arrived during the drain travel in a file, or the client would be left in a session no
+    worker ever saw."""
+    store.live_path.mkdir(parents=True, exist_ok=True)
+    handover = RelayHandover(initialize='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}', initialized='{"jsonrpc":"2.0","method":"notifications/initialized"}',
+                             client_initialized=True, held=('{"jsonrpc":"2.0","id":7,"method":"tools/call"}',), from_runtime=str(store.root / "0.1.0-fake"))
+    path = handover.left(store)
+    assert path.read_text()
+    monkeypatch.setenv(RelayHandover.variable, str(path))
+    taken = RelayHandover.taken()
+    assert taken == handover
+    assert not path.exists()                                  # read once, never left behind
+    assert RelayHandover.variable not in os.environ           # and never inherited by a worker
+    assert RelayHandover.taken() is None                      # a supervisor nobody handed over to
+
+
+def test_a_new_long_lived_child_starts_on_the_active_runtime_not_on_its_callers(store: RuntimeStore, monkeypatch) -> None:
+    """A dispatcher keeps its runtime until its run ends, so the one it is GIVEN must be the active one:
+    started from a supervisor that still ran an older build, it kept that build alive for hours."""
+    old, new = fake_runtime(store, "0.1.0", 1), fake_runtime(store, "0.2.0", 2)
+    monkeypatch.setenv("INTERACT_RUNTIMES", str(store.root))
+    store.activate(old)
+    assert active_interpreter() == str(old.python)
+    store.activate(new)
+    assert active_interpreter() == str(new.python)
+    # A store with no runtime (a checkout, a first install): a real interpreter, and never a fake one.
+    monkeypatch.setenv("INTERACT_RUNTIMES", str(store.root / "nothing-here"))
+    fallback = active_interpreter()
+    assert Path(fallback).is_file() and fallback not in {str(old.python), str(new.python)}

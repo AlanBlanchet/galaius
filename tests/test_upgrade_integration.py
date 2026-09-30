@@ -190,17 +190,22 @@ def test_running_mcp_server_and_machine_connection_upgrade_themselves_from_n_to_
         assert any("upgraded from 0.43.0" in note.get("params", {}).get("data", "") and "0.43.1" in note["params"]["data"] for note in notes)
 
         until(lambda: channel.hellos[-1:] == ["interact/0.43.1"], 120, "the machine's hello from N+1")
-        # The MCP relay keeps its pipe (and its code) until the client reconnects; its worker, the
-        # machine connection's worker AND that connection's supervisor now run N+1.
+        # EVERY interact process ends on N+1: both workers, and both supervisors — the MCP relay
+        # replaces itself in place at its quiet point, carrying the client's session over, so nothing
+        # is left running N.
         def moved() -> dict[int, Path] | None:
             found = running(store)
-            return found if list(found.values()).count(second.path) >= 3 else None
+            return found if list(found.values()).count(second.path) >= 4 else None
 
-        after = until(moved, 60, "workers and the machine supervisor on N+1")
+        after = until(moved, 120, "both workers and both supervisors on N+1")
         assert mcp.poll() is None and machine.poll() is None
-        assert list(after.values()).count(first.path) == 1  # only the relay, holding the client's pipe
+        assert list(after.values()).count(first.path) == 0  # nothing still runs N
         if sys.platform != "win32":  # replaced in place: the pids a client or service manager holds never change
-            assert after[mcp.pid] == first.path and after[machine.pid] == second.path and before[machine.pid] == first.path
+            assert (after[mcp.pid], after[machine.pid]) == (second.path, second.path)
+            assert (before[mcp.pid], before[machine.pid]) == (first.path, first.path)
+        # The client's session survived that replacement: this call needs the handshake the relay
+        # carried over (a worker that never saw `initialize` answers nothing).
+        assert {tool["name"] for tool in request(4, "tools/list", {})["result"]["tools"]} == {tool["name"] for tool in tools_before}
     finally:
         mcp.stdin.close()
         machine.terminate()

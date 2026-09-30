@@ -23,7 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from interact.agents import registry as reg
 from interact.agents.providers import _safe_process_detail
 from interact.processes import process_started
-from interact.upgrade.store import Runtime, RuntimeStore
+from interact.upgrade.store import Runtime, RuntimeStore, active_interpreter
 
 MAX_PENDING = 128
 _POLL_SECONDS = 0.1
@@ -226,7 +226,10 @@ def ensure_dispatcher_locked(run_id: str, *, cwd: str = ".") -> int:
     _write_state(run_id, state)
     try:
         process = subprocess.Popen(
-            [sys.executable, "-m", "interact.agents.agent_queue", "--dispatch", run_id, token],
+            # The ACTIVE runtime's interpreter, never this process's: a dispatcher deliberately keeps
+            # its runtime until its run ends (see `main`), so one started by a process that still runs
+            # an older build would keep that build alive for hours after an upgrade.
+            [active_interpreter(), "-m", "interact.agents.agent_queue", "--dispatch", run_id, token],
             cwd=cwd if cwd and Path(cwd).is_dir() else ".",
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL, start_new_session=True,
