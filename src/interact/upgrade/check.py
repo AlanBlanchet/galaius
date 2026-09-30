@@ -115,7 +115,10 @@ class UpgradeCheck(BaseModel):
             except ValidationError as error:
                 return self.refused(f"{source.base}: a signed document that is not a release ({error.error_count()} problems)")
             except httpx.HTTPStatusError as error:
-                return f"{source.base} offers no release (HTTP {error.response.status_code}); trying again in {self.config.upgrade_check_seconds} s"
+                # 404 is the server answering that it has published no release, which reads very
+                # differently from one that is failing: say which it is, or this looks like a bug.
+                nothing = " (it has published none yet)" if error.response.status_code == 404 else ""
+                return f"{source.base} offers no release{nothing} (HTTP {error.response.status_code}); trying again in {self.config.upgrade_check_seconds} s"
             except httpx.HTTPError as error:
                 return f"{source.base} did not answer ({type(error).__name__}); trying again in {self.config.upgrade_check_seconds} s"
             if self.running(release):
