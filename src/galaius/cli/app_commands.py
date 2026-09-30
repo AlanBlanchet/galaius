@@ -988,7 +988,9 @@ def agents_resume(
     reason half of these runs stopped, and they would refuse the same models again.
     """
 
-    cut = reg.interrupted_runs(within_hours=hours)
+    # Only a LISTING pays for the whole store: deriving every run re-reads every transcript, which
+    # took over a minute on a real history and made a named resume time out (visual-critic r2).
+    cut = [] if run_id else reg.interrupted_runs(within_hours=hours)
     targets = list(run_id or ()) or ([run.run_id for run in cut] if all_cut else [])
     if not targets:
         if not cut:
