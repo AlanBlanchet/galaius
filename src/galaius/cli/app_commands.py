@@ -7,6 +7,7 @@ import platform as _pf
 import shutil
 import subprocess
 import sys
+import time
 from importlib.util import find_spec
 from pathlib import Path
 from collections.abc import Callable
@@ -20,6 +21,7 @@ from galaius import feedback, live_sources, model_catalog, ollama
 from galaius_core import AGENT_TOUCH_SCOPES
 
 from galaius.agents import messaging
+from galaius.agents import quota
 from galaius.agents import providers as agent_providers
 from galaius.agents import registry as reg
 from galaius.agents.catalog import AgentCatalog
@@ -971,6 +973,36 @@ def agents_send(run_id: str, message: str) -> None:
     print(delivery.text)
     if delivery.state == "error":
         raise SystemExit(1)
+
+
+@agents_app.command(name="resume")
+def agents_resume(
+    run_id: list[str] | None = None, *, all_cut: bool = False, hours: float = 24.0,
+) -> None:
+    """Pick up agents whose run was CUT — a usage limit, an OOM kill, a reboot, a closed laptop.
+
+    With no argument it only LISTS them (a cut run is one whose process is gone with nothing having
+    recorded how it ended). `--all-cut` resumes every one it lists; naming ids resumes those.
+
+    Resuming also drops the quota refusals remembered under an exhausted window: they were the
+    reason half of these runs stopped, and they would refuse the same models again.
+    """
+
+    cut = reg.interrupted_runs(within_hours=hours)
+    targets = list(run_id or ()) or ([run.run_id for run in cut] if all_cut else [])
+    if not targets:
+        if not cut:
+            print(f"Nothing cut in the last {hours:g} h.")
+            return
+        for run in cut:
+            stopped = run.finished_at or run.started_at
+            print(f"  {run.run_id[:8]}  {run.agent or run.name:<20} stopped {(time.time() - stopped) / 60:.0f} min ago")
+        print(f"\nResume them with  galaius agents resume --all-cut  (or by id).")
+        return
+    quota.forget()  # the refusals that cut them would refuse the same models again
+    for identity in targets:
+        delivery = messaging.deliver_message(identity, reg.RESUME_BRIEF)
+        print(f"{identity[:8]}: {delivery.text}")
 
 
 @agents_app.command(name="variables")

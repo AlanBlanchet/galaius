@@ -140,7 +140,7 @@ const STATUS_COLOR: Record<string, string> = {
   running: "var(--vscode-charts-blue)",
   done: "var(--vscode-charts-green)",
   failed: "var(--vscode-charts-red)",
-  crashed: "var(--vscode-charts-orange)",
+  interrupted: "var(--vscode-charts-orange)",
 };
 
 /** The diagram as inline SVG. Colours are theme variables so it works in light and dark, and the

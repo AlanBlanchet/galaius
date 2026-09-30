@@ -7,7 +7,7 @@ default is ``~/.galaius/out/agents``; disposable test and harness processes pass
 broke before (0ef5fa4), and ``server_registry`` pins its own path for the same reason.
 
 Status is DERIVED from the pid on every read. A record cannot assert it is still running — a
-killed agent reports as crashed instead of spinning forever in the UI.
+killed agent reports as interrupted instead of spinning forever in the UI.
 """
 
 import functools
@@ -29,7 +29,7 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import BinaryIO, ClassVar, Literal, Self
 
-from pydantic import BaseModel, Field, PrivateAttr
+from pydantic import BaseModel, Field, PrivateAttr, field_validator
 from galaius.agents import quota
 from galaius_core import AgentRevisionRef, PromptExecutionRef
 
@@ -49,9 +49,16 @@ from galaius.server_registry import (
 )
 
 RunStatus = Literal[
-    "starting", "running", "waiting", "done", "failed", "cancelled", "crashed", "stopped",
+    "starting", "running", "waiting", "done", "failed", "cancelled", "interrupted", "stopped",
     "foreign",
 ]
+#: The word older records used for "its process is gone and nothing recorded an ending". Coerced
+#: at the typed edge (`AgentRun.settled_word`) so a record written months ago still reads.
+_LEGACY_INTERRUPTED = "crashed"
+#: Statuses that mean the run will never do anything again.
+TERMINAL_STATUSES: frozenset[str] = frozenset(
+    {"done", "failed", "cancelled", "interrupted", "stopped"}
+)
 RunKind = Literal["process", "conversation", "provider_child"]
 ConnectionMode = Literal["local_session", "api"]
 ChargePath = Literal[
@@ -116,7 +123,7 @@ class SkippedCandidate(BaseModel):
 
 
 class Interruption(BaseModel):
-    """How a run's process went away when it never said how it ended itself (status `crashed`), as
+    """How a run's process went away when it never said how it ended itself (status `interrupted`), as
     the system recorded it: the journal of the systemd unit that held it (`AgentRun.unit`) when it can
     be read, else the moment this machine saw the pid gone. Written once, on the record, so every
     reader (CLI, panel, a mirror on another host) says the same cause."""
@@ -251,7 +258,7 @@ class AgentRun(BaseModel):
     #: The systemd unit holding `pid` (`process_unit`), recorded with it: the journal says how that unit
     #: ended (out of memory) under its name, never under the pid. None off systemd.
     unit: str | None = None
-    #: How its process went away when it ended without saying so (`crashed`); None otherwise.
+    #: How its process went away when it ended without saying so (`interrupted`); None otherwise.
     interruption: Interruption | None = None
     lifecycle_token: str | None = Field(
         default_factory=lambda: secrets.token_hex(16), min_length=1, max_length=80,
@@ -312,6 +319,12 @@ class AgentRun(BaseModel):
     foreign: bool = False
 
     status: RunStatus = "running"
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def settled_word(cls, value: object) -> object:
+        """One word for "gone without saying how it ended", whatever a record on disk spells."""
+        return "interrupted" if value == _LEGACY_INTERRUPTED else value
     #: API-equivalent value of observed usage. The actual account impact is represented separately
     #: by ``charge_path`` and ``cost_certainty`` and remains unknown without provider evidence.
     cost_usd: float | None = None
@@ -1117,7 +1130,7 @@ def append_event(run_id: str, event: AgentEvent) -> None:
             # whatever an earlier refusal left against it is over, whatever reset it named. An
             # `allowed` rate-limit line proves nothing: one pool can allow while another refuses.
             quota.served(stored.provider, stored.model)
-        terminal = stored.status in ("done", "failed", "cancelled", "crashed", "stopped")
+        terminal = stored.status in TERMINAL_STATUSES
         same_turn = event.turn_id is None or event.turn_id == stored.provider_turn_id
         newer_root_turn = (
             stored.kind == "conversation" and event.kind in ("started", "prompt")
@@ -1156,7 +1169,7 @@ def append_event(run_id: str, event: AgentEvent) -> None:
             elif not terminal and event.kind in ("started", "prompt", "text", "thinking", "tool"):
                 updates["status"] = "running"
         elif stored.kind == "provider_child":
-            was_terminal = stored.status in ("done", "failed", "cancelled", "crashed", "stopped")
+            was_terminal = stored.status in TERMINAL_STATUSES
             if event.kind == "done":
                 updates["status"] = "done"
             elif event.kind == "cancelled":
@@ -1280,7 +1293,7 @@ def upsert_provider_child(
             )
             _replace_private(_record_path(run_id), run.model_dump_json().encode())
         rank = {"starting": 0, "running": 1, "waiting": 2, "cancelled": 3,
-                "done": 4, "failed": 4, "crashed": 4, "stopped": 4, "foreign": 4}
+                "done": 4, "failed": 4, "interrupted": 4, "stopped": 4, "foreign": 4}
         updates: dict[str, object] = {}
         if task:
             updates["task"] = task
@@ -1576,23 +1589,37 @@ def last_event(run_id: str) -> AgentEvent | None:
     return events[-1] if events else None
 
 
-def _status_for(run: AgentRun) -> RunStatus:
-    """The one thing a file cannot assert about itself: whether it is still running."""
+def _status_for(run: AgentRun, *, depth: int = 0) -> RunStatus:
+    """The one thing a file cannot assert about itself: whether it is still running.
+
+    Every surface that reports a run answers from here (`list_runs`, `trees`, `running_runs`, the
+    CLI, the editor panel, and any mirror of these records). A pid alone is not enough: a
+    pid the system has since handed to another process is a DEAD run (`process_running`), and a
+    child the provider ran inside a session has no pid of its own — it lives exactly as long as
+    the session that hosts it."""
     if run.kind == "provider_child":
-        return run.status
+        if run.status in TERMINAL_STATUSES or depth > 4:
+            return run.status
+        # Its parent holds the process. A session killed mid-delegation leaves its children
+        # marked "running" for good — one of the rows the owner saw stuck as still working.
+        host = _read_record(run.parent_run_id or run.root_run_id or "") if (run.parent_run_id or run.root_run_id) else None
+        if host is None:
+            return run.status
+        return run.status if _status_for(host, depth=depth + 1) in ("starting", "running", "waiting") else "interrupted"
     if run.kind == "conversation":
-        if run.status in ("waiting", "done", "failed", "cancelled", "stopped"):
+        if run.status in TERMINAL_STATUSES or run.status == "waiting":
             return run.status
         if run.process_running():
             return run.status
-        return "crashed"
+        return "interrupted"
     if run.exit_code is not None:
         return ("stopped" if run.exit_code == -signal.SIGTERM
                 else "done" if run.exit_code == 0 else "failed")
     if run.process_running():
         return "running"
-    # It never recorded an ending and its process is gone — it died without saying so.
-    return "crashed"
+    # It never recorded an ending and its process is gone — cut off mid-work, as far as the pid
+    # can tell. `_derive` then asks the run's OWN stream whether it actually finished first.
+    return "interrupted"
 
 
 def _derive(run: AgentRun) -> AgentRun:
@@ -1614,7 +1641,7 @@ def _derive(run: AgentRun) -> AgentRun:
         digest = StreamDigest.of(source, read_events(run.run_id), viewer=run.run_id)
     # The child's OWN stream is the authority on how it ended. If its LAST event is an ending, the
     # run finished — even if nothing was watching to record an exit code. Without this, a run
-    # whose supervisor died reports "crashed" while its transcript plainly says it completed.
+    # whose supervisor died reports "interrupted" while its transcript plainly says it completed.
     ending = digest.ending if run.exit_code is None else None
     if ending is not None:
         run.status = (
@@ -1628,7 +1655,7 @@ def _derive(run: AgentRun) -> AgentRun:
     # drawable. Only ever stamped for a run that is no longer running.
     # Cut off with nothing on record saying how: ask the system once, and keep its answer on the record.
     # Only on the transition: a run settled before this existed stays without one (no journal read per old record).
-    if (run.status == "crashed" and run.interruption is None and run.pid
+    if (run.status == "interrupted" and run.interruption is None and run.pid
             and original.get("status") in ("starting", "running")):
         raw = raw_events_path(run.run_id)
         run.interruption = Interruption.observe(run.unit, now=time.time(), since=raw.stat().st_mtime if raw.exists() else 0.0)
@@ -1637,10 +1664,19 @@ def _derive(run: AgentRun) -> AgentRun:
     if run.status == "running" and run.unit is None and run.pid:
         run.unit = process_unit(run.pid)
     if run.finished_at is None and run.status != "running":
-        try:
-            run.finished_at = _private_mtime(raw_events_path(run.run_id))
-        except OSError:
-            pass
+        # Whichever of its two streams was written last: a run whose ending is known only from the
+        # normalised copy (or that never wrote a raw byte) still has to carry WHEN it stopped, or
+        # every surface listing it draws its length as "—".
+        stamps = []
+        for path in (raw_events_path(run.run_id), events_path(run.run_id)):
+            try:
+                stamp = _private_mtime(path)
+            except OSError:
+                continue
+            if stamp is not None:
+                stamps.append(stamp)
+        if stamps:
+            run.finished_at = max(stamps)
     if digest.events:
         # Tokens beside cost: cost alone hides how much CONTEXT a run consumed, and two models at
         # the same price consume very differently.
@@ -1650,7 +1686,7 @@ def _derive(run: AgentRun) -> AgentRun:
     run.stream_digest = digest
     # Persist whatever we healed — status included. The panel reads these files directly and does
     # its own (downgrade-only) liveness check, so a status left stale on disk reappears there as
-    # "crashed" no matter what Python worked out in memory.
+    # "interrupted" no matter what Python worked out in memory.
     owned = {"project", "status", "finished_at", "cost_usd", *TOKEN_FIELDS, "last", "unit", "interruption",
              "stream_digest"}
     healed = run.model_dump(mode="json", include=owned)
@@ -1676,6 +1712,36 @@ def _derive(run: AgentRun) -> AgentRun:
                     and quota.REFUSAL.search(digest.ending_text)):
                 quota.record_refusal(run.provider, run.model, said=digest.ending_text)
     return run
+
+
+#: What an interrupted agent is told when it is picked up again. One sentence, one place: every
+#: caller that offers a "resume" — the CLI, a panel, a web surface — sends THIS.
+RESUME_BRIEF = (
+    "Resumed after your run was cut (subscription switch, usage limit or kill). Check git status "
+    "and your last committed slice, then continue your task where it stopped; commit by pathspec, "
+    "diff against HEAD first."
+)
+
+
+def interrupted_runs(*, within_hours: float = 24.0) -> list[AgentRun]:
+    """Runs cut off mid-work recently enough to be worth picking up, newest first.
+
+    "Cut off" is the ONE status rule's own word (`_status_for`): the process is gone and neither an
+    exit code nor the run's own stream ever said how it ended. `within_hours` is measured from when
+    it stopped, so yesterday's reboot casualties are offered and last month's are not."""
+    now = time.time()
+    found = [run for run in list_runs() if run.status == "interrupted" and not run.foreign]
+    recent = [run for run in found if now - (run.finished_at or run.started_at) <= within_hours * 3600]
+    return sorted(recent, key=lambda run: run.finished_at or run.started_at, reverse=True)
+
+
+def reconcile(run: AgentRun) -> AgentRun:
+    """Settle ONE run's record against the process and its own stream, and write what changed.
+
+    The public name of the derivation every listing does, for the callers that watch a single run:
+    the mirror loop when a process leaves the live set, and anything asked "is this row still
+    true?". Idempotent — a settled record re-reconciles to itself and writes nothing."""
+    return _derive(run)
 
 
 def _discover_foreign() -> list[dict]:
@@ -1736,7 +1802,7 @@ def running_runs() -> list[AgentRun]:
 def settle_gone() -> list[AgentRun]:
     """Settle every record that still claims a process which is gone (or whose pid now belongs to another
     program, or is a zombie nobody collected): `_derive` writes `done` / `failed` when its own stream
-    said so, else `crashed` with the system's cause (`Interruption`). The machine daemon runs it every
+    said so, else `interrupted` with the system's cause (`Interruption`). The machine daemon runs it every
     minute, so a run killed while nothing watched it (out of memory, `kill -9`, a crash) never reads
     « running » for long. Reads only records that moved, like `running_runs`. Returns the runs it changed."""
     d = agents_dir()
@@ -1778,7 +1844,7 @@ def trees(root_run_ids: frozenset[str]) -> list[AgentRun]:
         # A process gone with no ending recorded is healed from its own stream (it may have
         # finished while nothing watched it) — the only case that pays for reading the stream.
         # `_derive` compare-and-swaps against the STORED record, so it gets that record as read.
-        return _derive(run) if status == "crashed" else run.model_copy(update={"status": status})
+        return _derive(run) if status == "interrupted" else run.model_copy(update={"status": status})
     return sorted((current(run) for run in records if run.run_id in members), key=lambda run: run.started_at, reverse=True)
 
 

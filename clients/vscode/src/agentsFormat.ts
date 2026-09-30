@@ -29,7 +29,7 @@ const STATUS_ICON: Record<string, StatusIcon> = {
   running: { id: "sync~spin", color: "charts.blue" },
   done: { id: "pass-filled", color: "charts.green" },
   failed: { id: "error", color: "charts.red" },
-  crashed: { id: "warning", color: "charts.orange" },
+  interrupted: { id: "warning", color: "charts.orange" },
   stopped: { id: "circle-slash", color: "descriptionForeground" },
   foreign: { id: "circle-outline", color: "charts.purple" },
 };

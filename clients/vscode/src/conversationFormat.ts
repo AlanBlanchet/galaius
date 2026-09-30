@@ -727,7 +727,7 @@ function canonicalRunStatus(
 
 function settledRunStatus(status: AgentRun["status"] | undefined): boolean {
   return status === "done" || status === "failed" || status === "cancelled"
-    || status === "crashed" || status === "stopped";
+    || status === "interrupted" || status === "stopped";
 }
 
 /** Provider streams may replay richer start metadata after completion. Enrich the snapshot without

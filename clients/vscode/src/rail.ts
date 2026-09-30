@@ -66,7 +66,7 @@ export function attentionOf(run: AgentRun, idleSeconds: number, awaitingReply = 
   if (run.status === "foreign") return "not-ours";
   // Declared in the company file, never asked: present and quiet, below everything with history.
   if (run.status === "declared") return "ready";
-  if (run.status === "failed" || run.status === "crashed") return "error";
+  if (run.status === "failed" || run.status === "interrupted") return "error";
   // Killed by a person: never success, mildly attention-worthy — the kill had a reason.
   if (run.status === "stopped") return "stopped";
   if (run.status === "running") {
@@ -217,7 +217,7 @@ export function buildRail(
   const inScope = filter ? held.filter((r) => filter.roleOf(r) === filter.agent) : held;
   // Old TERMINAL work stops competing for rows. Never inside a drill-in: an agent's own page is
   // where you asked for its history.
-  const terminal = new Set(["done", "stopped", "failed", "crashed"]);
+  const terminal = new Set(["done", "stopped", "failed", "interrupted"]);
   const ancient = (r: AgentRun) =>
     nowSeconds !== undefined && !filter && terminal.has(r.status)
     && nowSeconds - (r.started_at ?? nowSeconds) >= RECENT_SECONDS;

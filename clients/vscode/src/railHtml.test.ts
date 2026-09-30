@@ -50,7 +50,7 @@ test("an empty team still renders every destination", () => {
 });
 
 test("a run that needs you is marked, not merely listed", () => {
-  const doc = html([run({ run_id: "bad", name: "perf-critic", status: "crashed" })]);
+  const doc = html([run({ run_id: "bad", name: "perf-critic", status: "interrupted" })]);
   assert.ok(doc.includes("perf-critic"));
   /* The prose note ("stopped with an error") left with the one-row grammar — the WORD carries the
      state now, exactly as the workplace stamps it, and the row spends its width on what/when/cost. */

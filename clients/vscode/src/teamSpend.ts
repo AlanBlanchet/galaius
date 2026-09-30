@@ -49,7 +49,7 @@ export function teamSpend(
   };
 }
 
-const TERMINAL = new Set(["done", "failed", "cancelled", "crashed", "stopped"]);
+const TERMINAL = new Set(["done", "failed", "cancelled", "interrupted", "stopped"]);
 
 function mergeSpendRun(first: TeamSpendRun, second: TeamSpendRun | undefined): TeamSpendRun {
   if (!second) return first;

@@ -12,7 +12,7 @@
  *  When the stream cannot settle it either, the answer is genuinely UNKNOWN, and the two ways of
  *  being wrong are not equal. Python heals these records from the raw stream and is the authority,
  *  but it only does so while a current galaius server is running — so this fallback is what the
- *  panel shows in the gap, and it was showing a red "crashed" warning over an agent that had
+ *  panel shows in the gap, and it was showing a red "interrupted" warning over an agent that had
  *  returned its answer and exited cleanly. Claiming a failure that did not happen is the worse
  *  error: it sends someone to read a transcript for a problem that is not there.
  *
@@ -26,9 +26,12 @@ import type { AgentRun as GeneratedAgentRun } from "./generated/types";
 export type RunStatus = NonNullable<GeneratedAgentRun["status"]> | "declared";
 
 const RUN_STATUSES = [
-  "starting", "running", "waiting", "done", "failed", "cancelled", "crashed", "stopped",
+  "starting", "running", "waiting", "done", "failed", "cancelled", "interrupted", "stopped",
   "foreign", "declared",
 ] as const satisfies readonly RunStatus[];
+
+/** What records written before the vocabulary settled spell "gone without saying how it ended". */
+const LEGACY_INTERRUPTED = "crashed";
 
 /** Old/corrupt records remain readable without blessing arbitrary strings as a finite status. */
 function isRunStatus(value: unknown): value is RunStatus {
@@ -36,6 +39,7 @@ function isRunStatus(value: unknown): value is RunStatus {
 }
 
 export function runStatusOf(value: unknown): RunStatus {
+  if (value === LEGACY_INTERRUPTED) return "interrupted";
   return isRunStatus(value) ? value : "running";
 }
 
@@ -47,8 +51,8 @@ export function livenessOf(
   producedOutput: boolean = false,
 ): RunStatus {
   if (recorded !== "starting" && recorded !== "running") return recorded;
-  if (typeof pid !== "number") return recorded; // nothing to probe — a crash would be invented
+  if (typeof pid !== "number") return recorded; // nothing to probe — an interruption would be invented
   if (processAlive) return recorded;
   if (streamEnded) return "done";
-  return producedOutput ? "done" : "crashed";
+  return producedOutput ? "done" : "interrupted";
 }

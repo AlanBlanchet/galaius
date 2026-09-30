@@ -3,8 +3,8 @@
 Two properties matter more than the rest.
 
 **Status is DERIVED, never trusted.** A record says "running"; the process may have been killed.
-Reading liveness from the pid (the same check `server_registry` uses) means a crashed agent
-reports as crashed instead of spinning forever in the UI — the difference between a supervisor
+Reading liveness from the pid (the same check `server_registry` uses) means a killed agent
+reports as interrupted instead of spinning forever in the UI — the difference between a supervisor
 and a decoration.
 
 **The registry is a FIXED path, not debug_dir-relative.** It is cross-process IPC: the CLI
@@ -474,7 +474,7 @@ def test_a_registered_run_is_listed():
 @pytest.mark.parametrize(
     "finish_exit_code, alive, expected_status",
     [
-        pytest.param(None, False, "crashed", id="dead_pid_never_finished"),
+        pytest.param(None, False, "interrupted", id="dead_pid_never_finished"),
         pytest.param(None, True, "running", id="live_pid"),
         pytest.param(0, False, "done", id="finished_exit_0"),
         pytest.param(2, False, "failed", id="finished_exit_nonzero"),
@@ -484,8 +484,8 @@ def test_status_is_derived_from_pid_liveness_and_recorded_exit(
     monkeypatch, finish_exit_code, alive, expected_status
 ):
     """Status is never trusted from the record alone: a live pid overrides a stale 'done', a dead
-    pid with no recorded outcome reads as crashed, and a recorded exit code (clean or not) survives
-    the process going away."""
+    pid with no recorded outcome reads as interrupted, and a recorded exit code (clean or not)
+    survives the process going away."""
     register_run(pid=999999 if not alive else 1)
     if finish_exit_code is not None:
         reg.finish("r1", exit_code=finish_exit_code)
@@ -496,6 +496,39 @@ def test_status_is_derived_from_pid_liveness_and_recorded_exit(
         assert run.exit_code == finish_exit_code
 
 
+#: The ONE status rule, as a table: what the record says never decides, the process and the run's
+#: own stream do. Every surface that reports a run (the CLI, the mirrored machine records, the
+#: every listing surface) answers from this rule and nothing else — the owner saw runs sitting at
+#: "still working" for hours because each surface carried its own half of it (2026-09-30).
+@pytest.mark.parametrize(
+    "alive, reused, terminal, expected_status, ended",
+    [
+        pytest.param(True, False, None, "running", False, id="live_pid"),
+        pytest.param(False, False, reg.AgentEvent(kind="done", cost_usd=0.4), "done", True, id="dead_pid_final_event"),
+        pytest.param(False, False, reg.AgentEvent(kind="error", text="blew up"), "failed", True, id="dead_pid_error_event"),
+        pytest.param(False, False, None, "interrupted", True, id="dead_pid_no_final_event"),
+        pytest.param(True, True, None, "interrupted", True, id="pid_reused_by_another_process"),
+    ],
+)
+def test_one_status_rule_answers_every_surface(monkeypatch, alive, reused, terminal, expected_status, ended):
+    """A pid its process no longer owns is a DEAD run: the pid alone says "alive" and the record
+    would stay "running" forever, which is exactly the stuck row. `pid_started` settles it."""
+    register_run(pid=4242)
+    reg._update_fields("r1", {"pid_started": 111})
+    reg.append_event("r1", reg.AgentEvent(kind="tool", tool="Bash"))
+    if terminal is not None:
+        reg.append_event("r1", terminal)
+    monkeypatch.setattr(reg, "_alive", lambda pid: alive)
+    monkeypatch.setattr(reg, "process_started", lambda pid: 222 if reused else 111)
+    run = reg.list_runs()[0]
+    assert run.status == expected_status
+    # An ended run carries WHEN it stopped: the last moment we know it was alive. A row with no
+    # end time reads as "1 ms" or "—" wherever the run is listed.
+    assert (run.finished_at is not None) is ended
+    # And the record itself is fixed on disk, so a surface reading the file sees the same thing.
+    assert json.loads((reg.agents_dir() / "r1.json").read_text())["status"] == expected_status
+
+
 linux_only = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
 
 
@@ -504,7 +537,7 @@ def _child(*argv: str) -> subprocess.Popen:
 
 
 @linux_only
-def test_a_zombie_run_is_settled_as_crashed():
+def test_a_zombie_run_is_settled_as_interrupted():
     """A run whose process EXITED but was never collected by its parent still answers every pid probe:
     two finished critic runs read « En cours » for two hours that way (2026-10-06)."""
     child = _child("pass")
@@ -516,16 +549,16 @@ def test_a_zombie_run_is_settled_as_crashed():
         register_run(pid=child.pid)
         assert not reg._alive(child.pid)
         (settled,) = reg.settle_gone()
-        assert settled.status == "crashed" and settled.interruption is not None
+        assert settled.status == "interrupted" and settled.interruption is not None
     finally:
         child.wait()
 
 
 @linux_only
 @pytest.mark.parametrize("reused", [False, True], ids=["killed", "pid_reused"])
-def test_settle_gone_writes_crashed_with_the_cause(reused):
+def test_settle_gone_writes_interrupted_with_the_cause(reused):
     """`kill -9` with nobody watching, or the pid handed to another program: the minute sweep writes
-    `crashed` + when it was seen gone, on disk, and leaves a live run alone."""
+    `interrupted` + when it was seen gone, on disk, and leaves a live run alone."""
     victim, bystander = _child("import time; time.sleep(60)"), _child("import time; time.sleep(60)")
     try:
         register_run(pid=victim.pid)
@@ -538,7 +571,7 @@ def test_settle_gone_writes_crashed_with_the_cause(reused):
         before = time.time()
         assert [run.run_id for run in reg.settle_gone()] == ["r1"]
         stored = json.loads((reg.agents_dir() / "r1.json").read_text())
-        assert stored["status"] == "crashed"
+        assert stored["status"] == "interrupted"
         assert stored["interruption"]["cause"] == "process_gone" and stored["interruption"]["at"] >= before - 1
         assert reg.get_run("alive").status == "running" and reg.settle_gone() == []
         assert "process gone at" in reg.get_run("r1").interruption.describe()
@@ -826,7 +859,7 @@ def test_costs_accumulate_across_events():
     [
         pytest.param(reg.AgentEvent(kind="done", cost_usd=0.6), "done", id="terminal_done_event"),
         pytest.param(reg.AgentEvent(kind="error", text="blew up"), "failed", id="terminal_error_event"),
-        pytest.param(reg.AgentEvent(kind="tool", tool="Bash"), "crashed", id="no_terminal_event"),
+        pytest.param(reg.AgentEvent(kind="tool", tool="Bash"), "interrupted", id="no_terminal_event"),
     ],
 )
 def test_status_is_derived_from_the_last_stream_event_when_the_pid_is_gone(
@@ -843,7 +876,7 @@ def test_status_is_derived_from_the_last_stream_event_when_the_pid_is_gone(
 
 def test_a_healed_status_is_written_back_to_disk(monkeypatch):
     """The panel reads the file, not Python's in-memory view, and only ever downgrades. A status
-    healed in memory but left stale on disk shows up there as 'crashed' regardless."""
+    healed in memory but left stale on disk shows up there as 'interrupted' regardless."""
     register_run(pid=999999)
     reg.append_event("r1", reg.AgentEvent(kind="done", cost_usd=0.6))
     monkeypatch.setattr(reg, "_alive", lambda pid: False)
@@ -1173,7 +1206,7 @@ def test_tokens_accumulate_for_a_run_with_a_raw_vendor_stream(tmp_path, monkeypa
 
 # ── A detached run that finished cleanly is not a crash ─────────────────────────────────────
 # `agents spawn` returns immediately, so nobody is left waiting to record the exit code. Status
-# was inferred from the pid alone, so every detached run read as "crashed" the moment it finished
+# was inferred from the pid alone, so every detached run read as "interrupted" the moment it finished
 # — measured live: a tester that reported "68 passed" was shown with a crash warning.
 
 
@@ -1192,7 +1225,7 @@ def test_tokens_accumulate_for_a_run_with_a_raw_vendor_stream(tmp_path, monkeypa
         pytest.param(
             {"type": "assistant", "session_id": "s",
              "message": {"role": "assistant", "content": [{"type": "text", "text": "half way"}]}},
-            "crashed", id="stream_stopped_mid_stream",
+            "interrupted", id="stream_stopped_mid_stream",
         ),
     ],
 )
@@ -1518,7 +1551,7 @@ def test_a_pid_given_to_another_process_is_neither_the_run_nor_stopped_with_it()
         reg.save_run(record)
         register_run("own", pid=own.pid)
 
-        assert {run.run_id: run.status for run in reg.list_runs()} == {"reused": "crashed", "own": "running"}
+        assert {run.run_id: run.status for run in reg.list_runs()} == {"reused": "interrupted", "own": "running"}
         assert reg.stop("reused") and reg.stop("own")
         assert own.wait(timeout=10) is not None
         assert stranger.poll() is None
@@ -1576,7 +1609,7 @@ def test_a_listing_rereads_a_transcript_only_when_it_changed(monkeypatch, ended,
     fresh = next(run for run in reg.list_runs() if run.run_id == "r1")
     assert listed.model_dump(exclude={"stream_digest"}) == fresh.model_dump(exclude={"stream_digest"})
     # A message after the ending means the run is addressed again: its stream no longer ends there.
-    assert listed.status == {"nothing": "done", "process_died": "crashed",
+    assert listed.status == {"nothing": "done", "process_died": "interrupted",
                              "stream_grew": "done", "message_arrived": "running"}[change]
 
 

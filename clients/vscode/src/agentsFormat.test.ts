@@ -157,7 +157,7 @@ test("a foreign session does not wear the same colour as a stopped one", () => {
 });
 
 test("every status has an icon, and an unknown one falls back rather than blanking", () => {
-  for (const s of ["running", "done", "failed", "crashed", "stopped", "foreign"]) {
+  for (const s of ["running", "done", "failed", "interrupted", "stopped", "foreign"]) {
     assert.ok(statusIcon(s).id, `${s} has no icon`);
   }
   assert.ok(statusIcon("something-new").id, "an unknown status must still render something");
@@ -166,7 +166,7 @@ test("every status has an icon, and an unknown one falls back rather than blanki
 test("only a running agent spins", () => {
   // A spinner on anything else claims work is happening when it is not.
   assert.match(statusIcon("running").id, /~spin$/);
-  for (const s of ["done", "failed", "crashed", "stopped", "foreign"]) {
+  for (const s of ["done", "failed", "interrupted", "stopped", "foreign"]) {
     assert.doesNotMatch(statusIcon(s).id, /~spin$/, `${s} spins`);
   }
 });

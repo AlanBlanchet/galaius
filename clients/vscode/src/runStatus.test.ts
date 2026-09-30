@@ -16,7 +16,7 @@ test("a run whose stream ENDED is finished, not crashed", () => {
 
 test("a run that stopped with no ending recorded anywhere is a real crash", () => {
   for (const active of ["starting", "running"] as const) {
-    assert.equal(livenessOf(active, 999999, false, false), "crashed", active);
+    assert.equal(livenessOf(active, 999999, false, false), "interrupted", active);
   }
 });
 
@@ -52,7 +52,7 @@ test("a run that produced a transcript and then vanished is finished, not crashe
 
 test("a run that vanished having said nothing is the shape a crash leaves", () => {
   for (const active of ["starting", "running"] as const) {
-    assert.equal(livenessOf(active, 4242, false, false, false), "crashed", active);
+    assert.equal(livenessOf(active, 4242, false, false, false), "interrupted", active);
   }
 });
 

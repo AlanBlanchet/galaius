@@ -623,7 +623,7 @@ function RangeSelector({
 const MINUTE = 60_000;
 const HOUR = 3_600_000;
 
-/** Distinct SHAPE per status, not merely a distinct colour — "running vs done vs crashed must not
+/** Distinct SHAPE per status, not merely a distinct colour — "running vs done vs interrupted must not
  *  look alike" has to survive a colour-blind reader and a grayscale screenshot. */
 /** Status glyphs, as FACTORIES — never shared nodes.
  *
@@ -655,7 +655,7 @@ const STATUS_GLYPH: Record<AgentStatus, () => (Node | null)[]> = {
     <path d="M7 5.2 V8" className="g-stroke" fill="none" />,
     <circle cx="7" cy="10" r="0.85" className="g-fill" />,
   ],
-  crashed: () => [
+  interrupted: () => [
     <circle cx="7" cy="7" r="5.4" className="g-stroke" fill="none" />,
     <path d="M4.6 4.6 L9.4 9.4 M9.4 4.6 L4.6 9.4" className="g-stroke" fill="none" />,
   ],
@@ -688,7 +688,7 @@ const STATUS_LABEL: Record<AgentStatus, string> = {
   waiting: "waiting",
   done: "done",
   failed: "failed",
-  crashed: "crashed",
+  interrupted: "interrupted",
   stopped: "stopped",
   cancelled: "cancelled",
   foreign: "foreign",
@@ -1072,7 +1072,7 @@ function Lane({
             <div className="thread-node" style={{ left: `${t.x}%`, background: t.hue }} />
           ),
         ])}
-        {/* Status owns the bar's fill and cap, because "running vs done vs crashed must not look
+        {/* Status owns the bar's fill and cap, because "running vs done vs interrupted must not look
             alike" is the load-bearing read. Provider gets the launch edge only — enough to see a
             mixed-vendor team on the clock without contesting the status channel. */}
         <div
@@ -1105,7 +1105,7 @@ function Lane({
 /** Per-status share of a group, as one thin bar — a group's health without reading any row. */
 function GroupPulse({ lanes }: { lanes: AgentLane[] }): Node {
   const order: AgentStatus[] = [
-    "starting", "running", "waiting", "done", "stopped", "cancelled", "failed", "crashed",
+    "starting", "running", "waiting", "done", "stopped", "cancelled", "failed", "interrupted",
     "foreign", "declared",
   ];
   const counts = order

@@ -1106,6 +1106,16 @@ async def _mirror_running_runs(alive, *, interval: float = 1.0) -> None:
                 continue  # one half-written stream must not stop the rest
             mirrored[run.run_id] = signature
         live = {run.run_id for run in runs}
+        # A run that LEFT the live set has exited. Nobody else notices: `agents spawn` detaches, so
+        # its reaper died with the spawning CLI and `finish()` is never called — the record stays
+        # "running" for good and every surface reading it shows a dead agent as still working
+        # (2026-09-30, eight of them). Deriving it once here settles it on disk within one tick:
+        # done / failed when its own stream reported an ending, interrupted when nothing did.
+        for run_id in mirrored.keys() - live:
+            with suppress(Exception):
+                record = reg.get_run(run_id)
+                if record is not None:
+                    reg.reconcile(record)
         mirrored = {run_id: sig for run_id, sig in mirrored.items() if run_id in live}
         await asyncio.sleep(interval)
 

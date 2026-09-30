@@ -25,7 +25,7 @@ test("a run that failed outranks everything else", () => {
   const built = rail([
     run({ run_id: "ok", status: "running" }),
     run({ run_id: "done", status: "done" }),
-    run({ run_id: "bad", status: "crashed" }),
+    run({ run_id: "bad", status: "interrupted" }),
   ]);
   assert.equal(built.runs[0].run.run_id, "bad");
   assert.equal(built.runs[0].attention, "error");
@@ -69,7 +69,7 @@ test("within one band the most recently started leads", () => {
 test("the header counts what NEEDS you, not what is merely running", () => {
   // "8 running" answers "is it busy", which is never the question a supervisor is asking.
   const built = rail(
-    [run({ run_id: "a" }), run({ run_id: "b" }), run({ run_id: "c", status: "crashed" })],
+    [run({ run_id: "a" }), run({ run_id: "b" }), run({ run_id: "c", status: "interrupted" })],
   );
   assert.equal(built.header.needsYou, 1);
   assert.equal(built.header.working, 2);
@@ -151,7 +151,7 @@ test("junk does nothing at all", () => {
 // sub-agent floats loose beside its lead tells you nothing about who is driving what.
 test("the brain is MARKED, and never displaces what needs you", () => {
   // Pinning it to the top was tried and reverted: this surface sorts by who needs you, and a
-  // healthy orchestrator burying a crashed agent is exactly the sort the rail replaced.
+  // healthy orchestrator burying an interrupted agent is exactly the sort the rail replaced.
   const built = buildRail([
     run({ run_id: "boss", status: "running", started_at: 100 }),
     run({ run_id: "worker", status: "failed", started_at: 900 }),
@@ -189,7 +189,7 @@ test("within one lead, its reports keep the attention order", () => {
   const built = buildRail([
     run({ run_id: "boss", status: "running", started_at: 100 }),
     run({ run_id: "fine", status: "running", parent_run_id: "boss", started_at: 200 }),
-    run({ run_id: "broken", status: "crashed", parent_run_id: "boss", started_at: 300 }),
+    run({ run_id: "broken", status: "interrupted", parent_run_id: "boss", started_at: 300 }),
   ], "x", () => 0);
   assert.deepEqual(built.runs.map((r) => r.run.run_id), ["boss", "broken", "fine"]);
 });
@@ -409,7 +409,7 @@ test("a finish from this morning keeps its seat", () => {
 test("an ancient failure is history, not a standing alarm", () => {
   const now = 10 * DAY;
   const built = buildRail([
-    run({ run_id: "oldbad", status: "crashed", started_at: now - 8 * DAY }),
+    run({ run_id: "oldbad", status: "interrupted", started_at: now - 8 * DAY }),
   ] as never[], "galaius", (() => 0) as never, (() => false) as never, undefined, undefined, now);
   assert.equal(built.header.needsYou, 0);
   assert.equal(built.ledger?.failed, 1, "but the ledger line says it plainly");
@@ -451,7 +451,7 @@ test("an old failure never outshouts today's work in a grouped row", () => {
   const now = 10 * DAY;
   const identify = (r: { name: string }) => ({ id: r.name, label: r.name });
   const built = buildRail([
-    run({ run_id: "oldbad", name: "tester", status: "crashed", started_at: now - 8 * DAY }),
+    run({ run_id: "oldbad", name: "tester", status: "interrupted", started_at: now - 8 * DAY }),
     run({ run_id: "live", name: "tester", status: "running", started_at: now - 60 }),
   ] as never[], "galaius", (() => 0) as never, (() => false) as never, undefined, identify as never, now);
   assert.equal(built.runs.length, 1);

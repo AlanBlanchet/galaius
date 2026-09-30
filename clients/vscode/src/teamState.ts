@@ -265,7 +265,7 @@ function safeFaculties(run: RunLike, resolve: (run: RunLike) => string[]): strin
  *
  *  Registry says running / done / failed / crashed / stopped / foreign; floor's stamp table
  *  knows running / done / error / foreign. This was a bare "as" cast, which silenced TypeScript
- *  over a real mismatch — a crashed agent arrived as "crashed", matched nothing, got NO stamp at
+ *  over a real mismatch — a cut agent arrived as "interrupted", matched nothing, got NO stamp at
  *  all. Tree drew it red while the floor showed it as though nothing had happened, the worse of
  *  the two lies: a supervisor scanning the building for trouble saw none.
  *
@@ -279,7 +279,7 @@ export function floorStatus(status: string | undefined): Worker["status"] {
   if (status === "declared") return "ready";
   switch (status) {
     case "failed":
-    case "crashed":
+    case "interrupted":
       return "error";
     case "running":
     case "done":
@@ -331,7 +331,7 @@ export function buildTeam(
     // Only CURRENT errands speak, mirroring the rail's rule: a week-old crash must not stamp
     // ERROR over a character whose live errand is fine, and an agent whose every errand aged
     // out RESTS — the same "ready" its rail row shows, one truth on both surfaces.
-    const terminal = new Set(["done", "stopped", "failed", "crashed"]);
+    const terminal = new Set(["done", "stopped", "failed", "interrupted"]);
     const currentHeld = held.filter((r) =>
       !(terminal.has(r.status) && now - (r.started_at ?? now) >= RECENT_SECONDS));
     const byNeed = [...(currentHeld.length ? currentHeld : held)].sort((a, b) =>
