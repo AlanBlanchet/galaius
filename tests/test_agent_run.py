@@ -455,6 +455,37 @@ async def _mirror_once(monkeypatch, read):
 
 
 @pytest.mark.asyncio
+async def test_a_run_that_leaves_the_live_set_is_settled_on_disk(monkeypatch):
+    """A detached run's reaper dies with the CLI that spawned it, so `finish()` is never called and
+    its record says "running" for good — every surface then shows a dead agent as still working.
+    This loop is the one process watching, so the tick after a run's process goes it writes the
+    ending the run never wrote: "interrupted" with nothing in its stream, `done` when the stream
+    itself reported one."""
+    from galaius.agents import registry as reg
+    from galaius.agents.run import _mirror_running_runs
+    from tests.support import register_run
+
+    register_run("cut", name="cut", provider="claude", task="t", pid=os.getpid())
+    register_run("reported", name="reported", provider="claude", task="t", pid=os.getpid())
+    reg.append_event("reported", reg.AgentEvent(kind="done", cost_usd=0.2))
+    gone: set[str] = set()
+    monkeypatch.setattr(reg, "_alive", lambda pid: pid is not None and str(pid) not in gone)
+
+    alive = {"value": True}
+    task = asyncio.create_task(_mirror_running_runs(lambda: alive["value"], interval=0.02))
+    await asyncio.sleep(0.08)
+    assert {run.run_id: run.status for run in reg.list_runs()}["cut"] == "running"
+    gone.add(str(os.getpid()))  # both processes go, and neither record moves on disk
+    await asyncio.sleep(0.12)
+    alive["value"] = False
+    await asyncio.wait_for(task, timeout=2)
+
+    settled = {run_id: json.loads((reg.agents_dir() / f"{run_id}.json").read_text())["status"]
+               for run_id in ("cut", "reported")}
+    assert settled == {"cut": "interrupted", "reported": "done"}
+
+
+@pytest.mark.asyncio
 async def test_every_running_run_is_kept_current_and_nothing_else_is_read(monkeypatch):
     """The loop ticks every second in every MCP server. Deriving the whole history there re-parsed
     1.6 GB of transcripts per tick: each idle server held ~70% of a core."""
