@@ -149,7 +149,12 @@ class WebRuns(BaseModel):
         """Stops every one still working (agents switched off here): (how many stopped, how many
         could not be - each failure logged, never stopping the rest)."""
         stopped = failed = 0
-        for run in self.runs():
+        try:
+            runs = self.runs()
+        except (OSError, ValueError) as error:
+            logger.warning("web runs unreadable; none stopped: %s", error)
+            return 0, 1
+        for run in runs:
             if run.status not in {"running", "waiting"}:
                 continue
             try:

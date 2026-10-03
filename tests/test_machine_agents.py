@@ -497,7 +497,11 @@ def test_the_submodule_walk_never_leaves_the_clone(base: Path, tmp_path: Path) -
     outside, clone = tmp_path / "outside", base / "project" / "clone"
     for repo in (outside, clone):
         subprocess.run(["git", "init", "-q", str(repo)], check=True)
-    (clone / ".gitmodules").write_text('[submodule "x"]\n\tpath = ../../../outside\n\turl = https://github.com/owner/x.git\n')
+    module = '[submodule "x"]\n\tpath = {path}\n\turl = https://github.com/owner/x.git\n'
+    (clone / ".gitmodules").write_text(module.format(path="../../../outside"))
+    # The outside repo looks like one with a submodule of its own: a walk that entered it would init it.
+    (outside / ".gitmodules").write_text(module.format(path="x"))
+    subprocess.run(["git", "-C", str(outside), "update-index", "--add", "--cacheinfo", f"160000,{'a' * 40},x"], check=True)
     before = (outside / ".git" / "config").read_bytes()
     workspaces = _agents(base, tmp_path, clone_origins=("github.com/owner/*",)).workspaces
     git = Git(options=MachineWorkspaces.GIT_OPTIONS, environment={"PATH": os.environ["PATH"], "HOME": str(tmp_path)}, host="github.com", deadline=time.monotonic() + 30)
