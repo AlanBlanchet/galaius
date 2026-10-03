@@ -315,11 +315,11 @@ def test_codex_registration_discovery_fails_closed_without_echoing_output(tmp_pa
 
     def failed(argv, **kwargs):
         if failure == "timeout":
-            raise subprocess.TimeoutExpired(argv, 10, output="fixture-sensitive-value")
+            raise subprocess.TimeoutExpired(argv, 10, output="leak")
         if failure == "os-error":
-            raise OSError("fixture-sensitive-value")
-        output = '[{"missing_name":"fixture-sensitive-value"}]' if failure == "shape" else "fixture-sensitive-value"
-        return subprocess.CompletedProcess(argv, 1 if failure == "exit" else 0, output, "fixture-sensitive-value")
+            raise OSError("leak")
+        output = '[{"missing_name":"leak"}]' if failure == "shape" else "leak"
+        return subprocess.CompletedProcess(argv, 1 if failure == "exit" else 0, output, "leak")
 
     monkeypatch.setattr(subprocess, "run", failed)
     with pytest.raises(ValueError, match="^Cannot inspect Codex MCP configuration safely$"):
@@ -327,7 +327,7 @@ def test_codex_registration_discovery_fails_closed_without_echoing_output(tmp_pa
 
 
 @pytest.mark.parametrize("field,value", [
-    ("env", {"INTERACT_PARENT_RUN_ID": "fixture-run", "TOKEN": "fixture-sensitive-value"}),
+    ("env", {"INTERACT_PARENT_RUN_ID": "fixture-run", "TOKEN": "leak"}),
     ("enabled", True), ("command", ""), ("args", [42]),
 ])
 def test_codex_mesh_rejects_extra_fields_and_invalid_values_without_echoing_them(field, value):

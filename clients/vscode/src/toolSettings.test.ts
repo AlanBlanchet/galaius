@@ -38,12 +38,12 @@ test("late refresh cannot replace a newer response or clear it on failure", asyn
 });
 
 test("server settings remove old launcher pins while retaining local grants and paths", () => {
-  const env = { INTERACT_IMAGE_MODEL: "old", INTERACT_VIDEO_FPS: "5", OPENAI_API_KEY: "fixture", INTERACT_MEDIA_BILLING: "session_only", INTERACT_DEBUG_DIR: "local-path" };
+  const env = { INTERACT_IMAGE_MODEL: "old", INTERACT_VIDEO_FPS: "5", OPENAI_API_KEY: "fake", INTERACT_MEDIA_BILLING: "session_only", INTERACT_DEBUG_DIR: "local-path" };
   stripPortableEnvironment(env, parseToolSettings(view));
-  assert.deepEqual(env, { OPENAI_API_KEY: "fixture", INTERACT_MEDIA_BILLING: "session_only", INTERACT_DEBUG_DIR: "local-path" });
+  assert.deepEqual(env, { OPENAI_API_KEY: "fake", INTERACT_MEDIA_BILLING: "session_only", INTERACT_DEBUG_DIR: "local-path" });
 });
 
-for (const change of [{ revision: -1 }, { account_id: "invalid" }, { stale: "false" }, { values: { OPENAI_API_KEY: "fixture" } }, { values: { INTERACT_VIDEO_FPS: 12 } }]) {
+for (const change of [{ revision: -1 }, { account_id: "invalid" }, { stale: "false" }, { values: { OPENAI_API_KEY: "fake" } }, { values: { INTERACT_VIDEO_FPS: 12 } }]) {
   test(`invalid CLI settings boundary ${JSON.stringify(change)}`, () => assert.throws(() => parseToolSettings({ ...view, ...change })));
 }
 

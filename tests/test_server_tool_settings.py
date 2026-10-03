@@ -103,7 +103,7 @@ def settings_server(tmp_path, monkeypatch):
 
 
 def test_two_consumers_conflict_and_local_bytes_unchanged(settings_server):
-    UserConfig.PATH.write_text("# recovery\nINTERACT_IMAGE_CRITERIA=old\nOPENAI_API_KEY=fixture-secret\n")
+    UserConfig.PATH.write_text("# recovery\nINTERACT_IMAGE_CRITERIA=old\nOPENAI_API_KEY=s3c\n")
     original = UserConfig.PATH.read_bytes()
     first, second = ServerToolSettings.configured(), ServerToolSettings.configured()
     a, b = first.read(), second.read()
@@ -112,7 +112,7 @@ def test_two_consumers_conflict_and_local_bytes_unchanged(settings_server):
         second.update({"INTERACT_IMAGE_CRITERIA": "fixture/other"}, base=b)
     assert UserConfig.read()["INTERACT_IMAGE_CRITERIA"] == "fixture/new"
     assert UserConfig.PATH.read_bytes() == original
-    assert all(b"fixture-secret" not in request.content for request in settings_server["requests"])
+    assert all(b"s3c" not in request.content for request in settings_server["requests"])
 
 
 @pytest.mark.parametrize("failure", [401, 403, "invalid"])
@@ -161,7 +161,7 @@ def test_local_unset_keeps_recovery_bytes_and_cached_portable_values(settings_se
 
 
 @pytest.mark.parametrize("changes", [
-    {"OPENAI_API_KEY": "fixture"}, {"INTERACT_DEBUG_DIR": "fixture"},
+    {"OPENAI_API_KEY": "fake"}, {"INTERACT_DEBUG_DIR": "fixture"},
     {"INTERACT_MEDIA_PROVIDER_ORDER": "invented-provider"}, {"INTERACT_VLM_MIN_DIM": "9999"},
 ])
 def test_actual_config_boundary_rejects_nonportable_or_unusable_values(settings_server, changes):
@@ -201,11 +201,11 @@ def test_workspace_token_refused_before_credential_file_access(tmp_path):
 
 def test_cli_status_and_revision_guard_never_project_secrets(settings_server, capsys):
     from interact.cli.app_commands import config_status, config_set
-    UserConfig.PATH.write_text("OPENAI_API_KEY=fixture-secret\nINTERACT_IMAGE_CRITERIA=recovery\n")
+    UserConfig.PATH.write_text("OPENAI_API_KEY=s3c\nINTERACT_IMAGE_CRITERIA=recovery\n")
     config_status(json_out=True)
     view = json.loads(capsys.readouterr().out)
     assert view["ok"] and view["configured"] and view["revision"] == 0 and not view["stale"]
-    assert "fixture-secret" not in json.dumps(view) and "recovery" not in json.dumps(view)
+    assert "s3c" not in json.dumps(view) and "recovery" not in json.dumps(view)
     config_set("image.criteria", "fixture/new", expected_revision=0, account_id=settings_server["bootstrap"].account.account_id, json_out=True)
     assert json.loads(capsys.readouterr().out)["revision"] == 1
     with pytest.raises(SystemExit):
@@ -252,11 +252,11 @@ def test_removed_connection_never_turns_server_draft_into_local_write(settings_s
 
 def test_import_preview_is_allowlisted_diff_without_upload(settings_server, capsys):
     from interact.cli.app_commands import config_import_preview
-    UserConfig.PATH.write_text("INTERACT_VIDEO_FPS=12\nOPENAI_API_KEY=fixture-secret\nINTERACT_MEDIA_BILLING=api_allowed\n")
+    UserConfig.PATH.write_text("INTERACT_VIDEO_FPS=12\nOPENAI_API_KEY=s3c\nINTERACT_MEDIA_BILLING=api_allowed\n")
     config_import_preview(json_out=True)
     output = capsys.readouterr().out
     assert json.loads(output)["changes"] == {"INTERACT_VIDEO_FPS": {"current": None, "proposed": "12"}}
-    assert "fixture-secret" not in output and "api_allowed" not in output
+    assert "s3c" not in output and "api_allowed" not in output
     assert all(request.method != "PUT" for request in settings_server["requests"])
 
 
@@ -326,7 +326,7 @@ def machine_connection(tmp_path, monkeypatch):
     connection = CatalogConnection(endpoint="https://interact.example.invalid", auth_mode="token", workspace_id=uuid4(), token_file=tmp_path / "machine.key")
     connection.save()
     UserConfig.PATH.parent.mkdir(parents=True, exist_ok=True)
-    UserConfig.PATH.write_text("INTERACT_VIDEO_FPS=9\nOPENAI_API_KEY=fixture-secret\n")
+    UserConfig.PATH.write_text("INTERACT_VIDEO_FPS=9\nOPENAI_API_KEY=s3c\n")
     return connection
 
 
@@ -334,7 +334,7 @@ def machine_connection(tmp_path, monkeypatch):
 async def test_machine_connection_runs_on_local_settings(machine_connection, fps):
     from interact.runtime import _LiveConfig
     from textual.widgets import Select
-    UserConfig.PATH.write_text(f"INTERACT_VIDEO_FPS={fps}\nOPENAI_API_KEY=fixture-secret\n")
+    UserConfig.PATH.write_text(f"INTERACT_VIDEO_FPS={fps}\nOPENAI_API_KEY=s3c\n")
     assert UserConfig.read()["INTERACT_VIDEO_FPS"] == fps
     assert _LiveConfig().refresh().video_fps == int(fps)
     app = InteractTUI()  # bare `interact` on a terminal
@@ -346,7 +346,7 @@ async def test_machine_connection_runs_on_local_settings(machine_connection, fps
         app.query_one(f"#{_field_id(target)}", Select).value = "nested"  # a machine setting, portable ones untouched
         app._save_config()
         await pilot.pause()
-    assert UserConfig.read_local() == {"INTERACT_VIDEO_FPS": fps, "OPENAI_API_KEY": "fixture-secret", "INTERACT_DESKTOP_TARGET": "nested"}
+    assert UserConfig.read_local() == {"INTERACT_VIDEO_FPS": fps, "OPENAI_API_KEY": "s3c", "INTERACT_DESKTOP_TARGET": "nested"}
 
 
 @pytest.mark.parametrize("lang,sentence", [("fr_FR.UTF-8", "Ce PC est connecté comme machine de travail"), ("en_US.UTF-8", "This PC is connected as a work machine")])
