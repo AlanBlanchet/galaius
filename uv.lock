@@ -983,7 +983,7 @@ requires-dist = [
     { name = "evdev-binary", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = ">=2.0" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "huggingface-hub", specifier = ">=0.35" },
-    { name = "interact-core", git = "https://github.com/AlanBlanchet/interact-core.git?rev=9b047fa5d0c5f84c7712c46e961aa26f40dc269d" },
+    { name = "interact-core", git = "https://github.com/AlanBlanchet/interact-core.git?rev=4509e3a39e7c690424f5b9135ea7a94abc50c8a7" },
     { name = "jsonschema", specifier = ">=4.23,<5" },
     { name = "litellm", specifier = ">=1.83.4,<2" },
     { name = "mcp", extras = ["cli"], specifier = ">=1.27.0,<2" },
@@ -1017,7 +1017,7 @@ dev = [
 [[package]]
 name = "interact-core"
 version = "0.44.0"
-source = { git = "https://github.com/AlanBlanchet/interact-core.git?rev=9b047fa5d0c5f84c7712c46e961aa26f40dc269d#9b047fa5d0c5f84c7712c46e961aa26f40dc269d" }
+source = { git = "https://github.com/AlanBlanchet/interact-core.git?rev=4509e3a39e7c690424f5b9135ea7a94abc50c8a7#4509e3a39e7c690424f5b9135ea7a94abc50c8a7" }
 dependencies = [
     { name = "pydantic" },
 ]
