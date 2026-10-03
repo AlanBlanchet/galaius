@@ -375,6 +375,24 @@ def test_machine_connection_notice_is_said_once(machine_connection, monkeypatch,
     MachineNotice.say(first)
     MachineNotice.say(second)
     assert piped.getvalue() == "" and "work machine" in first.getvalue() and second.getvalue() == ""
+    with machine_connection.access_guard():  # the remembered notice keeps the catalog session directory private
+        pass
     with pytest.raises(SystemExit):  # the refusal right after the notice does not repeat it
         config_set("video.fps", "12")
     assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize("auth_mode", ["token", "preview"])
+def test_session_directory_left_open_by_the_notice_is_made_private(tmp_path, auth_mode):
+    import io
+    from interact.server_tool_settings import MachineNotice
+    connection = CatalogConnection(endpoint="http://127.0.0.1:8767", auth_mode=auth_mode, workspace_id=uuid4(),
+                                   token_file=tmp_path / "machine.key" if auth_mode == "token" else None)
+    connection.save()
+    sessions = connection.session_path().parent
+    sessions.mkdir(mode=0o775, parents=True)
+    sessions.chmod(0o775)
+    connection.session_path().with_suffix(".machine-notice").touch()
+    MachineNotice.say(io.StringIO())
+    with connection.access_guard():
+        pass

@@ -4,6 +4,7 @@ import hashlib
 import json
 import locale
 import os
+from contextlib import suppress
 from datetime import UTC, datetime
 from http.cookiejar import LWPCookieJar
 from typing import ClassVar, TextIO
@@ -16,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from interact.agents.catalog_connection import CatalogAuthenticationError, CatalogConnection, CatalogConnectionError
 from interact.config.settings import Config
+from interact.private_files import PRIVATE_FILES
 from interact.server_prompts import ServerPrompts
 
 PORTABLE_ENV = {f"INTERACT_{name.upper()}": name for name in PortableToolSettingsValues.model_fields}
@@ -81,14 +83,18 @@ class MachineNotice(CatalogAuthenticationError):
     @classmethod
     def say(cls, stream: TextIO) -> None:
         """Tell a person at a terminal once per connection; pipes and editor-launched servers stay quiet."""
-        if (connection := cls.connection()) is None or not stream.isatty():
+        if (connection := CatalogConnection.load()) is None:
             return
         marker = connection.session_path().with_suffix(".machine-notice")
-        if marker.exists():
+        sessions = marker.parent
+        if sessions.is_dir() and {entry.suffix for entry in sessions.iterdir()} <= {".machine-notice"}:
+            with suppress(PermissionError):  # not ours: the session lock refuses it in its own words
+                PRIVATE_FILES.directory(sessions)  # an earlier build created it open, holding only this marker
+        if connection.auth_mode != "token" or not stream.isatty() or marker.exists():
             return
         print(cls(connection), file=stream)
         cls.said = True
-        marker.parent.mkdir(parents=True, exist_ok=True)
+        PRIVATE_FILES.directory(sessions)
         marker.touch()
 
 
