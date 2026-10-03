@@ -130,7 +130,7 @@ class MachineWorkspaces(BaseModel):
     #: Where an existing checkout is looked for besides the agent roots (the PC's working directory).
     working_directory: Path | None = None
     #: Makes a folder (relative to the working directory) an agent root on this PC; whether it is usable.
-    register: Callable[[str], bool] | None = None
+    register_root: Callable[[str], bool] | None = None
     #: How deep below each place an existing checkout is looked for, and how many folders at most.
     SCAN_DEPTH: ClassVar[int] = 3
     SCAN_LIMIT: ClassVar[int] = 20000
@@ -189,7 +189,7 @@ class MachineWorkspaces(BaseModel):
         inside = next(((name, root) for name, root in self.roots.items() if checkout == root or root in checkout.parents), None)
         if inside is not None:
             root, path = inside[0], checkout.relative_to(inside[1]).as_posix() if checkout != inside[1] else ""
-        elif base is not None and base in checkout.parents and self.register is not None and self.register(checkout.relative_to(base).as_posix()):
+        elif base is not None and base in checkout.parents and self.register_root is not None and self.register_root(checkout.relative_to(base).as_posix()):
             root, path = checkout.relative_to(base).as_posix(), ""
         else:
             return None
@@ -199,6 +199,16 @@ class MachineWorkspaces(BaseModel):
         return job
 
     _ORIGIN: ClassVar[re.Pattern[str]] = re.compile(r'\[remote "origin"\][^\[]*?^\s*url\s*=\s*(\S+)', re.MULTILINE)
+
+    @classmethod
+    def origin_of(cls, checkout: Path) -> str | None:
+        """The repository `checkout` comes from (its `origin` remote, `host/owner/repo` lowercased),
+        read from `.git/config` as a file: no git runs inside a repository it does not know."""
+        try:
+            match = cls._ORIGIN.search((checkout / ".git" / "config").read_text(errors="replace"))
+            return GitRemote(url=match[1]).origin.lower() if match is not None else None
+        except (OSError, ValueError):
+            return None
 
     def _scan(self, origin: str) -> Path | None:
         """The first folder, shallow-first, whose `.git/config` names `origin` as its origin remote
@@ -210,14 +220,9 @@ class MachineWorkspaces(BaseModel):
             if folder in seen:
                 continue
             seen.add(folder)
-            config = folder / ".git" / "config"
-            if config.is_file():
-                try:
-                    match = self._ORIGIN.search(config.read_text(errors="replace"))
-                    if match is not None and GitRemote(url=match[1]).origin.lower() == origin:
-                        return folder
-                except (OSError, ValueError):
-                    pass
+            if (folder / ".git" / "config").is_file():
+                if self.origin_of(folder) == origin:
+                    return folder
                 continue
             if depth >= self.SCAN_DEPTH:
                 continue

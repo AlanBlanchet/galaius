@@ -42,6 +42,9 @@ from interact.agents.providers import PROJECT_SETTINGS_OFF, PROVIDERS
 from interact.agents.run import LAUNCH_STAMP, launch_editor_turn, load_policy, rank_candidates
 from interact.file_lock import exclusive
 from interact.machine_workspaces import MachineWorkspaces
+from interact.project_secrets import ProjectEnv
+from cryptography.exceptions import InvalidTag
+from interact_core.sealing import SecretsSeal
 
 logger = logging.getLogger(__name__)
 
@@ -259,6 +262,8 @@ class MachineAgents(BaseModel):
     sessions: MachineSessions | None = None
     #: The repositories prepared here from the web (`workspace_prepare`).
     workspaces: MachineWorkspaces | None = None
+    #: Opens project secrets sealed for this machine (`SealedSecrets`).
+    seal: SecretsSeal | None = None
     logs: LogRing | None = None
     #: Where the editor keeps its conversations (Claude Code: one JSONL file per conversation).
     editor_projects: Path = Field(default_factory=lambda: Path.home() / ".claude" / "projects")
@@ -539,6 +544,7 @@ class MachineAgents(BaseModel):
             # The launcher runs a role on what its own rule picks (a per-run model is never
             # honoured): refused, never silently replaced.
             raise PermissionError("an agent runs on the model its rule picks; change the rule on its Agents page, or start a session to choose the model")
+        written = self._project_env(request, folder)
         options = ["--agent", str(request.role), "--cwd", str(folder), "--permission-mode", self.scope(request.permission), "--session-id", self.session, "--quota-window", "4",
                    *(["--provider", request.provider] if request.provider is not None else []), *([f"--model={request.model}"] if request.model else [])]
         # "--" ends the options: a brief starting with "-" (a markdown bullet, "--help") is the brief.
@@ -551,7 +557,24 @@ class MachineAgents(BaseModel):
         if run_id is None:
             raise RuntimeError(self._said(done.stderr) or f"the agent did not start (exit {done.returncode})")
         self.runs.add(WebRun(run_id=run_id, root=request.root, path=request.path))
-        return MachineAgentAnswer(request_id=request.id, run_id=run_id)
+        return MachineAgentAnswer(request_id=request.id, run_id=run_id, detail=f"{written} project secrets written to .env" if written else "")
+
+    def _project_env(self, request: AgentStartRequest, folder: Path) -> int:
+        """The project's secrets, when the start brings them: opened with this machine's key, written
+        as the .env of the project's own checkout holding `folder` (`ProjectEnv`); how many. Their
+        values join the redaction list of this runner's log lines."""
+        if request.secrets is None:
+            return 0
+        if self.seal is None or request.project != request.secrets.project:
+            raise PermissionError("this computer cannot take these project secrets")
+        try:
+            values = self.seal.open(request.secrets, request=request.id)
+        except (InvalidTag, ValueError):
+            raise PermissionError("the project's secrets could not be opened on this computer") from None
+        ProjectEnv.locate(folder, self.roots[request.root], request.secrets.origin).write(values, project=request.secrets.project, revision=request.secrets.revision)
+        if self.logs is not None:
+            self.logs.secrets = (*self.logs.secrets, *(value for value in values.values() if len(value) >= 8))
+        return len(values)
 
     def _send(self, request: AgentSendRequest) -> MachineAgentAnswer:
         run = self._require_run(request.run_id)

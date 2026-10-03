@@ -37,6 +37,7 @@ from interact.file_lock import exclusive
 from interact.private_files import PRIVATE_FILES
 from interact.machine_agents import LogRing, MachineAgents, MachineSessions, WebRuns, redact, secret_values
 from interact.machine_workspaces import MachineWorkspaces, WorkspaceJobs
+from interact_core.sealing import SecretsSeal
 from interact.agents.events import AgentEvent
 from interact.agents.run import run_agent
 from interact.agents import registry as reg
@@ -943,7 +944,7 @@ class MachineRunner:
 
     #: What this runner can do beyond the base protocol (the server's `MachineChannel.require_feature`):
     #: file queries browse the owner's script roots; a script file runs from them.
-    FEATURES: ClassVar[tuple[str, ...]] = ("file_query", "script_file", "file_read", "agent_control", "agent_settings", "web_settings", "workspaces", "start_permission")
+    FEATURES: ClassVar[tuple[str, ...]] = ("file_query", "script_file", "file_read", "agent_control", "agent_settings", "web_settings", "workspaces", "start_permission", "project_secrets")
 
     @classmethod
     def features(cls) -> list[str]:
@@ -1079,9 +1080,9 @@ class MachineRunner:
             agents = MachineAgents(roots=current.agent_roots_by_name(), permission=current.agent_permission, run_agents=current.run_agents,
                                    continue_conversations=current.continue_conversations, answer_approvals=current.answer_approvals, session=f"web-{current.machine_id}",
                                    runs=WebRuns(path=self.config_path.with_name("machine-agent-runs.json")), environment=self._safe_environment(),
-                                   sessions=self._sessions, logs=self._log_ring,
+                                   sessions=self._sessions, logs=self._log_ring, seal=SecretsSeal.for_token(current.token.get_secret_value()),
                                    workspaces=MachineWorkspaces(roots=current.agent_roots_by_name(), origins=current.clone_origins, jobs=self._workspace_jobs,
-                                                                working_directory=current.working_directory, register=self._register_agent_root,
+                                                                working_directory=current.working_directory, register_root=self._register_agent_root,
                                                                 environment={**self._safe_environment(), **{key: os.environ[key] for key in ("SSH_AUTH_SOCK",) if key in os.environ}}))
             answer = await agents.answer(request)
             # Reading (the page polls every few seconds) stays out of the owner's log; actions go in.

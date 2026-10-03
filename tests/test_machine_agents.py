@@ -22,6 +22,8 @@ from interact.machine_agents import LogRing, MachineAgents, MachineSessions, Web
 from interact.machines import MachineConfig, MachineRunner
 from interact.machine_workspaces import CloneFailure, Git, MachineWorkspaces, WorkspaceJobs
 from interact.agents.providers import PROJECT_SETTINGS_OFF
+from interact.project_secrets import MARKER, ProjectEnv
+from interact_core.sealing import SecretsSeal
 
 
 @pytest.fixture
@@ -520,7 +522,46 @@ def test_an_existing_checkout_is_used_before_any_clone(base: Path, tmp_path: Pat
     subprocess.run(["git", "-C", str(checkout), "remote", "add", "origin", "git@github.com:Owner/Aino.git"], check=True)
     registered: list[str] = []
     agents = _agents(base, tmp_path, clone_origins=("github.com/owner/*",))
-    workspaces = agents.workspaces.model_copy(update={"working_directory": base, "register": lambda name: registered.append(name) or True})
+    workspaces = agents.workspaces.model_copy(update={"working_directory": base, "register_root": lambda name: registered.append(name) or True})
     job = _answer(agents.model_copy(update={"workspaces": workspaces}), _request("workspace_prepare", root="project", url="https://github.com/owner/aino.git")).workspaces[0]
     assert (job.state, job.found, job.root, job.name) == ("ready", True, root, path)
     assert registered == ([] if root == "project" else [root]) and not workspaces.prepared(checkout)
+
+
+def _checkout(folder: Path, origin: str = "git@github.com:owner/aino.git") -> Path:
+    subprocess.run(["git", "init", "-q", str(folder)], check=True)
+    subprocess.run(["git", "-C", str(folder), "remote", "add", "origin", origin], check=True)
+    return folder
+
+
+def test_a_start_with_project_secrets_writes_them_as_the_checkouts_dotenv_only(base: Path, tmp_path: Path) -> None:
+    """Opened with this PC's key, written as the .env of the project's own checkout (marker, quoted,
+    0600, locally git-excluded), never as the run's environment; values redacted from the PC's logs."""
+    checkout = _checkout(base / "project" / "aino")
+    seen = tmp_path / "env.json"
+    recorder = ("python3", "-c", f"import json,os,sys; json.dump(dict(os.environ), open({str(seen)!r}, 'w')); print({str(uuid4())!r})")
+    config = _config(base)
+    agents = _agents(base, tmp_path, cli=recorder).model_copy(update={"seal": SecretsSeal.for_token(config.token.get_secret_value()), "logs": LogRing()})
+    project, request_id = uuid4(), uuid4()
+    sealed = SecretsSeal.for_token(config.token.get_secret_value()).seal({"DATABASE_URL": "not-a-real-secret-value-for-aino"}, request=request_id, project=project, origin="github.com/owner/aino")
+    start = _request("start", root="project", path="aino", role="tester", text="go", project=str(project), with_secrets=True, secrets=sealed.model_dump(mode="json"))
+    answer = _answer(agents, start.model_copy(update={"id": request_id}))
+    lines = (checkout / ".env").read_text().splitlines()
+    assert lines[0].startswith(MARKER) and lines[1] == "DATABASE_URL='not-a-real-secret-value-for-aino'" and answer.detail.startswith("1 project secrets")
+    assert oct((checkout / ".env").stat().st_mode & 0o777) == "0o600" and ".env" in (checkout / ".git" / "info" / "exclude").read_text().splitlines()
+    assert "DATABASE_URL" not in json.loads(seen.read_text()) and "not-a-real-secret-value-for-aino" in agents.logs.secrets
+
+
+@pytest.mark.parametrize("trap", ["owner", "link", "tracked", "other origin"])
+def test_project_secrets_are_never_written_where_they_could_leak_or_clobber(base: Path, tmp_path: Path, trap: str) -> None:
+    checkout = _checkout(base / "project" / "aino", "git@github.com:someone/else.git" if trap == "other origin" else "git@github.com:owner/aino.git")
+    if trap == "owner":
+        (checkout / ".env").write_text("MINE=1\n")
+    elif trap == "link":
+        (checkout / ".env").symlink_to(tmp_path / "elsewhere")
+    elif trap == "tracked":
+        (checkout / ".env").write_text(f"{MARKER}\n")
+        subprocess.run(["git", "-C", str(checkout), "add", ".env"], check=True)
+    with pytest.raises(PermissionError):
+        ProjectEnv.locate(checkout, base / "project", "github.com/owner/aino").write({"API_KEY": "secret-value"}, project=uuid4(), revision="0" * 64)
+    assert not (tmp_path / "elsewhere").exists() and (trap != "owner" or (checkout / ".env").read_text() == "MINE=1\n")
