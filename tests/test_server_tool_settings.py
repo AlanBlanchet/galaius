@@ -195,7 +195,7 @@ def test_changed_session_cannot_reuse_account_cache(settings_server):
 
 def test_workspace_token_refused_before_credential_file_access(tmp_path):
     connection = CatalogConnection(endpoint="https://example.invalid", auth_mode="token", workspace_id=uuid4(), token_file=tmp_path / "absent-token")
-    with pytest.raises(CatalogAuthenticationError, match="signed-in account"):
+    with pytest.raises(CatalogAuthenticationError, match="work machine"):
         ServerToolSettings(connection=connection).read()
 
 
@@ -316,3 +316,59 @@ def test_sparse_dimensions_use_client_defaults_not_host_environment(settings_ser
             server.read()
         assert "minimum image dimension cannot exceed maximum" in str(error.value.__cause__)
         assert not server.cache_path.exists()
+
+
+@pytest.fixture
+def machine_connection(tmp_path, monkeypatch):
+    """`interact login` / `machine connect` leave a workspace-token connection: a machine, no person."""
+    for name in ("LC_ALL", "LC_MESSAGES"):
+        monkeypatch.delenv(name, raising=False)
+    connection = CatalogConnection(endpoint="https://interact.example.invalid", auth_mode="token", workspace_id=uuid4(), token_file=tmp_path / "machine.key")
+    connection.save()
+    UserConfig.PATH.parent.mkdir(parents=True, exist_ok=True)
+    UserConfig.PATH.write_text("INTERACT_VIDEO_FPS=9\nOPENAI_API_KEY=fixture-secret\n")
+    return connection
+
+
+async def test_machine_connection_runs_on_local_settings(machine_connection):
+    from interact.runtime import _LiveConfig
+    assert UserConfig.read()["INTERACT_VIDEO_FPS"] == "9"
+    assert _LiveConfig().refresh().video_fps == 9
+    app = InteractTUI()  # bare `interact` on a terminal
+    async with app.run_test(size=(120, 48)) as pilot:
+        await pilot.pause()
+        assert "work machine" in str(app.query_one("#save-status", Static).render())
+
+
+@pytest.mark.parametrize("lang,sentence", [("fr_FR.UTF-8", "Ce PC est connecté comme machine de travail"), ("en_US.UTF-8", "This PC is connected as a work machine")])
+def test_machine_connection_refuses_personal_write_in_plain_words(machine_connection, monkeypatch, capsys, lang, sentence):
+    from interact.cli.app_commands import config_set, config_unset
+    monkeypatch.setenv("LANG", lang)
+    before = UserConfig.PATH.read_bytes()
+    for write in (lambda: config_set("video.fps", "12"), lambda: config_unset("video.fps")):
+        with pytest.raises(SystemExit) as refused:
+            write()
+        assert refused.value.code == 1
+        error = capsys.readouterr().err
+        assert sentence in error and machine_connection.endpoint in error and "Traceback" not in error
+    with pytest.raises(SystemExit):
+        config_set("video.fps", "12", json_out=True)
+    view = json.loads(capsys.readouterr().out)
+    assert view["code"] == "authorization" and sentence in view["message"]
+    assert UserConfig.PATH.read_bytes() == before
+    UserConfig.set("desktop.target", "local")  # machine settings stay writable here
+    assert UserConfig.read_local()["INTERACT_VIDEO_FPS"] == "9"
+
+
+def test_machine_connection_notice_is_said_once(machine_connection, monkeypatch):
+    import io
+    from interact.server_tool_settings import MachineNotice
+    class Terminal(io.StringIO):
+        def isatty(self):
+            return True
+    monkeypatch.setenv("LANG", "en_US.UTF-8")
+    first, second, piped = Terminal(), Terminal(), io.StringIO()
+    MachineNotice.say(piped)
+    MachineNotice.say(first)
+    MachineNotice.say(second)
+    assert piped.getvalue() == "" and "work machine" in first.getvalue() and second.getvalue() == ""

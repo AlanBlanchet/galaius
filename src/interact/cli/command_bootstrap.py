@@ -1,6 +1,9 @@
 """Apply persisted CLI configuration before importing command dependencies."""
 
+import sys
+
 from interact.config import Config, UserConfig, load_dotenv_for_cli
+from interact.server_tool_settings import MachineNotice
 
 
 def apply_command_environment() -> None:
@@ -9,6 +12,7 @@ def apply_command_environment() -> None:
     # Portable server preferences are resolved by their adapter or runtime invocation refresh.
     UserConfig.apply(portable=False)
     load_dotenv_for_cli()
+    MachineNotice.say(sys.stderr)
 
 
 apply_command_environment()

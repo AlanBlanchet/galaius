@@ -48,7 +48,7 @@ from textual.widgets import (
 from interact.cli.clients import ClientTarget
 from interact.cli.usage import UsageReport
 from interact.config import SETTINGS, Setting, UserConfig, groups
-from interact.server_tool_settings import PORTABLE_ENV, ServerToolSettings
+from interact.server_tool_settings import PORTABLE_ENV, MachineNotice, ServerToolSettings
 from interact.upgrade.quiet import QuietPoint, UpgradeReady
 from interact.upgrade.store import EXIT_UPGRADE
 from interact.agents.catalog_connection import CatalogConnectionError
@@ -494,7 +494,8 @@ class InteractTUI(App):
     def compose(self) -> ComposeResult:
         self._settings_snapshot = None
         self._settings_data = UserConfig.read_local()
-        self._settings_message = "Local settings"
+        machine = MachineNotice.connection()
+        self._settings_message = str(MachineNotice(machine)) if machine else "Local settings"
         server = ServerToolSettings.configured()
         if server:
             self._settings_data = {key: value for key, value in self._settings_data.items() if key not in PORTABLE_ENV}
@@ -739,12 +740,23 @@ class InteractTUI(App):
             value = self._widget_value(setting)
             changes[setting.env] = None if value in ("", _AUTO, setting.default) else value
         if UserConfig.server() is None and self._settings_snapshot is None:
-            UserConfig.update(changes)
+            if not self._local_update(changes):
+                return
             self._settings_data = UserConfig.read_local()
             self.query_one("#save-status", Static).update("Saved local settings")
             self.notify("Saved local settings")
             return
         self.run_worker(self._save_settings(changes), group="settings-save", exclusive=False)
+
+    def _local_update(self, changes: dict[str, str | None]) -> bool:
+        """A refused local write (a machine connection changing personal settings) keeps the draft."""
+        try:
+            UserConfig.update(changes)
+        except CatalogConnectionError as refused:
+            self.query_one("#save-status", Static).update(f"{refused} Draft retained.")
+            self.notify(str(refused), severity="warning")
+            return False
+        return True
 
     def _settings_source(self) -> str:
         snapshot = self._settings_snapshot
@@ -802,7 +814,8 @@ class InteractTUI(App):
         """Clear all persisted config settings and restore the on-screen defaults."""
         changes = {setting.env: None for setting in SETTINGS}
         if UserConfig.server() is None and self._settings_snapshot is None:
-            UserConfig.update(changes)
+            if not self._local_update(changes):
+                return
             self._settings_data = UserConfig.read_local()
             self.query_one("#save-status", Static).update("Reset local settings to defaults")
             self.notify("Reset local settings to defaults")

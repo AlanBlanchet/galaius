@@ -114,12 +114,17 @@ class UserConfig:
     @classmethod
     def update(cls, changes: dict[str, str | None], *, base=None):
         """One server CAS for portable edits; local edits never serialize effective settings."""
-        from interact.server_tool_settings import PORTABLE_ENV, ToolSettingsConflict  # circular Config/UserConfig wiring
+        from interact.server_tool_settings import PORTABLE_ENV, MachineNotice, ToolSettingsConflict  # circular Config/UserConfig wiring
 
         changes = {cls.normalize_key(key): value for key, value in changes.items()}
         server = cls.server()
         if base is not None and server is None:
             raise ToolSettingsConflict("Server connection removed. Reload before saving; draft retained.")
+        if server is None and (machine := MachineNotice.connection()) is not None:
+            current = cls.read_local()
+            if any(current.get(key) != value for key, value in changes.items() if key in PORTABLE_ENV):
+                raise MachineNotice(machine)
+            changes = {key: value for key, value in changes.items() if key not in PORTABLE_ENV}
         portable = {key: value for key, value in changes.items() if key in PORTABLE_ENV} if server else {}
         saved = server.update(portable, base=base or server.read(allow_stale=False)) if portable else base
         local = {key: value for key, value in changes.items() if key not in portable}

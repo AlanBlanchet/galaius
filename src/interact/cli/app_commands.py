@@ -9,7 +9,8 @@ import subprocess
 import sys
 from importlib.util import find_spec
 from pathlib import Path
-from typing import Annotated, cast
+from collections.abc import Callable
+from typing import Annotated, TypeVar, cast
 from uuid import UUID
 
 from cyclopts import App, Parameter
@@ -20,7 +21,7 @@ from interact.agents import messaging
 from interact.agents import providers as agent_providers
 from interact.agents import registry as reg
 from interact.agents.catalog import AgentCatalog
-from interact.agents.catalog_connection import CatalogConnection
+from interact.agents.catalog_connection import CatalogConnection, CatalogConnectionError
 from interact.agents.host import run_console
 from interact.agents.policy import ParadigmProjection, Policy, PolicyError, policy_path
 from interact.agents.providers import (
@@ -46,7 +47,7 @@ from interact.model_catalog import bare_model_name as _bare_model_name
 from interact.models import Model, ModelCapability, _ordinal
 from interact.runtime import _LiveConfig, config
 from interact.server_registry import kill_stale_servers, latest_version, stale_servers
-from interact.server_tool_settings import PORTABLE_ENV, ServerToolSettings, ToolSettingsConflict
+from interact.server_tool_settings import PORTABLE_ENV, MachineNotice, ServerToolSettings, ToolSettingsConflict
 from interact.cli.workspace import WorkspaceCLI
 
 
@@ -588,9 +589,10 @@ config_app = App(name="config", help="Personal portable settings on the server; 
 def _settings_status(*, allow_stale: bool = True) -> dict:
     server = ServerToolSettings.configured()
     if server is None:
+        machine = MachineNotice.connection()
         return {"configured": False, "source": "local", "stale": False, "revision": None,
                 "values": {key: value for key, value in UserConfig.read_local().items() if key in PORTABLE_ENV},
-                "portable_keys": list(PORTABLE_ENV)}
+                "portable_keys": list(PORTABLE_ENV)} | ({"notice": str(MachineNotice(machine))} if machine else {})
     return server.read(allow_stale=allow_stale).status()
 
 
@@ -704,7 +706,7 @@ def config_set(key: str, value: str, *, expected_revision: int | None = None, ac
     if json_out:
         WorkspaceCLI.emit(lambda: _settings_change(key, value, expected_revision, account_id))
         return
-    env = UserConfig.set(key, value)
+    env = _refused_plainly(lambda: UserConfig.set(key, value))
     source = "personal server settings" if env in PORTABLE_ENV and UserConfig.server() else str(UserConfig.PATH)
     print(f"✓ {env} = {_mask(env, value)}  →  {source}")
     if env in PORTABLE_ENV and UserConfig.server():
@@ -738,7 +740,19 @@ def config_unset(key: str, *, expected_revision: int | None = None, account_id: 
         WorkspaceCLI.emit(lambda: _settings_change(key, None, expected_revision, account_id))
         return
     env = UserConfig.normalize_key(key)
-    print(f"✓ removed {env}" if UserConfig.unset(key) else f"{env} was not set")
+    print(f"✓ removed {env}" if _refused_plainly(lambda: UserConfig.unset(key)) else f"{env} was not set")
+
+
+_T = TypeVar("_T")
+
+
+def _refused_plainly(write: Callable[[], _T]) -> _T:
+    """A refused settings write (machine connection, conflict, signed out) is its sentence and exit 1."""
+    try:
+        return write()
+    except CatalogConnectionError as refused:
+        print(refused, file=sys.stderr)
+        raise SystemExit(1) from None
 
 
 def _settings_change(key: str, value: str | None, revision: int | None, account_id: UUID | None) -> dict:

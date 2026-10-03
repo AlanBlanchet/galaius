@@ -2,8 +2,11 @@
 
 import hashlib
 import json
+import locale
+import os
 from datetime import UTC, datetime
 from http.cookiejar import LWPCookieJar
+from typing import TextIO
 from uuid import UUID
 
 import httpx
@@ -56,11 +59,42 @@ class ToolSettingsConflict(CatalogConnectionError):
     """The editor retains its base and proposed values until the user reloads."""
 
 
+class MachineNotice(CatalogAuthenticationError):
+    """A workspace-token connection is a machine, not a person: it runs on its local settings, and
+    a personal-settings change is refused with the address where the person changes them."""
+
+    def __init__(self, connection: CatalogConnection) -> None:
+        french = next((value for name in ("LC_ALL", "LC_MESSAGES", "LANG") if (value := os.environ.get(name))),
+                      locale.getlocale()[0] or "").lower().startswith("fr")
+        super().__init__(
+            f"Ce PC est connecté comme machine de travail : il utilise ses réglages locaux. Vos réglages personnels se changent sur {connection.endpoint}."
+            if french else
+            f"This PC is connected as a work machine: it uses its local settings. Change your personal settings at {connection.endpoint}.")
+
+    @staticmethod
+    def connection() -> CatalogConnection | None:
+        connection = CatalogConnection.load()
+        return connection if connection is not None and connection.auth_mode == "token" else None
+
+    @classmethod
+    def say(cls, stream: TextIO) -> None:
+        """Tell a person at a terminal once per connection; pipes and editor-launched servers stay quiet."""
+        if (connection := cls.connection()) is None or not stream.isatty():
+            return
+        marker = connection.session_path().with_suffix(".machine-notice")
+        if marker.exists():
+            return
+        print(cls(connection), file=stream)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.touch()
+
+
 class ServerToolSettings(ServerPrompts):
     @classmethod
     def configured(cls):
+        """The signed-in person's settings; None without a connection or on a machine connection."""
         connection = CatalogConnection.load()
-        return cls(connection=connection) if connection else None
+        return cls(connection=connection) if connection and connection.auth_mode != "token" else None
 
     @property
     def cache_path(self):
@@ -81,7 +115,7 @@ class ServerToolSettings(ServerPrompts):
     def require_actor(self) -> None:
         if self.connection.auth_mode == "token":
             self.cache_path.unlink(missing_ok=True)
-            raise CatalogAuthenticationError("Personal settings require a signed-in account; workspace tokens cannot read or change them.")
+            raise MachineNotice(self.connection)
 
     def bootstrap(self, client: httpx.Client) -> Bootstrap:
         bootstrap = Bootstrap.model_validate_json(self.connection.request(client, "GET", "/v1/bootstrap"))
