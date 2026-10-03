@@ -472,6 +472,7 @@ class InteractTUI(App):
     .key-row Input { width: 1fr; }
     .key-row Button { width: 7; margin: 0 1; }
     #save-status { color: $success; padding: 1 2; }
+    #save-status.machine { color: $warning; }
     DataTable { height: auto; margin: 1 2; }
     Static.hint { color: $text-muted; padding: 1 2 0 2; }
     #update-banner { background: $warning; color: $text; padding: 0 2; text-style: bold; }
@@ -489,13 +490,15 @@ class InteractTUI(App):
 
     # Filled by the background worker; placeholders show instantly on first paint.
     _models_info = "[dim]checking…[/dim]"
+    _machine_notice: str | None = None  # set in compose on a workspace-token (machine) connection
     _model_lines = tuple(f"  {s.role:<10} [dim]…[/dim]" for s in _MODEL_SETTINGS)
 
     def compose(self) -> ComposeResult:
         self._settings_snapshot = None
         self._settings_data = UserConfig.read_local()
         machine = MachineNotice.connection()
-        self._settings_message = str(MachineNotice(machine)) if machine else "Local settings"
+        self._machine_notice = str(MachineNotice(machine)) if machine else None
+        self._settings_message = self._settings_source()
         server = ServerToolSettings.configured()
         if server:
             self._settings_data = {key: value for key, value in self._settings_data.items() if key not in PORTABLE_ENV}
@@ -546,7 +549,7 @@ class InteractTUI(App):
                         yield Button("Save (Ctrl+S)", variant="primary", id="btn-save-config")
                         yield Button("Reset to defaults", id="btn-reset-config")
                         yield Button("Reload server", id="btn-reload-config")
-                    yield Static(self._settings_message, id="save-status")
+                    yield Static(self._settings_message, id="save-status", classes="machine" if self._machine_notice else "")
 
             with TabPane("Local API keys", id="tab-keys"):
                 with VerticalScroll():
@@ -584,6 +587,8 @@ class InteractTUI(App):
         if self._quiet is not None:
             self.set_interval(5, self._upgrade_when_idle)
         self._ensure_focus()  # so the keyboard works immediately, before any click
+        if self._machine_notice:
+            self.notify(self._machine_notice, severity="warning", timeout=15)
 
     def _ensure_focus(self) -> None:
         if self.focused is None:
@@ -743,7 +748,7 @@ class InteractTUI(App):
             if not self._local_update(changes):
                 return
             self._settings_data = UserConfig.read_local()
-            self.query_one("#save-status", Static).update("Saved local settings")
+            self.query_one("#save-status", Static).update(" · ".join(filter(None, ("Saved local settings", self._machine_notice))))
             self.notify("Saved local settings")
             return
         self.run_worker(self._save_settings(changes), group="settings-save", exclusive=False)
@@ -753,7 +758,7 @@ class InteractTUI(App):
         try:
             UserConfig.update(changes)
         except CatalogConnectionError as refused:
-            self.query_one("#save-status", Static).update(f"{refused} Draft retained.")
+            self.query_one("#save-status", Static).update(str(refused))
             self.notify(str(refused), severity="warning")
             return False
         return True
@@ -761,7 +766,7 @@ class InteractTUI(App):
     def _settings_source(self) -> str:
         snapshot = self._settings_snapshot
         return (f"Personal server settings · revision {snapshot.settings.revision} · "
-                f"{'STALE cache; reload before saving' if snapshot.stale else 'current'} · machine settings and keys stay local") if snapshot else "Local settings"
+                f"{'STALE cache; reload before saving' if snapshot.stale else 'current'} · machine settings and keys stay local") if snapshot else self._machine_notice or "Local settings"
 
     async def _save_settings(self, changes: dict[str, str | None], *, reset: bool = False) -> None:
         if getattr(self, "_settings_saving", False):
@@ -817,7 +822,7 @@ class InteractTUI(App):
             if not self._local_update(changes):
                 return
             self._settings_data = UserConfig.read_local()
-            self.query_one("#save-status", Static).update("Reset local settings to defaults")
+            self.query_one("#save-status", Static).update(" · ".join(filter(None, ("Reset local settings to defaults", self._machine_notice))))
             self.notify("Reset local settings to defaults")
             self._reset_settings_widgets()
         else:

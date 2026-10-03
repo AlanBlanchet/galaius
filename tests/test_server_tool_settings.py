@@ -338,6 +338,7 @@ async def test_machine_connection_runs_on_local_settings(machine_connection):
     async with app.run_test(size=(120, 48)) as pilot:
         await pilot.pause()
         assert "work machine" in str(app.query_one("#save-status", Static).render())
+        assert any("work machine" in str(toast.message) for toast in app._notifications)
 
 
 @pytest.mark.parametrize("lang,sentence", [("fr_FR.UTF-8", "Ce PC est connecté comme machine de travail"), ("en_US.UTF-8", "This PC is connected as a work machine")])
@@ -360,15 +361,20 @@ def test_machine_connection_refuses_personal_write_in_plain_words(machine_connec
     assert UserConfig.read_local()["INTERACT_VIDEO_FPS"] == "9"
 
 
-def test_machine_connection_notice_is_said_once(machine_connection, monkeypatch):
+def test_machine_connection_notice_is_said_once(machine_connection, monkeypatch, capsys):
     import io
+    from interact.cli.app_commands import config_set
     from interact.server_tool_settings import MachineNotice
     class Terminal(io.StringIO):
         def isatty(self):
             return True
     monkeypatch.setenv("LANG", "en_US.UTF-8")
     first, second, piped = Terminal(), Terminal(), io.StringIO()
+    monkeypatch.setattr(MachineNotice, "said", False)
     MachineNotice.say(piped)
     MachineNotice.say(first)
     MachineNotice.say(second)
     assert piped.getvalue() == "" and "work machine" in first.getvalue() and second.getvalue() == ""
+    with pytest.raises(SystemExit):  # the refusal right after the notice does not repeat it
+        config_set("video.fps", "12")
+    assert capsys.readouterr().err == ""

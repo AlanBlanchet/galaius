@@ -688,7 +688,7 @@ def config_get(key: str) -> None:
     env = UserConfig.normalize_key(key)
     server = UserConfig.server() if env in PORTABLE_ENV else None
     if server:
-        snapshot = server.read()
+        snapshot = _refused_plainly(server.read)
         value = snapshot.env.get(env)
         print(f"Personal server settings · revision {snapshot.settings.revision} · {'STALE cache' if snapshot.stale else 'current'}")
     else:
@@ -751,7 +751,8 @@ def _refused_plainly(write: Callable[[], _T]) -> _T:
     try:
         return write()
     except CatalogConnectionError as refused:
-        print(refused, file=sys.stderr)
+        if not (isinstance(refused, MachineNotice) and MachineNotice.said):
+            print(refused, file=sys.stderr)
         raise SystemExit(1) from None
 
 

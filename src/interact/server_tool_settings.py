@@ -6,7 +6,7 @@ import locale
 import os
 from datetime import UTC, datetime
 from http.cookiejar import LWPCookieJar
-from typing import TextIO
+from typing import ClassVar, TextIO
 from uuid import UUID
 
 import httpx
@@ -63,6 +63,8 @@ class MachineNotice(CatalogAuthenticationError):
     """A workspace-token connection is a machine, not a person: it runs on its local settings, and
     a personal-settings change is refused with the address where the person changes them."""
 
+    said: ClassVar[bool] = False  # this process already printed it; a refusal right after stays silent
+
     def __init__(self, connection: CatalogConnection) -> None:
         french = next((value for name in ("LC_ALL", "LC_MESSAGES", "LANG") if (value := os.environ.get(name))),
                       locale.getlocale()[0] or "").lower().startswith("fr")
@@ -85,6 +87,7 @@ class MachineNotice(CatalogAuthenticationError):
         if marker.exists():
             return
         print(cls(connection), file=stream)
+        cls.said = True
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.touch()
 
