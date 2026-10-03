@@ -21,7 +21,7 @@ import sys
 import tempfile
 from collections.abc import Callable
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import ClassVar, Literal, Self
 from urllib.parse import urlencode, urlsplit, urlunsplit
 from uuid import UUID, uuid4
@@ -153,6 +153,21 @@ class MachineConfig(MachineAgentSettings):
         settings, refused = self.agent_settings()
         return MachineAgentSettingsState(revision=self.settings_revision, version=self.web_settings_version, remote=self.remote_settings,
                                          settings=settings, refused=refused, detail=detail[:400], refused_version=refused_version)
+
+    def create_agent_roots(self) -> tuple[str, ...]:
+        """Creates each agent root that does not exist yet (the web named a new one), walking it part
+        by part below the working directory and never through a link; the names created."""
+        base, created = self.working_directory.resolve(), []
+        for name in self.agent_roots:
+            current = base
+            for part in PurePosixPath(name).parts:
+                current = current / part
+                if current.is_symlink() or (current.exists() and not current.is_dir()):
+                    break
+                if not current.exists():
+                    current.mkdir(mode=0o755)
+                    created.append(name)
+        return tuple(dict.fromkeys(created))
 
     def with_web_settings(self, update: MachineAgentSettingsUpdate) -> Self:
         """This config with a web version applied, or PermissionError naming why not (checked
@@ -1021,6 +1036,8 @@ class MachineRunner:
                 self._same_enrollment(current, config)
                 return current.with_web_settings(update)
             after = await asyncio.to_thread(self.update, apply)
+            if created := await asyncio.to_thread(after.create_agent_roots):
+                logger.info("agent folders created for the web: %s", ", ".join(created))
             self._settings_detail, self._settings_refused = "", 0
             was, now = before.agent_settings()[0].model_dump(mode="json"), after.agent_settings()[0].model_dump(mode="json")
             changed = {key: [was[key], now[key]] for key in was if was[key] != now[key]}

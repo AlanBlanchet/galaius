@@ -437,9 +437,11 @@ def test_web_settings_apply_once_from_the_revision_the_page_read(base: Path, tmp
         asyncio.run(runner._apply_web_settings(Socket(), config, payload))
         return Socket.sent[-1]
 
-    first = _signed_settings(config, 1, 0, run_agents=True, agent_roots=("project",), agent_permission="read_only")
+    first = _signed_settings(config, 1, 0, run_agents=True, agent_roots=("project", "workspaces/new"), agent_permission="read_only")
     state = apply(first)
-    assert (state["revision"], state["version"], state["detail"], state["settings"]["agent_roots"]) == (1, 1, "", ["project"])
+    assert (base / "workspaces" / "new").is_dir()  # a folder the web names is created on the PC
+    runner.update(lambda current: current.model_copy(update={"agent_roots": ("project",)}))
+    assert (state["revision"], state["version"], state["detail"], state["settings"]["agent_roots"]) == (1, 1, "", ["project", "workspaces/new"])
     assert apply(first)["detail"].startswith("version 1 is not newer") and Socket.sent[-1]["refused_version"] == 1
     runner.update(lambda current: current.model_copy(update={"agent_permission": "workspace_write"}))  # a change made on the PC
     assert "changed on this computer" in apply(_signed_settings(config, 2, 1, run_agents=True, agent_roots=("project", "other")))["detail"]
@@ -454,7 +456,7 @@ def test_web_settings_apply_once_from_the_revision_the_page_read(base: Path, tmp
     runner.update(lambda current: current.model_copy(update={"remote_settings": False}))
     assert "web control" in apply(_signed_settings(config, 3, 3))["detail"]
     held = runner.load()
-    assert (held.run_agents, held.agent_roots, held.agent_permission, held.settings_revision, held.web_settings_version) == (False, ("project",), "workspace_write", 3, 2)
+    assert (held.run_agents, held.agent_roots, held.agent_permission, held.settings_revision, held.web_settings_version) == (False, ("project",), "workspace_write", 4, 2)
 
 
 def test_a_start_asks_less_never_more_and_a_cloned_workspace_loads_no_project_settings(base: Path, tmp_path: Path) -> None:
