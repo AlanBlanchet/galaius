@@ -11,6 +11,7 @@ lands in a hidden `.<name>.partial` folder (never reachable as an agent folder) 
 into place only once complete; an existing folder is never touched."""
 
 import ipaddress
+import re
 import json
 import os
 import shutil
@@ -19,6 +20,8 @@ import stat
 import subprocess
 import threading
 import time
+from collections import deque
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import ClassVar
@@ -124,6 +127,14 @@ class MachineWorkspaces(BaseModel):
     origins: tuple[str, ...]
     jobs: WorkspaceJobs
     environment: dict[str, str]
+    #: Where an existing checkout is looked for besides the agent roots (the PC's working directory).
+    working_directory: Path | None = None
+    #: Makes a folder (relative to the working directory) an agent root on this PC; whether it is usable.
+    register: Callable[[str], bool] | None = None
+    #: How deep below each place an existing checkout is looked for, and how many folders at most.
+    SCAN_DEPTH: ClassVar[int] = 3
+    SCAN_LIMIT: ClassVar[int] = 20000
+    SCAN_SKIP: ClassVar[frozenset[str]] = frozenset({"node_modules", "__pycache__", "venv", "site-packages", "target", "dist", "build"})
     timeout: float = 30 * 60
     #: Free space a clone needs before it starts.
     disk_floor: int = 5 * 1024**3
@@ -139,9 +150,14 @@ class MachineWorkspaces(BaseModel):
     _running: ClassVar[threading.Lock] = threading.Lock()
 
     def prepare(self, request: WorkspacePrepareRequest) -> MachineWorkspaceJob:
-        """Starts the clone (answered at once, `running`) or refuses it with why."""
+        """An existing checkout of the repository on this PC, registered as an agent folder (ready at
+        once); else the clone, started (answered at once, `running`); or a refusal saying why."""
         remote = request.url
-        self._allowed(remote)
+        if not remote.allowed_by(self.origins):
+            raise PermissionError(f"{remote.origin} is not among the repositories this PC may use; allow it on this PC's page first")
+        if (found := self.found(request.url)) is not None:
+            return found
+        self._public_host(remote.host)
         base = self.roots.get(request.root)
         if base is None:
             raise PermissionError(f"{request.root!r} is not an agent folder on this computer")
@@ -162,6 +178,56 @@ class MachineWorkspaces(BaseModel):
             raise
         return job
 
+    def found(self, remote: GitRemote) -> MachineWorkspaceJob | None:
+        """An existing checkout of `remote` on this PC (its `origin` remote), looked for shallow-first
+        in the agent roots, then the working directory: inside an agent root it is used as is,
+        elsewhere its folder becomes an agent root. Its own agent settings load (its owner's code)."""
+        checkout = self._scan(remote.origin.lower())
+        if checkout is None:
+            return None
+        base = self.working_directory.resolve() if self.working_directory is not None else None
+        inside = next(((name, root) for name, root in self.roots.items() if checkout == root or root in checkout.parents), None)
+        if inside is not None:
+            root, path = inside[0], checkout.relative_to(inside[1]).as_posix() if checkout != inside[1] else ""
+        elif base is not None and base in checkout.parents and self.register is not None and self.register(checkout.relative_to(base).as_posix()):
+            root, path = checkout.relative_to(base).as_posix(), ""
+        else:
+            return None
+        job = MachineWorkspaceJob(id=uuid4(), root=root, name=path, origin=remote.origin, state="ready", found=True, started_at=datetime.now(UTC), finished_at=datetime.now(UTC),
+                                  detail=f"existing checkout found at {root}{'/' + path if path else ''}")
+        self.jobs.put(job)
+        return job
+
+    _ORIGIN: ClassVar[re.Pattern[str]] = re.compile(r'\[remote "origin"\][^\[]*?^\s*url\s*=\s*(\S+)', re.MULTILINE)
+
+    def _scan(self, origin: str) -> Path | None:
+        """The first folder, shallow-first, whose `.git/config` names `origin` as its origin remote
+        (read as a file: no git runs inside a repository it does not know)."""
+        places = [*self.roots.values(), *([self.working_directory] if self.working_directory is not None else [])]
+        queue, seen = deque((place.resolve(), 0) for place in places if place.is_dir()), set()
+        while queue and len(seen) < self.SCAN_LIMIT:
+            folder, depth = queue.popleft()
+            if folder in seen:
+                continue
+            seen.add(folder)
+            config = folder / ".git" / "config"
+            if config.is_file():
+                try:
+                    match = self._ORIGIN.search(config.read_text(errors="replace"))
+                    if match is not None and GitRemote(url=match[1]).origin.lower() == origin:
+                        return folder
+                except (OSError, ValueError):
+                    pass
+                continue
+            if depth >= self.SCAN_DEPTH:
+                continue
+            try:
+                children = sorted(entry for entry in folder.iterdir() if not entry.name.startswith(".") and entry.name not in self.SCAN_SKIP and entry.is_dir() and not entry.is_symlink())
+            except OSError:
+                continue
+            queue.extend((child, depth + 1) for child in children)
+        return None
+
     def _allowed(self, remote: GitRemote) -> None:
         """Refuses a repository outside the owner's origins, or on a host that is not public."""
         if not remote.allowed_by(self.origins):
@@ -177,7 +243,7 @@ class MachineWorkspaces(BaseModel):
         """Whether `folder` lies in a workspace cloned here from the web: code its owner did not
         write, so its own agent settings (hooks, permissions) are never loaded there."""
         resolved = folder.resolve()
-        return any(job.state == "ready" and job.root in self.roots and (resolved == (place := (self.roots[job.root] / job.name).resolve()) or place in resolved.parents)
+        return any(job.state == "ready" and not job.found and job.root in self.roots and (resolved == (place := (self.roots[job.root] / job.name).resolve()) or place in resolved.parents)
                    for job in self.jobs.read())
 
     @staticmethod

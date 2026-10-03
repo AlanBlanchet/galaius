@@ -1081,6 +1081,7 @@ class MachineRunner:
                                    runs=WebRuns(path=self.config_path.with_name("machine-agent-runs.json")), environment=self._safe_environment(),
                                    sessions=self._sessions, logs=self._log_ring,
                                    workspaces=MachineWorkspaces(roots=current.agent_roots_by_name(), origins=current.clone_origins, jobs=self._workspace_jobs,
+                                                                working_directory=current.working_directory, register=self._register_agent_root,
                                                                 environment={**self._safe_environment(), **{key: os.environ[key] for key in ("SSH_AUTH_SOCK",) if key in os.environ}}))
             answer = await agents.answer(request)
             # Reading (the page polls every few seconds) stays out of the owner's log; actions go in.
@@ -1101,6 +1102,17 @@ class MachineRunner:
             asked = request.model_dump(mode="json", exclude={"type", "id", "machine", "workspace_id", "expires_at", "signature"})
             self.audit("agents.log", {**asked, **({"started_run_id": str(answer.run_id)} if answer.run_id and "run_id" not in asked else {}), "error": answer.error})
         await socket.send(json.dumps({"type": "agent_answer", "result": answer.model_dump(mode="json")}))
+
+    def _register_agent_root(self, name: str) -> bool:
+        """Adds `name` (relative to the working directory) to the agent roots - an existing checkout
+        of a repository the owner allowed; whether it is usable there (never over a file or script
+        root, never hidden, never interact's own folders)."""
+        after = self.update(lambda current: current if name in current.agent_roots else current.model_copy(update={"agent_roots": (*current.agent_roots, name)}))
+        usable = name in after.agent_roots_by_name()
+        if not usable:
+            self.update(lambda current: current.model_copy(update={"agent_roots": tuple(root for root in current.agent_roots if root != name)}))
+        logger.info("existing checkout %s %s as an agent folder", name, "registered" if usable else "refused")
+        return usable
 
     def _accept_command(self, config: MachineConfig, connected: MachineConfig, command: MachineCommand) -> MachineConfig:
         self._same_enrollment(config, connected)

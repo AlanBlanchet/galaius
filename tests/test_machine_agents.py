@@ -509,3 +509,18 @@ def test_the_submodule_walk_never_leaves_the_clone(base: Path, tmp_path: Path) -
     git = Git(options=MachineWorkspaces.GIT_OPTIONS, environment={"PATH": os.environ["PATH"], "HOME": str(tmp_path)}, host="github.com", deadline=time.monotonic() + 30)
     workspaces._submodules(git, clone, clone)
     assert (outside / ".git" / "config").read_bytes() == before
+
+
+@pytest.mark.parametrize(("where", "root", "path"), [("project/src/aino", "project", "src/aino"), ("other/aino", "other/aino", "")])
+def test_an_existing_checkout_is_used_before_any_clone(base: Path, tmp_path: Path, where: str, root: str, path: str) -> None:
+    """The owner already has the project on that PC: found by its origin remote, inside an agent root
+    as is, elsewhere registered as one - never cloned again, and its own agent settings load."""
+    checkout = base / where
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    subprocess.run(["git", "-C", str(checkout), "remote", "add", "origin", "git@github.com:Owner/Aino.git"], check=True)
+    registered: list[str] = []
+    agents = _agents(base, tmp_path, clone_origins=("github.com/owner/*",))
+    workspaces = agents.workspaces.model_copy(update={"working_directory": base, "register": lambda name: registered.append(name) or True})
+    job = _answer(agents.model_copy(update={"workspaces": workspaces}), _request("workspace_prepare", root="project", url="https://github.com/owner/aino.git")).workspaces[0]
+    assert (job.state, job.found, job.root, job.name) == ("ready", True, root, path)
+    assert registered == ([] if root == "project" else [root]) and not workspaces.prepared(checkout)
