@@ -54,10 +54,17 @@ function Install-Interact {
 
     Write-Host ''
     Write-Host 'interact installed.'
+    # $env:INTERACT_ADDRESS names the server; a computer connected elsewhere moves there when that
+    # server holds it (the server moved).
+    $server = if ($env:INTERACT_ADDRESS) { @('--server', $env:INTERACT_ADDRESS) } else { @() }
     # `irm | iex` keeps this window's keyboard: ask there, and only when a person is at it.
     if (-not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected) {
         Write-Host 'Connecting this computer to your Interact account...'
-        & $interact login
+        & $interact login @server
+        if ($LASTEXITCODE -ne 0) { Write-Host 'Not connected. Run it again any time:  interact login' }
+    } elseif ($server.Count -gt 0) {
+        Write-Host "Connecting this computer to $($env:INTERACT_ADDRESS)..."
+        & $interact login @server --yes
         if ($LASTEXITCODE -ne 0) { Write-Host 'Not connected. Run it again any time:  interact login' }
     } else {
         Write-Host 'Next, connect this computer to your Interact account:  interact login'

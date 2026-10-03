@@ -5,7 +5,9 @@
 # Needs only curl (or wget): installs uv (the Python tool manager) and a Python if missing, then
 # `interact` from GitHub's source archives (no git needed). Run from a terminal, it goes straight on
 # to `interact login`. Override the source with INTERACT_REPO=<path-or-git-url>, or another source
-# archive of this repository (a branch or tag .tar.gz) with INTERACT_ARCHIVE=<url>.
+# archive of this repository (a branch or tag .tar.gz) with INTERACT_ARCHIVE=<url>. INTERACT_ADDRESS=<url>
+# names the server; a computer already connected elsewhere moves there when that server holds it
+# (the server moved): curl -LsSf …/install.sh | INTERACT_ADDRESS=https://example.org sh
 set -eu
 
 # uv's own installer, this exact release, its bytes pinned (it pins each uv binary's sha256 in turn);
@@ -40,10 +42,14 @@ main() {
 
   echo ""
   echo "✓ interact installed."
+  if [ -n "${INTERACT_ADDRESS:-}" ]; then set -- --server "$INTERACT_ADDRESS"; else set --; fi
   # stdin is this script: ask the terminal, and only when there is one.
   if [ -t 1 ] && (exec </dev/tty) 2>/dev/null; then
     echo "Connecting this computer to your Interact account…"
-    "$bin/interact" login </dev/tty || echo "Not connected. Run it again any time:  interact login"
+    "$bin/interact" login "$@" </dev/tty || echo "Not connected. Run it again any time:  interact login"
+  elif [ $# -gt 0 ]; then
+    echo "Connecting this computer to ${INTERACT_ADDRESS}…"
+    "$bin/interact" login "$@" --yes </dev/null || echo "Not connected. Run it again any time:  interact login"
   else
     echo "Next, connect this computer to your Interact account:  interact login"
   fi

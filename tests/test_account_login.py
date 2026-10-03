@@ -159,8 +159,26 @@ def test_connected_login_asks_nothing_web_control_covers_and_restarts_the_servic
     assert f"already connected to {PUBLIC} as pc2." in out and "Background service restarted" in out and "Agents: " in out
 
 
-def test_connected_to_another_server_refused(connected: Path) -> None:
+@pytest.mark.parametrize("verdict, refusal", [("accepted", None), ("refused", "does not know it"), ("unreachable", "does not answer")])
+def test_connected_elsewhere_moves_only_to_a_server_that_holds_this_computer(connected: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+                                                                               verdict: str, refusal: str | None) -> None:
+    """The server moved with its data: the computer follows the new address as the same machine,
+    proven by the new server's channel taking its own token; a server that refuses it changes nothing."""
+    moved_to = "https://new.example.org"
     before = MachineRunner.default_config_path().read_bytes()
-    with pytest.raises(LoginError, match="run `interact logout` first"):
-        account_login.login("https://other.example.org", allow_runs=False, yes=True, open_browser=False, agents=True)
-    assert MachineRunner.default_config_path().read_bytes() == before
+    token = MachineRunner().load().token.get_secret_value()
+    asked: list[tuple[str, str]] = []
+    monkeypatch.setattr(account_login, "_channel_accepts", lambda server, offered: asked.append((server, offered)) or verdict)
+    calls: list[str] = []
+    for action in ("install", "stop", "start"):
+        monkeypatch.setattr(type(account_login.MACHINE_SERVICE), action, lambda self, action=action: calls.append(action))
+    if refusal is not None:
+        with pytest.raises(LoginError, match=refusal):
+            account_login.login(moved_to, allow_runs=False, yes=True, open_browser=False)
+        assert MachineRunner.default_config_path().read_bytes() == before and calls == []
+        return
+    account_login.login(moved_to, allow_runs=False, yes=True, open_browser=False)
+    machine = MachineRunner().load()
+    assert asked == [(moved_to, token)] and machine.server_url == moved_to and machine.token.get_secret_value() == token
+    assert CatalogConnection.load().endpoint == moved_to and AccountLogin.remembered_path().read_text().strip() == moved_to
+    assert calls == ["install", "stop", "start"] and f"now connects to {moved_to} (was {PUBLIC})" in capsys.readouterr().out
