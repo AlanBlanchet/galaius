@@ -130,7 +130,7 @@ class MachineWorkspaces(BaseModel):
     #: What git and ssh may do here, whatever the repository or the server says.
     GIT_OPTIONS: ClassVar[tuple[str, ...]] = (
         "-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "-c", "protocol.ssh.allow=always",
-        "-c", "http.followRedirects=false", "-c", "credential.interactive=false", "-c", "core.fsmonitor=false",
+        "-c", "http.followRedirects=false", "-c", "credential.interactive=false", "-c", "core.fsmonitor=false", "-c", "submodule.recurse=false",
     )
     #: How deep submodules may nest.
     SUBMODULE_DEPTH: ClassVar[int] = 5
@@ -202,7 +202,7 @@ class MachineWorkspaces(BaseModel):
                       environment={**self.environment, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never", "GIT_LFS_SKIP_SMUDGE": "1", "GIT_SSH_COMMAND": self.SSH_COMMAND})
             git.run("clone", "--", remote.url, str(partial))
             if submodules:
-                self._submodules(git, partial)
+                self._submodules(git, partial, partial)
             partial.rename(target)
             finished = job.model_copy(update={"state": "ready", "detail": "", "finished_at": datetime.now(UTC)})
         except FileNotFoundError:
@@ -217,17 +217,21 @@ class MachineWorkspaces(BaseModel):
             self._remove(partial)
         self.jobs.put(finished)
 
-    def _submodules(self, git: "Git", folder: Path, depth: int = 0) -> None:
+    def _submodules(self, git: "Git", folder: Path, clone: Path, depth: int = 0) -> None:
         """Fetches `folder`'s submodules, nested ones too, each only once its address (as git
-        resolved it, relative ones included) is checked like the repository's own."""
-        if not (folder / ".gitmodules").is_file():
-            return
+        resolved it, relative ones included) is checked like the repository's own. The walk follows
+        only the submodules git itself records in `folder` (its gitlinks), never `.gitmodules`
+        paths, and never leaves `clone`."""
         if depth >= self.SUBMODULE_DEPTH:
             raise RuntimeError(f"submodules nest deeper than {self.SUBMODULE_DEPTH} levels; refused")
+        linked = [entry.split("\t", 1)[1] for entry in git.run("-C", str(folder), "ls-files", "-z", "--stage").split("\0") if entry.startswith("160000 ")]
+        if not linked:
+            return
         git.run("-C", str(folder), "submodule", "init")
-        listed = git.run("-C", str(folder), "config", "--get-regexp", r"^submodule\..*\.url$", allow=(1,))
-        for line in listed.splitlines():
-            key, _, url = line.partition(" ")
+        for entry in git.run("-C", str(folder), "config", "--local", "-z", "--get-regexp", r"^submodule\..*\.url$", allow=(1,)).split("\0"):
+            key, _, url = entry.partition("\n")
+            if not key:
+                continue
             try:
                 remote = GitRemote(url=url)
             except ValueError:
@@ -237,8 +241,11 @@ class MachineWorkspaces(BaseModel):
             except PermissionError as refusal:
                 raise RuntimeError(f"submodule {remote.origin}: {refusal}") from None
         git.run("-C", str(folder), "submodule", "update")
-        for line in git.run("-C", str(folder), "config", "--file", ".gitmodules", "--get-regexp", r"^submodule\..*\.path$", allow=(1,)).splitlines():
-            self._submodules(git, folder / line.partition(" ")[2], depth + 1)
+        for path in linked:
+            nested = folder / path
+            if nested.is_symlink() or not nested.resolve().is_relative_to(clone.resolve()):
+                raise RuntimeError(f"submodule path {path!r} leaves the workspace; refused")
+            self._submodules(git, nested, clone, depth + 1)
 
     @staticmethod
     def _remove(folder: Path) -> None:

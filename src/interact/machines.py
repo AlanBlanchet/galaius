@@ -1025,8 +1025,9 @@ class MachineRunner:
             was, now = before.agent_settings()[0].model_dump(mode="json"), after.agent_settings()[0].model_dump(mode="json")
             changed = {key: [was[key], now[key]] for key in was if was[key] != now[key]}
             # Agents switched off from the web stop the ones the web started here, as a kill switch must.
-            stopped = await asyncio.to_thread(WebRuns(path=self.config_path.with_name("machine-agent-runs.json")).stop_live) if before.run_agents and not after.run_agents else 0
-            logger.info("agent settings version %s from the web applied: %s%s", update.version, ", ".join(sorted(changed)) or "no change", f"; {stopped} running agents stopped" if stopped else "")
+            stopped, failed = await asyncio.to_thread(WebRuns(path=self.config_path.with_name("machine-agent-runs.json")).stop_live) if before.run_agents and not after.run_agents else (0, 0)
+            logger.info("agent settings version %s from the web applied: %s%s", update.version, ", ".join(sorted(changed)) or "no change",
+                        f"; running agents stopped: {stopped}" + (f", {failed} could not be" if failed else "") if stopped or failed else "")
             error = None
         except PermissionError as refusal:
             self._settings_detail, self._settings_refused = str(refusal), update.version

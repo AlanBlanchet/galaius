@@ -145,9 +145,19 @@ class WebRuns(BaseModel):
         """These runs and every run they launched, as the launcher's registry has them now."""
         return reg.trees(frozenset(str(item.run_id) for item in self.read()))
 
-    def stop_live(self) -> int:
-        """Stops every one still working (agents switched off here); how many were."""
-        return sum(1 for run in self.runs() if run.status in {"running", "waiting"} and reg.stop(run.run_id))
+    def stop_live(self) -> tuple[int, int]:
+        """Stops every one still working (agents switched off here): (how many stopped, how many
+        could not be - each failure logged, never stopping the rest)."""
+        stopped = failed = 0
+        for run in self.runs():
+            if run.status not in {"running", "waiting"}:
+                continue
+            try:
+                stopped += bool(reg.stop(run.run_id))
+            except (OSError, RuntimeError, ValueError) as error:
+                failed += 1
+                logger.warning("could not stop run %s: %s", run.run_id[:8], error)
+        return stopped, failed
 
 
 class MachineSessions:

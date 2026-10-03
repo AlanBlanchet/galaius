@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 import pytest
 
 import asyncio
+import subprocess
 import hashlib
 import hmac
 import logging
@@ -19,7 +20,7 @@ from interact.agents import registry as reg
 from interact.agents.host import ConversationRefused
 from interact.machine_agents import LogRing, MachineAgents, MachineSessions, WebRun, WebRuns, interaction_digest, redact
 from interact.machines import MachineConfig, MachineRunner
-from interact.machine_workspaces import CloneFailure, MachineWorkspaces, WorkspaceJobs
+from interact.machine_workspaces import CloneFailure, Git, MachineWorkspaces, WorkspaceJobs
 from interact.agents.providers import PROJECT_SETTINGS_OFF
 
 
@@ -489,3 +490,16 @@ def test_a_clone_is_refused_before_git_runs(base: Path, tmp_path: Path, url: str
 ])
 def test_a_failed_clone_says_why_in_plain_words(output: str, said: str) -> None:
     assert said in CloneFailure.explain(output, "github.com")
+
+
+def test_the_submodule_walk_never_leaves_the_clone(base: Path, tmp_path: Path) -> None:
+    """Only gitlinks git records are followed: a `.gitmodules` path pointing outside touches nothing."""
+    outside, clone = tmp_path / "outside", base / "project" / "clone"
+    for repo in (outside, clone):
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    (clone / ".gitmodules").write_text('[submodule "x"]\n\tpath = ../../../outside\n\turl = https://github.com/owner/x.git\n')
+    before = (outside / ".git" / "config").read_bytes()
+    workspaces = _agents(base, tmp_path, clone_origins=("github.com/owner/*",)).workspaces
+    git = Git(options=MachineWorkspaces.GIT_OPTIONS, environment={"PATH": os.environ["PATH"], "HOME": str(tmp_path)}, host="github.com", deadline=time.monotonic() + 30)
+    workspaces._submodules(git, clone, clone)
+    assert (outside / ".git" / "config").read_bytes() == before
