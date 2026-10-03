@@ -69,7 +69,7 @@ def settings_server(tmp_path, monkeypatch):
     connection = CatalogConnection(endpoint="http://127.0.0.1:8767", auth_mode="preview", workspace_id=uuid4())
     connection.save()
     bootstrap = Bootstrap(account=Account(account_id=uuid4(), email="fixture@example.invalid", locale="en", verified=True),
-        workspaces=(Workspace(workspace_id=connection.workspace_id, name="Fixture", role="owner"),),
+        workspaces=(Workspace(workspace_id=connection.workspace_id, name="Fixture", role="owner", kind="personal"),),
         current_workspace_id=connection.workspace_id, csrf_token="fixture-csrf", session_expires_at=datetime.now(UTC)+timedelta(hours=1))
     state = {"value": PortableToolSettings(revision=0, values={}), "bootstrap": bootstrap,
              "failure": None, "requests": [], "connection": connection}
