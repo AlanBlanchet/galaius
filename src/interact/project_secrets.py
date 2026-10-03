@@ -10,10 +10,12 @@ Never written over a link, an `.env` the owner wrote, or one git tracks; `.env` 
 repository's own `.git/info/exclude` (local, never its `.gitignore`)."""
 
 import os
+from hashlib import sha256
 import subprocess
 from pathlib import Path
 from uuid import UUID
 
+from interact_core.sealing import SecretsSeal
 from pydantic import BaseModel, ConfigDict
 
 from interact.machine_workspaces import MachineWorkspaces
@@ -64,10 +66,12 @@ class ProjectEnv(BaseModel):
             return ".env is tracked by git in this repository; secrets would be committed, so they are not written"
         return None
 
-    def write(self, values: dict[str, str], *, project: UUID, revision: str) -> Path:
-        """Writes the whole file (temporary file in the same folder, then renamed over), 0600."""
+    def write(self, values: dict[str, str], *, project: UUID) -> Path:
+        """Writes the whole file (temporary file in the same folder, then renamed over), 0600; its
+        first line names the vault state it holds (sha256 of the values, kept on this PC only)."""
         if (refused := self._refusal()) is not None:
             raise PermissionError(refused)
+        revision = sha256(SecretsSeal.plain(values)).hexdigest()
         lines = [f"{MARKER} (project {project}, revision {revision[:12]}): do not commit; rewritten at each start that brings secrets.",
                  *(f"{name}='{value}'" for name, value in sorted(values.items()))]
         temporary = self.checkout / f".env.interact-{os.getpid()}"
