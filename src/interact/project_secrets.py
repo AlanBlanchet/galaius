@@ -35,7 +35,7 @@ class ProjectEnv(BaseModel):
         current = folder.resolve()
         top = top.resolve()
         while True:
-            if (current / ".git").is_dir():
+            if (current / ".git").exists():
                 if MachineWorkspaces.origin_of(current) != origin.lower():
                     raise PermissionError(f"this folder is not a checkout of {origin}: the project's secrets go only into its own repository")
                 return cls(checkout=current)
@@ -83,9 +83,9 @@ class ProjectEnv(BaseModel):
         return self.path
 
     def _exclude(self) -> None:
-        """`.env` in the repository's own local exclude list, when `.git` is a real folder."""
-        git = self.checkout / ".git"
-        if not git.is_dir() or git.is_symlink():
+        """`.env` in the repository's own local exclude list (shared by its worktrees)."""
+        git = MachineWorkspaces.git_dir(self.checkout)
+        if git is None:
             return
         exclude = git / "info" / "exclude"
         exclude.parent.mkdir(exist_ok=True)

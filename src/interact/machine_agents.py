@@ -571,7 +571,7 @@ class MachineAgents(BaseModel):
             values = self.seal.open(request.secrets, request=request.id)
         except (InvalidTag, ValueError):
             raise PermissionError("the project's secrets could not be opened on this computer") from None
-        ProjectEnv.locate(folder, self.roots[request.root], request.secrets.origin).write(values, project=request.secrets.project, revision=request.secrets.revision)
+        ProjectEnv.locate(folder, self.roots[request.root], request.secrets.origin).write(values, project=request.secrets.project, revision=hashlib.sha256(SecretsSeal.plain(values)).hexdigest())
         if self.logs is not None:
             self.logs.secrets = (*self.logs.secrets, *(value for value in values.values() if len(value) >= 8))
         return len(values)

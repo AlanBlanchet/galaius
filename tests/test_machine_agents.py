@@ -565,3 +565,19 @@ def test_project_secrets_are_never_written_where_they_could_leak_or_clobber(base
     with pytest.raises(PermissionError):
         ProjectEnv.locate(checkout, base / "project", "github.com/owner/aino").write({"API_KEY": "secret-value"}, project=uuid4(), revision="0" * 64)
     assert not (tmp_path / "elsewhere").exists() and (trap != "owner" or (checkout / ".env").read_text() == "MINE=1\n")
+
+
+
+def test_a_worktree_checkout_takes_the_secrets_and_an_empty_vault_clears_them(base: Path, tmp_path: Path) -> None:
+    """A git worktree (its .git a file) is a checkout of its repository; an empty set rewrites the
+    .env with no secret left in it."""
+    main = _checkout(tmp_path / "main")
+    subprocess.run(["git", "-C", str(main), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "start"], check=True)
+    worktree = base / "project" / "aino-wt"
+    subprocess.run(["git", "-C", str(main), "worktree", "add", "-q", str(worktree)], check=True)
+    env = ProjectEnv.locate(worktree, base / "project", "github.com/owner/aino")
+    assert env.checkout == worktree.resolve()
+    env.write({"API_KEY": "secret-value-one"}, project=uuid4(), revision="0" * 64)
+    env.write({}, project=uuid4(), revision="1" * 64)
+    assert [line for line in (worktree / ".env").read_text().splitlines() if not line.startswith("#")] == []
+    assert ".env" in (main / ".git" / "info" / "exclude").read_text().splitlines()

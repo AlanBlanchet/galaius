@@ -200,12 +200,32 @@ class MachineWorkspaces(BaseModel):
 
     _ORIGIN: ClassVar[re.Pattern[str]] = re.compile(r'\[remote "origin"\][^\[]*?^\s*url\s*=\s*(\S+)', re.MULTILINE)
 
+    @staticmethod
+    def git_dir(checkout: Path) -> Path | None:
+        """The repository folder git keeps for `checkout`, shared by its worktrees: `.git` itself, or
+        for a worktree / submodule (`.git` a file naming it) the common folder it points to; None when
+        `checkout` is not one. Read as files: no git runs inside a repository it does not know."""
+        marker = checkout / ".git"
+        try:
+            if marker.is_dir() and not marker.is_symlink():
+                return marker
+            if not marker.is_file():
+                return None
+            line = marker.read_text(errors="replace").strip()
+            if not line.startswith("gitdir:"):
+                return None
+            own = (checkout / line.removeprefix("gitdir:").strip()).resolve()
+            common = own / "commondir"
+            return (own / common.read_text(errors="replace").strip()).resolve() if common.is_file() else own
+        except OSError:
+            return None
+
     @classmethod
     def origin_of(cls, checkout: Path) -> str | None:
-        """The repository `checkout` comes from (its `origin` remote, `host/owner/repo` lowercased),
-        read from `.git/config` as a file: no git runs inside a repository it does not know."""
+        """The repository `checkout` comes from (its `origin` remote, `host/owner/repo` lowercased)."""
+        git = cls.git_dir(checkout)
         try:
-            match = cls._ORIGIN.search((checkout / ".git" / "config").read_text(errors="replace"))
+            match = cls._ORIGIN.search((git / "config").read_text(errors="replace")) if git is not None else None
             return GitRemote(url=match[1]).origin.lower() if match is not None else None
         except (OSError, ValueError):
             return None
@@ -220,7 +240,7 @@ class MachineWorkspaces(BaseModel):
             if folder in seen:
                 continue
             seen.add(folder)
-            if (folder / ".git" / "config").is_file():
+            if (folder / ".git").exists():
                 if self.origin_of(folder) == origin:
                     return folder
                 continue
