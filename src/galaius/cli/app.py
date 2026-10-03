@@ -57,6 +57,10 @@ app.command(
     help="Diagnose the environment and optionally deliver fixes.",
 )
 app.command(
+    "galaius.install_migration:migrate", name="migrate",
+    help="Move this computer's former interact install (folders, settings, service, MCP registrations) to galaius.",
+)
+app.command(
     "galaius.cli.app_commands:refresh_live_data", name="refresh",
     help="Refresh the live model catalog and benchmark scores.",
 )

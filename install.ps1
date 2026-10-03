@@ -57,8 +57,18 @@ function Install-Galaius {
     # $env:GALAIUS_ADDRESS names the server; a computer connected elsewhere moves there when that
     # server holds it (the server moved).
     $server = if ($env:GALAIUS_ADDRESS) { @('--server', $env:GALAIUS_ADDRESS) } else { @() }
+    $migrated = $false
+    # Named interact until 2026-10-07: a computer that ran it moves its install once, staying connected.
+    $configHome = if ($env:XDG_CONFIG_HOME) { $env:XDG_CONFIG_HOME } else { Join-Path $HOME '.config' }
+    if ((Test-Path (Join-Path $HOME '.interact')) -or (Test-Path (Join-Path $configHome 'interact'))) {
+        & $galaius migrate
+        if ($LASTEXITCODE -eq 0) { $migrated = $true }
+        else { Write-Host 'galaius: part of the former install was not moved (above); fix it, then run  galaius migrate' }
+    }
     # `irm | iex` keeps this window's keyboard: ask there, and only when a person is at it.
-    if (-not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected) {
+    if ($migrated) {
+        Write-Host 'Your interact install is now galaius; this computer stays connected.'
+    } elseif (-not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected) {
         Write-Host 'Connecting this computer to your Galaius account...'
         & $galaius login @server
         if ($LASTEXITCODE -ne 0) { Write-Host 'Not connected. Run it again any time:  galaius login' }

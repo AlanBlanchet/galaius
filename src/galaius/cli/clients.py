@@ -167,6 +167,10 @@ class ClientTarget(BaseModel):
     def install(self, server: MCPServer, scope: Scope, project: Path, dry_run: bool) -> InstallResult:
         raise NotImplementedError
 
+    def forget(self, name: str, scope: Scope, project: Path) -> InstallResult:
+        """Remove the server registered as ``name`` in ``scope``; the inverse of :meth:`install`."""
+        raise NotImplementedError
+
     def registrations(self, project: Path, name: str = "galaius") -> list[str]:
         """Scopes where ``name`` is currently registered (read-only) — for `galaius status`."""
         out = []
@@ -227,6 +231,20 @@ class JsonClient(ClientTarget):
             return False
         return name in (document.get(self.top_key) or {})
 
+    def forget(self, name, scope, project):
+        path = self.path_for(scope, project)
+        if path is None or not path.exists():
+            return InstallResult(client=self.id, action="skipped", target=str(path or scope.value))
+        try:
+            document = json.loads(path.read_text())
+        except ValueError:
+            return InstallResult(client=self.id, action="manual", target=str(path),
+                                 detail=f"Existing file isn't plain JSON — remove {self.top_key}.{name} yourself")
+        if (document.get(self.top_key) or {}).pop(name, None) is None:
+            return InstallResult(client=self.id, action="skipped", target=str(path))
+        path.write_text(json.dumps(document, indent=2) + "\n")
+        return InstallResult(client=self.id, action="wrote", target=str(path), detail=f"removed {name}")
+
 
 class TomlClient(ClientTarget):
     """Codex — user registration through its CLI, project registration through trusted TOML."""
@@ -277,7 +295,28 @@ class TomlClient(ClientTarget):
             return False
         return name in (document.get("mcp_servers") or {})
 
+    def forget(self, name, scope, project):
+        if scope == Scope.user and shutil.which(self.cli):
+            command = [self.cli, "mcp", "remove", name]
+            done = subprocess.run(command, capture_output=True, text=True)
+            return InstallResult(client=self.id, action="ran" if done.returncode == 0 else "skipped", target=" ".join(command))
+        path = self.path_for(scope, project)
+        if path is None or not path.exists():
+            return InstallResult(client=self.id, action="skipped", target=str(path or scope.value))
+        original = path.read_text()
+        kept = self._without(original, name, path)
+        if kept == original.rstrip("\r\n"):
+            return InstallResult(client=self.id, action="skipped", target=str(path))
+        self._write_atomic(path, kept + "\n")
+        return InstallResult(client=self.id, action="wrote", target=str(path), detail=f"removed {name}")
+
     def _merged_toml(self, original: str, server: MCPServer, path: Path) -> str:
+        base = self._without(original, server.name, path)
+        separator = "\n\n" if base else ""
+        return base + separator + self._toml_block(server)
+
+    def _without(self, original: str, name: str, path: Path) -> str:
+        """``original`` minus every ``[mcp_servers.<name>…]`` table, trailing newlines stripped."""
         try:
             document = tomllib.loads(original)
         except tomllib.TOMLDecodeError as exc:
@@ -292,13 +331,13 @@ class TomlClient(ClientTarget):
         ))
         spans = []
         for index, header in enumerate(headers):
-            if self._is_server_table(header.group(1).strip(), server.name):
+            if self._is_server_table(header.group(1).strip(), name):
                 end = headers[index + 1].start() if index + 1 < len(headers) else len(original)
                 spans.append((header.start(), end))
-        existing = isinstance(servers, dict) and server.name in servers
+        existing = isinstance(servers, dict) and name in servers
         if existing and not spans:
             raise ValueError(
-                f"Cannot update {path}: existing {server.name!r} registration is not a table; "
+                f"Cannot update {path}: existing {name!r} registration is not a table; "
                 "file was left unchanged"
             )
 
@@ -308,9 +347,7 @@ class TomlClient(ClientTarget):
             pieces.append(original[cursor:start])
             cursor = end
         pieces.append(original[cursor:])
-        base = "".join(pieces).rstrip("\r\n")
-        separator = "\n\n" if base else ""
-        return base + separator + self._toml_block(server)
+        return "".join(pieces).rstrip("\r\n")
 
     @staticmethod
     def _is_server_table(section: str, name: str) -> bool:
@@ -369,6 +406,13 @@ class CliClient(ClientTarget):
         subprocess.run(cmd, check=True)
         return InstallResult(client=self.id, action="ran", target=line)
 
+    def forget(self, name, scope, project):
+        command = [self.cli, "mcp", "remove", "--scope", scope.value, name]
+        if not shutil.which(self.cli):
+            return InstallResult(client=self.id, action="manual", target=" ".join(command))
+        done = subprocess.run(command, capture_output=True, text=True, cwd=project)
+        return InstallResult(client=self.id, action="ran" if done.returncode == 0 else "skipped", target=" ".join(command))
+
     def registrations(self, project: Path, name: str = "galaius") -> list[str]:
         """Claude Code stores both scopes in ~/.claude.json (user at top level, project
         nested under projects[abspath])."""
@@ -419,15 +463,15 @@ def _vscode_user_mcp_path() -> Path:
         base = Path(os.environ.get("APPDATA", "~")) / "Code" / "User"
     else:
         base = Path("~/.config/Code/User")
-    return base.expanduser() / "mcp.json"
+    return base / "mcp.json"
 
 
 def _claude_desktop_path() -> Path:
     if sys.platform == "darwin":
-        return Path("~/Library/Application Support/Claude/claude_desktop_config.json").expanduser()
+        return Path("~/Library/Application Support/Claude/claude_desktop_config.json")
     if sys.platform == "win32":
-        return Path(os.environ.get("APPDATA", "~")).expanduser() / "Claude" / "claude_desktop_config.json"
-    return Path("~/.config/Claude/claude_desktop_config.json").expanduser()
+        return Path(os.environ.get("APPDATA", "~")) / "Claude" / "claude_desktop_config.json"
+    return Path("~/.config/Claude/claude_desktop_config.json")
 
 
 # Registry — instantiating each target registers it via model_post_init.

@@ -43,8 +43,17 @@ main() {
   echo ""
   echo "✓ galaius installed."
   if [ -n "${GALAIUS_ADDRESS:-}" ]; then set -- --server "$GALAIUS_ADDRESS"; else set --; fi
+  migrated=""
+  # Named interact until 2026-10-07: a computer that ran it moves its install once, staying connected.
+  if [ -d "$HOME/.interact" ] || [ -d "${XDG_CONFIG_HOME:-$HOME/.config}/interact" ]; then
+    if "$bin/galaius" migrate; then migrated=1
+    else echo "galaius: part of the former install was not moved (above); fix it, then run  galaius migrate" >&2
+    fi
+  fi
   # stdin is this script: ask the terminal, and only when there is one.
-  if [ -t 1 ] && (exec </dev/tty) 2>/dev/null; then
+  if [ -n "$migrated" ]; then
+    echo "Your interact install is now galaius; this computer stays connected."
+  elif [ -t 1 ] && (exec </dev/tty) 2>/dev/null; then
     echo "Connecting this computer to your Galaius account…"
     "$bin/galaius" login "$@" </dev/tty || echo "Not connected. Run it again any time:  galaius login"
   elif [ $# -gt 0 ]; then

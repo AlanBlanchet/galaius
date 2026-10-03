@@ -1,4 +1,4 @@
-# Changelog — Interact (VS Code)
+# Changelog — Galaius (VS Code)
 
 The extension version tracks the [interact](https://github.com/AlanBlanchet/interact) server
 version. See the [full changelog](https://github.com/AlanBlanchet/interact/blob/main/CHANGELOG.md).
