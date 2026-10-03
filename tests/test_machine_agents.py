@@ -14,11 +14,13 @@ import hmac
 import logging
 import time
 
-from interact_core import MACHINE_AGENT_REQUESTS, MachineAgentModel, MachineAgentRequest
+from interact_core import MACHINE_AGENT_REQUESTS, MachineAgentModel, MachineAgentRequest, MachineAgentSettings, MachineAgentSettingsUpdate, MachineWorkspaceJob
 from interact.agents import registry as reg
 from interact.agents.host import ConversationRefused
 from interact.machine_agents import LogRing, MachineAgents, MachineSessions, WebRun, WebRuns, interaction_digest, redact
 from interact.machines import MachineConfig, MachineRunner
+from interact.machine_workspaces import CloneFailure, MachineWorkspaces, WorkspaceJobs
+from interact.agents.providers import PROJECT_SETTINGS_OFF
 
 
 @pytest.fixture
@@ -33,14 +35,16 @@ def base(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 def _config(base: Path, **settings) -> MachineConfig:
     return MachineConfig(server_url="http://127.0.0.1:8817", workspace_id=uuid4(), machine_id=uuid4(), token="t" * 40, permission_ceiling="full_access",
-                         working_directory=base, agent_roots=("project",), **settings)
+                         working_directory=base, **{"agent_roots": ("project",), "run_agents": True, **settings})
 
 
 def _agents(base: Path, tmp_path: Path, cli: tuple[str, ...] = ("false",), **settings) -> MachineAgents:
     config = _config(base, **settings)
     return MachineAgents(roots=config.agent_roots_by_name(), permission=config.agent_permission, run_agents=config.run_agents, session="web-test",
                          continue_conversations=config.continue_conversations, answer_approvals=config.answer_approvals,
-                         runs=WebRuns(path=tmp_path / "web-runs.json"), environment={"PATH": os.environ["PATH"]}, cli=cli)
+                         runs=WebRuns(path=tmp_path / "web-runs.json"), environment={"PATH": os.environ["PATH"]}, cli=cli,
+                         workspaces=MachineWorkspaces(roots=config.agent_roots_by_name(), origins=config.clone_origins, jobs=WorkspaceJobs(path=tmp_path / "workspaces.json"),
+                                                      environment={"PATH": os.environ["PATH"]}))
 
 
 def _answer(agents: MachineAgents, request: MachineAgentRequest):
@@ -403,3 +407,75 @@ def test_a_rule_that_cannot_be_read_says_why_instead_of_resolving(monkeypatch: p
     assert roles["audio"]["configured"] and roles["audio"]["models"] == [] and roles["audio"]["reason"]
     assert not roles["sovereign"]["configured"] and roles["sovereign"]["criterion"] == "cap.vlm"
     assert set(roles) == {"image", "component", "video", "audio", "sovereign"}
+
+
+def _signed_settings(config: MachineConfig, version: int, based_on: int, **settings) -> dict:
+    update = MachineAgentSettingsUpdate(machine={"id": config.machine_id}, workspace_id=config.workspace_id, version=version, based_on=based_on,
+                                        settings=MachineAgentSettings(**settings), changed_by=uuid4(), changed_at=datetime.now(UTC), signature="0" * 64)
+    return {**update.model_dump(mode="json"), "signature": MachineRunner.signature(config.token.get_secret_value(), update)}
+
+
+def test_web_settings_apply_once_from_the_revision_the_page_read(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A web version applies only newer than the last, built from this PC's current revision, signed
+    for this machine, below full access, while web control is on here; every outcome is reported."""
+    runner = MachineRunner(config_path=tmp_path / "machine.json")
+    config = _config(base, run_agents=False, agent_roots=())
+    runner.save(config)
+    monkeypatch.setattr(MachineRunner, "audit", staticmethod(lambda log, entry: None))
+
+    class Socket:
+        sent: list[dict] = []
+        async def send(self, text: str) -> None:
+            self.sent.append(json.loads(text)["state"])
+
+    def apply(payload: dict) -> dict:
+        asyncio.run(runner._apply_web_settings(Socket(), config, payload))
+        return Socket.sent[-1]
+
+    first = _signed_settings(config, 1, 0, run_agents=True, agent_roots=("project",), agent_permission="read_only")
+    state = apply(first)
+    assert (state["revision"], state["version"], state["detail"], state["settings"]["agent_roots"]) == (1, 1, "", ["project"])
+    assert apply(first)["detail"].startswith("version 1 is not newer")
+    runner.update(lambda current: current.model_copy(update={"agent_permission": "workspace_write"}))  # a change made on the PC
+    assert "changed on this computer" in apply(_signed_settings(config, 2, 1, run_agents=True))["detail"]
+    assert "full access" in apply(_signed_settings(config, 2, 2, agent_permission="full_access"))["detail"]
+    assert "signature" in apply({**_signed_settings(config, 2, 2), "signature": "0" * 64})["detail"]
+    runner.update(lambda current: current.model_copy(update={"remote_settings": False}))
+    assert "web control" in apply(_signed_settings(config, 3, 2))["detail"]
+    held = runner.load()
+    assert (held.run_agents, held.agent_roots, held.agent_permission, held.settings_revision, held.web_settings_version) == (True, ("project",), "workspace_write", 2, 1)
+
+
+def test_a_start_asks_less_never_more_and_a_cloned_workspace_loads_no_project_settings(base: Path, tmp_path: Path) -> None:
+    seen = tmp_path / "argv.json"
+    recorder = ("python3", "-c", f"import json,os,sys; json.dump([sys.argv[1:], os.environ.get({PROJECT_SETTINGS_OFF!r})], open({str(seen)!r}, 'w')); print({str(uuid4())!r})")
+    agents = _agents(base, tmp_path, cli=recorder, agent_permission="workspace_write")
+    agents.workspaces.jobs.put(MachineWorkspaceJob(id=uuid4(), root="project", name="src", origin="github.com/o/r", state="ready", started_at=datetime.now(UTC)))
+    for asked, path, scope, untrusted in ((None, "", "workspace_write", None), ("read_only", "src/deep", "read_only", "1"), ("full_access", "", "workspace_write", None)):
+        _answer(agents, _request("start", root="project", path=path, role="tester", text="go", **({"permission": asked} if asked else {})))
+        argv, flag = json.loads(seen.read_text())
+        assert argv[argv.index("--permission-mode") + 1] == scope and flag == untrusted
+
+
+@pytest.mark.parametrize(("url", "name", "said"), [
+    ("https://github.com/other/repo", None, "not among the repositories"),
+    ("https://github.com/owner/src", None, "already exists"),
+    ("https://127.0.0.1/owner/repo", "fresh", "local or private address"),
+])
+def test_a_clone_is_refused_before_git_runs(base: Path, tmp_path: Path, url: str, name: str | None, said: str) -> None:
+    agents = _agents(base, tmp_path, clone_origins=("github.com/owner/*", "127.0.0.1/owner/repo"))
+    with pytest.raises(PermissionError, match=said):
+        _answer(agents, _request("workspace_prepare", root="project", url=url, **({"name": name} if name else {})))
+    assert agents.workspaces.jobs.read() == ()
+
+
+@pytest.mark.parametrize(("output", "said"), [
+    ("Host key verification failed.\nfatal: Could not read from remote repository.", "never connected to github.com over SSH"),
+    ("git@github.com: Permission denied (publickey).", "refused this PC's SSH key"),
+    ("fatal: could not read Username for 'https://github.com': terminal prompts disabled", "no saved git sign-in for github.com"),
+    ("remote: Repository not found.\nfatal: repository 'https://github.com/o/r/' not found", "does not exist"),
+    ("fatal: transport 'file' not allowed", "transport other than https or ssh"),
+    ("fatal: something new", "git clone failed: fatal: something new"),
+])
+def test_a_failed_clone_says_why_in_plain_words(output: str, said: str) -> None:
+    assert said in CloneFailure.explain(output, "github.com")

@@ -88,6 +88,17 @@ def machine_agents(state: Literal["on", "off"] | None = None, *,
     print(json.dumps({"run_agents": config.run_agents, "continue_conversations": config.continue_conversations, "answer_approvals": config.answer_approvals}))
 
 
+@machine_app.command(name="remote")
+def machine_remote(state: Literal["on", "off"] | None = None) -> None:
+    """Owner-only, on this machine: whether its page on the web may change its agent settings
+    (agents on/off, agent folders, read_only / workspace_write, the two opt-ins, the repositories
+    it may clone). off is this computer's kill switch: nothing on the server can turn it back on,
+    and agent settings then change only here. No argument prints it."""
+    runner = MachineRunner()
+    config = runner.update(lambda current: current.model_copy(update={"remote_settings": state == "on"})) if state is not None else runner.load()
+    print(json.dumps({"remote_settings": config.remote_settings, "settings_revision": config.settings_revision, "web_settings_version": config.web_settings_version}))
+
+
 @machine_app.command(name="script-roots")
 def machine_script_roots(*roots: str) -> None:
     """Owner-only, on this machine: the folders (relative to its working directory) Script steps

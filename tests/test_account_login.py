@@ -128,28 +128,35 @@ def connected(joining: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return joining
 
 
-@pytest.mark.parametrize("tty, answers, flags, saved", [
-    # (run_agents, agent_roots, continue_conversations, answer_approvals)
-    (True, ["", "", "", ""], {}, (True, ["dev"], True, False)),                    # Enter keeps every current answer
-    (True, ["", "work", "n", "y"], {}, (True, ["work"], False, True)),             # changed: folder replaced, opt-ins flipped
-    (True, ["", "-", "", ""], {}, (True, [], True, False)),                       # - clears the folders
-    (True, ["n"], {}, (False, ["dev"], True, False)),                             # agents off, the rest kept for later
-    (False, [], {"agent_opt_ins": {"answer_approvals": True}}, (True, ["dev"], True, True)),  # a flag changes only what it names
-    (False, [], {"agents": False}, (False, ["dev"], True, False)),
-    (False, [], {}, (True, ["dev"], True, False)),                                # no terminal, no flag: unchanged
+@pytest.mark.parametrize("remote, tty, answers, flags, saved", [
+    # (run_agents, agent_roots, continue_conversations, answer_approvals); remote: the PC takes its web page's settings
+    (False, True, ["", "", "", ""], {}, (True, ["dev"], True, False)),                    # Enter keeps every current answer
+    (False, True, ["", "work", "n", "y"], {}, (True, ["work"], False, True)),             # changed: folder replaced, opt-ins flipped
+    (False, True, ["", "-", "", ""], {}, (True, [], True, False)),                       # - clears the folders
+    (False, True, ["n"], {}, (False, ["dev"], True, False)),                             # agents off, the rest kept for later
+    (True, True, [], {}, (True, ["dev"], True, False)),                                  # web control on: nothing asked, unchanged
+    (True, False, [], {"agent_opt_ins": {"answer_approvals": True}}, (True, ["dev"], True, True)),  # a flag changes only what it names
+    (True, False, [], {"agents": False}, (False, ["dev"], True, False)),
+    (True, False, [], {}, (True, ["dev"], True, False)),                                # no terminal, no flag: unchanged
 ])
-def test_connected_login_asks_only_agents(connected: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
-                                          tty: bool, answers: list[str], flags: dict, saved: tuple) -> None:
+def test_connected_login_asks_nothing_web_control_covers_and_restarts_the_service(connected: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+                                                                                    remote: bool, tty: bool, answers: list[str], flags: dict, saved: tuple) -> None:
+    """Re-running the installer on a connected PC is all an older one needs: its service restarts
+    on the new build, and settings its web page holds are not asked again."""
+    MachineRunner().update(lambda current: current.model_copy(update={"remote_settings": remote}))
     capsys.readouterr()
     replies = iter(answers)
+    calls: list[str] = []
+    for action in ("install", "stop", "start"):
+        monkeypatch.setattr(type(account_login.MACHINE_SERVICE), action, lambda self, action=action: calls.append(action))
     monkeypatch.setattr("sys.stdin.isatty", lambda: tty)
     monkeypatch.setattr("builtins.input", lambda question: next(replies))
     account_login.login(None, allow_runs=False, open_browser=False, **{"yes": False, **flags})
     machine = MachineRunner().load()
     assert (machine.run_agents, list(machine.agent_roots), machine.continue_conversations, machine.answer_approvals) == saved
-    assert next(replies, None) is None
+    assert next(replies, None) is None and calls == ["install", "stop", "start"]
     out = capsys.readouterr().out
-    assert f"already connected to {PUBLIC} as pc2." in out and "Nothing to restart" in out and "Agents: " in out
+    assert f"already connected to {PUBLIC} as pc2." in out and "Background service restarted" in out and "Agents: " in out
 
 
 def test_connected_to_another_server_refused(connected: Path) -> None:

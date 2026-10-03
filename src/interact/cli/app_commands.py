@@ -48,6 +48,7 @@ from interact.models import Model, ModelCapability, _ordinal
 from interact.runtime import _LiveConfig, config
 from interact.server_registry import kill_stale_servers, latest_version, stale_servers
 from interact.server_tool_settings import PORTABLE_ENV, MachineNotice, ServerToolSettings, ToolSettingsConflict
+from interact.server_workspace import ServerWorkspace
 from interact.cli.workspace import WorkspaceCLI
 
 
@@ -875,10 +876,34 @@ def agents_list(foreign: bool = False, session_id: str | None = None, all_sessio
         print("\n* not started by interact")
 
 
-@agents_app.command(name="events")
-def agents_events(run_id: str, limit: int = 30) -> None:
-    """Print what an agent run has been doing. Takes the short id `agents list` prints."""
+def _spawn_on_machine(machine: str, folder: str | None, task: str, *, agent: str | None, provider: str | None, model: str | None, permission: str | None) -> None:
+    """`agents spawn --machine`: the run id of an agent started on another computer, or one line why not."""
+    try:
+        if folder is None:
+            raise ValueError("--machine needs --folder: an agent folder of that computer, or a folder beneath one")
+        workspace = ServerWorkspace.configured()
+        spec = {"text": task, "role": agent, "provider": provider, "model": model, "permission": permission}
+        print(workspace.start_on_machine(workspace.machine(machine), folder, {key: value for key, value in spec.items() if value is not None}))
+    except (ValueError, CatalogConnectionError) as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        raise SystemExit(2) from None
 
+
+@agents_app.command(name="events")
+def agents_events(run_id: str, limit: int = 30, machine: str | None = None) -> None:
+    """Print what an agent run has been doing. Takes the short id `agents list` prints; with
+    --machine, the full id of a run started on that computer (`agents spawn --machine`)."""
+
+    if machine is not None:
+        try:
+            workspace = ServerWorkspace.configured()
+            events = workspace.machine_run_events(workspace.machine(machine), UUID(run_id))
+        except (ValueError, CatalogConnectionError) as error:
+            print(f"ERROR: {error}", file=sys.stderr)
+            raise SystemExit(2) from None
+        for line in events.items[-max(1, limit):]:
+            print(f"  {line.kind:11} {line.text}")
+        return
     resolved = reg.resolve_run_id(run_id) or run_id
     events = reg.read_events(resolved)
     if not events:
@@ -1432,8 +1457,14 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
                  session_id: str | None = None,
                  denied_tools: Annotated[list[str] | None, Parameter(name="--deny-tool")] = None,
                  provider_modes: Annotated[list[str] | None, Parameter(name="--provider-mode")] = None,
-                 quota_window: Annotated[float, Parameter(name="--quota-window")] = CLI_QUOTA_WINDOW) -> None:
+                 quota_window: Annotated[float, Parameter(name="--quota-window")] = CLI_QUOTA_WINDOW,
+                 machine: str | None = None, folder: str | None = None) -> None:
     """Start an agent and return its id immediately, without waiting for it to finish.
+
+    --machine <name or id> starts it on another of your computers instead, through the server, in
+    --folder (an agent folder of that computer, or a folder beneath one); --permission-mode there
+    is read_only or workspace_write, never more than that computer allows. Follow it with
+    `interact agents events <run id> --machine <name>`.
 
     `agents run` streams until the agent is done — right at a terminal, useless to a UI — the
     panel needs the id NOW to show the agent working. Nothing is lost by letting go: the child
@@ -1453,6 +1484,13 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
     supervisor that shows the run at once passes a short one.
     """
 
+
+    if machine is not None:
+        _spawn_on_machine(machine, folder, task, agent=agent, provider=provider, model=model, permission=permission_mode)
+        return
+    if folder is not None:
+        print("ERROR: --folder names a folder on another computer: pass --machine too (here, use --cwd)", file=sys.stderr)
+        raise SystemExit(2)
 
     async def _go():
         handle = await _agent_runner()(

@@ -404,13 +404,25 @@ def login(server: str | None, *, allow_runs: bool, yes: bool, open_browser: bool
 
 
 def _reconfigured(account: AccountLogin, existing: MachineConfig, *, yes: bool, agents: AgentChoice | None) -> None:
-    """This computer stays connected as it is; only its agent settings change."""
+    """This computer stays connected as it is: agent settings the flags name change (asked only
+    when its owner switched web control off here: otherwise they live on its page on the web), and
+    its background service restarts on THIS build, so re-running the installer is all an older
+    computer ever needs to take every later update by itself."""
     print(f"This computer is already connected to {account.server} as {_shown(account.connected_name(existing))}.")
-    if agents is None and sys.stdin.isatty() and not yes:
+    if agents is None and sys.stdin.isatty() and not yes and not existing.remote_settings:
         agents = AgentChoice.asked(existing)
     machine = existing if agents is None else agents.applied(MachineRunner())
     print(AgentChoice.described(machine))
-    print("Nothing to restart: the connected service reads these settings on each request.")
+    if machine.remote_settings:
+        print(f"Its agent settings can also be changed on its page: {account.server}/#data?computer={machine.machine_id}")
+    try:
+        MACHINE_SERVICE.install()
+        MACHINE_SERVICE.stop()
+        MACHINE_SERVICE.start()
+    except ServiceUnavailable as refused:
+        print(f"Could not restart the background service ({refused}). Keep it connected with:  interact machine connect", file=sys.stderr)
+    else:
+        print("Background service restarted on this interact build.")
 
 
 def _login(account: AccountLogin, *, allow_runs: bool, yes: bool, open_browser: bool, agents: AgentChoice | None) -> None:

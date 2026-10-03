@@ -3,10 +3,11 @@ connection, as the editor panel does: start an agent (a role) or a session (a co
 asks before commands) in a folder he allowed, on a model he picks, read what it does, answer what
 it asks, message it, stop it; continue one of his own editor conversations; read the logs.
 
-Everything a request may touch is decided HERE, on the machine, never by the server: the folders
-(`MachineConfig.agent_roots`, set with `interact machine agent-roots`), the permission agents start
-with (`agent_permission`, never bypass unless set here), and the runs a request may read or act on
-(only runs started this way and what they launched: `WebRuns`). Starting and messaging go through
+Everything a request may touch is checked HERE, on the machine, against its CURRENT settings: the
+folders (`MachineConfig.agent_roots`), the permission agents start with (`agent_permission`; a
+start may ask for less, never more; bypass only when set on the PC itself), and the runs a request
+may read or act on (only runs started this way and what they launched: `WebRuns`). The owner sets
+those settings on the PC or on its web page (`MachineAgentSettings`, while `remote_settings` is on). Starting and messaging go through
 the launcher's own CLI (`interact agents spawn / send`) in a child process given the scrubbed
 environment explicitly, so no request ever changes this process's environment."""
 
@@ -25,7 +26,7 @@ import threading
 import time
 from collections import deque
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, get_args
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -33,13 +34,14 @@ from pydantic import BaseModel, ConfigDict, Field
 from interact_core import (
     MACHINE_AGENT_TAIL, AgentAnswerRequest, AgentContinueRequest, AgentFoldersRequest, AgentInteraction, AgentLogsRequest, AgentOptionsRequest,
     AgentProviderState, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
-    MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, MachineAgentSession, MachineFileEntry,
+    MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, MachineAgentSession, MachineFileEntry, WorkspacePrepareRequest, WorkspacesRequest,
 )
 from interact.agents import registry as reg
 from interact.agents.host import ConversationHost, ConversationRefused
-from interact.agents.providers import PROVIDERS
+from interact.agents.providers import PROJECT_SETTINGS_OFF, PROVIDERS
 from interact.agents.run import LAUNCH_STAMP, launch_editor_turn, load_policy, rank_candidates
 from interact.file_lock import exclusive
+from interact.machine_workspaces import MachineWorkspaces
 
 logger = logging.getLogger(__name__)
 
@@ -232,6 +234,8 @@ class MachineAgents(BaseModel):
     runs: WebRuns
     environment: dict[str, str]
     sessions: MachineSessions | None = None
+    #: The repositories prepared here from the web (`workspace_prepare`).
+    workspaces: MachineWorkspaces | None = None
     logs: LogRing | None = None
     #: Where the editor keeps its conversations (Claude Code: one JSONL file per conversation).
     editor_projects: Path = Field(default_factory=lambda: Path.home() / ".claude" / "projects")
@@ -288,6 +292,29 @@ class MachineAgents(BaseModel):
                 return await asyncio.to_thread(self._settings, request)
             case AgentProviderSwitchRequest():
                 return await asyncio.to_thread(self._switch_provider, request)
+            case WorkspacePrepareRequest():
+                job = await asyncio.to_thread(self._workspaces().prepare, request)
+                return MachineAgentAnswer(request_id=request.id, workspaces=(job,), detail=f"preparing {job.root}/{job.name}")
+            case WorkspacesRequest():
+                return MachineAgentAnswer(request_id=request.id, workspaces=self._workspaces().jobs.read())
+
+    def _workspaces(self) -> MachineWorkspaces:
+        if self.workspaces is None:
+            raise PermissionError("this computer does not prepare workspaces")
+        return self.workspaces
+
+    #: Least first (the contract's own order): a start may ask for less than the PC's permission, never more.
+    SCOPES: ClassVar[tuple[AgentTouchScope, ...]] = get_args(AgentTouchScope)
+
+    def scope(self, asked: AgentTouchScope | None) -> AgentTouchScope:
+        """What a run started now may do: `asked`, capped by this PC's permission."""
+        return self.permission if asked is None else min(asked, self.permission, key=self.SCOPES.index)
+
+    def environment_in(self, folder: Path) -> dict[str, str]:
+        """The child's environment for an agent working in `folder`: a workspace cloned from the
+        web loads none of its own agent settings (its hooks would run code its owner never read)."""
+        untrusted = self.workspaces is not None and self.workspaces.prepared(folder)
+        return {**self.environment, PROJECT_SETTINGS_OFF: "1"} if untrusted else self.environment
 
     def _kind(self, run_id: UUID) -> AgentRunKind:
         return next((item.kind for item in self.runs.read() if item.run_id == run_id), "agent")
@@ -457,12 +484,12 @@ class MachineAgents(BaseModel):
                 said.append(json.dumps({"kind": "text", "text": text[:20000], "at": moment}))
         return tuple(said[-keep:])
 
-    def _run_cli(self, *arguments: str, timeout: float) -> subprocess.CompletedProcess[str]:
+    def _run_cli(self, *arguments: str, timeout: float, environment: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
         """The CLI's own exit and output. Output goes to files, never pipes: the agent it starts
         outlives it and inherits its descriptors, and reading a pipe to its end would wait for the
         AGENT to finish (a start answered only once the run was over)."""
         with tempfile.TemporaryFile("w+") as out, tempfile.TemporaryFile("w+") as err:
-            done = subprocess.run([*self.cli, *arguments], env=self.environment, stdin=subprocess.DEVNULL, stdout=out, stderr=err, timeout=timeout, check=False)
+            done = subprocess.run([*self.cli, *arguments], env=environment or self.environment, stdin=subprocess.DEVNULL, stdout=out, stderr=err, timeout=timeout, check=False)
             out.seek(0)
             err.seek(0)
             return subprocess.CompletedProcess(done.args, done.returncode, out.read(), err.read())
@@ -491,10 +518,10 @@ class MachineAgents(BaseModel):
             # The launcher runs a role on what its own rule picks (a per-run model is never
             # honoured): refused, never silently replaced.
             raise PermissionError("an agent runs on the model its rule picks; change the rule on its Agents page, or start a session to choose the model")
-        options = ["--agent", str(request.role), "--cwd", str(folder), "--permission-mode", self.permission, "--session-id", self.session, "--quota-window", "4",
+        options = ["--agent", str(request.role), "--cwd", str(folder), "--permission-mode", self.scope(request.permission), "--session-id", self.session, "--quota-window", "4",
                    *(["--provider", request.provider] if request.provider is not None else []), *([f"--model={request.model}"] if request.model else [])]
         # "--" ends the options: a brief starting with "-" (a markdown bullet, "--help") is the brief.
-        done = self._run_cli("agents", "spawn", *options, "--", request.text, timeout=120)
+        done = self._run_cli("agents", "spawn", *options, "--", request.text, timeout=120, environment=self.environment_in(folder))
         output = done.stdout.strip().splitlines()
         try:
             run_id = UUID(output[-1].strip()) if done.returncode == 0 and output else None
@@ -509,7 +536,7 @@ class MachineAgents(BaseModel):
         run = self._require_run(request.run_id)
         if self._kind(request.run_id) == "continued":
             return self._continue_turn(run, request.text, request_id=request.id)
-        done = self._run_cli("agents", "send", "--", str(request.run_id), request.text, timeout=60)
+        done = self._run_cli("agents", "send", "--", str(request.run_id), request.text, timeout=60, environment=self.environment_in(Path(run.cwd)))
         if done.returncode != 0:
             raise RuntimeError(self._said(done.stdout + "\n" + done.stderr) or f"not delivered (exit {done.returncode})")
         return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=self._first_line(done.stdout))

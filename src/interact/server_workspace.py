@@ -10,7 +10,7 @@ from urllib.parse import quote, urlencode
 from uuid import UUID, uuid4
 
 import httpx
-from interact_core import AgentGraph, AgentGraphUpdate, AgentRevision, AgentRevisionRef, ArtifactRef, CompanyProfile, ConfiguredModelRef, ReleaseInfo, TriggerInvocation, WorkflowEvent, WorkflowRevision, WorkflowRevisionRef, WorkflowRun
+from interact_core import AgentGraph, AgentGraphUpdate, AgentRevision, AgentRevisionRef, AgentStartSpec, ArtifactRef, CompanyProfile, ConfiguredModelRef, MachineSummary, ReleaseInfo, TriggerInvocation, WorkflowEvent, WorkflowRevision, WorkflowRevisionRef, WorkflowRun
 from interact_core.accounts import Bootstrap
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
@@ -63,6 +63,24 @@ class AgentEdit(BaseModel):
             **current.model_dump(), **changes, "revision": uuid4(),
             "parent_revision": current.revision, "created_at": datetime.now(UTC),
         })
+
+
+class RemoteRunLine(BaseModel):
+    """One line of a run on another computer, as its page shows it (said / final / step / error ...)."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+    kind: str
+    text: str = ""
+    at: float = 0.0
+
+
+class RemoteRunEvents(BaseModel):
+    """A window of a run on another computer: its lines after a cursor, and where the next starts."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+    run_id: UUID
+    cursor: int | None = None
+    items: tuple[RemoteRunLine, ...] = ()
 
 
 class ServerWorkspace(ServerPrompts):
@@ -294,6 +312,47 @@ class ServerWorkspace(ServerPrompts):
                     raise CatalogAuthenticationError(f"Script approval refused (HTTP {response.status_code}).")
                 if not 200 <= response.status_code < 300:
                     raise CatalogConnectionError(f"Script approval rejected (HTTP {response.status_code}).")
+
+    def owner_call(self, method: Literal["GET", "POST"], path: str, body: BaseModel | None = None, *, timeout: float = 150, transport=None) -> bytes:
+        """One call a computer's OWNER makes on the workspace (`path` below it): a signed-in session
+        with its CSRF token, never the read-only key; a refusal raises with the server's own words."""
+        if self.connection.auth_mode == "token":
+            raise CatalogAuthenticationError("This connection is a read-only key: act on a computer from a signed-in session (interact login on the owner's computer).")
+        with self.session(transport=transport) as client:
+            headers = {} if method == "GET" else {"Content-Type": "application/json", "x-csrf-token": Bootstrap.model_validate_json(self.connection.request(client, "GET", "/v1/bootstrap")).csrf_token}
+            response = client.request(method, f"{self.workspace_endpoint}{path}", content=body.model_dump_json() if body is not None else None, headers=headers, timeout=timeout)
+            if not response.is_success:
+                try:
+                    said = response.json()
+                    reason = said.get("message") or said.get("detail") or said.get("code")
+                except (ValueError, AttributeError):
+                    reason = None
+                raise CatalogConnectionError(f"{reason or 'refused'} (HTTP {response.status_code})")
+            return response.content
+
+    def machine(self, which: str, *, transport=None) -> MachineSummary:
+        """The connected (not revoked) computer named `which`, or with that id."""
+        machines = TypeAdapter(tuple[MachineSummary, ...]).validate_json(self.owner_call("GET", "/machines", transport=transport))
+        found = [machine for machine in machines if machine.state != "revoked" and (str(machine.id) == which or machine.name == which)]
+        if len(found) != 1:
+            names = ", ".join(sorted(machine.name for machine in machines if machine.state != "revoked"))
+            raise CatalogConnectionError(f"{'no' if not found else 'more than one'} computer named {which!r} (connected: {names or 'none'})")
+        return found[0]
+
+    def start_on_machine(self, machine: MachineSummary, folder: str, spec: dict[str, object], *, transport=None) -> UUID:
+        """Starts an agent on `machine` in `folder` ("<agent folder>/<path beneath it>"): the agent
+        folder is the longest of the computer's own that `folder` starts with."""
+        roots = json.loads(self.owner_call("GET", f"/machines/{machine.id}/agents/folders", transport=transport)).get("roots", [])
+        parts = folder.strip("/").split("/")
+        root = next((candidate for size in range(len(parts), 0, -1) if (candidate := "/".join(parts[:size])) in roots), None)
+        if root is None:
+            raise CatalogConnectionError(f"{folder!r} is not inside an agent folder of {machine.name} (its agent folders: {', '.join(roots) or 'none'})")
+        start = AgentStartSpec(root=root, path="/".join(parts[len(root.split("/")):]), **spec)
+        return UUID(json.loads(self.owner_call("POST", f"/machines/{machine.id}/agents", start, transport=transport))["run_id"])
+
+    def machine_run_events(self, machine: MachineSummary, run_id: UUID, cursor: int | None = None, *, transport=None) -> RemoteRunEvents:
+        query = f"?cursor={cursor}" if cursor is not None else ""
+        return RemoteRunEvents.model_validate_json(self.owner_call("GET", f"/machines/{machine.id}/agents/{run_id}/events{query}", transport=transport))
 
     def link(self, view: Literal["agents", "workflows", "company", "personal", "connections", "prompts", "version", "assistant"], identity: UUID | None = None):
         query = urlencode({"agent" if view == "agents" else "workflow": str(identity)}) if identity and view in {"agents", "workflows"} else ""

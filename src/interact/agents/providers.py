@@ -37,6 +37,11 @@ from interact.agents.vocabulary import ApprovalIntent, TouchScope, ThinkingLevel
 from interact.models import Model
 from interact.processes import run_isolated_process
 
+#: Set (to anything) in the environment of an agent working in a folder whose own agent settings
+#: must not load - a workspace cloned from the web: its hooks and permission rules are code and
+#: policy its owner never read. Children inherit it, so a subagent there obeys it too.
+PROJECT_SETTINGS_OFF = "INTERACT_PROJECT_SETTINGS_OFF"
+
 #: A transcript is read by a human, and a 50k-char tool result is not read — it is scrolled past,
 #: while bloating every refresh that parses the file. Keep the head, say what was cut.
 _CLIP = 2000
@@ -764,12 +769,17 @@ class ClaudeCodeProvider(AgentProvider):
         argv += self.role_arguments(agent, agent_prompt, allowed_tools, denied_tools)
         if mcp_config:
             argv += ["--mcp-config", mcp_config]
-        argv += self._permission_flag(permission_mode)
+        argv += self._permission_flag(permission_mode) + self._setting_sources()
         if reasoning is not None:
             argv += ["--effort", self.provider_thinking_level(reasoning)]
         # The prompt goes LAST, after "--": one starting with "-" (a markdown bullet) is the
         # prompt, never an option Claude refuses ("unknown option").
         return [*argv, "--", task]
+
+    @staticmethod
+    def _setting_sources() -> list[str]:
+        """Only the user's own settings when the folder's must not load (`PROJECT_SETTINGS_OFF`)."""
+        return ["--setting-sources", "user"] if os.environ.get(PROJECT_SETTINGS_OFF) else []
 
     def definition_path(self, agent: str) -> Path | None:
         catalog = AgentCatalog.active()
@@ -804,7 +814,7 @@ class ClaudeCodeProvider(AgentProvider):
             *(["--fork-session", "--session-id", fork_to] if fork_to else []),
             "--output-format", "stream-json",
             "--verbose",
-        ] + (["--model", model] if model else []) + self._permission_flag(permission_mode) + self.role_arguments(agent, agent_prompt, allowed_tools, denied_tools) + (["--mcp-config", mcp_config] if mcp_config else []) + ["--", message]
+        ] + (["--model", model] if model else []) + self._permission_flag(permission_mode) + self._setting_sources() + self.role_arguments(agent, agent_prompt, allowed_tools, denied_tools) + (["--mcp-config", mcp_config] if mcp_config else []) + ["--", message]
 
     #: Claude's two usage dialects: ``message.usage`` / ``result.usage`` (snake) and
     #: ``result.modelUsage[model]`` (camel). Each reports the UNCACHED prompt remainder, cache

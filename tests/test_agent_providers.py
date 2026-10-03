@@ -20,6 +20,7 @@ import pytest
 
 from interact.agents.events import TOKEN_FIELDS, AgentEvent, UsageLedger
 from interact.agents.providers import (
+    PROJECT_SETTINGS_OFF,
     PROVIDERS, ClaudeCodeProvider, CodexProvider, UnsupportedToolPolicy, provider_for,
 )
 from interact.models import Model
@@ -109,6 +110,17 @@ def test_native_claude_model_id_uses_cli_version_spelling_without_a_model_pin():
         provider="anthropic", id="claude-opus-9.9", capabilities=set(),
     )
     assert provider.model_id_for(model) == "claude-opus-9-9"
+
+
+@pytest.mark.parametrize("off", [False, True])
+def test_claude_loads_no_folder_settings_where_they_must_not_load(monkeypatch: pytest.MonkeyPatch, off: bool) -> None:
+    """A workspace cloned from the web: its own hooks and permission rules never load, on a start or a resume."""
+    if off:
+        monkeypatch.setenv(PROJECT_SETTINGS_OFF, "1")
+    provider = ClaudeCodeProvider()
+    for argv in (provider.command("t", cwd="/tmp", model=None, mcp_config=None, run_id="r"), provider.resume_command("r", "next")):
+        assert (argv[argv.index("--setting-sources") + 1] == "user") if off else "--setting-sources" not in argv
+        assert argv[-2:] in (["--", "t"], ["--", "next"])
 
 
 def test_codex_uses_only_documented_approval_flags():

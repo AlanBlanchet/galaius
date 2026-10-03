@@ -27,15 +27,16 @@ from urllib.parse import urlencode, urlsplit, urlunsplit
 from uuid import UUID, uuid4
 
 import websockets
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, ValidationError, field_validator, model_validator
 
-from interact_core import MACHINE_AGENT_REQUESTS, MACHINE_MODELS, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, MachineAgentAnswer, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachineRuntime, ScriptFile, ScriptLanguage, UserModelOrigin
+from interact_core import MACHINE_AGENT_REQUESTS, MACHINE_MODELS, MachineAgentSettings, MachineAgentSettingsState, MachineAgentSettingsUpdate, PlacePath, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, MachineAgentAnswer, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachineRuntime, ScriptFile, ScriptLanguage, UserModelOrigin
 from interact import USER_AGENT
 from interact.agents.catalog import AgentCatalog
 from interact.agents import providers as agent_providers
 from interact.file_lock import exclusive
 from interact.private_files import PRIVATE_FILES
 from interact.machine_agents import LogRing, MachineAgents, MachineSessions, WebRuns, redact, secret_values
+from interact.machine_workspaces import MachineWorkspaces, WorkspaceJobs
 from interact.agents.events import AgentEvent
 from interact.agents.run import run_agent
 from interact.agents import registry as reg
@@ -70,9 +71,9 @@ class MachineConfig(BaseModel):
     #: workflow file step can write beside a script it would then run.
     script_roots: tuple[str, ...] = Field(default=(), max_length=32)
     #: Whether agent steps run here. An agent CLI on this computer can read any file its user can,
-    #: whatever the file roots, so `interact login` asks its owner once (default off); changed here
-    #: later (`interact machine agents on|off`), never from the server.
-    run_agents: bool = True
+    #: whatever the file roots: off until its owner turns it on (`interact login`, `interact
+    #: machine agents on|off`, or the PC's page on the web while `remote_settings` is on).
+    run_agents: bool = False
     #: The folders the owner lets agents be STARTED in from the web (any plain folder beneath one),
     #: relative to `working_directory` - set here (`interact machine agent-roots`), none by default.
     #: A file root's rules, and never overlapping a file or script root: no workflow file step can
@@ -80,7 +81,7 @@ class MachineConfig(BaseModel):
     #: point, not a fence: an agent CLI reads whatever its user can.
     agent_roots: tuple[str, ...] = Field(default=(), max_length=32)
     #: What an agent started from the web may do: never unrestricted unless its owner sets it here
-    #: (`interact machine agent-permission full_access`); the server cannot raise it.
+    #: (`interact machine agent-permission full_access`); the web sets read_only / workspace_write.
     agent_permission: AgentTouchScope = "workspace_write"
     #: Whether the web may continue the owner's own editor conversations here (a forked copy in
     #: an agent root; the editor's session is never written) — set here only, off by default.
@@ -89,6 +90,19 @@ class MachineConfig(BaseModel):
     #: change): accept / decline only — set here only, off by default. An accept can run what the
     #: session's sandbox would block, so the server never decides this alone.
     answer_approvals: bool = False
+    #: The repositories the web may have this PC clone into an agent folder (`host/owner/repo`
+    #: or `host/owner/*`), none by default.
+    clone_origins: tuple[str, ...] = Field(default=(), max_length=32)
+    #: Whether the owner's web page may change the agent settings above (`MachineAgentSettings`):
+    #: this PC's own kill switch (`interact machine remote off`), which nothing on the server can
+    #: turn back on.
+    remote_settings: bool = True
+    #: Counts every change of the agent settings, from the web or here: a web change is applied
+    #: only when it was built from this revision, so it never undoes a change made here since.
+    settings_revision: int = Field(default=0, ge=0)
+    #: The last web version applied here (`MachineAgentSettingsUpdate.version`): older or equal
+    #: ones (a replay, a late delivery) are never applied.
+    web_settings_version: int = Field(default=0, ge=0)
     #: How long a vision model stays loaded after a step used it (0: loaded per step, GPU memory
     #: freed at once). Trades held GPU memory for ~6 s saved on each next step on that model.
     model_keep_warm_seconds: int = Field(default=300, ge=0, le=86400)
@@ -137,6 +151,38 @@ class MachineConfig(BaseModel):
                 usable.append(root)
         return tuple(usable), tuple(refused)
 
+    def agent_settings(self) -> tuple[MachineAgentSettings, tuple[str, ...]]:
+        """(the agent settings as the web reads and edits them, each root they leave out and why)."""
+        roots, refused = [], []
+        for name in self.agent_roots:
+            try:
+                roots.append(PLACE_PATH.validate_python(name))
+            except ValidationError:
+                refused.append(f"{name}: not a plain folder path below the working directory")
+        refused += [f"{name}: overlaps a file or script root, or is hidden, a link, the home folder or interact's own" for name in self.usable_agent_roots()[1]]
+        settings = MachineAgentSettings(run_agents=self.run_agents, agent_roots=tuple(roots), agent_permission=self.agent_permission,
+                                        continue_conversations=self.continue_conversations, answer_approvals=self.answer_approvals, clone_origins=self.clone_origins)
+        return settings, tuple(dict.fromkeys(refused))
+
+    def agent_state(self, detail: str = "") -> MachineAgentSettingsState:
+        settings, refused = self.agent_settings()
+        return MachineAgentSettingsState(revision=self.settings_revision, version=self.web_settings_version, remote=self.remote_settings,
+                                         settings=settings, refused=refused, detail=detail[:400])
+
+    def with_web_settings(self, update: MachineAgentSettingsUpdate) -> Self:
+        """This config with a web version applied, or PermissionError naming why not (checked
+        against what this PC holds NOW, never what the server believes)."""
+        if not self.remote_settings:
+            raise PermissionError("web control of agent settings is off on this computer (interact machine remote on)")
+        if update.version <= self.web_settings_version:
+            raise PermissionError(f"version {update.version} is not newer than {self.web_settings_version}, applied already")
+        if update.based_on != self.settings_revision:
+            raise PermissionError("these settings changed on this computer since the page read them; reload it")
+        if update.settings.agent_permission == "full_access":
+            raise PermissionError("full access is set on this computer itself, never from the web")
+        values = update.settings.model_dump(include=set(MachineAgentSettings.model_fields))
+        return self.model_copy(update={**values, "settings_revision": self.settings_revision + 1, "web_settings_version": update.version})
+
     def reported_file_roots(self) -> list[str]:
         """The usable roots as the server shows them: paths relative to the working directory."""
         base = self.working_directory.resolve()
@@ -160,6 +206,7 @@ class MachineConfig(BaseModel):
 
 
 logger = logging.getLogger(__name__)
+PLACE_PATH: TypeAdapter[str] = TypeAdapter(PlacePath)
 
 
 class MachineFiles(BaseModel):
@@ -714,6 +761,9 @@ class MachineRunner:
         self._server_restarted = False
         self._log_ring = LogRing()
         logging.getLogger("interact").addHandler(self._log_ring)
+        #: Why the last web version of the agent settings was not applied (shown on the PC's page).
+        self._settings_detail = ""
+        self._workspace_jobs = WorkspaceJobs(path=self.config_path.with_name("machine-workspaces.json"))
 
     def _vision_worker(self, config: MachineConfig) -> VisionWorker:
         if self._vision is None or self._vision.keep_warm != config.model_keep_warm_seconds:
@@ -744,9 +794,13 @@ class MachineRunner:
             self._save(config)
 
     def update(self, change: Callable[[MachineConfig], MachineConfig]) -> MachineConfig:
-        """Read, merge and atomically replace under the same lock as enrollment and owner edits."""
+        """Read, merge and atomically replace under the same lock as enrollment and owner edits. A
+        change of the agent settings made here counts one more `settings_revision`."""
         with self._config_lock():
-            config = MachineConfig.model_validate(change(self.load()).model_dump())
+            before = self.load()
+            config = MachineConfig.model_validate(change(before).model_dump())
+            if config.settings_revision == before.settings_revision and config.agent_settings()[0] != before.agent_settings()[0]:
+                config = config.model_copy(update={"settings_revision": before.settings_revision + 1})
             self._save(config)
             return config
 
@@ -764,6 +818,7 @@ class MachineRunner:
     async def connect(self, config: MachineConfig) -> None:
         # Exact secrets masked in every kept log line from the first one on (`LogRing`).
         self._log_ring.secrets = (config.token.get_secret_value(), *secret_values(self._safe_environment()))
+        self._workspace_jobs.settle_interrupted()
         delay_index = 0
         while True:
             endpoint = self._channel_url(config.server_url)
@@ -782,7 +837,7 @@ class MachineRunner:
                     if self._server_restarted:
                         self._server_restarted = False
                         RuntimeStore.default().request_check()
-                    await socket.send(json.dumps({"type": "hello", "features": self.features(), "runtimes": self._runtimes(config), "accelerators": self._accelerators(), "functions": self._functions(), "resources": self._resources(config.working_directory), "file_roots": self._file_roots(config)}))
+                    await socket.send(json.dumps({"type": "hello", "features": self.features(), **self._beat(config)}))
                     if await self._serve(socket, config):
                         return
             except EnrollmentChanged:
@@ -855,7 +910,7 @@ class MachineRunner:
         between the look and the connection closing)."""
         if self._quiet is None:
             await asyncio.Event().wait()
-        await self._quiet.watch(lambda: not commands.empty() or bool(self._executing) or bool(self._queries) or (self._sessions is not None and self._sessions.busy), every=1)
+        await self._quiet.watch(lambda: not commands.empty() or bool(self._executing) or bool(self._queries) or (self._sessions is not None and self._sessions.busy) or MachineWorkspaces.busy(), every=1)
 
     async def _receive(self, socket, config: MachineConfig, commands: asyncio.Queue[MachineCommand | None]) -> bool:
         async for payload in socket:
@@ -867,6 +922,10 @@ class MachineRunner:
                 answer = (self._answer_file_query(socket, config, response["query"]) if response["type"] == "file_query"
                           else self._answer_data_request(socket, config, response["request"]))
                 task = asyncio.create_task(answer)
+                self._queries.add(task)
+                task.add_done_callback(self._query_finished)
+            elif response.get("type") == "agent_settings":
+                task = asyncio.create_task(self._apply_web_settings(socket, config, response.get("settings")))
                 self._queries.add(task)
                 task.add_done_callback(self._query_finished)
             elif response.get("type") == "agent_request":
@@ -884,7 +943,7 @@ class MachineRunner:
 
     #: What this runner can do beyond the base protocol (the server's `MachineChannel.require_feature`):
     #: file queries browse the owner's script roots; a script file runs from them.
-    FEATURES: ClassVar[tuple[str, ...]] = ("file_query", "script_file", "file_read", "agent_control", "agent_settings")
+    FEATURES: ClassVar[tuple[str, ...]] = ("file_query", "script_file", "file_read", "agent_control", "agent_settings", "web_settings", "workspaces", "start_permission")
 
     @classmethod
     def features(cls) -> list[str]:
@@ -892,7 +951,7 @@ class MachineRunner:
         return [*cls.FEATURES, *(f"script:{language}" for language in ScriptRuntime.languages(cls._safe_environment().get("PATH")))]
 
     @staticmethod
-    def signature(token: str, message: MachineCommand | MachineFileQuery | MachineDataRequest | MachineAgentRequest) -> str:
+    def signature(token: str, message: MachineCommand | MachineFileQuery | MachineDataRequest | MachineAgentRequest | MachineAgentSettingsUpdate) -> str:
         """What the server signs `message` with for the machine holding `token`: HMAC-SHA256 of its
         canonical JSON (sorted keys, no spaces, `signature` left out) keyed by SHA-256(token)."""
         unsigned = message.model_dump(mode="json", exclude={"signature"})
@@ -957,6 +1016,39 @@ class MachineRunner:
             answer = MachineDataAnswer(request_id=request.id, error=reason[:400] or type(error).__name__)
         await socket.send(json.dumps({"type": "data_answer", "result": answer.model_dump(mode="json")}))
 
+    async def _apply_web_settings(self, socket, config: MachineConfig, payload: object) -> None:
+        """The owner's web page changing this PC's agent settings (`MachineAgentSettingsUpdate`):
+        signed with this machine's key, for this machine, newer than the last applied, built from
+        this PC's current revision, and only while `remote_settings` is on - checked against what
+        the machine file holds NOW. Applied or not, the PC answers its state and logs it here."""
+        try:
+            update = MachineAgentSettingsUpdate.model_validate(payload)
+        except ValidationError:
+            logger.warning("malformed agent settings dropped")
+            return
+        before = self._current_config(config)
+        try:
+            if update.machine.id != config.machine_id or update.workspace_id != config.workspace_id:
+                raise PermissionError("agent settings target another machine")
+            if not hmac.compare_digest(self.signature(config.token.get_secret_value(), update), update.signature):
+                raise PermissionError("agent settings signature is invalid")
+            def apply(current: MachineConfig) -> MachineConfig:
+                self._same_enrollment(current, config)
+                return current.with_web_settings(update)
+            after = await asyncio.to_thread(self.update, apply)
+            self._settings_detail = ""
+            was, now = before.agent_settings()[0].model_dump(mode="json"), after.agent_settings()[0].model_dump(mode="json")
+            changed = {key: [was[key], now[key]] for key in was if was[key] != now[key]}
+            logger.info("agent settings version %s from the web applied: %s", update.version, ", ".join(sorted(changed)) or "no change")
+            error = None
+        except PermissionError as refusal:
+            self._settings_detail = error = str(refusal)
+            changed = {}
+            logger.warning("agent settings version %s refused: %s", update.version, refusal)
+        self.audit("agents.log", {"op": "settings", "version": update.version, "changed_by": str(update.changed_by), "changed_at": update.changed_at.isoformat(), "changed": changed, "error": error})
+        state = self._current_config(config).agent_state(self._settings_detail)
+        await socket.send(json.dumps({"type": "agent_settings_state", "state": state.model_dump(mode="json")}))
+
     async def _answer_agent_request(self, socket, config: MachineConfig, payload: object) -> None:
         """The owner driving agents here from the web (`MachineAgents`): checked like a command (this
         machine, this workspace, signed, not expired; an action's id accepted once), answered from
@@ -982,7 +1074,9 @@ class MachineRunner:
             agents = MachineAgents(roots=current.agent_roots_by_name(), permission=current.agent_permission, run_agents=current.run_agents,
                                    continue_conversations=current.continue_conversations, answer_approvals=current.answer_approvals, session=f"web-{current.machine_id}",
                                    runs=WebRuns(path=self.config_path.with_name("machine-agent-runs.json")), environment=self._safe_environment(),
-                                   sessions=self._sessions, logs=self._log_ring)
+                                   sessions=self._sessions, logs=self._log_ring,
+                                   workspaces=MachineWorkspaces(roots=current.agent_roots_by_name(), origins=current.clone_origins, jobs=self._workspace_jobs,
+                                                                environment={**self._safe_environment(), **{key: os.environ[key] for key in ("SSH_AUTH_SOCK",) if key in os.environ}}))
             answer = await agents.answer(request)
             # Reading (the page polls every few seconds) stays out of the owner's log; actions go in.
             run_id = answer.run_id or getattr(request, "run_id", None)
@@ -1520,12 +1614,15 @@ class MachineRunner:
     async def _heartbeat(self, socket, config: MachineConfig) -> None:
         while True:
             await asyncio.sleep(self.heartbeat_seconds)
-            await socket.send(json.dumps({"type": "heartbeat", "runtimes": self._runtimes(config), "accelerators": self._accelerators(), "functions": self._functions(), "resources": self._resources(config.working_directory), "file_roots": self._file_roots(config)}))
+            await socket.send(json.dumps({"type": "heartbeat", **self._beat(config)}))
 
-    def _file_roots(self, connected: MachineConfig) -> list[str]:
-        """The folders file nodes may use, as the machine file on disk says NOW: an owner's
-        `interact machine file-roots` change reaches the server with the next beat."""
-        return self._current_config(connected).reported_file_roots()
+    def _beat(self, connected: MachineConfig) -> dict[str, object]:
+        """What every hello and heartbeat says: this PC's runtimes, resources, and its file roots and
+        agent settings as its machine file says NOW (a change made here reaches the server with the
+        next beat)."""
+        current = self._current_config(connected)
+        return {"runtimes": self._runtimes(current), "accelerators": self._accelerators(), "functions": self._functions(), "resources": self._resources(current.working_directory),
+                "file_roots": current.reported_file_roots(), "agent_settings": current.agent_state(self._settings_detail).model_dump(mode="json")}
 
     @staticmethod
     def _channel_url(server_url: str) -> str:

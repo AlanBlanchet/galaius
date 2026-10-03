@@ -504,9 +504,10 @@ def test_the_runner_reports_the_file_roots_it_accepts_as_they_are_now(tmp_path: 
     connected = MachineConfig(server_url="http://127.0.0.1:8817", workspace_id=uuid4(), machine_id=uuid4(), token="t" * 40, permission_ceiling="read_only", working_directory=root,
                               file_roots=("interact-files", "exports/pc", "../outside", ".interact/x", "linked"))
     runner.save(connected)
-    assert runner._file_roots(connected) == ["interact-files", "exports/pc"]
-    runner.save(connected.model_copy(update={"file_roots": ("exports",)}))
-    assert runner._file_roots(connected) == ["exports"]
+    assert runner._beat(connected)["file_roots"] == ["interact-files", "exports/pc"]
+    runner.update(lambda current: current.model_copy(update={"file_roots": ("exports",), "agent_roots": ("exports/pc",)}))
+    beat = runner._beat(connected)
+    assert beat["file_roots"] == ["exports"] and beat["agent_settings"]["revision"] == 1 and beat["agent_settings"]["refused"][0].startswith("exports/pc: overlaps")
 
 
 def _signed(config, message):
