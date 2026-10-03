@@ -101,9 +101,13 @@ def test_only_runs_started_from_the_web_are_reachable(base: Path, tmp_path: Path
         _answer(agents, _request("stop", run_id=foreign))
 
 
-def test_off_switch_and_missing_roots_refuse_everything(base: Path, tmp_path: Path) -> None:
+def test_off_switch_and_missing_roots_refuse_everything_but_reading_and_stopping(base: Path, tmp_path: Path) -> None:
+    off = _agents(base, tmp_path, run_agents=False)
     with pytest.raises(PermissionError, match="agents are off"):
-        _answer(_agents(base, tmp_path, run_agents=False), _request("folders"))
+        _answer(off, _request("folders"))
+    assert _answer(off, _request("runs")).runs == ()  # what the web started stays readable and stoppable
+    with pytest.raises(PermissionError, match="not started from the web"):
+        _answer(off, _request("stop", run_id=str(uuid4())))
     empty = _agents(base, tmp_path).model_copy(update={"roots": {}})
     with pytest.raises(PermissionError, match="no agent folders"):
         _answer(empty, _request("folders"))
@@ -411,7 +415,7 @@ def test_a_rule_that_cannot_be_read_says_why_instead_of_resolving(monkeypatch: p
 
 def _signed_settings(config: MachineConfig, version: int, based_on: int, **settings) -> dict:
     update = MachineAgentSettingsUpdate(machine={"id": config.machine_id}, workspace_id=config.workspace_id, version=version, based_on=based_on,
-                                        settings=MachineAgentSettings(**settings), changed_by=uuid4(), changed_at=datetime.now(UTC), signature="0" * 64)
+                                        settings=settings, changed_by=uuid4(), changed_at=datetime.now(UTC), signature="0" * 64)
     return {**update.model_dump(mode="json"), "signature": MachineRunner.signature(config.token.get_secret_value(), update)}
 
 
@@ -435,15 +439,21 @@ def test_web_settings_apply_once_from_the_revision_the_page_read(base: Path, tmp
     first = _signed_settings(config, 1, 0, run_agents=True, agent_roots=("project",), agent_permission="read_only")
     state = apply(first)
     assert (state["revision"], state["version"], state["detail"], state["settings"]["agent_roots"]) == (1, 1, "", ["project"])
-    assert apply(first)["detail"].startswith("version 1 is not newer")
+    assert apply(first)["detail"].startswith("version 1 is not newer") and Socket.sent[-1]["refused_version"] == 1
     runner.update(lambda current: current.model_copy(update={"agent_permission": "workspace_write"}))  # a change made on the PC
-    assert "changed on this computer" in apply(_signed_settings(config, 2, 1, run_agents=True))["detail"]
-    assert "full access" in apply(_signed_settings(config, 2, 2, agent_permission="full_access"))["detail"]
+    assert "changed on this computer" in apply(_signed_settings(config, 2, 1, run_agents=True, agent_roots=("project", "other")))["detail"]
+    full = _signed_settings(config, 2, 2, run_agents=True)
+    full["settings"]["agent_permission"] = "full_access"
+    sent = len(Socket.sent)
+    asyncio.run(runner._apply_web_settings(Socket(), config, full))  # not even a valid web version: dropped
+    assert len(Socket.sent) == sent and runner.load().agent_permission == "workspace_write"
     assert "signature" in apply({**_signed_settings(config, 2, 2), "signature": "0" * 64})["detail"]
+    # Taking power away applies even when built from an older revision (the web's stop).
+    assert apply(_signed_settings(config, 2, 1, run_agents=False, agent_roots=("project",)))["detail"] == ""
     runner.update(lambda current: current.model_copy(update={"remote_settings": False}))
-    assert "web control" in apply(_signed_settings(config, 3, 2))["detail"]
+    assert "web control" in apply(_signed_settings(config, 3, 3))["detail"]
     held = runner.load()
-    assert (held.run_agents, held.agent_roots, held.agent_permission, held.settings_revision, held.web_settings_version) == (True, ("project",), "workspace_write", 2, 1)
+    assert (held.run_agents, held.agent_roots, held.agent_permission, held.settings_revision, held.web_settings_version) == (False, ("project",), "workspace_write", 3, 2)
 
 
 def test_a_start_asks_less_never_more_and_a_cloned_workspace_loads_no_project_settings(base: Path, tmp_path: Path) -> None:

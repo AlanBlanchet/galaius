@@ -26,13 +26,13 @@ import threading
 import time
 from collections import deque
 from pathlib import Path
-from typing import ClassVar, get_args
+from typing import ClassVar
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from interact_core import (
-    MACHINE_AGENT_TAIL, AgentAnswerRequest, AgentContinueRequest, AgentFoldersRequest, AgentInteraction, AgentLogsRequest, AgentOptionsRequest,
+    AGENT_TOUCH_SCOPES, MACHINE_AGENT_TAIL, AgentAnswerRequest, AgentContinueRequest, AgentFoldersRequest, AgentInteraction, AgentLogsRequest, AgentOptionsRequest,
     AgentProviderState, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
     MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, MachineAgentSession, MachineFileEntry, WorkspacePrepareRequest, WorkspacesRequest,
 )
@@ -141,6 +141,14 @@ class WebRuns(BaseModel):
                 json.dump([item.model_dump(mode="json") for item in kept], stream)
             os.replace(temporary, self.path)
 
+    def runs(self) -> list[reg.AgentRun]:
+        """These runs and every run they launched, as the launcher's registry has them now."""
+        return reg.trees(frozenset(str(item.run_id) for item in self.read()))
+
+    def stop_live(self) -> int:
+        """Stops every one still working (agents switched off here); how many were."""
+        return sum(1 for run in self.runs() if run.status in {"running", "waiting"} and reg.stop(run.run_id))
+
 
 class MachineSessions:
     """The conversations ("sessions") this machine hosts for the web, for the runner's lifetime:
@@ -220,8 +228,8 @@ class MachineSessions:
 class MachineAgents(BaseModel):
     """Answers one MachineAgentRequest (already checked: this machine, signed, not expired), from
     the owner's CURRENT settings on this machine: its agent roots (name -> resolved folder), the
-    permission web-started agents get, whether agents run here at all, and the two opt-ins the web
-    can never set (continuing his editor conversations, answering a session's approvals)."""
+    permission web-started agents get, whether agents run here at all, and the two opt-ins
+    (continuing his editor conversations, answering a session's approvals), each off by default."""
 
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
     roots: dict[str, Path]
@@ -253,10 +261,12 @@ class MachineAgents(BaseModel):
     async def answer(self, request: MachineAgentRequest) -> MachineAgentAnswer:
         """Session work runs on the runner's loop (its host is async); everything else on a worker
         thread (files, the launcher's CLI)."""
-        if not self.run_agents:
-            raise PermissionError("agents are off on this computer; its owner turns them on there with `interact machine agents on`")
-        if not self.roots:
-            raise PermissionError("no agent folders on this computer yet; its owner adds some there with `interact machine agent-roots <folder>`")
+        # With agents off (or no folder) what the web started here can still be read and stopped.
+        if not isinstance(request, AgentRunsRequest | AgentTailRequest | AgentStopRequest | AgentLogsRequest | WorkspacesRequest):
+            if not self.run_agents:
+                raise PermissionError("agents are off on this computer; its owner turns them on on its page on the web, or there with `interact machine agents on`")
+            if not self.roots:
+                raise PermissionError("no agent folders on this computer yet; its owner adds one on its page on the web, or there with `interact machine agent-roots <folder>`")
         match request:
             case AgentFoldersRequest():
                 return await asyncio.to_thread(self._folders, request)
@@ -303,12 +313,9 @@ class MachineAgents(BaseModel):
             raise PermissionError("this computer does not prepare workspaces")
         return self.workspaces
 
-    #: Least first (the contract's own order): a start may ask for less than the PC's permission, never more.
-    SCOPES: ClassVar[tuple[AgentTouchScope, ...]] = get_args(AgentTouchScope)
-
     def scope(self, asked: AgentTouchScope | None) -> AgentTouchScope:
         """What a run started now may do: `asked`, capped by this PC's permission."""
-        return self.permission if asked is None else min(asked, self.permission, key=self.SCOPES.index)
+        return self.permission if asked is None else min(asked, self.permission, key=AGENT_TOUCH_SCOPES.index)
 
     def environment_in(self, folder: Path) -> dict[str, str]:
         """The child's environment for an agent working in `folder`: a workspace cloned from the
@@ -362,8 +369,7 @@ class MachineAgents(BaseModel):
         return MachineAgentAnswer(request_id=request.id, roots=roots, entries=folders, truncated=len(names) > 500, permission=permission)
 
     def _allowed(self) -> tuple[dict[str, WebRun], list[reg.AgentRun]]:
-        started = {str(item.run_id): item for item in self.runs.read()}
-        return started, reg.trees(frozenset(started))
+        return {str(item.run_id): item for item in self.runs.read()}, self.runs.runs()
 
     def _runs(self, request: AgentRunsRequest) -> MachineAgentAnswer:
         started, runs = self._allowed()

@@ -121,6 +121,13 @@ def test_claude_loads_no_folder_settings_where_they_must_not_load(monkeypatch: p
     for argv in (provider.command("t", cwd="/tmp", model=None, mcp_config=None, run_id="r"), provider.resume_command("r", "next")):
         assert (argv[argv.index("--setting-sources") + 1] == "user") if off else "--setting-sources" not in argv
         assert argv[-2:] in (["--", "t"], ["--", "next"])
+    codex = CodexProvider()
+    for build in (lambda: codex.command("t", cwd="/tmp", model=None, mcp_config=None, run_id="r"), lambda: codex.resume_command("r", "next")):
+        if off:
+            with pytest.raises(UnsupportedToolPolicy, match="cannot run in a workspace cloned from the web"):
+                build()
+        else:
+            build()
 
 
 def test_codex_uses_only_documented_approval_flags():

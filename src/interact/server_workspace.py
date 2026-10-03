@@ -10,7 +10,7 @@ from urllib.parse import quote, urlencode
 from uuid import UUID, uuid4
 
 import httpx
-from interact_core import AgentGraph, AgentGraphUpdate, AgentRevision, AgentRevisionRef, AgentStartSpec, ArtifactRef, CompanyProfile, ConfiguredModelRef, MachineSummary, ReleaseInfo, TriggerInvocation, WorkflowEvent, WorkflowRevision, WorkflowRevisionRef, WorkflowRun
+from interact_core import AgentGraph, AgentGraphUpdate, AgentRevision, AgentRevisionRef, AgentStartSpec, AgentTouchScope, ArtifactRef, CompanyProfile, ConfiguredModelRef, MachineRunEvents, MachineSummary, ReleaseInfo, TriggerInvocation, WorkflowEvent, WorkflowRevision, WorkflowRevisionRef, WorkflowRun
 from interact_core.accounts import Bootstrap
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
@@ -63,24 +63,6 @@ class AgentEdit(BaseModel):
             **current.model_dump(), **changes, "revision": uuid4(),
             "parent_revision": current.revision, "created_at": datetime.now(UTC),
         })
-
-
-class RemoteRunLine(BaseModel):
-    """One line of a run on another computer, as its page shows it (said / final / step / error ...)."""
-
-    model_config = ConfigDict(extra="ignore", frozen=True)
-    kind: str
-    text: str = ""
-    at: float = 0.0
-
-
-class RemoteRunEvents(BaseModel):
-    """A window of a run on another computer: its lines after a cursor, and where the next starts."""
-
-    model_config = ConfigDict(extra="ignore", frozen=True)
-    run_id: UUID
-    cursor: int | None = None
-    items: tuple[RemoteRunLine, ...] = ()
 
 
 class ServerWorkspace(ServerPrompts):
@@ -339,20 +321,21 @@ class ServerWorkspace(ServerPrompts):
             raise CatalogConnectionError(f"{'no' if not found else 'more than one'} computer named {which!r} (connected: {names or 'none'})")
         return found[0]
 
-    def start_on_machine(self, machine: MachineSummary, folder: str, spec: dict[str, object], *, transport=None) -> UUID:
-        """Starts an agent on `machine` in `folder` ("<agent folder>/<path beneath it>"): the agent
-        folder is the longest of the computer's own that `folder` starts with."""
+    def start_on_machine(self, machine: MachineSummary, folder: str, text: str, *, role: str | None, provider: str | None = None, model: str | None = None,
+                         permission: AgentTouchScope | None = None, transport=None) -> UUID:
+        """Starts an agent (`role`) on `machine` in `folder` ("<agent folder>/<path beneath it>"):
+        the agent folder is the longest of the computer's own that `folder` starts with."""
         roots = json.loads(self.owner_call("GET", f"/machines/{machine.id}/agents/folders", transport=transport)).get("roots", [])
         parts = folder.strip("/").split("/")
         root = next((candidate for size in range(len(parts), 0, -1) if (candidate := "/".join(parts[:size])) in roots), None)
         if root is None:
             raise CatalogConnectionError(f"{folder!r} is not inside an agent folder of {machine.name} (its agent folders: {', '.join(roots) or 'none'})")
-        start = AgentStartSpec(root=root, path="/".join(parts[len(root.split("/")):]), **spec)
+        start = AgentStartSpec(root=root, path="/".join(parts[len(root.split("/")):]), text=text, role=role, provider=provider, model=model, permission=permission)
         return UUID(json.loads(self.owner_call("POST", f"/machines/{machine.id}/agents", start, transport=transport))["run_id"])
 
-    def machine_run_events(self, machine: MachineSummary, run_id: UUID, cursor: int | None = None, *, transport=None) -> RemoteRunEvents:
+    def machine_run_events(self, machine: MachineSummary, run_id: UUID, cursor: int | None = None, *, transport=None) -> MachineRunEvents:
         query = f"?cursor={cursor}" if cursor is not None else ""
-        return RemoteRunEvents.model_validate_json(self.owner_call("GET", f"/machines/{machine.id}/agents/{run_id}/events{query}", transport=transport))
+        return MachineRunEvents.model_validate_json(self.owner_call("GET", f"/machines/{machine.id}/agents/{run_id}/events{query}", transport=transport))
 
     def link(self, view: Literal["agents", "workflows", "company", "personal", "connections", "prompts", "version", "assistant"], identity: UUID | None = None):
         query = urlencode({"agent" if view == "agents" else "workflow": str(identity)}) if identity and view in {"agents", "workflows"} else ""

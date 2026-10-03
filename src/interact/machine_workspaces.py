@@ -3,8 +3,8 @@ cloned into a new folder beneath an agent root, with the PC's OWN git credential
 keys, its credential helper) - the server never sees them and never names a command.
 
 What a clone may do is fixed here, whatever the server asks (threat model run a0c18d82, MUST 5-7):
-only repositories the owner's `clone_origins` cover; only https and ssh, for the repository and
-every submodule; no hook runs (an empty hooks folder), no redirect, no password prompt, no LFS
+only repositories the owner's `clone_origins` cover - the repository AND every submodule, nested
+ones included, each checked before it is fetched; only https and ssh; no hook runs (an empty hooks folder), no redirect, no password prompt, no LFS
 download; SSH only to a host this PC already knows (`StrictHostKeyChecking=yes`, no agent or port
 forwarding); a host resolving to a loopback / private / link-local address is refused. The clone
 lands in a hidden `.<name>.partial` folder (never reachable as an agent folder) and is renamed
@@ -18,6 +18,7 @@ import socket
 import stat
 import subprocess
 import threading
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import ClassVar
@@ -66,6 +67,27 @@ CloneFailure.KNOWN = (
 )
 
 
+class Git(BaseModel):
+    """git as a clone from the web runs it: fixed options and environment, one shared deadline, a
+    failure told in plain words (`CloneFailure`)."""
+
+    model_config = ConfigDict(frozen=True)
+    options: tuple[str, ...]
+    environment: dict[str, str]
+    host: str
+    deadline: float
+
+    def run(self, *arguments: str, allow: tuple[int, ...] = ()) -> str:
+        """git's output; a failure (an exit code outside 0 and `allow`) raises RuntimeError."""
+        left = self.deadline - time.monotonic()
+        if left <= 0:
+            raise TimeoutError("clone deadline passed")
+        done = subprocess.run(["git", *self.options, *arguments], env=self.environment, stdin=subprocess.DEVNULL, capture_output=True, text=True, errors="replace", timeout=left, check=False)
+        if done.returncode != 0 and done.returncode not in allow:
+            raise RuntimeError(CloneFailure.explain(done.stderr + "\n" + done.stdout, self.host))
+        return done.stdout
+
+
 class WorkspaceJobs(BaseModel):
     """The clones asked of this PC, newest first, kept beside its machine file."""
 
@@ -80,8 +102,11 @@ class WorkspaceJobs(BaseModel):
             return ()
 
     def put(self, job: MachineWorkspaceJob) -> None:
+        """Records `job`; every ready workspace is kept (it marks a folder whose own agent settings
+        never load: `MachineWorkspaces.prepared`), the rest trimmed to the newest `keep`."""
         with exclusive(os.open(self.path.with_suffix(".lock"), os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)):
-            jobs = (job, *(item for item in self.read() if item.id != job.id))[: self.keep]
+            jobs = (job, *(item for item in self.read() if item.id != job.id))
+            jobs = tuple(item for index, item in enumerate(jobs) if item.state == "ready" or index < self.keep)
             PRIVATE_FILES.write_text(self.path, json.dumps([item.model_dump(mode="json") for item in jobs], separators=(",", ":")) + "\n")
 
     def settle_interrupted(self) -> None:
@@ -107,15 +132,16 @@ class MachineWorkspaces(BaseModel):
         "-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "-c", "protocol.ssh.allow=always",
         "-c", "http.followRedirects=false", "-c", "credential.interactive=false", "-c", "core.fsmonitor=false",
     )
+    #: How deep submodules may nest.
+    SUBMODULE_DEPTH: ClassVar[int] = 5
     SSH_COMMAND: ClassVar[str] = "ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ForwardAgent=no -o ClearAllForwardings=yes -o PermitLocalCommand=no"
     #: Only one clone runs at a time on a PC.
     _running: ClassVar[threading.Lock] = threading.Lock()
 
     def prepare(self, request: WorkspacePrepareRequest) -> MachineWorkspaceJob:
         """Starts the clone (answered at once, `running`) or refuses it with why."""
-        remote = GitRemote(url=request.url)
-        if not remote.allowed_by(self.origins):
-            raise PermissionError(f"{remote.origin} is not among the repositories this PC may clone; allow it on this PC's page first")
+        remote = request.url
+        self._allowed(remote)
         base = self.roots.get(request.root)
         if base is None:
             raise PermissionError(f"{request.root!r} is not an agent folder on this computer")
@@ -125,13 +151,22 @@ class MachineWorkspaces(BaseModel):
             raise PermissionError(f"{request.root}/{name} already exists on this computer")
         if shutil.disk_usage(base).free < self.disk_floor:
             raise PermissionError(f"less than {self.disk_floor // 1024**3} GB free under {request.root} on this computer")
-        self._public_host(remote.host)
         if not self._running.acquire(blocking=False):
             raise PermissionError("another workspace is being prepared on this computer; wait for it to finish")
-        job = MachineWorkspaceJob(id=uuid4(), root=request.root, name=name, origin=remote.origin, state="running", started_at=datetime.now(UTC))
-        self.jobs.put(job)
-        threading.Thread(target=self._clone, args=(job, remote, request.submodules, target), name=f"workspace-{name}", daemon=True).start()
+        try:
+            job = MachineWorkspaceJob(id=uuid4(), root=request.root, name=name, origin=remote.origin, state="running", started_at=datetime.now(UTC))
+            self.jobs.put(job)
+            threading.Thread(target=self._clone, args=(job, remote, request.submodules, target), name=f"workspace-{name}", daemon=True).start()
+        except BaseException:
+            self._running.release()
+            raise
         return job
+
+    def _allowed(self, remote: GitRemote) -> None:
+        """Refuses a repository outside the owner's origins, or on a host that is not public."""
+        if not remote.allowed_by(self.origins):
+            raise PermissionError(f"{remote.origin} is not among the repositories this PC may clone; allow it on this PC's page first")
+        self._public_host(remote.host)
 
     @classmethod
     def busy(cls) -> bool:
@@ -163,16 +198,16 @@ class MachineWorkspaces(BaseModel):
             self._remove(partial)
             hooks = UserPaths.data() / "empty-git-hooks"
             hooks.mkdir(parents=True, exist_ok=True)
-            environment = {**self.environment, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never", "GIT_LFS_SKIP_SMUDGE": "1", "GIT_SSH_COMMAND": self.SSH_COMMAND}
-            argv = ["git", *self.GIT_OPTIONS, "-c", f"core.hooksPath={hooks}", "clone", *(["--recurse-submodules"] if submodules else []), "--", remote.url, str(partial)]
-            done = subprocess.run(argv, env=environment, stdin=subprocess.DEVNULL, capture_output=True, text=True, errors="replace", timeout=self.timeout, check=False)
-            if done.returncode != 0:
-                raise RuntimeError(CloneFailure.explain(done.stderr + "\n" + done.stdout, remote.host))
+            git = Git(options=(*self.GIT_OPTIONS, "-c", f"core.hooksPath={hooks}"), host=remote.host, deadline=time.monotonic() + self.timeout,
+                      environment={**self.environment, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never", "GIT_LFS_SKIP_SMUDGE": "1", "GIT_SSH_COMMAND": self.SSH_COMMAND})
+            git.run("clone", "--", remote.url, str(partial))
+            if submodules:
+                self._submodules(git, partial)
             partial.rename(target)
             finished = job.model_copy(update={"state": "ready", "detail": "", "finished_at": datetime.now(UTC)})
         except FileNotFoundError:
             finished = job.model_copy(update={"state": "failed", "detail": "git is not installed on this PC", "finished_at": datetime.now(UTC)})
-        except subprocess.TimeoutExpired:
+        except (subprocess.TimeoutExpired, TimeoutError):
             finished = job.model_copy(update={"state": "failed", "detail": f"the clone took longer than {int(self.timeout // 60)} min and was stopped", "finished_at": datetime.now(UTC)})
         except (RuntimeError, OSError) as error:
             finished = job.model_copy(update={"state": "failed", "detail": str(error)[:600], "finished_at": datetime.now(UTC)})
@@ -181,6 +216,29 @@ class MachineWorkspaces(BaseModel):
         if finished.state == "failed":
             self._remove(partial)
         self.jobs.put(finished)
+
+    def _submodules(self, git: "Git", folder: Path, depth: int = 0) -> None:
+        """Fetches `folder`'s submodules, nested ones too, each only once its address (as git
+        resolved it, relative ones included) is checked like the repository's own."""
+        if not (folder / ".gitmodules").is_file():
+            return
+        if depth >= self.SUBMODULE_DEPTH:
+            raise RuntimeError(f"submodules nest deeper than {self.SUBMODULE_DEPTH} levels; refused")
+        git.run("-C", str(folder), "submodule", "init")
+        listed = git.run("-C", str(folder), "config", "--get-regexp", r"^submodule\..*\.url$", allow=(1,))
+        for line in listed.splitlines():
+            key, _, url = line.partition(" ")
+            try:
+                remote = GitRemote(url=url)
+            except ValueError:
+                raise RuntimeError(f"submodule {key.removeprefix('submodule.').removesuffix('.url')} has an address this PC never clones from the web") from None
+            try:
+                self._allowed(remote)
+            except PermissionError as refusal:
+                raise RuntimeError(f"submodule {remote.origin}: {refusal}") from None
+        git.run("-C", str(folder), "submodule", "update")
+        for line in git.run("-C", str(folder), "config", "--file", ".gitmodules", "--get-regexp", r"^submodule\..*\.path$", allow=(1,)).splitlines():
+            self._submodules(git, folder / line.partition(" ")[2], depth + 1)
 
     @staticmethod
     def _remove(folder: Path) -> None:

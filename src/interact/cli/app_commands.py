@@ -17,6 +17,8 @@ from cyclopts import App, Parameter
 from pydantic import ValidationError
 
 from interact import feedback, live_sources, model_catalog, ollama
+from interact_core import AGENT_TOUCH_SCOPES
+
 from interact.agents import messaging
 from interact.agents import providers as agent_providers
 from interact.agents import registry as reg
@@ -881,9 +883,10 @@ def _spawn_on_machine(machine: str, folder: str | None, task: str, *, agent: str
     try:
         if folder is None:
             raise ValueError("--machine needs --folder: an agent folder of that computer, or a folder beneath one")
+        if permission is not None and permission not in AGENT_TOUCH_SCOPES:
+            raise ValueError(f"--permission-mode on another computer is one of {', '.join(AGENT_TOUCH_SCOPES)}")
         workspace = ServerWorkspace.configured()
-        spec = {"text": task, "role": agent, "provider": provider, "model": model, "permission": permission}
-        print(workspace.start_on_machine(workspace.machine(machine), folder, {key: value for key, value in spec.items() if value is not None}))
+        print(workspace.start_on_machine(workspace.machine(machine), folder, task, role=agent, provider=provider, model=model, permission=permission))
     except (ValueError, CatalogConnectionError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         raise SystemExit(2) from None

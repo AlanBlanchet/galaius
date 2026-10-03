@@ -178,6 +178,17 @@ class AgentProvider(ABC):
     caveat: ClassVar[str | None] = None
     auth_home_env: ClassVar[tuple[str, ...]] = ()
     permission_option: ClassVar[str] = "--permission-mode"
+    #: How this CLI is told to load none of the folder's own settings (`PROJECT_SETTINGS_OFF`);
+    #: None: it cannot be, so it never starts or resumes where they must not load.
+    folder_settings_off: ClassVar[tuple[str, ...] | None] = None
+
+    def _setting_sources(self) -> list[str]:
+        """`folder_settings_off` when the folder's own settings must not load, else nothing."""
+        if not os.environ.get(PROJECT_SETTINGS_OFF):
+            return []
+        if self.folder_settings_off is None:
+            raise UnsupportedToolPolicy(f"{self.name} cannot run in a workspace cloned from the web: its folder's own settings cannot be switched off")
+        return list(self.folder_settings_off)
     #: Provider advertises whether its initial-prompt CLI has a native image attachment flag.
     #: The concrete provider still verifies the installed binary before using it.
     can_attach_images: ClassVar[bool] = False
@@ -507,6 +518,7 @@ class ClaudeCodeProvider(AgentProvider):
     """
 
     name = "claude"
+    folder_settings_off = ("--setting-sources", "user")
     native_providers = frozenset({"anthropic"})
     media_model_field = "claude_media_criteria"
     auth_home_env = ("CLAUDE_CONFIG_DIR",)
@@ -775,11 +787,6 @@ class ClaudeCodeProvider(AgentProvider):
         # The prompt goes LAST, after "--": one starting with "-" (a markdown bullet) is the
         # prompt, never an option Claude refuses ("unknown option").
         return [*argv, "--", task]
-
-    @staticmethod
-    def _setting_sources() -> list[str]:
-        """Only the user's own settings when the folder's must not load (`PROJECT_SETTINGS_OFF`)."""
-        return ["--setting-sources", "user"] if os.environ.get(PROJECT_SETTINGS_OFF) else []
 
     def definition_path(self, agent: str) -> Path | None:
         catalog = AgentCatalog.active()
@@ -1383,7 +1390,7 @@ class CodexProvider(AgentProvider):
                 base_url: str | None = None) -> list[str]:
         self.validate_tool_policy(allowed_tools or [], denied_tools, coarse_accepted=coarse_accepted)
         task = self._inject_definition(agent, task, agent_prompt)
-        argv = [self.binary, "exec", "--json", *self.native_delegation_flags, *self.platform_flags()]
+        argv = [self.binary, "exec", "--json", *self.native_delegation_flags, *self.platform_flags(), *self._setting_sources()]
         argv += self.mesh_arguments(mcp_config)
         argv += self._mcp_tool_scope_arguments(allowed_tools or [], denied_tools)
         argv += self._native_sandbox_arguments(allowed_tools or [], denied_tools,
@@ -1443,7 +1450,7 @@ class CodexProvider(AgentProvider):
         self.validate_tool_policy(allowed_tools or [], denied_tools, coarse_accepted=coarse_accepted)
         if agent:
             self.validate_agent_name(agent)
-        argv = [self.binary, "exec", "resume", "--json", *self.native_delegation_flags, *self.platform_flags()]
+        argv = [self.binary, "exec", "resume", "--json", *self.native_delegation_flags, *self.platform_flags(), *self._setting_sources()]
         argv += self.mesh_arguments(mcp_config)
         argv += self._mcp_tool_scope_arguments(allowed_tools or [], denied_tools)
         argv += self._openai_compat_arguments(base_url)

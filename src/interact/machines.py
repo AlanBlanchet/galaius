@@ -54,7 +54,7 @@ if sys.platform == "win32":
     import win32api
 
 
-class MachineConfig(BaseModel):
+class MachineConfig(MachineAgentSettings):
     model_config = ConfigDict(extra="forbid", frozen=True)
     server_url: str
     workspace_id: UUID
@@ -70,29 +70,15 @@ class MachineConfig(BaseModel):
     #: (`interact machine script-roots`), none by default. Never inside or around a file root: no
     #: workflow file step can write beside a script it would then run.
     script_roots: tuple[str, ...] = Field(default=(), max_length=32)
-    #: Whether agent steps run here. An agent CLI on this computer can read any file its user can,
-    #: whatever the file roots: off until its owner turns it on (`interact login`, `interact
-    #: machine agents on|off`, or the PC's page on the web while `remote_settings` is on).
-    run_agents: bool = False
-    #: The folders the owner lets agents be STARTED in from the web (any plain folder beneath one),
-    #: relative to `working_directory` - set here (`interact machine agent-roots`), none by default.
-    #: A file root's rules, and never overlapping a file or script root: no workflow file step can
-    #: write an instruction file (CLAUDE.md, AGENTS.md) where an agent then starts. A starting
-    #: point, not a fence: an agent CLI reads whatever its user can.
+    #: The agent settings (`MachineAgentSettings`, inherited: whether agents run here, where they
+    #: start, what they may do, the two opt-ins, the repositories the web may clone) are its owner's,
+    #: set here (`interact login`, `interact machine agents | agent-roots | agent-permission`) or on
+    #: the PC's page on the web while `remote_settings` is on - never `full_access` from the web.
+    #: An agent root is a file root's rules, never overlapping a file or script root (no workflow
+    #: file step can write an instruction file where an agent then starts): a starting point, not a
+    #: fence - an agent CLI reads whatever its user can. Read as typed loosely here: a root this PC
+    #: cannot use is refused where used (`usable_agent_roots`), never a reason this file fails to load.
     agent_roots: tuple[str, ...] = Field(default=(), max_length=32)
-    #: What an agent started from the web may do: never unrestricted unless its owner sets it here
-    #: (`interact machine agent-permission full_access`); the web sets read_only / workspace_write.
-    agent_permission: AgentTouchScope = "workspace_write"
-    #: Whether the web may continue the owner's own editor conversations here (a forked copy in
-    #: an agent root; the editor's session is never written) — set here only, off by default.
-    continue_conversations: bool = False
-    #: Whether the web may answer the approvals a session asks for (run this command, apply this
-    #: change): accept / decline only — set here only, off by default. An accept can run what the
-    #: session's sandbox would block, so the server never decides this alone.
-    answer_approvals: bool = False
-    #: The repositories the web may have this PC clone into an agent folder (`host/owner/repo`
-    #: or `host/owner/*`), none by default.
-    clone_origins: tuple[str, ...] = Field(default=(), max_length=32)
     #: Whether the owner's web page may change the agent settings above (`MachineAgentSettings`):
     #: this PC's own kill switch (`interact machine remote off`), which nothing on the server can
     #: turn back on.
@@ -160,14 +146,13 @@ class MachineConfig(BaseModel):
             except ValidationError:
                 refused.append(f"{name}: not a plain folder path below the working directory")
         refused += [f"{name}: overlaps a file or script root, or is hidden, a link, the home folder or interact's own" for name in self.usable_agent_roots()[1]]
-        settings = MachineAgentSettings(run_agents=self.run_agents, agent_roots=tuple(roots), agent_permission=self.agent_permission,
-                                        continue_conversations=self.continue_conversations, answer_approvals=self.answer_approvals, clone_origins=self.clone_origins)
+        settings = MachineAgentSettings.model_validate({**{name: getattr(self, name) for name in MachineAgentSettings.model_fields}, "agent_roots": tuple(roots)})
         return settings, tuple(dict.fromkeys(refused))
 
-    def agent_state(self, detail: str = "") -> MachineAgentSettingsState:
+    def agent_state(self, detail: str = "", refused_version: int = 0) -> MachineAgentSettingsState:
         settings, refused = self.agent_settings()
         return MachineAgentSettingsState(revision=self.settings_revision, version=self.web_settings_version, remote=self.remote_settings,
-                                         settings=settings, refused=refused, detail=detail[:400])
+                                         settings=settings, refused=refused, detail=detail[:400], refused_version=refused_version)
 
     def with_web_settings(self, update: MachineAgentSettingsUpdate) -> Self:
         """This config with a web version applied, or PermissionError naming why not (checked
@@ -176,10 +161,10 @@ class MachineConfig(BaseModel):
             raise PermissionError("web control of agent settings is off on this computer (interact machine remote on)")
         if update.version <= self.web_settings_version:
             raise PermissionError(f"version {update.version} is not newer than {self.web_settings_version}, applied already")
-        if update.based_on != self.settings_revision:
+        # A change that only takes power away (agents off, a folder removed) applies whatever was
+        # changed here since; one that grants anything must be built from what this PC holds now.
+        if update.based_on != self.settings_revision and not update.settings.narrows(self.agent_settings()[0]):
             raise PermissionError("these settings changed on this computer since the page read them; reload it")
-        if update.settings.agent_permission == "full_access":
-            raise PermissionError("full access is set on this computer itself, never from the web")
         values = update.settings.model_dump(include=set(MachineAgentSettings.model_fields))
         return self.model_copy(update={**values, "settings_revision": self.settings_revision + 1, "web_settings_version": update.version})
 
@@ -761,8 +746,8 @@ class MachineRunner:
         self._server_restarted = False
         self._log_ring = LogRing()
         logging.getLogger("interact").addHandler(self._log_ring)
-        #: Why the last web version of the agent settings was not applied (shown on the PC's page).
-        self._settings_detail = ""
+        #: Why the last web version of the agent settings was not applied, and which one (shown on the PC's page).
+        self._settings_detail, self._settings_refused = "", 0
         self._workspace_jobs = WorkspaceJobs(path=self.config_path.with_name("machine-workspaces.json"))
 
     def _vision_worker(self, config: MachineConfig) -> VisionWorker:
@@ -1036,17 +1021,19 @@ class MachineRunner:
                 self._same_enrollment(current, config)
                 return current.with_web_settings(update)
             after = await asyncio.to_thread(self.update, apply)
-            self._settings_detail = ""
+            self._settings_detail, self._settings_refused = "", 0
             was, now = before.agent_settings()[0].model_dump(mode="json"), after.agent_settings()[0].model_dump(mode="json")
             changed = {key: [was[key], now[key]] for key in was if was[key] != now[key]}
-            logger.info("agent settings version %s from the web applied: %s", update.version, ", ".join(sorted(changed)) or "no change")
+            # Agents switched off from the web stop the ones the web started here, as a kill switch must.
+            stopped = await asyncio.to_thread(WebRuns(path=self.config_path.with_name("machine-agent-runs.json")).stop_live) if before.run_agents and not after.run_agents else 0
+            logger.info("agent settings version %s from the web applied: %s%s", update.version, ", ".join(sorted(changed)) or "no change", f"; {stopped} running agents stopped" if stopped else "")
             error = None
         except PermissionError as refusal:
-            self._settings_detail = error = str(refusal)
-            changed = {}
+            self._settings_detail, self._settings_refused = str(refusal), update.version
+            changed, error = {}, str(refusal)
             logger.warning("agent settings version %s refused: %s", update.version, refusal)
         self.audit("agents.log", {"op": "settings", "version": update.version, "changed_by": str(update.changed_by), "changed_at": update.changed_at.isoformat(), "changed": changed, "error": error})
-        state = self._current_config(config).agent_state(self._settings_detail)
+        state = self._current_config(config).agent_state(self._settings_detail, self._settings_refused)
         await socket.send(json.dumps({"type": "agent_settings_state", "state": state.model_dump(mode="json")}))
 
     async def _answer_agent_request(self, socket, config: MachineConfig, payload: object) -> None:
@@ -1622,7 +1609,7 @@ class MachineRunner:
         next beat)."""
         current = self._current_config(connected)
         return {"runtimes": self._runtimes(current), "accelerators": self._accelerators(), "functions": self._functions(), "resources": self._resources(current.working_directory),
-                "file_roots": current.reported_file_roots(), "agent_settings": current.agent_state(self._settings_detail).model_dump(mode="json")}
+                "file_roots": current.reported_file_roots(), "agent_settings": current.agent_state(self._settings_detail, self._settings_refused).model_dump(mode="json")}
 
     @staticmethod
     def _channel_url(server_url: str) -> str:
