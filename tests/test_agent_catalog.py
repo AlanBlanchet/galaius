@@ -13,7 +13,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 from interact_core import AgentCatalogSnapshot, AgentRevision, AgentRevisionRef, PromptExecutionRef, PromptKey, PromptRevision
 
 from interact.agents.catalog import AgentCatalog, AgentInstructionSet, CatalogSnapshot
@@ -293,6 +293,31 @@ def test_token_mode_reuses_protected_file_reader_without_bootstrap(tmp_path):
     assert "synthetic-token" not in target.read_text()
 
 
+@pytest.mark.parametrize("saved", ["preview", "machine"])
+def test_a_linked_pc_reads_the_catalog_with_its_own_link_and_follows_a_relink(linked_pc, saved):
+    """The loopback preview sign-in is gone from every server: a PC whose saved connection still
+    names it, or names its link, reads with its machine token; a re-link (new token, new company)
+    is followed with no step; an unlinked PC is told to link again, in words."""
+    from interact.machines import MachineRunner
+
+    CatalogConnection(endpoint="http://127.0.0.1:8767", workspace_id=uuid4(), auth_mode=saved).save()
+    connection = CatalogConnection.load()
+    assert (connection.auth_mode, connection.workspace_id) == ("machine", linked_pc.workspace_id)
+    catalog = AgentCatalog.refresh(connection, transport=machine_transport(snapshot(1), linked_pc.token.get_secret_value()))
+    assert catalog.snapshot.agents
+    relinked = linked_pc.model_copy(update={"workspace_id": uuid4(), "token": SecretStr("iwm_" + "b" * 48)})
+    MachineRunner().save(relinked)
+    connection = CatalogConnection.load()
+    assert connection.workspace_id == relinked.workspace_id
+    AgentCatalog.refresh(connection, transport=machine_transport(snapshot(2), "iwm_" + "b" * 48))
+    with pytest.raises(CatalogAuthenticationError, match="interact login"):
+        AgentCatalog.refresh(connection, transport=machine_transport(snapshot(2), "iwm_" + "b" * 48, status=401))
+    MachineRunner().config_path.unlink()
+    if saved == "machine":
+        with pytest.raises(CatalogAuthenticationError, match="interact login"):
+            CatalogConnection.load()
+
+
 def test_corrupt_configuration_never_becomes_unconfigured(tmp_path):
     target = tmp_path / "connection.json"
     assert CatalogConnection.load(target) is None
@@ -305,14 +330,34 @@ def test_corrupt_configuration_never_becomes_unconfigured(tmp_path):
     assert json.loads(target.read_text()) == {"auth_mode": "preview"}
 
 
-def test_cli_sync_persists_connection_and_rebuilds_deleted_cache(catalog_home, monkeypatch, capsys):
-    workspace = uuid4()
+def machine_transport(value, token: str, status=200):
+    def respond(request):
+        assert request.headers["Authorization"] == f"Bearer {token}"
+        return httpx.Response(status, content=value.model_dump_json())
+    return httpx.MockTransport(respond)
+
+
+@pytest.fixture
+def linked_pc(catalog_home, monkeypatch):
+    """This PC linked to a server: its machine link carries server, company and machine token."""
+    from interact.machines import MachineConfig, MachineRunner
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(catalog_home / "xdg"))
+    link = MachineConfig(server_url="http://127.0.0.1:8767", workspace_id=uuid4(), machine_id=uuid4(), token="iwm_" + "a" * 48,
+                         permission_ceiling="read_only", working_directory=catalog_home)
+    MachineRunner().save(link)
+    return link
+
+
+def test_cli_sync_persists_connection_and_rebuilds_deleted_cache(linked_pc, catalog_home, monkeypatch, capsys):
+    workspace = linked_pc.workspace_id
     values = [snapshot(1), snapshot(2)]
     current = [values[0]]
+    token = [linked_pc.token.get_secret_value()]
     connect = CatalogConnection.connect
-    monkeypatch.setattr(CatalogConnection, "connect", lambda self, **kwargs: connect(self, transport=catalog_transport(current[0])))
+    monkeypatch.setattr(CatalogConnection, "connect", lambda self, **kwargs: connect(self, transport=machine_transport(current[0], token[0])))
     with pytest.raises(SystemExit) as first:
-        app(["agents", "sync", "--endpoint", "http://127.0.0.1:8767", "--preview", "--workspace", str(workspace)])
+        app(["agents", "sync", "--machine"])
     assert first.value.code == 0
     assert json.loads(capsys.readouterr().out)["cursor"] == values[0].cursor
     assert CatalogConnection.load().workspace_id == workspace

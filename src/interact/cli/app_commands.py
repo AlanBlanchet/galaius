@@ -787,30 +787,35 @@ agents_app = App(name="agents", help="Spawn and supervise agent runs across prov
 @agents_app.command(name="sync")
 def agents_sync(
     endpoint: Annotated[str | None, Parameter(name="--endpoint")] = None,
-    preview: bool = False,
+    machine: bool = False,
     workspace: Annotated[str | None, Parameter(name="--workspace")] = None,
     token_file: Annotated[Path | None, Parameter(name="--token-file")] = None,
 ) -> None:
     """Refresh the server-owned role catalog; save connection settings after validation.
 
-    First sync requires --endpoint and either --preview (loopback only) or --token-file.
-    Later syncs reuse the saved connection. --workspace selects a workspace UUID;
-    otherwise the authenticated bootstrap supplies the current workspace.
+    First sync requires --machine (this PC's own link: its server, company and machine
+    token) or --endpoint with --token-file. Later syncs reuse the saved connection.
+    --workspace selects a workspace UUID; otherwise the authenticated bootstrap supplies it.
     """
     try:
-        if endpoint is None:
-            if preview or workspace is not None or token_file is not None:
+        if machine:
+            if endpoint is not None or workspace is not None or token_file is not None:
+                raise ValueError("--machine takes the server and company from this PC's link")
+            connection = CatalogConnection.linked()
+            if connection is None:
+                raise ValueError("this PC is not linked to an Interact server; run `interact login`")
+        elif endpoint is None:
+            if workspace is not None or token_file is not None:
                 raise ValueError("connection changes require an explicit --endpoint")
             connection = CatalogConnection.load()
             if connection is None:
-                raise ValueError("first sync requires --endpoint and --preview or --token-file")
+                raise ValueError("first sync requires --machine, or --endpoint with --token-file")
         else:
-            if preview == (token_file is not None):
-                raise ValueError("choose exactly one of --preview or --token-file")
+            if token_file is None:
+                raise ValueError("--endpoint requires --token-file")
             connection = CatalogConnection(
                 endpoint=endpoint.rstrip("/"), workspace_id=workspace,
-                auth_mode="preview" if preview else "token",
-                token_file=token_file.absolute() if token_file is not None else None,
+                auth_mode="token", token_file=token_file.absolute(),
             )
         catalog = AgentCatalog.refresh(connection)
         catalog.connection.save()

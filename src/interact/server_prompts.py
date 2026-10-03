@@ -115,7 +115,7 @@ class ServerPrompts(BaseModel):
     def require_write(self, content: str) -> None:
         if len(content.encode("utf-8")) > MAX_EDITOR_BYTES:
             raise ValueError("prompt source is too large")
-        if self.connection.auth_mode == "token":
+        if self.connection.auth_mode != "preview":
             raise CatalogConnectionError("token authentication is read-only; save through the server's signed-in prompt editor")
 
     def write(

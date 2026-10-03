@@ -109,7 +109,7 @@ class ServerWorkspace(ServerPrompts):
         return self.read_record("models", tuple[ConfiguredModelRef, ...], transport=transport)
 
     def can_edit(self, *, transport=None):
-        if self.connection.auth_mode == "token":
+        if self.connection.auth_mode != "preview":
             return False
         with self.session(transport=transport) as client:
             bootstrap = Bootstrap.model_validate_json(self.connection.request(client, "GET", "/v1/bootstrap"))
@@ -280,7 +280,7 @@ class ServerWorkspace(ServerPrompts):
         """The client-side half of threat-modeler mitigation #1: only the machine OWNER (never
         workspace write-scope) may allowlist a script's exact content digest -- same bootstrap +
         CSRF handshake `save_graph` already uses, hitting the owner-gated approval endpoint."""
-        if self.connection.auth_mode == "token":
+        if self.connection.auth_mode != "preview":
             raise CatalogAuthenticationError("This connection is read-only. Approve from the signed-in server workspace.")
         with self.session(transport=transport) as client:
             bootstrap = Bootstrap.model_validate_json(self.connection.request(client, "GET", "/v1/bootstrap"))
@@ -298,7 +298,7 @@ class ServerWorkspace(ServerPrompts):
     def owner_call(self, method: Literal["GET", "POST"], path: str, body: BaseModel | None = None, *, timeout: float = 150, transport=None) -> bytes:
         """One call a computer's OWNER makes on the workspace (`path` below it): a signed-in session
         with its CSRF token, never the read-only key; a refusal raises with the server's own words."""
-        if self.connection.auth_mode == "token":
+        if self.connection.auth_mode != "preview":
             raise CatalogAuthenticationError("This connection is a read-only key: act on a computer from a signed-in session (interact login on the owner's computer).")
         with self.session(transport=transport) as client:
             headers = {} if method == "GET" else {"Content-Type": "application/json", "x-csrf-token": Bootstrap.model_validate_json(self.connection.request(client, "GET", "/v1/bootstrap")).csrf_token}
@@ -342,7 +342,7 @@ class ServerWorkspace(ServerPrompts):
         return f"{self.connection.endpoint.rstrip('/')}/#{view}{'?' + query if query else ''}"
 
     def save_graph(self, update: AgentGraphUpdate, *, transport=None):
-        if self.connection.auth_mode == "token":
+        if self.connection.auth_mode != "preview":
             raise CatalogAuthenticationError("This connection is read-only. Edit in the signed-in server workspace; draft retained.")
         with self.session(transport=transport) as client:
             bootstrap = Bootstrap.model_validate_json(self.connection.request(client, "GET", "/v1/bootstrap"))

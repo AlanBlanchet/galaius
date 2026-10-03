@@ -290,16 +290,16 @@ and exact prompt revisions from the server. Local snapshots and generated skill 
 replaceable caches. Transport failures may use a previously verified snapshot with a visible
 `STALE` notice; authentication or workspace refusal disables cached access.
 
-To connect an existing loopback preview, including an SSH tunnel to a remote server:
+A PC linked to a server (`interact login`) reads the catalog with its own machine link:
 
 ```bash
-interact agents sync --endpoint http://127.0.0.1:8817 --preview
+interact agents sync --machine
 interact agents definitions codex
 ```
 
 For the existing token authentication path, pass `--token-file /absolute/private/token-file`
-in place of `--preview` and select `--workspace WORKSPACE_UUID`. The token file must satisfy
-the existing private-file checks. Remote origins require HTTPS; preview login is loopback only.
+with `--endpoint` and select `--workspace WORKSPACE_UUID`. The token file must satisfy
+the existing private-file checks. Remote origins require HTTPS.
 Connection settings, private session cookies and catalog content are stored separately.
 
 A parent's delegated capability pins an exact child revision. Use `--delegate CAPABILITY`

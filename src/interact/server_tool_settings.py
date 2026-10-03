@@ -78,7 +78,7 @@ class MachineNotice(CatalogAuthenticationError):
     @staticmethod
     def connection() -> CatalogConnection | None:
         connection = CatalogConnection.load()
-        return connection if connection is not None and connection.auth_mode == "token" else None
+        return connection if connection is not None and connection.auth_mode != "preview" else None
 
     @classmethod
     def say(cls, stream: TextIO) -> None:
@@ -90,7 +90,7 @@ class MachineNotice(CatalogAuthenticationError):
         if sessions.is_dir() and {entry.suffix for entry in sessions.iterdir()} <= {".machine-notice"}:
             with suppress(PermissionError):  # not ours: the session lock refuses it in its own words
                 PRIVATE_FILES.directory(sessions)  # an earlier build created it open, holding only this marker
-        if connection.auth_mode != "token" or not stream.isatty() or marker.exists():
+        if connection.auth_mode == "preview" or not stream.isatty() or marker.exists():
             return
         print(cls(connection), file=stream)
         cls.said = True
@@ -103,7 +103,7 @@ class ServerToolSettings(ServerPrompts):
     def configured(cls):
         """The signed-in person's settings; None without a connection or on a machine connection."""
         connection = CatalogConnection.load()
-        return cls(connection=connection) if connection and connection.auth_mode != "token" else None
+        return cls(connection=connection) if connection and connection.auth_mode == "preview" else None
 
     @property
     def cache_path(self):
@@ -122,7 +122,7 @@ class ServerToolSettings(ServerPrompts):
         return hashlib.sha256(json.dumps(cookies).encode()).hexdigest()
 
     def require_actor(self) -> None:
-        if self.connection.auth_mode == "token":
+        if self.connection.auth_mode != "preview":
             self.cache_path.unlink(missing_ok=True)
             raise MachineNotice(self.connection)
 

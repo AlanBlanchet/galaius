@@ -1,7 +1,8 @@
 """Explicit service connection for the server-owned agent catalog.
 
 Connection settings and private preview sessions persist separately from catalog
-content. Standard authentication uses the existing protected token-file reader.
+content. Standard authentication uses the existing protected token-file reader; a linked PC
+(`auth_mode="machine"`) presents its own machine token, the one its channel already holds.
 """
 
 import hashlib
@@ -33,6 +34,7 @@ class CatalogAuthenticationError(CatalogConnectionError):
 
 
 _PREVIEW_SIGN_IN = "/v1/auth/local-preview"
+_UNLINKED = "this PC is no longer linked to its Interact server; run `interact login` to link it again"
 
 
 class _Refused(Exception):
@@ -55,7 +57,9 @@ class CatalogConnection(BaseModel):
 
     endpoint: str
     workspace_id: UUID | None = None
-    auth_mode: Literal["preview", "token"]
+    #: `machine`: this PC's own link (`interact.machines.MachineConfig`): its endpoint, company and
+    #: token are read from the link on every load, so a re-linked PC is followed with no step.
+    auth_mode: Literal["preview", "token", "machine"]
     token_file: Path | None = None
 
     @model_validator(mode="after")
@@ -81,7 +85,7 @@ class CatalogConnection(BaseModel):
         if not loopback and parsed.scheme != "https":
             raise ValueError("remote catalog authentication requires HTTPS")
         if (self.auth_mode == "token") != (self.token_file is not None):
-            raise ValueError("token authentication requires a token file; preview does not accept one")
+            raise ValueError("token authentication requires a token file; no other mode accepts one")
         if self.token_file is not None and not self.token_file.is_absolute():
             raise ValueError("catalog token-file path must be absolute")
         return self
@@ -93,6 +97,21 @@ class CatalogConnection(BaseModel):
         from interact.config import UserConfig
 
         return UserConfig.PATH.parent / "agent-catalog-connection.json"
+
+    @staticmethod
+    def _link():
+        """This PC's machine link, None when it is not linked."""
+        # Circular layers: machines imports agents.run -> registry -> this module.
+        from interact.machines import MachineRunner
+
+        runner = MachineRunner()
+        return runner.load() if runner.config_path.exists() else None
+
+    @classmethod
+    def linked(cls) -> Self | None:
+        """The connection this PC's own link gives: its server, its company, its machine token."""
+        link = cls._link()
+        return None if link is None else cls(endpoint=link.server_url.rstrip("/"), workspace_id=link.workspace_id, auth_mode="machine")
 
     @classmethod
     def load(cls, path: Path | None = None) -> Self | None:
@@ -109,6 +128,11 @@ class CatalogConnection(BaseModel):
             raise CatalogConnectionError("invalid catalog connection configuration") from error
         if connection.workspace_id is None:
             raise CatalogConnectionError("catalog connection has no selected workspace; sync again")
+        # The loopback preview sign-in no longer exists on any server: a linked PC uses its own link.
+        if connection.auth_mode in ("machine", "preview") and (linked := cls.linked()) is not None:
+            return linked
+        if connection.auth_mode == "machine":
+            raise CatalogAuthenticationError(_UNLINKED)
         return connection
 
     @staticmethod
@@ -125,6 +149,11 @@ class CatalogConnection(BaseModel):
         headers = {"Origin": self.endpoint.rstrip("/"), "User-Agent": USER_AGENT}
         if self.token_file is not None:
             headers["Authorization"] = f"Bearer {PRIVATE_FILES.read_secret(self.token_file)}"
+        elif self.auth_mode == "machine":
+            link = self._link()
+            if link is None or link.server_url.rstrip("/") != self.endpoint.rstrip("/") or link.workspace_id != self.workspace_id:
+                raise CatalogAuthenticationError(_UNLINKED)
+            headers["Authorization"] = f"Bearer {link.token.get_secret_value()}"
         return httpx.Client(
             base_url=self.endpoint.rstrip("/"), headers=headers,
             timeout=5, follow_redirects=False, trust_env=False, transport=transport,
@@ -248,6 +277,7 @@ class CatalogConnection(BaseModel):
             self.invalidate_access(client)
             raise CatalogAuthenticationError(
                 f"catalog access refused (HTTP {status}); cached access is disabled"
+                + (f"; {_UNLINKED}" if self.auth_mode == "machine" and status == 401 else "")
             ) from None
 
     def _sign_in_again(self, client: httpx.Client) -> bool:
