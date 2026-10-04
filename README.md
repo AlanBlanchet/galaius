@@ -144,8 +144,12 @@ your editor conversations here (as a copy) and answer the approvals a session as
 default no); `--agents` / `--no-agents`, `--agent-folder <name>`, `--continue-conversations` and
 `--answer-approvals` answer ahead. Change it later on that computer: run `interact login` again
 (already connected, it asks only these questions, Enter keeping each current answer; nothing to
-restart), or `interact machine agent-roots <folder…>`, `interact machine agents on|off --continue on|off --approvals on|off`. Workflows reach no folder until you
-share one: `interact machine file-roots <folder under home>`.
+restart), or `interact machine agent-roots <folder…>`, `interact machine agents on|off --continue on|off --approvals on|off`. Every folder starts hidden from
+workflows, Data and agents: `interact machine places <folder under home> <level>` opens one (see,
+read, write_on_review, sandbox, write); a wider level asked from the web waits until you run
+`interact machine approve` on that computer. `interact machine fence on` runs agents inside an OS
+fence built from those levels (Linux: bubblewrap + Landlock); without it an agent can read every
+file your user can.
 `interact logout` removes it from your account and stops the service. `interact machine service
 status|start|stop|restart` reads or controls that service. On Windows the saved machine token and
 CLI key are sealed with Windows' own encryption for your user (DPAPI) in files only you may read;

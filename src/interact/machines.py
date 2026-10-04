@@ -29,12 +29,13 @@ from uuid import UUID, uuid4
 import websockets
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, ValidationError, field_validator, model_validator
 
-from interact_core import MACHINE_AGENT_REQUESTS, MACHINE_MODELS, MachineAgentSettings, MachineAgentSettingsState, MachineAgentSettingsUpdate, PlacePath, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, MachineAgentAnswer, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachineRuntime, ScriptFile, ScriptLanguage, UserModelOrigin
+from interact_core import MACHINE_AGENT_REQUESTS, MACHINE_MODELS, MachineAgentSettings, MachineAgentSettingsState, MachineAgentSettingsUpdate, PlacePath, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, MachineAgentAnswer, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachinePlaceChange, MachineRuntime, PlaceLevel, ScriptFile, ScriptLanguage, UserModelOrigin
 from interact import USER_AGENT
 from interact.agents.catalog import AgentCatalog
 from interact.agents import providers as agent_providers
 from interact.file_lock import exclusive
 from interact.private_files import PRIVATE_FILES
+from interact.machine_places import PlaceDesk
 from interact.machine_agents import LogRing, MachineAgents, MachineSessions, WebRuns, redact, secret_values
 from interact.machine_workspaces import MachineWorkspaces, WorkspaceJobs
 from interact_core.sealing import SecretsSeal
@@ -50,6 +51,9 @@ from interact.paths import UserPaths
 from interact.upgrade.quiet import QuietPoint
 from interact.upgrade.store import RuntimeStore
 from interact.pinned_directory import PinnedDirectory
+from interact.fence import EGRESS, FenceSpec, available
+from interact.places import BrowseBudget, IN_PLACE_WRITES, INSTRUCTION_NAMES, LEVEL_RANK, PlaceMap, split
+from interact.place_reviews import PlaceReviews, write_plain
 
 if sys.platform == "win32":
     import win32api
@@ -63,10 +67,18 @@ class MachineConfig(MachineAgentSettings):
     token: SecretStr = Field(min_length=32, max_length=256)
     permission_ceiling: PermissionLevel
     working_directory: Path
-    #: The only folders a workflow's file ops may read or write, relative to `working_directory`
-    #: - set HERE on the machine by its owner (`interact machine file-roots`), never by the
-    #: server, so no workflow edit can widen them. Deny-by-default: one dedicated folder.
-    file_roots: tuple[str, ...] = Field(default=("interact-files",), max_length=32)
+    #: Levels per folder (relative to `working_directory`; `interact.places`): what workflows, the
+    #: Data screen and agents may do there. Set HERE by the owner (`interact machine places`), or
+    #: from the web: an earlier level applies at once, a later one waits in `pending_places` until
+    #: the owner confirms it here (`interact machine approve`). A folder not named is hidden.
+    places: dict[str, PlaceLevel] = Field(default_factory=dict, max_length=256)
+    pending_places: tuple[MachinePlaceChange, ...] = Field(default=(), max_length=64)
+    #: Whether the web may list the names of every folder here to pick levels from (names only),
+    #: set here only (`interact machine browse on`), off by default.
+    browse: bool = False
+    #: Whether agents started here run inside the OS fence built from the levels (`interact.fence`),
+    #: set here only (`interact machine fence on`). On: an agent that cannot be fenced never starts.
+    fence_agents: bool = False
     #: The only folders a Script step may run a file from (`ScriptFile`) — set here by the owner
     #: (`interact machine script-roots`), none by default. Never inside or around a file root: no
     #: workflow file step can write beside a script it would then run.
@@ -95,19 +107,38 @@ class MachineConfig(MachineAgentSettings):
     model_keep_warm_seconds: int = Field(default=300, ge=0, le=86400)
     seen_nonces: tuple[UUID, ...] = Field(default=(), max_length=10000)
 
-    def usable_file_roots(self) -> tuple[tuple[Path, ...], tuple[str, ...]]:
-        """(the file roots safe to use, resolved; the names refused)."""
-        return self._usable_roots(self.file_roots)
+    def place_map(self) -> PlaceMap:
+        """The owner's levels as every reader here applies them (the runner's own folders never open)."""
+        return PlaceMap(working_directory=self.working_directory, levels=self.places, internal=self._internal())
+
+    def writable_folders(self) -> tuple[Path, ...]:
+        """The folders a workflow step or an agent writes in (any level from `write_on_review` on)."""
+        return tuple(folder for folder, _ in self.place_map().in_force("write_on_review").values())
 
     def usable_script_roots(self) -> tuple[tuple[Path, ...], tuple[str, ...]]:
         """(the script roots safe to use, resolved; the names refused): a file root's rules, and
-        never overlapping a usable file root (inside it, around it, or the same folder)."""
-        return self._apart(self._usable_roots(self.script_roots), self.usable_file_roots()[0])
+        never overlapping a folder anything writes in (inside it, around it, or the same folder)."""
+        return self._apart(self._usable_roots(self.script_roots), self.writable_folders())
 
     def usable_agent_roots(self) -> tuple[tuple[Path, ...], tuple[str, ...]]:
         """(the agent roots safe to use, resolved; the names refused): a file root's rules, never
-        overlapping a usable file or script root (inside it, around it, or the same folder)."""
-        return self._apart(self._usable_roots(self.agent_roots), (*self.usable_file_roots()[0], *self.usable_script_roots()[0]))
+        overlapping a sandbox or a usable script root (inside it, around it, or the same folder)."""
+        sandboxes = tuple(folder for folder, level in self.place_map().in_force("sandbox").values() if level == "sandbox")
+        return self._apart(self._usable_roots(self.agent_roots), (*sandboxes, *self.usable_script_roots()[0]))
+
+    def with_place(self, path: str, level: PlaceLevel) -> Self:
+        """This configuration with `level` on `path` (and no widening pending for it any more).
+        Refused: a folder no level opens; anything writable around a script root; a sandbox
+        around an agent root (nothing a workflow writes lands where an agent starts)."""
+        levels = self.place_map().with_level(path, level)
+        folder = self.working_directory.resolve().joinpath(*split(path))
+        def overlaps(roots: tuple[Path, ...]) -> bool:
+            return any(folder == root or root in folder.parents or folder in root.parents for root in roots)
+        if LEVEL_RANK[level] >= LEVEL_RANK["write_on_review"] and overlaps(self._usable_roots(self.script_roots)[0]):
+            raise PermissionError(f"{path} holds or sits in a script folder: nothing may write there (`interact machine script-roots`)")
+        if level == "sandbox" and overlaps(self._usable_roots(self.agent_roots)[0]):
+            raise PermissionError(f"{path} holds or sits in an agent folder: a sandbox stays apart from where agents start; use write instead")
+        return self.model_copy(update={"places": levels, "pending_places": tuple(change for change in self.pending_places if change.path != path)})
 
     def _apart(self, found: tuple[tuple[Path, ...], tuple[str, ...]], taken: tuple[Path, ...]) -> tuple[tuple[Path, ...], tuple[str, ...]]:
         """`found` (usable, refused) minus every usable root inside, around or equal to one of `taken`."""
@@ -121,12 +152,18 @@ class MachineConfig(MachineAgentSettings):
         base = self.working_directory.resolve()
         return {root.relative_to(base).as_posix(): root for root in self.usable_agent_roots()[0]}
 
+    def _internal(self) -> tuple[Path, ...]:
+        """The runner's own folders (its settings, its installed runtimes, its data): code every
+        long-lived process runs, never opened to a workflow or an agent."""
+        base = self.working_directory.resolve()
+        return (base / ".interact", MachineRunner.default_config_path().parent.resolve(), UserPaths.data().resolve(), RuntimeStore.default().root.resolve())
+
     def _usable_roots(self, names: tuple[str, ...]) -> tuple[tuple[Path, ...], tuple[str, ...]]:
         """A usable root is strictly below the working directory, never the home folder or above
-        it, never a symlink, never holding or inside the runner's own folders (its settings, its
-        installed runtimes: code every long-lived process runs), never under a hidden name."""
+        it, never a symlink, never holding or inside the runner's own folders, never under a
+        hidden name."""
         base, home = self.working_directory.resolve(), Path.home().resolve()
-        internal = (base / ".interact", MachineRunner.default_config_path().parent.resolve(), UserPaths.data().resolve(), RuntimeStore.default().root.resolve())
+        internal = self._internal()
         usable, refused = [], []
         for name in names:
             declared = base / name
@@ -185,9 +222,9 @@ class MachineConfig(MachineAgentSettings):
         return self.model_copy(update={**values, "settings_revision": self.settings_revision + 1, "web_settings_version": update.version})
 
     def reported_file_roots(self) -> list[str]:
-        """The usable roots as the server shows them: paths relative to the working directory."""
-        base = self.working_directory.resolve()
-        return [root.relative_to(base).as_posix() for root in self.usable_file_roots()[0]]
+        """The folders workflows may name (level `read` or later), as the server shows them:
+        paths relative to the working directory."""
+        return list(self.place_map().in_force("read"))
 
     @field_validator("server_url")
     @classmethod
@@ -211,11 +248,11 @@ PLACE_PATH: TypeAdapter[str] = TypeAdapter(PlacePath)
 
 
 class MachineFiles(BaseModel):
-    """One of the machine owner's folder sets as a workflow reaches it — `files`, the file roots
-    file steps read and write (`MachineConfig.file_roots`), or `scripts`, the script roots Script
-    steps run files from (`MachineConfig.script_roots`): a path is resolved inside one of them or
-    refused; a person picking a script sees a folder's entries or a file's sha256 (`listing`,
-    answering a `MachineFileQuery`), never anything else."""
+    """One of the machine owner's folder sets as a workflow reaches it — `files`, the folders the
+    owner set a level on (`MachineConfig.places`: `read` to read, `write_on_review` or later to
+    write), or `scripts`, the script roots Script steps run files from (`MachineConfig.script_roots`):
+    a path is resolved inside one of them or refused; a person picking a script sees a folder's
+    entries or a file's sha256 (`listing`, answering a `MachineFileQuery`), never anything else."""
 
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
     config: MachineConfig
@@ -228,16 +265,19 @@ class MachineFiles(BaseModel):
     MAX_DIGEST_BYTES: ClassVar[int] = 64 * 1024 * 1024
 
     def roots(self) -> tuple[Path, ...]:
-        """The owner's roots of this area that are safe to use (`MachineConfig.usable_file_roots` / `usable_script_roots`)."""
-        usable, refused = self.config.usable_script_roots() if self.area == "scripts" else self.config.usable_file_roots()
+        """The owner's folders of this area that are safe to use: script roots, or the folders
+        whose level lets a workflow read them."""
+        if self.area == "files":
+            return tuple(folder for folder, _ in self.config.place_map().in_force("read").values())
+        usable, refused = self.config.usable_script_roots()
         for name in refused:
-            logger.warning("%s root %s is refused: it must be a real folder inside the working directory, below the home folder%s", self.area[:-1], name,
-                           ", apart from every file root" if self.area == "scripts" else "")
+            logger.warning("script root %s is refused: it must be a real folder inside the working directory, below the home folder, apart from every folder written in", name)
         return usable
 
-    def inside(self, relative: object) -> Path:
-        """`relative` inside one of the owner's file roots, else refused: an absolute or drive path,
-        `..`, a symlink pointing out, a hidden (dot) name, a stream or separator character."""
+    def inside(self, relative: object, need: Literal["read", "write"] = "read") -> Path:
+        """`relative` inside one of the owner's folders, else refused: an absolute or drive path,
+        `..`, a link on the way, a hidden (dot) or credential name, a stream or separator
+        character; for `files`, a folder whose level does not give `need`."""
         if not isinstance(relative, str) or not relative or Path(relative).is_absolute():
             raise PermissionError("a file path is relative to the machine's working directory")
         parts = Path(relative).parts
@@ -245,9 +285,16 @@ class MachineFiles(BaseModel):
             raise PermissionError(f"{relative}: hidden names, ':' '\\' and trailing dots or spaces are never reachable from a workflow")
         base = self.config.working_directory.resolve()
         target = (base / relative).resolve()
+        if self.area == "files":
+            level = self.config.place_map().reach(parts)
+            if LEVEL_RANK[level] < LEVEL_RANK["write_on_review" if need == "write" else "read"]:
+                raise PermissionError(f"{relative} is {level.replace('_', ' ')} on this machine: a workflow {'writes' if need == 'write' else 'reads'} only where its owner "
+                                      f"set {'write after review, sandbox or write' if need == 'write' else 'read or later'} (`interact machine places`)")
+            if target != base.joinpath(*parts):
+                raise PermissionError(f"{relative}: links are never followed")
+            return target
         if not any(target == root or root in target.parents for root in self.roots()):
-            names, command = (self.config.script_roots, "script-roots") if self.area == "scripts" else (self.config.file_roots, "file-roots")
-            raise PermissionError(f"{relative} is outside this machine's {'script' if self.area == 'scripts' else 'workflow'} folders ({', '.join(names) or 'none'}); its owner sets them with `interact machine {command}`")
+            raise PermissionError(f"{relative} is outside this machine's script folders ({', '.join(self.config.script_roots) or 'none'}); its owner sets them with `interact machine script-roots`")
         if any(part.startswith(".") for part in target.relative_to(base).parts):
             raise PermissionError(f"{relative}: hidden files and folders are never reachable from a workflow")
         return target
@@ -313,18 +360,19 @@ class MachineFiles(BaseModel):
 
 
 class MachineDataFiles(BaseModel):
-    """The owner's FILE ROOTS as the Data screen and the agents its owner allowed read them
-    (MachineDataRequest): beneath ONE named root, walked part by part without following a link
-    (`PinnedDirectory`) — a link anywhere on the way, a hidden name, anything but a folder or a
-    plain single-link file is refused, even when it would land inside another root. Read-only."""
+    """The owner's folders as the Data screen and the agents its owner allowed read them
+    (MachineDataRequest): each folder set to `see` or later is a root; beneath ONE named root,
+    walked part by part without following a link (`PinnedDirectory`) — a link anywhere on the way,
+    a hidden or credential name, anything but a folder or a plain single-link file is refused, even
+    when it would land inside another root. `see` lists names, sizes and dates; `read` or later
+    also gives the bytes; a deeper folder set to `hidden` is left out. Read-only."""
 
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
     config: MachineConfig
     MAX_ENTRIES: ClassVar[int] = 500
 
     def roots(self) -> dict[str, Path]:
-        base = self.config.working_directory.resolve()
-        return {root.relative_to(base).as_posix(): root for root in self.config.usable_file_roots()[0]}
+        return {path: folder for path, (folder, _) in self.config.place_map().in_force("see").items()}
 
     @staticmethod
     def _parts(path: str) -> tuple[str, ...]:
@@ -342,8 +390,11 @@ class MachineDataFiles(BaseModel):
         try:
             top = self.roots()[root]
         except KeyError:
-            raise PermissionError(f"{root} is not one of this machine's file roots; its owner sets them with `interact machine file-roots`") from None
+            raise PermissionError(f"{root} is not one of this machine's file roots; its owner sets levels with `interact machine places`") from None
         return PinnedDirectory.open(top, *parts)
+
+    def _level(self, root: str, parts: tuple[str, ...]) -> PlaceLevel:
+        return self.config.place_map().reach((*split(root), *parts))
 
     @staticmethod
     def _identity(facts: os.stat_result) -> str:
@@ -353,11 +404,15 @@ class MachineDataFiles(BaseModel):
         if request.op == "list" and not request.root:
             return MachineDataAnswer(request_id=request.id, kind="folder", entries=tuple(MachineFileEntry(name=name, kind="folder") for name in self.roots()))
         parts = self._parts(request.path)
+        needed = "see" if request.op == "list" or (request.op == "stat" and not parts) else "read"
+        if request.root in self.roots() and LEVEL_RANK[level := self._level(request.root, parts)] < LEVEL_RANK[needed]:
+            said = "only names are listed there" if level == "see" else "nothing there is reachable"
+            raise PermissionError(f"{'/'.join(filter(None, (request.root, request.path)))} is {level} on this machine: {said}")
         if request.op == "list":
             with self._folder(request.root, parts) as folder:
                 entries, truncated = [], False
                 for name in sorted(folder.names(), key=str.lower):
-                    if name.startswith(".") or MachineFiles.FORBIDDEN.search(name):
+                    if name.startswith(".") or MachineFiles.FORBIDDEN.search(name) or self._level(request.root, (*parts, name)) == "hidden":
                         continue
                     facts = folder.stat(name)
                     if folder.link_like(facts):
@@ -396,8 +451,9 @@ class MachineDataFiles(BaseModel):
 class CommandFiles(MachineFiles):
     """The files one command moves: an input file (an `ArtifactRef` value) is downloaded from the
     server into `<working directory>/.interact/transfers/<run>/` and handed to the step as a local
-    path; a file op reads or writes one file INSIDE one of the owner's file roots
-    (`MachineConfig.file_roots`). Every byte crosses the server over HTTP with this machine's own
+    path; a file op reads or writes one file INSIDE a folder whose level allows it
+    (`MachineConfig.places`; a `write_on_review` folder receives the write in a staging copy the
+    owner accepts on the machine, `interact.place_reviews`). Every byte crosses the server over HTTP with this machine's own
     token, scoped to this command while it is in flight (`MachineCommand.input_file_path` /
     `upload_path`), its sha256 checked on arrival; every file op is logged locally."""
 
@@ -487,57 +543,52 @@ class CommandFiles(MachineFiles):
         logger.info("received %s (%d bytes, sha256 %s)", ref.path, size, ref.digest[:12])
         return target
 
-    def _path(self) -> Path:
+    def _path(self, need: Literal["read", "write"] = "read") -> Path:
         """The file a file op names: a wired `path` input wins over the node's `artifact_path`."""
-        return self.inside(self.command.inputs.get("path", self.command.config.get("artifact_path")))
+        return self.inside(self.command.inputs.get("path", self.command.config.get("artifact_path")), need)
 
-    @staticmethod
-    def _replace(target: Path, content: bytes) -> None:
-        """Written beside `target`, then moved over it in one step: never through a symlink or a
-        hard link planted at the destination (the link would carry the write elsewhere)."""
-        with PinnedDirectory.open(target.parent) as folder:
-            try:
-                existing = folder.stat(target.name)
-            except FileNotFoundError:
-                existing = None
-            if existing is not None and (folder.link_like(existing) or not stat.S_ISREG(existing.st_mode) or existing.st_nlink > 1):
-                raise PermissionError(f"{target.name} is a link or not a plain file: it is never overwritten")
-            partial = f".{target.name}.{uuid4().hex}.part"
-            descriptor = folder.file(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-            try:
-                with os.fdopen(descriptor, "wb") as stream:
-                    stream.write(content)
-                folder.replace(partial, folder, target.name)
-            finally:
-                try:
-                    folder.unlink(partial)
-                except FileNotFoundError:
-                    pass
+    def _put(self, target: Path, content: bytes) -> UUID | None:
+        """`content` saved at `target` as its folder's level says: in place (`sandbox`, `write`:
+        never an instruction file an agent would obey, outside a sandbox), or held for the owner's
+        review (`write_on_review`: the review's id)."""
+        places = self.config.place_map()
+        parts = target.relative_to(places.base).parts
+        level = places.reach(parts)
+        if level == "write_on_review":
+            place, below = places.place_of(parts)
+            return PlaceReviews.default().stage_file(place, places.base.joinpath(*split(place)), below, content, origin="workflow", run_id=self.command.run_id)
+        if level not in IN_PLACE_WRITES:
+            raise PermissionError(f"{target.name}: this folder is {level} on this machine; a workflow writes only where its owner allowed it")
+        if level == "write" and target.name.casefold() in INSTRUCTION_NAMES:
+            raise PermissionError(f"{target.name} steers the agents started there: a workflow writes it only in a sandbox, or after review")
+        with PinnedDirectory.open(places.base, *parts[:-1], create=True) as folder:
+            write_plain(folder, parts[-1], content)
+        return None
 
     def write(self) -> dict[str, object]:
         """Saves the `value` input as a file (a received file copied as is, any other value as its
-        text; several received files into `path` as a folder); answers what was saved. Needs the
-        machine's full-access ceiling."""
+        text; several received files into `path` as a folder); answers what was saved, and the
+        review holding it when its folder is write-after-review. Needs the machine's full-access
+        ceiling."""
         if self.config.permission_ceiling != "full_access":
             raise PermissionError("this machine is read-only: it cannot save files")
-        target, value = self._path(), self.command.inputs.get("value", "")
-        target.parent.mkdir(parents=True, exist_ok=True)
+        target, value = self._path("write"), self.command.inputs.get("value", "")
+        base = self.config.working_directory.resolve()
         if "value" in self.fetched and isinstance(value, list):
-            target.mkdir(exist_ok=True)
-            names = []
+            names, reviews = [], set()
             for received in value:
                 name = Path(received).name
-                self._replace(self.inside(str((target / name).relative_to(self.config.working_directory.resolve()))), Path(received).read_bytes())
+                reviews.add(self._put(self.inside(str((target / name).relative_to(base)), "write"), Path(received).read_bytes()))
                 names.append(name)
-            content = json.dumps(sorted(names)).encode()
+            content, review = json.dumps(sorted(names)).encode(), next(iter(reviews - {None}), None)
         else:
             content = Path(value).read_bytes() if "value" in self.fetched else (value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)).encode()
-            self._replace(target, content)
+            review = self._put(target, content)
         digest = hashlib.sha256(content).hexdigest()
-        relative = target.relative_to(self.config.working_directory.resolve()).as_posix()
-        self._audit("write", target, digest, len(content))
-        logger.info("saved %s (%d bytes)", relative, len(content))
-        return {"machine": str(self.config.machine_id), "path": relative, "digest": digest, "size": len(content)}
+        relative = target.relative_to(base).as_posix()
+        self._audit("staged" if review else "write", target, digest, len(content))
+        logger.info("%s %s (%d bytes)", "held for review" if review else "saved", relative, len(content))
+        return {"machine": str(self.config.machine_id), "path": relative, "digest": digest, "size": len(content), **({"review": str(review)} if review else {})}
 
     def read(self) -> dict[str, object]:
         """Uploads one file of a file root, streamed; answers the `ArtifactRef` the server stored."""
@@ -765,6 +816,9 @@ class MachineRunner:
         #: Why the last web version of the agent settings was not applied, and which one (shown on the PC's page).
         self._settings_detail, self._settings_refused = "", 0
         self._workspace_jobs = WorkspaceJobs(path=self.config_path.with_name("machine-workspaces.json"))
+        #: Staged writes waiting for the owner's review, and the web's whole-PC browse budget.
+        self.reviews = PlaceReviews.default()
+        self.browse_budget = BrowseBudget()
 
     def _vision_worker(self, config: MachineConfig) -> VisionWorker:
         if self._vision is None or self._vision.keep_warm != config.model_keep_warm_seconds:
@@ -814,6 +868,10 @@ class MachineRunner:
     def load(self) -> MachineConfig:
         values = json.loads(PRIVATE_FILES.read_text(self.config_path))
         values["token"] = PRIVATE_FILES.unseal(values["token"])
+        # Machine files written before levels: each file root was read + write apart from every
+        # other root, i.e. a sandbox (kept as it was; the next save drops `file_roots`).
+        for name in values.pop("file_roots", ()):
+            values.setdefault("places", {}).setdefault(name, "sandbox")
         return MachineConfig.model_validate(values)
 
     async def connect(self, config: MachineConfig) -> None:
@@ -944,7 +1002,7 @@ class MachineRunner:
 
     #: What this runner can do beyond the base protocol (the server's `MachineChannel.require_feature`):
     #: file queries browse the owner's script roots; a script file runs from them.
-    FEATURES: ClassVar[tuple[str, ...]] = ("file_query", "script_file", "file_read", "agent_control", "agent_settings", "web_settings", "workspaces", "start_permission", "project_secrets")
+    FEATURES: ClassVar[tuple[str, ...]] = ("file_query", "script_file", "file_read", "agent_control", "agent_settings", "web_settings", "workspaces", "start_permission", "project_secrets", "places")
 
     @classmethod
     def features(cls) -> list[str]:
@@ -1075,6 +1133,10 @@ class MachineRunner:
                     raise PermissionError("agent request was already used")
                 self._agent_requests[request.id] = request.expires_at
             current = self._current_config(config)
+            if request.feature == "places":
+                answer = await asyncio.to_thread(PlaceDesk(self).answer, request)
+                await socket.send(json.dumps({"type": "agent_answer", "result": answer.model_dump(mode="json")}))
+                return
             self._sessions = self._sessions or MachineSessions(current.working_directory)
             self._log_ring.secrets = (current.token.get_secret_value(), *secret_values(self._safe_environment()))
             agents = MachineAgents(roots=current.agent_roots_by_name(), permission=current.agent_permission, run_agents=current.run_agents,
@@ -1083,7 +1145,9 @@ class MachineRunner:
                                    sessions=self._sessions, logs=self._log_ring, seal=SecretsSeal.for_token(current.token.get_secret_value()),
                                    workspaces=MachineWorkspaces(roots=current.agent_roots_by_name(), origins=current.clone_origins, jobs=self._workspace_jobs,
                                                                 working_directory=current.working_directory, register_root=self._register_agent_root,
-                                                                environment={**self._safe_environment(), **{key: os.environ[key] for key in ("SSH_AUTH_SOCK",) if key in os.environ}}))
+                                                                environment={**self._safe_environment(), **{key: os.environ[key] for key in ("SSH_AUTH_SOCK",) if key in os.environ}}),
+                                   places=current.place_map(), fence_agents=current.fence_agents, reviews=self.reviews,
+                                   levels_file=self.config_path, egress=(urlsplit(current.server_url).hostname or "",))
             answer = await agents.answer(request)
             # Reading (the page polls every few seconds) stays out of the owner's log; actions go in.
             run_id = answer.run_id or getattr(request, "run_id", None)
@@ -1352,7 +1416,7 @@ class MachineRunner:
             self._audit_script(command, spec.path)
             logger.info("%s script file %s (%s), timeout %s s", language, spec.path, found[:12], timeout)
             argv = [*self._interpreter(language, content.decode(errors="replace"), spec), str(path), *spec.args]
-            if any(Path(argv[0]).resolve() == root or root in Path(argv[0]).resolve().parents for root in MachineFiles(config=files.config).roots()):
+            if any(Path(argv[0]).resolve() == root or root in Path(argv[0]).resolve().parents for root in files.config.writable_folders()):
                 raise PermissionError(f"{spec.interpreter}: the program that runs a script cannot live in a folder workflow file steps write to")
             return self._run_process(argv, files.inside(spec.cwd) if spec.cwd else path.parent, timeout)
         source = str(command.config["source"])
@@ -1512,6 +1576,7 @@ class MachineRunner:
                 agent_ref=AgentCatalog.reference(agent.id, agent.revision),
                 cwd=str(config.working_directory),
                 permission_mode=config.permission_ceiling,
+                fence=await asyncio.to_thread(self._agent_fence, config),
             )
             logger.info("agent run %s started", handle.run_id, extra={"machine_id": config.machine_id, "command_id": command_id})
             await self._event(socket, command_id, "progress", {"kind": "log", "level": "info", "logger": __name__, "text": f"agent run {handle.run_id} started", "agent_run_id": handle.run_id})
@@ -1546,6 +1611,22 @@ class MachineRunner:
         finally:
             os.environ.clear()
             os.environ.update(original_environment)
+
+    def _agent_fence(self, config: MachineConfig) -> FenceSpec | None:
+        """What a workflow's agent step is fenced by (its levels, starting in the working directory,
+        which shows only the folders they open), None when its owner left the fence off."""
+        if not config.fence_agents:
+            return None
+        ready, reason = available()
+        if not ready:
+            raise PermissionError(f"the agent fence is on here but cannot be built: {reason}; its owner switches it off there with `interact machine fence off`")
+        places, providers = config.place_map(), ("claude", "codex")
+        programs = tuple(Path(found) for found in (shutil.which(name) for name in providers) if found)
+        spec = FenceSpec(working_directory=config.working_directory, levels_file=self.config_path, levels=places.levels, internal=places.internal,
+                         start=config.working_directory, providers=providers, programs=programs, state=self.reviews.root.parent / "fence-state" / str(uuid4()), reviews=self.reviews.root,
+                         egress=(*(host for provider in providers for host in EGRESS[provider]), urlsplit(config.server_url).hostname or ""))
+        spec.build()
+        return spec
 
     @staticmethod
     def _final_text(events: list[AgentEvent]) -> str:

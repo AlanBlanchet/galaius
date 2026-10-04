@@ -126,7 +126,7 @@ def test_model_input_path_rejects_files_outside_machine_workspace(tmp_path: Path
 def _config(tmp_path: Path, permission_ceiling: str) -> MachineConfig:
     return MachineConfig(
         server_url="http://127.0.0.1:8817", workspace_id=uuid4(), machine_id=uuid4(),
-        token="iwm_" + "x" * 48, permission_ceiling=permission_ceiling, working_directory=tmp_path,
+        token="iwm_" + "x" * 48, permission_ceiling=permission_ceiling, working_directory=tmp_path, places={"interact-files": "sandbox"},
     )
 
 
@@ -449,7 +449,8 @@ def test_a_machine_saves_text_or_a_received_file_within_its_ceiling(tmp_path: Pa
     root.mkdir()
     received = root / "received.bin"
     received.write_bytes(b"received bytes")
-    config = MachineConfig(server_url="http://127.0.0.1:8817", workspace_id=uuid4(), machine_id=uuid4(), token="t" * 40, permission_ceiling=ceiling, working_directory=root)
+    config = MachineConfig(server_url="http://127.0.0.1:8817", workspace_id=uuid4(), machine_id=uuid4(), token="t" * 40, permission_ceiling=ceiling, working_directory=root,
+                           places={"interact-files": "sandbox"})
     command = _file_command(config.machine_id, "write_artifact", "interact-files/saved/out.txt", {"value": str(received) if fetched else value})
     files = CommandFiles(config=config, command=command, fetched=frozenset({"value"}) if fetched else frozenset())
     if written is None:
@@ -492,20 +493,47 @@ def test_reading_a_folder_is_refused_and_leaks_no_descriptor(tmp_path: Path, mon
     assert len(os.listdir("/proc/self/fd")) == before
 
 
-def test_the_runner_reports_the_file_roots_it_accepts_as_they_are_now(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """What the server shows is what file nodes can use: refused roots (climbing out, the
-    runner's own folder, a symlink) are left out, and a change made with `interact machine
-    file-roots` is read on the next beat, no reconnect."""
+@pytest.mark.parametrize(("level", "name", "outcome"), [
+    ("read", "out.txt", "refused"),
+    ("write", "out.txt", "written"),
+    ("write", "CLAUDE.md", "refused"),      # steers the agents started there: never written in place outside a sandbox
+    ("sandbox", "claude.md", "written"),
+    ("write_on_review", "out.txt", "held"),  # lands in a staging copy the owner accepts on the machine
+])
+def test_a_workflow_write_follows_its_folders_level(tmp_path: Path, level: str, name: str, outcome: str, monkeypatch: pytest.MonkeyPatch, directory_backend) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    root = tmp_path / "work"
+    (root / "notes").mkdir(parents=True)
+    config = MachineConfig(server_url="http://127.0.0.1:8817", workspace_id=uuid4(), machine_id=uuid4(), token="t" * 40, permission_ceiling="full_access", working_directory=root,
+                           places={"notes": level})
+    files = CommandFiles(config=config, command=_file_command(config.machine_id, "write_artifact", f"notes/{name}", {"value": "text"}))
+    if outcome == "refused":
+        with pytest.raises(PermissionError):
+            files.write()
+        assert not (root / "notes" / name).exists()
+        return
+    receipt = files.write()
+    assert (root / "notes" / name).exists() is (outcome == "written")
+    assert ("review" in receipt) is (outcome == "held")
+
+
+def test_the_runner_reports_the_folders_workflows_may_read_as_they_are_now(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """What the server shows is what file nodes can use: folders set to read or later whose level is
+    in force (never the runner's own folder, a link, a hidden name), and a change made with
+    `interact machine places` is read on the next beat, no reconnect."""
     root = tmp_path / "work"
     (root / "exports" / "pc").mkdir(parents=True)
     (root / "linked").symlink_to(tmp_path)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     runner = MachineRunner(tmp_path / "config" / "interact" / "machine.json")
     connected = MachineConfig(server_url="http://127.0.0.1:8817", workspace_id=uuid4(), machine_id=uuid4(), token="t" * 40, permission_ceiling="read_only", working_directory=root,
-                              file_roots=("interact-files", "exports/pc", "../outside", ".interact/x", "linked"))
+                              places={"interact-files": "sandbox", "exports/pc": "read", "linked": "read", "exports/pc/names": "see"})
     runner.save(connected)
-    assert runner._beat(connected)["file_roots"] == ["interact-files", "exports/pc"]
-    runner.update(lambda current: current.model_copy(update={"file_roots": ("exports",), "agent_roots": ("exports/pc",)}))
+    assert runner._beat(connected)["file_roots"] == ["exports/pc", "interact-files"]
+    # A sandbox set over `exports` and an agent root inside it: the beat reports the new folder, the
+    # settings revision, and the agent root refused (nothing a workflow writes lands where an agent starts).
+    runner.update(lambda current: current.model_copy(update={"places": {"exports": "sandbox"}, "agent_roots": ("exports/pc",)}))
     beat = runner._beat(connected)
     assert beat["file_roots"] == ["exports"] and beat["agent_settings"]["revision"] == 1 and beat["agent_settings"]["refused"][0].startswith("exports/pc: overlaps")
 
@@ -520,13 +548,13 @@ def test_command_preserves_owner_changes_and_persists_replay_protection(tmp_path
     runner = MachineRunner(tmp_path / "config" / "machine.json")
     connected = _scripts_config(tmp_path)
     runner.save(connected)
-    runner.save(connected.model_copy(update={"file_roots": (), "script_roots": ()}))
+    runner.save(connected.model_copy(update={"places": {}, "script_roots": ()}))
     command = _signed(connected, _script_command(connected.machine_id, "python", "print(1)").model_copy(update={
         "workspace_id": connected.workspace_id, "expires_at": datetime.now(UTC) + timedelta(seconds=30)}))
     monkeypatch.setattr(runner, "_run_script", lambda *_: "ok")
     asyncio.run(runner._execute(AsyncMock(), connected, command))
     saved = runner.load()
-    assert saved.file_roots == saved.script_roots == ()
+    assert saved.places == {} and saved.script_roots == ()
     assert saved.seen_nonces == (command.nonce,)
     with pytest.raises(PermissionError, match="nonce was already used"):
         asyncio.run(runner._execute(AsyncMock(), connected, command))
@@ -578,11 +606,11 @@ def test_config_updates_serialize_nonce_claims_with_owner_edits(tmp_path):
         "workspace_id": config.workspace_id, "expires_at": datetime.now(UTC) + timedelta(seconds=30)})) for _ in range(12)]
     with ThreadPoolExecutor(max_workers=4) as workers:
         claims = [workers.submit(runner.update, lambda current, command=command: runner._accept_command(current, config, command)) for command in commands]
-        edit = workers.submit(runner.update, lambda current: current.model_copy(update={"file_roots": (), "script_roots": ()}))
+        edit = workers.submit(runner.update, lambda current: current.model_copy(update={"places": {}, "script_roots": ()}))
         for job in (*claims, edit):
             job.result(timeout=5)
     saved = runner.load()
-    assert saved.file_roots == saved.script_roots == ()
+    assert saved.places == {} and saved.script_roots == ()
     assert set(saved.seen_nonces) == {command.nonce for command in commands}
 
 
@@ -765,8 +793,8 @@ def test_script_file_runs_its_pinned_digest_and_refuses_a_changed_file(tmp_path:
     ("outside.py", {}, "outside this machine's script folders"),
     ("scripts/linked.py", {}, "outside this machine's script folders"),  # a link pointing out of the roots
     ("interact-files/job.py", {}, "outside this machine's script folders"),  # file steps write there
-    ("interact-files/job.py", {"script_roots": ("interact-files",)}, "outside this machine's script folders"),  # a script root never overlaps a file root
-    ("scripts/job.py", {"file_roots": ("scripts/inbox",)}, "outside this machine's script folders"),  # nor holds one
+    ("interact-files/job.py", {"script_roots": ("interact-files",)}, "outside this machine's script folders"),  # a script root never overlaps a sandbox
+    ("scripts/job.py", {"places": {"scripts/inbox": "write"}}, "outside this machine's script folders"),  # nor holds one
     ("scripts/job.py", {"interpreter": "interact-files/python"}, "full path"),
 ])
 def test_script_file_outside_the_script_roots_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path: str, update: dict, refusal: str) -> None:
@@ -805,7 +833,7 @@ def test_hidden_script_paths_never_pass_the_wire_contract() -> None:
 
 
 def test_file_listing_shows_script_roots_folders_and_a_file_digest_only(tmp_path: Path, directory_backend) -> None:
-    config = _scripts_config(tmp_path, file_roots=("interact-files",))
+    config = _scripts_config(tmp_path)
     root = tmp_path / "scripts"
     (root / "tools").mkdir(parents=True)
     (root / ".secret").mkdir()
@@ -917,3 +945,8 @@ def test_approve_script_pending_asks_once_per_waiting_version_on_this_machine(tm
     machine_command.machine_approve_script(pending=True)
     result = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert calls == [ScriptImplementation.inline_digest("python", "print(1)\n")] and result["skipped"] == [ScriptImplementation.inline_digest("shell", "rm x\n")]
+
+
+def test_agents_stay_off_until_the_owner_turns_them_on_there(tmp_path: Path) -> None:
+    """An agent CLI can read what its user can: no path that saves a machine turns them on for him."""
+    assert _config(tmp_path, "read_only").run_agents is False

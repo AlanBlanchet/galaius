@@ -9,10 +9,12 @@ from uuid import UUID
 
 from cyclopts import App, Parameter
 
-from interact_core import AgentTouchScope, WorkflowNode
+from interact_core import PLACE_LEVELS, AgentTouchScope, MachinePlaceChange, PlaceLevel, WorkflowNode
 
 from interact.functions import PermissionLevel
 from interact.machine_service import MACHINE_SERVICE, ServiceUnavailable
+from interact.machine_places import PlaceDesk
+from interact.places import split
 from interact.machines import SCRIPT_RUNTIMES, MachineFiles, MachineRunner, ScriptExecution, connect_command
 
 machine_app = App(name="machine", help="Connect this computer as a workflow machine.")
@@ -52,15 +54,113 @@ def machine_service(action: Literal["status", "start", "stop", "restart", "run"]
     print(f"Background service: {state}. Log: {MACHINE_SERVICE.logs}")
 
 
-@machine_app.command(name="file-roots")
-def machine_file_roots(*roots: str) -> None:
-    """Owner-only, on this machine: the folders (relative to its working directory) workflow file
-    nodes may read and write. No argument prints them; arguments replace them."""
+@machine_app.command(name="places")
+def machine_places(path: str | None = None, level: PlaceLevel | None = None) -> None:
+    """Owner-only, on this machine: how far each folder (relative to its working directory) is
+    open to workflows, the Data screen and agents — hidden (every folder not named), see (names,
+    sizes, dates), read, write_on_review (writes wait for your review: `interact machine
+    reviews`), sandbox (read + write, apart from agent and script folders), write. A level holds
+    for everything beneath until a deeper one. Set here, it applies at once. No argument prints
+    the levels, the widenings the web asked for (confirm them with `interact machine approve`),
+    and whether agents are fenced."""
     runner = MachineRunner()
+    desk = PlaceDesk(runner)
+    if path is not None:
+        if level is None:
+            raise SystemExit("name the level: " + ", ".join(PLACE_LEVELS))
+        try:
+            desk.set_here(path, level)
+        except PermissionError as error:
+            raise SystemExit(f"interact machine places: {error}") from None
     config = runner.load()
-    if roots:
-        config = runner.update(lambda current: current.model_copy(update={"file_roots": tuple(roots)}))
-    print(json.dumps({"working_directory": str(config.working_directory), "file_roots": list(config.file_roots)}))
+    print(desk.view(config).model_dump_json(indent=2))
+
+
+@machine_app.command(name="approve")
+def machine_approve(change: str | None = None, *, yes: bool = False) -> None:
+    """Owner-only, on this machine: confirm the widenings asked from the web (a folder opened
+    further, a new sandbox), each shown first; `change` (an id or its first characters) picks one.
+    Nothing asked from the web opens a folder further until confirmed here. --yes confirms the
+    one named without asking (never all: one queued after you last looked would pass unseen)."""
+    if yes and not change:
+        raise SystemExit("name the widening to confirm with --yes (its id, from `interact machine places`); without --yes each one is shown and asked")
+    def confirm(waiting: MachinePlaceChange) -> bool:
+        print(f"The web asks: {waiting.path}: {waiting.previous} -> {waiting.level} (asked {waiting.asked_at:%Y-%m-%d %H:%M} UTC, id {str(waiting.id)[:8]}, digest {waiting.digest[:16]})")
+        if yes:
+            return True
+        if not sys.stdin.isatty():
+            raise SystemExit("confirm in a terminal, or pass --yes")
+        return input("Open it? [y/N] ").strip().lower() in {"y", "yes"}
+    applied = PlaceDesk(MachineRunner()).approve(change, confirm)
+    print(json.dumps({"applied": [{"path": item.path, "level": item.level, "digest": item.digest} for item in applied]}))
+
+
+@machine_app.command(name="browse")
+def machine_browse(state: Literal["on", "off"] | None = None) -> None:
+    """Owner-only, on this machine: whether you may browse the names of every folder here from the
+    web to pick levels (names only, never contents; credential stores never listed; off by
+    default). No argument prints it."""
+    runner = MachineRunner()
+    config = runner.update(lambda current: current.model_copy(update={"browse": state == "on"})) if state else runner.load()
+    if state:
+        PlaceDesk(runner)._log("browse_switch", state=state, method="pc")
+    print(json.dumps({"browse": config.browse}))
+
+
+@machine_app.command(name="fence")
+def machine_fence(state: Literal["on", "off"] | None = None) -> None:
+    """Owner-only, on this machine: whether agents started here (from the web, or a workflow's
+    agent step) run inside an OS fence built from the levels: they see only folders set to read or
+    later, and cannot write below write. On, an agent that cannot be fenced is not started
+    (sessions are not fenced yet). Linux only (bubblewrap + Landlock). No argument prints whether
+    it is on and whether this machine can build it."""
+    runner = MachineRunner()
+    config = runner.update(lambda current: current.model_copy(update={"fence_agents": state == "on"})) if state else runner.load()
+    if state:
+        PlaceDesk(runner)._log("fence_switch", state=state, method="pc")
+    print(PlaceDesk(runner).view(config).fence.model_dump_json())
+
+
+@machine_app.command(name="reviews")
+def machine_reviews() -> None:
+    """Owner-only, on this machine: the writes waiting for your review (agents and workflows
+    writing into a write_on_review folder), each with its files and digest."""
+    for review in MachineRunner().reviews.list():
+        print(f"{str(review.id)[:8]}  {review.place}  {review.origin}  {review.state}  {len(review.files)} file(s)  digest {review.digest}" + (f"  ({review.reason})" if review.reason else ""))
+
+
+@machine_app.command(name="review")
+def machine_review(review: str, *, accept: str | None = None, discard: bool = False) -> None:
+    """Owner-only, on this machine: show one review's diff and digest (`review`: its id or first
+    characters). --accept DIGEST applies exactly that diff (the digest you read; at least its first
+    12 characters); in a terminal you are asked instead. --discard drops it; nothing is written."""
+    runner = MachineRunner()
+    desk, config = PlaceDesk(runner), runner.load()
+    matches = [item for item in runner.reviews.list() if str(item.id).startswith(review)]
+    if len(matches) != 1:
+        raise SystemExit("no single review starts with that id: see `interact machine reviews`")
+    found = matches[0]
+    if discard:
+        runner.reviews.discard(found.id)
+        desk._log("review", review_id=found.id, place=found.place, outcome="discarded", method="pc", digest=found.digest)
+        print(json.dumps({"discarded": str(found.id)}))
+        return
+    manifest = runner.reviews.manifest(found.id)
+    _, lines = runner.reviews.read(found.id, config.place_map().base.joinpath(*split(found.place)), limit=None)
+    print("Files (what an editor, git or an agent runs later comes first):")
+    print("\n".join(f"  {change:8} {key}" for key, change, _, _ in manifest.entries))
+    print("\n".join(lines))
+    print(f"\n{found.place}: {len(manifest.entries)} file(s), {found.state}{' (' + found.reason + ')' if found.reason else ''}\ndigest {found.digest}")
+    if accept is None and sys.stdin.isatty() and found.state == "ready":
+        accept = found.digest if input("Apply exactly this diff? [y/N] ").strip().lower() in {"y", "yes"} else None
+    if accept is not None:
+        if len(accept) < 12 or not found.digest or not found.digest.startswith(accept):
+            raise SystemExit("that is not this review's digest (read it again above)")
+        try:
+            desk.accept(found.id, found.digest)
+        except PermissionError as error:
+            raise SystemExit(f"interact machine review: {error}") from None
+        print(json.dumps({"accepted": str(found.id), "digest": found.digest}))
 
 
 @machine_app.command(name="permission")
@@ -102,7 +202,7 @@ def machine_remote(state: Literal["on", "off"] | None = None) -> None:
 @machine_app.command(name="script-roots")
 def machine_script_roots(*roots: str) -> None:
     """Owner-only, on this machine: the folders (relative to its working directory) Script steps
-    may run a file from. Never inside or around a file root, so no workflow can write beside a
+    may run a file from. Never inside or around a folder anything writes in, so no workflow can write beside a
     script it runs. No argument prints them; arguments replace them; "" alone clears them."""
     runner = MachineRunner()
     config = runner.load()
@@ -116,8 +216,8 @@ def machine_script_roots(*roots: str) -> None:
 @machine_app.command(name="agent-roots")
 def machine_agent_roots(*roots: str) -> None:
     """Owner-only, on this machine: the folders (relative to its working directory) you may start
-    agents in from the web, in any folder beneath them. Never inside or around a file or script
-    root. No argument prints them; arguments replace them; "" alone clears them."""
+    agents in from the web, in any folder beneath them. Never inside or around a sandbox or a
+    script root. No argument prints them; arguments replace them; "" alone clears them."""
     runner = MachineRunner()
     config = runner.load()
     if roots:

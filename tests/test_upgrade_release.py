@@ -149,14 +149,14 @@ def test_upgrade_settings_are_never_synced_from_a_server() -> None:
     assert not {"INTERACT_AUTO_UPGRADE", "INTERACT_UPGRADE_PIN", "INTERACT_UPGRADE_CHECK_SECONDS", "INTERACT_UPGRADE_GITHUB"} & set(PORTABLE_ENV)
 
 
-def test_a_workflow_file_root_never_reaches_the_installed_runtimes(tmp_path, monkeypatch) -> None:
+def test_no_folder_level_reaches_the_installed_runtimes(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("INTERACT_RUNTIMES", str(tmp_path / "work" / "runtimes"))
     (tmp_path / "work" / "runtimes" / "0.44.0-x").mkdir(parents=True)
     (tmp_path / "work" / "data").mkdir()
     config = MachineConfig(server_url="https://interact.example.com", workspace_id="00000000-0000-0000-0000-000000000001", machine_id="00000000-0000-0000-0000-000000000002",
-                           token="t" * 32, permission_ceiling="read_only", working_directory=tmp_path / "work", file_roots=("runtimes/0.44.0-x", "runtimes", "data"))
-    usable, refused = config.usable_file_roots()
-    assert usable == ((tmp_path / "work" / "data").resolve(),) and set(refused) == {"runtimes/0.44.0-x", "runtimes"}
+                           token="t" * 32, permission_ceiling="read_only", working_directory=tmp_path / "work", places={"runtimes/0.44.0-x": "write", "runtimes": "write", "data": "write"})
+    assert list(config.place_map().in_force()) == ["data"]
+    assert {place.path for place in config.place_map().entries() if place.refused} == {"runtimes/0.44.0-x", "runtimes"}
 
 
 def test_a_pin_names_one_build_and_only_that_build_passes_the_floor(tmp_path, signer, published, monkeypatch) -> None:
@@ -242,7 +242,7 @@ def test_the_package_retires_the_key_that_was_readable_on_the_owner_pc() -> None
 
 
 def test_a_server_offering_no_release_says_so(tmp_path, signer, published, monkeypatch) -> None:
-    assert "offers no release (HTTP 404)" in checker(tmp_path, signer, published, monkeypatch).run()
+    assert "offers no release (it has published none yet) (HTTP 404)" in checker(tmp_path, signer, published, monkeypatch).run()
 
 
 @pytest.mark.parametrize("folder", [".local/bin", ".cargo/bin"])

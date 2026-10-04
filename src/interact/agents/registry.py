@@ -30,6 +30,7 @@ from interact_core import AgentRevisionRef, PromptExecutionRef
 from interact.agents.events import TOKEN_FIELDS, AgentEvent, UsageLedger
 from interact.agents.catalog_connection import CatalogConnection
 from interact.agents.providers import PROVIDERS, DeniedTool
+from interact.fence import FenceSpec
 from interact.file_lock import exclusive
 from interact.pinned_directory import PinnedDirectory
 from interact.private_files import PRIVATE_FILES
@@ -141,6 +142,9 @@ class AgentRun(BaseModel):
     permission_mode: str | None = None
     #: Only an explicitly recorded opt-in may add the launcher mesh on resume.
     mesh_enabled: bool = False
+    #: What the OS fence of every turn is built from, at that turn, from the levels as they are then
+    #: (`interact.fence`); None: unfenced. Held here, in the runner's store, never inside a fence.
+    fence: FenceSpec | None = None
     parent_run_id: str | None = None
     root_run_id: str | None = None
     #: Owning caller conversation, independent of run genealogy and the child's vendor session.
@@ -614,7 +618,7 @@ def register(*, run_id: str, pid: int | None, provider: str, name: str, task: st
              definition_path: Path | None = None, session_id: str | None = None,
              candidates: tuple[LaunchCandidate, ...] = (),
              skipped: tuple[SkippedCandidate, ...] = (),
-             denied_tools: tuple[DeniedTool, ...] = ()) -> AgentRun:
+             denied_tools: tuple[DeniedTool, ...] = (), fence: FenceSpec | None = None) -> AgentRun:
     provider_impl = PROVIDERS.get(provider)
     definition = definition_path
     if definition is None and agent_ref is None:
@@ -626,7 +630,7 @@ def register(*, run_id: str, pid: int | None, provider: str, name: str, task: st
                    permission_mode=permission_mode, requested_criterion=requested_criterion,
                    mesh_enabled=mesh_enabled,
                    reasoning=reasoning,
-                   candidates=candidates, skipped=skipped, denied_tools=denied_tools,
+                   candidates=candidates, skipped=skipped, denied_tools=denied_tools, fence=fence,
                    provider_session_id=provider_session_id,
                    lifecycle_token=secrets.token_hex(16),
                    started_at=time.time())
