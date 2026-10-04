@@ -77,13 +77,20 @@ class MachineNotice(CatalogAuthenticationError):
 
     @staticmethod
     def connection() -> CatalogConnection | None:
-        connection = CatalogConnection.load()
+        try:
+            connection = CatalogConnection.load()
+        except CatalogConnectionError:
+            return None
         return connection if connection is not None and connection.auth_mode != "preview" else None
 
     @classmethod
     def say(cls, stream: TextIO) -> None:
         """Tell a person at a terminal once per connection; pipes and editor-launched servers stay quiet."""
-        if (connection := CatalogConnection.load()) is None:
+        try:
+            connection = CatalogConnection.load()
+        except CatalogConnectionError:
+            return
+        if connection is None:
             return
         marker = connection.session_path().with_suffix(".machine-notice")
         sessions = marker.parent
@@ -101,8 +108,13 @@ class MachineNotice(CatalogAuthenticationError):
 class ServerToolSettings(ServerPrompts):
     @classmethod
     def configured(cls):
-        """The signed-in person's settings; None without a connection or on a machine connection."""
-        connection = CatalogConnection.load()
+        """The signed-in person's settings; None without a connection or on a machine connection.
+        An unreadable connection file never takes local settings (every tool call reads them) down
+        with it: the catalog commands that need it say why."""
+        try:
+            connection = CatalogConnection.load()
+        except CatalogConnectionError:
+            return None
         return cls(connection=connection) if connection and connection.auth_mode == "preview" else None
 
     @property

@@ -7,7 +7,9 @@ content. Standard authentication uses the existing protected token-file reader; 
 
 import hashlib
 import ipaddress
+import json
 import os
+import typing
 import warnings
 from contextlib import ExitStack, contextmanager
 from http.cookiejar import LWPCookieJar, LoadError
@@ -58,7 +60,9 @@ class CatalogConnection(BaseModel):
     endpoint: str
     workspace_id: UUID | None = None
     #: `machine`: this PC's own link (`interact.machines.MachineConfig`): its endpoint, company and
-    #: token are read from the link on every load, so a re-linked PC is followed with no step.
+    #: token are read from the link on every load, so a re-linked PC is followed with no step. Never
+    #: written to the connection file: the link is its only record (one writer, `MachineRunner`), so
+    #: no install or sync rewrites a file other running interact processes read.
     auth_mode: Literal["preview", "token", "machine"]
     token_file: Path | None = None
 
@@ -119,12 +123,20 @@ class CatalogConnection(BaseModel):
         try:
             payload = target.read_bytes()
         except FileNotFoundError:
-            return None
+            return cls.linked() if path is None else None
         if len(payload) > 16 * 1024:
             raise CatalogConnectionError("catalog connection exceeds its size limit")
         try:
             connection = cls.model_validate_json(payload)
         except ValueError as error:
+            try:
+                mode = json.loads(payload).get("auth_mode")
+            except (ValueError, AttributeError):
+                mode = None
+            if isinstance(mode, str) and mode not in typing.get_args(cls.model_fields["auth_mode"].annotation):
+                raise CatalogConnectionError(
+                    f"catalog connection {target} names auth_mode {mode!r}, written by a newer interact; restart this process to load it"
+                ) from error
             raise CatalogConnectionError("invalid catalog connection configuration") from error
         if connection.workspace_id is None:
             raise CatalogConnectionError("catalog connection has no selected workspace; sync again")
@@ -143,7 +155,11 @@ class CatalogConnection(BaseModel):
     def save(self, path: Path | None = None) -> None:
         if self.workspace_id is None:
             raise CatalogConnectionError("select a workspace before saving the catalog connection")
-        self.replace_text(path if path is not None else self.path(), self.model_dump_json(indent=2))
+        target = path if path is not None else self.path()
+        if self.auth_mode == "machine":
+            target.unlink(missing_ok=True)  # the PC link is the connection: no second copy to clobber
+            return
+        self.replace_text(target, self.model_dump_json(indent=2))
 
     def connect(self, *, transport: httpx.BaseTransport | None = None) -> httpx.Client:
         headers = {"Origin": self.endpoint.rstrip("/"), "User-Agent": USER_AGENT}

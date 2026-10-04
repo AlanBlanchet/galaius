@@ -313,9 +313,9 @@ def test_a_linked_pc_reads_the_catalog_with_its_own_link_and_follows_a_relink(li
     with pytest.raises(CatalogAuthenticationError, match="interact login"):
         AgentCatalog.refresh(connection, transport=machine_transport(snapshot(2), "iwm_" + "b" * 48, status=401))
     MachineRunner().config_path.unlink()
-    if saved == "machine":
-        with pytest.raises(CatalogAuthenticationError, match="interact login"):
-            CatalogConnection.load()
+    assert CatalogConnection.load() is None if saved == "machine" else CatalogConnection.load().auth_mode == "preview"
+    with pytest.raises(CatalogAuthenticationError, match="interact login"):
+        AgentCatalog.refresh(connection)  # a machine connection held in hand: the link is gone
 
 
 def test_a_linked_pc_whose_key_is_revoked_reads_the_catalog_through_its_link(linked_pc, catalog_home):
@@ -334,6 +334,33 @@ def test_a_linked_pc_whose_key_is_revoked_reads_the_catalog_through_its_link(lin
     elsewhere = CatalogConnection(endpoint="https://other.example", workspace_id=uuid4(), auth_mode="token", token_file=key)
     with pytest.raises(CatalogAuthenticationError):
         AgentCatalog.refresh(elsewhere, transport=httpx.MockTransport(server))
+
+
+def test_a_linked_pc_keeps_no_catalog_file_so_nothing_rewrites_what_running_processes_read(linked_pc, capsys):
+    """The PC link is the only record of a machine connection: syncing removes a stale file instead of
+    writing a mode older running interact processes cannot read; with no file the link is used."""
+    CatalogConnection(endpoint="http://127.0.0.1:8767", workspace_id=uuid4(), auth_mode="preview").save()
+    connection = CatalogConnection.load()
+    assert connection.auth_mode == "machine"
+    connection.save()
+    assert not CatalogConnection.path().exists()
+    assert CatalogConnection.load() == connection
+
+
+@pytest.mark.parametrize(("payload", "said"), [
+    ('{"endpoint":"http://127.0.0.1:8767","workspace_id":"%s","auth_mode":"passkey"}' % uuid4(), "written by a newer interact; restart this process"),
+    ('{"auth_mode":"token"}', "invalid catalog connection configuration"),
+    ("not json", "invalid catalog connection configuration"),
+])
+def test_an_unreadable_catalog_file_names_why_and_never_breaks_local_settings(catalog_home, payload, said):
+    from interact.server_tool_settings import ServerToolSettings
+
+    CatalogConnection.replace_text(CatalogConnection.path(), payload)
+    with pytest.raises(CatalogConnectionError, match=said):
+        CatalogConnection.load()
+    UserConfig.PATH.write_text("INTERACT_EXAMPLE=kept\n")
+    assert ServerToolSettings.configured() is None
+    assert UserConfig.read()["INTERACT_EXAMPLE"] == "kept"
 
 
 def test_corrupt_configuration_never_becomes_unconfigured(tmp_path):
