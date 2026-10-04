@@ -10,6 +10,7 @@ once right after the approval (`AgentChoice`; off and none unless said). On a co
 connected to the same server, `interact login` signs nothing in again: it asks the same agent
 questions, the current settings as defaults."""
 
+import asyncio
 import os
 import platform
 import socket
@@ -24,6 +25,7 @@ from typing import ClassVar, Literal
 from urllib.parse import urlsplit
 
 import httpx
+import websockets
 from interact_core import DeviceLoginIssued, DeviceLoginStart, DeviceLoginStarted, DeviceTokenRefusal, MachineSummary, ReleaseInfo
 from pydantic import BaseModel, ConfigDict, TypeAdapter
 
@@ -389,18 +391,56 @@ def login(server: str | None, *, allow_runs: bool, yes: bool, open_browser: bool
     agents questions ahead (scripts, the install line); unsaid and in a terminal without `yes`, they
     are asked; else they stay as they are (off on a joining computer). Already connected to this
     server (the one remembered when `server` is None): nothing is signed in again, only the agent
-    settings are asked or applied; connected to another server: refused."""
+    settings are asked or applied; connected to another server: moved there when that server holds
+    this computer's enrollment (`_moved`), else refused."""
     existing = _existing_machine()
     try:
         account = AccountLogin.parsed(existing.server_url) if existing is not None and server is None else AccountLogin.at(server)
         if existing is None:
             _login(account, allow_runs=allow_runs, yes=yes, open_browser=open_browser, agents=AgentChoice.given(agents, agent_folders, agent_opt_ins, AgentChoice.joining()))
         elif AccountLogin.parsed(existing.server_url) != account:
-            raise LoginError(f"this computer is already connected (machine {existing.machine_id} on {existing.server_url}); run `interact logout` first")
+            _moved(account, existing, yes=yes, agents=AgentChoice.given(agents, agent_folders, agent_opt_ins, existing))
         else:
             _reconfigured(account, existing, yes=yes, agents=AgentChoice.given(agents, agent_folders, agent_opt_ins, existing))
     except httpx.HTTPError as error:
         raise LoginError(f"cannot reach the server ({type(error).__name__}); check the address and your network, then run it again") from None
+
+
+def _moved(account: AccountLogin, existing: MachineConfig, *, yes: bool, agents: AgentChoice | None) -> None:
+    """The server moved (its data with it): this computer stays the SAME machine and only follows the
+    address. Proof the new address holds this enrollment: its machine channel opens with this
+    computer's own token, which every other server refuses before accepting. Then the address is
+    rewritten (machine file, the CLI's connection, the remembered server) and the service restarted
+    on it. A server that does not know this computer changes nothing here."""
+    match _channel_accepts(account.server, existing.token.get_secret_value()):
+        case "refused":
+            raise LoginError(f"this computer is already connected (machine {existing.machine_id} on {existing.server_url}) and "
+                             f"{account.server} does not know it; run `interact logout` first to sign in there as a new computer")
+        case "unreachable":
+            raise LoginError(f"{account.server} does not answer as an Interact server yet; nothing changed here, run it again once it does")
+    machine = MachineRunner().update(lambda current: current.model_copy(update={"server_url": account.server}))
+    connection = CatalogConnection.load()
+    if connection is not None and connection.endpoint.rstrip("/") == existing.server_url.rstrip("/"):
+        connection.model_copy(update={"endpoint": account.server}).save()
+    account.remember()
+    print(f"Moved: this computer now connects to {account.server} (was {existing.server_url}).")
+    _reconfigured(account, machine, yes=yes, agents=agents)
+
+
+def _channel_accepts(server: str, token: str, timeout: float = 15) -> Literal["accepted", "refused", "unreachable"]:
+    """What `server`'s machine channel says to `token`: an Interact server refuses an unknown token
+    (403) before accepting the WebSocket; anything else (no route, no answer) is not a verdict. The
+    probe closes at once and sends nothing."""
+    async def probe() -> Literal["accepted", "refused", "unreachable"]:
+        try:
+            async with websockets.connect(MachineRunner._channel_url(server), additional_headers={"Authorization": f"Bearer {token}"},
+                                          user_agent_header=USER_AGENT, open_timeout=timeout, close_timeout=3):
+                return "accepted"
+        except websockets.InvalidStatus as error:
+            return "refused" if error.response.status_code == 403 else "unreachable"
+        except (OSError, TimeoutError, websockets.InvalidHandshake, websockets.InvalidURI):
+            return "unreachable"
+    return asyncio.run(probe())
 
 
 def _reconfigured(account: AccountLogin, existing: MachineConfig, *, yes: bool, agents: AgentChoice | None) -> None:

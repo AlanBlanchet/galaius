@@ -8,7 +8,7 @@ import os
 import re
 from pathlib import Path
 
-from interact.config.schema import by_key
+from interact.config.schema import SETTINGS, by_key
 
 # An already-environment-shaped name: all-caps, digits/underscores, no dots or dashes. A friendly
 # setting key is always dotted (group.field), so this only matches real env vars.
@@ -121,8 +121,10 @@ class UserConfig:
         if base is not None and server is None:
             raise ToolSettingsConflict("Server connection removed. Reload before saving; draft retained.")
         if server is None and (machine := MachineNotice.connection()) is not None:
-            current = cls.read_local()
-            if any(current.get(key) != value for key, value in changes.items() if key in PORTABLE_ENV):
+            # Unset means the default: a default-valued setting left in config.env is no change.
+            current, defaults = cls.read_local(), {setting.env: setting.default for setting in SETTINGS}
+            if any(current.get(key, defaults.get(key)) != (defaults.get(key) if value is None else value)
+                   for key, value in changes.items() if key in PORTABLE_ENV):
                 raise MachineNotice(machine)
             changes = {key: value for key, value in changes.items() if key not in PORTABLE_ENV}
         portable = {key: value for key, value in changes.items() if key in PORTABLE_ENV} if server else {}

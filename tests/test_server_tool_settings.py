@@ -13,7 +13,7 @@ from interact_core.accounts import Account, Bootstrap, Workspace
 
 from interact.agents.catalog_connection import CatalogAuthenticationError, CatalogConnection, CatalogConnectionError
 from interact.config import SETTINGS, UserConfig
-from interact.cli.tui import InteractTUI, WorkspacePane, _build_widget
+from interact.cli.tui import InteractTUI, WorkspacePane, _build_widget, _field_id
 from interact.server_tool_settings import ServerToolSettings, ToolSettingsConflict
 
 
@@ -69,7 +69,7 @@ def settings_server(tmp_path, monkeypatch):
     connection = CatalogConnection(endpoint="http://127.0.0.1:8767", auth_mode="preview", workspace_id=uuid4())
     connection.save()
     bootstrap = Bootstrap(account=Account(account_id=uuid4(), email="fixture@example.invalid", locale="en", verified=True),
-        workspaces=(Workspace(workspace_id=connection.workspace_id, name="Fixture", role="owner"),),
+        workspaces=(Workspace(workspace_id=connection.workspace_id, name="Fixture", role="owner", kind="personal"),),
         current_workspace_id=connection.workspace_id, csrf_token="fixture-csrf", session_expires_at=datetime.now(UTC)+timedelta(hours=1))
     state = {"value": PortableToolSettings(revision=0, values={}), "bootstrap": bootstrap,
              "failure": None, "requests": [], "connection": connection}
@@ -330,15 +330,23 @@ def machine_connection(tmp_path, monkeypatch):
     return connection
 
 
-async def test_machine_connection_runs_on_local_settings(machine_connection):
+@pytest.mark.parametrize("fps", ["9", "5"])  # 5 = the default, kept in config.env from before the PC was connected
+async def test_machine_connection_runs_on_local_settings(machine_connection, fps):
     from interact.runtime import _LiveConfig
-    assert UserConfig.read()["INTERACT_VIDEO_FPS"] == "9"
-    assert _LiveConfig().refresh().video_fps == 9
+    from textual.widgets import Select
+    UserConfig.PATH.write_text(f"INTERACT_VIDEO_FPS={fps}\nOPENAI_API_KEY=fixture-secret\n")
+    assert UserConfig.read()["INTERACT_VIDEO_FPS"] == fps
+    assert _LiveConfig().refresh().video_fps == int(fps)
     app = InteractTUI()  # bare `interact` on a terminal
     async with app.run_test(size=(120, 48)) as pilot:
         await pilot.pause()
         assert "work machine" in str(app.query_one("#save-status", Static).render())
         assert any("work machine" in str(toast.message) for toast in app._notifications)
+        target, = (setting for setting in SETTINGS if setting.key == "desktop.target")
+        app.query_one(f"#{_field_id(target)}", Select).value = "nested"  # a machine setting, portable ones untouched
+        app._save_config()
+        await pilot.pause()
+    assert UserConfig.read_local() == {"INTERACT_VIDEO_FPS": fps, "OPENAI_API_KEY": "fixture-secret", "INTERACT_DESKTOP_TARGET": "nested"}
 
 
 @pytest.mark.parametrize("lang,sentence", [("fr_FR.UTF-8", "Ce PC est connecté comme machine de travail"), ("en_US.UTF-8", "This PC is connected as a work machine")])
