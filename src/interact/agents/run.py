@@ -47,8 +47,10 @@ def _skip(code: reg.SkipReason, message: str) -> _SkipDecision:
     return _SkipDecision(code, message)
 
 
-def _skip_record(candidate: reg.LaunchCandidate, decision: _SkipDecision) -> reg.SkippedCandidate:
-    return reg.SkippedCandidate(candidate=candidate, reason=decision.code, message=decision.message)
+def _skip_record(
+    candidate: reg.LaunchCandidate, decision: _SkipDecision, *, until: float | None = None,
+) -> reg.SkippedCandidate:
+    return reg.SkippedCandidate(candidate=candidate, reason=decision.code, message=decision.message, until=until)
 
 
 def _quota_message(provider: str, model: str, said: str, *, now: float | None = None) -> str:
@@ -995,7 +997,7 @@ async def run_agent(
                 "quota_exceeded",
                 f"quota intent: {candidate.provider}/{candidate.model} is still exhausted; "
                 f"the recorded window clears after {clears}. Retry then or choose another provider/model.",
-            )))
+            ), until=until))
             continue
         candidate_provider = by_name[candidate.provider]
         # Named once per role, per provider (`accepts_coarse_tool_policy`) — a provider that can
@@ -1142,12 +1144,12 @@ async def run_agent(
             # The child's own stream, not just the fact that it refused: it carries the
             # window the vendor named and the instant that window reopens, which is what decides
             # how long this candidate is passed over.
-            quota.record_refusal(candidate.provider, candidate.model,
-                                 said=_child_output(run_id))
+            until = quota.record_refusal(candidate.provider, candidate.model,
+                                         said=_child_output(run_id))
             skipped.append(_skip_record(candidate, _skip(
                 "quota_exceeded",
                 _quota_message(candidate.provider, candidate.model, _child_output(run_id)),
-            )))
+            ), until=until))
             continue
         chosen = candidate
         chosen_provider = candidate_provider

@@ -34,7 +34,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from interact_core import (
     AGENT_TOUCH_SCOPES, MACHINE_AGENT_TAIL, AgentAnswerRequest, AgentContinueRequest, AgentFoldersRequest, AgentInteraction, AgentLogsRequest, AgentOptionsRequest,
     AgentProviderState, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
-    MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, MachineAgentSession, MachineFileEntry, WorkspacePrepareRequest, WorkspacesRequest,
+    MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, PassedOverCandidate, MachineAgentSession, MachineFileEntry, WorkspacePrepareRequest, WorkspacesRequest,
 )
 from interact.agents import registry as reg
 from interact.agents.host import ConversationHost, ConversationRefused
@@ -424,6 +424,8 @@ class MachineAgents(BaseModel):
                 parent_run_id=UUID(run.parent_run_id) if run.parent_run_id and run.run_id not in started else None,
                 kind=kind, pending=self.pending(run.run_id) if kind == "session" and run.status == "waiting" else (),
                 fenced=bool({run.run_id, run.root_run_id, run.parent_run_id} & fenced),
+                passed_over=tuple(PassedOverCandidate(provider=item.candidate.provider, model=item.candidate.model[:120], reason=item.reason, until=item.until)
+                                  for item in run.skipped[:16]),
             ))
         return MachineAgentAnswer(request_id=request.id, runs=tuple(found))
 

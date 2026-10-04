@@ -98,6 +98,9 @@ class SkippedCandidate(BaseModel):
     candidate: LaunchCandidate
     reason: SkipReason
     message: str = ""
+    #: When a `quota_exceeded` candidate may be tried again (epoch seconds); None for every other
+    #: reason, and on records written before this field.
+    until: float | None = None
 
 
 class AgentRun(BaseModel):
@@ -707,6 +710,37 @@ def finish(
     # re-reads the stream and merges through `_update_fields`, each taking `record_lock` itself.
     _derive(finished)
     return True
+
+
+def fail_turn_locked(
+    run_id: str, reason: str, *, exit_code: int = 1, now: float | None = None,
+) -> AgentRun | None:
+    """Record that a RESUMED turn of `run_id` failed before, or without, its provider saying so,
+    while the caller owns ``record_lock(run_id)``.
+
+    An `error` event carrying `reason` lands in the run's messages file — the one side channel the
+    raw-stream re-parse keeps (`_read_messages`) — anchored at the end of the stream, and the
+    record reads failed (status, exit code, end time, `last`), so every reader (the panel, a PC's
+    run list for the web) sees the failure instead of the ended run the message found. A refused
+    resume used to fail only its queue item: the run stayed "done" and the web showed the message
+    as delivered forever.
+    """
+    if _read_record(run_id) is None:
+        return None
+    moment = time.time() if now is None else now
+    event = AgentEvent(kind="error", event_id=secrets.token_hex(16), text=reason, at=moment,
+                       raw_index=raw_line_count(run_id))
+    _append_private(messages_path(run_id), (event.model_dump_json() + "\n").encode())
+    return _merge_record_locked(run_id, {
+        "status": "failed", "exit_code": exit_code, "finished_at": moment,
+        "last": event.summary(viewer=run_id),
+    })
+
+
+def fail_turn(run_id: str, reason: str, *, exit_code: int = 1, now: float | None = None) -> AgentRun | None:
+    """:func:`fail_turn_locked` for a caller not holding the run's lock."""
+    with record_lock(run_id):
+        return fail_turn_locked(run_id, reason, exit_code=exit_code, now=now)
 
 
 def stop(run_id: str, *, expected_lifecycle_token: str | None = None) -> bool:

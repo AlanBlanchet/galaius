@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import secrets
+import time
 from contextlib import ExitStack
 from typing import Literal
 
@@ -185,6 +186,37 @@ def deliver_message(run_id: str, message: str, *, sender: str | None = None) -> 
             f"Queued for {run.name} ({run.run_id[:8]}), delivery {item.id[:8]}.",
             run.run_id, queue_id=item.id,
         )
+
+
+def wait_for_start(delivery: Delivery, *, timeout: float = 10.0, interval: float = 0.2) -> str | None:
+    """Give the detached dispatcher `timeout` seconds to START the resumed turn; the reason when it
+    could not, None otherwise.
+
+    The reason is the queue item's own error (policy, catalog, a provider that would not spawn,
+    a child that died at once). None means the turn's provider child is alive (its reply follows
+    on its own), the item already replied, or the deadline passed with the item still unclaimed —
+    the ask stays queued and the run's record tells the rest. What lets `interact agents send`
+    exit 1 within seconds of a refused resume instead of printing "Queued".
+    """
+    from interact.agents import agent_queue
+
+    if delivery.state != "queued" or delivery.queue_id is None:
+        return None
+    deadline = time.monotonic() + timeout
+    while True:
+        item = next((i for i in agent_queue.items(delivery.run_id) if i.id == delivery.queue_id), None)
+        if item is None:
+            return "queued delivery disappeared"
+        if item.state in ("failed", "cancelled", "uncertain"):
+            return item.error or f"queued delivery {item.state}"
+        if item.state == "replied":
+            return None
+        run = reg.get_run(delivery.run_id)
+        if item.state == "running" and run is not None and run.process_running():
+            return None
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(interval)
 
 
 async def wait_for_reply(delivery: Delivery) -> str:

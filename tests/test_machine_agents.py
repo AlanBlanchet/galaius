@@ -106,6 +106,23 @@ def test_only_runs_started_from_the_web_are_reachable(base: Path, tmp_path: Path
         _answer(agents, _request("stop", run_id=foreign))
 
 
+def test_runs_say_which_ranked_candidates_were_passed_over_and_until_when(base: Path, tmp_path: Path) -> None:
+    """A run that fell through to Codex because Claude was exhausted carries that fact to the web, with
+    the instant Claude reopens — what lets the conversation say « Claude indisponible jusqu'à 22:01,
+    lancé avec Codex » instead of showing Codex as the choice."""
+    agents = _agents(base, tmp_path)
+    run_id = str(uuid4())
+    claude = reg.LaunchCandidate(provider="claude", model="claude-opus-5-5", rank=0)
+    reg.save_run(reg.AgentRun(run_id=run_id, provider="codex", model="gpt-6-astra", name="r", cwd=str(base / "project"), started_at=1.0,
+                              skipped=(reg.SkippedCandidate(candidate=claude, reason="quota_exceeded", message="exhausted", until=1791000000.0),
+                                       reg.SkippedCandidate(candidate=reg.LaunchCandidate(provider="claude", model="claude-fable-5-1", rank=1), reason="cli_missing"))))
+    agents.runs.add(WebRun(run_id=run_id, root="project"))
+    listed = _answer(agents, _request("runs")).runs[0]
+    assert listed.provider == "codex"
+    assert [(item.provider, item.model, item.reason, item.until) for item in listed.passed_over] == [
+        ("claude", "claude-opus-5-5", "quota_exceeded", 1791000000.0), ("claude", "claude-fable-5-1", "cli_missing", None)]
+
+
 def test_off_switch_and_missing_roots_refuse_everything_but_reading_and_stopping(base: Path, tmp_path: Path) -> None:
     off = _agents(base, tmp_path, run_agents=False)
     with pytest.raises(PermissionError, match="agents are off"):

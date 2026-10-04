@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -338,10 +339,15 @@ def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
                                     record_locked=True,
                                 )
                             except Exception as error:
+                                # The run itself reads failed, with the reason: a message to an
+                                # ended run whose resume cannot start otherwise leaves it "done"
+                                # and its sender watching a message "delivered" forever.
+                                detail = _safe_process_detail(str(error))
                                 _replace_item_locked(
                                     run_id, item.id, state="failed", finished_at=time.time(),
-                                    error=_safe_process_detail(str(error)),
+                                    error=detail,
                                 )
+                                reg.fail_turn_locked(run_id, f"resume refused: {detail}")
                                 item = None
             if recover is not None:
                 recovered_item, _ = recover
@@ -367,12 +373,19 @@ def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
                 error = f"resumed provider exited {code}"
                 if detail:
                     error += f": {_safe_process_detail(detail)}"
+                # Read before the lock: `read_events` locks the record itself. The provider's own
+                # last word (a quota refusal, a vendor error) outranks the exit code; a child that
+                # died saying nothing gets the exit code and its stderr as the run's last line.
+                said = reg.last_event(run_id)
+                stopped = code in (-signal.SIGTERM, 128 + signal.SIGTERM)
                 with reg.record_lock(run_id):
                     current = next((i for i in _items(_state(run_id)) if i.id == item.id), None)
                     if current is not None and current.state == "running":
                         _replace_item_locked(
                             run_id, item.id, state="failed", finished_at=time.time(), error=error,
                         )
+                    if not stopped and (said is None or said.kind != "error" or not said.text.strip()):
+                        reg.fail_turn_locked(run_id, error, exit_code=code)
             else:
                 attempt_state, attempt_error = _classify_attempt(run_id, item.raw_index)
                 with reg.record_lock(run_id):

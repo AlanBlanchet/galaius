@@ -964,6 +964,9 @@ def agents_send(run_id: str, message: str) -> None:
 
 
     delivery = messaging.deliver_message(run_id, message)
+    if (refused := messaging.wait_for_start(delivery)) is not None:
+        print(f"ERROR: the resumed turn did not start: {refused}")
+        raise SystemExit(1)
     print(delivery.text)
     if delivery.state == "error":
         raise SystemExit(1)

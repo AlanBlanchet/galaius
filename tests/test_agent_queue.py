@@ -66,6 +66,8 @@ def test_ordered_items_run_once_in_real_subprocesses(monkeypatch):
     assert first.state == second.state == "queued"
     assert [item.state for item in agent_queue.items("r1")] == ["replied", "replied"]
     assert provider.messages == ["one", "two"]
+    # A turn that started (here: already replied) is no refusal for the sender to report.
+    assert messaging.wait_for_start(first, timeout=1) is None
 
 
 def test_stop_cancels_queued_work_before_any_resume(monkeypatch):
@@ -107,6 +109,38 @@ def test_failed_resume_records_bounded_redacted_stderr(monkeypatch):
     assert delivery.state == "queued"
     assert item.state == "failed" and "7" in item.error
     assert "test-secret-value" not in reg.read_stderr("r1")
+    # The RUN failed too, saying why — not only its queue item (the web reads the run).
+    run = reg.get_run("r1")
+    assert run is not None and run.status == "failed" and "exited 7" in run.last
+    assert "test-secret-value" not in run.last
+    assert reg.read_events("r1")[-1].kind == "error"
+    assert "exited 7" in (messaging.wait_for_start(delivery, timeout=1) or "")
+
+
+def test_a_resume_the_dispatcher_cannot_start_fails_the_run_and_the_sender_hears_why(monkeypatch):
+    """A message to an ENDED run used to be accepted ("Queued", exit 0) while the detached dispatcher's
+    policy / catalog / provider step failed in silence: the queue item alone read failed, the run stayed
+    done, the web showed the message as delivered forever. Now the run itself fails with the reason and
+    the sender, waiting a few seconds for the start, hears it."""
+    _setup(monkeypatch)
+
+    def refused(run):
+        raise RuntimeError("catalog access refused (HTTP 401); cached access is disabled")
+
+    monkeypatch.setattr(agent_queue, "_fresh_policy", refused)
+    delivery = messaging.deliver_message("r1", "wake up", sender="operator")
+    assert delivery.state == "queued"
+
+    agent_queue.dispatch("r1")
+
+    run = reg.get_run("r1")
+    assert run is not None and run.status == "failed" and run.exit_code == 1
+    assert run.last == "resume refused: catalog access refused (HTTP 401); cached access is disabled"
+    assert reg.read_events("r1")[-1].text == run.last
+    assert agent_queue.items("r1")[0].state == "failed"
+    assert "catalog access refused" in (messaging.wait_for_start(delivery, timeout=1) or "")
+    # The failure is the run's own now: a later list read (`_derive`) keeps it failed.
+    assert next(item for item in reg.list_runs() if item.run_id == "r1").status == "failed"
 
 
 def test_separate_process_enqueue_calls_are_serialized(monkeypatch, tmp_path):
