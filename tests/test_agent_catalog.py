@@ -318,6 +318,24 @@ def test_a_linked_pc_reads_the_catalog_with_its_own_link_and_follows_a_relink(li
             CatalogConnection.load()
 
 
+def test_a_linked_pc_whose_key_is_revoked_reads_the_catalog_through_its_link(linked_pc, catalog_home):
+    """A PC given a key (`interact login`) keeps starting agents after that key is revoked: the
+    refused key falls back to the PC's own link on the same server; another server's key does not."""
+    key = catalog_home / "key"
+    PRIVATE_FILES.write_secret(key, "iwk_" + "r" * 40)
+    def server(request):
+        if request.headers["Authorization"] == "Bearer iwk_" + "r" * 40:
+            return httpx.Response(401)
+        assert request.headers["Authorization"] == f"Bearer {linked_pc.token.get_secret_value()}"
+        return httpx.Response(200, content=snapshot(1).model_dump_json())
+    revoked = CatalogConnection(endpoint="http://127.0.0.1:8767", workspace_id=uuid4(), auth_mode="token", token_file=key)
+    catalog = AgentCatalog.refresh(revoked, transport=httpx.MockTransport(server))
+    assert (catalog.connection.auth_mode, catalog.connection.workspace_id) == ("machine", linked_pc.workspace_id)
+    elsewhere = CatalogConnection(endpoint="https://other.example", workspace_id=uuid4(), auth_mode="token", token_file=key)
+    with pytest.raises(CatalogAuthenticationError):
+        AgentCatalog.refresh(elsewhere, transport=httpx.MockTransport(server))
+
+
 def test_corrupt_configuration_never_becomes_unconfigured(tmp_path):
     target = tmp_path / "connection.json"
     assert CatalogConnection.load(target) is None

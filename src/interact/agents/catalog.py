@@ -203,7 +203,12 @@ class AgentCatalog(BaseModel):
                 return value
         except CatalogAuthenticationError:
             cls.discard_invalidated_cache(resolved, target)
-            raise
+            # A key this PC was given can be revoked while its own link still works: the agents it
+            # starts read the catalog through that link instead (no key to make, no step).
+            linked = CatalogConnection.linked() if connection.auth_mode == "token" else None
+            if linked is None or linked.endpoint != connection.endpoint.rstrip("/"):
+                raise
+            return cls.refresh(linked, allow_stale=allow_stale, cache_path=cache_path, transport=transport)
         except (httpx.NetworkError, httpx.TimeoutException) as error:
             if not allow_stale:
                 raise CatalogConnectionError("agent catalog service is unreachable; sync was not applied") from error
