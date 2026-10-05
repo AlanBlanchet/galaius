@@ -5,6 +5,7 @@ from typing import Union
 
 from pydantic import TypeAdapter
 
+from galaius_core.people import PersonInvite
 from galaius_core import (
     Account,
     AccountUpdate,
@@ -25,7 +26,6 @@ from galaius_core import (
     WorkspaceCreate,
     WorkspaceDeleteRequest,
     WorkspaceInvitation,
-    WorkspaceInvite,
     WorkspaceMember,
     WorkspaceMembership,
     CompanyAccess,
@@ -40,7 +40,7 @@ def main() -> None:
         ReleaseInfo,
         Account, AccountUpdate, Bootstrap, SignupRequest, LoginRequest, TokenRequest,
         RecoveryRequest, PasswordResetRequest, PlatformError, Workspace, WorkspaceCreate, WorkspaceDeleteRequest, WorkspaceInvitation,
-        WorkspaceInvite, WorkspaceMember, WorkspaceMembership, CompanyAccess, WorkspaceUpdate,
+        PersonInvite, WorkspaceMember, WorkspaceMembership, CompanyAccess, WorkspaceUpdate,
     ]
     print(json.dumps(TypeAdapter(contract).json_schema(), indent=2, sort_keys=True))
 
