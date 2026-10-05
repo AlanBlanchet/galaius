@@ -12,6 +12,7 @@ the launcher's own CLI (`interact agents spawn / send`) in a child process given
 environment explicitly, so no request ever changes this process's environment."""
 
 import asyncio
+import base64
 import hashlib
 import json
 import logging
@@ -32,9 +33,9 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 from interact_core import (
-    AGENT_TOUCH_SCOPES, MACHINE_AGENT_TAIL, AgentAnswerRequest, AgentContinueRequest, AgentFoldersRequest, AgentInteraction, AgentLogsRequest, AgentOptionsRequest,
+    AGENT_TOUCH_SCOPES, MACHINE_AGENT_MEDIA, MACHINE_AGENT_TAIL, AgentAnswerRequest, AgentMedia, AgentMediaRequest, image_type, AgentContinueRequest, AgentFoldersRequest, AgentInteraction, AgentLogsRequest, AgentOptionsRequest,
     AgentProviderState, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
-    MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, PassedOverCandidate, MachineAgentSession, MachineFileEntry, WorkspacePrepareRequest, WorkspacesRequest,
+    MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, PassedOverCandidate, media_key, media_paths, MachineAgentSession, MachineFileEntry, WorkspacePrepareRequest, WorkspacesRequest,
 )
 from interact.agents import registry as reg
 from interact.agents.host import ConversationHost, ConversationRefused
@@ -296,7 +297,7 @@ class MachineAgents(BaseModel):
         """Session work runs on the runner's loop (its host is async); everything else on a worker
         thread (files, the launcher's CLI)."""
         # With agents off (or no folder) what the web started here can still be read and stopped.
-        if not isinstance(request, AgentRunsRequest | AgentTailRequest | AgentStopRequest | AgentLogsRequest | WorkspacesRequest):
+        if not isinstance(request, AgentRunsRequest | AgentTailRequest | AgentMediaRequest | AgentStopRequest | AgentLogsRequest | WorkspacesRequest):
             if not self.run_agents:
                 raise PermissionError("agents are off on this computer; its owner turns them on on its page on the web, or there with `interact machine agents on`")
             if not self.roots:
@@ -311,6 +312,8 @@ class MachineAgents(BaseModel):
                 return await asyncio.to_thread(self._runs, request)
             case AgentTailRequest():
                 return await asyncio.to_thread(self._tail, request)
+            case AgentMediaRequest():
+                return await asyncio.to_thread(self._media, request)
             case AgentOptionsRequest():
                 return await self._options(request)
             case AgentStartRequest(kind="session"):
@@ -499,6 +502,54 @@ class MachineAgents(BaseModel):
         if cursor is None and (placed := next((item for item in self.runs.read() if item.run_id == request.run_id and item.source), None)):
             lines = (*self._editor_history(placed.source), *lines)[-TAIL_LINES:]
         return MachineAgentAnswer(request_id=request.id, lines=lines, cursor=start + whole, truncated=skipped)
+
+    def _media(self, request: AgentMediaRequest) -> MachineAgentAnswer:
+        """One image a step of this web run names (`media_key` of the path it wrote): only a path
+        that run's own stream names, only a plain file (never a link, a FIFO or a device: opened
+        non-blocking, checked before any read), at most MACHINE_AGENT_MEDIA bytes, its type proven
+        by its first bytes. A path a later step overwrote serves its CURRENT bytes."""
+        run = self._require_run(request.run_id)
+        written = self._named_image(run.run_id, request.name)
+        if written is None or not written.startswith(("/", "~/")):
+            raise PermissionError("no step of this run names that image")
+        path = Path.home() / written[2:] if written.startswith("~/") else Path(written)
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
+        try:
+            descriptor = os.open(path, flags)
+        except OSError:
+            raise PermissionError("that image is no longer on this computer") from None
+        with os.fdopen(descriptor, "rb") as handle:
+            facts = os.fstat(handle.fileno())
+            if not stat.S_ISREG(facts.st_mode):
+                raise PermissionError("that image is not a plain file")
+            if facts.st_size > MACHINE_AGENT_MEDIA:
+                raise PermissionError(f"that image is larger than {MACHINE_AGENT_MEDIA // (1024 * 1024)} MiB")
+            data = handle.read(MACHINE_AGENT_MEDIA + 1)
+        content_type = image_type(data)
+        if content_type is None or len(data) > MACHINE_AGENT_MEDIA:
+            raise PermissionError("that file is not an image")
+        return MachineAgentAnswer(request_id=request.id, media=AgentMedia(content_type=content_type, data=base64.b64encode(data).decode("ascii")))
+
+    @staticmethod
+    def _named_image(run_id: str, name: str) -> str | None:
+        """The path, as a tool step of `run_id` wrote it, whose `media_key` is `name`; None if none does."""
+        try:
+            handle = reg.events_path(run_id).open("rb")
+        except OSError:
+            return None
+        with handle:
+            for line in handle:
+                if b'"tool"' not in line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(event, dict) and event.get("kind") == "tool":
+                    found = next((path for path in media_paths(str(event.get("tool_input") or "")) if media_key(path) == name), None)
+                    if found is not None:
+                        return found
+        return None
 
     def _editor_history(self, session_id: UUID, keep: int = 40) -> tuple[str, ...]:
         """The editor conversation a copy continues, as stream lines the transcript reads (what the

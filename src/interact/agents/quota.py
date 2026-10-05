@@ -24,9 +24,10 @@ import os
 import re
 import time
 from contextlib import suppress
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Self
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict
 
@@ -72,6 +73,12 @@ REFUSAL = re.compile(
     # recognises has no window to read and no cooldown at all.
     r"|(?:you(?:['’]ve|r| have)?|your workspace) (?:hit|is out of credits)"
     r"[^\n]{0,80}?\b(usage limit|spend cap|credits)\b"
+    # Claude Code's own refusal names the pool, not "usage": « You've hit your weekly limit ·
+    # resets 9pm (Europe/Paris) » (every quota-failed run on record, 2026-10).
+    # Anchored on its « · resets » tail: a child QUOTING the words (reading this file) is no refusal.
+    r"|you(?:['’]ve| have) hit your [\w -]{0,20}\blimit\s*[·•]\s*resets\b"
+    # interact's own launcher, passing over a model whose recorded window is still open.
+    r"|\bquota intent: \S+ is still exhausted;"
     r"|usage limit reached"
     r"|quota exceeded"
     r"|switch to another model"
@@ -169,6 +176,12 @@ _RESET_IN_IN_TEXT = _key_pattern(_RESET_IN_KEYS, r"\d{1,7}")
 #: text, and how an HTTP-dated refusal spells one.
 _ISO_INSTANT = re.compile(
     r"\b(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)")
+#: A reset said the way a person reads it, in a named zone: « resets 9pm (Europe/Paris) », « resets
+#: Oct 6, 12am (Europe/Paris) », « resets 3:30pm (UTC) » (Claude Code's own refusal line).
+_RESET_SPOKEN = re.compile(
+    r"\bresets\s+(?:(?P<month>[A-Za-z]{3})[a-z]*\s+(?P<day>\d{1,2}),?\s+)?(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*(?P<half>am|pm)"
+    r"\s*\((?P<zone>[A-Za-z_]+(?:/[A-Za-z_+\-]+)*)\)", re.IGNORECASE)
+_MONTHS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
 #: Longest first, so `seven_day_overage_included` is never read as a bare `seven_day`.
 _WINDOW_IN_TEXT = re.compile(
     "|".join(re.escape(name) for name in sorted(WINDOWS, key=len, reverse=True)), re.IGNORECASE)
@@ -280,7 +293,34 @@ class Refusal(BaseModel):
             return now + float(found.group(1))
         if (found := _ISO_INSTANT.search(line)) is not None:
             return cls._as_instant(found.group(1))
+        if (found := _RESET_SPOKEN.search(line)) is not None:
+            return cls._spoken_instant(found, now=now)
         return None
+
+    @staticmethod
+    def _spoken_instant(found: re.Match[str], *, now: float) -> float | None:
+        """The first instant at or after `now` matching a spoken reset (a bare hour: today or
+        tomorrow; with a date: that date this year or next), in the zone it names."""
+        try:
+            zone = ZoneInfo(found["zone"])
+        except (ZoneInfoNotFoundError, ValueError):
+            return None
+        hour = int(found["hour"]) % 12 + (12 if found["half"].lower() == "pm" else 0)
+        minute = int(found["minute"] or 0)
+        today = datetime.fromtimestamp(now, zone)
+        try:
+            if found["month"] is None:
+                moment = today.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                candidates = (moment, moment + timedelta(days=1))
+            else:
+                # A date is this year's unless it lies more than half a year back (« Jan 2 » said on
+                # Dec 30): a date just gone stays this year's — already past, never a year's block.
+                month, day = _MONTHS.index(found["month"].lower()[:3]) + 1, int(found["day"])
+                moment = datetime(today.year, month, day, hour, minute, tzinfo=zone)
+                return (moment.replace(year=today.year + 1) if moment.timestamp() < now - 183 * 86400 else moment).timestamp()
+        except ValueError:
+            return None
+        return next(moment.timestamp() for moment in candidates if moment.timestamp() > now - RESET_SLACK)
 
     @staticmethod
     def _window_in(line: str) -> str:

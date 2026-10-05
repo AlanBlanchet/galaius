@@ -1002,7 +1002,7 @@ class MachineRunner:
 
     #: What this runner can do beyond the base protocol (the server's `MachineChannel.require_feature`):
     #: file queries browse the owner's script roots; a script file runs from them.
-    FEATURES: ClassVar[tuple[str, ...]] = ("file_query", "script_file", "file_read", "agent_control", "agent_settings", "web_settings", "workspaces", "start_permission", "project_secrets", "places")
+    FEATURES: ClassVar[tuple[str, ...]] = ("file_query", "script_file", "file_read", "agent_control", "agent_settings", "web_settings", "workspaces", "start_permission", "project_secrets", "places", "agent_media")
 
     @classmethod
     def features(cls) -> list[str]:

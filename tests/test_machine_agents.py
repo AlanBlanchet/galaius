@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 import pytest
 
 import asyncio
+import base64
 import subprocess
 import hashlib
 import hmac
@@ -147,6 +148,41 @@ def test_tail_reads_whole_lines_from_the_cursor(base: Path, tmp_path: Path) -> N
     with path.open("ab") as handle:
         handle.write(b'xt":"two"}\n')
     assert [json.loads(line)["text"] for line in _answer(agents, _request("tail", run_id=run_id, cursor=first.cursor)).lines] == ["two"]
+
+
+PNG = b"\x89PNG\r\n\x1a\n" + b"\0" * 32
+
+
+@pytest.mark.parametrize(("case", "served"), [
+    ("named png", "image/png"), ("named under ~", "image/png"), ("never named", None), ("named link", None), ("named text as .png", None),
+    ("named but too large", None), ("named by another run", None), ("named fifo", None),
+])
+def test_a_run_image_is_served_only_when_its_own_step_names_a_plain_image(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str, served: str | None) -> None:
+    """Deny by default: the web asks by key, never by path; the PC serves only an image file a tool step
+    of THAT web run wrote down — with agents switched off too (reading what ran stays possible)."""
+    import interact.machine_agents as machine_agents
+    from interact_core import media_key
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr(machine_agents, "MACHINE_AGENT_MEDIA", 64)
+    agents = _agents(base, tmp_path, run_agents=False)
+    mine, foreign = str(uuid4()), str(uuid4())
+    for run_id in (mine, foreign):
+        reg.save_run(reg.AgentRun(run_id=run_id, provider="claude", name="r", cwd=str(base / "project"), started_at=1.0))
+    agents.runs.add(WebRun(run_id=mine, root="project"))
+    image = tmp_path / "shot.png"
+    image.write_bytes(PNG + (b"\0" * 64 if case == "named but too large" else b"") if case != "named text as .png" else b"not an image")
+    (tmp_path / "link.png").symlink_to(image)
+    os.mkfifo(tmp_path / "pipe.png")  # a FIFO would block a plain open for ever
+    written = {"named under ~": "~/shot.png", "named link": str(tmp_path / "link.png"), "named fifo": str(tmp_path / "pipe.png")}.get(case, str(image))
+    step = json.dumps({"kind": "tool", "tool": "Read", "tool_input": json.dumps({"file_path": written})}) + "\n"
+    reg.events_path(foreign if case == "named by another run" else mine).write_text(step if case != "never named" else "")
+    request = _request("media", run_id=mine, name=media_key(written))
+    if served is None:
+        with pytest.raises(PermissionError):
+            _answer(agents, request)
+        return
+    media = _answer(agents, request).media
+    assert media.content_type == served and base64.b64decode(media.data) == PNG
 
 
 @pytest.mark.parametrize("brief", ["- fix the header", "--help", "-x"])

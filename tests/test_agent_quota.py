@@ -40,6 +40,14 @@ def _own_store(tmp_path, monkeypatch):
         # Codex writes a CURLY apostrophe; the straight-quote pattern matched neither the
         # refusal nor, therefore, the window behind it.
         ("You’ve hit your usage limit. Upgrade to Pro to continue.", True),
+        # Claude Code names the pool it refused for (every quota-failed run on record, 2026-10), and
+        # interact's own launcher says a recorded window is still open.
+        ("You've hit your weekly limit · resets Oct 6, 12am (Europe/Paris)", True),
+        ("You've hit your limit · resets 9pm (Europe/Paris)", True),
+        ("quota intent: claude/claude-opus-5-5 is still exhausted; the recorded window clears after 2026-10-05T22:01:00+00:00.", True),
+        ("if you hit the wall, check your limits", False),
+        # A child quoting the words (reading the launcher's code, a brief about it) refused nothing.
+        ("the server reads « You've hit your weekly limit » and « … is still exhausted »", False),
         ("You’ve reached your Fable limit. Switch to another model.", True),
         ("Your workspace is out of credits. Add credits to continue.", True),
         ("You hit your spend cap set in your workspace. Increase your spend cap to continue.", True),
@@ -185,6 +193,38 @@ def test_a_relative_reset_is_read_too():
     assert quota.record_refusal(
         "codex", "m", said='{"status":"rejected","resets_in_seconds":7200}', now=now,
     ) == pytest.approx(now + 7200 + quota.RESET_SLACK)
+
+
+@pytest.mark.parametrize(("said", "now", "reopens"), [
+    # 18:00 Paris (16:00 UTC) on 5 Oct: « 9pm » is tonight; « 12am » on Oct 6 is midnight Paris.
+    ("You've hit your weekly limit · resets 9pm (Europe/Paris)", "2026-10-05T16:00:00+00:00", "2026-10-05T19:00:00+00:00"),
+    ("You've hit your weekly limit · resets Oct 6, 12am (Europe/Paris)", "2026-10-05T16:00:00+00:00", "2026-10-05T22:00:00+00:00"),
+    # Past 9pm, « 9pm » is tomorrow's; a date already gone this year is next year's.
+    ("You've hit your limit · resets 9pm (Europe/Paris)", "2026-10-05T20:30:00+00:00", "2026-10-06T19:00:00+00:00"),
+    ("You've hit your limit · resets 3:30pm (UTC)", "2026-10-05T10:00:00+00:00", "2026-10-05T15:30:00+00:00"),
+    # « Jan 2 » said on Dec 30 is next year's.
+    ("You've hit your weekly limit · resets Jan 2, 9am (UTC)", "2026-12-30T10:00:00+00:00", "2027-01-02T09:00:00+00:00"),
+])
+def test_a_spoken_reset_in_a_named_zone_is_read_as_its_instant(said, now, reopens):
+    """Claude Code's refusal names neither a window this code knows nor an epoch: an hour's default
+    would retry a model refused until midnight every hour."""
+    moment = datetime.fromisoformat(now).timestamp()
+    assert quota.record_refusal("claude", "m", said=said, now=moment) == pytest.approx(
+        datetime.fromisoformat(reopens).timestamp() + quota.RESET_SLACK)
+
+
+def test_a_dated_reset_just_gone_is_never_read_as_next_year_s():
+    """Read two minutes after it passed, « Oct 6, 12am » is not Oct 6 next year: the block falls back
+    to the default instead of benching the model for a year."""
+    now = datetime.fromisoformat("2026-10-05T22:02:00+00:00").timestamp()
+    said = "You've hit your weekly limit · resets Oct 6, 12am (Europe/Paris)"
+    assert quota.record_refusal("claude", "m", said=said, now=now) == pytest.approx(now + quota.DEFAULT_COOLDOWN)
+
+
+def test_a_spoken_reset_in_an_unknown_zone_falls_back_to_the_default():
+    now = 1_800_000_000.0
+    said = "You've hit your weekly limit · resets 9pm (Mars/Olympus)"
+    assert quota.record_refusal("claude", "m", said=said, now=now) == pytest.approx(now + quota.DEFAULT_COOLDOWN)
 
 
 def test_a_named_window_with_no_instant_falls_back_to_that_window_s_length():
