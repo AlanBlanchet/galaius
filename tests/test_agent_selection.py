@@ -116,6 +116,16 @@ def test_an_explicit_provider_is_a_filter_on_the_same_list(team):
     assert _ids(rank_candidates(CRITERION, {}, providers=[alpha])) == [("alpha", "a-mid", 1), ("alpha", "a-weak", 2)]
 
 
+@pytest.mark.parametrize("switch", ["beta/b-strong", "b-strong", "vendor-b/b-strong"])
+def test_a_model_switched_off_is_never_a_candidate_even_as_fallback(team, monkeypatch, switch):
+    """Owner 2026-10-05: « Woow, fable was used. Please make sure we don't activate it. It costs too much... »"""
+    alpha, beta = team
+    use_policy(monkeypatch, agents={"tester": CRITERION}, models={switch: False})
+    assert _ids(rank_candidates(CRITERION, {}, providers=[alpha, beta])) == [("alpha", "a-mid", 1), ("alpha", "a-weak", 2)]
+    with pytest.raises(ModelUnavailable, match="switched off"):
+        rank_candidates("b-strong", {}, providers=[beta])
+
+
 def test_nothing_runnable_names_every_pool(team):
     with pytest.raises(ModelUnavailable, match="alpha, beta"):
         rank_candidates("price.in > 100", {}, providers=list(team))

@@ -77,6 +77,9 @@ class Policy:
     agent_tools: dict[str, list[str]] = field(default_factory=dict)
     paradigms: dict[str, list[ParadigmAssignment]] = field(default_factory=dict)
     providers: dict[str, bool] = field(default_factory=dict)
+    #: Models switched off on this machine (`"claude/claude-fable-5-1": false`): never launched, not
+    #: even as a fallback, whatever a role's criterion ranks. A local cost choice, like `providers`.
+    models: dict[str, bool] = field(default_factory=dict)
     defaults: dict[str, str] = field(default_factory=dict)
     reasoning: dict[str, str] = field(default_factory=dict)
     #: Optional model-specific effort override. Keys use the standard `provider/model` id; this
@@ -119,6 +122,7 @@ class Policy:
             agent_tools={k: list(v) for k, v in (raw.get("agent_tools") or {}).items()},
             paradigms=_parse_paradigms(raw.get("paradigms") or {}, path),
             providers=dict(raw.get("providers") or {}),
+            models=dict(raw.get("models") or {}),
             defaults=dict(raw.get("defaults") or {}),
             reasoning=dict(raw.get("reasoning") or {}),
             reasoning_models=dict(raw.get("reasoning_models") or {}),
@@ -140,6 +144,9 @@ class Policy:
         if not isinstance(raw, dict) or not isinstance(raw.get("providers", {}), dict):
             raise PolicyError("Local provider switches must be an object")
         policy.providers = dict(raw.get("providers", {}))
+        if not isinstance(raw.get("models", {}), dict):
+            raise PolicyError("Local model switches must be an object")
+        policy.models = dict(raw.get("models", {}))
         if not isinstance(raw.get("defaults", {}), dict):
             raise PolicyError("Local agent defaults must be an object")
         policy.defaults = dict(raw.get("defaults", {}))
@@ -333,6 +340,12 @@ class Policy:
         person meant to use, and a policy file nobody wrote must never silently disable anything.
         """
         return bool(self.providers.get(provider, True))
+
+    def model_active(self, provider: str, model: str, catalog_id: str | None = None) -> bool:
+        """Whether this model may run here, read under any of its names (`claude/<id>`, the
+        catalog's `anthropic/<id>`, the bare id). Unmentioned means ON, like `provider_active`."""
+        names = (f"{provider}/{model}", model, *((catalog_id,) if catalog_id else ()))
+        return all(bool(self.models.get(name, True)) for name in names)
 
     def accepts_coarse_tool_policy(self, agent: str, provider: str) -> bool:
         """Whether THIS role explicitly accepted running on a provider that can only enforce a

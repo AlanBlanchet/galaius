@@ -128,10 +128,28 @@ def rank_candidates(
     """
     # The list is ranked over EVERY registered CLI and then filtered, so a rank means the same
     # thing whichever subset a caller asked for; the given providers only decide who may run.
+    policy = load_policy()
+    return _switched_on(_ranked_candidates(model, env, providers=providers, weights=weights, policy=policy), policy, model)
+
+
+def _switched_on(candidates: tuple[reg.LaunchCandidate, ...], policy: Policy, model: str) -> tuple[reg.LaunchCandidate, ...]:
+    """Drop every model switched off on this machine (`Policy.models`) — never a fallback either.
+    An empty result refuses, naming the switch, rather than running a model the owner turned off."""
+    kept = tuple(c for c in candidates if policy.model_active(c.provider, c.model, c.catalog_id))
+    if candidates and not kept:
+        off = ", ".join(sorted({f"{c.provider}/{c.model}" for c in candidates}))
+        raise ModelUnavailable(f"every model {model!r} ranks is switched off on this machine ({off}); "
+                               "turn one back on under `models` in ~/.interact/agents.json")
+    return kept
+
+
+def _ranked_candidates(
+    model: str, env: dict[str, str], *, providers: Sequence[AgentProvider], weights: str, policy: Policy,
+) -> tuple[reg.LaunchCandidate, ...]:
     universe = list(PROVIDERS.values()) + [p for p in providers if p.name not in PROVIDERS]
     allowed = {p.name for p in providers}
     if model.startswith("@"):
-        model = load_policy().rule(model)
+        model = policy.rule(model)
     if not is_criterion(model):
         row = Model.by_id(model)
         candidates = tuple(
