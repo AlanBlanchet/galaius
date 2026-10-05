@@ -32,6 +32,7 @@ from interact_core import AgentRevisionRef
 
 from interact.agents.catalog import AgentCatalog
 from interact.agents.catalog_connection import CatalogConnectionError
+from interact.agents.tool_gateway import AgentToolList, ToolGateway
 from interact.agents.vocabulary import TouchScope
 from interact.config import UserConfig
 from interact.criteria import ValueRule
@@ -100,6 +101,9 @@ class Policy:
     #: each role's own measured token mix, never a mix typed here.
     value: ValueRule = field(default_factory=ValueRule)
     catalog: AgentCatalog | None = None
+    #: The external tools the server connects each role to, served on this PC by interact's MCP
+    #: server (`interact.agents.tool_gateway`): read with the catalog, added to each role's tools.
+    gateway: AgentToolList = field(default_factory=AgentToolList)
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Policy":
@@ -140,7 +144,7 @@ class Policy:
 
     @classmethod
     def from_catalog(cls, catalog: AgentCatalog) -> "Policy":
-        policy = cls(catalog=catalog)
+        policy = cls(catalog=catalog, gateway=ToolGateway.current(online=not catalog.stale))
         # Provider installation switches are local machine preferences, not role policy.
         try:
             raw = json.loads(policy_path().read_text())
@@ -332,7 +336,7 @@ class Policy:
     def tools_for(self, agent: str) -> list[str]:
         """The tools this agent may use, or [] when the policy does not restrict it."""
         if self.catalog is not None:
-            return list(self.catalog.role(agent).harness_tools)
+            return self.gateway.granted(agent, self.catalog.role(agent).harness_tools, TOOL_PREFIX)
         members = self.agent_tools.get(agent)
         if not members:
             return []

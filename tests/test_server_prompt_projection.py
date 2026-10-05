@@ -19,6 +19,7 @@ from interact_core import AgentCatalogSnapshot, AgentRevision, AgentRevisionRef,
 from interact.agents.catalog import AgentCatalog, CatalogSnapshot
 from interact.agents.catalog_connection import CatalogAuthenticationError, CatalogConnection
 from interact.pinned_directory import PathDirectory
+from interact.agents.tool_gateway import AgentToolList, GatewayTool
 from interact.prompt_projection import (
     MANIFEST_NAME, _server_outputs, compile_server_prompt_projection, install_prompt_projection,
     install_server_prompt_projection,
@@ -546,3 +547,15 @@ def test_projection_leaves_another_server_s_tools_alone(tmp_path):
     listed = ['Bash', 'mcp__other__navigate', 'mcp__interact__navigate']
     outputs = _server_outputs(catalog_fixture(worker_tools=listed), tmp_path / 'home', tmp_path / 'projection')
     assert _worker_header(outputs)['tools'] == listed
+
+
+@pytest.mark.parametrize(('worker_tools', 'expected'), [
+    (['Read'], ['Read', 'mcp__interact__ext__Context7__query-docs']),   # the server connected it: listed, so callable
+    ([], []),                                                           # no list = every tool already: stays unrestricted
+])
+def test_projection_gives_a_role_the_external_tools_the_server_connects_it_to(tmp_path, worker_tools, expected):
+    gateway = AgentToolList(revision='r1', agents={'worker': ('ext__Context7__query-docs',), 'other': ('ext__Notion__search',)},
+                            tools=(GatewayTool(name='ext__Context7__query-docs', server_id=str(uuid4()), tool='query-docs'),
+                                   GatewayTool(name='ext__Notion__search', server_id=str(uuid4()), tool='search')))
+    outputs = _server_outputs(catalog_fixture(worker_tools=worker_tools), tmp_path / 'home', tmp_path / 'projection', gateway)
+    assert _worker_header(outputs)['tools'] == expected

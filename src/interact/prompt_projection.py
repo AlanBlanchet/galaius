@@ -20,6 +20,7 @@ from interact_core import PromptExecutionRef, PromptKey
 from interact.agents.catalog import AgentCatalog, AgentInstructionSet
 from interact.agents.catalog_connection import CatalogConnection
 from interact.agents.policy import TOOL_PREFIX
+from interact.agents.tool_gateway import AgentToolList, ToolGateway
 from interact.file_lock import exclusive
 from interact.pinned_directory import PinnedDirectory
 
@@ -33,12 +34,15 @@ _PASSTHROUGH_ROOTS = ("hooks",)
 def compile_server_prompt_projection(connection: CatalogConnection, installed_root: Path) -> Path:
     """Compile one verified server snapshot without executing downloaded source code."""
     catalog = AgentCatalog.refresh(connection, allow_stale=False)
+    gateway = ToolGateway.current(online=True)
     cache_home = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
     consumer_key = hashlib.sha256(str(installed_root.resolve()).encode()).hexdigest()[:16]
     root = cache_home / "interact" / "prompts" / "server" / str(connection.workspace_id)
-    destination = root / f"{catalog.snapshot.cursor}-{consumer_key}-{catalog.access_generation}"
+    # The gateway's revision names the projection too: a tool connected or removed on the server
+    # changes the roles' tools with no new catalog cursor.
+    destination = root / "-".join((catalog.snapshot.cursor, consumer_key, str(catalog.access_generation), *((gateway.revision[:16],) if gateway.revision else ())))
     _safe_directory(root, create=True)
-    outputs = _server_outputs(catalog, installed_root, destination)
+    outputs = _server_outputs(catalog, installed_root, destination, gateway)
     if destination.exists():
         with connection.access_guard(catalog.access_generation):
             _verified_server_cache(destination, outputs)
@@ -125,7 +129,7 @@ def _listable_tools(role: str, tools) -> list[str]:
     return names
 
 
-def _server_outputs(catalog: AgentCatalog, home: Path, projection: Path) -> dict[str, str]:
+def _server_outputs(catalog: AgentCatalog, home: Path, projection: Path, gateway: AgentToolList = AgentToolList()) -> dict[str, str]:
     snapshot = catalog.snapshot
     roles = sorted(snapshot.agents, key=lambda agent: agent.role_key or str(agent.id))
     identifiers = {agent.id: agent.role_key or f"agent-{agent.id}" for agent in roles}
@@ -166,7 +170,7 @@ def _server_outputs(catalog: AgentCatalog, home: Path, projection: Path) -> dict
             continue
         key = identifiers[agent.id]
         header = {"name": key, "description": agent.description or agent.name,
-                  "tools": _listable_tools(key, agent.harness_tools)}
+                  "tools": _listable_tools(key, gateway.granted(key, agent.harness_tools, TOOL_PREFIX))}
         body = snapshot.definition(key, skill_paths, instructions=AgentInstructionSet(agent=agent, prompts=snapshot.paradigms))
         outputs[_projection_relative("agents", f"{key}.md", agent.scope)] = (
             "---\n" + yaml.safe_dump(header, sort_keys=False, allow_unicode=True) + "---\n\n" + body + "\n"

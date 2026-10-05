@@ -26,6 +26,7 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
+from interact.agents.tool_gateway import GATEWAY_PREFIX, ServedGateway
 from interact.browser import SessionRegistry
 from interact.debug_utils import _CURRENT_INV, Debug, resolve_output_path
 from interact.desktop import CaptureError
@@ -338,7 +339,9 @@ def undispatchable_tools(names) -> list[str]:
     from interact.agents.policy import TOOL_PREFIX
 
     known = dispatchable_tools()
-    return [n for n in names if n.startswith(TOOL_PREFIX) and n[len(TOOL_PREFIX):] not in known]
+    # A gateway tool (`ext__…`) is served from the server's list at this server's start
+    # (`interact.agents.tool_gateway`), never registered at import: its name is the server's word.
+    return [n for n in names if n.startswith(TOOL_PREFIX) and not n[len(TOOL_PREFIX):].startswith(GATEWAY_PREFIX) and n[len(TOOL_PREFIX):] not in known]
 
 
 @asynccontextmanager
@@ -360,6 +363,7 @@ async def _lifespan(_: FastMCP) -> AsyncIterator[None]:
     from interact.agents.run import _mirror_running_runs
 
     mirror = _SideLoop("interact-run-mirror", _mirror_running_runs)
+    gateway = _SideLoop("interact-tool-gateway", mcp.gateway.watch)
     # The reaper stays HERE: it closes browser sessions owned by this loop, and touching them
     # from another one is a different bug. It never reads the registry.
     reaper = asyncio.create_task(sandbox._idle_session_reaper(config.session_idle_ttl))
@@ -373,6 +377,7 @@ async def _lifespan(_: FastMCP) -> AsyncIterator[None]:
         if reporter is not None:
             reporter.stop()
         mirror.stop()
+        gateway.stop()
         reaper.cancel()
         with suppress(asyncio.CancelledError):
             await reaper
@@ -454,6 +459,17 @@ class _SessionScopedMCP(FastMCP):
             for p in params
             if p.default == _AUTO_SESSION
         ]
+
+    #: External tools an agent here calls through the Interact server (`interact.agents.tool_gateway`).
+    gateway = ServedGateway()
+
+    async def list_tools(self):
+        return [*await super().list_tools(), *self.gateway.tools()]
+
+    async def call_tool(self, name: str, arguments: dict):
+        if self.gateway.serves(name):
+            return await self.gateway.call(name, arguments)
+        return await super().call_tool(name, arguments)
 
     def tool(self, *args, category: ToolCategory, meta: dict | None = None, **kwargs):
         """Every interact tool names its `ToolCategory`; it travels in the tool's `_meta`."""
