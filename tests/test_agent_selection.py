@@ -243,6 +243,52 @@ def test_the_policy_bounds_and_the_roles_measured_mix_decide(team, scored, monke
     assert [(d.model.id, d.rule) for d in writer.dropped] == [("cheap-in", "small_edge")]
 
 
+def test_every_role_keeps_its_own_mix_however_busy_the_others(team, monkeypatch):
+    """A role whose runs are older than every other role's still prices at ITS mix; each role reads
+    only its own newest `TOKEN_MIX_WINDOW` runs; a new record is seen on the next call."""
+    monkeypatch.setattr(reg, "TOKEN_MIX_WINDOW", 2)
+    def record(agent, when, input_tokens, output_tokens):
+        run = register_run(f"{agent}-{when}", agent=agent)
+        reg.save_run(run.model_copy(update={"input_tokens": input_tokens, "output_tokens": output_tokens}))
+        os.utime(reg.agents_dir() / f"{run.run_id}.json", ns=(when * 10**9, when * 10**9))
+    record("tester", 1, 100, 900)
+    for when, (fresh, out) in enumerate([(900, 100), (500, 500), (500, 500)], start=10):
+        record("coder", when, fresh, out)
+    assert reg.token_mix("tester").shares == (0.1, 0.0, 0.0, 0.9)
+    assert reg.token_mix("coder").shares == (0.5, 0.0, 0.0, 0.5)  # the oldest coder run is out
+    assert reg.token_mix("nobody") == reg.TokenMix()
+    record("tester", 20, 900, 100)
+    assert reg.token_mix("tester").shares == (0.5, 0.0, 0.0, 0.5)
+    # A fresh process reads the token index, parsing only a record written since.
+    monkeypatch.setattr(reg, "_TOKEN_TOTALS", None)
+    monkeypatch.setattr(reg, "_TOKEN_INDEX", None)
+    monkeypatch.setattr(reg, "_RECORD_CACHE", {})
+    monkeypatch.setattr(reg, "_RACY_NS", 0)
+    parsed = []
+    real_read = reg._read_record
+    monkeypatch.setattr(reg, "_read_record", lambda run_id: parsed.append(run_id) or real_read(run_id))
+    assert reg.token_mix("coder").shares == (0.5, 0.0, 0.0, 0.5) and parsed == []
+    record("coder", 30, 100, 900)
+    assert reg.token_mix("coder").shares == (0.3, 0.0, 0.0, 0.7) and parsed == ["coder-30"]
+    # Read inside the racy window, a record is saved unsettled: the next process re-reads it at an
+    # unchanged mtime and size (a rewrite in the same clock tick would look identical), then trusts it.
+    def fresh_process():
+        for name in ("_TOKEN_TOTALS", "_TOKEN_INDEX"):
+            monkeypatch.setattr(reg, name, None)
+        monkeypatch.setattr(reg, "_RECORD_CACHE", {})
+        parsed.clear()
+    monkeypatch.setattr(reg, "_RACY_NS", 10**20)
+    fresh_process()
+    record("coder", 40, 100, 900)
+    reg.token_mix("coder")
+    monkeypatch.setattr(reg, "_RACY_NS", 0)
+    fresh_process()
+    reg.token_mix("coder")
+    assert "coder-40" in parsed
+    fresh_process()
+    assert reg.token_mix("coder").shares == (0.1, 0.0, 0.0, 0.9) and parsed == []
+
+
 def test_nothing_runnable_names_every_pool(team):
     with pytest.raises(ModelUnavailable, match="alpha, beta"):
         rank_candidates("price.in > 100", {}, providers=list(team))
