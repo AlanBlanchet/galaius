@@ -53,6 +53,16 @@ def _skip_record(
     return reg.SkippedCandidate(candidate=candidate, reason=decision.code, message=decision.message, until=until)
 
 
+def _vendor_words(said: str) -> str:
+    """The vendor's own sentence about the refusal, one line, clipped."""
+    found = quota.UNSUPPORTED.search(said)
+    if found is None:
+        return "no detail"
+    start = said.rfind("\n", 0, found.start()) + 1
+    line = said[start:said.find("\n", found.end()) if said.find("\n", found.end()) != -1 else len(said)]
+    return " ".join(line.split())[:200]
+
+
 def _quota_message(provider: str, model: str, said: str, *, now: float | None = None) -> str:
     moment = time.time() if now is None else now
     refusal = quota.Refusal.read(said, now=moment) if said else None
@@ -371,15 +381,26 @@ async def _quota_probe(run_id: str, process: "asyncio.subprocess.Process", *,
     deadline = loop.time() + window
     while process.returncode is None and loop.time() < deadline:
         await asyncio.sleep(interval)
-    if quota.REFUSAL.search(_child_output(run_id)):
-        return "quota_exceeded"
+    if (reason := _startup_refusal(_child_output(run_id))) is not None:
+        return reason
     if process.returncode is None:
         return None
     grace_deadline = loop.time() + grace
     while loop.time() < grace_deadline:
         await asyncio.sleep(interval)
-        if quota.REFUSAL.search(_child_output(run_id)):
-            return "quota_exceeded"
+        if (reason := _startup_refusal(_child_output(run_id))) is not None:
+            return reason
+    return None
+
+
+def _startup_refusal(said: str) -> reg.SkipReason | None:
+    """What a child's first words refuse, if anything: its quota (`quota_exceeded`) or this model for
+    this login (`model_capability_unsupported`, `quota.UNSUPPORTED`). Both fall through to the next
+    ranked candidate; they differ in how long the model is remembered as unusable."""
+    if quota.REFUSAL.search(said):
+        return "quota_exceeded"
+    if quota.UNSUPPORTED.search(said):
+        return "model_capability_unsupported"
     return None
 
 
@@ -1143,13 +1164,17 @@ async def run_agent(
                 await candidate_process.wait()
             # The child's own stream, not just the fact that it refused: it carries the
             # window the vendor named and the instant that window reopens, which is what decides
-            # how long this candidate is passed over.
-            until = quota.record_refusal(candidate.provider, candidate.model,
-                                         said=_child_output(run_id))
-            skipped.append(_skip_record(candidate, _skip(
-                "quota_exceeded",
-                _quota_message(candidate.provider, candidate.model, _child_output(run_id)),
-            ), until=until))
+            # how long this candidate is passed over. A model the vendor refuses for this login is
+            # remembered longer: nothing about it clears in minutes.
+            said = _child_output(run_id)
+            if quota_reason == "quota_exceeded":
+                until = quota.record_refusal(candidate.provider, candidate.model, said=said)
+                message = _quota_message(candidate.provider, candidate.model, said)
+            else:
+                until = quota.record_refusal(candidate.provider, candidate.model, cooldown=quota.UNSUPPORTED_COOLDOWN)
+                message = (f"model intent: {candidate.provider}/{candidate.model} is refused for this login by the vendor "
+                           f"({_vendor_words(said)}); passed over for the next ranked model.")
+            skipped.append(_skip_record(candidate, _skip(quota_reason, message), until=until))
             continue
         chosen = candidate
         chosen_provider = candidate_provider

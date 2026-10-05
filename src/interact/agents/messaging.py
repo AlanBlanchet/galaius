@@ -188,7 +188,7 @@ def deliver_message(run_id: str, message: str, *, sender: str | None = None) -> 
         )
 
 
-def wait_for_start(delivery: Delivery, *, timeout: float = 10.0, interval: float = 0.2) -> str | None:
+def wait_for_start(delivery: Delivery, *, timeout: float = 10.0, interval: float = 0.2, grace: float = 1.5) -> str | None:
     """Give the detached dispatcher `timeout` seconds to START the resumed turn; the reason when it
     could not, None otherwise.
 
@@ -196,13 +196,16 @@ def wait_for_start(delivery: Delivery, *, timeout: float = 10.0, interval: float
     a child that died at once). None means the turn's provider child is alive (its reply follows
     on its own), the item already replied, or the deadline passed with the item still unclaimed —
     the ask stays queued and the run's record tells the rest. What lets `interact agents send`
-    exit 1 within seconds of a refused resume instead of printing "Queued".
+    exit 1 within seconds of a refused resume instead of printing "Queued". A child counts as
+    started only once it has lived `grace` seconds: one that dies on arrival (a CLI refusing, a
+    missing session) is caught here, not reported as queued.
     """
     from interact.agents import agent_queue
 
     if delivery.state != "queued" or delivery.queue_id is None:
         return None
     deadline = time.monotonic() + timeout
+    alive_since: float | None = None
     while True:
         item = next((i for i in agent_queue.items(delivery.run_id) if i.id == delivery.queue_id), None)
         if item is None:
@@ -213,7 +216,11 @@ def wait_for_start(delivery: Delivery, *, timeout: float = 10.0, interval: float
             return None
         run = reg.get_run(delivery.run_id)
         if item.state == "running" and run is not None and run.process_running():
-            return None
+            alive_since = alive_since if alive_since is not None else time.monotonic()
+            if time.monotonic() - alive_since >= grace:
+                return None
+        else:
+            alive_since = None
         if time.monotonic() >= deadline:
             return None
         time.sleep(interval)

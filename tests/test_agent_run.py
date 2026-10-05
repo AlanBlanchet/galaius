@@ -29,6 +29,7 @@ def _home(monkeypatch, tmp_path):
     install_provider(monkeypatch, _FakeProvider())
     install_provider(monkeypatch, _CrashingProvider())
     install_provider(monkeypatch, _LateRefusalProvider())
+    install_provider(monkeypatch, _UnsupportedModelProvider())
     yield
 
 
@@ -42,6 +43,17 @@ class _FakeProvider(ScriptedProvider):
         '"session_id":"SID"}), flush=True)\n'
         'print(json.dumps({"type":"result","subtype":"success","is_error":False,'
         '"total_cost_usd":0.5,"usage":{"output_tokens":7},"session_id":"SID"}), flush=True)\n'
+    )
+
+
+class _UnsupportedModelProvider(_FakeProvider):
+    """Says what Codex says to a ChatGPT login asked for an API-only model (run 699e3e56), then exits."""
+    name = "unsupported"
+    script = (
+        'import json\n'
+        'print(json.dumps({"type":"error","message":json.dumps({"type":"error","status":400,"error":{"type":"invalid_request_error",'
+        '"message":"The \'gpt-6-astra\' model is not supported when using Codex with a ChatGPT account."}})}), flush=True)\n'
+        'raise SystemExit(1)\n'
     )
 
 
@@ -464,3 +476,19 @@ async def test_one_unreadable_run_never_stops_the_others(monkeypatch):
 
     await _mirror_once(monkeypatch, _read)
     assert "good" in seen
+
+
+@pytest.mark.asyncio
+async def test_a_model_the_vendor_refuses_for_this_login_is_passed_over_and_remembered(tmp_path):
+    """Codex answering "model not supported with a ChatGPT account" a second after start is not this
+    run's outcome: the launch passes the model over (`model_capability_unsupported`, like a quota
+    refusal) and remembers it for a day, so the next ranked model of that CLI runs and no later launch
+    pays the same dead child. With one candidate only, the launch refuses by name."""
+    quota.forget()
+    with pytest.raises(run_module.ModelUnavailable, match="model_capability_unsupported"):
+        await run_agent(_UnsupportedModelProvider(), "do a thing", agent="tester", cwd=str(tmp_path), quota_window=0.5)
+    until = quota.blocked_until("unsupported", "fixture-model")
+    assert until is not None and 23 * 3600 < until - __import__("time").time() <= 24 * 3600
+    assert run_module._startup_refusal("The 'gpt-6-astra' model is not supported when using Codex with a ChatGPT account.") == "model_capability_unsupported"
+    assert run_module._startup_refusal("You have reached your weekly limit") == "quota_exceeded"
+    assert run_module._startup_refusal("Selected model is at capacity") is None

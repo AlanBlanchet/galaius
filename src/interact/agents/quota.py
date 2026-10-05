@@ -46,6 +46,23 @@ from pydantic import BaseModel, ConfigDict
 #: ("Selected model is at capacity") and a plain rate-limit-per-minute notice ("You are sending
 #: requests too quickly") are deliberately excluded: transient load, not an account quota, and
 #: do not deserve an hour cooldown.
+#: The vendor refusing this MODEL for this account's kind of access — a subscription login that cannot
+#: use an API-only model ("The 'gpt-6-astra' model is not supported when using Codex with a ChatGPT
+#: account."), an account without access to a model. Not a quota: it does not clear with time, so a
+#: launch passes the model over and remembers it for `UNSUPPORTED_COOLDOWN` (the next ranked model
+#: of the same CLI runs instead of the run dying on arrival, as 699e3e56 did).
+UNSUPPORTED = re.compile(
+    r"model is not supported when using"
+    r"|not supported when using .{0,60}account"
+    r"|does not have access to (?:the )?model"
+    r"|model_not_found"
+    r"|you do not have access to .{0,80}\bmodel\b",
+    re.IGNORECASE,
+)
+#: How long an unsupported model is passed over before being tried again: the login does not change
+#: by the minute, but it may (a new subscription tier, a key added).
+UNSUPPORTED_COOLDOWN = 24 * 3600.0
+
 REFUSAL = re.compile(
     r"reached (?:your|its) .{0,80}\b(limit|quota)\b"
     r"|exceeded (?:your|its) current quota"
