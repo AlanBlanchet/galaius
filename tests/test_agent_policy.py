@@ -703,7 +703,7 @@ def test_a_criterion_answers_PER_VENDOR_CLI_because_that_is_who_will_run_it(
         def model_id_for(self, model):
             return model.id
 
-    monkeypatch.setattr("interact.agents.providers.PROVIDERS", {"onlyvendor": OneVendor})
+    monkeypatch.setattr("interact.agents.providers.PROVIDERS", {"onlyvendor": OneVendor()})
     monkeypatch.setattr("interact.agents.providers.provider_for", lambda _n: OneVendor())
     monkeypatch.setenv("FIXTURE_KEY", "set")
     with catalog_of(

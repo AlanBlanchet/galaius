@@ -34,7 +34,7 @@ from interact.agents.providers import (
     provider_caveat_note,
     provider_for,
 )
-from interact.agents.run import ModelUnavailable, is_criterion, rank_candidates, resolve_model, run_agent
+from interact.agents.run import ModelUnavailable, is_criterion, Ranking, rank, resolve_model, run_agent
 from interact.cli.clients import ClientTarget, MCPServer, Scope
 from interact.cli.command_bootstrap import Config, UserConfig
 from interact.cli.render import CliRenderer
@@ -990,24 +990,18 @@ def agents_variables() -> None:
           " clears every term is used, and re-resolved at every spawn.")
 
 
-def _per_vendor(rule: str, weights: str = "", policy: Policy | None = None) -> dict[str, str | None]:
-    """What each switched-on vendor CLI would ACTUALLY run for `rule`, by the spawn's own resolver.
-
-    Explicit-provider previews are filters. The default launch ranks the combined pool first;
-    these individual answers remain useful when a caller chooses a provider constraint.
-    """
-    policy = policy if policy is not None else Policy.load()
+def _per_vendor(ranking: Ranking, policy: Policy) -> dict[str, str | None]:
+    """What each switched-on vendor CLI would ACTUALLY run: its first candidate in the one ranked
+    list a spawn walks — a CLI given alone gets that same list, filtered (`rank`)."""
     answers: dict[str, str | None] = {}
     # Read THROUGH the module: which CLIs exist is a fact about the caller's environment — a name
     # bound at import time would freeze whatever the process started with.
     for name in agent_providers.PROVIDERS:
         if not policy.provider_active(name):
             continue
-        try:
-            answers[name] = resolve_model(
-                rule, dict(os.environ), provider=agent_providers.provider_for(name), weights=weights)[1]
-        except ModelUnavailable:
-            answers[name] = None
+        first = next((c for c in ranking.candidates if c.provider == name), None)
+        answers[name] = None if first is None else resolve_model(
+            first.model, dict(os.environ), provider=agent_providers.provider_for(name))[1]
     return answers
 
 
@@ -1034,13 +1028,18 @@ def agents_criterion(criterion: str, json_out: bool = False) -> None:
     chosen = parsed.choose()
     why = parsed.explain()
     if json_out:
+        policy = Policy.load()
+        try:
+            ranking = rank(criterion, dict(os.environ), providers=list(agent_providers.PROVIDERS.values()), policy=policy)
+        except ModelUnavailable:
+            ranking = Ranking(candidates=())
         print(json.dumps({
             "criterion": criterion,
             "model": chosen.id if chosen else None,
             "score": chosen.intelligence_score if chosen else None,
             "competence": chosen.competence() if chosen else None,
             # What each switched-on CLI would run: the answer a spawn will actually get.
-            "providers": _per_vendor(criterion),
+            "providers": _per_vendor(ranking, policy),
             "why": why,
         }))
         return
@@ -1209,18 +1208,19 @@ def agents_policy(json_out: bool = False) -> None:
             rule = policy.criterion_for(agent) or ""
             resolves: str | None = rule
             why = None
-            ranked = ()
+            ranking = Ranking(candidates=())
             if is_criterion(rule):
                 try:
-                    ranked = rank_candidates(rule, dict(os.environ), providers=list(agent_providers.PROVIDERS.values()), weights=policy.weights_for(agent))
-                    resolves = ranked[0].model
+                    ranking = rank(rule, dict(os.environ), providers=list(agent_providers.PROVIDERS.values()), weights=policy.weights_for(agent), role=agent, policy=policy)
+                    resolves = ranking.candidates[0].model
                 except ModelUnavailable as err:
                     resolves, why = None, str(err).splitlines()[0]
             agents.append({
                 "name": agent, "rule": policy.agents[agent], "criterion": is_criterion(rule),
                 "resolves": resolves, "why": why,
-                "ranked": [candidate.model_dump() for candidate in ranked[:3]],
-                "providers": _per_vendor(rule, policy.weights_for(agent), policy) if is_criterion(rule) else {},
+                "ranked": [candidate.model_dump() for candidate in ranking.candidates[:3]],
+                "dropped": [str(item) for item in ranking.dropped],
+                "providers": _per_vendor(ranking, policy) if is_criterion(rule) else {},
             })
         print(json.dumps({
             "policy": "server catalog" if policy.catalog is not None else str(policy_path()),
@@ -1244,14 +1244,20 @@ def agents_policy(json_out: bool = False) -> None:
             resolved = policy.criterion_for(agent) or ""
             shown = rule if rule == resolved else f"{rule}  →  {resolved}"
             note = ""
+            ranking = Ranking(candidates=())
             if is_criterion(resolved):
                 try:
-                    ranked = rank_candidates(resolved, dict(os.environ), providers=list(agent_providers.PROVIDERS.values()), weights=policy.weights_for(agent))
-                    note = "  ranked: " + " → ".join(f"{item.provider}/{item.model}" for item in ranked[:3]) + " (availability checked at start)"
+                    ranking = rank(resolved, dict(os.environ), providers=list(agent_providers.PROVIDERS.values()), weights=policy.weights_for(agent), role=agent, policy=policy)
+                    note = "  ranked: " + " → ".join(f"{item.provider}/{item.model}" for item in ranking.candidates[:3]) + " (availability checked at start)"
                 except ModelUnavailable as err:
                     note = "  ⇒ NOTHING (" + str(err).splitlines()[0].rstrip(":") + ")"
 
             print(f"  {agent:<16} {shown}{note}")
+            ahead = ranking.drops_ahead_of(3)
+            for item in ahead:
+                print(f"  {'':<16}   dropped {item}")
+            if len(ranking.dropped) > len(ahead):
+                print(f"  {'':<16}   + {len(ranking.dropped) - len(ahead)} more dropped further down the list (--json-out lists them)")
     if policy.toolsets:
         print("\ntoolsets")
         for name in policy.toolsets:

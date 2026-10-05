@@ -6,7 +6,7 @@ import time
 from enum import StrEnum
 from typing import TYPE_CHECKING, ClassVar, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 from interact.benchmarks.published import (
     PublishedEntry,
@@ -199,6 +199,39 @@ def _ordinal(n: int) -> str:
     return f"{n}{ {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th') }".replace(" ", "")
 
 
+class TokenMix(BaseModel):
+    """How a workload's tokens split between fresh input, cache reads, cache writes and output —
+    relative weights, so one price per model can be read for that workload.
+
+    Default 3:1 input:output, the usual chat shape; an agent role's MEASURED mix (its runs' token
+    counts) replaces it when there is one — agents read mostly from the prompt cache.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    input: float = Field(default=3.0, ge=0)
+    cache_read: float = Field(default=0.0, ge=0)
+    cache_write: float = Field(default=0.0, ge=0)
+    output: float = Field(default=1.0, ge=0)
+
+    @property
+    def shares(self) -> tuple[float, float, float, float]:
+        """The four weights as fractions of one (input, cache read, cache write, output)."""
+        weights = (self.input, self.cache_read, self.cache_write, self.output)
+        total = sum(weights)
+        return tuple(weight / total for weight in weights)  # type: ignore[return-value]
+
+    @model_validator(mode="after")
+    def _some_tokens(self) -> Self:
+        if self.input + self.cache_read + self.cache_write + self.output <= 0:
+            raise ValueError("a token mix needs at least one token")
+        return self
+
+    def __str__(self) -> str:
+        names = ("input", "cache read", "cache write", "output")
+        return " · ".join(f"{name} {share:.0%}" for name, share in zip(names, self.shares) if share >= 0.005)
+
+
 class Model(RegistryMixin, BaseModel):
     model_config = {"arbitrary_types_allowed": True}
 
@@ -207,6 +240,9 @@ class Model(RegistryMixin, BaseModel):
     capabilities: set[ModelCapability]
     input_cost_per_million: float | None = None
     output_cost_per_million: float | None = None
+    #: Prompt-cache rates, as `ModelSpec` carries them; None = no cache rate quoted (priced as input).
+    cache_read_cost_per_million: float | None = None
+    cache_write_cost_per_million: float | None = None
     #: Capability score from the catalog — what best-first ordering sorts on. None for a model
     #: nobody has scored, which sorts LAST rather than first: unknown is not the same as good.
     intelligence_score: float | None = None
@@ -378,6 +414,32 @@ class Model(RegistryMixin, BaseModel):
     def cost_score(self) -> float:
         return Model.cost_of(self.input_cost_per_million, self.output_cost_per_million)
 
+    @property
+    def catalog_id(self) -> str:
+        """`<catalog provider>/<id>` — the one spelling that names this row and no other."""
+        return f"{self.provider}/{self.id}"
+
+    def blended_cost(self, mix: "TokenMix") -> float | None:
+        """$ per million tokens spent in ``mix``'s proportions; None when the price is unknown.
+
+        A local daemon serving the model is the one real zero. A missing cache rate is priced at
+        the input rate — the most it can cost, never a discount nobody quoted.
+        """
+        if self.serves_itself:
+            return 0.0
+        if self.input_cost_per_million is None or self.output_cost_per_million is None:
+            return None
+        if self.input_cost_per_million == 0 and self.output_cost_per_million == 0:
+            # Nobody serves it here, yet the catalog says free: a placeholder, not a price.
+            return None
+        rates = (
+            self.input_cost_per_million,
+            self.input_cost_per_million if self.cache_read_cost_per_million is None else self.cache_read_cost_per_million,
+            self.input_cost_per_million if self.cache_write_cost_per_million is None else self.cache_write_cost_per_million,
+            self.output_cost_per_million,
+        )
+        return sum(share * rate for share, rate in zip(mix.shares, rates))
+
     @staticmethod
     def cost_of(input_cost: float | None, output_cost: float | None) -> float:
         """Sum of input/output cost-per-million; missing values count as 0."""
@@ -470,6 +532,12 @@ class Model(RegistryMixin, BaseModel):
             * 1_000_000
             if cost_entry.get("output_cost_per_token")
             else None,
+            cache_read_cost_per_million=cost_entry["cache_read_input_token_cost"] * 1_000_000
+            if cost_entry.get("cache_read_input_token_cost") is not None
+            else None,
+            cache_write_cost_per_million=cost_entry["cache_creation_input_token_cost"] * 1_000_000
+            if cost_entry.get("cache_creation_input_token_cost") is not None
+            else None,
             supports_structured_output=bool(cost_entry.get("supports_response_schema")),
             coord_format=fmt if fmt != CoordFormat() else None,
         )  # type: ignore[return-value]
@@ -541,6 +609,8 @@ class Model(RegistryMixin, BaseModel):
                         capabilities=caps,
                         input_cost_per_million=model_spec.input_cost_per_million,
                         output_cost_per_million=model_spec.output_cost_per_million,
+                        cache_read_cost_per_million=model_spec.cache_read_cost_per_million,
+                        cache_write_cost_per_million=model_spec.cache_write_cost_per_million,
                         supports_structured_output=model_spec.supports_response_schema,
                         intelligence_score=model_spec.intelligence_score,
                         coord_format=fmt,
@@ -706,6 +776,8 @@ class Model(RegistryMixin, BaseModel):
                     capabilities=caps | (baked.capabilities if baked else set()),
                     input_cost_per_million=baked.input_cost_per_million if baked else None,
                     output_cost_per_million=baked.output_cost_per_million if baked else None,
+                    cache_read_cost_per_million=baked.cache_read_cost_per_million if baked else None,
+                    cache_write_cost_per_million=baked.cache_write_cost_per_million if baked else None,
                     supports_structured_output=bool(baked and baked.supports_structured_output),
                     intelligence_score=baked.intelligence_score if baked else None,
                     coord_format=fmt or (baked.coord_format if baked else None),

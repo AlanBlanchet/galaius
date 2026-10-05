@@ -102,7 +102,7 @@ def _policy_for_continuation(run, provider: AgentProvider):
                 f"Recorded permission intent {run.permission_mode!r} is not accepted by "
                 f"{provider.name!r}; refusing continuation"
             ) from error
-        model = resolve_continuable_model(criterion, dict(os.environ), provider=provider, weights=policy.weights_for(run.agent))[1]
+        model = resolve_continuable_model(criterion, dict(os.environ), provider=provider, weights=policy.weights_for(run.agent), role=run.agent)[1]
         return policy, criterion, model, policy.reasoning_for(run.agent)
     except (ModelUnavailable, PolicyError, ValueError) as error:
         raise ModelUnavailable(str(error)) from error

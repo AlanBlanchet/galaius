@@ -745,7 +745,7 @@ class MachineAgents(BaseModel):
             best = []
             for provider in providers:
                 try:
-                    ranked = rank_candidates(criterion, dict(self.environment), providers=[provider], weights=policy.weights_for(role))
+                    ranked = rank_candidates(criterion, dict(self.environment), providers=[provider], weights=policy.weights_for(role), role=role)
                     provider.validate_tool_policy(policy.tools_for(role), (), coarse_accepted=policy.accepts_coarse_tool_policy(role, provider.name))
                 except (ValueError, RuntimeError):
                     continue  # this CLI cannot run the role (no model clears its rule, or its tool rules)

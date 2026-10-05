@@ -102,7 +102,8 @@ def _select(policy: Policy, role: str) -> tuple[str, str, str, str]:
             and all(value is not None and math.isfinite(value) and value >= 0 for value in prices)
         )
 
-    chosen = Criteria.parse(rule).choose(runnable=eligible, weights=policy.weights_for(role))
+    chosen = Criteria.parse(rule).choose(runnable=eligible, weights=policy.weights_for(role),
+                                         value=policy.value, mix=reg.token_mix(role))
     if chosen is None:
         raise PolicyError(
             f"No native Codex model with known prices clears {role!r}: {rule!r} "

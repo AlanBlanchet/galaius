@@ -33,10 +33,12 @@ from __future__ import annotations
 import re
 import math
 from dataclasses import dataclass, field
-from typing import Callable, Literal
+from typing import Callable, Literal, Sequence
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from interact import benchmark_tables, model_catalog
-from interact.models import Benchmark, Model, ModelCapability, PublishedEntry
+from interact.models import Benchmark, Model, ModelCapability, PublishedEntry, TokenMix
 
 
 class CriteriaError(ValueError):
@@ -69,6 +71,23 @@ class Variable:
     #: a model the source never measured has no place in it — carrying a snapshot score into a
     #: board percentile once put fifteen models ABOVE the board's own maximum.
     measured: Callable[[Model], bool] | None = None
+    #: The range the source scores on, (worst, best) — what "a point" of this measure is when two
+    #: models are compared (`ValueRule.edge`). None: no declared scale.
+    score_range: tuple[float, float] | None = None
+
+
+class _Scalar(BaseModel):
+    """A `Variable` read straight off the model record rather than off a benchmark board."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    attr: str
+    describe: str
+    source: str
+    population: Callable[[], list[float]] | None = None
+    score_range: tuple[float, float] | None = None
+    #: A quality measure, rankable when written bare — never a price, which is a cost constraint.
+    rankable: bool = False
 
 
 class Variables:
@@ -76,26 +95,30 @@ class Variables:
 
     #: Scalars off the model record. Namespaced by SOURCE: capability score is Artificial
     #: Analysis', prices are the provider catalog's — saying so is the whole point.
-    _SCALARS: dict[str, tuple[str, str, Callable[[], list[float]] | None, str]] = {
+    _SCALARS: dict[str, _Scalar] = {
         # Artificial Analysis publishes its board to disk — that board, not the local catalog, is
-        # what "the 90th percentile" means for this number.
-        "aa.intelligence": ("intelligence_score", "Artificial Analysis capability score",
-                            lambda: _board_scores(), "Artificial Analysis"),
+        # what "the 90th percentile" means for this number. Scored out of 100, like its sibling
+        # indexes in the benchmark registry (`aa.coding_index`, `aa.coding_agent_index`).
+        "aa.intelligence": _Scalar(attr="intelligence_score", describe="Artificial Analysis capability score",
+                                   source="Artificial Analysis", population=lambda: _board_scores(),
+                                   score_range=(0.0, 100.0), rankable=True),
         # A price has no published leaderboard: its population is what interact can reach — also
         # the honest answer to "cheaper than most of what I could actually run".
-        "price.in": ("input_cost_per_million", "input cost, $ per million tokens", None,
-                     "the provider catalog"),
-        "price.out": ("output_cost_per_million", "output cost, $ per million tokens", None,
-                      "the provider catalog"),
+        "price.in": _Scalar(attr="input_cost_per_million", describe="input cost, $ per million tokens",
+                            source="the provider catalog"),
+        "price.out": _Scalar(attr="output_cost_per_million", describe="output cost, $ per million tokens",
+                             source="the provider catalog"),
     }
 
     @classmethod
     def all(cls) -> list[Variable]:
         out: list[Variable] = []
-        for name, (attr, describe, population, source) in cls._SCALARS.items():
+        for name, scalar in cls._SCALARS.items():
             out.append(Variable(
-                name, describe, _reader(attr), source=source, rankable=name == "aa.intelligence",
-                population=population, measured=_board_measured if population is not None else None,
+                name, scalar.describe, _reader(scalar.attr), source=scalar.source, rankable=scalar.rankable,
+                population=scalar.population,
+                measured=_board_measured if scalar.population is not None else None,
+                score_range=scalar.score_range,
             ))
         for bench in Benchmark.registry():
             out.append(Variable(
@@ -105,6 +128,7 @@ class Variables:
                 higher_is_better=bench.higher_is_better is not False,
                 population=_bench_population(bench),
                 measured=_bench_measured(bench),
+                score_range=bench.score_range if bench.score_range and bench.score_range[0] < bench.score_range[1] else None,
             ))
         for cap in ModelCapability:
             out.append(Variable(
@@ -426,6 +450,99 @@ def _validate_provider_constraints(constraints: list[ProviderConstraint]) -> Non
         raise CriteriaError(f"provider {name!r} is both PREFER and EXCLUDE — contradiction")
 
 
+#: Why a model left a ranking: another one is at least as good for no more money, or nearly as
+#: good for a fraction of the price.
+DropRule = Literal["dominated", "small_edge"]
+
+
+class Dropped(BaseModel):
+    """A model a ranking left out, and the model that made it pointless — with the numbers."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    model: Model
+    by: Model
+    rule: DropRule
+    score: tuple[float, ...]
+    by_score: tuple[float, ...]
+    cost: float
+    by_cost: float
+    #: The rule's own bounds, so the sentence states the bar that applied.
+    ceiling: float
+    edge: float
+
+    def __str__(self) -> str:
+        score = "/".join(f"{value:g}" for value in self.score)
+        by_score = "/".join(f"{value:g}" for value in self.by_score)
+        if self.rule == "dominated":
+            return (f"{self.model.id}: dominated by {self.by.id} — score {by_score} ≥ {score}, "
+                    f"price ${self.by_cost:.2f} ≤ ${self.cost:.2f} per M tokens")
+        return (f"{self.model.id}: {self.by.id} scores {by_score}, less than {self.edge:g} points "
+                f"below {score}, for ${self.by_cost:.2f} vs ${self.cost:.2f} per M tokens "
+                f"(over {self.ceiling:g}x)")
+
+
+class ValueRule(BaseModel):
+    """Intelligence against cost: which models a ranking may never run, not even as a fallback.
+
+    Two drops, both relative to another model in the SAME pool — so a model leaves the list
+    because something runnable there is a better deal, never because of its name:
+
+    - dominated: another model scores at least as high on every measure AND costs no more
+      (strictly better on one side; an exact twin is kept as a second route);
+    - small edge: another model costs ``ceiling`` times less and scores less than ``edge`` points
+      below — a big price for a small gain. Points are out of 100 of the measure's range, so this
+      drop needs a measure with a known scale.
+
+    Price is one number per model: catalog rates blended by the workload's `TokenMix`. A model
+    with no known price is never dropped and never drops another — an unknown price proves
+    nothing. Models are walked cheapest first and only KEPT models drop others, so the outcome
+    does not depend on catalog order.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True, allow_inf_nan=False)
+
+    ceiling: float = Field(default=1.5, ge=1)
+    edge: float = Field(default=2.0, ge=0)
+
+    def prune(
+        self, models: Sequence[Model], score: Callable[[Model], tuple[float, ...] | None],
+        mix: TokenMix, *, small_edge: bool = True,
+    ) -> tuple[list[Model], list[Dropped]]:
+        """``models`` minus every dropped one, order kept, and why each left."""
+        valued = [(index, model, score(model), model.blended_cost(mix)) for index, model in enumerate(models)]
+        walk = sorted(
+            ((index, model, value, cost) for index, model, value, cost in valued if value is not None and cost is not None),
+            key=lambda item: (item[3], tuple(-v for v in item[2]), item[0]),
+        )
+        keepers: list[tuple[Model, tuple[float, ...], float]] = []
+        dropped: dict[int, Dropped] = {}
+        for index, model, value, cost in walk:
+            for by, by_value, by_cost in keepers:
+                rule = self._beats(by_value, by_cost, value, cost, small_edge)
+                if rule is not None:
+                    dropped[index] = Dropped(
+                        model=model, by=by, rule=rule, score=value, by_score=by_value,
+                        cost=cost, by_cost=by_cost, ceiling=self.ceiling, edge=self.edge,
+                    )
+                    break
+            else:
+                keepers.append((model, value, cost))
+        return ([model for index, model in enumerate(models) if index not in dropped],
+                [dropped[index] for index in sorted(dropped)])
+
+    def _beats(
+        self, by_value: tuple[float, ...], by_cost: float, value: tuple[float, ...], cost: float,
+        small_edge: bool,
+    ) -> DropRule | None:
+        pairs = list(zip(by_value, value, strict=True))
+        if by_cost <= cost and all(b >= v for b, v in pairs) and (by_cost < cost or by_value != value):
+            return "dominated"
+        if small_edge and by_cost * self.ceiling < cost and all(v - b < self.edge for b, v in pairs):
+            return "small_edge"
+        return None
+
+
 @dataclass(frozen=True)
 class Criteria:
     """A model requirement, as a sentence somebody can read and change."""
@@ -554,18 +671,99 @@ class Criteria:
         bars = self.against_the_board()
         fit = [m for m in self._pool(available_only, runnable, candidates)
                if all(t.holds(m) for t in bars)]
-        ranking_fields = tuple(term.field for term in bars if term.ranking)
-        if ranking_fields:
-            variables = [Variables.by_name(name) for name in ranking_fields]
-            if all(variable is not None for variable in variables):
-                fit.sort(key=lambda model: (
-                    *[variable.read(model) * (-1 if variable.higher_is_better else 1)
-                      for variable in variables if variable is not None],
-                    model.thrift[0], model.thrift[1], model.id,
-                ))
-                return fit
+        variables = self._ranking_variables()
+        if variables:
+            fit.sort(key=lambda model: (
+                *[variable.read(model) * (-1 if variable.higher_is_better else 1) for variable in variables],
+                model.thrift[0], model.thrift[1], model.id,
+            ))
+            return fit
         fit.sort(key=lambda m: m.thrift)
         return fit
+
+    def _ranking_variables(self) -> list[Variable]:
+        variables = [Variables.by_name(term.field) for term in self.terms if term.ranking]
+        return [v for v in variables if v is not None] if all(v is not None for v in variables) else []
+
+    def _value_variables(self) -> list[Variable]:
+        """The measures a model's worth is read on: the bare metrics it ranks on, else the measured
+        ones its bars compare (`aa.intelligence >= 90%` ranks cheapest-first, yet a model clearing it
+        that is weaker AND pricier than another is still never worth running). Prices are the
+        other axis, never a score."""
+        ranking = self._ranking_variables()
+        if ranking:
+            return ranking
+        named = dict.fromkeys(term.field for term in self.terms if term.op)
+        variables = [Variables.by_name(name) for name in named]
+        return [v for v in variables if v is not None and v.rankable]
+
+    def value_score(self, weights: str = "") -> Callable[[Model], tuple[float, ...] | None]:
+        """What "scores at least as high" means for this criterion, per model, in POINTS OUT OF 100
+        of each measure's declared range: its weighted score when weights are given, else every
+        bare metric it ranks on, higher always better. A measure with no declared range stays on
+        its own scale (only `edge_known` tells the two apart). None for a model without that
+        number, and for every model when the criterion names no measure at all."""
+        parsed = _parse_weights(weights)
+        if parsed:
+            pairs = [(Variables.by_name(name), weight) for name, weight in parsed.items()]
+
+            def weighted(model: Model) -> tuple[float, ...] | None:
+                scores = [(_weighted_value(variable, model), weight) for variable, weight in pairs]
+                if any(score is None for score, _weight in scores):
+                    return None
+                return (100 * sum(score * weight for score, weight in scores if score is not None),)
+            return weighted
+        variables = self._value_variables()
+
+        def measured(model: Model) -> tuple[float, ...] | None:
+            if not variables:
+                return None
+            points: list[float] = []
+            for variable in variables:
+                value = variable.read(model)
+                if value is None:
+                    return None
+                if variable.score_range is not None:
+                    worst, best = variable.score_range
+                    value = 100 * (value - worst) / (best - worst)
+                points.append(value if variable.higher_is_better else -value)
+            return tuple(points)
+        return measured
+
+    def edge_known(self, weights: str = "") -> bool:
+        """Whether a POINT of this criterion's score means something: weighted scores and measures
+        with a declared range are out of 100; a measure without one has no size for "a small edge"."""
+        return bool(_parse_weights(weights)) or all(
+            variable.score_range is not None for variable in self._value_variables())
+
+    def prune(
+        self, value: ValueRule, models: Sequence[Model], weights: str = "", mix: TokenMix = TokenMix(),
+    ) -> tuple[list[Model], list[Dropped]]:
+        """`value` applied with this criterion's score, prices blended by `mix`."""
+        return value.prune(models, self.value_score(weights), mix, small_edge=self.edge_known(weights))
+
+    def frontier(
+        self,
+        available_only: bool = True,
+        runnable: Callable[[Model], bool] | None = None,
+        weights: str = "",
+        candidates: list[Model] | None = None,
+        value: ValueRule | None = None,
+        mix: TokenMix = TokenMix(),
+    ) -> tuple[list[Model], list[Dropped]]:
+        """The ranking, and the models `value` left out of it — none unless a `ValueRule` is given:
+        the rule is a POLICY choice, read once by its owner (`interact.agents.run.rank`) and handed
+        here, never a default some callers apply and others do not."""
+        fit = self.qualifying(available_only, runnable, candidates)
+        parsed = _parse_weights(weights)
+        if parsed:
+            score = self.value_score(weights)
+            weighted = [(scored[0], model) for model in fit if (scored := score(model)) is not None]
+            weighted.sort(key=lambda pair: (-pair[0], pair[1].thrift, pair[1].id))
+            fit = [model for _score, model in weighted]
+        if value is None:
+            return fit, []
+        return self.prune(value, fit, weights, mix)
 
     def ranked(
         self,
@@ -573,21 +771,12 @@ class Criteria:
         runnable: Callable[[Model], bool] | None = None,
         weights: str = "",
         candidates: list[Model] | None = None,
+        value: ValueRule | None = None,
+        mix: TokenMix = TokenMix(),
     ) -> list[Model]:
-        """Eligible candidates in the same order used for execution and selection previews."""
-        fit = self.qualifying(available_only, runnable, candidates)
-        parsed = _parse_weights(weights)
-        if parsed:
-            weighted: list[tuple[float, Model]] = []
-            for model in fit:
-                values = [(Variables.by_name(name), weight) for name, weight in parsed.items()]
-                scores = [(_weighted_value(variable, model), weight) for variable, weight in values]
-                numeric = [(score, weight) for score, weight in scores if score is not None]
-                if len(numeric) == len(scores):
-                    weighted.append((sum(score * weight for score, weight in numeric), model))
-            weighted.sort(key=lambda pair: (-pair[0], pair[1].thrift, pair[1].id))
-            return [model for _score, model in weighted]
-        return fit
+        """Eligible candidates in the same order used for execution and selection previews,
+        without the models `value` rules out (see `ValueRule`)."""
+        return self.frontier(available_only, runnable, weights, candidates, value, mix)[0]
 
     def choose(
         self,
@@ -595,9 +784,11 @@ class Criteria:
         runnable: Callable[[Model], bool] | None = None,
         weights: str = "",
         candidates: list[Model] | None = None,
+        value: ValueRule | None = None,
+        mix: TokenMix = TokenMix(),
     ) -> Model | None:
         """The selected model, or None when the requested policy cannot be satisfied."""
-        ranked = self.ranked(available_only, runnable, weights, candidates)
+        ranked = self.ranked(available_only, runnable, weights, candidates, value, mix)
         return ranked[0] if ranked else None
 
     @staticmethod

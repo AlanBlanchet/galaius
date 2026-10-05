@@ -34,6 +34,7 @@ from interact.agents.catalog import AgentCatalog
 from interact.agents.catalog_connection import CatalogConnectionError
 from interact.agents.vocabulary import TouchScope
 from interact.config import UserConfig
+from interact.criteria import ValueRule
 
 #: The two altitudes a paradigm can be projected at for one agent. Closed on purpose: a third
 #: spelling ("prompt", "sticky-note") is a typo, silent until spawn.
@@ -93,6 +94,11 @@ class Policy:
     #: Never a default: a CLI that cannot enforce a role's tool list is refused unless the
     #: operator names this tradeoff here.
     coarse_tool_policy: dict[str, list[str]] = field(default_factory=dict)
+    #: Intelligence against cost (`ValueRule`): `"value": {"ceiling": 1.5, "edge": 2}` — a model
+    #: costing more than `ceiling` times another for less than `edge` points more is never run.
+    #: A machine-local cost choice, like `models`; absent means the defaults. Prices are read at
+    #: each role's own measured token mix, never a mix typed here.
+    value: ValueRule = field(default_factory=ValueRule)
     catalog: AgentCatalog | None = None
 
     @classmethod
@@ -127,6 +133,7 @@ class Policy:
             reasoning=dict(raw.get("reasoning") or {}),
             reasoning_models=dict(raw.get("reasoning_models") or {}),
             coarse_tool_policy={k: list(v) for k, v in (raw.get("coarse_tool_policy") or {}).items()},
+            value=_value_rule(raw, path),
         )
         policy.validate()
         return policy
@@ -155,6 +162,7 @@ class Policy:
         policy.coarse_tool_policy = {
             k: list(v) for k, v in (raw.get("coarse_tool_policy") or {}).items()
         }
+        policy.value = _value_rule(raw, policy_path())
         for agent in catalog.launch_agents:
             if agent.role_key is None:
                 continue
@@ -412,6 +420,13 @@ class Policy:
             ParadigmAssignment(paradigm=e["paradigm"], projection=e["as"]) for e in entries
         ]
 
+
+def _value_rule(raw: dict, path: Path) -> ValueRule:
+    """The file's `value` block as a `ValueRule`, refused at load when it cannot be one."""
+    try:
+        return ValueRule.model_validate(raw.get("value") or {})
+    except ValueError as error:
+        raise PolicyError(f"{path}: `value` must look like {{\"ceiling\": 1.5, \"edge\": 2}} ({error})") from error
 
 def _parse_paradigms(
     raw: dict[str, list[dict[str, str]]], path: Path,

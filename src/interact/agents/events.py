@@ -13,6 +13,8 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from interact.models import TokenMix
+
 EventKind = Literal[
     "started",     # session is up (id, cwd, tools known)
     "text",        # the agent said something
@@ -146,6 +148,15 @@ class TokenUsage(BaseModel):
     def since(self, previous: "TokenUsage") -> "TokenUsage":
         """Growth of a cumulative counter; a counter that went BACKWARDS restarted from zero."""
         return self - previous if self.covers(previous) else self
+
+    def mix(self) -> TokenMix | None:
+        """These tokens as a `TokenMix` — how a workload splits between fresh input, cache reads,
+        cache writes and output; None before the first counted token."""
+        if self.input_tokens + self.output_tokens <= 0:
+            return None
+        fresh = self.input_tokens - self.cached_input_tokens - self.cache_write_input_tokens
+        return TokenMix(input=max(fresh, 0), cache_read=self.cached_input_tokens,
+                        cache_write=self.cache_write_input_tokens, output=self.output_tokens)
 
 
 #: The token fields shared by :class:`TokenUsage`, :class:`AgentEvent` and the run record. Every

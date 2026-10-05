@@ -27,11 +27,12 @@ from pydantic import BaseModel, Field, PrivateAttr
 from interact.agents import quota
 from interact_core import AgentRevisionRef, PromptExecutionRef
 
-from interact.agents.events import TOKEN_FIELDS, AgentEvent, UsageLedger
+from interact.agents.events import TOKEN_FIELDS, AgentEvent, TokenUsage, UsageLedger
 from interact.agents.catalog_connection import CatalogConnection
 from interact.agents.providers import PROVIDERS, DeniedTool
 from interact.fence import FenceSpec
 from interact.file_lock import exclusive
+from interact.models import TokenMix
 from interact.pinned_directory import PinnedDirectory
 from interact.private_files import PRIVATE_FILES
 from interact.processes import end_process_tree, process_started
@@ -1583,6 +1584,35 @@ def _stat_cached_record(path: Path) -> AgentRun | None:
     _RECORD_CACHE[str(path)] = (stat.st_mtime_ns, stat.st_size, run)
     return run
 
+
+
+def _listed_mtime(path: Path) -> float:
+    """When a listed record last changed, for ORDERING only (its content is still read through the
+    private-file guard); one removed meanwhile sorts last."""
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+#: How many of the newest run records a role's token mix is read from: its RECENT workload, at a
+#: cost that stays flat however long the history grows (a full scan cost seconds per process at
+#: 2 700 records).
+TOKEN_MIX_WINDOW = 300
+
+
+def token_mix(agent: str | None) -> TokenMix:
+    """How `agent`'s recent runs on this machine spent their tokens, summed — the workload its model
+    prices are read at. The default mix for no agent, or one with no counted token in the window."""
+    folder = agents_dir()
+    total = TokenUsage()
+    if agent and folder.exists():
+        newest = sorted(((_listed_mtime(path), path) for path in folder.glob("*.json")), reverse=True)
+        for _mtime, path in newest[:TOKEN_MIX_WINDOW]:
+            run = _stat_cached_record(path)
+            if run is not None and run.agent == agent:
+                total += TokenUsage(**{name: getattr(run, name) or 0 for name in TOKEN_FIELDS})
+    return total.mix() or TokenMix()
 
 def forget(run_id: str) -> bool:
     """Remove a finished run and everything it wrote. False if it is still running, or unknown.

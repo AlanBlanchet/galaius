@@ -22,6 +22,7 @@ import subprocess
 import tempfile
 from typing import BinaryIO, Mapping, Sequence
 from interact_core import AgentRevisionRef
+from pydantic import BaseModel, ConfigDict
 
 from interact.agents import registry as reg
 from interact.agents import quota
@@ -32,7 +33,7 @@ from interact.agents.policy import Policy, policy_path
 from interact.agents.profiles import overlay_for, profiles_from
 from interact.agents.providers import PROVIDERS, AgentProvider, CodexProvider, UnsupportedToolPolicy, validate_denied_tools, _safe_process_detail
 from interact.agents.vocabulary import TouchScope
-from interact.criteria import Criteria, CriteriaError, Variables
+from interact.criteria import Criteria, CriteriaError, Dropped, Variables
 from interact.models import Model, ModelCapability
 
 
@@ -107,9 +108,38 @@ def resolve_model(
     return overlay, overlay.get("ANTHROPIC_MODEL") or overlay.get("OPENAI_MODEL") or model
 
 
+class Ranking(BaseModel):
+    """A launch's ordered candidates, and the models the value rule left out of them."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    candidates: tuple[reg.LaunchCandidate, ...]
+    dropped: tuple[Dropped, ...] = ()
+    #: Catalog ids in the criterion's own order, before the value rule — where each drop stood.
+    order: tuple[str, ...] = ()
+
+    def drops_ahead_of(self, shown: int) -> tuple[Dropped, ...]:
+        """The drops that stood ahead of the last of the first `shown` candidates — the ones that
+        changed what a launch tries; a drop behind them would never have been reached anyway."""
+        if not self.candidates or not self.order:
+            return self.dropped
+        last = self.candidates[:shown][-1].catalog_id
+        bar = self.order.index(last) if last in self.order else len(self.order)
+        return tuple(d for d in self.dropped if self.order.index(d.model.catalog_id) < bar)
+
+
 def rank_candidates(
     model: str, env: dict[str, str], *, providers: Sequence[AgentProvider], weights: str = "",
+    role: str | None = None,
 ) -> tuple[reg.LaunchCandidate, ...]:
+    """The ordered (CLI, model) list a launch walks — see :func:`rank`."""
+    return rank(model, env, providers=providers, weights=weights, role=role).candidates
+
+
+def rank(
+    model: str, env: dict[str, str], *, providers: Sequence[AgentProvider], weights: str = "",
+    role: str | None = None, policy: Policy | None = None,
+) -> Ranking:
     """ONE ordered list across every given CLI — "we rank based on all providers, we get the
     first one from the criteria, and if not available we get the next one".
 
@@ -120,11 +150,34 @@ def rank_candidates(
     or every given CLI when the id is outside the catalog — passed through untouched, as
     :func:`resolve_model` does. The criterion itself is never relaxed: an empty list raises,
     naming the pools that were searched.
+
+    A criterion's list then loses every model the policy's `ValueRule` rules out, priced at
+    `role`'s measured token mix: a model another one beats on score AND price, or barely beats for
+    a multiple of the price, is never launched, not even as a fallback. Each CLI's chain is judged
+    on what THAT CLI runs — a better deal only another CLI runs is no reason to drop this one's
+    fallback, since the other may be logged out or out of quota — so one provider alone is still
+    the union list filtered. A plain model id is the caller's own choice, never second-guessed.
+    `policy` is the one already loaded by a caller ranking many roles; otherwise it is read here.
     """
-    # The list is ranked over EVERY registered CLI and then filtered, so a rank means the same
-    # thing whichever subset a caller asked for; the given providers only decide who may run.
-    policy = load_policy()
-    return _switched_on(_ranked_candidates(model, env, providers=providers, weights=weights, policy=policy), policy, model)
+    policy = policy if policy is not None else load_policy()
+    candidates, rows, criteria = _ranked_candidates(model, env, providers=providers, weights=weights, policy=policy)
+    candidates = _switched_on(candidates, policy, model)
+    if criteria is None:
+        return Ranking(candidates=candidates)
+    mix = reg.token_mix(role)
+    gone: set[tuple[str, str]] = set()
+    dropped: dict[str, Dropped] = {}
+    for provider in dict.fromkeys(c.provider for c in candidates):
+        pool = [rows[c.catalog_id] for c in candidates if c.provider == provider and c.catalog_id is not None]
+        for item in criteria.prune(policy.value, pool, weights, mix)[1]:
+            gone.add((provider, item.model.catalog_id))
+            dropped.setdefault(item.model.catalog_id, item)
+    kept = tuple(c for c in candidates if (c.provider, c.catalog_id) not in gone)
+    running = {c.catalog_id for c in kept}
+    order = tuple(rows)
+    return Ranking(candidates=kept, order=order, dropped=tuple(sorted(
+        (item for name, item in dropped.items() if name not in running),
+        key=lambda item: order.index(item.model.catalog_id))))
 
 
 def _switched_on(candidates: tuple[reg.LaunchCandidate, ...], policy: Policy, model: str) -> tuple[reg.LaunchCandidate, ...]:
@@ -140,7 +193,9 @@ def _switched_on(candidates: tuple[reg.LaunchCandidate, ...], policy: Policy, mo
 
 def _ranked_candidates(
     model: str, env: dict[str, str], *, providers: Sequence[AgentProvider], weights: str, policy: Policy,
-) -> tuple[reg.LaunchCandidate, ...]:
+) -> tuple[tuple[reg.LaunchCandidate, ...], dict[str, Model], Criteria | None]:
+    """Candidates before the value rule, the catalog rows they name, and the parsed criterion
+    (None for a plain model id)."""
     universe = list(PROVIDERS.values()) + [p for p in providers if p.name not in PROVIDERS]
     allowed = {p.name for p in providers}
     if model.startswith("@"):
@@ -149,22 +204,23 @@ def _ranked_candidates(
         row = Model.by_id(model)
         candidates = tuple(
             reg.LaunchCandidate(provider=p.name, model=model, rank=0,
-                                catalog_id=f"{row.provider}/{row.id}" if row is not None else None)
+                                catalog_id=row.catalog_id if row is not None else None)
             for p in universe if p.name in allowed and (row is None or p.can_run(row, env))
         )
         if not candidates:
             names = ", ".join(sorted(allowed)) or "none"
             raise ModelUnavailable(f"The {names} CLIs cannot run model {model!r}")
-        return candidates
+        return candidates, {}, None
     try:
         criteria = Criteria.parse(model)
     except CriteriaError as err:
         raise ModelUnavailable(f"{model!r} is not a usable model criterion: {err}") from err
     pool = lambda m: any(p.can_run(m, env) for p in universe if p.name in allowed)
-    ranked = criteria.ranked(runnable=lambda m: any(p.can_run(m, env) for p in universe), weights=weights)
+    # Unpruned here: what is worth running is judged over the pool that can run, further down.
+    ranked = criteria.ranked(runnable=lambda m: any(p.can_run(m, env) for p in universe), weights=weights, value=None)
     candidates = tuple(
         reg.LaunchCandidate(provider=p.name, model=p.model_id_for(row),
-                            catalog_id=f"{row.provider}/{row.id}", rank=rank)
+                            catalog_id=row.catalog_id, rank=rank)
         for rank, row in enumerate(ranked) for p in universe
         if p.name in allowed and p.can_run(row, env)
     )
@@ -173,7 +229,8 @@ def _ranked_candidates(
         raise ModelUnavailable(
             f"no model the {names} CLIs can run clears {criteria}:\n{criteria.explain(True, pool)}"
         )
-    return _apply_provider_constraint(criteria, candidates)
+    rows = {row.catalog_id: row for row in ranked}
+    return _apply_provider_constraint(criteria, candidates), rows, criteria
 
 
 def _apply_provider_constraint(
@@ -214,7 +271,7 @@ def _apply_provider_constraint(
 
 
 def resolve_continuable_model(
-    model: str, env: dict[str, str], *, provider: AgentProvider, weights: str = "",
+    model: str, env: dict[str, str], *, provider: AgentProvider, weights: str = "", role: str | None = None,
 ) -> tuple[dict[str, str], str]:
     """Re-resolve a criterion for a RESUMED turn exactly like a fresh spawn does — walk the same
     ranked candidate list, skip anything still in quota cooldown — instead of replaying whatever
@@ -230,7 +287,7 @@ def resolve_continuable_model(
     first-time launch is never blocked by a stale note; a resume already failed once for this
     exact reason, so retrying the same dead model a second time is not the safer default here).
     """
-    candidates = rank_candidates(model, env, providers=[provider], weights=weights)
+    candidates = rank_candidates(model, env, providers=[provider], weights=weights, role=role)
     cooled: dict[str, float] = {}
     for candidate in candidates:
         until = quota.blocked_until(candidate.provider, candidate.model)
@@ -770,7 +827,7 @@ def launch_continuation(
         criterion = policy.criterion_for(run.agent)
         if not criterion:
             raise ModelUnavailable(f"No model criterion for {run.agent!r}")
-        routed, model = resolve_continuable_model(criterion, dict(os.environ), provider=provider, weights=policy.weights_for(run.agent))
+        routed, model = resolve_continuable_model(criterion, dict(os.environ), provider=provider, weights=policy.weights_for(run.agent), role=run.agent)
         reasoning = policy.reasoning_for(run.agent, f"{provider.name}/{model}" if model else None)
     coarse_accepted = policy.accepts_coarse_tool_policy(run.agent, provider.name) if run.agent else False
     provider.validate_tool_policy(policy.tools_for(run.agent), run.denied_tools, coarse_accepted=coarse_accepted)
@@ -1056,7 +1113,7 @@ async def run_agent(
     # Explicit provider only narrows the pool; every candidate uses the same preflight.
     pool = [provider] if provider is not None else list(PROVIDERS.values())
     by_name = {p.name: p for p in pool}
-    candidates = rank_candidates(model, dict(os.environ), providers=pool, weights=weights)
+    candidates = rank_candidates(model, dict(os.environ), providers=pool, weights=weights, role=agent)
     skipped: list[reg.SkippedCandidate] = []
     #: How many children this run has already handed to the vendor that owns session ids.
     #: The first gets the run id itself, so `claude --resume <run_id>` works; a later one

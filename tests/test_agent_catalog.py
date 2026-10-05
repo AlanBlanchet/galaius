@@ -197,7 +197,7 @@ async def test_common_launcher_uses_one_catalog_for_prompt_and_policy(catalog_ho
     # The ranked list is stubbed at its entry point for the same reason the resolver is: the
     # fixture role weights `gui.screenspot`, which no catalog row scores, so a real ranking finds
     # nothing — and a real launch is not what these tests measure.
-    monkeypatch.setattr("interact.agents.run.rank_candidates", lambda rule, env, *, providers, weights="": (
+    monkeypatch.setattr("interact.agents.run.rank_candidates", lambda rule, env, *, providers, weights="", role=None: (
         reg.LaunchCandidate(provider=providers[0].name, model=rule, rank=0),))
     for version in (1, 2):
         catalog = AgentCatalog.refresh(connection, transport=catalog_transport(snapshot(version, tools=() if provider_type is CodexProvider else None)))
@@ -748,7 +748,7 @@ async def test_local_delegation_and_resume_run_exact_parent_pin(advanced_catalog
     # The ranked list is stubbed at its entry point for the same reason the resolver is: the
     # fixture role weights `gui.screenspot`, which no catalog row scores, so a real ranking finds
     # nothing — and a real launch is not what these tests measure.
-    monkeypatch.setattr("interact.agents.run.rank_candidates", lambda rule, env, *, providers, weights="": (
+    monkeypatch.setattr("interact.agents.run.rank_candidates", lambda rule, env, *, providers, weights="", role=None: (
         reg.LaunchCandidate(provider=providers[0].name, model=rule, rank=0),))
     handle = await run_agent(ClaudeCodeProvider(), "Pinned task", agent=None if by_capability else "fixture-worker",
         delegate="ask_worker" if by_capability else None, parent_run_id=parent.run_id, cwd=str(catalog_home), mesh=False)
