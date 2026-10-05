@@ -6,15 +6,18 @@ later. Without a memory, every launch pays the same tax — spawn, wait, die at 
 through — and a refusal arriving after the probe's window kills the run outright (#181).
 
 So the refusal is written down, and a model under cooldown is passed over BEFORE anything is
-spawned. The cooldown expires on its own, so nothing has to be cleared by hand when the vendor's
-window rolls over; and when EVERY candidate is under cooldown the walk ignores the memory rather
-than refusing to launch, because a stale note must never be the reason an agent cannot run.
+spawned. When EVERY candidate is under cooldown the walk ignores the memory rather than refusing
+to launch, because a stale note must never be the reason an agent cannot run.
 
-How LONG is the vendor's own answer, never ours. A refusal names the period it refuses for and
-usually names the instant that period reopens; a fixed hour ignored both, so a seven-day window
-was re-probed every hour until the builds under it died. Across the 60 real refusals captured in
-`~/.interact/out/agents/*.raw.jsonl`, the gap between the refusal and its own `resetsAt` ran from
-0.05 h to 151 h — no single constant is within two orders of magnitude of that spread.
+How LONG is earned, never read off the vendor alone. The instant a refusal names (`resetsAt`) is
+when the period RESETS, an upper bound: a rolling window reopens as old usage ages out — a
+seven-day refusal on 2026-10-04 06:54Z named 2026-10-05 22:00Z while the same account served the
+same model again hours later, and the remembered block kept it benched 39 h. So one refusal
+blocks for at most `DEFAULT_COOLDOWN`; a model refused AGAIN right after its block ended is
+blocked twice as long, and so on — never past what the vendor named, never past seven days. A
+model coming off a block is tried with a longer startup look (`PROBATION_WINDOW`), so a late
+refusal falls through to the next candidate instead of killing the run; and any sign the model
+serves again (a turn it wrote, a run that finishes) clears the memory at once.
 """
 
 from __future__ import annotations
@@ -29,7 +32,7 @@ from pathlib import Path
 from typing import Any, Self
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 #: A vendor CLI's own refusal for QUOTA or RATE LIMIT — provider-neutral by construction, keyed
 #: on (provider, model) by the caller, so one shared pattern never needs to tell providers apart.
@@ -49,9 +52,9 @@ from pydantic import BaseModel, ConfigDict
 #: do not deserve an hour cooldown.
 #: The vendor refusing this MODEL for this account's kind of access — a subscription login that cannot
 #: use an API-only model ("The 'gpt-6-astra' model is not supported when using Codex with a ChatGPT
-#: account."), an account without access to a model. Not a quota: it does not clear with time, so a
-#: launch passes the model over and remembers it for `UNSUPPORTED_COOLDOWN` (the next ranked model
-#: of the same CLI runs instead of the run dying on arrival, as 699e3e56 did).
+#: account."), an account without access to a model. Not a quota, but remembered by the same rule:
+#: the next ranked model of the same CLI runs instead of the run dying on arrival (as 699e3e56 did),
+#: and the block grows while the login keeps refusing.
 UNSUPPORTED = re.compile(
     r"model is not supported when using"
     r"|not supported when using .{0,60}account"
@@ -60,10 +63,6 @@ UNSUPPORTED = re.compile(
     r"|you do not have access to .{0,80}\bmodel\b",
     re.IGNORECASE,
 )
-#: How long an unsupported model is passed over before being tried again: the login does not change
-#: by the minute, but it may (a new subscription tier, a key added).
-UNSUPPORTED_COOLDOWN = 24 * 3600.0
-
 REFUSAL = re.compile(
     r"reached (?:your|its) .{0,80}\b(limit|quota)\b"
     r"|exceeded (?:your|its) current quota"
@@ -103,30 +102,28 @@ REFUSAL = re.compile(
 #: every captured payload gives it and `seven_day` the SAME `resetsAt`, which is why it maps to
 #: the same length rather than a guessed longer one.
 #:
-#: Used only when a refusal names its window but no instant — the instant is always preferred.
-#: The full nominal length is the honest floor there: a rolling window's remaining time is
-#: unknowable from the name alone, and the two errors are not symmetric. Blocking too long costs
-#: one fall-through to the next ranked candidate (and the walk ignores the memory outright when
-#: that would empty the list); blocking too short costs a dead build.
+#: An UPPER bound on a block, like a named instant: a window cannot stay shut longer than itself.
 WINDOWS: dict[str, float] = {
     "five_hour": 5 * 3600.0,
     "seven_day": 7 * 86400.0,
     "seven_day_overage_included": 7 * 86400.0,
 }
 
-#: How long a refused model is passed over when the vendor named NO window at all — a bare
-#: "you've reached your limit" with nothing machine-readable behind it. Guessing long is not free
-#: either when there is no evidence to guess from, so this stays an hour and a named window
-#: overrides it.
+#: The longest block ONE refusal earns; each refusal heard right after the previous block ended
+#: doubles it. Overridable for one machine through `COOLDOWN_ENV`.
 DEFAULT_COOLDOWN = 3600.0
 COOLDOWN_ENV = "INTERACT_QUOTA_COOLDOWN_SECONDS"
+
+#: How long a model coming off a block gets to refuse at startup before a run commits to it — far
+#: past a healthy launch's few seconds, paid only on that one launch. A vendor can take longer than
+#: those few seconds to say "still refused", and that late refusal killed the run (#181).
+PROBATION_WINDOW = 30.0
 
 #: Added past an instant the vendor named, so the next launch does not race the boundary it was
 #: just refused at: their clock and this machine's are not the same clock.
 RESET_SLACK = 60.0
 
-#: No period any of these vendors names is longer than seven days, so a reset instant beyond that
-#: is a malformed payload, not a reason to bench a model for a year.
+#: No period any of these vendors names is longer than seven days: no block is ever longer.
 MAX_COOLDOWN = max(WINDOWS.values())
 
 #: Every key any of these vendors uses to say WHEN the exhausted period reopens, as an absolute
@@ -208,7 +205,7 @@ class Refusal(BaseModel):
 
     @classmethod
     def read(cls, said: str, *, now: float) -> Self | None:
-        """The longest block anything in `said` justifies, or None when nothing in it refused.
+        """The refusal in `said` naming the latest reopening, or None when nothing in it refused.
 
         Per LINE, never over the whole blob: a healthy child's stream is mostly `allowed` lines,
         each carrying a five-hour `resetsAt` an hour away, and grepping the blob for a reset
@@ -219,21 +216,19 @@ class Refusal(BaseModel):
                     if (found := cls._from_line(line, now=now)) is not None]
         if not refusals:
             return None
-        return max(refusals, key=lambda found: found.until(now=now, default=0.0))
+        return max(refusals, key=lambda found: found.latest(now=now) or 0.0)
 
-    def until(self, *, now: float, default: float) -> float:
-        """When this refusal says the model may be tried again.
+    def latest(self, *, now: float) -> float | None:
+        """The LAST moment this refusal can still hold: the instant the vendor named, else one
+        full period of the window it named or measured. None when it named neither.
 
-        The instant the vendor NAMED wins over the length its window name implies: a rolling
-        window reopens when usage falls under the cap, not one full period after the refusal —
-        measured over the captured runs, anywhere from three minutes to six days later.
+        An upper bound, never the block itself: a rolling window reopens as usage falls under the
+        cap, measured over the captured runs anywhere from three minutes to six days before it.
         """
         if self.reopens_at is not None and self.reopens_at > now:
-            return min(self.reopens_at + RESET_SLACK, now + MAX_COOLDOWN)
-        length = self.window_seconds
-        if length is None:
-            length = WINDOWS.get(self.window, default)
-        return now + min(length, MAX_COOLDOWN)
+            return self.reopens_at + RESET_SLACK
+        length = self.window_seconds if self.window_seconds is not None else WINDOWS.get(self.window)
+        return None if length is None else now + length
 
     @classmethod
     def _from_line(cls, line: str, *, now: float) -> Self | None:
@@ -359,12 +354,34 @@ class Refusal(BaseModel):
         return None
 
 
+class Block(BaseModel):
+    """One model's remembered refusals: until when it is passed over, how many refusals in a row
+    earned that, and when the last one was heard."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    until: float
+    count: int = Field(ge=1)
+    at: float
+
+    @staticmethod
+    def length(count: int) -> float:
+        """The longest block `count` refusals in a row earn: the first one `_cooldown()`, each
+        next twice the last, never past seven days."""
+        return min(_cooldown() * 2 ** min(count - 1, 32), MAX_COOLDOWN)
+
+    def remembered(self, now: float) -> bool:
+        """Still worth keeping: blocking, or ended so recently that a refusal now means the window
+        really is still shut (and earns a longer block), and a launch now is a re-check."""
+        return now <= self.until + self.length(self.count)
+
+
 def _path() -> Path:
     return Path.home() / ".interact" / "out" / "agents" / "quota-cooldowns.json"
 
 
 def _cooldown() -> float:
-    """The fallback length, for a refusal that named no window this code can read."""
+    """The block one refusal earns (`DEFAULT_COOLDOWN`, or this machine's `COOLDOWN_ENV`)."""
     raw = os.environ.get(COOLDOWN_ENV)
     if raw is None:
         return DEFAULT_COOLDOWN
@@ -378,56 +395,82 @@ def _key(provider: str, model: str | None) -> str:
     return f"{provider}/{model or ''}"
 
 
-def _read() -> dict[str, float]:
+def _read(now: float) -> dict[str, Block]:
+    """Every block still remembered at `now`. An entry that is not a `Block` — a corrupt file, or
+    one written by an older interact as a bare deadline — is no evidence and reads as nothing."""
+    entries: dict[str, Block] = {}
     with suppress(Exception):
         raw = json.loads(_path().read_text(encoding="utf-8"))
-        if isinstance(raw, dict):
-            return {str(k): float(v) for k, v in raw.items() if isinstance(v, (int, float))}
-    return {}
+        for key, value in (raw if isinstance(raw, dict) else {}).items():
+            with suppress(ValueError):
+                block = Block.model_validate(value)
+                if block.remembered(now):
+                    entries[str(key)] = block
+    return entries
 
 
-def _write(entries: dict[str, float]) -> None:
+def _write(entries: dict[str, Block]) -> None:
     path = _path()
     with suppress(Exception):
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(entries, sort_keys=True), encoding="utf-8")
+        tmp.write_text(json.dumps({key: block.model_dump() for key, block in entries.items()},
+                                  sort_keys=True), encoding="utf-8")
         tmp.replace(path)
 
 
 def blocked_until(provider: str, model: str | None, *, now: float | None = None) -> float | None:
     """When this model may be tried again, or None when nothing is remembered against it."""
     moment = time.time() if now is None else now
-    until = _read().get(_key(provider, model))
-    return until if until is not None and until > moment else None
+    block = _read(moment).get(_key(provider, model))
+    return block.until if block is not None and block.until > moment else None
 
 
-def record_refusal(provider: str, model: str | None, *, said: str = "",
-                   now: float | None = None, cooldown: float | None = None) -> float:
-    """Remember that this model refused for quota; returns when it may be tried again.
+def on_probation(provider: str, model: str | None, *, now: float | None = None) -> bool:
+    """Whether a launch of this model now is the re-check after a block: it gets
+    `PROBATION_WINDOW` to refuse at startup."""
+    moment = time.time() if now is None else now
+    block = _read(moment).get(_key(provider, model))
+    return block is not None and block.until <= moment
+
+
+def record_refusal(provider: str, model: str | None, *, said: str = "", now: float | None = None) -> float:
+    """Remember that this model refused; returns when it may be tried again.
 
     `said` is whatever the vendor wrote — the child's raw stream, an exception message, one
-    event's text. The window it names decides the length, so a call site that has the text is
-    never reduced to the unnamed default; a call site that has none still records the refusal.
+    event's text. What it names only ever SHORTENS the block (a five-hour pool reopening in ten
+    minutes); the length itself is earned by refusals in a row (`Block.length`).
     """
     moment = time.time() if now is None else now
-    if cooldown is not None:
-        until = moment + cooldown
-    elif (refusal := Refusal.read(said, now=moment)) is not None:
-        until = refusal.until(now=moment, default=_cooldown())
-    else:
-        until = moment + _cooldown()
-    entries = {k: v for k, v in _read().items() if v > moment}
+    entries = _read(moment)
     key = _key(provider, model)
-    # A WEAKER signal never shortens a live block. A five-hour refusal arriving under a live
-    # seven-day one says nothing about the seven-day pool, and neither does the generic error
-    # line that follows every refusal a moment later carrying no window at all. Whatever is
-    # written stands until IT expires; a new refusal may only push the block further out.
-    # Clearing one early is `forget`'s job, deliberately, not a side effect of being refused.
-    until = max(until, entries.get(key, until))
-    entries[key] = until
+    previous = entries.get(key)
+    if previous is None:
+        count = 1
+    elif moment < previous.until:
+        # Heard while still blocked — the error line that follows a rate-limit line, a run that
+        # started before the block: the same evidence again, never an escalation.
+        count = previous.count
+    else:
+        count = previous.count + 1
+    until = moment + Block.length(count)
+    if (refusal := Refusal.read(said, now=moment)) is not None \
+            and (latest := refusal.latest(now=moment)) is not None:
+        until = min(until, latest)
+    if previous is not None and moment < previous.until:
+        # A weaker signal never shortens a live block; clearing one early is `served`'s job.
+        until = max(until, previous.until)
+    entries[key] = Block(until=until, count=count, at=moment)
     _write(entries)
     return until
+
+
+def served(provider: str, model: str | None) -> None:
+    """This model just answered (a turn it wrote, a run that finished): whatever is
+    remembered against it is over. Writes only when there was something to forget."""
+    entries = _read(time.time())
+    if entries.pop(_key(provider, model), None) is not None:
+        _write(entries)
 
 
 def forget(provider: str | None = None, model: str | None = None) -> None:
@@ -435,6 +478,4 @@ def forget(provider: str | None = None, model: str | None = None) -> None:
     if provider is None:
         _write({})
         return
-    entries = _read()
-    entries.pop(_key(provider, model), None)
-    _write(entries)
+    served(provider, model)

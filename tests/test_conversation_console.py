@@ -1351,7 +1351,7 @@ async def test_resumed_conversation_skips_a_cooled_model_and_uses_the_next_ranke
 
     # The cheap model refused for quota in the meantime — recorded in the SAME memory a
     # CLI-subprocess agent run writes to (`quota._path()` follows this fixture's own HOME).
-    quota.record_refusal("codex", "openai/cheap-example", cooldown=3600)
+    quota.record_refusal("codex", "openai/cheap-example")
 
     _scenario(binary_dir, mode="hold", models=model_ids)
     resumed_process = await _open_console(workspace)
@@ -1401,8 +1401,8 @@ async def test_resumed_conversation_refuses_when_every_candidate_is_cooled(
     await _event(process, "cancelled")
     await _stop_console(process)
 
-    quota.record_refusal("codex", "openai/cheap-example", cooldown=3600)
-    quota.record_refusal("codex", "openai/expensive-example", cooldown=3600)
+    quota.record_refusal("codex", "openai/cheap-example")
+    quota.record_refusal("codex", "openai/expensive-example")
 
     resumed_process = await _open_console(workspace)
     try:

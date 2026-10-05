@@ -367,7 +367,7 @@ def test_a_resumed_turn_skips_a_cooled_model_and_uses_the_next_ranked_one(monkey
     ):
         # "fable" is the cheaper, normally-preferred candidate for "cap.llm" — exactly the
         # dead-model-gets-replayed shape from the bug report.
-        quota.record_refusal("resume-fake", "fable", cooldown=3600)
+        quota.record_refusal("resume-fake", "fable")
         delivery = messaging.deliver_message("r1", "keep going", sender="operator")
         agent_queue.dispatch("r1")
         reply = asyncio.run(messaging.wait_for_reply(delivery))
@@ -401,8 +401,8 @@ def test_a_resumed_turn_refuses_when_every_candidate_for_its_provider_is_cooled(
         fixture_model("fable", provider="fixture", caps={ModelCapability.LLM}, input_cost=0.1, output_cost=0.1),
         fixture_model("opus", provider="fixture", caps={ModelCapability.LLM}, input_cost=5.0, output_cost=5.0),
     ):
-        quota.record_refusal("resume-fake", "fable", cooldown=3600)
-        quota.record_refusal("resume-fake", "opus", cooldown=3600)
+        quota.record_refusal("resume-fake", "fable")
+        quota.record_refusal("resume-fake", "opus")
         # Refused eagerly at delivery time — never even enqueued, so nothing here should reach
         # a "resend explicitly" or "uncertain" outcome; the caller learns the reason immediately.
         delivery = messaging.deliver_message("r1", "keep going", sender="operator")

@@ -699,6 +699,8 @@ def finish(
             else "failed" if exit_code is not None
             else _status_for(stored)
         )
+        if status == "done" and (stored.output_tokens or 0) > 0:
+            quota.served(stored.provider, stored.model)  # it answered: nothing holds against it
         finished = _merge_record_locked(run_id, {
             "finished_at": stored.finished_at if stored.status == "stopped" and stored.finished_at else finished_at,
             "exit_code": exit_code,
@@ -941,6 +943,11 @@ def append_event(run_id: str, event: AgentEvent) -> None:
             # error can no longer shorten what the rate-limit line already wrote (`record_refusal`
             # never lowers a live block), so hearing both is strictly better than hearing one.
             quota.record_refusal(stored.provider, stored.model, said=event.text)
+        elif event.kind in ("text", "tool", "thinking") and (event.input_tokens or 0) > 0:
+            # The MODEL answering — a turn that read tokens; the CLI's own notice reads none:
+            # whatever an earlier refusal left against it is over, whatever reset it named. An
+            # `allowed` rate-limit line proves nothing: one pool can allow while another refuses.
+            quota.served(stored.provider, stored.model)
         terminal = stored.status in ("done", "failed", "cancelled", "crashed", "stopped")
         same_turn = event.turn_id is None or event.turn_id == stored.provider_turn_id
         newer_root_turn = (

@@ -175,6 +175,7 @@ class _CompletionTransport(_ConversationTransport):
             if text is None or not text.strip():
                 raise ValueError("completion has no text")
             usage = payload.get("usage", {})
+            quota.served(self.provider, model)  # it answered: no earlier refusal holds against it
             return (
                 AgentEvent(
                     kind="text", event_id=f"{turn_id}:response", turn_id=turn_id,

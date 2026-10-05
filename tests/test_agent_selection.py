@@ -8,6 +8,7 @@ or a failure once the child could act is the run's outcome, never a reason to tr
 
 import asyncio
 import importlib
+import json
 import os
 import sys
 from pathlib import Path
@@ -22,7 +23,10 @@ from interact.agents import quota
 from interact.agents.run import (
     ModelUnavailable,
     _quota_probe as quota_probe,
+    _child_output,
     _quota_message,
+    _answered_at_startup,
+    _startup_refusal,
     rank_candidates,
     run_agent,
 )
@@ -204,11 +208,70 @@ async def test_a_quota_refusal_falls_through_to_the_next_candidate(team, tmp_pat
     assert saved.status == "done"
 
 
+_QUOTED = "You've hit your weekly limit · resets 9pm (Europe/Paris)"
+_ALLOWED_5H = {"type": "rate_limit_event", "rate_limit_info": {"status": "allowed", "rateLimitType": "five_hour"}}
+
+
+def _turn(model: str, text: str = "on it") -> dict:
+    return {"type": "assistant", "message": {"model": model, "content": [{"type": "text", "text": text}]}}
+
+
+@pytest.mark.parametrize(("lines", "verdict", "answered"), [
+    pytest.param([{"type": "user", "message": {"content": [{"type": "tool_result", "content": _QUOTED}]}}],
+                 None, False, id="a tool's output quoting a refusal refused nothing"),
+    pytest.param([_turn("claude-opus-5-5", _QUOTED)], None, True, id="the model's own words refused nothing"),
+    pytest.param([{"type": "result", "is_error": False, "result": _QUOTED}], None, False, id="a healthy final answer"),
+    pytest.param([_turn("<synthetic>", _QUOTED)], "quota_exceeded", False, id="the CLI's own synthetic notice"),
+    # 59d1a39a: the five-hour pool allows, the next line refuses for the seven-day one.
+    pytest.param([_ALLOWED_5H, {"type": "rate_limit_event", "rate_limit_info": {
+        "status": "rejected", "rateLimitType": "seven_day_overage_included"}}],
+                 "quota_exceeded", False, id="an allowed line before a refusal proves nothing"),
+    pytest.param([{"type": "error", "message": "The 'gpt-6-astra' model is not supported when using Codex with a ChatGPT account."}],
+                 "model_capability_unsupported", False, id="codex refusing the model for this login"),
+    pytest.param([{"type": "rate_limit_event", "rate_limit_info": {"status": "allowed_warning", "rateLimitType": "seven_day",
+                   "overageStatus": "rejected", "utilization": 0.99}}], None, False, id="a warning is no refusal"),
+    pytest.param([{"type": "item.completed", "item": {"type": "agent_message", "text": _QUOTED}}], None, True,
+                 id="a codex item is the model answering"),
+    # Codex warns about the model as an `error` item, then refuses it (7b9198ba).
+    pytest.param([{"type": "item.completed", "item": {"type": "error", "message": "Model metadata for `x` not found."}},
+                  {"type": "error", "message": "The 'x' model is not supported when using Codex with a ChatGPT account."}],
+                 "model_capability_unsupported", False, id="a codex warning item is not the model answering"),
+])
+def test_the_startup_probe_reads_only_what_the_vendor_says(tmp_path, monkeypatch, lines, verdict, answered):
+    """A child that read the launcher's code or a brief must not be killed as « refused »; only a
+    turn the model wrote ends the look early."""
+    monkeypatch.setenv("INTERACT_AGENTS_DIR", str(tmp_path / "agents"))
+    path = reg.raw_events_path("probe")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(line, ensure_ascii=False) + "\n"
+                            for line in [{"type": "system", "subtype": "init"}, *lines]))
+    assert _startup_refusal(_child_output("probe")) == verdict
+    assert _answered_at_startup("probe") is answered
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_after_an_allowed_line_is_still_caught_by_a_live_probe(tmp_path, monkeypatch):
+    monkeypatch.setenv("INTERACT_AGENTS_DIR", str(tmp_path / "agents"))
+    raw = reg.raw_events_path("probe-live")
+    raw.parent.mkdir(parents=True, exist_ok=True)
+    raw.write_text(json.dumps(_ALLOWED_5H) + "\n")
+
+    async def refuse():
+        await asyncio.sleep(0.5)
+        with raw.open("a") as stream:
+            stream.write(json.dumps(_turn("<synthetic>", _QUOTED), ensure_ascii=False) + "\n")
+
+    writer = asyncio.create_task(refuse())
+    reason = await quota_probe("probe-live", SimpleNamespace(returncode=None), window=2.0)
+    await writer
+    assert reason == "quota_exceeded"
+
+
 def test_quota_skip_message_names_window_and_clear_time() -> None:
     now = 1_790_000_000.0
     said = '{"status":"rejected","rateLimitType":"seven_day","resetsAt":1790000900}'
 
-    message = _quota_message("codex", "gpt-5.6-luna", said, now=now)
+    message = _quota_message("codex", "gpt-5.6-luna", said, quota.record_refusal("codex", "gpt-5.6-luna", said=said, now=now))
 
     assert "quota intent: codex/gpt-5.6-luna exhausted seven_day" in message
     assert "2026-09-21T14:29:20+00:00" in message
@@ -227,8 +290,8 @@ async def test_a_refusal_that_reaches_disk_after_the_child_exits_is_still_seen(t
 
     async def refuse_late():
         await asyncio.sleep(0.3)
-        raw.write_text('{"kind":"text","text":"You\'ve reached your Fable limit. '
-                       'Switch to another model, or manage usage credits"}\n')
+        raw.write_text(json.dumps({"type": "assistant", "message": {"model": "<synthetic>", "content": [
+            {"type": "text", "text": "You've reached your Fable limit. Switch to another model, or manage usage credits"}]}}) + "\n")
 
     writer = asyncio.create_task(refuse_late())
     reason = await quota_probe("probe-run", SimpleNamespace(returncode=1), window=1.0)
@@ -321,7 +384,7 @@ async def test_a_model_that_refused_a_moment_ago_is_passed_over_before_any_child
     the account for a period, so the next launch must not spend another child discovering it."""
     alpha, beta = team
     top = rank_candidates(CRITERION, dict(os.environ), providers=[alpha, beta])[0]
-    quota.record_refusal(top.provider, top.model, cooldown=600)
+    quota.record_refusal(top.provider, top.model)
     _Cli.probes = 0
     run = await run_agent(None, "t", agent="tester", cwd=str(tmp_path), mesh=False)
     await asyncio.wait_for(run.wait(), 30)
@@ -337,7 +400,7 @@ async def test_a_stale_memory_never_stops_every_candidate_from_running(team, tmp
     ignores the memory rather than telling the owner nothing can run."""
     alpha, beta = team
     for candidate in rank_candidates(CRITERION, dict(os.environ), providers=[alpha, beta]):
-        quota.record_refusal(candidate.provider, candidate.model, cooldown=600)
+        quota.record_refusal(candidate.provider, candidate.model)
     run = await run_agent(None, "t", agent="tester", cwd=str(tmp_path), mesh=False)
     await asyncio.wait_for(run.wait(), 30)
     saved = reg.get_run(run.run_id)

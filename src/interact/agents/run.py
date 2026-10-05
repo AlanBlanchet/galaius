@@ -63,19 +63,14 @@ def _vendor_words(said: str) -> str:
     return " ".join(line.split())[:200]
 
 
-def _quota_message(provider: str, model: str, said: str, *, now: float | None = None) -> str:
-    moment = time.time() if now is None else now
-    refusal = quota.Refusal.read(said, now=moment) if said else None
-    if refusal is None:
-        return (
-            f"quota intent: {provider}/{model} was refused by its usage limit; the reset window "
-            "was not named. Retry after the recorded cooldown or choose another provider/model."
-        )
-    until = refusal.until(now=moment, default=quota.DEFAULT_COOLDOWN)
-    window = refusal.window or "usage-limit window"
+def _quota_message(provider: str, model: str, said: str, until: float) -> str:
+    """What the walk tells the run about a refused candidate: the window the vendor named, if any,
+    and when this machine tries the model again."""
+    refusal = quota.Refusal.read(said, now=time.time()) if said else None
+    window = (refusal.window if refusal is not None else "") or "usage-limit window"
     clears = datetime.fromtimestamp(until, UTC).isoformat(timespec="seconds")
     return (
-        f"quota intent: {provider}/{model} exhausted {window}; it clears after {clears}. "
+        f"quota intent: {provider}/{model} exhausted {window}; tried again after {clears}. "
         "Retry then, or choose another provider/model."
     )
 
@@ -364,17 +359,65 @@ class ModelUnavailable(RuntimeError):
     to some other model is worse than none — it looks like it worked."""
 
 
-def _child_output(run_id: str) -> str:
-    """Whatever the child has managed to write so far — its own stderr plus the tail of the
-    supervisor's raw event stream."""
-    text = ""
-    with suppress(Exception):
-        text += reg.read_stderr(run_id)
+#: Raw stream lines in which the VENDOR speaks about the request itself. Everything else — the
+#: model's words, a tool's output — can quote anything (this file, a brief, a skip message) and
+#: once killed a healthy child as "refused".
+_VENDOR_LINES = frozenset({"rate_limit_event", "error", "turn.failed"})
+
+
+def _vendor_says(line: dict) -> bool:
+    kind = line.get("type")
+    if kind in _VENDOR_LINES:
+        return True
+    if kind == "result":
+        return bool(line.get("is_error"))  # a healthy result is the model's own final answer
+    message = line.get("message")
+    # Claude Code's own notice ("You've hit your limit · resets …") wears an assistant turn
+    # written by the CLI, never the model: its model is "<synthetic>".
+    return kind == "assistant" and isinstance(message, dict) and message.get("model") == "<synthetic>"
+
+
+def _raw_tail(run_id: str) -> list[dict]:
+    """The parsed lines of the last 4 KB of the child's raw stream; a line the cut tore is dropped:
+    it is no evidence either way."""
+    lines: list[dict] = []
     with suppress(Exception):
         raw = reg.raw_events_path(run_id)
         if raw.exists():
-            text += raw.read_bytes()[-4000:].decode(errors="replace")
+            for line in raw.read_bytes()[-4000:].decode(errors="replace").splitlines():
+                with suppress(ValueError):
+                    if isinstance(parsed := json.loads(line), dict):
+                        lines.append(parsed)
+    return lines
+
+
+def _child_output(run_id: str) -> str:
+    """What the vendor has said about this child so far — its stderr, plus the raw-stream lines
+    where the vendor itself speaks (`_vendor_says`)."""
+    text = ""
+    with suppress(Exception):
+        text += reg.read_stderr(run_id)
+    for line in _raw_tail(run_id):
+        if _vendor_says(line):
+            text += "\n" + json.dumps(line, ensure_ascii=False)
     return text
+
+
+def _answered_at_startup(run_id: str) -> bool:
+    """The MODEL has answered — a turn it wrote (Claude: an assistant line not written by the CLI;
+    Codex: an item or a finished turn). An `allowed` rate-limit line is no such proof: Claude Code
+    opens with one for the five-hour pool and refuses on the very next line (22 of 54 recorded
+    startup refusals)."""
+    for line in _raw_tail(run_id):
+        kind = line.get("type")
+        item = line.get("item")
+        if kind == "turn.completed" or (kind in ("item.started", "item.completed") and isinstance(item, dict)
+                                        and item.get("type") != "error"):  # an error item is the CLI's warning
+            return True
+        message = line.get("message")
+        if kind == "assistant" and isinstance(message, dict) and message.get("model") not in (None, "<synthetic>"):
+            return True
+    return False
 
 
 async def _quota_probe(run_id: str, process: "asyncio.subprocess.Process", *,
@@ -393,12 +436,17 @@ async def _quota_probe(run_id: str, process: "asyncio.subprocess.Process", *,
     exits can find an empty stream and hand the run a candidate that never ran.
 
     A refusal that arrives after ``window`` on a child still alive is NOT caught here: that run
-    keeps the candidate and reports its own failure.
+    keeps the candidate and reports its own failure. The model's first turn ends the look at once
+    (`_answered_at_startup`) — a probation launch's long window costs nothing then.
     """
     loop = asyncio.get_running_loop()
     deadline = loop.time() + window
     while process.returncode is None and loop.time() < deadline:
         await asyncio.sleep(interval)
+        if (reason := _startup_refusal(_child_output(run_id))) is not None:
+            return reason
+        if _answered_at_startup(run_id):
+            return None
     if (reason := _startup_refusal(_child_output(run_id))) is not None:
         return reason
     if process.returncode is None:
@@ -1170,9 +1218,13 @@ async def run_agent(
             provider_session_id=vendor_session if candidate_provider.name == "claude" else None,
             agent_ref=selected_ref, definition_path=definition_path, fence=fence,
         )
+        # A model coming off a block is the re-check: it gets long enough to say "still refused"
+        # that the answer falls through to the next candidate instead of killing this run.
+        probe_window = max(quota_window or 0.0, quota.PROBATION_WINDOW) \
+            if quota.on_probation(candidate.provider, candidate.model) else quota_window
         quota_reason = await _quota_probe(
             run_id, candidate_process,
-            **({} if quota_window is None else {"window": quota_window}),
+            **({} if probe_window is None else {"window": probe_window}),
         )
         if quota_reason is not None:
             if candidate_process.returncode is None:
@@ -1187,9 +1239,9 @@ async def run_agent(
             said = _child_output(run_id)
             if quota_reason == "quota_exceeded":
                 until = quota.record_refusal(candidate.provider, candidate.model, said=said)
-                message = _quota_message(candidate.provider, candidate.model, said)
+                message = _quota_message(candidate.provider, candidate.model, said, until)
             else:
-                until = quota.record_refusal(candidate.provider, candidate.model, cooldown=quota.UNSUPPORTED_COOLDOWN)
+                until = quota.record_refusal(candidate.provider, candidate.model)
                 message = (f"model intent: {candidate.provider}/{candidate.model} is refused for this login by the vendor "
                            f"({_vendor_words(said)}); passed over for the next ranked model.")
             skipped.append(_skip_record(candidate, _skip(quota_reason, message), until=until))
