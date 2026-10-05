@@ -8,11 +8,12 @@ every call again (the PC's owner may run the agent, the server is approved and u
 is switched on for that agent).
 
 Only a LINKED PC (`interact login`) has a gateway: it is the PC's own machine token that asks. The
-listing is cached beside the agent catalog (``agent-tools-cache.json``, its own file: the catalog's
+listing is cached beside the agent catalog (``agent-tools-<server+company>.json``, its own file: the catalog's
 cache is read by older interact processes that refuse a field they do not know), so a projection
 and a start read it with no network, and a server that does not answer leaves the last list."""
 
 import asyncio
+import hashlib
 import os
 from pathlib import Path
 from typing import Any, Self
@@ -83,20 +84,21 @@ class ToolGateway(BaseModel):
 
     @classmethod
     def current(cls, *, online: bool) -> AgentToolList:
-        """This PC's listing: read again when `online` (the server just answered for the catalog)
-        and the PC is linked, else the cached one."""
-        gateway = cls.linked() if online else None
-        return cls.cached() if gateway is None else gateway.refreshed()
+        """This PC's listing: read again when `online` (the server just answered for the catalog),
+        else the cached one; empty when the PC is not linked."""
+        gateway = cls.linked()
+        return AgentToolList() if gateway is None else gateway.refreshed() if online else gateway.cached()
 
-    @staticmethod
-    def cache_path() -> Path:
-        return CatalogConnection.path().with_name("agent-tools-cache.json")
+    @property
+    def cache_path(self) -> Path:
+        """One file per server and company: a PC re-linked elsewhere never reads another's tools."""
+        key = hashlib.sha256(f"{self.connection.endpoint}\0{self.connection.workspace_id}".encode()).hexdigest()[:16]
+        return CatalogConnection.path().with_name(f"agent-tools-{key}.json")
 
-    @classmethod
-    def cached(cls) -> AgentToolList:
-        """The last listing this PC read; empty when it never read one (or it is unreadable)."""
+    def cached(self) -> AgentToolList:
+        """The last listing this PC read from its server; empty when it never read one (or it is unreadable)."""
         try:
-            return AgentToolList.model_validate_json(cls.cache_path().read_bytes())
+            return AgentToolList.model_validate_json(self.cache_path.read_bytes())
         except (OSError, ValidationError):
             return AgentToolList()
 
@@ -118,7 +120,7 @@ class ToolGateway(BaseModel):
             value = AgentToolList.model_validate_json(response.content)
         except ValidationError as error:
             raise CatalogConnectionError("the server's tool list is not one this interact reads") from error
-        CatalogConnection.replace_text(self.cache_path(), value.model_dump_json())
+        CatalogConnection.replace_text(self.cache_path, value.model_dump_json())
         return value
 
     def refreshed(self) -> AgentToolList:
@@ -165,7 +167,7 @@ class ServedGateway(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    listing: AgentToolList = Field(default_factory=ToolGateway.cached)
+    listing: AgentToolList = Field(default_factory=lambda: ToolGateway.current(online=False))
     interval: float = 120.0
 
     def tools(self) -> list[types.Tool]:
