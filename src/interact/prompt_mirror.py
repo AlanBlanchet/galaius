@@ -1,15 +1,16 @@
 """Every workspace this PC reads prompts from, kept as plain files a person can browse.
 
-`<root>/personal/<email>/<namespace>/<slug>.md` for the owner's personal workspace and
-`<root>/company/<company>/<namespace>/<slug>.md` for each company that granted this PC its prompts
-(`GET /v1/machine/prompt-workspaces`). The folders are copies refreshed by `interact prompts sync`,
+`<root>/<workspace>/<namespace>/<slug>.md` for each workspace this PC reads: its own, and every
+other one that granted this PC its prompts (`GET /v1/machine/prompt-workspaces`). The folders are copies refreshed by `interact prompts sync`,
 never a source: a file edited here is overwritten at the next sync, and a change reaches the server
 only through `interact prompts write` (its digest check refuses a stale base). A file whose prompt
 left its workspace is removed only when this mirror wrote it (its folder's `.mirror.json`).
 
-Folder names come from server text (an email, a company name), so they are reduced to
-`[a-z0-9._@+-]`, never `.`/`..`, and two companies sharing a name get their id's first 8
-characters appended; every folder is reached without following a link (`PinnedDirectory`)."""
+Folder names come from server text (a workspace's name), so they are reduced to
+`[a-z0-9._@+-]`, never `.`/`..`, and two workspaces sharing a name get their id's first 8
+characters appended; every folder is reached without following a link (`PinnedDirectory`).
+`<root>/personal/` and `<root>/company/`, the layout of earlier releases, are left in place,
+read-only, for their owner to remove (`LEGACY`)."""
 
 import hashlib
 import json
@@ -28,6 +29,8 @@ from interact.pinned_directory import PinnedDirectory
 from interact.server_prompts import ServerPrompts
 
 MANIFEST = ".mirror.json"
+#: Folders an earlier release wrote: kept, never synced again, made read-only once.
+LEGACY = ("personal", "company")
 _MAX_WORKSPACES = 64
 
 
@@ -45,7 +48,7 @@ class PromptWorkspace(BaseModel):
 
 
 def prompt_workspaces(connection: CatalogConnection) -> tuple[PromptWorkspace, ...]:
-    """The PC link's own workspace first, then every company that granted this PC."""
+    """The PC link's own workspace first, then every other workspace that granted this PC."""
     linked = CatalogConnection.linked()
     if linked is None or connection.auth_mode != "machine":
         raise CatalogConnectionError("only a linked PC lists the workspaces it may read prompts from")
@@ -67,12 +70,34 @@ def folder_name(text: str) -> str:
     return name or "workspace"
 
 
-def folders(workspaces: tuple[PromptWorkspace, ...]) -> dict[UUID, tuple[str, str]]:
-    """(kind folder, own folder) per workspace; a shared name gets the id's first 8 characters."""
+def folders(workspaces: tuple[PromptWorkspace, ...]) -> dict[UUID, tuple[str]]:
+    """The folder of each workspace under the root; a name shared with another workspace or with a
+    `LEGACY` folder gets the id's first 8 characters."""
     names = {value.workspace_id: folder_name(value.label) for value in workspaces}
-    taken = [(value.kind, names[value.workspace_id]) for value in workspaces]
-    return {value.workspace_id: (value.kind, names[value.workspace_id] if taken.count((value.kind, names[value.workspace_id])) == 1
-                                 else f"{names[value.workspace_id]}-{str(value.workspace_id)[:8]}") for value in workspaces}
+    taken = [*names.values(), *LEGACY]
+    return {workspace: (name if taken.count(name) == 1 else f"{name}-{str(workspace)[:8]}",) for workspace, name in names.items()}
+
+
+def freeze_legacy(root: Path) -> tuple[Path, ...]:
+    """Make the `LEGACY` folders under `root` read-only (folders 0o500, files 0o400) without
+    following a link; nothing is removed. Returns the folders frozen this time."""
+    frozen = []
+    for name in LEGACY:
+        top = root / name
+        if not top.is_dir() or top.is_symlink() or not os.stat(top).st_mode & 0o200:
+            continue
+        for current, directories, files in os.walk(top, topdown=False, followlinks=False):
+            for entry in files:
+                path = Path(current) / entry
+                if not path.is_symlink():
+                    path.chmod(0o400)
+            for entry in directories:
+                path = Path(current) / entry
+                if not path.is_symlink():
+                    path.chmod(0o500)
+        top.chmod(0o500)
+        frozen.append(top)
+    return tuple(frozen)
 
 
 class PromptSyncReport(BaseModel):
@@ -89,13 +114,14 @@ def mirror_root() -> Path:
 
 def sync(connection: CatalogConnection, root: Path, install: Callable[[ServerPrompts], Path]) -> PromptSyncReport:
     """Mirror every workspace this PC reads, then install the ACTIVE one's prompts for its agents.
-    A PC that never chose and holds exactly one company grant runs on that company; one whose
-    chosen company withdrew the grant goes back to its own workspace."""
+    A PC that never chose, cannot write its own workspace's prompts, and holds exactly one other
+    workspace's grant runs on that one; one whose chosen workspace withdrew the grant goes back to its own."""
     values = prompt_workspaces(connection)
     granted = [value for value in values if not value.link]
     readable = {value.workspace_id for value in values}
     notes: list[str] = []
-    if not CatalogConnection.path().exists() and len(granted) == 1:
+    owned = any(value.link and value.can_write for value in values)
+    if not CatalogConnection.path().exists() and len(granted) == 1 and not owned:
         connection = connection.model_copy(update={"workspace_id": granted[0].workspace_id})
         connection.save()
     elif connection.workspace_id not in readable and values:
@@ -104,6 +130,7 @@ def sync(connection: CatalogConnection, root: Path, install: Callable[[ServerPro
         connection.save()
     places = folders(values)
     _note(root)
+    notes.extend(f"{path}: kept read-only (earlier layout), remove it when you no longer need it" for path in freeze_legacy(root))
     for value in values:
         count = mirror(root, connection, value, places[value.workspace_id])
         notes.append(f"{root.joinpath(*places[value.workspace_id])}: {count} prompt(s){' (active)' if value.workspace_id == connection.workspace_id else ''}")
@@ -139,7 +166,7 @@ def _note(root: Path) -> None:
         _write(folder, "README.txt", _NOTE.encode(), 0o600)
 
 
-def mirror(root: Path, connection: CatalogConnection, workspace: PromptWorkspace, place: tuple[str, str]) -> int:
+def mirror(root: Path, connection: CatalogConnection, workspace: PromptWorkspace, place: tuple[str, ...]) -> int:
     """Write `workspace`'s current prompts under `root/place`; returns how many files it holds."""
     revisions = ServerPrompts(connection=connection.model_copy(update={"workspace_id": workspace.workspace_id})).catalog()
     wanted = {f"{item.key.namespace}/{item.key.slug}.md": item.content.encode("utf-8") for item in revisions}

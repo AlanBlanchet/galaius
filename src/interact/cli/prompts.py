@@ -503,7 +503,7 @@ def _workspaces(server: ServerPrompts) -> tuple[prompt_mirror.PromptWorkspace, .
 
 @prompts_app.command
 def workspaces() -> None:
-    """The workspaces this PC reads prompts from: its own, and every company that granted it."""
+    """The workspaces this PC reads prompts from: its own, and every other workspace that granted it."""
     server = PromptMode.server()
     if server is None or server.connection.auth_mode != "machine":
         _editor_error("Only a linked PC has prompt workspaces; run `interact login` first.", "not_linked")
