@@ -39,6 +39,8 @@ class GatewayTool(BaseModel):
     tool: str
     description: str = ""
     input_schema: dict[str, Any] = Field(default_factory=lambda: {"type": "object", "properties": {}})
+    #: Seconds the server gives one call (a download + transcription takes minutes); None: the default.
+    timeout: float | None = Field(default=None, gt=0, le=3600)
 
 
 class AgentToolList(BaseModel):
@@ -73,8 +75,10 @@ class ToolGateway(BaseModel):
     connection: CatalogConnection
     #: Seconds one listing read may take (a start never waits longer for it).
     list_timeout: float = 5.0
-    #: Seconds one call may take, the server's own budget for the remote tool (30 s) included.
+    #: Seconds one call may take, the server's own budget for the remote tool (30 s) included; a tool
+    #: the server lists with a longer budget gets that plus `call_margin`.
     call_timeout: float = 90.0
+    call_margin: float = 30.0
 
     @classmethod
     def linked(cls) -> Self | None:
@@ -130,14 +134,16 @@ class ToolGateway(BaseModel):
         except CatalogConnectionError:
             return self.cached()
 
-    def call(self, name: str, arguments: dict[str, Any], *, role: str | None, run_id: str | None) -> str:
-        """Run gateway tool `name` on the server; its text answer. GatewayCallFailed says why not."""
+    def call(self, name: str, arguments: dict[str, Any], *, role: str | None, run_id: str | None, budget: float | None = None) -> str:
+        """Run gateway tool `name` on the server; its text answer. GatewayCallFailed says why not.
+        `budget`: the seconds the server lists for that tool."""
         body = {"name": name, "arguments": arguments, "role_key": role, "run_id": run_id}
+        timeout = max(self.call_timeout, (budget or 0.0) + self.call_margin)
         try:
             with self.connection.connect() as client:
-                response = client.post("/v1/machines/agent-tools/call", json=body, timeout=self.call_timeout)
+                response = client.post("/v1/machines/agent-tools/call", json=body, timeout=timeout)
         except httpx.TimeoutException as error:
-            raise GatewayCallFailed(f"the Interact server did not answer within {self.call_timeout:.0f} s") from error
+            raise GatewayCallFailed(f"the Interact server did not answer within {timeout:.0f} s") from error
         except (httpx.HTTPError, CatalogConnectionError) as error:
             raise GatewayCallFailed(f"the Interact server cannot be reached from this PC right now ({error})") from error
         try:
@@ -183,8 +189,9 @@ class ServedGateway(BaseModel):
         if gateway is None:
             raise ToolError("this PC is not linked to an Interact server (run `interact login`): its external tools are unavailable")
         role, run_id = ToolGateway.calling_role(self.listing, name)
+        listed = self.listing.tool(name)
         try:
-            text = await anyio.to_thread.run_sync(lambda: gateway.call(name, arguments, role=role, run_id=run_id))
+            text = await anyio.to_thread.run_sync(lambda: gateway.call(name, arguments, role=role, run_id=run_id, budget=listed.timeout if listed else None))
         except GatewayCallFailed as error:
             raise ToolError(str(error)) from error
         return [types.TextContent(type="text", text=text)]
