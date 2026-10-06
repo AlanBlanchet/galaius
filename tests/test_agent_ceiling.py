@@ -62,24 +62,20 @@ def test_a_slice_that_cannot_be_prepared(monkeypatch, failure, scoped):
         assert argv == ["claude"]
 
 
-@pytest.mark.parametrize("unit, description, stopped", [
-    pytest.param("run-r1.scope", "/bin/claude -p --session-id run-1 --model m", True, id="own_scope"),
-    pytest.param("run-r1.scope", "/bin/claude -p --session-id parent-9 --model m", False, id="launchers_scope"),
-    pytest.param("app-com.microsoft.VSCode-1.scope", "never read", False, id="editor_scope"),
-    pytest.param(None, "never read", False, id="no_unit"),
+@pytest.mark.parametrize("unit, stopped", [
+    pytest.param("interact-run-run-1-0a1b2c3d.scope", True, id="own_scope"),
+    pytest.param("interact-run-parent-9-0a1b2c3d.scope", False, id="launchers_scope"),
+    pytest.param("interact-run-run-10-0a1b2c3d.scope", False, id="longer_id_sharing_a_prefix"),
+    pytest.param("app-com.microsoft.VSCode-1.scope", False, id="editor_scope"),
+    pytest.param(None, False, id="no_unit"),
 ])
-def test_an_ended_run_stops_only_its_own_scope(monkeypatch, unit, description, stopped):
+def test_an_ended_run_stops_only_its_own_scope(monkeypatch, unit, stopped):
     """What the agent left running is ended; the editor or a parent run holding it never is."""
     monkeypatch.setattr(ceiling_module.shutil, "which", lambda name: f"/usr/bin/{name}")
     calls: list[list[str]] = []
-
-    def _systemctl(argv, **kwargs):
-        calls.append(argv)
-        return subprocess.CompletedProcess(argv, 0, stdout=description + "\n", stderr="")
-
-    monkeypatch.setattr(ceiling_module.subprocess, "run", _systemctl)
+    monkeypatch.setattr(ceiling_module.subprocess, "run", lambda argv, **kwargs: calls.append(argv))
     assert end_run_scope(unit, "run-1") is stopped
-    assert (["/usr/bin/systemctl", "--user", "stop", unit] in calls) is stopped
+    assert calls == ([["/usr/bin/systemctl", "--user", "stop", unit]] if stopped else [])
 
 
 def _user_manager() -> bool:
@@ -92,13 +88,13 @@ def _user_manager() -> bool:
 @pytest.mark.skipif(not _user_manager(), reason="needs a systemd user manager")
 def test_a_contained_agent_keeps_its_pid_and_lands_in_its_own_capped_scope():
     process = subprocess.Popen(
-        contained([sys.executable, "-c", "import os; print(os.getpid()); print(open('/proc/self/cgroup').read())"], CEILING),
+        contained([sys.executable, "-c", "import os; print(os.getpid()); print(open('/proc/self/cgroup').read())"], CEILING, run_id="probe-1"),
         stdout=subprocess.PIPE, text=True,
     )
     out, _ = process.communicate(timeout=30)
     pid, cgroup = out.split("\n", 1)
     assert int(pid) == process.pid
-    assert f"/{SLICE}/run-" in cgroup
+    assert f"/{SLICE}/interact-run-probe-1-" in cgroup
     limits = subprocess.run(
         ["systemctl", "--user", "show", SLICE, "-p", "MemoryHigh", "-p", "MemorySwapMax", "-p", "CPUWeight"],
         capture_output=True, text=True, check=True,
@@ -118,7 +114,7 @@ async def test_every_launched_agent_goes_through_the_ceiling(tmp_path, monkeypat
     use_policy(monkeypatch, agents={"tester": "fixture-model"}, reasoning={"tester": "medium"})
     install_provider(monkeypatch, _FakeProvider())
     wrapped: list[list[str]] = []
-    monkeypatch.setattr(run_module, "contained", lambda argv: wrapped.append(list(argv)) or list(argv))
+    monkeypatch.setattr(run_module, "contained", lambda argv, **named: wrapped.append(list(argv)) or list(argv))
     run = await run_module.run_agent(_FakeProvider(), "t", agent="tester", name="w", cwd=str(tmp_path))
     await asyncio.wait_for(run.wait(), timeout=30)
 

@@ -254,7 +254,7 @@ async def test_a_fenced_launch_starts_inside_the_fence_and_its_run_keeps_the_spe
     use_policy(monkeypatch, agents={"tester": "fixture-model"}, reasoning={"tester": "medium"})
     install_provider(monkeypatch, _FakeProvider())
     started: list[list[str]] = []
-    monkeypatch.setattr(run_module, "contained", lambda argv: started.append(list(argv)) or [sys.executable, "-c", "pass"])
+    monkeypatch.setattr(run_module, "contained", lambda argv, **named: started.append(list(argv)) or [sys.executable, "-c", "pass"])
     (tmp_path / "work").mkdir()
     spec = FenceSpec(working_directory=tmp_path, levels={"work": "write"}, start=tmp_path / "work", state=tmp_path / "state")
     run = await run_module.run_agent(_FakeProvider(), "t", agent="tester", name="w", cwd=str(tmp_path / "work"), fence=spec)

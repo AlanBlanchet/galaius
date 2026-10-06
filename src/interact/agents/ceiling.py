@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 import shutil
 import subprocess
 import sys
@@ -35,6 +36,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from interact.config import Config
 
 SLICE = "interact-agents.slice"
+_RUN_SCOPE = "interact-run-"
 _SYSTEMCTL_TIMEOUT = 5
 
 log = logging.getLogger(__name__)
@@ -89,9 +91,11 @@ class Ceiling(BaseModel):
         }
 
 
-def contained(argv: Sequence[str], ceiling: Ceiling | None = None) -> list[str]:
+def contained(argv: Sequence[str], ceiling: Ceiling | None = None, *, run_id: str | None = None) -> list[str]:
     """``argv`` run in its own capped scope inside the agent slice, or unchanged where no user
     systemd exists or ``INTERACT_AGENT_CEILING`` is off. An explicit ``ceiling`` always applies.
+    A ``run_id`` names the scope after the run (:func:`run_scope_name`), so :func:`end_run_scope`
+    can find it; a process serving several runs (a shared app server) passes none.
 
     A slice whose limits cannot be applied in time (systemctl timing out under load) still gets the
     run its own scope: unscoped, it would live and die inside its launcher's scope. Any other
@@ -114,7 +118,15 @@ def contained(argv: Sequence[str], ceiling: Ceiling | None = None) -> list[str]:
         log.warning("agent runs uncapped: %s could not be prepared (%s)", SLICE, error)
         return list(argv)
     scope = [f"--property={key}={value}" for key, value in ceiling.run_properties().items()]
+    if run_id is not None:
+        scope.append(f"--unit={run_scope_name(run_id)}")
     return [systemd_run, "--user", "--scope", "--quiet", "--collect", f"--slice={SLICE}", *scope, "--", *argv]
+
+
+def run_scope_name(run_id: str) -> str:
+    """The scope one turn of run ``run_id`` runs in: the run's id, then a nonce, since a resumed
+    turn may start while the scope of an earlier one is still being torn down."""
+    return f"{_RUN_SCOPE}{run_id}-{secrets.token_hex(4)}.scope"
 
 
 def _prepare_slice(systemctl: str, ceiling: Ceiling) -> None:
@@ -128,18 +140,14 @@ def _prepare_slice(systemctl: str, ceiling: Ceiling) -> None:
 def end_run_scope(unit: str | None, run_id: str) -> bool:
     """Stop the scope :func:`contained` made for run ``run_id`` once its agent is gone without an
     ending: under ``OOMPolicy=continue`` the MCP servers, browsers and dev servers it started would
-    keep running and holding memory. Only a ``run-*.scope`` whose description (``systemd-run``'s:
-    the command line) names this run is stopped; a run without a scope of its own shares its
-    launcher's unit, which is never touched. True when a stop was sent."""
+    keep running and holding memory. Only a scope named for this run (:func:`run_scope_name`) is
+    stopped; a run without a scope of its own shares its launcher's unit, which is never touched.
+    True when a stop was sent."""
     systemctl = shutil.which("systemctl")
-    if not unit or not unit.startswith("run-") or not unit.endswith(".scope") or systemctl is None:
+    if not unit or not unit.startswith(f"{_RUN_SCOPE}{run_id}-") or not unit.endswith(".scope") or systemctl is None:
         return False
-    run = dict(capture_output=True, text=True, timeout=_SYSTEMCTL_TIMEOUT)
     try:
-        described = subprocess.run([systemctl, "--user", "show", unit, "-p", "Description", "--value"], **run).stdout
-        if run_id not in described:
-            return False
-        subprocess.run([systemctl, "--user", "stop", unit], **run)
+        subprocess.run([systemctl, "--user", "stop", unit], capture_output=True, timeout=_SYSTEMCTL_TIMEOUT)
     except (OSError, subprocess.SubprocessError) as error:
         log.warning("could not stop %s left by run %s (%s)", unit, run_id, error)
         return False

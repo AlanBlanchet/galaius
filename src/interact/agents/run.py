@@ -869,7 +869,7 @@ def _spawn_turn(
     stderr_file = tempfile.TemporaryFile()
     try:
         process = subprocess.Popen(
-            contained(fenced(spawnable(argv, env), run.fence)), cwd=run.cwd or ".", env=env, stdout=sink, stderr=stderr_file,
+            contained(fenced(spawnable(argv, env), run.fence), run_id=run.run_id), cwd=run.cwd or ".", env=env, stdout=sink, stderr=stderr_file,
             **process_group_options(),
         )
     except BaseException:
@@ -1255,7 +1255,7 @@ async def run_agent(
         stderr = reg.open_stderr(run_id, append=False)
         try:
             candidate_process = await asyncio.create_subprocess_exec(
-                *contained(fenced(spawnable(argv, env), fence)), cwd=cwd, env=env,
+                *contained(fenced(spawnable(argv, env), fence), run_id=run_id), cwd=cwd, env=env,
                 stdout=sink, stderr=stderr,
                 **process_group_options(),  # own process tree, so stop() can end the whole of it
             )
