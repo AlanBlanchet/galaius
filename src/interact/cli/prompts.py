@@ -12,7 +12,7 @@ from typing import Annotated
 from cyclopts import App, Parameter
 import httpx
 
-from interact import prompt_projection
+from interact import prompt_mirror, prompt_projection
 from interact.agents.catalog_connection import CatalogConnection, CatalogConnectionError
 from interact.prompt_projection import compile_prompt_projection, install_prompt_projection
 from interact.prompt_publisher import publish_projection
@@ -489,12 +489,71 @@ def publish(endpoint: str, token_file: Path) -> None:
     print(head)
 
 
+def _mirror_root() -> Path:
+    configured = os.environ.get("INTERACT_PROMPT_MIRROR_ROOT")
+    return Path(configured) if configured else Path.home() / "galaius"
+
+
+def _workspaces(server: ServerPrompts) -> tuple[prompt_mirror.PromptWorkspace, ...]:
+    try:
+        return prompt_mirror.prompt_workspaces(server.connection)
+    except (OSError, ValueError, httpx.HTTPError) as error:
+        _editor_error(f"Cannot list this PC's prompt workspaces: {error}")
+
+
+@prompts_app.command
+def workspaces() -> None:
+    """The workspaces this PC reads prompts from: its own, and every company that granted it."""
+    server = PromptMode.server()
+    if server is None or server.connection.auth_mode != "machine":
+        _editor_error("Only a linked PC has prompt workspaces; run `interact login` first.", "not_linked")
+    values = _workspaces(server)
+    places = prompt_mirror.folders(values)
+    print(json.dumps({"ok": True, "active": str(server.connection.workspace_id), "workspaces": [
+        {**value.model_dump(mode="json"), "folder": str(_mirror_root().joinpath(*places[value.workspace_id]))} for value in values
+    ]}, separators=(",", ":")))
+
+
+@prompts_app.command
+def use(workspace: str) -> None:
+    """Make WORKSPACE (its id, or its name when no other has it) the prompts this PC's agents run on."""
+    server = PromptMode.server()
+    if server is None or server.connection.auth_mode != "machine":
+        _editor_error("Only a linked PC chooses its prompt workspace; run `interact login` first.", "not_linked")
+    values = _workspaces(server)
+    chosen = [value for value in values if str(value.workspace_id) == workspace] or [value for value in values if value.name == workspace]
+    if len(chosen) != 1:
+        _editor_error(f"No single readable workspace is {workspace!r}; see `interact prompts workspaces`.", "unknown_workspace")
+    server.connection.model_copy(update={"workspace_id": chosen[0].workspace_id}).save()
+    print(json.dumps({"ok": True, "active": str(chosen[0].workspace_id), "name": chosen[0].name}))
+
+
+def _sync_server(server: ServerPrompts) -> None:
+    """Mirror every readable workspace into its folder, then install the active one's prompts.
+    A PC that never chose and holds exactly one company grant runs on that company."""
+    if server.connection.auth_mode == "machine":
+        values = _workspaces(server)
+        granted = [value for value in values if not value.link]
+        if not CatalogConnection.path().exists() and len(granted) == 1:
+            server = ServerPrompts(connection=server.connection.model_copy(update={"workspace_id": granted[0].workspace_id}))
+            server.connection.save()
+        places = prompt_mirror.folders(values)
+        for value in values:
+            try:
+                count = prompt_mirror.mirror(_mirror_root(), server.connection, value, places[value.workspace_id])
+            except (OSError, ValueError, httpx.HTTPError) as error:
+                _editor_error(f"Cannot mirror {value.name}: {error}")
+            print(f"{_mirror_root().joinpath(*places[value.workspace_id])}: {count} prompt(s)"
+                  f"{' (active)' if value.workspace_id == server.connection.workspace_id else ''}", file=sys.stderr)
+    print(PromptMode.project(server, install=True))
+
+
 @prompts_app.command
 def sync() -> None:
     """Refresh installed server caches when configured, otherwise pull and install local Git."""
     server = PromptMode.server()
     if server is not None:
-        print(PromptMode.project(server, install=True))
+        _sync_server(server)
         return
     repository = _repository()
     _require_clean(repository)

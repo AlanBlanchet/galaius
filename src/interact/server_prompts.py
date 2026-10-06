@@ -1,6 +1,7 @@
 """Current workspace prompt heads through the configured catalog connection."""
 
 import hashlib
+import json
 import re
 from contextlib import contextmanager
 
@@ -18,6 +19,14 @@ from interact.agents.catalog_connection import (
 MAX_EDITOR_BYTES = 1 << 20
 _MAX_RESPONSE_BYTES = 16 << 20
 _MAX_CATALOG_ENTRIES = 4096
+
+
+_GRANT_REFUSALS = {
+    "pc_grant_expired": "this PC's window to edit these prompts is over; renew it on the platform (Library, Your PCs)",
+    "pc_grant_shared": "another member reads this prompt: edit it from the platform, not from a PC",
+    "pc_grant_rate": "this PC wrote too many prompts this hour; try again later",
+    "not_found": "this PC may not edit these prompts; allow it on the platform (Library, Your PCs)",
+}
 
 
 class PromptConflictError(CatalogConnectionError):
@@ -115,7 +124,7 @@ class ServerPrompts(BaseModel):
     def require_write(self, content: str) -> None:
         if len(content.encode("utf-8")) > MAX_EDITOR_BYTES:
             raise ValueError("prompt source is too large")
-        if self.connection.auth_mode != "preview":
+        if self.connection.auth_mode == "token":
             raise CatalogConnectionError("token authentication is read-only; save through the server's signed-in prompt editor")
 
     def write(
@@ -140,12 +149,15 @@ class ServerPrompts(BaseModel):
     def submit_revision(self, client: httpx.Client, proposed: PromptCreateRequest | PromptRevision) -> PromptRevision:
         """One bounded authenticated mutation path for create and compare-and-swap updates."""
         self.require_write(proposed.content)
-        try:
-            bootstrap = Bootstrap.model_validate_json(self.connection.request(client, "GET", "/v1/bootstrap"))
-        except ValueError as error:
-            if isinstance(error, CatalogConnectionError):
-                raise
-            raise CatalogConnectionError("invalid server session bootstrap") from error
+        headers = {"Content-Type": "application/json"}
+        if self.connection.auth_mode == "preview":  # a cookie session needs its CSRF token; a PC token carries none
+            try:
+                bootstrap = Bootstrap.model_validate_json(self.connection.request(client, "GET", "/v1/bootstrap"))
+            except ValueError as error:
+                if isinstance(error, CatalogConnectionError):
+                    raise
+                raise CatalogConnectionError("invalid server session bootstrap") from error
+            headers["x-csrf-token"] = bootstrap.csrf_token
         payload = proposed.model_dump_json().encode("utf-8")
         if len(payload) > _MAX_RESPONSE_BYTES:
             raise ValueError("prompt request exceeds its size limit")
@@ -154,8 +166,11 @@ class ServerPrompts(BaseModel):
         endpoint = self.endpoint if creating else f"{self.endpoint}/{key.namespace}/{key.slug}"
         with client.stream(
             "POST" if creating else "PUT", endpoint, content=payload,
-            headers={"Content-Type": "application/json", "x-csrf-token": bootstrap.csrf_token},
+            headers=headers,
         ) as response:
+            refusal = _GRANT_REFUSALS.get(self._code(response)) if self.connection.auth_mode == "machine" and response.status_code in {403, 404, 429} else None
+            if refusal is not None:  # this PC's grant said no; its read access stands
+                raise CatalogConnectionError(f"{refusal}; preserve the editor buffer")
             if response.status_code in {401, 403}:
                 self.connection.invalidate_access(client)
                 raise CatalogAuthenticationError(f"prompt save refused (HTTP {response.status_code}); preserve the editor buffer")
@@ -172,6 +187,20 @@ class ServerPrompts(BaseModel):
         if saved.content != proposed.content or saved.name != proposed.name:
             raise CatalogConnectionError("server save response does not match submitted revision; preserve the editor buffer and reload")
         return saved
+
+    @staticmethod
+    def _code(response: httpx.Response) -> str | None:
+        """The refusal code of a small JSON error body, None otherwise."""
+        body = bytearray()
+        for chunk in response.iter_bytes():
+            body.extend(chunk)
+            if len(body) > 4096:
+                return None
+        try:
+            code = json.loads(body).get("code")
+        except (ValueError, AttributeError):
+            return None
+        return code if isinstance(code, str) else None
 
     def status(self, *, transport: httpx.BaseTransport | None = None) -> PromptSyncStatus:
         with self.session(transport=transport) as client:

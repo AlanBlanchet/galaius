@@ -140,8 +140,11 @@ class CatalogConnection(BaseModel):
             raise CatalogConnectionError("invalid catalog connection configuration") from error
         if connection.workspace_id is None:
             raise CatalogConnectionError("catalog connection has no selected workspace; sync again")
-        # The loopback preview sign-in no longer exists on any server: a linked PC uses its own link.
+        # The loopback preview sign-in no longer exists on any server: a linked PC uses its own link,
+        # on the workspace it chose (`interact prompts use`: a company that granted this PC its prompts).
         if connection.auth_mode in ("machine", "preview") and (linked := cls.linked()) is not None:
+            if connection.auth_mode == "machine" and connection.endpoint.rstrip("/") == linked.endpoint:
+                return linked.model_copy(update={"workspace_id": connection.workspace_id})
             return linked
         if connection.auth_mode == "machine":
             raise CatalogAuthenticationError(_UNLINKED)
@@ -157,8 +160,10 @@ class CatalogConnection(BaseModel):
             raise CatalogConnectionError("select a workspace before saving the catalog connection")
         target = path if path is not None else self.path()
         if self.auth_mode == "machine":
-            target.unlink(missing_ok=True)  # the PC link is the connection: no second copy to clobber
-            return
+            linked = self.linked()
+            if linked is None or linked.workspace_id == self.workspace_id:
+                target.unlink(missing_ok=True)  # the PC link is the connection: no second copy to clobber
+                return
         self.replace_text(target, self.model_dump_json(indent=2))
 
     def connect(self, *, transport: httpx.BaseTransport | None = None) -> httpx.Client:
@@ -167,7 +172,8 @@ class CatalogConnection(BaseModel):
             headers["Authorization"] = f"Bearer {PRIVATE_FILES.read_secret(self.token_file)}"
         elif self.auth_mode == "machine":
             link = self._link()
-            if link is None or link.server_url.rstrip("/") != self.endpoint.rstrip("/") or link.workspace_id != self.workspace_id:
+            # Its own workspace, or one that granted this PC its prompts: the server checks the grant.
+            if link is None or link.server_url.rstrip("/") != self.endpoint.rstrip("/"):
                 raise CatalogAuthenticationError(_UNLINKED)
             headers["Authorization"] = f"Bearer {link.token.get_secret_value()}"
         return httpx.Client(
