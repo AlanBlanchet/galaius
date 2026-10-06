@@ -78,6 +78,42 @@ def folders(workspaces: tuple[PromptWorkspace, ...]) -> dict[UUID, tuple[str]]:
     return {workspace: (name if taken.count(name) == 1 else f"{name}-{str(workspace)[:8]}",) for workspace, name in names.items()}
 
 
+def follow_renames(root: Path, places: dict[UUID, tuple[str]]) -> tuple[str, ...]:
+    """A workspace renamed since the last sync: its old folder (known by the id its `.mirror.json`
+    names) takes the new name; when the new one already exists, the old copy's files this mirror
+    wrote go, as for a prompt that left (anything else in it stays, and so does the folder)."""
+    current = {str(workspace): place[0] for workspace, place in places.items()}
+    notes = []
+    for entry in sorted(os.scandir(root), key=lambda item: item.name) if root.is_dir() else ():
+        if entry.name in LEGACY or not entry.is_dir(follow_symlinks=False):
+            continue
+        with PinnedDirectory.at(Path(entry.path)) as folder:
+            target = current.get(str(_document(folder).get("workspace_id")))
+            if target is None or target == entry.name:
+                continue
+            if (root / target).exists():
+                for relative in sorted(_manifest(folder)):
+                    namespace, name = relative.split("/")
+                    try:
+                        with PinnedDirectory.open(folder.path, namespace) as directory:
+                            directory.unlink(name)
+                        folder.rmdir(namespace)
+                    except OSError:
+                        pass  # gone already, or holds something the mirror did not write
+                folder.unlink(MANIFEST)
+        if (root / target).exists():
+            with PinnedDirectory.at(root) as parent:
+                try:
+                    parent.rmdir(entry.name)
+                except OSError:
+                    pass
+            notes.append(f"{root / entry.name}: its workspace is now {root / target}; the old copy was removed")
+        else:
+            os.rename(entry.path, root / target)
+            notes.append(f"{root / entry.name}: renamed to {root / target} (its workspace was renamed)")
+    return tuple(notes)
+
+
 def freeze_legacy(root: Path) -> tuple[Path, ...]:
     """Make the `LEGACY` folders under `root` read-only (folders 0o500, files 0o400) without
     following a link; nothing is removed. Returns the folders frozen this time."""
@@ -130,6 +166,7 @@ def sync(connection: CatalogConnection, root: Path, install: Callable[[ServerPro
         connection.save()
     places = folders(values)
     _note(root)
+    notes.extend(follow_renames(root, places))
     notes.extend(f"{path}: kept read-only (earlier layout), remove it when you no longer need it" for path in freeze_legacy(root))
     for value in values:
         count = mirror(root, connection, value, places[value.workspace_id])
@@ -189,7 +226,7 @@ def mirror(root: Path, connection: CatalogConnection, workspace: PromptWorkspace
     return len(wanted)
 
 
-def _manifest(folder: PinnedDirectory) -> dict[str, str]:
+def _document(folder: PinnedDirectory) -> dict:
     try:
         descriptor = folder.file(MANIFEST, os.O_RDONLY | os.O_NOFOLLOW)
     except FileNotFoundError:
@@ -197,8 +234,15 @@ def _manifest(folder: PinnedDirectory) -> dict[str, str]:
     with os.fdopen(descriptor, "rb") as stream:
         payload = stream.read(1 << 20)
     try:
-        files = json.loads(payload).get("files", {})
-    except (ValueError, AttributeError):
+        document = json.loads(payload)
+    except ValueError:
+        return {}
+    return document if isinstance(document, dict) else {}
+
+
+def _manifest(folder: PinnedDirectory) -> dict[str, str]:
+    files = _document(folder).get("files", {})
+    if not isinstance(files, dict):
         return {}
     return {key: value for key, value in files.items()
             if isinstance(key, str) and re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*/[a-z0-9]+(?:-[a-z0-9]+)*\.md", key)}

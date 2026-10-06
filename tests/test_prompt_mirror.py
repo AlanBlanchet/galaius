@@ -1,11 +1,12 @@
 """Folder names a PC derives from server text (a workspace name) stay one safe folder each,
 and two workspaces sharing a name never share a folder (`interact.prompt_mirror`)."""
 
+import json
 from uuid import uuid4
 
 import pytest
 
-from interact.prompt_mirror import PromptWorkspace, folder_name, folders, freeze_legacy
+from interact.prompt_mirror import PromptWorkspace, folder_name, folders, follow_renames, freeze_legacy
 
 
 @pytest.mark.parametrize(("text", "name"), [
@@ -43,3 +44,23 @@ def test_earlier_layout_is_kept_read_only_never_removed(tmp_path):
     assert freeze_legacy(tmp_path) == ()  # once
     for path in (prompt.parent, prompt.parent.parent, tmp_path / "personal"):
         path.chmod(0o700)  # let tmp_path clean up
+
+
+def _copy(root, folder, workspace, files):
+    for relative, text in files.items():
+        (root / folder / relative).parent.mkdir(parents=True, exist_ok=True)
+        (root / folder / relative).write_text(text)
+    (root / folder / ".mirror.json").write_text(json.dumps({"workspace_id": str(workspace), "files": {key: "x" for key in files}}))
+
+
+def test_a_renamed_workspace_moves_its_folder_or_drops_its_old_copy(tmp_path):
+    renamed, merged = uuid4(), uuid4()
+    _copy(tmp_path, "my-workspace", renamed, {"paradigms/coding.md": "a"})
+    _copy(tmp_path, "old-name", merged, {"paradigms/coding.md": "a"})
+    (tmp_path / "old-name" / "paradigms" / "mine.txt").write_text("written by hand")
+    _copy(tmp_path, "new-name", merged, {"paradigms/coding.md": "a"})
+    notes = follow_renames(tmp_path, {renamed: ("alan-blanchet-ei",), merged: ("new-name",)})
+    assert len(notes) == 2 and not (tmp_path / "my-workspace").exists()
+    assert (tmp_path / "alan-blanchet-ei" / "paradigms" / "coding.md").read_text() == "a"
+    assert sorted(path.name for path in (tmp_path / "old-name").rglob("*")) == ["mine.txt", "paradigms"]  # only what the mirror wrote went
+    assert follow_renames(tmp_path, {renamed: ("alan-blanchet-ei",), merged: ("new-name",)}) == ()
