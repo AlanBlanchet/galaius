@@ -79,7 +79,7 @@ def mirror(root: Path, connection: CatalogConnection, workspace: PromptWorkspace
     """Write `workspace`'s current prompts under `root/place`; returns how many files it holds."""
     revisions = ServerPrompts(connection=connection.model_copy(update={"workspace_id": workspace.workspace_id})).catalog()
     wanted = {f"{item.key.namespace}/{item.key.slug}.md": item.content.encode("utf-8") for item in revisions}
-    with PinnedDirectory.open(root, *place, create=True) as folder:
+    with PinnedDirectory.at(root.joinpath(*place), create=True) as folder:
         previous = _manifest(folder)
         for relative, content in wanted.items():
             namespace, name = relative.split("/")

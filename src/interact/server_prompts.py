@@ -188,6 +188,25 @@ class ServerPrompts(BaseModel):
             raise CatalogConnectionError("server save response does not match submitted revision; preserve the editor buffer and reload")
         return saved
 
+    def repin(self, agents: list[dict], *, transport: httpx.BaseTransport | None = None) -> tuple[str, ...]:
+        """Pin `agents` ({id, paradigms?, skill_paradigms?}) to the current text of every prompt
+        they read, in one save; returns the roles re-pinned."""
+        self.require_write("")
+        with self.session(transport=transport) as client:
+            response = client.put(f"/v1/workspaces/{self.connection.workspace_id}/agent-prompt-refs", json={"agents": agents},
+                                  headers={"Content-Type": "application/json"})
+            refusal = _GRANT_REFUSALS.get(self._code(response)) if response.status_code in {403, 404, 429} else None
+            if refusal is not None:
+                raise CatalogConnectionError(refusal)
+            if response.status_code == 409:
+                raise PromptConflictError("the agents changed meanwhile; run it again")
+            if not 200 <= response.status_code < 300:
+                raise CatalogConnectionError(f"agent re-pin failed (HTTP {response.status_code})")
+            try:
+                return tuple(str(agent.get("role_key") or agent["id"]) for agent in response.json()["agents"])
+            except (ValueError, KeyError, TypeError) as error:
+                raise CatalogConnectionError("invalid agent re-pin response") from error
+
     @staticmethod
     def _code(response: httpx.Response) -> str | None:
         """The refusal code of a small JSON error body, None otherwise."""

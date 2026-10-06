@@ -13,6 +13,7 @@ from cyclopts import App, Parameter
 import httpx
 
 from interact import prompt_mirror, prompt_projection
+from interact.agents.catalog import AgentCatalog
 from interact.agents.catalog_connection import CatalogConnection, CatalogConnectionError
 from interact.prompt_projection import compile_prompt_projection, install_prompt_projection
 from interact.prompt_publisher import publish_projection
@@ -528,14 +529,53 @@ def use(workspace: str) -> None:
     print(json.dumps({"ok": True, "active": str(chosen[0].workspace_id), "name": chosen[0].name}))
 
 
+@prompts_app.command
+def refs(*roles: str, paradigms: str | None = None, skills: str | None = None) -> None:
+    """Make agents run the current text of the prompts they read (after `prompts write`): every
+    agent pinned to an older revision, or only ROLES. --paradigms / --skills (comma-separated
+    namespace/slug keys) change what the ONE named role reads."""
+    server = PromptMode.server()
+    if server is None:
+        _editor_error("Agent prompts live on the server; this computer is not connected to one.", "not_linked")
+    if (paradigms is not None or skills is not None) and len(roles) != 1:
+        _editor_error("--paradigms / --skills change ONE role: name exactly one.")
+    try:
+        snapshot = AgentCatalog.refresh(server.connection).snapshot
+    except (OSError, ValueError, httpx.HTTPError) as error:
+        _editor_error(f"Cannot read the agents: {error}")
+    heads = {(ref.key.namespace, ref.key.slug): ref.digest for ref in snapshot.prompt_heads}
+    def stale(agent) -> bool:
+        return any(heads.get((ref.key.namespace, ref.key.slug), ref.digest) != ref.digest
+                   for ref in (agent.prompt, *agent.paradigms, *agent.skill_paradigms))
+    chosen = [agent for agent in snapshot.agents if (agent.role_key in roles if roles else stale(agent))]
+    if roles and {agent.role_key for agent in chosen} != set(roles):
+        _editor_error(f"Unknown role(s): {', '.join(sorted(set(roles) - {agent.role_key for agent in chosen}))}", "unknown_role")
+    body = [{"id": str(agent.id),
+             **({"paradigms": [key for key in paradigms.split(",") if key]} if paradigms is not None else {}),
+             **({"skill_paradigms": [key for key in skills.split(",") if key]} if skills is not None else {})} for agent in chosen]
+    if not body:
+        print(json.dumps({"ok": True, "repinned": []}))
+        return
+    try:
+        repinned = server.repin(body)
+    except (OSError, ValueError, httpx.HTTPError) as error:
+        _editor_error(str(error))
+    print(json.dumps({"ok": True, "repinned": list(repinned)}))
+
+
 def _sync_server(server: ServerPrompts) -> None:
     """Mirror every readable workspace into its folder, then install the active one's prompts.
     A PC that never chose and holds exactly one company grant runs on that company."""
     if server.connection.auth_mode == "machine":
         values = _workspaces(server)
         granted = [value for value in values if not value.link]
+        readable = {value.workspace_id for value in values}
         if not CatalogConnection.path().exists() and len(granted) == 1:
             server = ServerPrompts(connection=server.connection.model_copy(update={"workspace_id": granted[0].workspace_id}))
+            server.connection.save()
+        elif server.connection.workspace_id not in readable and values:  # its grant was withdrawn: back to the PC's own
+            print(f"{server.connection.workspace_id} no longer lets this PC read its prompts; using {values[0].name}", file=sys.stderr)
+            server = ServerPrompts(connection=server.connection.model_copy(update={"workspace_id": values[0].workspace_id}))
             server.connection.save()
         places = prompt_mirror.folders(values)
         for value in values:
