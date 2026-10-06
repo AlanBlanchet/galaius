@@ -5,15 +5,17 @@ several agents run at once. Uncapped, they share the editor's cgroup, so when me
 OOM killer takes the editor. Inside :data:`SLICE` they share one budget the desktop sits outside
 of, and the desktop gets the CPU first.
 
-How a memory shortage ends decides how many runs it costs. The slice has a hard ``MemoryMax`` and
-no ``MemoryHigh`` throttle: a throttle below the cap makes the kernel reclaim the agents' own pages
-long before the machine is short, every agent stalls on it, and systemd-oomd reads that stall as
-pressure and kills a whole run scope with every child in it. At the cap the kernel instead kills
+How a memory shortage ends decides how many runs it costs. The slice has a hard ``MemoryMax``, no
+swap (swapped pages escape ``MemoryMax`` and, on compressed-RAM swap, still take the desktop's RAM)
+and no ``MemoryHigh`` throttle: a throttle below the cap makes the kernel reclaim the agents' own
+pages long before the machine is short, every agent stalls on it, and systemd-oomd reads that stall
+as pressure and kills a whole run scope with every child in it. At the cap the kernel instead kills
 ONE process. Each run's scope carries its own ``MemoryMax`` (a runaway test suite or browser in one
 run is killed inside that run) and ``OOMPolicy=continue`` (losing that process does not stop the
-rest of the run). systemd-oomd stays as the last resort for a slice that truly thrashes, and it
-passes over run scopes (``ManagedOOMPreference=avoid``) while anything else in the slice — a
-fixture server, a build — can be ended instead.
+rest of the run; when the agent itself is the one lost, :func:`end_run_scope` ends what it left).
+systemd-oomd stays as the last resort for a slice that truly thrashes, and it passes over run
+scopes (``ManagedOOMPreference=avoid``) while anything else in the slice — a fixture server, a
+build — can be ended instead.
 
 ``systemd-run --scope`` registers its own pid in a new scope and then execs the command, so the
 pid a caller records, signals and waits on is the agent's own.
@@ -66,12 +68,12 @@ class Ceiling(BaseModel):
         )
 
     def properties(self, cores: int) -> dict[str, str]:
-        """systemd resource-control properties for :data:`SLICE`. ``MemoryHigh`` and
-        ``MemorySwapMax`` are named to clear what an earlier ceiling set on this boot."""
+        """systemd resource-control properties for :data:`SLICE`. ``MemoryHigh`` is named to clear
+        what an earlier ceiling set on this boot."""
         return {
             "MemoryHigh": "infinity",
             "MemoryMax": f"{self.memory_max_percent}%",
-            "MemorySwapMax": "infinity",
+            "MemorySwapMax": "0",
             "CPUQuota": f"{max(1, cores) * self.cpu_percent}%",
             "CPUWeight": str(self.cpu_weight),
             "ManagedOOMMemoryPressure": "kill",
@@ -91,8 +93,10 @@ def contained(argv: Sequence[str], ceiling: Ceiling | None = None) -> list[str]:
     """``argv`` run in its own capped scope inside the agent slice, or unchanged where no user
     systemd exists or ``INTERACT_AGENT_CEILING`` is off. An explicit ``ceiling`` always applies.
 
-    A slice whose limits cannot be applied right now (systemctl timing out under load) still gets
-    the run its own scope: run unscoped, it would live and die inside its launcher's scope."""
+    A slice whose limits cannot be applied in time (systemctl timing out under load) still gets the
+    run its own scope: unscoped, it would live and die inside its launcher's scope. Any other
+    failure means no reachable user manager, where ``systemd-run`` would fail too: the run goes
+    uncapped."""
     if ceiling is None:
         config = Config()
         if not config.agent_ceiling:
@@ -104,8 +108,11 @@ def contained(argv: Sequence[str], ceiling: Ceiling | None = None) -> list[str]:
         return list(argv)
     try:
         _prepare_slice(systemctl, ceiling)
-    except (OSError, subprocess.SubprocessError) as error:
+    except subprocess.TimeoutExpired as error:
         log.warning("%s limits not applied this time (%s); the run still gets its own scope", SLICE, error)
+    except (OSError, subprocess.SubprocessError) as error:
+        log.warning("agent runs uncapped: %s could not be prepared (%s)", SLICE, error)
+        return list(argv)
     scope = [f"--property={key}={value}" for key, value in ceiling.run_properties().items()]
     return [systemd_run, "--user", "--scope", "--quiet", "--collect", f"--slice={SLICE}", *scope, "--", *argv]
 
@@ -116,3 +123,24 @@ def _prepare_slice(systemctl: str, ceiling: Ceiling) -> None:
     subprocess.run([systemctl, "--user", "start", SLICE], **run)
     assignments = [f"{key}={value}" for key, value in ceiling.properties(os.cpu_count() or 1).items()]
     subprocess.run([systemctl, "--user", "set-property", "--runtime", SLICE, *assignments], **run)
+
+
+def end_run_scope(unit: str | None, run_id: str) -> bool:
+    """Stop the scope :func:`contained` made for run ``run_id`` once its agent is gone without an
+    ending: under ``OOMPolicy=continue`` the MCP servers, browsers and dev servers it started would
+    keep running and holding memory. Only a ``run-*.scope`` whose description (``systemd-run``'s:
+    the command line) names this run is stopped; a run without a scope of its own shares its
+    launcher's unit, which is never touched. True when a stop was sent."""
+    systemctl = shutil.which("systemctl")
+    if not unit or not unit.startswith("run-") or not unit.endswith(".scope") or systemctl is None:
+        return False
+    run = dict(capture_output=True, text=True, timeout=_SYSTEMCTL_TIMEOUT)
+    try:
+        described = subprocess.run([systemctl, "--user", "show", unit, "-p", "Description", "--value"], **run).stdout
+        if run_id not in described:
+            return False
+        subprocess.run([systemctl, "--user", "stop", unit], **run)
+    except (OSError, subprocess.SubprocessError) as error:
+        log.warning("could not stop %s left by run %s (%s)", unit, run_id, error)
+        return False
+    return True

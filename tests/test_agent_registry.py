@@ -569,6 +569,13 @@ def test_interruption_reads_the_units_journal(monkeypatch, lines, cause, source,
     assert (found.cause, found.source) == (cause, source) and found.at == pytest.approx(at)
 
 
+def test_a_child_killed_before_the_runs_last_output_is_not_its_end(monkeypatch):
+    """The agent wrote after the kernel took one of its children: something else ended it."""
+    monkeypatch.setattr(reg.Interruption, "_journal", classmethod(lambda cls, unit: [_STARTED, _KERNEL_OOM, _CONSUMED]))
+    found = reg.Interruption.observe("run-r37e1.scope", now=5.0, since=1791288056.7)
+    assert (found.cause, found.source) == ("process_gone", "journal")
+
+
 def test_a_stale_reaper_cannot_finish_a_reused_run_pid():
     register_run(pid=111)
     first = reg.get_run("r1")

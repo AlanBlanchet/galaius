@@ -31,6 +31,7 @@ from interact_core import AgentRevisionRef, PromptExecutionRef
 
 from interact.agents.events import TOKEN_FIELDS, AgentEvent, TokenUsage, UsageLedger
 from interact.agents.catalog_connection import CatalogConnection
+from interact.agents.ceiling import end_run_scope
 from interact.agents.providers import PROVIDERS, DeniedTool
 from interact.fence import FenceSpec
 from interact.file_lock import exclusive
@@ -132,15 +133,26 @@ class Interruption(BaseModel):
     _JOURNAL_TIMEOUT: ClassVar[float] = 5.0
 
     @classmethod
-    def observe(cls, unit: str | None, *, now: float) -> Self:
-        """The cause the journal holds for `unit`, else `process_gone` observed at `now`."""
+    def observe(cls, unit: str | None, *, now: float, since: float = 0.0) -> Self:
+        """The cause the journal holds for `unit`, else `process_gone` observed at `now`. Only an OOM
+        line from `since` on (the run's last output) counts: a child killed earlier while the agent
+        carried on did not end the run."""
         lines = cls._journal(unit) if unit else []
         ended = [line for line in lines if line.get("MESSAGE_ID") != cls._STARTED]
         if not ended:
             return cls(cause="process_gone", at=now, source="observed")
-        oom = any(line.get("UNIT_RESULT") == cls._OOM_RESULT or line.get("MESSAGE_ID") in cls._OOM_KILLED for line in ended)
-        at = max(int(line.get("__REALTIME_TIMESTAMP") or 0) for line in ended) / 1e6
+        oom = any(
+            (line.get("UNIT_RESULT") == cls._OOM_RESULT or line.get("MESSAGE_ID") in cls._OOM_KILLED)
+            and cls._at(line) >= since
+            for line in ended
+        )
+        at = max(cls._at(line) for line in ended)
         return cls(cause="out_of_memory" if oom else "process_gone", at=at or now, source="journal")
+
+    @staticmethod
+    def _at(line: dict) -> float:
+        """A journal line's time, epoch seconds."""
+        return int(line.get("__REALTIME_TIMESTAMP") or 0) / 1e6
 
     @classmethod
     def _journal(cls, unit: str) -> list[dict]:
@@ -1506,7 +1518,9 @@ def _derive(run: AgentRun) -> AgentRun:
     # Only on the transition: a run settled before this existed stays without one (no journal read per old record).
     if (run.status == "crashed" and run.interruption is None and run.pid
             and original.get("status") in ("starting", "running")):
-        run.interruption = Interruption.observe(run.unit, now=time.time())
+        raw = raw_events_path(run.run_id)
+        run.interruption = Interruption.observe(run.unit, now=time.time(), since=raw.stat().st_mtime if raw.exists() else 0.0)
+        end_run_scope(run.unit, run.run_id)
     # A run launched before its unit was recorded learns it while its process still runs.
     if run.status == "running" and run.unit is None and run.pid:
         run.unit = process_unit(run.pid)

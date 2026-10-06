@@ -196,7 +196,7 @@ class Config(BaseSettings):
     agent_ceiling: bool = True
     agent_memory_max_percent: Annotated[int, Field(ge=1, le=100)] = 45
     agent_run_memory_max_percent: Annotated[int, Field(ge=1, le=100)] = 20
-    # systemd-oomd ends a run only when the agents' slice stalls this share of the time on memory.
+    # systemd-oomd acts on the agents' slice when it stalls this share of the time on memory.
     agent_oomd_pressure_percent: Annotated[int, Field(ge=1, le=100)] = 80
     agent_cpu_percent: Annotated[int, Field(ge=1, le=100)] = 75
     # Relative to the desktop's default 100: under contention the editor gets 5x the CPU.

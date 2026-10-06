@@ -10,7 +10,7 @@ import pytest
 from pydantic import ValidationError
 
 from interact.agents import ceiling as ceiling_module
-from interact.agents.ceiling import SLICE, Ceiling, contained
+from interact.agents.ceiling import SLICE, Ceiling, contained, end_run_scope
 
 CEILING = Ceiling(memory_max_percent=45, run_memory_max_percent=20, oomd_pressure_percent=80, cpu_percent=75, cpu_weight=20)
 
@@ -20,7 +20,7 @@ def test_the_slice_has_a_hard_cap_and_no_throttle_below_it():
     assert CEILING.properties(cores=12) == {
         "MemoryHigh": "infinity",
         "MemoryMax": "45%",
-        "MemorySwapMax": "infinity",
+        "MemorySwapMax": "0",
         "CPUQuota": "900%",
         "CPUWeight": "20",
         "ManagedOOMMemoryPressure": "kill",
@@ -40,18 +40,46 @@ def test_without_user_systemd_the_agent_runs_unchanged(monkeypatch, missing):
     assert contained(["claude", "-p", "x"], CEILING) == ["claude", "-p", "x"]
 
 
-def test_a_slice_that_cannot_be_prepared_still_gives_the_run_its_own_scope(monkeypatch):
-    """Unscoped, the run would live inside its launcher's scope and die with it."""
+@pytest.mark.parametrize("failure, scoped", [
+    pytest.param(subprocess.TimeoutExpired("systemctl", 5), True, id="slow_manager_still_scopes"),
+    pytest.param(subprocess.CalledProcessError(1, "systemctl"), False, id="no_manager_runs_uncapped"),
+])
+def test_a_slice_that_cannot_be_prepared(monkeypatch, failure, scoped):
+    """Slow: the run still gets its own scope (unscoped, it would die with its launcher's). No
+    reachable user manager: systemd-run would fail too, so the run starts uncapped."""
     monkeypatch.setattr(ceiling_module.shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(ceiling_module.sys, "platform", "linux")
 
     def _refuse(*args, **kwargs):
-        raise subprocess.TimeoutExpired(args[0], 5)
+        raise failure
 
     monkeypatch.setattr(ceiling_module.subprocess, "run", _refuse)
     argv = contained(["claude"], CEILING)
-    assert argv[:3] == ["/usr/bin/systemd-run", "--user", "--scope"] and argv[-2:] == ["--", "claude"]
-    assert "--property=OOMPolicy=continue" in argv and "--property=MemoryMax=20%" in argv
+    if scoped:
+        assert argv[:3] == ["/usr/bin/systemd-run", "--user", "--scope"] and argv[-2:] == ["--", "claude"]
+        assert "--property=OOMPolicy=continue" in argv and "--property=MemoryMax=20%" in argv
+    else:
+        assert argv == ["claude"]
+
+
+@pytest.mark.parametrize("unit, description, stopped", [
+    pytest.param("run-r1.scope", "/bin/claude -p --session-id run-1 --model m", True, id="own_scope"),
+    pytest.param("run-r1.scope", "/bin/claude -p --session-id parent-9 --model m", False, id="launchers_scope"),
+    pytest.param("app-com.microsoft.VSCode-1.scope", "never read", False, id="editor_scope"),
+    pytest.param(None, "never read", False, id="no_unit"),
+])
+def test_an_ended_run_stops_only_its_own_scope(monkeypatch, unit, description, stopped):
+    """What the agent left running is ended; the editor or a parent run holding it never is."""
+    monkeypatch.setattr(ceiling_module.shutil, "which", lambda name: f"/usr/bin/{name}")
+    calls: list[list[str]] = []
+
+    def _systemctl(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout=description + "\n", stderr="")
+
+    monkeypatch.setattr(ceiling_module.subprocess, "run", _systemctl)
+    assert end_run_scope(unit, "run-1") is stopped
+    assert (["/usr/bin/systemctl", "--user", "stop", unit] in calls) is stopped
 
 
 def _user_manager() -> bool:
@@ -75,7 +103,7 @@ def test_a_contained_agent_keeps_its_pid_and_lands_in_its_own_capped_scope():
         ["systemctl", "--user", "show", SLICE, "-p", "MemoryHigh", "-p", "MemorySwapMax", "-p", "CPUWeight"],
         capture_output=True, text=True, check=True,
     ).stdout
-    assert "MemoryHigh=infinity" in limits and "MemorySwapMax=infinity" in limits and "CPUWeight=20" in limits
+    assert "MemoryHigh=infinity" in limits and "MemorySwapMax=0" in limits and "CPUWeight=20" in limits
 
 
 @pytest.mark.asyncio
