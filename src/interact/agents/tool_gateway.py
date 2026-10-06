@@ -150,6 +150,8 @@ class ToolGateway(BaseModel):
             answer = response.json()
         except ValueError:
             answer = {}
+        if not isinstance(answer, dict):
+            answer = {}
         if response.status_code != 200:
             words = answer.get("error") if isinstance(answer, dict) else None
             raise GatewayCallFailed(str(words or f"the Interact server refused the call (HTTP {response.status_code})"))

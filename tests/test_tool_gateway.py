@@ -57,6 +57,7 @@ LISTING = AgentToolList(revision="r", agents={"researcher": ("ext__Context7__que
     (200, {}, 2.0, None, ToolError("did not answer within 1 s")),        # bounded: never a hang
     (200, {"content": [{"type": "text", "text": "{\"text\": \"Bonjour\"}"}]}, 1.5, 2.0, "{\"text\": \"Bonjour\"}"),   # a tool listed with a longer budget gets it
     (200, {}, 3.0, 2.0, ToolError("did not answer within 2 s")),         # … and no more than it plus the margin
+    (200, ["not", "an", "object"], 0.0, None, ""),                       # a 200 that is no object: an empty answer, no crash
 ])
 def test_a_gateway_call_answers_the_server_s_words_or_a_plain_error(tmp_path, monkeypatch, status, body, delay, budget, said):
     fake = FakeServer(status, body, delay)
