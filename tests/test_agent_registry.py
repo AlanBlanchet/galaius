@@ -21,6 +21,7 @@ import stat
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -29,6 +30,7 @@ import pytest
 from interact.agents import registry as reg
 from interact.agents.events import TOKEN_FIELDS, AgentEvent
 from interact.private_files import PRIVATE_FILES
+from interact.processes import process_exited
 from tests.support import register_run
 from tests.support.private_files import loosen
 
@@ -491,6 +493,77 @@ def test_status_is_derived_from_pid_liveness_and_recorded_exit(
     assert run.status == expected_status
     if finish_exit_code is not None:
         assert run.exit_code == finish_exit_code
+
+
+linux_only = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
+
+
+def _child(*argv: str) -> subprocess.Popen:
+    return subprocess.Popen([sys.executable, "-c", *argv])
+
+
+@linux_only
+def test_a_zombie_run_is_settled_as_crashed():
+    """A run whose process EXITED but was never collected by its parent still answers every pid probe:
+    two finished critic runs read « En cours » for two hours that way (2026-10-06)."""
+    child = _child("pass")
+    try:
+        deadline = time.monotonic() + 10
+        while not process_exited(child.pid):
+            assert time.monotonic() < deadline, "child never became a zombie"
+            time.sleep(0.02)
+        register_run(pid=child.pid)
+        assert not reg._alive(child.pid)
+        (settled,) = reg.settle_gone()
+        assert settled.status == "crashed" and settled.interruption is not None
+    finally:
+        child.wait()
+
+
+@linux_only
+@pytest.mark.parametrize("reused", [False, True], ids=["killed", "pid_reused"])
+def test_settle_gone_writes_crashed_with_the_cause(reused):
+    """`kill -9` with nobody watching, or the pid handed to another program: the minute sweep writes
+    `crashed` + when it was seen gone, on disk, and leaves a live run alone."""
+    victim, bystander = _child("import time; time.sleep(60)"), _child("import time; time.sleep(60)")
+    try:
+        register_run(pid=victim.pid)
+        register_run(run_id="alive", pid=bystander.pid)
+        if reused:
+            reg._update_fields("r1", {"pid_started": -1})
+        else:
+            victim.kill()
+            victim.wait()
+        before = time.time()
+        assert [run.run_id for run in reg.settle_gone()] == ["r1"]
+        stored = json.loads((reg.agents_dir() / "r1.json").read_text())
+        assert stored["status"] == "crashed"
+        assert stored["interruption"]["cause"] == "process_gone" and stored["interruption"]["at"] >= before - 1
+        assert reg.get_run("alive").status == "running" and reg.settle_gone() == []
+        assert "process gone at" in reg.get_run("r1").interruption.describe()
+    finally:
+        for child in (victim, bystander):
+            child.kill()
+            child.wait()
+
+
+#: The user journal's lines for a scope, as `journalctl --user --all -o json USER_UNIT=…` prints them.
+_STARTED = {"MESSAGE_ID": "39f53479d3a045ac8e11786248231fbf", "__REALTIME_TIMESTAMP": "1791277759553166"}
+_OOMD = {"MESSAGE_ID": "d989611b15e44c9dbf31e3c81256e4ed", "__REALTIME_TIMESTAMP": "1791288056578685"}
+_FAILED_OOM = {"MESSAGE_ID": "d9b373ed55a64feb8242e02dbe79a49c", "UNIT_RESULT": "oom-kill", "__REALTIME_TIMESTAMP": "1791288056853530"}
+_CONSUMED = {"MESSAGE_ID": "ae8f7b866b0347b9af31fe1c80b127c0", "__REALTIME_TIMESTAMP": "1791288056854595"}
+
+
+@pytest.mark.parametrize("lines, cause, source, at", [
+    pytest.param([_STARTED, _OOMD, _FAILED_OOM, _CONSUMED], "out_of_memory", "journal", 1791288056.854595, id="oomd_killed"),
+    pytest.param([_STARTED, _CONSUMED], "process_gone", "journal", 1791288056.854595, id="scope_ended"),
+    pytest.param([_STARTED], "process_gone", "observed", 5.0, id="no_ending_in_journal"),
+    pytest.param([], "process_gone", "observed", 5.0, id="journal_unreadable"),
+])
+def test_interruption_reads_the_units_journal(monkeypatch, lines, cause, source, at):
+    monkeypatch.setattr(reg.Interruption, "_journal", classmethod(lambda cls, unit: lines))
+    found = reg.Interruption.observe("run-r37e1.scope", now=5.0)
+    assert (found.cause, found.source) == (cause, source) and found.at == pytest.approx(at)
 
 
 def test_a_stale_reaper_cannot_finish_a_reused_run_pid():

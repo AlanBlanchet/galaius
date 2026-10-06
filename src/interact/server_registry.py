@@ -21,6 +21,7 @@ import sys
 from pathlib import Path
 
 from interact import installed_version
+from interact.processes import process_exited
 
 
 def _runtime_dir() -> Path:
@@ -115,7 +116,8 @@ def _alive(pid: int) -> bool:
         return False
     except PermissionError:
         return True  # exists, owned by another user — still running
-    return True
+    # A zombie answers the probe too: it exited, only its parent has not collected it yet.
+    return not process_exited(pid)
 
 
 def _alive_windows(pid: int) -> bool:

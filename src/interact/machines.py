@@ -798,6 +798,8 @@ class MachineRunner:
     #: How often this PC checks whether the prompts it runs changed (a company granted or withdrew
     #: it, a prompt or agent was saved); a check is one 304 per workspace when nothing moved.
     prompt_sync_seconds = 300
+    #: How often this PC's run records are settled against their processes (`registry.settle_gone`).
+    settle_seconds = 60
     reconnect_seconds = (1, 2, 5, 10, 20)
 
     def __init__(self, config_path: Path | None = None) -> None:
@@ -885,6 +887,26 @@ class MachineRunner:
         # Exact secrets masked in every kept log line from the first one on (`LogRing`).
         self._log_ring.secrets = (config.token.get_secret_value(), *secret_values(self._safe_environment()))
         self._workspace_jobs.settle_interrupted()
+        # Local and independent of the server: a run killed while the PC is offline is settled too.
+        settler = asyncio.create_task(self._settle_runs())
+        try:
+            await self._connect(config)
+        finally:
+            settler.cancel()
+            await asyncio.gather(settler, return_exceptions=True)
+
+    async def _settle_runs(self) -> None:
+        """Every `settle_seconds`, mark ended the runs whose process is gone (`registry.settle_gone`)."""
+        while True:
+            try:
+                for run in await asyncio.to_thread(reg.settle_gone):
+                    cause = run.interruption.describe() if run.interruption else ""
+                    logger.info("run %s settled %s %s", run.run_id[:8], run.status, cause)
+            except Exception:  # one unreadable record never stops the sweep
+                logger.exception("settling run records failed")
+            await asyncio.sleep(self.settle_seconds)
+
+    async def _connect(self, config: MachineConfig) -> None:
         delay_index = 0
         while True:
             endpoint = self._channel_url(config.server_url)

@@ -878,8 +878,9 @@ def agents_list(foreign: bool = False, session_id: str | None = None, all_sessio
     for run in runs:
         cost = f"~${run.cost_usd:.4f}" if run.cost_usd is not None else "—"
         mark = "*" if run.foreign else " "
+        said = run.interruption.describe() if run.interruption else run.last
         print(f"{mark} {run.status:8} {run.run_id[:8]}  {run.provider:7} {run.name:16} "
-              f"{cost:>10}  {run.last[:60]}")
+              f"{cost:>10}  {said[:60]}")
     if any(r.foreign for r in runs):
         print("\n* not started by interact")
 

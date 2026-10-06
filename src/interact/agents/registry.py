@@ -14,14 +14,16 @@ import json
 import os
 import re
 import secrets
+import shutil
 import signal
 import stat
+import subprocess
 import sys
 import time
 from contextlib import ExitStack, contextmanager, suppress
 from contextvars import ContextVar
 from pathlib import Path
-from typing import BinaryIO, Literal
+from typing import BinaryIO, ClassVar, Literal, Self
 
 from pydantic import BaseModel, Field, PrivateAttr
 from interact.agents import quota
@@ -35,7 +37,7 @@ from interact.file_lock import exclusive
 from interact.models import TokenMix
 from interact.pinned_directory import PinnedDirectory
 from interact.private_files import PRIVATE_FILES
-from interact.processes import end_process_tree, process_started
+from interact.processes import end_process_tree, process_started, process_unit
 from interact.server_registry import (
     _alive,  # generic pid liveness (Windows-safe, no signal sent)
 )
@@ -104,6 +106,69 @@ class SkippedCandidate(BaseModel):
     until: float | None = None
 
 
+class Interruption(BaseModel):
+    """How a run's process went away when it never said how it ended itself (status `crashed`), as
+    the system recorded it: the journal of the systemd unit that held it (`AgentRun.unit`) when it can
+    be read, else the moment this machine saw the pid gone. Written once, on the record, so every
+    reader (CLI, panel, a mirror on another host) says the same cause."""
+
+    model_config = {"frozen": True, "extra": "forbid"}
+
+    #: `out_of_memory`: the kernel or systemd-oomd killed it for memory; `process_gone`: nothing
+    #: recorded why — a kill, a crash, a closed terminal.
+    cause: Literal["out_of_memory", "process_gone"]
+    #: When (epoch seconds): the unit's last journal line, else when it was first seen gone.
+    at: float
+    #: `journal` = the system recorded it; `observed` = noticed missing, so `at` is an upper bound.
+    source: Literal["journal", "observed"]
+
+    #: The unit's ending lines: `Failed with result 'oom-kill'` and systemd-oomd's « killed N process(es) ».
+    _OOM_RESULT: ClassVar[str] = "oom-kill"
+    _OOMD_KILLED: ClassVar[str] = "d989611b15e44c9dbf31e3c81256e4ed"
+    #: systemd's « Started <unit> » line: about the unit, never about how it ended.
+    _STARTED: ClassVar[str] = "39f53479d3a045ac8e11786248231fbf"
+    _JOURNAL_TIMEOUT: ClassVar[float] = 5.0
+
+    @classmethod
+    def observe(cls, unit: str | None, *, now: float) -> Self:
+        """The cause the journal holds for `unit`, else `process_gone` observed at `now`."""
+        lines = cls._journal(unit) if unit else []
+        ended = [line for line in lines if line.get("MESSAGE_ID") != cls._STARTED]
+        if not ended:
+            return cls(cause="process_gone", at=now, source="observed")
+        oom = any(line.get("UNIT_RESULT") == cls._OOM_RESULT or line.get("MESSAGE_ID") == cls._OOMD_KILLED for line in ended)
+        at = max(int(line.get("__REALTIME_TIMESTAMP") or 0) for line in ended) / 1e6
+        return cls(cause="out_of_memory" if oom else "process_gone", at=at or now, source="journal")
+
+    @classmethod
+    def _journal(cls, unit: str) -> list[dict]:
+        """The user journal's lines about `unit` (what the service manager said of it), [] when unreadable."""
+        journalctl = shutil.which("journalctl")
+        if journalctl is None:
+            return []
+        try:
+            done = subprocess.run(
+                [journalctl, "--user", "--all", "--no-pager", "-o", "json", f"USER_UNIT={unit}"],
+                capture_output=True, text=True, timeout=cls._JOURNAL_TIMEOUT, check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return []
+        lines = []
+        for text in done.stdout.splitlines():
+            try:
+                line = json.loads(text)
+            except ValueError:
+                continue
+            if isinstance(line, dict):
+                lines.append(line)
+        return lines
+
+    def describe(self) -> str:
+        """One line a person reads: « killed: out of memory at 14:03 » / « process gone at 14:03 »."""
+        at = time.strftime("%H:%M", time.localtime(self.at))
+        return f"killed: out of memory at {at}" if self.cause == "out_of_memory" else f"process gone at {at}"
+
+
 class AgentRun(BaseModel):
     """One supervised run.
 
@@ -125,6 +190,11 @@ class AgentRun(BaseModel):
     #: given to another process is not this run's (Windows reuses pids within minutes). None when
     #: unknown (a record from before it was kept, or a system without start times).
     pid_started: int | None = None
+    #: The systemd unit holding `pid` (`process_unit`), recorded with it: the journal says how that unit
+    #: ended (out of memory) under its name, never under the pid. None off systemd.
+    unit: str | None = None
+    #: How its process went away when it ended without saying so (`crashed`); None otherwise.
+    interruption: Interruption | None = None
     lifecycle_token: str | None = Field(
         default_factory=lambda: secrets.token_hex(16), min_length=1, max_length=80,
     )
@@ -609,7 +679,7 @@ def session_runs(*, session_id: str | None = None, all_sessions: bool = False, i
 
 def _process_identity(pid: int | None) -> dict:
     """A run's process as recorded: its pid and when that process started (see `AgentRun.pid_started`)."""
-    return {"pid": pid, "pid_started": process_started(pid) if pid else None}
+    return {"pid": pid, "pid_started": process_started(pid) if pid else None, "unit": process_unit(pid) if pid else None}
 
 
 def register(*, run_id: str, pid: int | None, provider: str, name: str, task: str = "",
@@ -1400,7 +1470,7 @@ def _status_for(run: AgentRun) -> RunStatus:
 
 
 def _derive(run: AgentRun) -> AgentRun:
-    original = run.model_dump()
+    original = run.model_dump(mode="json")
     if not run.project and run.cwd:
         run.project = project_for(run.cwd)
     """Re-check liveness, and SELF-HEAL the record from the child's own stream.
@@ -1430,6 +1500,14 @@ def _derive(run: AgentRun) -> AgentRun:
     # timeline cannot draw an interval without one. The last byte the child wrote is an OBSERVED
     # end: not when it died, but the last moment we know it was alive, which is honest and
     # drawable. Only ever stamped for a run that is no longer running.
+    # Cut off with nothing on record saying how: ask the system once, and keep its answer on the record.
+    # Only on the transition: a run settled before this existed stays without one (no journal read per old record).
+    if (run.status == "crashed" and run.interruption is None and run.pid
+            and original.get("status") in ("starting", "running")):
+        run.interruption = Interruption.observe(run.unit, now=time.time())
+    # A run launched before its unit was recorded learns it while its process still runs.
+    if run.status == "running" and run.unit is None and run.pid:
+        run.unit = process_unit(run.pid)
     if run.finished_at is None and run.status != "running":
         try:
             run.finished_at = _private_mtime(raw_events_path(run.run_id))
@@ -1450,11 +1528,9 @@ def _derive(run: AgentRun) -> AgentRun:
     # Persist whatever we healed — status included. The panel reads these files directly and does
     # its own (downgrade-only) liveness check, so a status left stale on disk reappears there as
     # "crashed" no matter what Python worked out in memory.
-    owned = ("project", "status", "finished_at", "cost_usd", *TOKEN_FIELDS, "last")
-    updates = {
-        field: getattr(run, field) for field in owned
-        if getattr(run, field) != original.get(field)
-    }
+    owned = {"project", "status", "finished_at", "cost_usd", *TOKEN_FIELDS, "last", "unit", "interruption"}
+    healed = run.model_dump(mode="json", include=owned)
+    updates = {field: value for field, value in healed.items() if value != original.get(field)}
     if updates:
         current = _update_fields(
             run.run_id, updates,
@@ -1530,6 +1606,31 @@ def running_runs() -> list[AgentRun]:
         return []
     runs = (_stat_cached_record(path) for path in sorted(d.glob("*.json")))
     return [run for run in runs if run is not None and _status_for(run) == "running"]
+
+
+def settle_gone() -> list[AgentRun]:
+    """Settle every record that still claims a process which is gone (or whose pid now belongs to another
+    program, or is a zombie nobody collected): `_derive` writes `done` / `failed` when its own stream
+    said so, else `crashed` with the system's cause (`Interruption`). The machine daemon runs it every
+    minute, so a run killed while nothing watched it (out of memory, `kill -9`, a crash) never reads
+    « running » for long. Reads only records that moved, like `running_runs`. Returns the runs it changed."""
+    d = agents_dir()
+    if not d.exists():
+        return []
+    settled = []
+    for path in sorted(d.glob("*.json")):
+        run = _stat_cached_record(path)
+        if run is None or run.status not in ("starting", "running"):
+            continue
+        if _status_for(run) == run.status:
+            if run.unit is None and run.pid and (unit := process_unit(run.pid)) is not None:
+                # Launched before units were recorded: learn it while the process is still there.
+                _update_fields(run.run_id, {"unit": unit}, expected={"pid": run.pid})
+            continue
+        healed = _derive(run.model_copy())  # `_derive` heals in place: the cached record stays as read
+        if healed.status != run.status:
+            settled.append(healed)
+    return settled
 
 
 def trees(root_run_ids: frozenset[str]) -> list[AgentRun]:

@@ -247,13 +247,40 @@ def process_started(pid: int) -> int | None:
     no such record here (macOS)."""
     if sys.platform == "win32":
         return _started_windows(pid)
+    fields = _stat_fields(pid)
+    return int(fields[19]) if fields is not None and len(fields) > 19 else None  # field 22, `starttime`
+
+
+def process_exited(pid: int) -> bool:
+    """Whether `pid` is a process that has EXITED but still holds its pid: a zombie its parent has not
+    collected yet (Linux state Z, or X while being removed). Every pid probe (`kill(pid, 0)`, `/proc/<pid>`)
+    still finds it, so a liveness test without this keeps a finished run « running » for as long as its
+    parent never waits on it. False where there is no `/proc` (it cannot tell)."""
+    fields = _stat_fields(pid)
+    return fields is not None and bool(fields) and fields[0] in ("Z", "X")
+
+
+def process_unit(pid: int) -> str | None:
+    """The systemd unit holding `pid` (a `run-….scope` / `….service`), from its cgroup v2 path: the journal
+    records how that unit ENDED (out of memory, a failure) under its name, never under the pid. None off
+    systemd, for a pid already gone, or in a cgroup no unit owns."""
+    try:
+        lines = Path(f"/proc/{pid}/cgroup").read_text().splitlines()
+    except OSError:
+        return None
+    path = next((line.partition("::")[2] for line in lines if line.startswith("0::")), "")
+    leaf = path.rstrip("/").rpartition("/")[2]
+    return leaf if leaf.endswith((".scope", ".service")) else None
+
+
+def _stat_fields(pid: int) -> list[str] | None:
+    """`/proc/<pid>/stat` from field 3 (`state`) on, or None when it cannot be read."""
     try:
         stat_line = Path(f"/proc/{pid}/stat").read_text()
     except OSError:
         return None
     # `comm` (field 2) may hold spaces and parentheses: fields restart after its last ')'.
-    fields = stat_line.rpartition(")")[2].split()
-    return int(fields[19]) if len(fields) > 19 else None  # field 22, `starttime`
+    return stat_line.rpartition(")")[2].split()
 
 
 def _started_windows(pid: int) -> int | None:
