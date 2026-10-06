@@ -190,12 +190,14 @@ class Config(BaseSettings):
     detection_max_retries: int = 3  # judge-driven re-detection passes to recover missed elements
     # Every agent interact starts, with everything it runs (MCP servers, browsers, test workers,
     # dev servers), shares ONE systemd user slice capped at these shares of the machine, so agents
-    # together can never starve the desktop: the kernel throttles them past `high`, and the OOM
-    # killer takes an agent before the editor. Linux with a systemd user manager; elsewhere the
-    # agent runs uncapped. Percent of physical RAM / of all CPU cores.
+    # together can never starve the desktop, and each run sits in its own scope under its own cap,
+    # so one run's memory cannot kill another (`interact.agents.ceiling`). Linux with a systemd user
+    # manager; elsewhere the agent runs uncapped. Percent of physical RAM / of all CPU cores.
     agent_ceiling: bool = True
-    agent_memory_high_percent: Annotated[int, Field(ge=1, le=100)] = 40
-    agent_memory_max_percent: Annotated[int, Field(ge=1, le=100)] = 50
+    agent_memory_max_percent: Annotated[int, Field(ge=1, le=100)] = 45
+    agent_run_memory_max_percent: Annotated[int, Field(ge=1, le=100)] = 20
+    # systemd-oomd ends a run only when the agents' slice stalls this share of the time on memory.
+    agent_oomd_pressure_percent: Annotated[int, Field(ge=1, le=100)] = 80
     agent_cpu_percent: Annotated[int, Field(ge=1, le=100)] = 75
     # Relative to the desktop's default 100: under contention the editor gets 5x the CPU.
     agent_cpu_weight: Annotated[int, Field(ge=1, le=10000)] = 20

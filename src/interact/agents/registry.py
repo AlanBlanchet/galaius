@@ -122,9 +122,11 @@ class Interruption(BaseModel):
     #: `journal` = the system recorded it; `observed` = noticed missing, so `at` is an upper bound.
     source: Literal["journal", "observed"]
 
-    #: The unit's ending lines: `Failed with result 'oom-kill'` and systemd-oomd's « killed N process(es) ».
+    #: The unit's ending lines: `Failed with result 'oom-kill'`, systemd-oomd's « killed N process(es) »,
+    #: and the kernel's « A process of this unit has been killed by the OOM killer » (a run scope with
+    #: `OOMPolicy=continue` loses that one process and does not fail).
     _OOM_RESULT: ClassVar[str] = "oom-kill"
-    _OOMD_KILLED: ClassVar[str] = "d989611b15e44c9dbf31e3c81256e4ed"
+    _OOM_KILLED: ClassVar[frozenset[str]] = frozenset({"d989611b15e44c9dbf31e3c81256e4ed", "fe6faa94e7774663a0da52717891d8ef"})
     #: systemd's « Started <unit> » line: about the unit, never about how it ended.
     _STARTED: ClassVar[str] = "39f53479d3a045ac8e11786248231fbf"
     _JOURNAL_TIMEOUT: ClassVar[float] = 5.0
@@ -136,7 +138,7 @@ class Interruption(BaseModel):
         ended = [line for line in lines if line.get("MESSAGE_ID") != cls._STARTED]
         if not ended:
             return cls(cause="process_gone", at=now, source="observed")
-        oom = any(line.get("UNIT_RESULT") == cls._OOM_RESULT or line.get("MESSAGE_ID") == cls._OOMD_KILLED for line in ended)
+        oom = any(line.get("UNIT_RESULT") == cls._OOM_RESULT or line.get("MESSAGE_ID") in cls._OOM_KILLED for line in ended)
         at = max(int(line.get("__REALTIME_TIMESTAMP") or 0) for line in ended) / 1e6
         return cls(cause="out_of_memory" if oom else "process_gone", at=at or now, source="journal")
 

@@ -552,10 +552,13 @@ _STARTED = {"MESSAGE_ID": "39f53479d3a045ac8e11786248231fbf", "__REALTIME_TIMEST
 _OOMD = {"MESSAGE_ID": "d989611b15e44c9dbf31e3c81256e4ed", "__REALTIME_TIMESTAMP": "1791288056578685"}
 _FAILED_OOM = {"MESSAGE_ID": "d9b373ed55a64feb8242e02dbe79a49c", "UNIT_RESULT": "oom-kill", "__REALTIME_TIMESTAMP": "1791288056853530"}
 _CONSUMED = {"MESSAGE_ID": "ae8f7b866b0347b9af31fe1c80b127c0", "__REALTIME_TIMESTAMP": "1791288056854595"}
+#: The kernel's kill inside a scope that keeps running (`OOMPolicy=continue`): no failed result follows.
+_KERNEL_OOM = {"MESSAGE_ID": "fe6faa94e7774663a0da52717891d8ef", "__REALTIME_TIMESTAMP": "1791288056578685"}
 
 
 @pytest.mark.parametrize("lines, cause, source, at", [
     pytest.param([_STARTED, _OOMD, _FAILED_OOM, _CONSUMED], "out_of_memory", "journal", 1791288056.854595, id="oomd_killed"),
+    pytest.param([_STARTED, _KERNEL_OOM, _CONSUMED], "out_of_memory", "journal", 1791288056.854595, id="kernel_killed_in_scope"),
     pytest.param([_STARTED, _CONSUMED], "process_gone", "journal", 1791288056.854595, id="scope_ended"),
     pytest.param([_STARTED], "process_gone", "observed", 5.0, id="no_ending_in_journal"),
     pytest.param([], "process_gone", "observed", 5.0, id="journal_unreadable"),
