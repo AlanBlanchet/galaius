@@ -491,8 +491,7 @@ def publish(endpoint: str, token_file: Path) -> None:
 
 
 def _mirror_root() -> Path:
-    configured = os.environ.get("INTERACT_PROMPT_MIRROR_ROOT")
-    return Path(configured) if configured else Path.home() / "galaius"
+    return prompt_mirror.mirror_root()
 
 
 def _workspaces(server: ServerPrompts) -> tuple[prompt_mirror.PromptWorkspace, ...]:
@@ -564,28 +563,17 @@ def refs(*roles: str, paradigms: str | None = None, skills: str | None = None) -
 
 
 def _sync_server(server: ServerPrompts) -> None:
-    """Mirror every readable workspace into its folder, then install the active one's prompts.
-    A PC that never chose and holds exactly one company grant runs on that company."""
-    if server.connection.auth_mode == "machine":
-        values = _workspaces(server)
-        granted = [value for value in values if not value.link]
-        readable = {value.workspace_id for value in values}
-        if not CatalogConnection.path().exists() and len(granted) == 1:
-            server = ServerPrompts(connection=server.connection.model_copy(update={"workspace_id": granted[0].workspace_id}))
-            server.connection.save()
-        elif server.connection.workspace_id not in readable and values:  # its grant was withdrawn: back to the PC's own
-            print(f"{server.connection.workspace_id} no longer lets this PC read its prompts; using {values[0].name}", file=sys.stderr)
-            server = ServerPrompts(connection=server.connection.model_copy(update={"workspace_id": values[0].workspace_id}))
-            server.connection.save()
-        places = prompt_mirror.folders(values)
-        for value in values:
-            try:
-                count = prompt_mirror.mirror(_mirror_root(), server.connection, value, places[value.workspace_id])
-            except (OSError, ValueError, httpx.HTTPError) as error:
-                _editor_error(f"Cannot mirror {value.name}: {error}")
-            print(f"{_mirror_root().joinpath(*places[value.workspace_id])}: {count} prompt(s)"
-                  f"{' (active)' if value.workspace_id == server.connection.workspace_id else ''}", file=sys.stderr)
-    print(PromptMode.project(server, install=True))
+    """Mirror every readable workspace, then install the active one's prompts (`prompt_mirror.sync`)."""
+    if server.connection.auth_mode != "machine":
+        print(PromptMode.project(server, install=True))
+        return
+    try:
+        report = prompt_mirror.sync(server.connection, _mirror_root(), PromptMode.installed)
+    except (OSError, ValueError, httpx.HTTPError) as error:
+        _editor_error(f"Prompt sync failed: {error}")
+    for line in report.notes:
+        print(line, file=sys.stderr)
+    print(report.projection)
 
 
 @prompts_app.command

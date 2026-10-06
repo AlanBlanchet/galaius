@@ -26,12 +26,16 @@ from typing import ClassVar, Literal, Self
 from urllib.parse import urlencode, urlsplit, urlunsplit
 from uuid import UUID, uuid4
 
+import httpx
 import websockets
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, ValidationError, field_validator, model_validator
 
 from interact_core import MACHINE_AGENT_REQUESTS, MACHINE_MODELS, MachineAgentSettings, MachineAgentSettingsState, MachineAgentSettingsUpdate, PlacePath, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, MachineAgentAnswer, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachinePlaceChange, MachineRuntime, PlaceLevel, ScriptFile, ScriptLanguage, UserModelOrigin
 from interact import USER_AGENT
+from interact import prompt_mirror
 from interact.agents.catalog import AgentCatalog
+from interact.agents.catalog_connection import CatalogConnection
+from interact.cli.prompts import PromptMode
 from interact.agents import providers as agent_providers
 from interact.file_lock import exclusive
 from interact.private_files import PRIVATE_FILES
@@ -791,6 +795,9 @@ class ScriptExecution(BaseModel):
 
 class MachineRunner:
     heartbeat_seconds = 3
+    #: How often this PC checks whether the prompts it runs changed (a company granted or withdrew
+    #: it, a prompt or agent was saved); a check is one 304 per workspace when nothing moved.
+    prompt_sync_seconds = 300
     reconnect_seconds = (1, 2, 5, 10, 20)
 
     def __init__(self, config_path: Path | None = None) -> None:
@@ -938,6 +945,7 @@ class MachineRunner:
         worker = asyncio.create_task(self._command_worker(socket, config, commands))
         heartbeat = asyncio.create_task(self._heartbeat(socket, config))
         upgrade = asyncio.create_task(self._leave_when_quiet(commands))
+        prompts = asyncio.create_task(self._sync_prompts())
         try:
             done, _ = await asyncio.wait((receiver, worker, heartbeat, upgrade), return_when=asyncio.FIRST_COMPLETED)
             for task in done:
@@ -947,12 +955,13 @@ class MachineRunner:
             receiver.cancel()
             heartbeat.cancel()
             upgrade.cancel()
+            prompts.cancel()
             while not commands.empty():
                 commands.get_nowait()
             commands.put_nowait(None)
             for query in self._queries:
                 query.cancel()
-            await asyncio.gather(receiver, heartbeat, upgrade, *self._queries, return_exceptions=True)
+            await asyncio.gather(receiver, heartbeat, upgrade, prompts, *self._queries, return_exceptions=True)
             await asyncio.shield(worker)
 
     async def _command_worker(self, socket, config: MachineConfig, commands: asyncio.Queue[MachineCommand | None]) -> None:
@@ -1709,6 +1718,22 @@ class MachineRunner:
         if sys.platform != "darwin" or platform.machine() != "arm64":
             return ()
         return (MachineAccelerator(kind="mps", name="Apple GPU", memory_mb=0),)
+
+    async def _sync_prompts(self) -> None:
+        """Keep this PC's agents on the prompts of the workspace it runs, and its ~/galaius copies
+        current, without anyone running `interact prompts sync` (`prompt_mirror.sync`). A failed
+        check is logged and retried next round; it never touches the machine channel."""
+        seen: dict[UUID, str] = {}
+        while True:
+            try:
+                connection = CatalogConnection.load()
+                if connection is not None and connection.auth_mode == "machine" and await asyncio.to_thread(prompt_mirror.changed, connection, seen):
+                    report = await asyncio.to_thread(prompt_mirror.sync, connection, prompt_mirror.mirror_root(), PromptMode.installed)
+                    logger.info("prompts synced: %s", "; ".join(report.notes))
+            except (OSError, ValueError, httpx.HTTPError) as error:
+                seen.clear()
+                logger.warning("prompt sync failed: %s", error)
+            await asyncio.sleep(self.prompt_sync_seconds)
 
     async def _heartbeat(self, socket, config: MachineConfig) -> None:
         while True:
