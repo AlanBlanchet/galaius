@@ -4,6 +4,11 @@ Notable changes to **galaius** (named interact before 2026-10-07). Follows [Sema
 [Keep a Changelog](https://keepachangelog.com). Releases are cut from `main` (and `release/X.Y`
 maintenance branches) — see [RELEASING.md](RELEASING.md).
 
+## 0.44.1 — 2026-10-07
+
+- `galaius migrate` moves the former folders' entries into a galaius folder the installer already
+  started (its `login-server`, its uv); only a name both hold is left for the person.
+
 ## 0.44.0 — 2026-10-07
 
 - Renamed interact → galaius: the package, the `galaius` command, the `galaius` MCP server (tools

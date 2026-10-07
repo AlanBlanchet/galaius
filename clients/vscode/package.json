@@ -2,7 +2,7 @@
   "name": "galaius",
   "displayName": "Galaius",
   "description": "Galaius — browser + desktop automation via an MCP server",
-  "version": "0.44.0",
+  "version": "0.44.1",
   "preview": true,
   "publisher": "AlanBlanchet",
   "icon": "icon.png",

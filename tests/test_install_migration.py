@@ -34,8 +34,13 @@ def test_state_settings_and_registration_move_once(home):
     assert {step.outcome for step in again} <= {"already", "absent", "manual"}
 
 
-def test_both_folders_present_moves_nothing(home):
+def test_a_folder_the_installer_started_takes_the_former_entries(home):
+    (home / ".config" / "galaius").mkdir(parents=True)
+    (home / ".config" / "galaius" / "login-server").write_text("https://galaius.ai\n")
     (home / ".galaius").mkdir()
+    (home / ".galaius" / "config.env").write_text("GALAIUS_IMAGE_MODEL=y\n")
     steps = {step.name: step for step in InstallMigration(home=home).move_folders()}
-    assert steps[str(home / ".galaius")].outcome == "conflict"
-    assert (home / ".interact" / "config.env").exists()
+    assert steps[str(home / ".config" / "galaius")].outcome == "done" and not (home / ".config" / "interact").exists()
+    assert sorted(path.name for path in (home / ".config" / "galaius").iterdir()) == ["login-server", "machine.json"]
+    assert steps[str(home / ".galaius")].outcome == "conflict" and "config.env" in steps[str(home / ".galaius")].detail
+    assert (home / ".interact" / "config.env").exists() and (home / ".galaius" / "config.env").read_text() == "GALAIUS_IMAGE_MODEL=y\n"

@@ -48,16 +48,28 @@ class InstallMigration(BaseModel):
         return [(path.with_name(path.name.replace(self.current, self.former)), path) for path in current]
 
     def move_folders(self) -> list[Step]:
+        """Each former folder becomes the current one; one the installer already started (its
+        `login-server`, its own uv) takes the former's entries it lacks, and a name both hold is left
+        for the person."""
         steps = []
         for former, current in self.folders():
             if not former.exists():
                 steps.append(Step(name=str(current), outcome="already" if current.exists() else "absent"))
-            elif current.exists():
-                steps.append(Step(name=str(current), outcome="conflict", detail=f"both {former} and {current} exist; nothing moved — keep one, delete the other, run `galaius migrate` again"))
-            else:
-                current.parent.mkdir(parents=True, exist_ok=True)
+                continue
+            current.parent.mkdir(parents=True, exist_ok=True)
+            if not current.exists():
                 os.replace(former, current)
                 steps.append(Step(name=str(current), outcome="done", detail=f"moved from {former}"))
+                continue
+            both = sorted(entry.name for entry in former.iterdir() if (current / entry.name).exists())
+            for entry in former.iterdir():
+                if entry.name not in both:
+                    os.replace(entry, current / entry.name)
+            if both:
+                steps.append(Step(name=str(current), outcome="conflict", detail=f"{', '.join(both)} in both {former} and {current}; the rest moved — keep one of each, delete the other, run `galaius migrate` again"))
+            else:
+                former.rmdir()
+                steps.append(Step(name=str(current), outcome="done", detail=f"merged from {former}"))
         return steps
 
     def rename_settings(self) -> Step:
