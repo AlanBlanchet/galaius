@@ -1,10 +1,10 @@
 # Changelog
 
-Notable changes to **galaius** (named interact before 2026-10-03). Follows [Semantic Versioning](https://semver.org) and
+Notable changes to **galaius** (named interact before 2026-10-07). Follows [Semantic Versioning](https://semver.org) and
 [Keep a Changelog](https://keepachangelog.com). Releases are cut from `main` (and `release/X.Y`
 maintenance branches) — see [RELEASING.md](RELEASING.md).
 
-## Unreleased
+## 0.44.0 — 2026-10-07
 
 - Renamed interact → galaius: the package, the `galaius` command, the `galaius` MCP server (tools
   `mcp__galaius__*`), `GALAIUS_*` settings, `~/.galaius` and the `galaius-core` dependency.

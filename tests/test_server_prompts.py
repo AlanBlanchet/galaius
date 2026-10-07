@@ -37,7 +37,7 @@ def remote_prompts(tmp_path, monkeypatch):
              "token": uuid4().hex}
     bootstrap = Bootstrap(
         account=Account(account_id=uuid4(), email="fixture@example.invalid", locale="en", verified=True),
-        workspaces=(Workspace(workspace_id=connection.workspace_id, name="Fixture", role="owner"),),
+        workspaces=(Workspace(workspace_id=connection.workspace_id, name="Fixture", role="owner", kind="personal"),),
         current_workspace_id=connection.workspace_id, csrf_token="synthetic-csrf",
         session_expires_at=datetime.now(UTC) + timedelta(hours=1),
     )

@@ -30,7 +30,7 @@ def workspace_server(tmp_path, monkeypatch):
     child = root.model_copy(update={"id": uuid4(), "revision": uuid4(), "name": "Child", "role_key": "child", "reports_to": root.id})
     graph = AgentGraph(revision="a" * 64, root_agent=AgentRevisionRef(id=root.id, revision=root.revision), agents=(root, child))
     bootstrap = Bootstrap(account=Account(account_id=uuid4(), email="fixture@example.invalid", locale="en", verified=True),
-                          workspaces=(Workspace(workspace_id=connection.workspace_id, name="Fixture", role="owner"),),
+                          workspaces=(Workspace(workspace_id=connection.workspace_id, name="Fixture", role="owner", kind="personal"),),
                           current_workspace_id=connection.workspace_id, csrf_token="synthetic-csrf",
                           session_expires_at=datetime.now(UTC) + timedelta(hours=1))
     state = {"graph": graph, "requests": [], "failure": None, "connection": connection, "bootstrap": bootstrap,
@@ -229,7 +229,7 @@ def test_approve_script_posts_the_exact_digest_with_owner_csrf(tmp_path, monkeyp
         if request.url.path == "/v1/bootstrap":
             return httpx.Response(200, content=Bootstrap(
                 account=Account(account_id=uuid4(), email="fixture@example.invalid", locale="en", verified=True),
-                workspaces=(Workspace(workspace_id=workspace_id, name="Fixture", role="owner"),),
+                workspaces=(Workspace(workspace_id=workspace_id, name="Fixture", role="owner", kind="personal"),),
                 current_workspace_id=workspace_id, csrf_token=fixture_csrf,
                 session_expires_at=datetime.now(UTC) + timedelta(hours=1),
             ).model_dump_json())
