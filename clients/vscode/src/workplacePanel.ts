@@ -45,7 +45,7 @@ export class WorkplacePanel {
     private readonly store?: vscode.Memento,
   ) {
     this.panel.onDidDispose(() => this.dispose());
-    // One column for interact's surfaces: a new one joins the group its siblings already
+    // One column for galaius's surfaces: a new one joins the group its siblings already
     // hold rather than opening yet another beside your code.
     claimColumn("workplace", this.panel.viewColumn);
     // A click in the room aims the side-bar Chat at that agent: the workplace is where you SEE
@@ -66,14 +66,14 @@ export class WorkplacePanel {
         // given, rather than dropping you into whichever single run happened to speak for it.
         // A READY character has no real run behind it — its id names the agent directly.
         if (runId.startsWith("decl:")) {
-          void vscode.commands.executeCommand("interact.agents.agent", runId.slice(5));
+          void vscode.commands.executeCommand("galaius.agents.agent", runId.slice(5));
           return;
         }
         const run = readAgentRuns().find((r) => r.run_id === runId);
         const company = companyOf(readOrg()) ?? undefined;
         const who = run ? roleOf(run as never, company) : null;
-        if (who && !who.plain) void vscode.commands.executeCommand("interact.agents.agent", who.id);
-        else void vscode.commands.executeCommand("interact.agents.chat", runId);
+        if (who && !who.plain) void vscode.commands.executeCommand("galaius.agents.agent", who.id);
+        else void vscode.commands.executeCommand("galaius.agents.chat", runId);
         return;
       }
       // The roster shares this document now, so its buttons arrive here too. Routed through the
@@ -91,18 +91,18 @@ export class WorkplacePanel {
             const company = companyOf(readOrg()) ?? undefined;
             const who = roleOf(run as never, company);
             if (!who.plain) {
-              void vscode.commands.executeCommand("interact.agents.agent", who.id);
+              void vscode.commands.executeCommand("galaius.agents.agent", who.id);
               return;
             }
           }
-          void vscode.commands.executeCommand("interact.agents.chat", id);
+          void vscode.commands.executeCommand("galaius.agents.chat", id);
         },
         agent: (id) => {
           this.inside = id;
           this.pushRoster();
           // "on the sidepanel, we should be able to view what TASKS an agent was given" — clicking
           // the role opens that depth beside the room rather than only narrowing the list here.
-          if (id) void vscode.commands.executeCommand("interact.agents.agent", id);
+          if (id) void vscode.commands.executeCommand("galaius.agents.agent", id);
         },
         act: (command, id) => {
           const run = readAgentRuns().find((r) => r.run_id === id);
@@ -117,7 +117,7 @@ export class WorkplacePanel {
   /** Where the chosen roster view is remembered. "store in configs (cache) so it reuses the same
    *  next time" — the same memento the agents tree already keeps its grouping in, so a preference
    *  survives a window close without inventing a second place for UI state to live. */
-  private static readonly VIEW_KEY = "interact.workplace.rosterView";
+  private static readonly VIEW_KEY = "galaius.workplace.rosterView";
 
   /** The chosen view, this session at minimum. Held in a FIELD as well as the memento: with only
    *  this.store?.update(...) a missing memento made the whole chooser inert — the write was
@@ -138,8 +138,8 @@ export class WorkplacePanel {
       return;
     }
     const panel = vscode.window.createWebviewPanel(
-      "interact.workplace",
-      "Interact — Team",
+      "galaius.workplace",
+      "Galaius — Team",
       nextColumn() as vscode.ViewColumn,
       { enableScripts: true, retainContextWhenHidden: true },
     );

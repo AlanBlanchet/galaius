@@ -24,7 +24,7 @@ from gi.repository import Gtk, Gdk
 
 class TestWindow(Gtk.Window):
     def __init__(self):
-        super().__init__(title="Interact Test")
+        super().__init__(title="Galaius Test")
         self.set_default_size(420, 480)
 
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -36,7 +36,7 @@ class TestWindow(Gtk.Window):
 
         # --- Header ---
         label = Gtk.Label()
-        label.set_markup("<b>Interact MCP Test</b>")
+        label.set_markup("<b>Galaius MCP Test</b>")
         root.pack_start(label, False, False, 0)
 
         # --- Status bar (shows last action) ---

@@ -15,9 +15,9 @@ from datetime import date, timedelta
 
 import pytest
 
-from interact.models import Benchmark, Model, ModelCapability
-from interact.criteria import Criteria, CriteriaError, Variables
-from interact.agents.protocol import ConversationRoute, ModelSelection
+from galaius.models import Benchmark, Model, ModelCapability
+from galaius.criteria import Criteria, CriteriaError, Variables
+from galaius.agents.protocol import ConversationRoute, ModelSelection
 
 from tests.support.models import catalog_of
 
@@ -104,7 +104,7 @@ def test_it_selects_the_cheapest_model_that_clears_the_bar(registry):
 
 
 def test_bare_intelligence_excludes_snapshot_scores_outside_the_current_board(monkeypatch):
-    from interact import model_catalog
+    from galaius import model_catalog
 
     monkeypatch.setattr(model_catalog, "live_scores", lambda: {"current": 40.0})
     with catalog_of(
@@ -254,7 +254,7 @@ def test_unknown_never_qualifies_and_nothing_matching_refuses_loudly(registry):
 
 
 def test_a_criterion_where_a_model_id_goes_resolves_before_the_cli_sees_it(registry):
-    from interact.agents.run import resolve_model
+    from galaius.agents.run import resolve_model
 
     _, name = resolve_model("claude-sonnet-5", {})
     assert name == "claude-sonnet-5", "an id passes through untouched"
@@ -264,7 +264,7 @@ def test_a_criterion_where_a_model_id_goes_resolves_before_the_cli_sees_it(regis
 
 
 def test_a_criterion_that_matches_nothing_refuses_loudly(registry):
-    from interact.agents.run import ModelUnavailable, resolve_model
+    from galaius.agents.run import ModelUnavailable, resolve_model
 
     with pytest.raises(ModelUnavailable) as e:
         resolve_model("aa.intelligence > 999", {}, available_only=False)
@@ -272,7 +272,7 @@ def test_a_criterion_that_matches_nothing_refuses_loudly(registry):
 
 
 def test_the_catalog_loads_itself_in_a_process_that_never_asked_for_it():
-    """The CLI spawn path never imported `interact.runtime`, so the catalog was EMPTY there and
+    """The CLI spawn path never imported `galaius.runtime`, so the catalog was EMPTY there and
     every criterion died with "no model is configured at all" — while these tests passed, because
     conftest loads the catalog for them. A fresh interpreter is the only faithful stand-in for
     the CLI process: nothing here may pre-load anything."""
@@ -280,7 +280,7 @@ def test_the_catalog_loads_itself_in_a_process_that_never_asked_for_it():
     import sys
 
     code = (
-        "from interact.agents.run import resolve_model; "
+        "from galaius.agents.run import resolve_model; "
         "print(resolve_model('aa.intelligence >= 30', {}, available_only=False)[1])"
     )
     run = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120)
@@ -291,10 +291,10 @@ def test_the_catalog_loads_itself_in_a_process_that_never_asked_for_it():
 def test_a_criterion_only_picks_what_the_vendor_cli_can_run(monkeypatch):
     """`@eyes` resolved to a Gemini id and was handed to the claude binary — structurally
     unrunnable. The pool a vendor CLI chooses from is what THAT CLI can be pointed at: its own
-    vendor's models through its own login, or a model interact can route it to (ollama, when its
+    vendor's models through its own login, or a model galaius can route it to (ollama, when its
     key or daemon is there) — never a cheaper model from a provider it cannot reach."""
-    from interact.agents.providers import provider_for
-    from interact.agents.run import ModelUnavailable, resolve_model
+    from galaius.agents.providers import provider_for
+    from galaius.agents.run import ModelUnavailable, resolve_model
 
     claude, codex = provider_for("claude"), provider_for("codex")
     with catalog_of(
@@ -323,7 +323,7 @@ def test_a_model_states_its_competence_with_the_source_and_the_field_it_ranks_in
     models that carry the same measure — a comparison, explicitly not a verdict. A model nobody
     scored says so rather than reading as a zero.
     """
-    from interact.models import Model
+    from galaius.models import Model
 
     with catalog_of(
         Model(id="big", provider="anthropic", capabilities=set(), intelligence_score=60.0),
@@ -437,7 +437,7 @@ def test_nonnegative_price_guards_do_not_hide_a_scored_unpriced_model(registry, 
     new provider has already published both prices. Explicit upper bounds still reject unknown
     prices; only the zero lower-bound guard is open-ended."""
     monkeypatch.setattr(
-        "interact.criteria.model_catalog.live_scores",
+        "galaius.criteria.model_catalog.live_scores",
         lambda: {"priced": 10.0, "new-and-unpriced": 90.0},
     )
     with catalog_of(
@@ -453,12 +453,12 @@ def test_nonnegative_price_guards_do_not_hide_a_scored_unpriced_model(registry, 
 
 
 def test_pricing_the_ranked_models_is_cached_so_no_command_pays_for_litellm(monkeypatch, tmp_path):
-    """`interact.models` is on the import path of EVERY CLI command, and importing litellm costs
+    """`galaius.models` is on the import path of EVERY CLI command, and importing litellm costs
     ~2.5 s. Pricing the board's models against it once a day is the difference between a live
     catalog and a tool that got slower for everyone who never asked."""
     import sys
 
-    from interact import model_catalog as mcat
+    from galaius import model_catalog as mcat
 
     board = tmp_path / "board.json"
     board.write_text(json.dumps({"scores": [
@@ -501,7 +501,7 @@ def test_a_percentile_is_read_against_the_variable_s_OWN_source(monkeypatch, tmp
     which is the same "two sources, one number" bug that put two tabs of one window into open
     disagreement about which model leads.
     """
-    from interact import model_catalog as mcat
+    from galaius import model_catalog as mcat
 
     board = tmp_path / "board.json"
     board.write_text(json.dumps({"scores": [
@@ -532,8 +532,8 @@ def test_every_variable_reads_its_percentile_against_its_own_leaderboard(registr
     SAME table the score is read from, or `90%` is the 90th percentile of a board nobody was
     scored on.
     """
-    from interact import benchmark_tables
-    from interact.benchmarks.published import PublishedEntry, PublishedTable
+    from galaius import benchmark_tables
+    from galaius.benchmarks.published import PublishedEntry, PublishedTable
 
     # No live table: the bundled snapshot IS this fixture's board, so the assertion cannot depend
     # on whatever this machine last fetched.
@@ -613,7 +613,7 @@ def test_the_measure_names_its_source_from_the_registry(registry):
     `competence()` held `source = "Artificial Analysis"` inline, so a second board supplying the
     same field would still have been announced as the first one's.
     """
-    from interact.criteria import Variables
+    from galaius.criteria import Variables
 
     variable = Variables.by_name("aa.intelligence")
     assert variable is not None and variable.source, "the registry owns the source name"

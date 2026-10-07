@@ -16,8 +16,8 @@ from pathlib import Path
 
 import pytest
 
-from interact import model_catalog as mc
-from interact.ttl_cache import describe_age
+from galaius import model_catalog as mc
+from galaius.ttl_cache import describe_age
 from tests.support.models import catalog_of
 
 
@@ -139,8 +139,8 @@ def test_freshness_renders_for_a_human():
 def test_the_catalog_carries_each_model_s_capability_score_for_the_pickers():
     """The panel's model picker reads this catalog, so the score has to travel on it — otherwise
     a picker row can only show a name, and the choice cannot be a comparison."""
-    from interact.model_catalog import ModelInfo, _with_scores
-    from interact.models import Model
+    from galaius.model_catalog import ModelInfo, _with_scores
+    from galaius.models import Model
 
     with catalog_of(
         Model(id="known", provider="anthropic", capabilities=set(), intelligence_score=42.0),
@@ -155,7 +155,7 @@ def test_live_leaderboard_scores_outrank_the_baked_snapshot(tmp_path, monkeypatc
     saying something else. One tab of the panel called a model first at 60.2 while the tab beside
     it had that model at 38.6 and a different leader. A displayed external fact reads from the live
     source when there is one; the baked value is the fallback, never the contradiction."""
-    from interact.model_catalog import live_scores
+    from galaius.model_catalog import live_scores
 
     board = tmp_path / "benchmark_scores.json"
     board.write_text(json.dumps({"source": "artificial_analysis", "fetched_at": 1.0, "scores": [
@@ -178,8 +178,8 @@ def test_catalog_scores_follow_the_live_board_not_the_shipped_snapshot(tmp_path,
     """End to end: a model the live board measures takes THAT number, whatever the package baked.
     Ranking on the snapshot is how the picker came to call a model first at 60.2 while the panel's
     own Benchmarks tab, reading the live fetch, had it at 38.6 behind a different leader."""
-    from interact import model_catalog as mcat
-    from interact.models import Model
+    from galaius import model_catalog as mcat
+    from galaius.models import Model
 
     board = tmp_path / "benchmark_scores.json"
     board.write_text(json.dumps({"scores": [
@@ -210,7 +210,7 @@ def test_the_id_normalizer_is_held_to_the_table_its_typescript_twin_reads():
     the score lookup and to the merge that fills the catalog. Both suites now read THIS file, so a
     pair can only be changed for both at once.
     """
-    from interact.model_catalog import bare_model_name
+    from galaius.model_catalog import bare_model_name
 
     table = json.loads((Path(__file__).parent / "data" / "bare_model_names.json").read_text())
     for model_id, expected in table["pairs"].items():

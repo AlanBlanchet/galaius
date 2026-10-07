@@ -9,8 +9,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from PIL import Image as PILImage
 
-import interact.server.vlm as server_vlm
-from interact.vision import MediaItem, VLMResult
+import galaius.server.vlm as server_vlm
+from galaius.vision import MediaItem, VLMResult
 
 
 def _jpeg_bytes() -> bytes:
@@ -25,8 +25,8 @@ def _jpeg_bytes() -> bytes:
 
 @pytest.fixture
 def srv():
-    import interact.server as _srv
-    from interact.server import breaker
+    import galaius.server as _srv
+    from galaius.server import breaker
 
     breaker.clear()
     _srv.config.component_criteria = "cap.gui_grounding"

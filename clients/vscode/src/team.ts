@@ -74,7 +74,7 @@ export interface Worker {
   /** That department's room name, as the company file words it ("Finance Desk"). */
   room?: string;
   /** The orchestrator: the first agent YOU asked, which put the others to work. Exactly one per
-   *  team, never one of your own editor sessions — interact doesn't drive those, so crowning one
+   *  team, never one of your own editor sessions — galaius doesn't drive those, so crowning one
    *  would claim authority the view lacks. Without it every character ranked the same, so the
    *  building read as a bag of sprites, not a company. */
   brain?: boolean;

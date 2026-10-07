@@ -12,11 +12,11 @@ from unittest.mock import patch
 
 import pytest
 
-from interact.config import Config
-import interact.vision.core as vision
-import interact.vision.session as vision_session
-from interact.vision import evenly_sampled
-from interact.vision.core import _extract_frames
+from galaius.config import Config
+import galaius.vision.core as vision
+import galaius.vision.session as vision_session
+from galaius.vision import evenly_sampled
+from galaius.vision.core import _extract_frames
 
 
 @pytest.mark.asyncio
@@ -108,7 +108,7 @@ def test_evenly_sampled_is_evenly_spaced():
 async def test_record_analyzes_per_step_frames_capped_with_query():
     """record captures one frame per step; a long interaction is sampled to the frame budget and
     the whole sequence (carrying the query) goes to the video model — so it reads the flow."""
-    import interact.server as srv
+    import galaius.server as srv
 
     frames = [f"frame{i}".encode() for i in range(100)]  # 100 steps
     captured: dict = {}
@@ -129,7 +129,7 @@ async def test_record_analyzes_per_step_frames_capped_with_query():
 @pytest.mark.asyncio
 async def test_record_keeps_every_frame_for_short_interactions():
     """The common case — a short sequence keeps a frame for every step, nothing dropped."""
-    import interact.server as srv
+    import galaius.server as srv
 
     captured: dict = {}
 

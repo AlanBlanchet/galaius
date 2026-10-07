@@ -8,7 +8,7 @@ const md = (raw: string) => renderMarkdown(escapeHtml(raw));
 test("bold, italic and code stop arriving as punctuation", () => {
   assert.match(md("**done**"), /<strong>done<\/strong>/);
   assert.match(md("a *quiet* word"), /<em>quiet<\/em>/);
-  assert.match(md("run `interact doctor`"), /<code>interact doctor<\/code>/);
+  assert.match(md("run `galaius doctor`"), /<code>galaius doctor<\/code>/);
 });
 
 test("a findings list reads as a list", () => {

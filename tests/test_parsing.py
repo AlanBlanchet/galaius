@@ -1,10 +1,10 @@
-"""Parametrized tests for src/interact/parsing.py."""
+"""Parametrized tests for src/galaius/parsing.py."""
 
 from __future__ import annotations
 
 import pytest
 
-from interact.parsing import Parse
+from galaius.parsing import Parse
 
 
 @pytest.mark.parametrize(

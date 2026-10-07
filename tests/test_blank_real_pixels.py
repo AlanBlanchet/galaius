@@ -12,7 +12,7 @@ area on every page ever designed.
 
 import pytest
 
-from interact.vision.measure import blank_frame_reason
+from galaius.vision.measure import blank_frame_reason
 from tests.support import browser_manager
 
 # Each is (name, html, expect_blank). The sparse ones are the trap: almost all background.
@@ -25,7 +25,7 @@ PAGES = [
     ("mobile header only", """<style>body{margin:0;background:#fff;font:16px system-ui}
         header{padding:12px;border-bottom:1px solid #ddd}</style><header>Account</header>""", False),
     ("dark terminal, one line", """<style>body{margin:0;background:#1e1e1e;color:#d4d4d4;
-        font:13px monospace}</style><div>$ interact doctor</div>""", False),
+        font:13px monospace}</style><div>$ galaius doctor</div>""", False),
     ("truly empty white", "<style>body{margin:0;background:#fff}</style>", True),
     ("truly empty black", "<style>body{margin:0;background:#000}</style>", True),
     ("crashed-window grey", "<style>body{margin:0;background:#1f1f1f}</style>", True),

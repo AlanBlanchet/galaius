@@ -47,7 +47,7 @@ function executableCandidates(
   const seen = new Set<string>();
   for (const directory of searchPath.split(delimiter).filter(path.isAbsolute)) {
     for (const extension of extensions) {
-      const candidate = path.join(directory, `interact${extension}`);
+      const candidate = path.join(directory, `galaius${extension}`);
       try {
         fs.accessSync(candidate, fs.constants.X_OK);
         const canonical = fs.realpathSync(candidate);
@@ -77,7 +77,7 @@ export async function resolveConversationBackend(
     return {
       available: true,
       command: "uv",
-      args: ["run", "--directory", projectPath, "interact", ...args],
+      args: ["run", "--directory", projectPath, "galaius", ...args],
       origin: "project_checkout",
     };
   }
@@ -87,7 +87,7 @@ export async function resolveConversationBackend(
     options.pathExt ?? process.env.PATHEXT ?? ".EXE;.CMD;.BAT",
   );
   if (candidates.length === 0) {
-    return { available: false, reason: `Install interact ${options.extensionVersion}, then reload the window.` };
+    return { available: false, reason: `Install galaius ${options.extensionVersion}, then reload the window.` };
   }
   let observedVersion: string | undefined;
   for (const command of candidates) {
@@ -98,6 +98,6 @@ export async function resolveConversationBackend(
   const found = observedVersion ? `Found ${observedVersion}; ` : "The installed version could not be verified; ";
   return {
     available: false,
-    reason: `${found}interact ${options.extensionVersion} is required. Update it, then reload the window.`,
+    reason: `${found}galaius ${options.extensionVersion} is required. Update it, then reload the window.`,
   };
 }

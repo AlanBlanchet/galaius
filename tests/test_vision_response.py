@@ -1,7 +1,7 @@
 """What a vision-model response carries back across the seam: the schema request and the framing.
 
 Models that reject a native ``response_format`` (e.g. zai/GLM → litellm UnsupportedParamsError)
-must still run the structured tools: interact asks for JSON in the PROMPT instead of erroring into
+must still run the structured tools: galaius asks for JSON in the PROMPT instead of erroring into
 a frontier fallback. This is the bug behind "the sovereign tier silently falls back to gemini":
 review_ui selected GLM, GLM rejected response_format, and the chain dropped to gemini — so GLM
 never ran.
@@ -24,9 +24,9 @@ import pytest
 from PIL import Image as PILImage
 from pydantic import BaseModel
 
-import interact.server as srv
-import interact.vision.core as v
-from interact.vision.core import VLMResult
+import galaius.server as srv
+import galaius.vision.core as v
+from galaius.vision.core import VLMResult
 
 # A frame with CONTENT in it, not a flat fill (#112 short-circuits an empty frame before any
 # model call, which would make this assert on a chain that never ran).
@@ -108,9 +108,9 @@ async def test_the_model_is_told_it_can_only_look(monkeypatch):
 async def test_unset_sentinel_uses_config_max_tokens():
     """When max_tokens=_UNSET (default), analyze_media uses config.max_tokens."""
     from unittest.mock import AsyncMock
-    from interact.config import Config
-    from interact.vision import MediaItem
-    from interact.vision.core import _UNSET, analyze_media
+    from galaius.config import Config
+    from galaius.vision import MediaItem
+    from galaius.vision.core import _UNSET, analyze_media
 
     cfg = Config()
     media_item = [MediaItem.from_bytes(_PNG)]
@@ -118,9 +118,9 @@ async def test_unset_sentinel_uses_config_max_tokens():
     # model is now resolved at the boundary and passed in; analyze_media no longer reads
     # config.model_for. It still validates the key, so patch that True.
     with (
-        patch("interact.vision.core._vision_completion", mock_completion),
+        patch("galaius.vision.core._vision_completion", mock_completion),
         patch(
-            "interact.vision.core.litellm.validate_environment",
+            "galaius.vision.core.litellm.validate_environment",
             return_value={"keys_in_environment": True},
         ),
     ):
@@ -131,9 +131,9 @@ async def test_unset_sentinel_uses_config_max_tokens():
 
     # Now pass explicit value -- should override
     with (
-        patch("interact.vision.core._vision_completion", mock_completion),
+        patch("galaius.vision.core._vision_completion", mock_completion),
         patch(
-            "interact.vision.core.litellm.validate_environment",
+            "galaius.vision.core.litellm.validate_environment",
             return_value={"keys_in_environment": True},
         ),
     ):

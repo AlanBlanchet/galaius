@@ -9,9 +9,9 @@ import struct
 from pathlib import Path
 
 import pytest
-from interact_core import UnsafeModelWeightsError
+from galaius_core import UnsafeModelWeightsError
 
-from interact.model_safety import assert_directory_safetensors_only, assert_safetensors_only, is_safetensors, looks_like_pickle
+from galaius.model_safety import assert_directory_safetensors_only, assert_safetensors_only, is_safetensors, looks_like_pickle
 
 
 class _PopMarker:

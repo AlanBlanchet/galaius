@@ -384,7 +384,7 @@ test("the Chat host forwards only the pending interaction's validated atomic sub
     "the hostile webview payload must be checked against the pending provider fields");
   assert.doesNotMatch(source, /typeof msg\.key|typeof msg\.value|values:\s*\{\s*\[msg\.key\]/,
     "the host must not retain the one-field shortcut beside atomic submissions");
-  const providerCall = source.indexOf("await this.conversationClient.interact");
+  const providerCall = source.indexOf("await this.conversationClient.galaius");
   const pendingRemoval = source.indexOf("this.approvals.delete", providerCall);
   const failureBranch = source.indexOf("} catch", providerCall);
   assert.ok(providerCall >= 0 && providerCall < pendingRemoval && pendingRemoval < failureBranch,
@@ -676,8 +676,8 @@ test("the installed compiled ChatView cold-starts a root conversation without ch
   // The source renderer was already correct while the installed VSIX still exposed the old,
   // agent-gated provider.  Load whichever compiled bundle the delivery check names so this one
   // lifecycle assertion can distinguish those artifacts without touching a real editor profile.
-  const bundleRoot = process.env.INTERACT_CONVERSATION_BUNDLE_ROOT
-    ? path.resolve(process.env.INTERACT_CONVERSATION_BUNDLE_ROOT)
+  const bundleRoot = process.env.GALAIUS_CONVERSATION_BUNDLE_ROOT
+    ? path.resolve(process.env.GALAIUS_CONVERSATION_BUNDLE_ROOT)
     : path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "out");
   const builtChatView = path.join(bundleRoot, "chatView.js");
   assert.ok(fs.existsSync(builtChatView), `compiled ChatView is missing at ${builtChatView}`);
@@ -777,7 +777,7 @@ test("the installed compiled ChatView cold-starts a root conversation without ch
       },
       send: async () => { throw new Error("not used"); },
       cancel: async () => { throw new Error("not used"); },
-      interact: async () => { throw new Error("not used"); },
+      galaius: async () => { throw new Error("not used"); },
       state: () => "ready",
       dispose() {},
     };
@@ -789,9 +789,9 @@ test("the installed compiled ChatView cold-starts a root conversation without ch
         describeMode: (_mode: unknown, _known: unknown) => undefined,
       }],
       ["./paths", { agentsDir: () => workspaceRoot }],
-      ["./shared", { resolveCommand: () => ["interact", ["mcp"]] }],
+      ["./shared", { resolveCommand: () => ["galaius", ["mcp"]] }],
       ["./conversationBackend", { resolveConversationBackend: async () => ({
-        available: true, command: "interact", args: ["agents", "console"],
+        available: true, command: "galaius", args: ["agents", "console"],
       }), conversationExtensionVersion: () => "0.39.0" }],
       ["./runStatus", { runStatusOf: (status: unknown) => status }],
       ["./conversationClient", {
@@ -867,7 +867,7 @@ test("a compatible local bridge that exits before initialize survives a fresh ex
   const ready = path.join(fixtureRoot, "ready");
   const release = path.join(fixtureRoot, "release");
   fs.mkdirSync(bin, { recursive: true });
-  const executable = path.join(bin, "interact");
+  const executable = path.join(bin, "galaius");
   fs.rmSync(executable, { force: true });
   fs.symlinkSync(path.resolve("test/fixtures/conversationFakeHost.ts"), executable);
   fs.rmSync(launches, { force: true });
@@ -897,14 +897,14 @@ test("a compatible local bridge that exits before initialize survives a fresh ex
   const originalLoad = Module._load;
   const originalPath = process.env.PATH ?? "";
   const restoreEnvironment = restoreEnvironmentAfter([
-    "PATH", "INTERACT_FAKE_CONVERSATION_MODE", "INTERACT_FAKE_CONVERSATION_LOG",
-    "INTERACT_FAKE_LAUNCH_LOG", "INTERACT_FAKE_READY_MARKER", "INTERACT_FAKE_RELEASE_MARKER",
+    "PATH", "GALAIUS_FAKE_CONVERSATION_MODE", "GALAIUS_FAKE_CONVERSATION_LOG",
+    "GALAIUS_FAKE_LAUNCH_LOG", "GALAIUS_FAKE_READY_MARKER", "GALAIUS_FAKE_RELEASE_MARKER",
   ]);
   Module._load = (request, parent, isMain) => request === "vscode" ? vscodeStub
     : localStubs.has(request) ? localStubs.get(request) : originalLoad(request, parent, isMain);
   process.env.PATH = `${bin}${path.delimiter}${originalPath ?? ""}`;
-  process.env.INTERACT_FAKE_CONVERSATION_MODE = "exit_before_initialize";
-  process.env.INTERACT_FAKE_LAUNCH_LOG = launches;
+  process.env.GALAIUS_FAKE_CONVERSATION_MODE = "exit_before_initialize";
+  process.env.GALAIUS_FAKE_LAUNCH_LOG = launches;
   try {
     let html = "";
     const posted: Record<string, unknown>[] = [];
@@ -945,9 +945,9 @@ test("a compatible local bridge that exits before initialize survives a fresh ex
 
       fs.rmSync(ready, { force: true });
       fs.rmSync(release, { force: true });
-      process.env.INTERACT_FAKE_CONVERSATION_MODE = "controlled_post_catalog_exit";
-      process.env.INTERACT_FAKE_READY_MARKER = ready;
-      process.env.INTERACT_FAKE_RELEASE_MARKER = release;
+      process.env.GALAIUS_FAKE_CONVERSATION_MODE = "controlled_post_catalog_exit";
+      process.env.GALAIUS_FAKE_READY_MARKER = ready;
+      process.env.GALAIUS_FAKE_RELEASE_MARKER = release;
       posted.length = 0;
       receive({ type: "reload-conversation" });
       const readyDeadline = Date.now() + 1_000;
@@ -1009,14 +1009,14 @@ test("stored conversation continuation is gated only by its typed resume capabil
       describeMode: (_mode: unknown, _known: unknown) => undefined,
     }],
     ["./paths", { agentsDir: () => workspaceRoot }],
-    ["./shared", { resolveCommand: () => ["interact", ["mcp"]] }],
+    ["./shared", { resolveCommand: () => ["galaius", ["mcp"]] }],
     ["./conversationBackend", { resolveConversationBackend: async () => ({
-      available: true, command: "interact", args: ["agents", "console"],
+      available: true, command: "galaius", args: ["agents", "console"],
     }), conversationExtensionVersion: () => "0.39.0" }],
     ["./runStatus", { runStatusOf: (status: unknown) => status }],
     ["./org", { companyOf: () => undefined, definitionFile: () => undefined,
       readOrg: () => undefined }],
-    ["./interactCli", { interactCli: async () => {
+    ["./galaiusCli", { galaiusCli: async () => {
       cliCalls += 1;
       return { error: "unexpected legacy continuation", stdout: "" };
     } }],
@@ -1082,7 +1082,7 @@ test("stored conversation continuation is gated only by its typed resume capabil
         name: scenario.name,
         task: "Continue this stored conversation",
         cwd: workspaceRoot,
-        project: "interact",
+        project: "galaius",
         model: "provider-a/example-model",
         provider_session_id: "provider-session",
         connection: scenario.connection,
@@ -1103,7 +1103,7 @@ test("stored conversation continuation is gated only by its typed resume capabil
           return currentRun;
         },
         cancel: async () => { throw new Error("not used"); },
-        interact: async () => { throw new Error("not used"); },
+        galaius: async () => { throw new Error("not used"); },
         state: () => "ready",
         dispose() {},
       };

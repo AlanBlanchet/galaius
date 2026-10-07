@@ -5,7 +5,7 @@ Formerly split across `test_config`, `test_config_check`, `test_config_logging` 
 facets:
 
 * environment → `Config` fields (this file's first block);
-* `interact config set` running a real vision call to say whether the key works;
+* `galaius config set` running a real vision call to say whether the key works;
 * the `.env` autouse fixture in `conftest.py` really loading keys.
 
 A wrong key saved silently sits in `config.env` until the first real screenshot fails deep
@@ -23,9 +23,9 @@ from pathlib import Path
 import pytest
 from dotenv import load_dotenv
 
-from interact.cli import config_check
-from interact.config import Config
-from interact.config.user import UserConfig
+from galaius.cli import config_check
+from galaius.config import Config
+from galaius.config.user import UserConfig
 
 
 # ── Environment → `Config` fields ──────────────────────────────────────────────────────────
@@ -33,18 +33,18 @@ from interact.config.user import UserConfig
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
-    """Strip every key in the INTERACT_ namespace so tests start blank."""
+    """Strip every key in the GALAIUS_ namespace so tests start blank."""
     for var in list(os.environ):
-        if var.startswith("INTERACT_"):
+        if var.startswith("GALAIUS_"):
             monkeypatch.delenv(var, raising=False)
 
 
 def test_from_env(monkeypatch):
-    monkeypatch.setenv("INTERACT_IMAGE_CRITERIA", "cap.vlm and aa.intelligence > 80%")
-    monkeypatch.setenv("INTERACT_VIDEO_CRITERIA", "cap.video")
-    monkeypatch.setenv("INTERACT_HEADLESS", "false")
-    monkeypatch.setenv("INTERACT_BROWSER_TYPE", "firefox")
-    monkeypatch.setenv("INTERACT_VIEWPORT_WIDTH", "1920")
+    monkeypatch.setenv("GALAIUS_IMAGE_CRITERIA", "cap.vlm and aa.intelligence > 80%")
+    monkeypatch.setenv("GALAIUS_VIDEO_CRITERIA", "cap.video")
+    monkeypatch.setenv("GALAIUS_HEADLESS", "false")
+    monkeypatch.setenv("GALAIUS_BROWSER_TYPE", "firefox")
+    monkeypatch.setenv("GALAIUS_VIEWPORT_WIDTH", "1920")
     cfg = Config()
     assert cfg.image_criteria == "cap.vlm and aa.intelligence > 80%"
     assert cfg.video_criteria == "cap.video"
@@ -54,14 +54,14 @@ def test_from_env(monkeypatch):
 
 
 def test_screenshot_dump_dir_from_env(monkeypatch):
-    monkeypatch.setenv("INTERACT_SCREENSHOT_DUMP_DIR", "/tmp/shots")
+    monkeypatch.setenv("GALAIUS_SCREENSHOT_DUMP_DIR", "/tmp/shots")
     cfg = Config()
     assert cfg.screenshot_dump_dir == Path("/tmp/shots")
 
 
 def test_video_settings_from_env(monkeypatch):
-    monkeypatch.setenv("INTERACT_VIDEO_FPS", "10")
-    monkeypatch.setenv("INTERACT_VIDEO_DURATION", "5.0")
+    monkeypatch.setenv("GALAIUS_VIDEO_FPS", "10")
+    monkeypatch.setenv("GALAIUS_VIDEO_DURATION", "5.0")
     cfg = Config()
     assert cfg.video_fps == 10
     assert cfg.video_duration == 5.0
@@ -75,14 +75,14 @@ def test_video_settings_from_env(monkeypatch):
     ],
 )
 def test_criteria_for_component(monkeypatch, component_criteria, expected):
-    monkeypatch.setenv("INTERACT_COMPONENT_CRITERIA", component_criteria)
+    monkeypatch.setenv("GALAIUS_COMPONENT_CRITERIA", component_criteria)
     cfg = Config()
     assert cfg.criteria_for("component") == expected
 
 
 def test_vlm_min_dim_exceeds_max_dim_raises(monkeypatch):
-    monkeypatch.setenv("INTERACT_VLM_MIN_DIM", "2000")
-    monkeypatch.setenv("INTERACT_VLM_MAX_DIM", "1280")
+    monkeypatch.setenv("GALAIUS_VLM_MIN_DIM", "2000")
+    monkeypatch.setenv("GALAIUS_VLM_MAX_DIM", "1280")
     with pytest.raises(ValueError, match="vlm_min_dim.*must be <= vlm_max_dim"):
         Config()
 
@@ -97,7 +97,7 @@ def test_extra_usage_warning_is_silenced_only_by_confirmation(confirmed):
         assert "Usage credits" in warning and "media.noExtraUsageConfirmedFor" in warning
 
 
-# ── `interact config set` → "it works" verdict ─────────────────────────────────────────────
+# ── `galaius config set` → "it works" verdict ─────────────────────────────────────────────
 # When a user persists a model key or a model pin, the CLI must not stop at "saved" — it must
 # run that exact credential / model against a real vision call and print whether it works.
 
@@ -161,7 +161,7 @@ async def test_unknown_provider_key_no_probe(_check_env):
 
 def test_non_media_setting_skips_probe(_check_env, capsys):
     """`config set desktop.target nested` must not fire a model call."""
-    from interact.cli.app_commands import config_set
+    from galaius.cli.app_commands import config_set
 
     config_set("desktop.target", "nested")
     out = capsys.readouterr().out
@@ -171,22 +171,22 @@ def test_non_media_setting_skips_probe(_check_env, capsys):
 def test_set_value_breaking_shell_sourcing_warns(_check_env, capsys):
     """A value that breaks when `config.env` is SOURCED must be caught at set time.
 
-    Real failure: `INTERACT_MEDIA_CRITERIA=cap.vlm and aa.intelligence >= 40` was written
-    unquoted; every `source ~/.interact/config.env` then ran `and` as a command, and nothing
+    Real failure: `GALAIUS_MEDIA_CRITERIA=cap.vlm and aa.intelligence >= 40` was written
+    unquoted; every `source ~/.galaius/config.env` then ran `and` as a command, and nothing
     ever said so. The set site is where the user is watching — the warning belongs there.
     """
-    from interact.cli.app_commands import config_set
+    from galaius.cli.app_commands import config_set
 
     config_set("media.criteria", "cap.vlm and aa.intelligence >= 40")
     out = capsys.readouterr().out
     assert "sources" in out.lower() or "shell" in out.lower() or "quote" in out.lower()
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="config.env is sourced by POSIX shells; on Windows only interact reads it")
+@pytest.mark.skipif(sys.platform == "win32", reason="config.env is sourced by POSIX shells; on Windows only galaius reads it")
 def test_written_file_sources_cleanly(_check_env, capsys):
     """Whatever `config set` writes, `bash -c 'source file'` must exit 0."""
     import subprocess
-    from interact.cli.app_commands import config_set
+    from galaius.cli.app_commands import config_set
 
     config_set("media.criteria", "cap.vlm and aa.intelligence >= 40")
     proc = subprocess.run(
@@ -204,18 +204,18 @@ def test_quoted_value_reads_back_unquoted(_check_env, tmp_path, monkeypatch):
     `'cap.vlm and …'` WITH quotes, and the next criterion parse failed on the leading quote.
     The file is one store with two readers (python, bash) — the pair must compose.
     """
-    from interact.cli.app_commands import config_set
+    from galaius.cli.app_commands import config_set
 
     config_set("media.criteria", "cap.vlm and aa.intelligence >= 40")
     assert UserConfig.get("media.criteria") == "cap.vlm and aa.intelligence >= 40"
     raw = UserConfig.PATH.read_text()
-    assert "INTERACT_MEDIA_CRITERIA='cap.vlm and aa.intelligence >= 40'" in raw
+    assert "GALAIUS_MEDIA_CRITERIA='cap.vlm and aa.intelligence >= 40'" in raw
 
 
 def test_probe_resolves_through_criterion(_check_env, monkeypatch):
     """The probe target comes from the user's own `media.criteria` resolver, restricted to the
     provider owning the key — never a literal table."""
-    from interact.models import Model
+    from galaius.models import Model
 
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     Model.load_registry()
@@ -235,9 +235,9 @@ async def test_tool_dumps_early_error_returns(tmp_path, monkeypatch):
     the audit trail; the `@instrumented` decorator now dumps EVERY return path once. Dumps
     route to `tmp_path` via the autouse log-isolation fixture; `refresh` is stubbed so the
     decorator never reads (or leaks into `os.environ`) the developer's real
-    `~/.interact/config.env`."""
-    from interact.runtime import _LiveConfig
-    from interact.server.tools_vision import measure_ui
+    `~/.galaius/config.env`."""
+    from galaius.runtime import _LiveConfig
+    from galaius.server.tools_vision import measure_ui
 
     monkeypatch.setattr(_LiveConfig, "refresh", lambda self: self)
     out = await measure_ui(region="not,valid,ints")
@@ -256,12 +256,12 @@ def test_dotenv_fixture_loads_keys(tmp_path: Path, monkeypatch) -> None:
     env_file.write_text(
         textwrap.dedent(
             """\
-            INTERACT_TEST_DOTENV_KEY=from-dotenv
+            GALAIUS_TEST_DOTENV_KEY=from-dotenv
             """
         )
     )
     monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("INTERACT_TEST_DOTENV_KEY", raising=False)
+    monkeypatch.delenv("GALAIUS_TEST_DOTENV_KEY", raising=False)
 
     # Replicate the fixture body — we can't trigger the session fixture mid-run.
     cwd = Path.cwd().resolve()
@@ -271,17 +271,17 @@ def test_dotenv_fixture_loads_keys(tmp_path: Path, monkeypatch) -> None:
             load_dotenv(candidate, override=False)
             break
 
-    assert os.environ.get("INTERACT_TEST_DOTENV_KEY") == "from-dotenv"
+    assert os.environ.get("GALAIUS_TEST_DOTENV_KEY") == "from-dotenv"
 
 
 def test_dotenv_override_false_preserves_existing(tmp_path: Path, monkeypatch) -> None:
     env_file = tmp_path / ".env"
-    env_file.write_text("INTERACT_TEST_DOTENV_KEY2=from-dotenv\n")
+    env_file.write_text("GALAIUS_TEST_DOTENV_KEY2=from-dotenv\n")
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("INTERACT_TEST_DOTENV_KEY2", "preset")
+    monkeypatch.setenv("GALAIUS_TEST_DOTENV_KEY2", "preset")
 
     load_dotenv(env_file, override=False)
-    assert os.environ.get("INTERACT_TEST_DOTENV_KEY2") == "preset"
+    assert os.environ.get("GALAIUS_TEST_DOTENV_KEY2") == "preset"
 
 
 # ── Config.resolve_model: the single resolution site, never empty downstream ────────────────

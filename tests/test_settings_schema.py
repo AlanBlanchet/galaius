@@ -1,6 +1,6 @@
 """The shared settings schema is the single source of truth both front ends render from, so the
 invariants that keep it honest matter: every setting maps to a real Config field (so its env var
-and default can't drift — the bug that left the TUI writing INTERACT_BROWSER_HEADLESS that Config
+and default can't drift — the bug that left the TUI writing GALAIUS_BROWSER_HEADLESS that Config
 never read), the bundled JSON the extension consumes stays in lock-step, and the TUI builds a
 widget for every entry."""
 
@@ -10,9 +10,9 @@ import pytest
 from pathlib import Path
 from pydantic import ValidationError
 
-from interact.config import Config
-from interact.data import PackageData
-from interact.config import SETTINGS, by_key, groups, to_json_dict
+from galaius.config import Config
+from galaius.data import PackageData
+from galaius.config import SETTINGS, by_key, groups, to_json_dict
 
 
 def test_every_setting_maps_to_a_real_config_field():
@@ -24,13 +24,13 @@ def test_every_setting_maps_to_a_real_config_field():
 
 @pytest.mark.parametrize("setting", SETTINGS, ids=lambda s: s.key)
 def test_env_is_derived_from_the_field(setting):
-    assert setting.env == f"INTERACT_{setting.field.upper()}"
+    assert setting.env == f"GALAIUS_{setting.field.upper()}"
 
 
 def test_browser_headless_reaches_the_field_config_reads():
-    """Regression for the drift bug: browser.headless must write INTERACT_HEADLESS (the var
-    Config.headless reads), not INTERACT_BROWSER_HEADLESS."""
-    assert by_key("browser.headless").env == "INTERACT_HEADLESS"
+    """Regression for the drift bug: browser.headless must write GALAIUS_HEADLESS (the var
+    Config.headless reads), not GALAIUS_BROWSER_HEADLESS."""
+    assert by_key("browser.headless").env == "GALAIUS_HEADLESS"
 
 
 def test_keys_are_unique():
@@ -51,12 +51,12 @@ def test_kind_specific_shape(setting):
 def test_default_collapses_home_so_export_is_portable():
     """A path default must not bake the build machine's absolute home into the bundled JSON."""
     debug = by_key("debug.dir")
-    assert debug.default in ("", "~/.interact") or debug.default.startswith("~/")
+    assert debug.default in ("", "~/.galaius") or debug.default.startswith("~/")
 
 
 def test_bundled_settings_json_is_in_lockstep_with_the_schema():
     """The extension reads the bundled settings.json; if SETTINGS changed without regenerating
-    (`python -m interact.config.schema`), this fails — the same staleness guard as models.json."""
+    (`python -m galaius.config.schema`), this fails — the same staleness guard as models.json."""
     assert PackageData.settings_data() == to_json_dict()
 
 
@@ -70,19 +70,19 @@ def test_nested_default_and_numeric_constraints_have_one_declarative_owner() -> 
     assert by_key("browser.slowMo").minimum is None
     package = json.loads((Path(__file__).parent.parent / "clients" / "vscode" / "package.json").read_text())
     properties = package["contributes"]["configuration"]["properties"]
-    assert properties["interact.desktop.nestedHeadless"]["default"] is True
-    assert properties["interact.desktop.nestedSize"]["pattern"] == r"^[1-9]\d*x[1-9]\d*$"
+    assert properties["galaius.desktop.nestedHeadless"]["default"] is True
+    assert properties["galaius.desktop.nestedSize"]["pattern"] == r"^[1-9]\d*x[1-9]\d*$"
     size = by_key("desktop.nestedSize")
     assert size.pattern == r"^[1-9]\d*x[1-9]\d*$"
     for exported in (
-        Path("src/interact/data/settings.json"),
+        Path("src/galaius/data/settings.json"),
         Path("clients/vscode/src/settings.json"),
     ):
         projected = next(item for item in json.loads(exported.read_text())["settings"]
                          if item["key"] == "desktop.nestedSize")
         assert projected["pattern"] == size.pattern
-    assert properties["interact.browser.viewportWidth"]["minimum"] == 1
-    assert properties["interact.browser.viewportHeight"]["minimum"] == 1
+    assert properties["galaius.browser.viewportWidth"]["minimum"] == 1
+    assert properties["galaius.browser.viewportHeight"]["minimum"] == 1
 
 
 @pytest.mark.parametrize("field,key", [
@@ -146,12 +146,12 @@ def test_media_selection_policy_is_editable_and_unit_safe(key: str, word: str) -
 @pytest.mark.asyncio
 async def test_tui_renders_a_widget_for_every_setting(tmp_path, monkeypatch):
     """The TUI's Config tab is generated from the schema — every setting must yield a control."""
-    from interact.config import UserConfig
+    from galaius.config import UserConfig
 
     monkeypatch.setattr(UserConfig, "PATH", tmp_path / "config.env")  # never touch the real file
-    from interact.cli.tui import InteractTUI, _field_id
+    from galaius.cli.tui import GalaiusTUI, _field_id
 
-    app = InteractTUI()
+    app = GalaiusTUI()
     async with app.run_test() as pilot:
         app.query_one("TabbedContent").active = "tab-config"
         await pilot.pause()

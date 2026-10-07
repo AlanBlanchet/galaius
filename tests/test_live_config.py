@@ -1,4 +1,4 @@
-"""~/.interact/config.env is the live source of truth: a long-running server reflects file
+"""~/.galaius/config.env is the live source of truth: a long-running server reflects file
 edits on the next tool call (config.refresh()), and clearing a setting in the file reverts it —
 no stale environment snapshot. This is the bug where a TUI/file model change didn't reach the
 already-running MCP server."""
@@ -7,15 +7,15 @@ import os
 
 import pytest
 
-from interact.config import Config, UserConfig
-from interact.runtime import _LiveConfig, config
+from galaius.config import Config, UserConfig
+from galaius.runtime import _LiveConfig, config
 
 
 @pytest.fixture
 def live_config(tmp_path, monkeypatch):
     monkeypatch.setattr(UserConfig, "PATH", tmp_path / "config.env")
     # Start from a clean environment for the settings under test.
-    for name in ("INTERACT_COMPONENT_CRITERIA", "INTERACT_IMAGE_CRITERIA"):
+    for name in ("GALAIUS_COMPONENT_CRITERIA", "GALAIUS_IMAGE_CRITERIA"):
         monkeypatch.delenv(name, raising=False)
     config.clear_overrides()  # isolate from any override leaked by an earlier test
     yield config
@@ -29,23 +29,23 @@ def live_config(tmp_path, monkeypatch):
     # var this file's tests touch, then replace `_inner` outright with a fresh, environment-
     # independent `Config()` rather than trusting a refresh (which would just re-read the same
     # environment) to land clean.
-    for name in ("INTERACT_COMPONENT_CRITERIA", "INTERACT_IMAGE_CRITERIA", "INTERACT_CLAUDE_MEDIA_CRITERIA"):
+    for name in ("GALAIUS_COMPONENT_CRITERIA", "GALAIUS_IMAGE_CRITERIA", "GALAIUS_CLAUDE_MEDIA_CRITERIA"):
         os.environ.pop(name, None)
     object.__getattribute__(config, "_overrides").clear()
     object.__setattr__(config, "_inner", Config())
 
 
-def test_spawned_interact_env_survives_file_overlay_and_removal(
+def test_spawned_galaius_env_survives_file_overlay_and_removal(
     tmp_path, monkeypatch, caplog
 ) -> None:
     """VS settings arrive in the child environment, then config.env temporarily overrides them."""
     monkeypatch.setattr(UserConfig, "PATH", tmp_path / "config.env")
-    monkeypatch.setenv("INTERACT_MEDIA_BACKEND", "session")
+    monkeypatch.setenv("GALAIUS_MEDIA_BACKEND", "session")
     monkeypatch.delenv(
-        "INTERACT_MEDIA_SESSION_NO_EXTRA_USAGE_CONFIRMED_FOR", raising=False
+        "GALAIUS_MEDIA_SESSION_NO_EXTRA_USAGE_CONFIRMED_FOR", raising=False
     )
-    monkeypatch.delenv("INTERACT_CLAUDE_MEDIA_CRITERIA", raising=False)
-    monkeypatch.setattr(UserConfig, "_process_interact_env", None, raising=False)
+    monkeypatch.delenv("GALAIUS_CLAUDE_MEDIA_CRITERIA", raising=False)
+    monkeypatch.setattr(UserConfig, "_process_galaius_env", None, raising=False)
 
     UserConfig.apply()
     live = _LiveConfig()
@@ -55,21 +55,21 @@ def test_spawned_interact_env_survives_file_overlay_and_removal(
     try:
         UserConfig.set("media.backend", "auto")
         UserConfig.set(
-            "INTERACT_MEDIA_SESSION_NO_EXTRA_USAGE_CONFIRMED_FOR", "claude"
+            "GALAIUS_MEDIA_SESSION_NO_EXTRA_USAGE_CONFIRMED_FOR", "claude"
         )
-        UserConfig.set("INTERACT_CLAUDE_MEDIA_CRITERIA", "must-not-appear-in-logs")
+        UserConfig.set("GALAIUS_CLAUDE_MEDIA_CRITERIA", "must-not-appear-in-logs")
         assert live.refresh().media_backend == "auto"
         assert live.media_session_no_extra_usage_confirmed_for == ("claude",)
         assert live.claude_media_criteria == "must-not-appear-in-logs"
     finally:
         UserConfig.unset("media.backend")
-        UserConfig.unset("INTERACT_MEDIA_SESSION_NO_EXTRA_USAGE_CONFIRMED_FOR")
-        UserConfig.unset("INTERACT_CLAUDE_MEDIA_CRITERIA")
+        UserConfig.unset("GALAIUS_MEDIA_SESSION_NO_EXTRA_USAGE_CONFIRMED_FOR")
+        UserConfig.unset("GALAIUS_CLAUDE_MEDIA_CRITERIA")
 
     assert live.refresh().media_backend == "session"
     assert live.media_session_no_extra_usage_confirmed_for == ()
     assert live.claude_media_criteria == ""
-    assert "INTERACT_CLAUDE_MEDIA_CRITERIA" not in os.environ
+    assert "GALAIUS_CLAUDE_MEDIA_CRITERIA" not in os.environ
     assert "must-not-appear-in-logs" not in caplog.text
 
 
@@ -129,22 +129,22 @@ def temp_cfg(tmp_path, monkeypatch):
 )
 def test_env_shaped_key_stored_verbatim(temp_cfg, env_name):
     """A provider cred whose env name doesn't end in _API_KEY (AWS / Azure / Vertex) must be
-    stored under its REAL env name, not a dead ``INTERACT_*`` alias nothing reads — the API-Keys
+    stored under its REAL env name, not a dead ``GALAIUS_*`` alias nothing reads — the API-Keys
     tab bug where a set key still read 'unset' and the provider never authenticated."""
     assert UserConfig.normalize_key(env_name) == env_name
     UserConfig.set(env_name, "secret-val")
     assert UserConfig.read()[env_name] == "secret-val"
-    assert f"INTERACT_{env_name}" not in UserConfig.read()
+    assert f"GALAIUS_{env_name}" not in UserConfig.read()
 
 
 @pytest.mark.parametrize(
     "friendly,expected",
-    [("image.criteria", "INTERACT_IMAGE_CRITERIA"),
-     ("desktop.target", "INTERACT_DESKTOP_TARGET"),
-     ("desktop-target", "INTERACT_DESKTOP_TARGET"),
-     ("desktop.nestedHeadless", "INTERACT_NESTED_HEADLESS"),
-     ("INTERACT_DEBUG_DIR", "INTERACT_DEBUG_DIR")],
+    [("image.criteria", "GALAIUS_IMAGE_CRITERIA"),
+     ("desktop.target", "GALAIUS_DESKTOP_TARGET"),
+     ("desktop-target", "GALAIUS_DESKTOP_TARGET"),
+     ("desktop.nestedHeadless", "GALAIUS_NESTED_HEADLESS"),
+     ("GALAIUS_DEBUG_DIR", "GALAIUS_DEBUG_DIR")],
 )
-def test_friendly_keys_still_map_to_interact_env(friendly, expected):
+def test_friendly_keys_still_map_to_galaius_env(friendly, expected):
     """The verbatim guard must NOT regress the friendly dotted/dashed setting keys."""
     assert UserConfig.normalize_key(friendly) == expected

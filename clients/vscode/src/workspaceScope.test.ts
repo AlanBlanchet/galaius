@@ -47,25 +47,25 @@ test("a loose package nobody version-controls gets its own name", () => {
 });
 
 const RUNS = [
-  run({ run_id: "a", project: "interact", cwd: "/work/interact" }),
-  run({ run_id: "b", project: "interact", cwd: "/work/interact/clients/vscode" }),
+  run({ run_id: "a", project: "galaius", cwd: "/work/galaius" }),
+  run({ run_id: "b", project: "galaius", cwd: "/work/galaius/clients/vscode" }),
   run({ run_id: "c", project: "sheets", cwd: "/work/sheets" }),
   run({ run_id: "d", project: "", cwd: "" }),
 ];
 
 test("the default scope is the folder you have open", () => {
-  const seen = scopeRuns(RUNS, { kind: "current" }, "interact").map((r) => r.run_id);
+  const seen = scopeRuns(RUNS, { kind: "current" }, "galaius").map((r) => r.run_id);
   assert.deepEqual(seen, ["a", "b"]);
 });
 
 test("a parent workspace includes runs from repositories below its folders", () => {
   const root = mkdtempSync(join(tmpdir(), "ws-"));
   const parent = join(root, "workspace");
-  mkdirSync(join(parent, "interact"), { recursive: true });
+  mkdirSync(join(parent, "galaius"), { recursive: true });
   mkdirSync(join(parent, "service"), { recursive: true });
   mkdirSync(join(root, "sheets"), { recursive: true });
   const runs = [
-    run({ run_id: "public", project: "interact", cwd: join(parent, "interact") }),
+    run({ run_id: "public", project: "galaius", cwd: join(parent, "galaius") }),
     run({ run_id: "sibling", project: "service", cwd: join(parent, "service") }),
     run({ run_id: "outside", project: "sheets", cwd: join(root, "sheets") }),
   ];
@@ -75,7 +75,7 @@ test("a parent workspace includes runs from repositories below its folders", () 
     ["public", "sibling"],
   );
   assert.deepEqual(
-    scopeRuns(runs, { kind: "project", name: "interact" }, "workspace", [parent])
+    scopeRuns(runs, { kind: "project", name: "galaius" }, "workspace", [parent])
       .map((r) => r.run_id),
     ["public"],
   );
@@ -100,13 +100,13 @@ test("current scope accepts runs below any multi-root workspace folder", () => {
 });
 
 test("and you can look at every workspace at once", () => {
-  assert.equal(scopeRuns(RUNS, { kind: "all" }, "interact").length, 4);
+  assert.equal(scopeRuns(RUNS, { kind: "all" }, "galaius").length, 4);
 });
 
 test("and you can look at one you are NOT in — agents running in another checkout", () => {
   // His words: "i have agents in the 'sheets' folder elsewhere, and i can't change and see how
   // they work."
-  const seen = scopeRuns(RUNS, { kind: "project", name: "sheets" }, "interact").map((r) => r.run_id);
+  const seen = scopeRuns(RUNS, { kind: "project", name: "sheets" }, "galaius").map((r) => r.run_id);
   assert.deepEqual(seen, ["c"]);
 });
 
@@ -115,17 +115,17 @@ test("with no folder open, scoping to 'current' would hide everything — so it 
 });
 
 test("the switcher lists every workspace that actually has agents", () => {
-  assert.deepEqual(projectsOf(RUNS), ["interact", "sheets"]);
+  assert.deepEqual(projectsOf(RUNS), ["galaius", "sheets"]);
 });
 
 test("each scope says plainly what it is showing", () => {
   const cases: Array<[Scope, string]> = [
-    [{ kind: "current" }, "interact"],
+    [{ kind: "current" }, "galaius"],
     [{ kind: "all" }, "all workspaces"],
     [{ kind: "project", name: "sheets" }, "sheets"],
   ];
   for (const [scope, expected] of cases) {
-    assert.match(describeScope(scope, "interact"), new RegExp(expected));
+    assert.match(describeScope(scope, "galaius"), new RegExp(expected));
   }
 });
 
@@ -133,8 +133,8 @@ test("each scope says plainly what it is showing", () => {
 test("the switcher offers this folder first, then everything, then the others", () => {
   // Order is the point: the thing you almost always want is one keystroke away, and the workspace
   // you are NOT in is still reachable without leaving the panel.
-  const items = scopeChoices(RUNS, "interact");
-  assert.deepEqual(items.map((i) => i.label), ["interact", "All workspaces", "sheets"]);
+  const items = scopeChoices(RUNS, "galaius");
+  assert.deepEqual(items.map((i) => i.label), ["galaius", "All workspaces", "sheets"]);
   assert.equal(items[0].detail, "this folder");
   assert.deepEqual(items[0].scope, { kind: "current" });
   assert.deepEqual(items[2].scope, { kind: "project", name: "sheets" });
@@ -142,11 +142,11 @@ test("the switcher offers this folder first, then everything, then the others", 
 
 test("with no folder open there is nothing to put first", () => {
   const items = scopeChoices(RUNS, "");
-  assert.deepEqual(items.map((i) => i.label), ["All workspaces", "interact", "sheets"]);
+  assert.deepEqual(items.map((i) => i.label), ["All workspaces", "galaius", "sheets"]);
 });
 
 test("a workspace with agents is offered even when it is the one you are in", () => {
   // Guards the obvious regression: dedupe that drops the current project from the list entirely.
   const items = scopeChoices(RUNS, "sheets");
-  assert.deepEqual(items.map((i) => i.label), ["sheets", "All workspaces", "interact"]);
+  assert.deepEqual(items.map((i) => i.label), ["sheets", "All workspaces", "galaius"]);
 });

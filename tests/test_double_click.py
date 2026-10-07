@@ -11,12 +11,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from interact.actions import DoubleClickAction
-from interact.actions.dispatch import _run_actions_browser
-from interact.actions.models import BROWSER_ONLY_ACTIONS
-from interact.desktop import DesktopWindow
-from interact.desktop.element import DesktopElement
-from interact.server import _run_actions_desktop
+from galaius.actions import DoubleClickAction
+from galaius.actions.dispatch import _run_actions_browser
+from galaius.actions.models import BROWSER_ONLY_ACTIONS
+from galaius.desktop import DesktopWindow
+from galaius.desktop.element import DesktopElement
+from galaius.server import _run_actions_desktop
 
 
 @pytest.fixture
@@ -26,7 +26,7 @@ def desktop_spies():
     with (
         patch.object(DesktopWindow, "click", new_callable=AsyncMock) as click,
         patch.object(DesktopWindow, "resize", new_callable=AsyncMock, create=True) as resize,
-        patch("interact.actions.dispatch.DesktopState") as state,
+        patch("galaius.actions.dispatch.DesktopState") as state,
     ):
         state.capture.return_value = None
         yield click, resize
@@ -108,12 +108,12 @@ async def test_browser_double_click_by_ref_stays_a_double_click():
     mgr.active_tab = 0
     mgr.get_page = AsyncMock(return_value=page)
     mgr.drain_dialog_log.return_value = []
-    mgr.get_element.return_value = MagicMock(ref="e3", playwright_ref='[data-interact-ref="e3"]')
+    mgr.get_element.return_value = MagicMock(ref="e3", playwright_ref='[data-galaius-ref="e3"]')
     state = MagicMock(title="t", url="u", visible_text="v")
     with (
-        patch("interact.server._capture", new_callable=AsyncMock, return_value=state),
-        patch("interact.server._session_response", side_effect=lambda s, r: r),
-        patch("interact.actions.dispatch._settle_and_diff", new_callable=AsyncMock,
+        patch("galaius.server._capture", new_callable=AsyncMock, return_value=state),
+        patch("galaius.server._session_response", side_effect=lambda s, r: r),
+        patch("galaius.actions.dispatch._settle_and_diff", new_callable=AsyncMock,
               return_value=(state, "selection appeared")),
     ):
         report = await _run_actions_browser(

@@ -8,7 +8,7 @@
  *  divided — "what is running in this repo" is the question being asked. Provider and model
  *  groupings exist too, and the mode persists so the panel opens the way you left it.
  *
- *  Read-only over the registry Python writes (interact.agents.registry), refreshed by watching
+ *  Read-only over the registry Python writes (galaius.agents.registry), refreshed by watching
  *  that directory. The extension never spawns or supervises anything itself.
  *
  *  The pure decisions below are exported and unit-tested in agentsView.test.ts; the tree class
@@ -33,7 +33,7 @@ import type { ScopeStore } from "./scopeStore";
 
 export type { GroupBy };
 
-const GROUP_KEY = "interact.agents.groupBy";
+const GROUP_KEY = "galaius.agents.groupBy";
 
 
 /** A group header, an agent, or one line of an agent's activity. */
@@ -114,7 +114,7 @@ export class AgentsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
     if (node.kind === "run" && node.run) {
       return [...this.reportsFor(node.run), ...this.activityFor(node.run)];
     }
-    if (node.contextValue === "interactCompany" || node.contextValue === "interactDepartment") {
+    if (node.contextValue === "galaiusCompany" || node.contextValue === "galaiusDepartment") {
       return this.companyChildren(String(node.label));
     }
     return [];
@@ -123,7 +123,7 @@ export class AgentsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
   /** The company as the prompt repo declares it: departments, and who sits in each.
    *
    *  Read from ~/.claude/org.json, which the prompt repo generates from its own yaml. Absent
-   *  for anyone without that repo — no company node, and interact is perfectly usable as a bare
+   *  for anyone without that repo — no company node, and galaius is perfectly usable as a bare
    *  agent runner.
    */
   private companyNode(): Node | undefined {
@@ -140,7 +140,7 @@ export class AgentsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
       ` · ${orgTree(org).length} departments` +
       (wired.size ? ` · ${[...wired].join(", ")}` : "");
     node.iconPath = new vscode.ThemeIcon("organization");
-    node.contextValue = "interactCompany";
+    node.contextValue = "galaiusCompany";
     return node;
   }
 
@@ -154,7 +154,7 @@ export class AgentsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
         const n = new Node(dept.id, vscode.TreeItemCollapsibleState.Collapsed, "group");
         n.description = `${dept.agents.length} · ${dept.mission ?? ""}`.trim();
         n.iconPath = new vscode.ThemeIcon("folder-library");
-        n.contextValue = "interactDepartment";
+        n.contextValue = "galaiusDepartment";
         return n;
       });
     }
@@ -170,7 +170,7 @@ export class AgentsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
         .filter(Boolean).join(" · ");
       n.tooltip = seat.description ?? seat.title ?? seat.name;
       n.iconPath = new vscode.ThemeIcon(live.length ? "person" : "person-add");
-      n.contextValue = "interactSeat";
+      n.contextValue = "galaiusSeat";
       return n;
     });
   }
@@ -217,7 +217,7 @@ export class AgentsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
         `${live ? `${live} running · ` : ""}${rs.length} agent${rs.length > 1 ? "s" : ""}` +
         ` · ${known ? formatCost(cost) : "—"}`;
       node.iconPath = new vscode.ThemeIcon(live ? "folder-active" : "folder");
-      node.contextValue = "interactGroup";
+      node.contextValue = "galaiusGroup";
       return node;
     })];
   }
@@ -253,7 +253,7 @@ export class AgentsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
     // there. That view shows the same transcript AND lets you reply, so it strictly beats opening
     // a read-only editor tab; the tab is still one click away on the row's own icon.
     node.command = {
-      command: "interact.agents.chat",
+      command: "galaius.agents.chat",
       title: "Open agent chat",
       arguments: [run.run_id],
     };
@@ -269,10 +269,10 @@ export class AgentsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
     node.tooltip = new vscode.MarkdownString(runTooltip(run));
     // Only OUR runs can be stopped; a foreign session belongs to the user's own editor window.
     node.contextValue = run.foreign
-      ? "interactForeignRun"
+      ? "galaiusForeignRun"
       : run.status === "running"
-        ? "interactRunningRun"
-        : "interactRun";
+        ? "galaiusRunningRun"
+        : "galaiusRun";
     return node;
   }
 

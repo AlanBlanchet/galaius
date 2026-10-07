@@ -18,9 +18,9 @@ import signal
 from contextlib import contextmanager
 from pathlib import Path
 
-from interact.data import PackageData
-from interact.config import load_dotenv_for_cli
-from interact.models import is_audio_model, is_native_video_model
+from galaius.data import PackageData
+from galaius.config import load_dotenv_for_cli
+from galaius.models import is_audio_model, is_native_video_model
 
 load_dotenv_for_cli()
 
@@ -60,7 +60,7 @@ _TASK_DESCRIPTIONS: dict[str, str] = {
 }
 
 # A modality task only recommends models that actually have the capability (sourced from the
-# curated family tables in interact.models, since litellm's supports_video_input/_audio_input
+# curated family tables in galaius.models, since litellm's supports_video_input/_audio_input
 # flags don't populate). Other tasks (image/component) consider every vision model.
 _TASK_REQUIRED_CAP: dict[str, str] = {"video": "video", "audio": "audio"}
 
@@ -175,7 +175,7 @@ def _fetch_ollama_models() -> dict[str, dict]:
     """
     import urllib.request
 
-    headers = {"User-Agent": "interact/1.0"}
+    headers = {"User-Agent": "galaius/1.0"}
 
     # 1. Get vision model base names from the search page
     try:
@@ -372,7 +372,7 @@ def _compute_recommendations(
     aa_scores: dict[str, float],
 ) -> dict[str, list[str]]:
     """Compute top model recommendations per task with min-max normalized scoring."""
-    from interact.benchmarks.published import PublishedTable  # noqa: PLC0415
+    from galaius.benchmarks.published import PublishedTable  # noqa: PLC0415
 
     # Collect raw dimensions for all models
     raw: list[tuple[str, float, float, bool, dict]] = []
@@ -551,7 +551,7 @@ for model, info in litellm.model_cost.items():
     if info.get("supports_computer_use"):  # native click-coordinate output (Anthropic/OpenAI CU)
         caps.append("computer_use")
     # video/audio: litellm's supports_*_input flags are unreliable (return nothing), so OR them
-    # with the curated family tables in interact.models (Gemini/Qwen-VL/Nova = video; Gemini/
+    # with the curated family tables in galaius.models (Gemini/Qwen-VL/Nova = video; Gemini/
     # gpt-4o-audio/Whisper/Qwen-Omni = audio).
     if info.get("supports_video_input") or is_native_video_model(model):
         caps.append("video")
@@ -600,8 +600,8 @@ recommendations = _compute_recommendations(providers, aa_scores)
 
 # Append per-benchmark best published model (lookup-only — no eval runs).
 # Keys: "screenspot", "screenspot_pro" — values: list[model_id] for shape parity.
-from interact.benchmarks.published import PublishedTable  # noqa: E402
-from interact.models import Model  # noqa: E402
+from galaius.benchmarks.published import PublishedTable  # noqa: E402
+from galaius.models import Model  # noqa: E402
 
 Model.load_registry()
 for _bid in ("screenspot", "screenspot_pro"):

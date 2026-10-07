@@ -9,7 +9,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 AGENTS_MD = REPO_ROOT / "AGENTS.md"
-CORE_PY = REPO_ROOT / "src/interact/server/core.py"
+CORE_PY = REPO_ROOT / "src/galaius/server/core.py"
 
 
 def test_target_routing_rule_points_at_its_source_instead_of_restating_it():

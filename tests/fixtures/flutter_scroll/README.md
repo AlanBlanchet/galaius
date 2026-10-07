@@ -18,13 +18,13 @@ cd /tmp/scrollfix && flutter build linux --debug
 Verify a gesture landed by asserting the capture CHANGED (valid only because the app is static),
 and confirm staticness first with two idle captures.
 
-## Status measured 2026-08-11 (interact @ 8b4f00f)
+## Status measured 2026-08-11 (galaius @ 8b4f00f)
 
 | gesture | result |
 |---|---|
 | wheel over the main list | consumed ✅ |
 | wheel over the sheet (#39) | consumed ✅ |
-| drag to expand the sheet | ignored ❌ — **but not interact's fault, see below** |
+| drag to expand the sheet | ignored ❌ — **but not galaius's fault, see below** |
 
 ### The drag is Flutter's default, not a defect
 
@@ -38,11 +38,11 @@ Proven by isolation: adding
 scrollBehavior: const _MouseDrag(),   // dragDevices including PointerDeviceKind.mouse
 ```
 
-to this same fixture — with interact's drag code completely unchanged — made the drag work
+to this same fixture — with galaius's drag code completely unchanged — made the drag work
 immediately. So the synthetic pointer stream is fine; the framework was filtering it by device
 kind.
 
-**Guidance:** to scroll a Flutter surface from interact, use `scroll` (wheel), not `drag`. Reach
+**Guidance:** to scroll a Flutter surface from galaius, use `scroll` (wheel), not `drag`. Reach
 for `drag` only when the app has opted mouse into `dragDevices`, or for genuinely non-scroll
 gestures (reordering, sliders, canvas).
 

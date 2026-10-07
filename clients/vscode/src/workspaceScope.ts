@@ -22,7 +22,7 @@ const PACKAGE_MARKERS = ["pyproject.toml", "package.json", "Cargo.toml", "go.mod
 
 /** The project a directory belongs to — the enclosing REPOSITORY, by name.
  *
- *  Deliberately the same rule as interact.agents.registry.project_for, which is what actually
+ *  Deliberately the same rule as galaius.agents.registry.project_for, which is what actually
  *  stamps project onto a run. If these two ever disagree, the panel filters on a name the
  *  registry never wrote and the folder you have open appears to have no agents at all.
  */

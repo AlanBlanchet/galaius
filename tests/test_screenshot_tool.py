@@ -12,9 +12,9 @@ test proves the file is actually written through the real browser dispatch.
 
 import pytest
 
-import interact.server as srv
-from interact.actions import ScreenshotAction
-from interact.vision import VLMResult
+import galaius.server as srv
+from galaius.actions import ScreenshotAction
+from galaius.vision import VLMResult
 from tests.support import async_capture, browser_manager, solid_png
 
 
@@ -74,7 +74,7 @@ def test_screenshot_action_accepts_path():
 
 @pytest.mark.asyncio
 async def test_inline_screenshot_writes_file(tmp_path):
-    from interact.actions.dispatch import _run_actions_browser
+    from galaius.actions.dispatch import _run_actions_browser
 
     mgr = browser_manager()
     try:

@@ -1,4 +1,4 @@
-/** The sessions interact did NOT start — your own editor windows — merged into the panel's view.
+/** The sessions galaius did NOT start — your own editor windows — merged into the panel's view.
  *
  *  These have no record on disk. They are found by asking each provider at list time, so a panel
  *  that reads the registry DIRECTORY (this one does, and should: it is a file read, not a
@@ -6,7 +6,7 @@
  *  for them the whole time. "i have agents in the 'sheets' folder elsewhere, and i can't change
  *  and see how they work" was literally true: the panel had no way to learn they existed.
  *
- *  So the fast path stays a file read, and this adds the discovered ones from interact agents
+ *  So the fast path stays a file read, and this adds the discovered ones from galaius agents
  *  discovered on a slow cadence — editor windows open and close on a human timescale, not on a
  *  refresh timer, and paying a subprocess per repaint to track that would be the wrong trade.
  */
@@ -24,7 +24,7 @@ export interface Discovery {
   at: number;
 }
 
-/** Parse interact agents discovered — one JSON object per line.
+/** Parse galaius agents discovered — one JSON object per line.
  *
  *  A line that will not parse is dropped rather than failing the batch: the realistic cause is a
  *  warning on stdout from some tool in the chain, and losing one session beats losing all of them.
@@ -45,7 +45,7 @@ export function parseDiscovered(stdout: string): AgentRun[] {
 
 /** The on-disk runs plus the discovered ones, with disk winning any collision.
  *
- *  A session interact started AND a provider reports is the same session seen twice; the record
+ *  A session galaius started AND a provider reports is the same session seen twice; the record
  *  is the better copy (it carries cost, tokens, the definition, the parent). Preferring the
  *  discovered one would replace a fully-described run with a stub and read as data loss.
  */

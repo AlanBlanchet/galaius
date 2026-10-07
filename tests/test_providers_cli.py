@@ -8,19 +8,19 @@ import json
 
 import pytest
 
-from interact import cli
-from interact.agents.providers import ClaudeCodeProvider, CodexProvider, MEDIA_PROVIDERS
-from interact.config import Config, UserConfig
-from interact.models import Model
-import interact.ollama as ollama
-from interact.runtime import config as runtime_config
-from interact.server.tools_meta import list_providers
+from galaius import cli
+from galaius.agents.providers import ClaudeCodeProvider, CodexProvider, MEDIA_PROVIDERS
+from galaius.config import Config, UserConfig
+from galaius.models import Model
+import galaius.ollama as ollama
+from galaius.runtime import config as runtime_config
+from galaius.server.tools_meta import list_providers
 
 
 @pytest.fixture
 def _only_zai(monkeypatch):
     # ONLY the z.ai GLM reachable → resolution is deterministic without real keys.
-    monkeypatch.setattr("interact.models.Model.is_available", lambda self: self.id == "zai/glm-4.5v")
+    monkeypatch.setattr("galaius.models.Model.is_available", lambda self: self.id == "zai/glm-4.5v")
 
 
 def test_resolved_models_helper_names_every_task_with_its_role_knob(_only_zai, capsys):
@@ -37,7 +37,7 @@ def test_resolved_models_helper_names_every_task_with_its_role_knob(_only_zai, c
 
 
 def test_resolved_models_helper_flags_a_missing_key(monkeypatch, capsys):
-    monkeypatch.setattr("interact.models.Model.is_available", lambda self: False)  # nothing reachable
+    monkeypatch.setattr("galaius.models.Model.is_available", lambda self: False)  # nothing reachable
     cli._print_resolved_models()
     out = capsys.readouterr().out
     assert "⚠" in out and "no model available" in out  # nothing resolving is called out, never silent
@@ -51,7 +51,7 @@ def test_providers_includes_the_resolved_selection(_only_zai, capsys):
 
 
 def test_media_transport_status_is_registry_derived_and_actionable(monkeypatch, capsys):
-    app_module = importlib.import_module("interact.cli.app")
+    app_module = importlib.import_module("galaius.cli.app")
     monkeypatch.setattr(ClaudeCodeProvider, "available", lambda self: True)
     monkeypatch.setattr(CodexProvider, "available", lambda self: False)
     config = Config(
@@ -108,10 +108,10 @@ async def test_list_providers_refreshes_a_live_config_file_edit(
     monkeypatch.setattr(CodexProvider, "available", lambda self: False)
     runtime_config.clear_overrides()
     baseline = json.loads(await list_providers())["media"]
-    UserConfig.set("INTERACT_MEDIA_BACKEND", "session")
-    UserConfig.set("INTERACT_MEDIA_BILLING", "session_only")
-    UserConfig.set("INTERACT_MEDIA_PROVIDER_ORDER", "claude")
-    UserConfig.set("INTERACT_MEDIA_SESSION_NO_EXTRA_USAGE_CONFIRMED_FOR", "claude")
+    UserConfig.set("GALAIUS_MEDIA_BACKEND", "session")
+    UserConfig.set("GALAIUS_MEDIA_BILLING", "session_only")
+    UserConfig.set("GALAIUS_MEDIA_PROVIDER_ORDER", "claude")
+    UserConfig.set("GALAIUS_MEDIA_SESSION_NO_EXTRA_USAGE_CONFIRMED_FOR", "claude")
 
     edited = json.loads(await list_providers())["media"]
     config_file.unlink()
@@ -127,9 +127,9 @@ async def test_list_providers_refreshes_a_live_config_file_edit(
 
 
 def test_modes_prints_one_tab_separated_row_per_mode(capsys):
-    from interact.cli.app import agents_modes
+    from galaius.cli.app import agents_modes
 
-    from interact.agents.providers import ClaudeCodeProvider
+    from galaius.agents.providers import ClaudeCodeProvider
 
     agents_modes(provider="claude")
     rows = [r for r in capsys.readouterr().out.splitlines() if r]
@@ -145,7 +145,7 @@ def test_modes_prints_one_tab_separated_row_per_mode(capsys):
 def test_the_unrestricted_mode_is_flagged_in_the_machine_output(capsys):
     """The panel has to mark it. A flag it must infer from wording would break the day the
     wording changes — the same failure that made `agents definitions` exist."""
-    from interact.cli.app import agents_modes
+    from galaius.cli.app import agents_modes
 
     agents_modes(provider="claude")
     flagged = [r.split("\t")[0] for r in capsys.readouterr().out.splitlines()
@@ -155,14 +155,14 @@ def test_the_unrestricted_mode_is_flagged_in_the_machine_output(capsys):
 
 def test_a_provider_with_no_verified_modes_prints_nothing(capsys, monkeypatch):
     """Not a line of prose: a caller splitting on newlines would read it as a mode."""
-    from interact.cli.app import agents_modes
+    from galaius.cli.app import agents_modes
 
     monkeypatch.setattr(CodexProvider, "permission_modes", lambda self: ())
     agents_modes(provider="codex")
     assert capsys.readouterr().out == ""
 
 
-# --- `agents discovered`: the sessions interact did NOT start, machine-readably ---------------
+# --- `agents discovered`: the sessions galaius did NOT start, machine-readably ---------------
 #
 # The VS Code panel reads the registry DIRECTLY off disk, and a foreign session has no record on
 # disk — it is discovered at list time. So the panel could never show one, despite carrying an
@@ -173,8 +173,8 @@ def test_a_provider_with_no_verified_modes_prints_nothing(capsys, monkeypatch):
 def test_discovered_prints_one_json_object_per_line(monkeypatch, capsys):
     import json
 
-    from interact.agents import registry as reg
-    from interact.cli.app import agents_discovered
+    from galaius.agents import registry as reg
+    from galaius.cli.app import agents_discovered
 
     monkeypatch.setattr(reg, "_discover_foreign", lambda: [
         {"sessionId": "s-1", "name": "sheets-ab", "cwd": "/workspace/xp/sheets",
@@ -194,8 +194,8 @@ def test_discovered_files_each_session_under_its_project(capsys, monkeypatch, tm
     by folder however visible it is in a flat list."""
     import json
 
-    from interact.agents import registry as reg
-    from interact.cli.app import agents_discovered
+    from galaius.agents import registry as reg
+    from galaius.cli.app import agents_discovered
 
     sheets = tmp_path / "xp" / "sheets"
     (sheets / ".git").mkdir(parents=True)
@@ -208,8 +208,8 @@ def test_discovered_files_each_session_under_its_project(capsys, monkeypatch, tm
 
 def test_discovered_prints_nothing_when_there_are_none(capsys, monkeypatch):
     """Not a line of prose — the caller parses each line as JSON."""
-    from interact.agents import registry as reg
-    from interact.cli.app import agents_discovered
+    from galaius.agents import registry as reg
+    from galaius.cli.app import agents_discovered
 
     monkeypatch.setattr(reg, "_discover_foreign", lambda: [])
     agents_discovered()
@@ -224,8 +224,8 @@ def test_a_broken_discovery_is_LOUD_rather_than_an_empty_answer(capsys, monkeypa
     handler at all means something is actually wrong, which is exactly what must be said."""
     import pytest as _pytest
 
-    from interact.agents import registry as reg
-    from interact.cli.app import agents_discovered
+    from galaius.agents import registry as reg
+    from galaius.cli.app import agents_discovered
 
     def boom():
         raise OSError("no such directory")
@@ -248,9 +248,9 @@ def test_the_permission_flag_spelling_is_pinned_end_to_end(monkeypatch):
     """
     import importlib
 
-    # `interact.cli` re-exports the cyclopts `app` object, and that attribute shadows the
+    # `galaius.cli` re-exports the cyclopts `app` object, and that attribute shadows the
     # submodule — the same trap test_agent_run.py already documents.
-    cli = importlib.import_module("interact.cli.app")
+    cli = importlib.import_module("galaius.cli.app")
 
     got = {}
 
@@ -273,13 +273,13 @@ def test_the_permission_flag_spelling_is_pinned_end_to_end(monkeypatch):
 def test_an_unknown_mode_at_the_CLI_reads_like_every_other_error(monkeypatch, capsys):
     """`command()` validates, but it is an argv BUILDER four frames below the boundary — the MCP
     tool catches its ValueError and the CLI did not, so `--permission-mode typo` printed a
-    traceback where every other interact failure prints one actionable line.
+    traceback where every other galaius failure prints one actionable line.
     """
     import importlib
 
-    cli = importlib.import_module("interact.cli.app")
+    cli = importlib.import_module("galaius.cli.app")
     monkeypatch.setattr(ClaudeCodeProvider, "available", lambda self: True)
-    monkeypatch.setattr("interact.agents.run.load_policy", lambda: pytest.fail("invalid mode must be rejected before policy loading"))
+    monkeypatch.setattr("galaius.agents.run.load_policy", lambda: pytest.fail("invalid mode must be rejected before policy loading"))
 
     with pytest.raises(SystemExit) as exit_info:
         cli.agents_spawn("t", agent="tester", permission_mode="definitely-not-a-mode")
@@ -298,9 +298,9 @@ def test_agents_run_reports_a_bad_mode_too(monkeypatch, capsys):
     would have raised NameError instead. One report is one sample of a class."""
     import importlib
 
-    cli = importlib.import_module("interact.cli.app")
+    cli = importlib.import_module("galaius.cli.app")
     monkeypatch.setattr(ClaudeCodeProvider, "available", lambda self: True)
-    monkeypatch.setattr("interact.agents.run.load_policy", lambda: pytest.fail("invalid mode must be rejected before policy loading"))
+    monkeypatch.setattr("galaius.agents.run.load_policy", lambda: pytest.fail("invalid mode must be rejected before policy loading"))
 
     with pytest.raises(SystemExit) as exit_info:
         cli.agents_run("t", agent="tester", permission_mode="definitely-not-a-mode")
@@ -319,7 +319,7 @@ def test_the_doctor_reports_the_criterion_when_one_governs_the_role(monkeypatch,
     criterion looked like it did nothing and the honest-seeming move was to pin a model id —
     which is exactly what a criterion exists to avoid.
     """
-    monkeypatch.setattr("interact.models.Model.is_available", lambda self: self.id == "zai/glm-4.5v")
+    monkeypatch.setattr("galaius.models.Model.is_available", lambda self: self.id == "zai/glm-4.5v")
     monkeypatch.setattr(runtime_config, "image_criteria", "cap.vlm and aa.intelligence >= 1")
     cli._print_resolved_models()
     out = capsys.readouterr().out
@@ -328,8 +328,8 @@ def test_the_doctor_reports_the_criterion_when_one_governs_the_role(monkeypatch,
 
 
 def test_agent_provider_json_preserves_disabled_and_unavailable_choices(monkeypatch, capsys):
-    from interact.cli import app_commands
-    from interact.agents.policy import Policy
+    from galaius.cli import app_commands
+    from galaius.agents.policy import Policy
 
     policy = Policy(providers={"claude": False})
     monkeypatch.setattr(Policy, "load", classmethod(lambda cls: policy))
@@ -342,8 +342,8 @@ def test_agent_provider_json_preserves_disabled_and_unavailable_choices(monkeypa
 
 
 def test_agent_provider_json_listing_never_mutates_policy(monkeypatch, capsys):
-    from interact.cli import app_commands
-    from interact.agents.policy import Policy
+    from galaius.cli import app_commands
+    from galaius.agents.policy import Policy
 
     monkeypatch.setattr(Policy, "load", classmethod(lambda cls: Policy()))
     monkeypatch.setattr(Policy, "set_provider_active", lambda *args: pytest.fail("must not mutate"))

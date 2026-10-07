@@ -16,7 +16,7 @@ import json
 
 import pytest
 
-from interact.agents.profiles import (
+from galaius.agents.profiles import (
     ALLOWED_ENV, PROFILE_PREFIX, overlay_for, profiles_from,
 )
 
@@ -77,7 +77,7 @@ def test_a_malformed_profile_value_yields_nothing(value):
 @pytest.fixture
 def named_profile_role(tmp_path):
     """Satisfy real role-definition and model-policy prerequisites before profile validation."""
-    from interact.config import UserConfig
+    from galaius.config import UserConfig
 
     role = "profile-test-role"
     definition = tmp_path / ".claude" / "agents" / f"{role}.md"
@@ -93,11 +93,11 @@ def named_profile_role(tmp_path):
 async def test_the_spawn_tool_refuses_a_profile_nobody_defined(monkeypatch, named_profile_role):
     """Silently ignoring an unknown profile is the dangerous version: the agent runs, looks fine,
     and quietly used the wrong model. Refuse, and say which profiles exist."""
-    import interact.server as srv
+    import galaius.server as srv
 
-    monkeypatch.setattr("interact.agents.providers.ClaudeCodeProvider.available", lambda self: True)
+    monkeypatch.setattr("galaius.agents.providers.ClaudeCodeProvider.available", lambda self: True)
 
-    monkeypatch.delenv("INTERACT_PROFILE_CHEAP", raising=False)
+    monkeypatch.delenv("GALAIUS_PROFILE_CHEAP", raising=False)
     out = await srv.agent_spawn("do a thing", agent=named_profile_role, profile="does-not-exist")
     assert out.startswith("ERROR:"), out
     assert "does-not-exist" in out
@@ -105,10 +105,10 @@ async def test_the_spawn_tool_refuses_a_profile_nobody_defined(monkeypatch, name
 
 @pytest.mark.asyncio
 async def test_a_known_profile_cannot_override_a_named_roles_policy(monkeypatch, named_profile_role):
-    import interact.server as srv
+    import galaius.server as srv
 
-    monkeypatch.setattr("interact.agents.providers.ClaudeCodeProvider.available", lambda self: True)
-    monkeypatch.setenv("INTERACT_PROFILE_CHEAP", "ollama/fixture-model")
+    monkeypatch.setattr("galaius.agents.providers.ClaudeCodeProvider.available", lambda self: True)
+    monkeypatch.setenv("GALAIUS_PROFILE_CHEAP", "ollama/fixture-model")
     out = await srv.agent_spawn("do a thing", agent=named_profile_role, profile="cheap")
     assert out.startswith("ERROR:"), out
     assert "cannot be bypassed with a provider profile" in out
@@ -118,12 +118,12 @@ async def test_a_known_profile_cannot_override_a_named_roles_policy(monkeypatch,
 async def test_a_defined_profile_reaches_the_spawn(monkeypatch):
     """The producer/consumer seam: a profile that resolves must actually reach `run_agent`, not
     merely exist in a module nothing calls."""
-    import interact.server as srv
-    from interact.agents import run as run_mod
+    import galaius.server as srv
+    from galaius.agents import run as run_mod
 
-    monkeypatch.setattr("interact.agents.providers.ClaudeCodeProvider.available", lambda self: True)
+    monkeypatch.setattr("galaius.agents.providers.ClaudeCodeProvider.available", lambda self: True)
 
-    monkeypatch.setenv("INTERACT_PROFILE_CHEAP", "ollama/deepseek-v4-flash")
+    monkeypatch.setenv("GALAIUS_PROFILE_CHEAP", "ollama/deepseek-v4-flash")
     seen: dict = {}
 
     async def fake_run(provider, task, **kw):
@@ -139,13 +139,13 @@ async def test_a_defined_profile_reaches_the_spawn(monkeypatch):
 def test_a_provider_prefixed_model_routes_even_without_a_named_profile(monkeypatch):
     """The gap that made "researcher runs on DeepSeek V4" untrue in practice.
 
-    A named profile (INTERACT_PROFILE_X=ollama/model) got the env overlay AND a bare model name for
+    A named profile (GALAIUS_PROFILE_X=ollama/model) got the env overlay AND a bare model name for
     the CLI. But a `provider/name` id declared in the company file — or chosen in the panel — was
     handed to the vendor CLI verbatim, which cannot resolve `ollama/deepseek-v4-pro:cloud`, so every
     dispatch died at startup. The pin was then reverted with the cause recorded as "routing config
-    is Alan's side"; it was interact's side.
+    is Alan's side"; it was galaius's side.
     """
-    from interact.agents.run import resolve_model
+    from galaius.agents.run import resolve_model
 
     env = {"OLLAMA_API_BASE": "http://localhost:11434"}
     overlay, cli_model = resolve_model("ollama/deepseek-v4-pro:cloud", env)
@@ -159,7 +159,7 @@ def test_a_provider_prefixed_model_routes_even_without_a_named_profile(monkeypat
 def test_a_vendor_model_is_left_completely_alone():
     """`claude-sonnet-5` means the vendor's own default endpoint. Redirecting it would send the
     operator's credentials somewhere nobody chose."""
-    from interact.agents.run import resolve_model
+    from galaius.agents.run import resolve_model
 
     overlay, cli_model = resolve_model("claude-sonnet-5", {})
     assert overlay == {}
@@ -168,7 +168,7 @@ def test_a_vendor_model_is_left_completely_alone():
 
 def test_an_unroutable_prefix_is_left_alone_rather_than_guessed():
     """A provider with no known endpoint must not be invented — refusing to act is safe here."""
-    from interact.agents.run import resolve_model
+    from galaius.agents.run import resolve_model
 
     overlay, cli_model = resolve_model("whoknows/some-model", {})
     assert overlay == {}
@@ -176,7 +176,7 @@ def test_an_unroutable_prefix_is_left_alone_rather_than_guessed():
 
 
 def test_no_model_asked_for_means_no_opinion():
-    from interact.agents.run import resolve_model
+    from galaius.agents.run import resolve_model
 
     assert resolve_model(None, {}) == ({}, None)
 
@@ -226,7 +226,7 @@ def test_a_bearer_token_is_copied_into_one_fixed_key_never_the_real_openai_name(
     OPENAI_API_KEY name — that would masquerade as (or collide with) a real OpenAI credential
     Codex's native, ChatGPT-authenticated provider might also read from the same process env."""
     got = overlay_for("hf/glm-5.2", env={"HF_TOKEN": "tok42"})
-    assert got["INTERACT_OPENAI_COMPAT_KEY"] == "tok42"
+    assert got["GALAIUS_OPENAI_COMPAT_KEY"] == "tok42"
     assert "OPENAI_API_KEY" not in got
 
 
@@ -234,13 +234,13 @@ def test_no_token_configured_means_no_key_in_the_overlay():
     """A bare self-hosted server started with no --api-key needs no Authorization header at
     all — absence must stay absence, never an empty-string credential."""
     got = overlay_for("vllm/glm-5.2", env={"VLLM_BASE_URL": "http://gpubox.lan:8000/v1"})
-    assert "INTERACT_OPENAI_COMPAT_KEY" not in got
+    assert "GALAIUS_OPENAI_COMPAT_KEY" not in got
 
 
 def test_an_openai_compat_model_routes_even_when_the_catalog_has_never_heard_of_it():
     """MODEL THE CATALOG HAS NEVER HEARD OF case, at the same seam the ollama regression test
     above covers: a literal provider/name id resolves on shape alone, never on catalog lookup."""
-    from interact.agents.run import resolve_model
+    from galaius.agents.run import resolve_model
 
     env = {"VLLM_BASE_URL": "http://gpubox.lan:8000/v1"}
     overlay, cli_model = resolve_model("vllm/some-model-nobody-catalogued", env)
@@ -251,26 +251,26 @@ def test_an_openai_compat_model_routes_even_when_the_catalog_has_never_heard_of_
 # ── activate once, never twice ──────────────────────────────────────────────────────────────────
 
 
-def test_a_child_is_not_handed_interact_twice(tmp_path, monkeypatch):
+def test_a_child_is_not_handed_galaius_twice(tmp_path, monkeypatch):
     """"we should be able to activate the 'agents' for the provider, but once (and not twice)...
     no conflicts."
 
-    A spawned Claude agent received --mcp-config registering interact — while the user's own
-    ~/.claude.json ALREADY registers interact at user scope, because that is what `interact
+    A spawned Claude agent received --mcp-config registering galaius — while the user's own
+    ~/.claude.json ALREADY registers galaius at user scope, because that is what `galaius
     install` sets up. The child then carries two registrations of the same server. Attribution
-    does not need the duplicate: INTERACT_PARENT_RUN_ID travels in the child's process
+    does not need the duplicate: GALAIUS_PARENT_RUN_ID travels in the child's process
     environment, which the globally-configured server inherits.
     """
-    from interact.agents.run import already_meshed
+    from galaius.agents.run import already_meshed
 
     cfg = tmp_path / ".claude.json"
-    cfg.write_text('{"mcpServers": {"interact": {"command": "/usr/local/bin/interact"}}}')
+    cfg.write_text('{"mcpServers": {"galaius": {"command": "/usr/local/bin/galaius"}}}')
     assert already_meshed("claude") is True
 
 
-def test_a_machine_without_interact_registered_still_gets_the_mesh(tmp_path, monkeypatch):
-    """The mesh exists for exactly this case: a provider with no interact of its own."""
-    from interact.agents.run import already_meshed
+def test_a_machine_without_galaius_registered_still_gets_the_mesh(tmp_path, monkeypatch):
+    """The mesh exists for exactly this case: a provider with no galaius of its own."""
+    from galaius.agents.run import already_meshed
 
     assert already_meshed("claude") is False
     (tmp_path / ".claude.json").write_text('{"mcpServers": {}}')
@@ -280,13 +280,13 @@ def test_a_machine_without_interact_registered_still_gets_the_mesh(tmp_path, mon
 def test_a_broken_provider_config_never_blocks_the_spawn(tmp_path, monkeypatch):
     """A corrupt ~/.claude.json must degrade to 'not registered' — doubling a server is annoying,
     a spawn that refuses to start is worse."""
-    from interact.agents.run import already_meshed
+    from galaius.agents.run import already_meshed
 
     (tmp_path / ".claude.json").write_text("{ not json")
     assert already_meshed("claude") is False
 
 
 def test_an_unknown_provider_is_assumed_unmeshed():
-    from interact.agents.run import already_meshed
+    from galaius.agents.run import already_meshed
 
     assert already_meshed("fixture-unknown-provider") is False

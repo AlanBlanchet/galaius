@@ -9,7 +9,7 @@ chose a profile."""
 
 import pytest
 
-from interact.server import _browser_isolate
+from galaius.server import _browser_isolate
 
 
 def _flags(argv: list[str]) -> str:

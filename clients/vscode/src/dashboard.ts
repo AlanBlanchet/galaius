@@ -26,7 +26,7 @@ import { scopeStore } from "./scopeStore";
 import { readAgentRuns, summarise, withDepth } from "./agents";
 import { describeAge as describeBoardAge, readLeaderboard } from "./leaderboard";
 import { describeAge, ageSeconds, isLive, loadCatalog, seeingModels, type Catalog } from "./catalog";
-import { agentsDir, usageLogPathFor, INTERACT_CONFIG_PATH } from "./paths";
+import { agentsDir, usageLogPathFor, GALAIUS_CONFIG_PATH } from "./paths";
 import { DIM_FOREGROUND } from "./themeTokens";
 import { claimColumn, nextColumn, releaseColumn } from "./panelColumn";
 import { presentMediaStatus } from "./mediaStatus";
@@ -61,7 +61,7 @@ function getNonce(): string {
   return result;
 }
 
-const VIEW_TYPE = "interact.dashboard";
+const VIEW_TYPE = "galaius.dashboard";
 
 // Benchmark ids the dashboard surfaces. These are taxonomy ids (matches
 // Benchmark.id in benchmarks.json), not domain data.
@@ -171,7 +171,7 @@ export class DashboardPanel {
       localResourceRoots: [vscode.Uri.joinPath(extensionUri, "out")],
     };
     panel.webview.onDidReceiveMessage((msg) => this.handleMessage(msg));
-    // One column for interact's surfaces: a new one joins the group its siblings already hold
+    // One column for galaius's surfaces: a new one joins the group its siblings already hold
     // rather than opening yet another beside your code.
     claimColumn("dashboard", panel.viewColumn);
     panel.onDidDispose(() => {
@@ -186,7 +186,7 @@ export class DashboardPanel {
   }
 
   /** Path of the usage log the running server writes to — under the configured base dir, so a
-   *  custom `interact.debug.dir` (== Python's INTERACT_DEBUG_DIR) is honoured, not hardcoded. */
+   *  custom `galaius.debug.dir` (== Python's GALAIUS_DEBUG_DIR) is honoured, not hardcoded. */
   private usageLogPath(): string {
     return usageLogPathFor(cfg().get<string>("debug.dir") || "");
   }
@@ -194,13 +194,13 @@ export class DashboardPanel {
   /** Live-sync the panel: the MCP server is a SEPARATE process that appends to the usage log and
    *  config.env as you work, so without watching them the panel would freeze at open time. Watch
    *  the usage log's dir and config.env's dir, debounced into one refresh. config.env is located
-   *  DIRECTLY (not as the log dir's parent): the two move independently — point `interact.debug.dir`
-   *  at a project's out/ and the parent is that project, not `~/.interact`, so walking up would
+   *  DIRECTLY (not as the log dir's parent): the two move independently — point `galaius.debug.dir`
+   *  at a project's out/ and the parent is that project, not `~/.galaius`, so walking up would
    *  both miss key/setting edits and watch an unrelated directory. */
   private startWatching(): void {
     const dirs = new Set([
       path.dirname(this.usageLogPath()),
-      path.dirname(INTERACT_CONFIG_PATH),
+      path.dirname(GALAIUS_CONFIG_PATH),
       // Agent runs appear and change here; without this a spawned agent would sit invisible
       // until something else happened to trigger a refresh.
       agentsDir(),
@@ -248,7 +248,7 @@ export class DashboardPanel {
     }
     const panel = vscode.window.createWebviewPanel(
       VIEW_TYPE,
-      "Interact",
+      "Galaius",
       nextColumn() as vscode.ViewColumn,
       {
         enableScripts: true,
@@ -419,7 +419,7 @@ export class DashboardPanel {
         break;
       }
       case "changeModel": {
-        await vscode.commands.executeCommand("interact.selectModel");
+        await vscode.commands.executeCommand("galaius.selectModel");
         this.refresh();
         break;
       }
@@ -530,7 +530,7 @@ export class DashboardPanel {
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     if (!workspaceRoot) return { ok: false, output: "Open a workspace before using prompts." };
     const backend = await resolveConversationBackend({
-      projectPath: cfg().get<string>("projectPath") || process.env.INTERACT_PROJECT_PATH,
+      projectPath: cfg().get<string>("projectPath") || process.env.GALAIUS_PROJECT_PATH,
       extensionVersion: conversationExtensionVersion(), workspaceRoot,
     });
     if (!backend.available) return { ok: false, output: backend.reason };
@@ -686,7 +686,7 @@ export class DashboardPanel {
 
   /** Benchmark data sources — where each benchmark's live scores come from and the optional key
    *  that source needs. Lets the user supply keys in-UI (no CLI), grouped per benchmark, with a
-   *  nudge: live scores let interact recommend the best current model. */
+   *  nudge: live scores let galaius recommend the best current model. */
   private benchmarkDataCell(): CellUpdate {
     const content: CellContent[] = [
       { kind: "row", label: "Benchmark source availability and refresh controls." },
@@ -762,7 +762,7 @@ export class DashboardPanel {
    *  shared billing presenter keeps API charges, subscription quota, credits and local compute
    *  separate rather than turning one API-equivalent total into a claim about the user's bill.
    *
-   *  Runs interact did NOT spawn (the user's own editor windows) are marked, so the panel is an
+   *  Runs galaius did NOT spawn (the user's own editor windows) are marked, so the panel is an
    *  honest view of the machine rather than only of our own children.
    */
   private agentsCell(): CellUpdate {
@@ -783,7 +783,7 @@ export class DashboardPanel {
             message:
               "No agent runs yet. Once a team is working, every run appears here as a lane on a " +
               "shared clock \u2014 who is running, on what, for how long, and who launched whom.",
-            hint: 'interact agents run "<task>"',
+            hint: 'galaius agents run "<task>"',
           },
         ],
       };
@@ -807,7 +807,7 @@ export class DashboardPanel {
         cwd,
         task: run.task || undefined,
         // `foreign` is provenance rather than lifecycle, but it is the read that matters here: a
-        // session interact did not spawn is drawn as a ghost, never as our own work.
+        // session galaius did not spawn is drawn as a ghost, never as our own work.
         status: run.foreign ? "foreign" : run.status,
         parentId: run.parent_run_id ?? null,
         depth,

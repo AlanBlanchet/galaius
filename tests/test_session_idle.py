@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from interact.browser import BrowserManager, SessionRegistry
+from galaius.browser import BrowserManager, SessionRegistry
 from tests.support import browser_config
 
 

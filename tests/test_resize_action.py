@@ -10,10 +10,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from interact.actions.dispatch import _run_actions_browser
-from interact.actions.models import DESKTOP_ONLY_ACTIONS, AnyAction, ResizeAction
-from interact.desktop import DesktopWindow
-from interact.server import _run_actions_desktop
+from galaius.actions.dispatch import _run_actions_browser
+from galaius.actions.models import DESKTOP_ONLY_ACTIONS, AnyAction, ResizeAction
+from galaius.desktop import DesktopWindow
+from galaius.server import _run_actions_desktop
 
 adapter = TypeAdapter(list[AnyAction])
 
@@ -25,7 +25,7 @@ def desktop_spies():
     with (
         patch.object(DesktopWindow, "click", new_callable=AsyncMock) as click,
         patch.object(DesktopWindow, "resize", new_callable=AsyncMock, create=True) as resize,
-        patch("interact.actions.dispatch.DesktopState") as state,
+        patch("galaius.actions.dispatch.DesktopState") as state,
     ):
         state.capture.return_value = None
         yield click, resize
@@ -73,15 +73,15 @@ async def test_desktop_resize_reports_a_refusal(desktop_spies):
 
 @pytest.mark.asyncio
 async def test_browser_rejects_resize_and_points_at_emulate_device():
-    from interact.actions.dispatch import _run_actions_browser
+    from galaius.actions.dispatch import _run_actions_browser
 
     mgr = MagicMock()
     mgr.active_tab = 0
     mgr.get_page = AsyncMock(return_value=MagicMock())
     mgr.drain_dialog_log.return_value = []
     with (
-        patch("interact.server._capture", new_callable=AsyncMock) as capture,
-        patch("interact.server._session_response", side_effect=lambda s, r: r),
+        patch("galaius.server._capture", new_callable=AsyncMock) as capture,
+        patch("galaius.server._session_response", side_effect=lambda s, r: r),
     ):
         capture.return_value = MagicMock(title="t", url="u", visible_text="v")
         report = await _run_actions_browser(

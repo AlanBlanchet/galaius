@@ -8,7 +8,7 @@
  *
  *   - an action is offered only when it would WORK. Stopping a finished agent is not an action,
  *     it is a dead menu item, and one of those teaches you the whole menu is untrustworthy;
- *   - one of your own editor sessions can be READ but not driven. interact does not supervise it,
+ *   - one of your own editor sessions can be READ but not driven. galaius does not supervise it,
  *     so offering "message" would promise a reach the product does not have.
  *
  *  No vscode import: the decision is testable, and the caller executes the command.
@@ -41,40 +41,40 @@ export interface ActionSubject {
 const ALL: (AgentAction & { when: (s: ActionSubject) => boolean })[] = [
   {
     id: "message", label: "Say something to them", mark: "✉",
-    command: "interact.agents.send",
+    command: "galaius.agents.send",
     // Ours and alive. A finished run has no session left to answer, and a foreign one is not
     // ours to drive.
     when: (s) => s.status === "running",
   },
   {
     id: "transcript", label: "Read what they did", mark: "▤",
-    command: "interact.agents.show",
+    command: "galaius.agents.show",
     // Always. This is the transparency the whole product exists for, and it is as true of a run
     // that ended yesterday as of one working now.
     when: () => true,
   },
   {
     id: "prompt", label: "See their instructions", mark: "◱",
-    command: "interact.agents.definition",
+    command: "galaius.agents.definition",
     when: (s) => Boolean(s.definition_path),
   },
   {
     // "find a way that we could easily chose what models are ran for what" — reachable from the row
     // that IS the agent, rather than only from a settings page somewhere else.
     id: "model", label: "Choose the model it runs on", mark: "◈",
-    command: "interact.agents.model",
+    command: "galaius.agents.model",
     // Only where there is an agent to key the choice by: the preference is stored per DEFINITION,
     // so a run with no definition has nothing to remember it against.
     when: (s) => Boolean(s.agent) && s.status !== "foreign",
   },
   {
     id: "events", label: "Raw stream", mark: "⋮",
-    command: "interact.agents.showEvents",
+    command: "galaius.agents.showEvents",
     when: (s) => s.status !== "foreign",
   },
   {
     id: "stop", label: "Stop them", mark: "■",
-    command: "interact.agents.stop",
+    command: "galaius.agents.stop",
     when: (s) => s.status === "running",
   },
 ];

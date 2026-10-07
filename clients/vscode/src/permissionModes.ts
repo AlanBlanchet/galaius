@@ -4,7 +4,7 @@
  *  writes, the unwatched one plans and touches nothing. The panel used to spawn agents without
  *  saying which: every run got the vendor's default, unshown.
  *
- *  List is READ from the CLI (interact agents modes), never hardcoded — two copies of a vendor's
+ *  List is READ from the CLI (galaius agents modes), never hardcoded — two copies of a vendor's
  *  flag values drift, and the copy further from the binary is the one that drifts. Tab-separated,
  *  not prose, so the parser survives a reworded description.
  */
@@ -105,8 +105,8 @@ export async function knownModes(provider = "claude"): Promise<PermissionMode[]>
   // Lazy import so this module stays loadable by node --test --experimental-strip-types, which
   // resolves real specifiers and would demand a ".ts" suffix tsc then refuses to emit. Pure
   // functions above are what tests exercise; this path never runs there.
-  const { interactCli } = await import("./interactCli");
-  const { stdout, error } = await interactCli(["agents", "modes", "--provider", provider]);
+  const { galaiusCli } = await import("./galaiusCli");
+  const { stdout, error } = await galaiusCli(["agents", "modes", "--provider", provider]);
   if (error) return [];
   const modes = parseModes(stdout);
   cached.set(provider, modes);

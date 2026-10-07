@@ -5,7 +5,7 @@ from typing import Union
 
 from pydantic import TypeAdapter
 
-from interact_core import (
+from galaius_core import (
     PromptCatalogPage,
     PromptChannelEntry,
     PromptCreateRequest,

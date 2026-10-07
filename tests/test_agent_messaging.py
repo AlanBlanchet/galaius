@@ -1,7 +1,7 @@
 """Delivering a message to a running agent.
 
 Two surfaces send messages — the `agent_send` MCP tool (an agent addressing a teammate) and the
-CLI (`interact agents send`, which is how the VS Code panel lets the OPERATOR join in). They must
+CLI (`galaius agents send`, which is how the VS Code panel lets the OPERATOR join in). They must
 agree on every refusal, so the checks live here once rather than being written twice and drifting.
 """
 
@@ -12,9 +12,9 @@ import threading
 
 import pytest
 
-from interact.agents import agent_queue, messaging
-from interact.agents import registry as reg
-from interact.agents.providers import PermissionMode
+from galaius.agents import agent_queue, messaging
+from galaius.agents import registry as reg
+from galaius.agents.providers import PermissionMode
 from tests.support import ScriptedProvider, install_provider, register_run, use_policy
 
 
@@ -24,7 +24,7 @@ def test_an_unknown_run_id_says_how_to_find_the_real_ones():
 
 
 def test_it_refuses_to_type_into_one_of_the_users_own_editor_sessions(monkeypatch):
-    """A foreign run is a session the user is driving — interact watches it, never types in it.
+    """A foreign run is a session the user is driving — galaius watches it, never types in it.
     It has no stored record: only the provider's own session listing knows it."""
     monkeypatch.setattr(reg, "list_runs", lambda **kw: [_Foreign()])
     error = messaging.check_deliverable("r1")[1]
@@ -105,7 +105,7 @@ def test_unknown_session_ownership_on_either_side_is_never_treated_as_a_mismatch
 
 
 # ── Run ids: what the tool PRINTS must be what it ACCEPTS ───────────────────────────────────
-# `interact agents list` shows 8-character ids, and every command that takes one demanded the full
+# `galaius agents list` shows 8-character ids, and every command that takes one demanded the full
 # uuid — so copying an id straight off the tool's own output failed with "no agent run". The panel
 # passes full ids, but a human reading the list cannot.
 
@@ -216,17 +216,17 @@ def _resume_policy(monkeypatch):
                reasoning={"tester": "high"}, providers={"resume-fake": True})
 
 
-def test_delivery_queues_against_vendor_session_not_interact_id(monkeypatch):
-    from interact.agents import agent_queue
+def test_delivery_queues_against_vendor_session_not_galaius_id(monkeypatch):
+    from galaius.agents import agent_queue
     provider = _continuation_policy(monkeypatch)
-    register_run("interact-run", name="reviewer", provider="fake", task="t", pid=1234, agent="tester", provider_session_id="vendor-thread")
+    register_run("galaius-run", name="reviewer", provider="fake", task="t", pid=1234, agent="tester", provider_session_id="vendor-thread")
     monkeypatch.setattr(agent_queue, "ensure_dispatcher_locked", lambda *args, **kwargs: 1)
 
-    delivery = messaging.deliver_message("interact-run", "ping", sender="operator")
+    delivery = messaging.deliver_message("galaius-run", "ping", sender="operator")
 
     assert delivery.state == "queued" and delivery.queue_id
     assert provider.calls == []
-    assert agent_queue.items("interact-run")[0].message_id
+    assert agent_queue.items("galaius-run")[0].message_id
 
 
 def test_peer_message_carries_registry_model_context_without_inventing_capability(monkeypatch):
@@ -252,23 +252,23 @@ def test_peer_message_carries_registry_model_context_without_inventing_capabilit
 
 
 def test_stopped_delivery_resumes_with_fresh_policy_and_tracks_new_pid(monkeypatch):
-    from interact.agents import agent_queue
+    from galaius.agents import agent_queue
     provider = _continuation_policy(monkeypatch)
-    register_run("interact-run", name="reviewer", provider="fake", task="t", pid=1234, agent="tester", provider_session_id="vendor-thread")
+    register_run("galaius-run", name="reviewer", provider="fake", task="t", pid=1234, agent="tester", provider_session_id="vendor-thread")
     monkeypatch.setattr(reg, "_alive", lambda pid: False)
     monkeypatch.setattr(reg, "_discover_foreign", lambda: [])
 
     monkeypatch.setattr(agent_queue, "ensure_dispatcher_locked", lambda *args, **kwargs: 1)
-    delivery = messaging.deliver_message("interact-run", "continue", sender="operator")
+    delivery = messaging.deliver_message("galaius-run", "continue", sender="operator")
 
     assert delivery.state == "queued" and delivery.queue_id
     assert provider.calls == []
-    tracked = reg.get_run("interact-run")
+    tracked = reg.get_run("galaius-run")
     assert tracked is not None and tracked.pid == 1234
 
 
 # ── A crashed or finished run resumes exactly like a stopped one ───────────────────────────
-# `interact agents send` never checked "running" — the dispatcher only asks whether the recorded
+# `galaius agents send` never checked "running" — the dispatcher only asks whether the recorded
 # pid is ALIVE (`_active`). A machine restart kills the pid without ever calling `finish()`, so a
 # genuinely crashed run's on-disk record is indistinguishable from `status="running"` until
 # something re-derives it; a normally finished run's `status="done"` is exactly the same shape the
@@ -279,7 +279,7 @@ def test_stopped_delivery_resumes_with_fresh_policy_and_tracks_new_pid(monkeypat
 
 @pytest.mark.parametrize("recorded_status,exit_code", [("running", None), ("done", 0), ("crashed", None)])
 def test_a_crashed_or_finished_run_resumes_with_full_context(monkeypatch, recorded_status, exit_code):
-    from interact.agents import agent_queue
+    from galaius.agents import agent_queue
     provider = _ResumeProvider()
     _resume_policy(monkeypatch)
     monkeypatch.setattr(messaging, "provider_for", lambda _: provider)
@@ -304,7 +304,7 @@ def test_a_crashed_or_finished_run_resumes_with_full_context(monkeypatch, record
 def test_a_vendor_session_that_no_longer_exists_fails_with_its_own_message_not_silently(monkeypatch):
     """The provider's own refusal (an expired/deleted vendor session, an unknown id) must reach
     the caller as a named failure — never swallowed, never reported as a successful reply."""
-    from interact.agents import agent_queue
+    from galaius.agents import agent_queue
     provider = _ResumeProvider()
     provider.script = "import sys; sys.stderr.write('Error: no conversation found for that id\\n'); sys.exit(1)"
     _resume_policy(monkeypatch)
@@ -346,8 +346,8 @@ def _cooldown_policy(monkeypatch):
 
 
 def test_a_resumed_turn_skips_a_cooled_model_and_uses_the_next_ranked_one(monkeypatch):
-    from interact.agents import agent_queue, quota
-    from interact.models import ModelCapability
+    from galaius.agents import agent_queue, quota
+    from galaius.models import ModelCapability
     from tests.support import catalog_of, model as fixture_model
 
     provider = _FixtureCatalogProvider()
@@ -382,8 +382,8 @@ def test_a_resumed_turn_refuses_when_every_candidate_for_its_provider_is_cooled(
     naming what the user can do — never spawn on a model that already refused for quota once
     (the exact bug), and never silently pick a different provider (a vendor session cannot
     switch CLI mid-conversation; that would abandon the conversation history)."""
-    from interact.agents import agent_queue, quota
-    from interact.models import ModelCapability
+    from galaius.agents import agent_queue, quota
+    from galaius.models import ModelCapability
     from tests.support import catalog_of, model as fixture_model
 
     provider = _FixtureCatalogProvider()
@@ -422,7 +422,7 @@ def test_delivery_is_a_validated_model_not_a_dataclass():
 
 
 def test_concurrent_resumes_have_one_writer_and_one_busy_result(monkeypatch):
-    from interact.agents import agent_queue
+    from galaius.agents import agent_queue
     provider = _ResumeProvider()
     provider.script = "import time; time.sleep(1)\n" + provider.script
     monkeypatch.setattr(messaging, "provider_for", lambda _: provider)
@@ -450,7 +450,7 @@ def test_concurrent_resumes_have_one_writer_and_one_busy_result(monkeypatch):
 
 
 def test_wait_records_nonzero_exit_and_bounded_redacted_stderr(monkeypatch):
-    from interact.agents import agent_queue
+    from galaius.agents import agent_queue
     provider = _ResumeProvider()
     provider.script = "import sys; sys.stderr.write('api_key=test-secret-value\\n'); sys.exit(7)"
     _resume_policy(monkeypatch)
@@ -470,7 +470,7 @@ def test_wait_records_nonzero_exit_and_bounded_redacted_stderr(monkeypatch):
 
 
 def test_wait_rejects_a_clean_process_that_emits_no_resume_event(monkeypatch):
-    from interact.agents import agent_queue
+    from galaius.agents import agent_queue
     provider = _ResumeProvider()
     provider.script = "pass"
     _resume_policy(monkeypatch)
@@ -491,7 +491,7 @@ def test_wait_rejects_a_clean_process_that_emits_no_resume_event(monkeypatch):
 
 
 def test_wait_false_still_reaps_and_records_the_resumed_process(monkeypatch):
-    from interact.agents import agent_queue
+    from galaius.agents import agent_queue
     provider = _ResumeProvider()
     provider.script = "import time; time.sleep(0.05)"
     _resume_policy(monkeypatch)
@@ -509,7 +509,7 @@ def test_wait_false_still_reaps_and_records_the_resumed_process(monkeypatch):
 
 
 def test_queued_reply_lookup_uses_persisted_attempt_anchor(monkeypatch):
-    from interact.agents import agent_queue
+    from galaius.agents import agent_queue
 
     provider = _ResumeProvider()
     _resume_policy(monkeypatch)
@@ -537,7 +537,7 @@ def test_record_and_delivery_share_the_transcript_message_limit(monkeypatch):
 
 
 def test_queue_preserves_effective_policy_and_records_fresh_policy_separately(monkeypatch):
-    from interact.agents import agent_queue
+    from galaius.agents import agent_queue
     provider = _DeliveryProvider()
     monkeypatch.setattr(messaging, "provider_for", lambda _: provider)
     use_policy(monkeypatch, messaging, agents={"tester": "fresh-model"},
@@ -566,14 +566,14 @@ def test_queue_preserves_effective_policy_and_records_fresh_policy_separately(mo
 
 
 def test_a_message_the_agent_RECEIVED_points_inward_and_names_the_sender():
-    from interact.agents.events import AgentEvent
+    from galaius.agents.events import AgentEvent
 
     event = AgentEvent(kind="message", from_run="operator", to_run="r1", text="check the tests")
     assert event.summary(viewer="r1") == "← operator: check the tests"
 
 
 def test_a_message_the_agent_SENT_points_outward_and_names_the_recipient(tmp_path, monkeypatch):
-    from interact.agents.events import AgentEvent
+    from galaius.agents.events import AgentEvent
 
     reg.register(run_id="r2", name="perf", provider="claude", task="t", pid=None)
     event = AgentEvent(kind="message", from_run="r1", to_run="r2", text="numbers look fine")
@@ -581,7 +581,7 @@ def test_a_message_the_agent_SENT_points_outward_and_names_the_recipient(tmp_pat
 
 
 def test_with_no_viewer_it_still_names_both_ends_rather_than_a_bare_hash(tmp_path, monkeypatch):
-    from interact.agents.events import AgentEvent
+    from galaius.agents.events import AgentEvent
 
     reg.register(run_id="r1", name="reviewer", provider="claude", task="t", pid=None)
     reg.register(run_id="r2", name="perf", provider="claude", task="t", pid=None)
@@ -590,7 +590,7 @@ def test_with_no_viewer_it_still_names_both_ends_rather_than_a_bare_hash(tmp_pat
 
 
 def test_an_unknown_id_falls_back_to_its_short_form():
-    from interact.agents.events import AgentEvent
+    from galaius.agents.events import AgentEvent
 
     event = AgentEvent(kind="message", from_run="operator", to_run="deadbeef-1111", text="hi")
     assert event.summary(viewer="deadbeef-1111") == "← operator: hi"
@@ -649,7 +649,7 @@ def test_a_message_with_no_anchor_goes_LAST_not_first(tmp_path, monkeypatch):
     raw = reg.raw_events_path("r1")
     raw.parent.mkdir(parents=True, exist_ok=True)
     raw.write_text(_assistant("a turn") + "\n")
-    from interact.agents.events import AgentEvent
+    from galaius.agents.events import AgentEvent
 
     reg.messages_path("r1").write_text(
         AgentEvent(kind="message", text="unanchored", from_run="operator",
@@ -665,7 +665,7 @@ def test_the_mirror_updates_when_the_CONTENT_changes_not_only_its_length(tmp_pat
     reg.register(run_id="r1", name="reviewer", provider="claude", task="t", pid=None)
     events_file = reg.events_path("r1")
     events_file.parent.mkdir(parents=True, exist_ok=True)
-    from interact.agents.events import AgentEvent
+    from galaius.agents.events import AgentEvent
 
     stale = [AgentEvent(kind="text", text="WRONG"), AgentEvent(kind="text", text="ORDER")]
     events_file.write_text("".join(e.model_dump_json() + "\n" for e in stale))

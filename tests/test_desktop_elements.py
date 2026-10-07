@@ -12,7 +12,7 @@ import pytest
 from PIL import Image as PILImage
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from interact.desktop import CoordTransform, DesktopElement, DesktopWindow
+from galaius.desktop import CoordTransform, DesktopElement, DesktopWindow
 
 
 
@@ -22,8 +22,8 @@ async def test_detection_discards_prior_screen_when_content_changes(monkeypatch)
     after navigating must DISCARD the prior screen's refs — not union them onto the new screenshot.
     Regression: home-screen refs (1..8) piled onto the quiz screen because the cache keyed off the
     (unchanging) window title."""
-    import interact.desktop as desktop
-    import interact.vision.detect as detect
+    import galaius.desktop as desktop
+    import galaius.vision.detect as detect
 
     def png(color):
         b = io.BytesIO()
@@ -55,7 +55,7 @@ async def test_detection_discards_prior_screen_when_content_changes(monkeypatch)
 def test_page_signature_tracks_content_not_identity():
     """The page key must be deterministic, change with screen CONTENT, and never raise — it errs
     toward resetting (a new key) rather than ever keeping stale refs."""
-    import interact.vision.detect as detect
+    import galaius.vision.detect as detect
 
     def png(color):
         b = io.BytesIO()
@@ -171,7 +171,7 @@ def test_get_element_invalid_index():
 def test_merge_into_accumulates_within_page_and_clears_on_change():
     """Detections accumulate (refs add up) while the page signature is stable, and clear
     when it changes — the per-window ref session behaviour."""
-    from interact.desktop import DesktopElement, _element_cache, _page_sig
+    from galaius.desktop import DesktopElement, _element_cache, _page_sig
 
     wid = 987654
     _element_cache.pop(wid, None)
@@ -203,7 +203,7 @@ def test_merge_into_accumulates_within_page_and_clears_on_change():
 def test_desktop_element_cache_invalidate_clears_refs_and_signature():
     """#57: a stale/accumulated cache for a nested window must be force-clearable, so the next
     detection starts empty and returns ONLY the live frame's refs."""
-    from interact.desktop import DesktopElement, _element_cache, _page_sig
+    from galaius.desktop import DesktopElement, _element_cache, _page_sig
 
     wid = 4242
     _element_cache[wid] = ["stale-ref"]

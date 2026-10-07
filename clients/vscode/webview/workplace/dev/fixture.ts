@@ -3,7 +3,7 @@
  *  Chosen to hit the cases that actually break a layout rather than to look tidy: two leads with
  *  the SAME name in different projects (the pod colour is the only thing telling them apart), a
  *  report three levels down, reports scattered across four rooms away from their lead, an empty
- *  room, a stalled "running" worker, an errored one, and a session interact did not start.
+ *  room, a stalled "running" worker, an errored one, and a session galaius did not start.
  */
 import { atSeconds } from "../palette";
 import type { TeamState, Worker, ZoneId } from "../../../src/team";
@@ -40,13 +40,13 @@ const ALL = ["reads", "writes", "runs", "sees", "searches", "delegates"];
 
 const SEEDS: Seed[] = [
   // Pod A — a session driving this very piece of work, its people spread over four rooms.
-  ["main", null, "running", "managers", "delegating the workplace view to the artist", null, "interact", 1.94, 3, null, ALL],
-  ["artist", "artist", "running", "studio", "drawing the pixel sprites for the team room", "a", "interact", 0.61, 1, "production", ["reads", "writes", "runs", "sees", "delegates"]],
-  ["researcher", "researcher", "running", "web", "searching the web for pixel art css techniques", "a", "interact", 0.22, 0, "research", ["reads", "writes", "searches", "delegates"]],
-  ["scraper", "scraper", "running", "web", "pulling the tilemap gallery", "c", "interact", 0.08, 6, "research", ["reads", "writes", "runs", "searches", "delegates"]],
-  ["tester", "tester", "running", "lab", "running the webview suite", "a", "interact", 0.34, 12, "quality", ["reads", "writes", "runs", "delegates"]],
-  ["Explore", "Explore", "done", "code", "read 14 files under webview/", "a", "interact", 0.05, 240, null, ["reads"]],
-  ["librarian", "librarian", "done", "library", "synced paradigms/creative.md", "a", "interact", 0.41, 320, "records", ["reads", "writes", "runs", "delegates"]],
+  ["main", null, "running", "managers", "delegating the workplace view to the artist", null, "galaius", 1.94, 3, null, ALL],
+  ["artist", "artist", "running", "studio", "drawing the pixel sprites for the team room", "a", "galaius", 0.61, 1, "production", ["reads", "writes", "runs", "sees", "delegates"]],
+  ["researcher", "researcher", "running", "web", "searching the web for pixel art css techniques", "a", "galaius", 0.22, 0, "research", ["reads", "writes", "searches", "delegates"]],
+  ["scraper", "scraper", "running", "web", "pulling the tilemap gallery", "c", "galaius", 0.08, 6, "research", ["reads", "writes", "runs", "searches", "delegates"]],
+  ["tester", "tester", "running", "lab", "running the webview suite", "a", "galaius", 0.34, 12, "quality", ["reads", "writes", "runs", "delegates"]],
+  ["Explore", "Explore", "done", "code", "read 14 files under webview/", "a", "galaius", 0.05, 240, null, ["reads"]],
+  ["librarian", "librarian", "done", "library", "synced paradigms/creative.md", "a", "galaius", 0.41, 320, "records", ["reads", "writes", "runs", "delegates"]],
 
   // Pod B — another project entirely, same lead NAME, different colour.
   ["main", null, "running", "code", "editing crates/engine/src/kernels.rs", null, "any-compute", 0.77, 8, null, ALL],
@@ -55,8 +55,8 @@ const SEEDS: Seed[] = [
   ["perf-critic", "perf-critic", "error", "lab", "benchmark harness died at p99", "h", "any-compute", 0.09, 61, "quality", ["reads", "runs", "sees", "delegates"]],
 
   // Pod C — a lead whose own parent has already been forgotten by the registry.
-  ["visual-critic", "visual-critic", "running", "studio", "measuring contrast on the agents panel", null, "interact", 0.28, 4, "quality", ["reads", "runs", "sees", "delegates"]],
-  ["ux-critic", "ux-critic", "running", "studio", "walking the surface graph from cold entry", "l", "interact", 0.12, 9, "quality", ["reads", "runs", "sees", "delegates"]],
+  ["visual-critic", "visual-critic", "running", "studio", "measuring contrast on the agents panel", null, "galaius", 0.28, 4, "quality", ["reads", "runs", "sees", "delegates"]],
+  ["ux-critic", "ux-critic", "running", "studio", "walking the surface graph from cold entry", "l", "galaius", 0.12, 9, "quality", ["reads", "runs", "sees", "delegates"]],
 
   // Someone else's session, and someone who has finished and come back to the door.
   ["codex", null, "foreign", "idle", "", null, "unknown", null, 900, null, []],
@@ -64,7 +64,7 @@ const SEEDS: Seed[] = [
 
   // The Finance Desk, which is the whole point of departments: finance work is filed elsewhere and
   // therefore stands in a room of its own, on the other side of the building from the critics.
-  ["auditor", "auditor", "running", "data", "closing the books for the quarter", "a", "interact", 0.07, 5, "finance", ["reads"]],
+  ["auditor", "auditor", "running", "data", "closing the books for the quarter", "a", "galaius", 0.07, 5, "finance", ["reads"]],
 
   /* A DEPARTMENT WHERE EVERY RUN HAS FINISHED, which nothing in this fixture could show before.
      The whole claim of the posture system is that you read a room's condition off where its
@@ -72,8 +72,8 @@ const SEEDS: Seed[] = [
      ever fully done can't put that claim in front of anybody. An independent critic hit exactly
      that and had to record the requirement as untestable — a hole in the fixture, not a gap in
      the feature: the state exists, the harness simply never entered it. */
-  ["teacher", "teacher", "done", "library", "wrote the lesson for Conv2d", "a", "interact", 0.31, 190, "records", ["reads", "writes", "delegates"]],
-  ["advocate", "advocate", "done", "library", "measured every claim in the README", "a", "interact", 0.24, 275, "records", ["reads", "writes", "runs"]],
+  ["teacher", "teacher", "done", "library", "wrote the lesson for Conv2d", "a", "galaius", 0.31, 190, "records", ["reads", "writes", "delegates"]],
+  ["advocate", "advocate", "done", "library", "measured every claim in the README", "a", "galaius", 0.24, 275, "records", ["reads", "writes", "runs"]],
 ];
 
 const ID = "abcdefghijklmnopqrstuvwxyz";

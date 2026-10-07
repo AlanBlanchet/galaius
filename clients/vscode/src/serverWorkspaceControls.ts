@@ -1,6 +1,6 @@
 /** Native workspace controls; Python owns authentication, validation and graph CAS. */
 import * as vscode from "vscode";
-import { interactCli } from "./interactCli.ts";
+import { galaiusCli } from "./galaiusCli.ts";
 import { type PolicyRule } from "./agentModels.ts";
 import { workspaceCommand, refreshWorkspace } from "./serverWorkspace.ts";
 import { acceptWorkspace, parseWorkspace, parseWorkspaceModel, type WorkspaceAgent, type WorkspaceView, type WorkspaceModel } from "./workspaceState.ts";
@@ -16,8 +16,8 @@ export class ServerWorkspaceControls implements vscode.Disposable {
   private executions = new Map<string, WorkflowExecution>();
   private status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 15);
   constructor(private readonly changed: () => void) {
-    this.status.command = "interact.workspace";
-    this.status.name = "Interact server workspace";
+    this.status.command = "galaius.workspace";
+    this.status.name = "Galaius server workspace";
     this.status.text = "$(cloud) Workspace: loading";
     this.status.show();
   }
@@ -27,7 +27,7 @@ export class ServerWorkspaceControls implements vscode.Disposable {
       const view = await refreshWorkspace();
       const root = view?.graph.agents.find(agent => agent.id === view.graph.root_agent?.id);
       this.status.text = view ? `$(cloud) ${root?.name ?? "No Assistant root"}` : "$(plug) Workspace: not connected";
-      this.status.tooltip = view ? `${view.origin}\nWorkspace ${view.workspace_id}\nCurrent server graph · ${view.writable ? "editable" : "read-only"}` : "Local tool settings remain available. Connect using interact agents sync.";
+      this.status.tooltip = view ? `${view.origin}\nWorkspace ${view.workspace_id}\nCurrent server graph · ${view.writable ? "editable" : "read-only"}` : "Local tool settings remain available. Connect using galaius agents sync.";
       this.changed();
       return view;
     } catch (error) {
@@ -40,7 +40,7 @@ export class ServerWorkspaceControls implements vscode.Disposable {
   async open(named?: string): Promise<void> {
     try {
       const view = await vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: "Read server workspace" }, () => this.refresh());
-      if (!view) { void vscode.window.showInformationMessage("Connect a workspace with interact agents sync. Local tool settings remain local."); return; }
+      if (!view) { void vscode.window.showInformationMessage("Connect a workspace with galaius agents sync. Local tool settings remain local."); return; }
       if (named) {
         const agent = view.graph.agents.find(item => item.role_key === named || item.id === named);
         if (!agent) throw new Error("Agent is absent from the current server graph.");
@@ -132,10 +132,10 @@ export class ServerWorkspaceControls implements vscode.Disposable {
       if (!action) return; // draft survives reopening this control
       if (action.key === "ranking") {
         const items = (async () => {
-          const result = await interactCli(["agents", "policy", "--json-out"]);
+          const result = await galaiusCli(["agents", "policy", "--json-out"]);
           if (result.error) throw new Error(result.error);
           const value = JSON.parse(result.stdout);
-          if (!Array.isArray(value.agents)) throw new Error("Model ranking unavailable. Retry with the matching Interact runtime.");
+          if (!Array.isArray(value.agents)) throw new Error("Model ranking unavailable. Retry with the matching Galaius runtime.");
           const rule = (value.agents as PolicyRule[]).find(item => item.name === agent.role_key);
           if (!rule) throw new Error("This agent has no named desktop role in the saved policy.");
           if (!rule.ranked?.length) throw new Error(rule.why ?? "No ranked candidates for this saved model rule.");

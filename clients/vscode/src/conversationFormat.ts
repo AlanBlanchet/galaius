@@ -1132,7 +1132,7 @@ export function chatDocument(
     ? `<header><div class="head-row"><button class="back" id="back" title="Close this conversation">← Close</button>${up}` +
       `<span class="who">${escapeHtml(name)}</span>` +
       `<span class="status">${escapeHtml(status ?? "")}</span>` +
-      `<button type="button" class="settings" id="openSettings" title="Interact settings">⚙</button></div>` +
+      `<button type="button" class="settings" id="openSettings" title="Galaius settings">⚙</button></div>` +
       (facts.length ? `<div class="facts">${facts.join("")}</div>` : "") +
       `</header>`
     : "";
@@ -1168,7 +1168,7 @@ export function chatDocument(
   // workspace switcher, or anything else. Thirteen labelled commands live behind this button; the
   // ones needing an agent already grey themselves out, which is a far better answer than hiding
   // the entire surface.
-  // A session interact did not start cannot be steered from here — the CLI refuses the send,
+  // A session galaius did not start cannot be steered from here — the CLI refuses the send,
   // and a composer that pretends otherwise is a dead control with a Send button. Watching is
   // the honest offer, and the placeholder says where steering happens.
   const route = consoleState?.catalog ? initialRoute(consoleState.catalog) : undefined;
@@ -1237,7 +1237,7 @@ const vscode = acquireVsCodeApi();
     if (back) back.addEventListener("click", () => vscode.postMessage({ type: "back" }));
     const settings = document.getElementById("openSettings");
     if (settings) settings.addEventListener("click", () =>
-      vscode.postMessage({ type: "command", command: "interact.openDashboard" }));
+      vscode.postMessage({ type: "command", command: "galaius.openDashboard" }));
     // A tab switches the panel to that colleague's own conversation — and back to the entry
     // agent, which is what the first tab is for.
     document.addEventListener("click", (e) => {

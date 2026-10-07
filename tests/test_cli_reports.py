@@ -1,5 +1,5 @@
 """The typed report/view shapes the CLI and dashboard render — usage aggregation and the
-`interact` dashboard's own sections."""
+`galaius` dashboard's own sections."""
 
 import json
 from datetime import datetime, timedelta, timezone
@@ -7,14 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from interact.cli.tui import _provider_usage_rows
-from interact.cli.usage import UsageReport
-from interact.cli.view import View
-from interact.config import Config
-from interact.models import Model
+from galaius.cli.tui import _provider_usage_rows
+from galaius.cli.usage import UsageReport
+from galaius.cli.view import View
+from galaius.config import Config
+from galaius.models import Model
 from tests.support import catalog_json
 
-# --- Usage-log aggregation — the data behind `interact usage` -------------------------------
+# --- Usage-log aggregation — the data behind `galaius usage` -------------------------------
 
 
 def _write_log(path: Path, rows: list[dict]) -> None:
@@ -104,7 +104,7 @@ def test_session_usage_keeps_unknown_account_impact_distinct_from_zero(tmp_path:
     )
 
 
-# --- The `interact` dashboard view ----------------------------------------------------------
+# --- The `galaius` dashboard view ----------------------------------------------------------
 
 _SAMPLE = catalog_json(
     ("gemini/g1", 1.0, 2.0),
@@ -122,7 +122,7 @@ def _registry(reset_model_registry):
 class TestDashboardView:
     def test_sections_reflect_state_and_serialize(self, monkeypatch):
         monkeypatch.setenv("GEMINI_API_KEY", "k")
-        monkeypatch.setenv("INTERACT_IMAGE_MODEL", "gemini/g1")
+        monkeypatch.setenv("GALAIUS_IMAGE_MODEL", "gemini/g1")
         Model.load_registry(_SAMPLE)
 
         view = View.dashboard(Config())
@@ -138,4 +138,4 @@ class TestDashboardView:
         assert any(r["model"] == "gemini/g1" for r in view.sections[2].table.rows)
 
         # Round-trips as JSON — the contract an HTTP endpoint serves to the web renderer.
-        assert json.loads(view.model_dump_json())["title"] == "interact"
+        assert json.loads(view.model_dump_json())["title"] == "galaius"

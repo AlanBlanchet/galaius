@@ -115,7 +115,7 @@ test("a real definition still wins over the coordinator fallback", () => {
 });
 
 test("without a company file nothing is invented", () => {
-  /* interact must work for someone with no prompt repo at all — then the provider IS all we know. */
+  /* galaius must work for someone with no prompt repo at all — then the provider IS all we know. */
   const bare = { run_id: "c", provider: "claude", name: "claude", agent: null };
   assert.deepEqual(roleOf(bare), { id: "claude", plain: true });
 });

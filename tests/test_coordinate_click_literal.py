@@ -14,10 +14,10 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from interact.actions.models import ClickAction, HoverAction
-from interact.desktop import DesktopWindow
-from interact.desktop.element import DesktopElement
-from interact.server import _run_actions_desktop
+from galaius.actions.models import ClickAction, HoverAction
+from galaius.desktop import DesktopWindow
+from galaius.desktop.element import DesktopElement
+from galaius.server import _run_actions_desktop
 
 WID = 77
 # A cached element whose box CONTAINS (130, 1180) — the snap trigger. Its centre (300, 1200) is
@@ -31,7 +31,7 @@ def desktop_spies():
     with (
         patch.object(DesktopWindow, "click", new_callable=AsyncMock) as click,
         patch.object(DesktopWindow, "hover", new_callable=AsyncMock) as hover,
-        patch("interact.actions.dispatch.DesktopState") as state,
+        patch("galaius.actions.dispatch.DesktopState") as state,
     ):
         state.capture.return_value = None
         DesktopElement.store(WID, [CACHED])
@@ -100,7 +100,7 @@ async def test_a_stale_detection_warns_instead_of_annotating(desktop_spies, win)
 async def test_no_cached_element_reports_bare_coordinates(win):
     with (
         patch.object(DesktopWindow, "click", new_callable=AsyncMock),
-        patch("interact.actions.dispatch.DesktopState") as state,
+        patch("galaius.actions.dispatch.DesktopState") as state,
         _stale(None),
     ):
         state.capture.return_value = None

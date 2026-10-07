@@ -1,7 +1,7 @@
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from interact.actions import (
+from galaius.actions import (
     AnyAction,
     AnnotateAction,
     BROWSER_ONLY_ACTIONS,
@@ -380,7 +380,7 @@ class _CountPage:
 
 @pytest.mark.asyncio
 async def test_selector_matching_nothing_fails_fast_and_names_the_selector():
-    from interact.actions.models import _click_selector
+    from galaius.actions.models import _click_selector
 
     with pytest.raises(ValueError) as exc:
         await _click_selector(_CountPage(0), "form button[type=submit]")

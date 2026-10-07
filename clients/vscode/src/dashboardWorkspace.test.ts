@@ -19,7 +19,7 @@ test("disconnected dashboard save retains server draft without local writes or r
   fs.existsSync = () => false;
   const panel = Object.create(DashboardPanel.prototype);
   panel.settingsSnapshot = { configured: true, revision: 3, account_id: "00000000-0000-0000-0000-000000000001",
-    stale: false, portable_keys: ["INTERACT_VIDEO_FPS"], values: { INTERACT_VIDEO_FPS: "12" } };
+    stale: false, portable_keys: ["GALAIUS_VIDEO_FPS"], values: { GALAIUS_VIDEO_FPS: "12" } };
   let refreshes = 0;
   panel.refreshRevision = 7;
   panel.refresh = () => { refreshes++; };

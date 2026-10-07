@@ -7,16 +7,16 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from interact_core import AgentGraph, AgentGraphUpdate, AgentRevision, AgentRevisionRef, ConfiguredModelRef, PromptExecutionRef, PromptKey, TriggerInvocation, WorkflowRevision, WorkflowRun
-from interact_core.accounts import Account, Bootstrap, Workspace
+from galaius_core import AgentGraph, AgentGraphUpdate, AgentRevision, AgentRevisionRef, ConfiguredModelRef, PromptExecutionRef, PromptKey, TriggerInvocation, WorkflowRevision, WorkflowRun
+from galaius_core.accounts import Account, Bootstrap, Workspace
 from textual.widgets import Button, Input, Select, Static, TabbedContent, Tree
 
-from interact import USER_AGENT
-from interact.agents.catalog_connection import CatalogAuthenticationError, CatalogConnection
-from interact.cli.app import app as cli
-from interact.cli.tui import InteractTUI, WorkspacePane
-from interact.config import UserConfig
-from interact.server_workspace import AgentEdit, ServerWorkspace, WorkflowConflictError, WorkflowRunRejected, WorkflowRunRequest, WorkflowRunUncertain, WorkspaceConflictError
+from galaius import USER_AGENT
+from galaius.agents.catalog_connection import CatalogAuthenticationError, CatalogConnection
+from galaius.cli.app import app as cli
+from galaius.cli.tui import GalaiusTUI, WorkspacePane
+from galaius.config import UserConfig
+from galaius.server_workspace import AgentEdit, ServerWorkspace, WorkflowConflictError, WorkflowRunRejected, WorkflowRunRequest, WorkflowRunUncertain, WorkspaceConflictError
 
 
 @pytest.fixture
@@ -341,8 +341,8 @@ def test_success_status_with_wrong_edit_is_not_accepted(workspace_server):
 
 
 async def test_tui_keyboard_saves_server_and_retains_conflict_draft(workspace_server, monkeypatch):
-    monkeypatch.setattr(InteractTUI, "_load_registry_info", lambda self: None)
-    app = InteractTUI()
+    monkeypatch.setattr(GalaiusTUI, "_load_registry_info", lambda self: None)
+    app = GalaiusTUI()
     async with app.run_test(size=(120, 55)) as pilot:
         app.query_one(TabbedContent).active = "tab-workspace"
         await pilot.pause()

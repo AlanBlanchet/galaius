@@ -1,8 +1,8 @@
 """End-to-end status bar test.
 
-Opt-in via ``INTERACT_E2E_VSCODE=1``. Builds the VSIX, installs it into a
+Opt-in via ``GALAIUS_E2E_VSCODE=1``. Builds the VSIX, installs it into a
 disposable user/extensions dir, launches VS Code in a fresh window, and OCRs
-the status bar to assert that the word "interact" is visible. Saves the
+the status bar to assert that the word "galaius" is visible. Saves the
 captured strip and OCR output to ``out/tests/{session}/e2e/`` on failure.
 """
 
@@ -21,8 +21,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 EXT_DIR = REPO_ROOT / "clients" / "vscode"
 
 pytestmark = pytest.mark.skipif(
-    os.environ.get("INTERACT_E2E_VSCODE") != "1",
-    reason="opt-in: set INTERACT_E2E_VSCODE=1",
+    os.environ.get("GALAIUS_E2E_VSCODE") != "1",
+    reason="opt-in: set GALAIUS_E2E_VSCODE=1",
 )
 
 
@@ -37,7 +37,7 @@ def _require(tool: str) -> str:
 def vsix(tmp_path_factory) -> Path:
     out = tmp_path_factory.mktemp("vsix")
     subprocess.run(["npm", "run", "compile"], cwd=EXT_DIR, check=True)
-    pkg = out / "interact.vsix"
+    pkg = out / "galaius.vsix"
     subprocess.run(
         ["npx", "vsce", "package", "--no-yarn", "--out", str(pkg)],
         cwd=EXT_DIR,
@@ -54,7 +54,7 @@ def _launch_vscode(tmp_path: Path, vsix: Path) -> subprocess.Popen:
     ext.mkdir()
     env = {
         **os.environ,
-        "INTERACT_AGENTS_DIR": str(tmp_path / ".interact" / "out" / "agents"),
+        "GALAIUS_AGENTS_DIR": str(tmp_path / ".galaius" / "out" / "agents"),
     }
     subprocess.run(
         [
@@ -84,10 +84,10 @@ def _launch_vscode(tmp_path: Path, vsix: Path) -> subprocess.Popen:
     )
 
 
-# Codicon glyph ($(eye)) sits flush against the leading "I" of "Interact" and
+# Codicon glyph ($(eye)) sits flush against the leading "I" of "Galaius" and
 # OCR commonly fuses them into a single glyph ("F", "B", "P" etc.), dropping
-# the "I". We accept any suffix-substring of "interact" as a positive match.
-_FUZZY_NEEDLES = ("interact", "nteract", "teract", "ntera")
+# the "I". We accept any suffix-substring of "galaius" as a positive match.
+_FUZZY_NEEDLES = ("galaius", "nteract", "teract", "ntera")
 
 
 def _preprocess(strip):
@@ -110,7 +110,7 @@ def _ocr(img):
 
 def _vlm_fallback(strip_path: Path) -> bool | None:
     """Optional VLM tiebreaker. Returns True/False, or None if not configured."""
-    model = os.environ.get("INTERACT_IMAGE_MODEL")
+    model = os.environ.get("GALAIUS_IMAGE_MODEL")
     if not model:
         return None
     try:
@@ -129,7 +129,7 @@ def _vlm_fallback(strip_path: Path) -> bool | None:
                     {
                         "type": "text",
                         "text": (
-                            "Does this status bar contain the word 'Interact' "
+                            "Does this status bar contain the word 'Galaius' "
                             "(case-insensitive)? Answer YES or NO."
                         ),
                     },
@@ -145,7 +145,7 @@ def _vlm_fallback(strip_path: Path) -> bool | None:
     return answer.startswith("YES")
 
 
-def test_status_bar_shows_interact(tmp_path, vsix):
+def test_status_bar_shows_galaius(tmp_path, vsix):
     pytest.importorskip("pytesseract")
     PIL = pytest.importorskip("PIL.Image")
     _require("maim")
@@ -190,10 +190,10 @@ def test_status_bar_shows_interact(tmp_path, vsix):
 
         vlm = _vlm_fallback(strip_path)
         if vlm is True:
-            print(f"[statusbar] OCR miss {text!r}; VLM confirmed Interact")
+            print(f"[statusbar] OCR miss {text!r}; VLM confirmed Galaius")
             return
         pytest.fail(
-            f"status bar OCR did not contain 'interact'; got: {text!r}"
+            f"status bar OCR did not contain 'galaius'; got: {text!r}"
             + (" (VLM said NO)" if vlm is False else "")
         )
     finally:

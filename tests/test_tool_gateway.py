@@ -1,5 +1,5 @@
 """The gateway's PC side: a call the server refuses, or a server that does not answer, is an
-error result the agent reads — never a hang, never a crash of interact's MCP server."""
+error result the agent reads — never a hang, never a crash of galaius's MCP server."""
 
 import asyncio
 import json
@@ -10,8 +10,8 @@ from uuid import uuid4
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
-from interact.agents.catalog_connection import CatalogConnection
-from interact.agents.tool_gateway import AgentToolList, GatewayTool, ServedGateway, ToolGateway
+from galaius.agents.catalog_connection import CatalogConnection
+from galaius.agents.tool_gateway import AgentToolList, GatewayTool, ServedGateway, ToolGateway
 
 
 class FakeServer:
@@ -62,7 +62,7 @@ LISTING = AgentToolList(revision="r", agents={"researcher": ("ext__Context7__que
 def test_a_gateway_call_answers_the_server_s_words_or_a_plain_error(tmp_path, monkeypatch, status, body, delay, budget, said):
     fake = FakeServer(status, body, delay)
     monkeypatch.setattr(ToolGateway, "linked", classmethod(lambda cls: fake.gateway(tmp_path)))
-    monkeypatch.setenv("INTERACT_RUN_ID", "run-without-record")
+    monkeypatch.setenv("GALAIUS_RUN_ID", "run-without-record")
     served = ServedGateway(listing=LISTING.model_copy(update={"tools": (LISTING.tools[0].model_copy(update={"timeout": budget}),)}))
     call = served.call("ext__Context7__query-docs", {"query": "react hooks"})
     if isinstance(said, ToolError):

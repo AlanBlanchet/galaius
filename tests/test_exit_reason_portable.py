@@ -1,7 +1,7 @@
 """Decoding a child's exit status must not need signals that only exist on POSIX.
 
 Regression: `_SIGNAL_CAUSE` was keyed by `signal.SIGKILL` / `signal.SIGHUP` objects, evaluated at
-MODULE level. Neither exists on Windows, so importing `interact.desktop.backend` raised
+MODULE level. Neither exists on Windows, so importing `galaius.desktop.backend` raised
 `AttributeError: module 'signal' has no attribute 'SIGKILL'` — and because nearly every module
 imports it, the ENTIRE Windows suite failed at collection. Linux and macOS were green, so a local
 run could not see it; only the Windows CI leg could.
@@ -13,7 +13,7 @@ import signal
 
 import pytest
 
-from interact.desktop.backend import _SIGNAL_CAUSE, _exit_reason
+from galaius.desktop.backend import _SIGNAL_CAUSE, _exit_reason
 
 
 def _needs(name: str):
@@ -50,7 +50,7 @@ def test_exit_reason_reads_the_cause(returncode, expected):
 
 @_needs("SIGKILL")
 def test_the_oom_case_names_the_outside_killer():
-    """A sandbox death by SIGKILL must point away from interact — that distinction was the whole
+    """A sandbox death by SIGKILL must point away from galaius — that distinction was the whole
     point of decoding the status (#84)."""
     assert "OOM" in _exit_reason(-9)
 

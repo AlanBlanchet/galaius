@@ -7,7 +7,7 @@
 
 /** Everything a RESELLER or a release process appends, in no particular order — applied to a
  *  fixpoint below, so stacking them in any sequence still collapses to one name. Python twin is
- *  _SUFFIXES in src/interact/model_catalog.py; both held to
+ *  _SUFFIXES in src/galaius/model_catalog.py; both held to
  *  tests/data/bare_model_names.json, since two hand-kept copies of these pairs drifted. */
 const SUFFIXES: RegExp[] = [
   /@.*$/,                                 // a revision pin: @default, @20251001
@@ -21,7 +21,7 @@ const SUFFIXES: RegExp[] = [
 ];
 
 /** The model's own name, without who is reselling it — the TWIN of _bare_model_name in
- *  src/interact/cli/app.py, and must stay one (agentModels.test.ts asserts the same pairs that
+ *  src/galaius/cli/app.py, and must stay one (agentModels.test.ts asserts the same pairs that
  *  test does). Exists because the two lists speak different id namespaces: registry ranks
  *  LiteLLM ids (openrouter/anthropic/claude-opus-4.7) while the browse catalogue speaks
  *  OpenRouter (anthropic/claude-opus-4.7), so comparing them literally missed every duplicate by
@@ -134,7 +134,7 @@ export function competenceOf(
   return `aa.intelligence ${score.toFixed(1)} · ${placeIn(score, scored)} of ${scored.length} scored`;
 }
 
-/** One row of interact agents models --json-out: a distinct model, its score spelled out, how
+/** One row of galaius agents models --json-out: a distinct model, its score spelled out, how
  *  many provider aliases collapsed into it, and — when asked for by name — which alias it
  *  stands for. */
 export interface ScoredRow {
@@ -254,7 +254,7 @@ export function scoreIndex(rows: readonly ScoredRow[]): Map<string, number> {
 }
 
 /** A leaderboard row's display name reduced to the model it names — the TWIN of
- *  _leaderboard_key in src/interact/model_catalog.py, and must stay one.
+ *  _leaderboard_key in src/galaius/model_catalog.py, and must stay one.
  *
  *  Board dresses each model in its effort level (GPT-5.5 (xhigh)), a setting rather than a
  *  different model, so the parenthetical goes and the rest becomes the shape an id reduces to.

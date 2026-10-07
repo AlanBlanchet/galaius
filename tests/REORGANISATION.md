@@ -111,4 +111,4 @@ of the 55 hand-written `setenv("HOME")` lines), `reset_model_registry`, `http_or
 - The launcher's quota fall-through did not work: it only ran when no provider was named, its
   refusal pattern matched the healthy `rate_limit ... allowed` line, a second candidate of the
   same vendor reused the dead child's session id, and nothing remembered the refusal. See
-  `src/interact/agents/quota.py`.
+  `src/galaius/agents/quota.py`.

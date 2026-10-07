@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from interact.vision_env import VisionWorker
+from galaius.vision_env import VisionWorker
 
 #: Answers like `vision_infer.serve`: the request file says what to do. Each start appends to `starts`.
 STUB = r'''

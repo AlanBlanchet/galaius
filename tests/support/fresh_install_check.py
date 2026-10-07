@@ -1,4 +1,4 @@
-"""Run by an INSTALLED interact's own interpreter (CI, right after an installer): offered a signed
+"""Run by an INSTALLED galaius's own interpreter (CI, right after an installer): offered a signed
 release built from the very commit it was installed from, the install says it is up to date and
 installs nothing. The release is signed by a key made here for the run (the real release key never
 leaves the release host), trusted by this check only; everything else is the installed code."""
@@ -10,12 +10,12 @@ import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from interact import installed_version
-from interact.config.settings import Config
-from interact.upgrade.check import UpgradeCheck
-from interact.upgrade.release import BuildIdentity, Release, ReleaseFile
-from interact.upgrade.source import ReleaseSigner, ReleaseSource
-from interact.upgrade.store import Runtime, RuntimeStore
+from galaius import installed_version
+from galaius.config.settings import Config
+from galaius.upgrade.check import UpgradeCheck
+from galaius.upgrade.release import BuildIdentity, Release, ReleaseFile
+from galaius.upgrade.source import ReleaseSigner, ReleaseSource
+from galaius.upgrade.store import Runtime, RuntimeStore
 
 
 class LocalCheck(UpgradeCheck):

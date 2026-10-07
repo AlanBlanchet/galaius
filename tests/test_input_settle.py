@@ -14,7 +14,7 @@ CONDITION (not on a guessed duration) is the fix, and it is what these tests pin
 
 import pytest
 
-from interact.desktop.input import wait_for_device
+from galaius.desktop.input import wait_for_device
 
 
 def test_it_returns_as_soon_as_the_device_is_listed():
@@ -23,9 +23,9 @@ def test_it_returns_as_soon_as_the_device_is_listed():
 
     def lister():
         calls.append(1)
-        return "interact-virtual-keyboard\nAT Translated Set 2 keyboard\n"
+        return "galaius-virtual-keyboard\nAT Translated Set 2 keyboard\n"
 
-    assert wait_for_device("interact-virtual-keyboard", lister=lister) is True
+    assert wait_for_device("galaius-virtual-keyboard", lister=lister) is True
     assert len(calls) == 1, "should not keep polling once the device is there"
 
 
@@ -35,9 +35,9 @@ def test_it_keeps_polling_until_udev_catches_up():
 
     def lister():
         seen.append(1)
-        return "" if len(seen) < 3 else "interact-virtual-keyboard\n"
+        return "" if len(seen) < 3 else "galaius-virtual-keyboard\n"
 
-    assert wait_for_device("interact-virtual-keyboard", lister=lister, interval=0.001) is True
+    assert wait_for_device("galaius-virtual-keyboard", lister=lister, interval=0.001) is True
     assert len(seen) == 3
 
 
@@ -60,7 +60,7 @@ def test_the_virtual_keyboard_settles_before_any_key_is_written():
     """The regression itself: constructing the injector must WAIT for the keyboard node, so the
     first chord's modifiers cannot be written into the drop window. Pins the ORDER — settle before
     the caller can possibly write — which is the whole content of the fix."""
-    from interact.desktop import input as inp
+    from galaius.desktop import input as inp
 
     order = []
 
@@ -99,7 +99,7 @@ def test_the_virtual_keyboard_settles_before_any_key_is_written():
         if real is not None:
             sys.modules["evdev"] = real
 
-    assert "interact-virtual-keyboard" in settled, (
+    assert "galaius-virtual-keyboard" in settled, (
         "the keyboard node was never waited on — the first chord's modifiers land in the "
         "udev window and are dropped, which is #115"
     )

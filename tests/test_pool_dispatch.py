@@ -6,10 +6,10 @@ import hashlib
 from uuid import uuid4
 
 import pytest
-from interact_core import EgressAllowEntry, MachineCommand, MachineRef, ScriptImplementation, WorkflowKey, WorkflowRevisionRef
+from galaius_core import EgressAllowEntry, MachineCommand, MachineRef, ScriptImplementation, WorkflowKey, WorkflowRevisionRef
 
-from interact.machines import MachineConfig, MachineRunner
-from interact.sandbox import gvisor_available
+from galaius.machines import MachineConfig, MachineRunner
+from galaius.sandbox import gvisor_available
 
 pytestmark = pytest.mark.skipif(not gvisor_available(), reason="gVisor (runsc) is not installed/registered as a Docker runtime here")
 
@@ -78,7 +78,7 @@ def test_pooled_script_refuses_a_read_only_machine() -> None:
 
 def test_pooled_script_honours_its_egress_allow_list() -> None:
     """The command's `_pool_egress_allow` (the server-stamped list) actually reaches
-    `interact.sandbox.run_pooled` as a real `EgressPolicy` — a raw TCP connect to an unlisted host
+    `galaius.sandbox.run_pooled` as a real `EgressPolicy` — a raw TCP connect to an unlisted host
     fails from inside the sandboxed script."""
     runner = MachineRunner()
     probe = "import socket; s=socket.socket(); s.settimeout(3)\ntry:\n s.connect(('8.8.8.8', 443))\n print('OPEN')\nexcept OSError as e:\n print('BLOCKED')\n"

@@ -14,7 +14,7 @@ import json
 
 import pytest
 
-from interact.benchmarks.upstream import GroundingLeaderboardJS
+from galaius.benchmarks.upstream import GroundingLeaderboardJS
 
 _PAYLOAD = json.dumps({
     "time": "20250917132916",
@@ -77,6 +77,6 @@ def test_a_missing_root_is_an_empty_table_rather_than_a_crash():
     ],
 )
 def test_a_leaderboard_stamp_becomes_a_real_date_or_nothing(stamp, expected):
-    from interact.benchmarks.upstream import _leaderboard_date
+    from galaius.benchmarks.upstream import _leaderboard_date
 
     assert _leaderboard_date({"time": stamp}) == expected

@@ -3,14 +3,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from interact.actions import (
+from galaius.actions import (
     AnyAction,
     CompareAction,
     ScreenshotAction,
     ScrollAction,
     SleepAction,
 )
-from interact.vision import VLMResult
+from galaius.vision import VLMResult
 
 _VLM = VLMResult(text="vlm-result", elapsed=0.5)
 _ANALYZED = VLMResult(text="analyzed", elapsed=0.3)
@@ -20,7 +20,7 @@ _PNG_B64 = base64.b64encode(_PNG).decode()
 
 
 def _page_state(**overrides):
-    from interact.state import PageState
+    from galaius.state import PageState
 
     defaults = dict(
         url="https://example.com",
@@ -35,7 +35,7 @@ def _page_state(**overrides):
 
 
 def _state_change():
-    from interact.state import StateChange
+    from galaius.state import StateChange
 
     return StateChange(before=_page_state(), after=_page_state())
 
@@ -53,11 +53,11 @@ def browser_mocks():
     change = _state_change()
 
     with (
-        patch("interact.server._capture", AsyncMock(return_value=state)) as cap,
-        patch("interact.state.StateChange.compute", return_value=change),
-        patch("interact.server.vlm.analyze_media", AsyncMock(return_value=_VLM)) as vlm,
+        patch("galaius.server._capture", AsyncMock(return_value=state)) as cap,
+        patch("galaius.state.StateChange.compute", return_value=change),
+        patch("galaius.server.vlm.analyze_media", AsyncMock(return_value=_VLM)) as vlm,
         patch(
-            "interact.server.analyze_screenshot", AsyncMock(return_value=_ANALYZED)
+            "galaius.server.analyze_screenshot", AsyncMock(return_value=_ANALYZED)
         ),
     ):
         yield {"page": page, "mgr": mgr, "vlm": vlm, "capture": cap}
@@ -70,7 +70,7 @@ def browser_mocks():
 async def test_record_frames_collects_one_per_step(browser_mocks):
     """record_frames captures a frame after every step — so a recorded interaction has the result
     of each action, with no uniform-sampling gaps."""
-    from interact.server import _run_actions_browser
+    from galaius.server import _run_actions_browser
 
     browser_mocks["page"].screenshot = AsyncMock(return_value=_PNG)
     frames: list[bytes] = []
@@ -92,7 +92,7 @@ async def test_record_frames_collects_one_per_step(browser_mocks):
 @pytest.mark.asyncio
 async def test_browser_observe(browser_mocks, observe, expect_vlm, expect_snapshot):
     """observe set → VLM called + snapshot stored; observe None → neither."""
-    from interact.server import _run_actions_browser
+    from galaius.server import _run_actions_browser
 
     action = ScrollAction(observe=observe)
     result = await _run_actions_browser(
@@ -123,7 +123,7 @@ async def test_browser_compare(
     browser_mocks, stored_steps, compare_steps, expect_error
 ):
     """CompareAction with valid indices → VLM; missing indices → error message."""
-    from interact.server import _run_actions_browser
+    from galaius.server import _run_actions_browser
 
     actions: list[AnyAction] = []
     # Pre-populate snapshots by using ScreenshotAction for the steps we want stored
@@ -148,7 +148,7 @@ async def test_browser_compare(
 @pytest.mark.asyncio
 async def test_vlm_error_continues(browser_mocks):
     """VLM error on observe → error in step report, subsequent actions still run."""
-    from interact.server import _run_actions_browser
+    from galaius.server import _run_actions_browser
 
     browser_mocks["vlm"].side_effect = [RuntimeError("API down"), _VLM]
 
@@ -173,7 +173,7 @@ async def test_vlm_error_continues(browser_mocks):
 @pytest.mark.asyncio
 async def test_screenshot_stores_snapshot(browser_mocks):
     """ScreenshotAction always stores its bytes, usable by later CompareAction."""
-    from interact.server import _run_actions_browser
+    from galaius.server import _run_actions_browser
 
     browser_mocks["vlm"].return_value = "compared"
 
@@ -193,8 +193,8 @@ async def test_screenshot_stores_snapshot(browser_mocks):
 @pytest.fixture
 def desktop_mocks():
     with (
-        patch("interact.desktop.DesktopWindow.capture", return_value=_PNG),
-        patch("interact.server.vlm.analyze_media", AsyncMock(return_value=_VLM)) as vlm,
+        patch("galaius.desktop.DesktopWindow.capture", return_value=_PNG),
+        patch("galaius.server.vlm.analyze_media", AsyncMock(return_value=_VLM)) as vlm,
     ):
         yield {"vlm": vlm}
 
@@ -202,8 +202,8 @@ def desktop_mocks():
 @pytest.mark.asyncio
 async def test_desktop_observe(desktop_mocks):
     """Desktop observe captures screenshot and calls VLM."""
-    from interact.desktop import DesktopWindow
-    from interact.server import _run_actions_desktop
+    from galaius.desktop import DesktopWindow
+    from galaius.server import _run_actions_desktop
 
     win = DesktopWindow(name="test", wid=42, w=800, h=600, x=0, y=0)
     action = SleepAction(duration=0.01, observe="what happened?")
@@ -215,8 +215,8 @@ async def test_desktop_observe(desktop_mocks):
 @pytest.mark.asyncio
 async def test_desktop_compare_missing_step(desktop_mocks):
     """Desktop CompareAction referencing unobserved step → error."""
-    from interact.desktop import DesktopWindow
-    from interact.server import _run_actions_desktop
+    from galaius.desktop import DesktopWindow
+    from galaius.server import _run_actions_desktop
 
     win = DesktopWindow(name="test", wid=42, w=800, h=600, x=0, y=0)
     action = CompareAction(steps=[1, 2], query="diff?")
@@ -226,7 +226,7 @@ async def test_desktop_compare_missing_step(desktop_mocks):
 
 @pytest.mark.asyncio
 async def test_browser_screenshot_wait_precedes_its_capture(browser_mocks, monkeypatch):
-    import interact.server as srv
+    import galaius.server as srv
 
     events = []
     state = _page_state()
@@ -254,7 +254,7 @@ async def test_browser_screenshot_wait_precedes_its_capture(browser_mocks, monke
 
 @pytest.mark.asyncio
 async def test_browser_mutation_wait_is_not_applied_twice(browser_mocks, monkeypatch):
-    import interact.server as srv
+    import galaius.server as srv
 
     waits = []
     async def wait(page, condition):

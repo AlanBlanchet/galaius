@@ -6,15 +6,15 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from interact import server as srv
-from interact.vision.critique import (
+from galaius import server as srv
+from galaius.vision.critique import (
     RequirementCheck,
     VerifyReport,
     build_verify_prompt,
     format_verify,
     parse_verify,
 )
-from interact.vision import VLMResult
+from galaius.vision import VLMResult
 
 
 def _report(**kw) -> VerifyReport:
@@ -56,8 +56,8 @@ def test_format_verify_flags_all_pass():
 
 
 def test_build_verify_prompt_embeds_detected_elements_for_grounding():
-    from interact.vision.critique import format_grounding
-    from interact.state import InteractiveElement
+    from galaius.vision.critique import format_grounding
+    from galaius.state import InteractiveElement
 
     grounding = format_grounding([InteractiveElement(ref="e3", role="link", name="Home", x=0, y=0, w=40, h=12, index=1)])
     p = build_verify_prompt(["nav has Home"], grounding=grounding)

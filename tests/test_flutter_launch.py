@@ -9,7 +9,7 @@ import time
 
 import pytest
 
-from interact.server import _flutter_software_render
+from galaius.server import _flutter_software_render
 
 
 
@@ -59,9 +59,9 @@ def test_non_flutter_command_untouched(tmp_path):
 
 
 # --- Live counterpart of the Flutter detection tests above (from test_sandbox_e2e.py) -------
-# Opt-in: spawns a real Xephyr + a real Flutter linux bundle. Gated on INTERACT_LOCAL_E2E=1 and
-# INTERACT_FLUTTER_BUNDLE=<path to bundle binary>; self-skips without either. Run locally with:
-#     INTERACT_LOCAL_E2E=1 INTERACT_FLUTTER_BUNDLE=<path> uv run --with PySide6 \
+# Opt-in: spawns a real Xephyr + a real Flutter linux bundle. Gated on GALAIUS_LOCAL_E2E=1 and
+# GALAIUS_FLUTTER_BUNDLE=<path to bundle binary>; self-skips without either. Run locally with:
+#     GALAIUS_LOCAL_E2E=1 GALAIUS_FLUTTER_BUNDLE=<path> uv run --with PySide6 \
 #         pytest tests/test_launch_replace.py -v -k e2e
 
 
@@ -71,17 +71,17 @@ def test_flutter_bundle_navbar_not_black_e2e():
     import io
     import shutil
 
-    if not os.environ.get("INTERACT_LOCAL_E2E"):
-        pytest.skip("opt-in: set INTERACT_LOCAL_E2E=1 (spawns Xephyr + real apps)")
+    if not os.environ.get("GALAIUS_LOCAL_E2E"):
+        pytest.skip("opt-in: set GALAIUS_LOCAL_E2E=1 (spawns Xephyr + real apps)")
     if shutil.which("Xephyr") is None:
         pytest.skip("Xephyr not installed")
-    bundle = os.environ.get("INTERACT_FLUTTER_BUNDLE")
+    bundle = os.environ.get("GALAIUS_FLUTTER_BUNDLE")
     if not bundle or not os.path.exists(bundle):
-        pytest.skip("set INTERACT_FLUTTER_BUNDLE=<path to a Flutter linux bundle binary>")
+        pytest.skip("set GALAIUS_FLUTTER_BUNDLE=<path to a Flutter linux bundle binary>")
     import numpy as np
     from PIL import Image
 
-    from interact.desktop import DesktopWindow, NestedBackend
+    from galaius.desktop import DesktopWindow, NestedBackend
 
     argv, note = _flutter_software_render([bundle])
     assert note, "bundle not detected as Flutter"

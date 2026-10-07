@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from interact.browser import BrowserManager
-from interact.config import Config
-from interact.state import InteractiveElement
+from galaius.browser import BrowserManager
+from galaius.config import Config
+from galaius.state import InteractiveElement
 
 
 def interactive_element(

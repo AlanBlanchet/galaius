@@ -9,8 +9,8 @@ import numpy as np
 import pytest
 from PIL import Image
 
-import interact.server as srv
-from interact.vision.measure import contrast_ratio, format_measure, measure
+import galaius.server as srv
+from galaius.vision.measure import contrast_ratio, format_measure, measure
 from tests.support import async_capture
 
 

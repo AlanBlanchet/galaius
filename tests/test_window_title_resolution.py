@@ -6,8 +6,8 @@ is unique.
 
 import pytest
 
-from interact import server as srv
-from interact.desktop import DesktopWindow
+from galaius import server as srv
+from galaius.desktop import DesktopWindow
 
 
 def _all(*windows):

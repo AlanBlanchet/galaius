@@ -15,7 +15,7 @@ import json
 
 import pytest
 
-from interact.actions import dispatch
+from galaius.actions import dispatch
 
 
 # ── Desktop: a type that never reached the field must say so (#93) ─────────────────────────
@@ -85,7 +85,7 @@ def test_an_unverifiable_type_reports_nothing(_fast):
 
 @pytest.mark.asyncio
 async def test_the_mode_prefix_trap_is_in_the_schema_agents_read():
-    from interact.server import mcp
+    from galaius.server import mcp
 
     tools = await mcp.list_tools()
     run_actions = next(t for t in tools if t.name == "run_actions")
@@ -101,23 +101,23 @@ async def test_clear_first_still_means_replace_the_whole_field():
     prefix has to change this test on purpose rather than by accident."""
     from unittest.mock import AsyncMock, MagicMock
 
-    from interact.actions import TypeTextAction
+    from galaius.actions import TypeTextAction
 
     page = MagicMock()
     page.keyboard.press = AsyncMock()
     page.keyboard.type = AsyncMock()
 
-    await TypeTextAction(text="Interact: Show Team").execute(page)
+    await TypeTextAction(text="Galaius: Show Team").execute(page)
 
     page.keyboard.press.assert_awaited_once_with("ControlOrMeta+a")
-    page.keyboard.type.assert_awaited_once_with("Interact: Show Team")
+    page.keyboard.type.assert_awaited_once_with("Galaius: Show Team")
 
 
 @pytest.mark.asyncio
 async def test_clear_first_off_appends_instead():
     from unittest.mock import AsyncMock, MagicMock
 
-    from interact.actions import TypeTextAction
+    from galaius.actions import TypeTextAction
 
     page = MagicMock()
     page.keyboard.press = AsyncMock()

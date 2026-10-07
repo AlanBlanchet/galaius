@@ -22,8 +22,8 @@ import time
 
 import pytest
 
-from interact.desktop import orphans
-from interact.desktop.nested import NestedBackend
+from galaius.desktop import orphans
+from galaius.desktop.nested import NestedBackend
 
 # The sandbox is Linux-only, and everything here asserts POSIX process-GROUP semantics
 # (`os.getpgid`, `killpg`, `SIGKILL`). On Windows these names do not exist, so the module has to
@@ -40,7 +40,7 @@ def _unused_display() -> str:
     """A display NOTHING on this machine serves or is bound to.
 
     The sweep under test kills every process bound to the display it is handed, and live sandboxes
-    of real interact servers run beside this suite (an `Xephyr :99` is the normal state on the
+    of real galaius servers run beside this suite (an `Xephyr :99` is the normal state on the
     maintainer's box) — so the fixture's display must be one only this test's own children can
     ever carry, never a hardcoded ":99".
     """
@@ -69,7 +69,7 @@ def backend(tmp_path, monkeypatch):
 @pytest.fixture
 def owned_backend(backend):
     """The display-OWNING shape: our X server reports alive. That is what licenses the display
-    sweep — a display whose server died may already belong to another interact server (#33), so a
+    sweep — a display whose server died may already belong to another galaius server (#33), so a
     bare ``backend`` never sweeps."""
     backend._xserver = type("X", (), {"poll": lambda self: None})()
     return backend

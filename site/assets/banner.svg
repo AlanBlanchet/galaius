@@ -1,4 +1,4 @@
-<svg viewBox="0 0 1200 360" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="interact — give your agent eyes and hands">
+<svg viewBox="0 0 1200 360" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="galaius — give your agent eyes and hands">
   <defs>
     <linearGradient id="grad" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#A78BFA"/>
@@ -49,7 +49,7 @@
   </g>
 
   <!-- wordmark + tagline -->
-  <text x="356" y="168" class="wm" fill="#F8FAFC">interact</text>
+  <text x="356" y="168" class="wm" fill="#F8FAFC">galaius</text>
   <rect x="360" y="196" width="150" height="6" rx="3" fill="url(#grad)"/>
   <text x="358" y="248" class="tag" fill="#E2E8F0">Give your agent eyes and hands.</text>
   <text x="358" y="292" class="sub" fill="#8B96A8">Browser + desktop automation · vision-grounded · over MCP</text>

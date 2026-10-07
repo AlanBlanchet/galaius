@@ -155,7 +155,7 @@ def main() -> None:
     parser.add_argument(
         "--destination",
         type=Path,
-        default=Path("src/interact/agents/codex_app_server_schema"),
+        default=Path("src/galaius/agents/codex_app_server_schema"),
     )
     arguments = parser.parse_args()
     refresh(arguments.source, arguments.destination)

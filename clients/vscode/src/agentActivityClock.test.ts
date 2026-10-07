@@ -28,11 +28,11 @@ const TEAM = new URL("../out/teamState.js", import.meta.url).pathname;
 
 function seed(lines: object[]): string {
   const home = mkdtempSync(join(tmpdir(), "agents-"));
-  const dir = join(home, ".interact", "out", "agents");
+  const dir = join(home, ".galaius", "out", "agents");
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "r1.jsonl"), lines.map((l) => JSON.stringify(l)).join("\n"));
   process.env.HOME = home;
-  process.env.INTERACT_DEBUG_DIR = join(home, ".interact", "out");
+  process.env.GALAIUS_DEBUG_DIR = join(home, ".galaius", "out");
   return home;
 }
 

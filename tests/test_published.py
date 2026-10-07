@@ -8,9 +8,9 @@ models. The tables must bind their as-published row names to registered models t
 
 import pytest
 
-from interact.benchmarks.published import PublishedEntry, PublishedTable
-from interact.criteria import Criteria, Variables
-from interact.models import Benchmark, Model
+from galaius.benchmarks.published import PublishedEntry, PublishedTable
+from galaius.criteria import Criteria, Variables
+from galaius.models import Benchmark, Model
 
 from tests.support.models import catalog_of, model
 

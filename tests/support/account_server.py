@@ -1,5 +1,5 @@
-"""An Interact server double for `interact login`, the machine connection and `interact logout`,
-speaking the real wire models (`interact_core`), for proving the whole path on a computer with no
+"""A Galaius server double for `galaius login`, the machine connection and `galaius logout`,
+speaking the real wire models (`galaius_core`), for proving the whole path on a computer with no
 real server (the Windows CI job). The owner's approval on /link is `POST /test/approve`; a Script
 step dispatched as the server does (signed with the machine's key, the owner's approval taken as
 given) is `POST /test/run`; what the server saw is `GET /test/state`.
@@ -15,9 +15,9 @@ from importlib.metadata import version
 from uuid import UUID, uuid4
 
 import uvicorn
-from interact_core import (DeviceLoginIssued, DeviceLoginStart, DeviceLoginStarted, MachineCommand, MachineCommandResult, MachineRef, MachineSummary,
+from galaius_core import (DeviceLoginIssued, DeviceLoginStart, DeviceLoginStarted, MachineCommand, MachineCommandResult, MachineRef, MachineSummary,
                            ReleaseInfo, ScriptImplementation, WorkflowKey, WorkflowRevisionRef)
-from interact_core.device_login import DeviceLoginWorkspace, UserCode
+from galaius_core.device_login import DeviceLoginWorkspace, UserCode
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -25,11 +25,11 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from interact.machines import MachineRunner
+from galaius.machines import MachineRunner
 
 
 class Pending(BaseModel):
-    """One `interact login` waiting for its owner."""
+    """One `galaius login` waiting for its owner."""
 
     model_config = ConfigDict(frozen=True)
     device_code: str
@@ -74,7 +74,7 @@ class AccountServer(BaseModel):
             Route("/test/approve", self.approve, methods=["POST"]), Route("/test/run", self.run, methods=["POST"]), Route("/test/state", self.state)])
 
     async def version(self, _request: Request) -> Response:
-        release = ReleaseInfo(version=version("interact"), core_version=version("interact-core"), changelog=())
+        release = ReleaseInfo(version=version("galaius"), core_version=version("galaius-core"), changelog=())
         return Response(release.model_dump_json(), media_type="application/json")
 
     async def authorize(self, request: Request) -> Response:

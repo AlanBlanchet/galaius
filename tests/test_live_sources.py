@@ -13,8 +13,8 @@ import time
 
 import pytest
 
-import interact.live_sources as live
-from interact.ttl_cache import RefreshFailed, TTLCache
+import galaius.live_sources as live
+from galaius.ttl_cache import RefreshFailed, TTLCache
 
 
 def _source(name, load=lambda **_: None, filename=None):
@@ -28,7 +28,7 @@ def _rate_limited(**_):
 
 def test_a_failing_source_is_reported_with_its_reason_and_never_stops_the_others():
     """Best-effort by construction — but a source that did not refresh is SAID, never counted:
-    `interact refresh` once printed "Refreshed" while every call to the vendor answered 429."""
+    `galaius refresh` once printed "Refreshed" while every call to the vendor answered 429."""
     outcomes = live.refresh_all([_source("broken", _rate_limited), _source("ok")])
     assert outcomes == {
         "broken": "rate-limited by Vendor (HTTP 429), retry in 1h, copy from 8h ago",
@@ -36,8 +36,8 @@ def test_a_failing_source_is_reported_with_its_reason_and_never_stops_the_others
     }
 
 
-def test_interact_refresh_prints_why_a_source_did_not_refresh(monkeypatch, capsys):
-    from interact.cli.app_commands import refresh_live_data
+def test_galaius_refresh_prints_why_a_source_did_not_refresh(monkeypatch, capsys):
+    from galaius.cli.app_commands import refresh_live_data
 
     monkeypatch.setattr(live, "SOURCES", (_source("benchmark scores", _rate_limited), _source("model catalog")))
     with pytest.raises(SystemExit) as exited:
@@ -83,9 +83,9 @@ def test_refreshing_actually_WRITES_every_cache(monkeypatch, tmp_path):
     no-op (it was: `load_catalog` was `@lru_cache`d, so the refresher re-read memory and never
     refetched). The only evidence that counts is both cache files on disk, freshly stamped.
     """
-    import interact.benchmark_source as bs
-    import interact.benchmark_tables as bt
-    import interact.model_catalog as mc
+    import galaius.benchmark_source as bs
+    import galaius.benchmark_tables as bt
+    import galaius.model_catalog as mc
 
     monkeypatch.setattr(mc, "_from_openrouter", lambda payload: [mc.ModelInfo(id="x/y", name="Y")])
     monkeypatch.setattr(mc.httpx, "get", lambda *a, **k: _Response({"data": [{}]}))
@@ -94,7 +94,7 @@ def test_refreshing_actually_WRITES_every_cache(monkeypatch, tmp_path):
         source="artificial_analysis", fetched_at=time.time()))
 
     monkeypatch.setattr(
-        "interact.benchmarks.upstream.fetch_all",
+        "galaius.benchmarks.upstream.fetch_all",
         lambda *a, **k: {"mmmu": _published_table()},
     )
     assert live.refresh_all() == {"model catalog": None, "benchmark scores": None, "benchmark tables": None}
@@ -123,12 +123,12 @@ def test_refresh_in_background_does_not_raise_when_a_source_fails(monkeypatch):
 
 
 def test_a_cache_write_is_atomic_so_a_concurrent_reader_never_sees_a_half_file(tmp_path, monkeypatch):
-    """Several interact servers run at once (one per editor window) and each refreshes on startup,
+    """Several galaius servers run at once (one per editor window) and each refreshes on startup,
     so N writers share one path. A truncating write caught mid-flight leaves a corrupt file, and
     both readers swallow the parse error — the panel silently shows nothing."""
     import json
 
-    import interact.model_catalog as mc
+    import galaius.model_catalog as mc
 
     mc._write_cache(mc.Catalog(models=[mc.ModelInfo(id="a/b")], source="openrouter", fetched_at=1.0))
     target = mc.cache_path()
@@ -142,14 +142,14 @@ def test_a_cache_write_is_atomic_so_a_concurrent_reader_never_sees_a_half_file(t
 def test_the_startup_refresh_can_be_turned_off():
     """It is the only outbound request a server makes on its own initiative, so it needs an
     off switch — an air-gapped or privacy-conscious install must be able to say no."""
-    from interact.config import Config
+    from galaius.config import Config
 
     assert Config().refresh_live_data is True
     assert Config(refresh_live_data=False).refresh_live_data is False
 
 
 def _published_table():
-    from interact.benchmarks.published import PublishedEntry, PublishedTable
+    from galaius.benchmarks.published import PublishedEntry, PublishedTable
 
     return PublishedTable(source_url="https://example.test", retrieved="2026-08-18",
                           entries=[PublishedEntry(model_name="M", score=0.9)])

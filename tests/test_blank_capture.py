@@ -15,8 +15,8 @@ import subprocess
 
 import pytest
 
-from interact.desktop import DesktopWindow
-from interact.vision.measure import blank_frame_reason
+from galaius.desktop import DesktopWindow
+from galaius.vision.measure import blank_frame_reason
 
 
 from tests.support import solid_png, varied_png as _varied_png
@@ -53,7 +53,7 @@ def test_a_real_screenful_is_not_blank():
 async def test_a_blank_capture_is_never_sent_to_the_vlm():
     """No mock needed to prove the model was not called: the conftest fixture fails any real
     litellm call in a non-integration test, so reaching one would blow up rather than pass."""
-    import interact.server as srv
+    import galaius.server as srv
 
     out = await srv.vlm._media_response(
         solid_png((400, 300), colour=(0, 0, 0)), "Desktop window: Code (1920x1080)", "what is on screen?"
@@ -64,9 +64,9 @@ async def test_a_blank_capture_is_never_sent_to_the_vlm():
 
 @pytest.mark.asyncio
 async def test_a_real_frame_still_reaches_the_vlm(monkeypatch):
-    import interact.server as srv
+    import galaius.server as srv
 
-    from interact.vision import VLMResult
+    from galaius.vision import VLMResult
 
     async def ok(*a, **k):
         return VLMResult(text="a toolbar and a sidebar", elapsed=0.1, model="test")
@@ -86,17 +86,17 @@ async def test_a_real_frame_still_reaches_the_vlm(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_black_window_capture_says_so_even_with_no_query(monkeypatch):
-    import interact.server as srv
+    import galaius.server as srv
 
     class DeadWindow:
-        wid, name, w, h = 33554476, "interact - Visual Studio Code", 1440, 900
+        wid, name, w, h = 33554476, "galaius - Visual Studio Code", 1440, 900
 
         def capture(self):
             return solid_png((240, 150), colour=(0, 0, 0))
 
     monkeypatch.setattr(srv.targets, "_resolve_target", lambda *a, **k: (DeadWindow(), None, None))
 
-    out = await srv.tools_vision.screenshot(target="interact - Visual Studio Code")
+    out = await srv.tools_vision.screenshot(target="galaius - Visual Studio Code")
     text = out[0] if isinstance(out, list) else out
 
     assert "#000000" in text, text
@@ -105,7 +105,7 @@ async def test_a_black_window_capture_says_so_even_with_no_query(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_normal_window_capture_carries_no_such_note(monkeypatch):
-    import interact.server as srv
+    import galaius.server as srv
 
     class LiveWindow:
         wid, name, w, h = 1, "Code", 240, 150
@@ -144,7 +144,7 @@ async def test_the_judgement_tools_are_gated_too():
     """review_ui and verify_ui reach the model through `_vlm` directly rather than through
     `_media_response`, and describing a frame is their entire job — so gating only the screenshot
     path left the two tools most exposed to #112 still exposed."""
-    import interact.server as srv
+    import galaius.server as srv
 
     r = await srv.vlm._vlm(solid_png((400, 300), colour=(0, 0, 0)), "ctx", "what is wrong here?")
     assert r.text.startswith("ERROR:") and "blank" in r.text
@@ -173,16 +173,16 @@ def _blank_capture(monkeypatch, *, pid: str | None, alive: bool):
             return "WIDTH=388\nHEIGHT=863\nX=0\nY=0\n"
         return black
 
-    monkeypatch.setattr("interact.desktop.subprocess.check_output", fake)
-    monkeypatch.setattr("interact.desktop.window.process_alive", lambda _pid: alive)
+    monkeypatch.setattr("galaius.desktop.subprocess.check_output", fake)
+    monkeypatch.setattr("galaius.desktop.window.process_alive", lambda _pid: alive)
 
 
 def test_a_blank_capture_of_a_DEAD_window_says_the_window_is_gone(monkeypatch):
     """The process behind it no longer exists, so no compositor setting will ever help."""
-    from interact.desktop import CaptureError
+    from galaius.desktop import CaptureError
 
     _blank_capture(monkeypatch, pid="4242", alive=False)
-    win = DesktopWindow(name="interact - Visual Studio Code", wid=123, x=0, y=0, w=388, h=863)
+    win = DesktopWindow(name="galaius - Visual Studio Code", wid=123, x=0, y=0, w=388, h=863)
     with pytest.raises(CaptureError) as exc:
         win.capture()
     msg = str(exc.value)
@@ -193,7 +193,7 @@ def test_a_blank_capture_of_a_DEAD_window_says_the_window_is_gone(monkeypatch):
 
 def test_a_blank_capture_of_a_LIVE_window_still_reports_the_gpu_cause(monkeypatch):
     """The original diagnosis stays for the case it was right about."""
-    from interact.desktop import CaptureError
+    from galaius.desktop import CaptureError
 
     _blank_capture(monkeypatch, pid="4242", alive=True)
     win = DesktopWindow(name="Android Emulator - Pixel_7:5554", wid=123, x=0, y=0, w=388, h=863)
@@ -205,7 +205,7 @@ def test_a_blank_capture_of_a_LIVE_window_still_reports_the_gpu_cause(monkeypatc
 def test_every_blank_capture_offers_the_screen_fallback(monkeypatch):
     """The cheap workaround the reporter found unaided. A whole-screen grab reveals crashes,
     modals and anything else a per-window grab cannot read — and costs one call."""
-    from interact.desktop import CaptureError
+    from galaius.desktop import CaptureError
 
     for alive in (True, False):
         _blank_capture(monkeypatch, pid="4242", alive=alive)
@@ -218,7 +218,7 @@ def test_every_blank_capture_offers_the_screen_fallback(monkeypatch):
 def test_an_unknowable_pid_does_not_become_a_liveness_claim(monkeypatch):
     """xdotool cannot always answer. Silence is not evidence the window is alive OR dead, and
     asserting either from a failed lookup is how a wrong diagnosis gets stated confidently."""
-    from interact.desktop import CaptureError
+    from galaius.desktop import CaptureError
 
     _blank_capture(monkeypatch, pid=None, alive=True)
     win = DesktopWindow(name="whatever", wid=123, x=0, y=0, w=388, h=863)
@@ -235,7 +235,7 @@ def test_a_window_whose_grab_FAILS_outright_is_reported_not_raised_raw(monkeypat
     runs, and what actually reached the agent was a raw CalledProcessError traceback naming a
     numeric window id. Every real dead-window case took this branch, not the one above it.
     """
-    from interact.desktop import CaptureError
+    from galaius.desktop import CaptureError
 
     def fake(cmd, *a, **k):
         if cmd[0] == "xdotool":
@@ -244,8 +244,8 @@ def test_a_window_whose_grab_FAILS_outright_is_reported_not_raised_raw(monkeypat
             raise subprocess.CalledProcessError(1, cmd)
         raise subprocess.CalledProcessError(1, cmd)  # maim cannot read a dead window
 
-    monkeypatch.setattr("interact.desktop.subprocess.check_output", fake)
-    monkeypatch.setattr("interact.desktop.window.process_alive", lambda _pid: False)
+    monkeypatch.setattr("galaius.desktop.subprocess.check_output", fake)
+    monkeypatch.setattr("galaius.desktop.window.process_alive", lambda _pid: False)
     win = DesktopWindow(name="doomed", wid=123, x=0, y=0, w=300, h=200)
     with pytest.raises(CaptureError) as exc:
         win.capture()
@@ -260,15 +260,15 @@ def test_the_local_backend_reports_an_unreadable_window_the_same_way(monkeypatch
     both capture paths have to answer the same way or the message you get depends on which
     internal route your target happened to take.
     """
-    from interact.desktop import CaptureError
-    from interact.desktop.backend import LocalBackend
+    from galaius.desktop import CaptureError
+    from galaius.desktop.backend import LocalBackend
 
     def fake_run(cmd, *a, **k):
         if cmd[0] == "xdotool":
             return subprocess.CompletedProcess(cmd, 0, stdout="555\n", stderr="")
         raise subprocess.CalledProcessError(1, cmd)
 
-    monkeypatch.setattr("interact.desktop.backend.subprocess.run", fake_run)
+    monkeypatch.setattr("galaius.desktop.backend.subprocess.run", fake_run)
     backend = LocalBackend.__new__(LocalBackend)  # no real uinput device in a unit test
     with pytest.raises(CaptureError) as exc:
         backend.capture_window("doomed")
@@ -280,7 +280,7 @@ def test_blank_gpu_surface_capture_raises_actionable_error(monkeypatch):
     black image; raise a clear error naming the cause + the adb/compositor fixes."""
     import io
     from PIL import Image as PILImage
-    from interact.desktop import CaptureError
+    from galaius.desktop import CaptureError
 
     buf = io.BytesIO()
     PILImage.new("RGB", (40, 40), "black").save(buf, format="PNG")
@@ -291,7 +291,7 @@ def test_blank_gpu_surface_capture_raises_actionable_error(monkeypatch):
             return "WIDTH=388\nHEIGHT=863\nX=0\nY=0\n"
         return black
 
-    monkeypatch.setattr("interact.desktop.subprocess.check_output", fake)
+    monkeypatch.setattr("galaius.desktop.subprocess.check_output", fake)
     win = DesktopWindow(name="Android Emulator - Pixel_7:5554", wid=123, x=0, y=0, w=388, h=863)
     with pytest.raises(CaptureError) as exc:
         win.capture()

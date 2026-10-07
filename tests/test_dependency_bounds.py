@@ -1,6 +1,6 @@
 """A dependency that may take a MAJOR version on its own will eventually take a breaking one.
 
-2026-08-19: `interact mcp` died with `ModuleNotFoundError: No module named 'mcp.server.fastmcp'`
+2026-08-19: `galaius mcp` died with `ModuleNotFoundError: No module named 'mcp.server.fastmcp'`
 for every client — the product's primary surface, gone. Nothing in this repo had changed. The
 requirement read `mcp[cli]>=1.27.0` with no upper bound, `uv tool install` resolved it fresh, and
 **mcp 2.0.0** arrived having moved that module. The lockfile kept development on 1.27.0, so the
@@ -38,7 +38,7 @@ def test_a_load_bearing_dependency_cannot_take_a_major_on_its_own(name):
         pytest.skip(f"{name} is not a direct dependency")
     assert re.search(r"[<~=!]=?\s*\d", req.split(">=")[-1]) or "<" in req, (
         f"{req!r} has no upper bound: a fresh install can take the next MAJOR and break the "
-        f"server, exactly as mcp 2.0.0 did on 2026-08-19 (fastmcp moved, `interact mcp` would "
+        f"server, exactly as mcp 2.0.0 did on 2026-08-19 (fastmcp moved, `galaius mcp` would "
         f"not start, while the lockfile kept the tests green on 1.27.0)"
     )
 
@@ -46,4 +46,4 @@ def test_a_load_bearing_dependency_cannot_take_a_major_on_its_own(name):
 def test_the_server_entry_point_actually_imports():
     """The cheapest possible smoke test for the failure above: if this import breaks, every MCP
     client sees 'server not connected' and no unit test would otherwise notice."""
-    import interact.server  # noqa: F401
+    import galaius.server  # noqa: F401

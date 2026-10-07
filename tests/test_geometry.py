@@ -1,11 +1,11 @@
-"""Parametrized tests for :mod:`interact.desktop.geometry`."""
+"""Parametrized tests for :mod:`galaius.desktop.geometry`."""
 
 from __future__ import annotations
 
 import numpy as np
 import pytest
 
-from interact.desktop.geometry import BBox, BoxArray
+from galaius.desktop.geometry import BBox, BoxArray
 
 
 # Single mega-parametrize covers every scalar BBox op.

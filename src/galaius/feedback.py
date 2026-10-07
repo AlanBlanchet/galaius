@@ -1,0 +1,210 @@
+"""Let an agent (or user) report a problem / missing capability / feedback about galaius ITSELF
+back to the maintainers, so issues hit in the wild actually surface.
+
+Deliberately AGENT-INITIATED, not automatic telemetry: the caller composes the report, so no
+surprise data collection and no secret leakage by default. Delivery ladder: a GitHub issue via
+`gh` when available + authed; otherwise save locally and return a prefilled new-issue link the
+user may explicitly open. galaius's version + platform append automatically (safe, useful
+triage context). The tracker is public: a report naming anything listed in the user's untracked
+private-terms file (one case-insensitive regex per line) is refused before it leaves.
+"""
+
+from __future__ import annotations
+
+import re
+import shutil
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+from galaius.paths import UserPaths
+
+REPO = "AlanBlanchet/galaius"
+KINDS = ("bug", "limitation", "feedback")
+FEEDBACK_DIR = Path.home() / ".galaius" / "out" / "feedback"
+PRIVATE_TERMS = UserPaths.config() / "private-terms"
+
+
+def _private_matches(text: str) -> list[str]:
+    """The distinct strings in ``text`` matching a line of ``PRIVATE_TERMS`` (none when the file is
+    absent). A line that is not a valid regex is matched literally, so a typo never lets it pass."""
+    try:
+        lines = PRIVATE_TERMS.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    found: dict[str, None] = {}
+    for line in (entry.strip() for entry in lines):
+        if not line or line.startswith("#"):
+            continue
+        try:
+            pattern = re.compile(line, re.IGNORECASE)
+        except re.error:
+            pattern = re.compile(re.escape(line), re.IGNORECASE)
+        found.update(dict.fromkeys(match.group(0) for match in pattern.finditer(text)))
+    return list(found)
+
+
+def _footer() -> str:
+    import platform
+
+    from galaius import __version__
+
+    # platform.platform() can shell out internally (macOS/Windows code paths), breaking under a
+    # mocked subprocess or on the odd host. Footer is cosmetic, must never crash a bug report —
+    # fall back to pieces reading straight from os.uname/sys.
+    try:
+        plat = platform.platform()
+    except Exception:
+        try:
+            plat = f"{platform.system()}-{platform.release()}-{platform.machine()}"
+        except Exception:
+            plat = sys.platform
+    return (
+        f"\n\n---\n_galaius {__version__} · Python {sys.version.split()[0]} · "
+        f"{plat} · reported via report_issue_"
+    )
+
+
+def _version_lt(a: str, b: str) -> bool:
+    """True if version string ``a`` is numerically older than ``b`` — by component, so 0.19.9 < 0.19.10
+    (a plain string compare gets that backwards). Unparseable input → False, so a non-semver never
+    triggers a warning."""
+
+    def parts(v: str) -> tuple[int, ...]:
+        try:
+            return tuple(int(x) for x in v.split("."))
+        except ValueError:
+            return ()
+
+    pa, pb = parts(a), parts(b)
+    return bool(pa) and bool(pb) and pa < pb
+
+
+def _stale_warning() -> str:
+    """A banner prepended to a report when the REPORTING process runs a galaius OLDER than
+    what's installed on this machine right now. A long-lived MCP server keeps the code it
+    imported at startup (``__version__`` frozen then), so a bug filed from a stale one is the
+    single biggest source of already-fixed reports — flag it up front, for filer and maintainer,
+    with the one-line fix. Compares the frozen startup version against live installed metadata
+    (what a restart would load), so it never false-fires on a fresh process. Best-effort: any
+    trouble → no banner (a report must never be blocked by its own staleness check)."""
+    try:
+        from galaius import __version__, installed_version
+
+        current = installed_version()
+        if _version_lt(__version__, current):
+            return (
+                f"> ⚠️ **Filed from galaius {__version__}, but {current} is installed here** — this "
+                f"may already be fixed. A running galaius MCP server keeps the code it loaded at "
+                f"startup; reconnect/restart it (or `uv tool install --force --editable .`) to load "
+                f"current code, then re-check before filing.\n\n"
+            )
+    except Exception:
+        pass
+    return ""
+
+
+def _slug(text: str) -> str:
+    keep = "".join(c if c.isalnum() else "-" for c in text.lower())
+    return "-".join(p for p in keep.split("-") if p)[:50] or "report"
+
+
+def _gh_create(title: str, body: str) -> tuple[str | None, str]:
+    """Try ``gh issue create``; return ``(issue_url, "")`` or ``(None, why_it_failed)``."""
+    gh = shutil.which("gh")
+    if not gh:
+        return None, "gh CLI not installed"
+    try:
+        done = subprocess.run(
+            [gh, "issue", "create", "--repo", REPO, "--title", title, "--body", body],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            # Inside an MCP server our stdin is the protocol pipe — gh must never read it
+            # (a stdin read would block to the timeout, or eat protocol bytes).
+            stdin=subprocess.DEVNULL,
+        )
+    except (subprocess.SubprocessError, OSError) as e:
+        return None, f"gh didn't complete: {e}"
+    if done.returncode == 0 and done.stdout.strip():
+        return done.stdout.strip().splitlines()[-1], ""
+    reason = done.stderr.strip().splitlines()[-1] if done.stderr.strip() else f"gh exited {done.returncode}"
+    return None, reason
+
+
+def _prefilled_url(title: str, body: str) -> str:
+    """A one-click new-issue link, capped to GitHub's URL limit. The cap is applied to the
+    ENCODED body, then any severed %XX escape at the cut is trimmed so the URL stays valid."""
+    import re
+    from urllib.parse import quote
+
+    encoded = quote(body)
+    if len(encoded) > 7000:
+        encoded = re.sub(r"%[0-9A-Fa-f]?$", "", encoded[:7000])
+    return f"https://github.com/{REPO}/issues/new?title={quote(title)}&body={encoded}"
+
+
+def _open_browser(url: str) -> bool:
+    """Open ``url`` in the user's browser, detached. Never touches our stdin/stdout/stderr —
+    inside an MCP stdio server those ARE the protocol pipes (same hygiene as the gh call).
+    Returns False when there's no opener (headless box, SSH session)."""
+    if sys.platform == "darwin":
+        cmd = ["open", url]
+    elif sys.platform.startswith("win"):
+        try:
+            import os
+
+            os.startfile(url)  # ShellExecute — detached by construction, no pipes
+            return True
+        except OSError:
+            return False
+    else:
+        cmd = ["xdg-open", url]
+    if not shutil.which(cmd[0]):
+        return False
+    try:
+        subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        return True
+    except OSError:
+        return False
+
+
+def report(title: str, body: str, kind: str = "bug") -> str:
+    """File the report and say what happened. Delivery ladder: an authed ``gh`` files the
+    issue outright; otherwise the report is saved locally and an explicit prefilled submission
+    link is returned. Never opens an external application and never raises."""
+    kind = kind if kind in KINDS else "feedback"
+    title = f"[{kind}] {title.strip()}" if not title.lower().startswith(f"[{kind}]") else title.strip()
+    full = _stale_warning() + body.strip() + _footer()
+    private = _private_matches(f"{title}\n{full}")
+    if private:
+        return (
+            f"Not reported: galaius's issue tracker is public and this report names private material "
+            f"listed in {PRIVATE_TERMS} ({', '.join(repr(term) for term in private)}). Reword it with "
+            f"neutral terms (for instance 'the server') and report again."
+        )
+
+    url, reason = _gh_create(title, full)
+    if url:
+        return f"Reported to galaius — {url}"
+
+    submit = _prefilled_url(title, full)
+    # Preserve the draft without stealing focus. Following the returned link is an explicit action.
+    try:
+        FEEDBACK_DIR.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        path = FEEDBACK_DIR / f"{stamp}-{_slug(title)}.md"
+        path.write_text(f"# {title}\n\n{full}\n")
+        return (
+            f"Saved feedback locally to {path} — couldn't file to GitHub ({reason}). "
+            f"Open this link to review and submit it: {submit}"
+        )
+    except OSError as e:
+        return f"Could not record feedback ({e}); please open it yourself: {submit}"

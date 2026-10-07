@@ -21,7 +21,7 @@ test("a CLI that cannot answer is reported as such, never as an unranked model",
     stdout: "", error: 'Unknown command "models".',
   }), NO_BOARD);
   await store.ensure(["claude-sonnet-5"]);
-  assert.match(store.unavailable ?? "", /installed interact/,
+  assert.match(store.unavailable ?? "", /installed galaius/,
     "the reader is told the binary is too old — the fix is a version, not a missing model");
   assert.notEqual(store.unavailable, "");
 });
@@ -31,7 +31,7 @@ test("a failed ask is retried, not remembered as an answer", async () => {
   const store = new CompetenceStore(async () => {
     calls += 1;
     return calls === 1
-      ? { stdout: "", error: "interact: command not found" }
+      ? { stdout: "", error: "galaius: command not found" }
       : { stdout: ROW, error: null };
   }, NO_BOARD);
   await store.ensure(["claude-sonnet-5"]);
@@ -70,7 +70,7 @@ test("what the CLI can reach and what the board measures are different questions
 
 test("the reason names the binary when the binary is the reason", () => {
   assert.match(whyUnavailable('Unknown command "models".'), /needs a newer version/);
-  assert.equal(whyUnavailable("some other failure"), "interact could not be asked for scores");
+  assert.equal(whyUnavailable("some other failure"), "galaius could not be asked for scores");
 });
 
 test("a cache hit reports NOTHING CHANGED, so a repaint cannot ask its way into a loop", async () => {
@@ -106,7 +106,7 @@ test("a CLI that cannot answer must not re-arm the repaint loop", async () => {
   const board = new Map([["m", 40]]);
   const store = new CompetenceStore(async () => {
     calls += 1;
-    return { stdout: "", error: "interact: command not found" };
+    return { stdout: "", error: "galaius: command not found" };
   }, () => board);
 
   const first = await store.ensure(["m"]);

@@ -307,7 +307,7 @@ def test_forty_eight_actors_hold_frame_budget_and_input_reaches_the_next_paint(s
             "zone": "code",
             "activity": "reviewing the production workspace",
             "parent_run_id": None if index % 6 == 0 else f"volume-{index - index % 6}",
-            "project": "interact",
+            "project": "galaius",
             "cost_usd": None,
             "input_tokens": None,
             "idle_seconds": index % 60,

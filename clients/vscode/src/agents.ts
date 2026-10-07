@@ -1,10 +1,10 @@
 /** Reading the agent-run registry that the Python side writes.
  *
- *  This process only ever READS: interact agents (or an agent calling the MCP tools) owns
+ *  This process only ever READS: galaius agents (or an agent calling the MCP tools) owns
  *  spawning and stopping. The panel is a window onto that, which is why a run's status here is
  *  whatever Python derived from the live pid — the extension never guesses liveness itself.
  *
- *  Mirrors interact.agents.registry (src/interact/agents/registry.py);
+ *  Mirrors galaius.agents.registry (src/galaius/agents/registry.py);
  *  tests/test_paths.py binds the directory the two agree on.
  */
 import * as fs from "fs";
@@ -248,8 +248,8 @@ export function createAgentActivityReader(
 
 const panelActivity = createAgentActivityReader({ eventLimit: 40, transcriptLimit: 300 });
 
-/** A run's activity, whichever kind of run it is: interact's own normalised stream, or — for a
- *  session interact did not start — the provider's transcript, mapped. One call site, one rule. */
+/** A run's activity, whichever kind of run it is: galaius's own normalised stream, or — for a
+ *  session galaius did not start — the provider's transcript, mapped. One call site, one rule. */
 export function activityOf(run: AgentRun, limit = 40): AgentActivity[] {
   return run.status === "foreign"
     ? readForeignActivity(run, limit)

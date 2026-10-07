@@ -14,13 +14,13 @@ from uuid import uuid4
 
 import pytest
 import yaml
-from interact_core import AgentCatalogSnapshot, AgentRevision, AgentRevisionRef, PromptExecutionRef, PromptKey, PromptRevision
+from galaius_core import AgentCatalogSnapshot, AgentRevision, AgentRevisionRef, PromptExecutionRef, PromptKey, PromptRevision
 
-from interact.agents.catalog import AgentCatalog, CatalogSnapshot
-from interact.agents.catalog_connection import CatalogAuthenticationError, CatalogConnection
-from interact.pinned_directory import PathDirectory
-from interact.agents.tool_gateway import AgentToolList, GatewayTool
-from interact.prompt_projection import (
+from galaius.agents.catalog import AgentCatalog, CatalogSnapshot
+from galaius.agents.catalog_connection import CatalogAuthenticationError, CatalogConnection
+from galaius.pinned_directory import PathDirectory
+from galaius.agents.tool_gateway import AgentToolList, GatewayTool
+from galaius.prompt_projection import (
     MANIFEST_NAME, _server_outputs, compile_server_prompt_projection, install_prompt_projection,
     install_server_prompt_projection,
 )
@@ -33,8 +33,8 @@ def catalog_fixture(skill_description=True, prompt_headers=None, worker_tools=()
         'main': 'Main charter.', 'worker': 'Worker charter.',
         'provider-openai': 'OpenAI provider context.',
         'provider-anthropic': 'Anthropic provider context.',
-        'skill': ('---\nname: skill\ndescription: Use for fixture work.\ninteract:\n  projection: skill\n  scope: domain\n---\n\n' if skill_description else '') + 'Pinned skill body.',
-        'rule': '---\nname: rule\ndescription: Fixture rule.\ninteract:\n  projection: rule\n---\n\nRule body.',
+        'skill': ('---\nname: skill\ndescription: Use for fixture work.\ngalaius:\n  projection: skill\n  scope: domain\n---\n\n' if skill_description else '') + 'Pinned skill body.',
+        'rule': '---\nname: rule\ndescription: Fixture rule.\ngalaius:\n  projection: rule\n---\n\nRule body.',
     }
     for slug, header in (prompt_headers or {}).items():
         contents[slug] = contents[slug].replace("---\n", "---\n" + yaml.safe_dump(header), 1)
@@ -133,7 +133,7 @@ def test_each_exact_revision_and_discovery_head_requires_safe_metadata(tmp_path,
 
 
 def test_canonical_skill_and_rule_metadata_compiles_and_installs_unchanged(tmp_path, monkeypatch):
-    source = Path.home() / ".local/share/interact/prompts"
+    source = Path.home() / ".local/share/galaius/prompts"
     if not (source / "paradigms.yaml").is_file():
         pytest.skip("canonical prompt working copy is unavailable")
     entries = yaml.safe_load((source / "paradigms.yaml").read_text())["paradigms"]
@@ -149,7 +149,7 @@ def test_canonical_skill_and_rule_metadata_compiles_and_installs_unchanged(tmp_p
         if config.get("paths"):
             routing["paths"] = config["paths"]
         # Add server routing to an in-memory copy; canonical sources are never edited.
-        content = content.replace("---\n", "---\n" + yaml.safe_dump({"interact": routing}), 1)
+        content = content.replace("---\n", "---\n" + yaml.safe_dump({"galaius": routing}), 1)
         prompt = PromptRevision(key=PromptKey(namespace="paradigms", slug=name), revision=uuid4(),
                                 content=content, digest=hashlib.sha256(content.encode()).hexdigest(),
                                 source_commit="a" * 40, created_at=datetime.now(UTC))
@@ -339,7 +339,7 @@ def test_server_cache_compares_verified_content_on_every_hit(tmp_path, monkeypat
     monkeypatch.setattr(AgentCatalog, "refresh", lambda *args, **kwargs: catalog)
     home = tmp_path / "home"
     key = hashlib.sha256(str(home.resolve()).encode()).hexdigest()[:16]
-    destination = (tmp_path / "cache/interact/prompts/server" / str(catalog.connection.workspace_id)
+    destination = (tmp_path / "cache/galaius/prompts/server" / str(catalog.connection.workspace_id)
                    / f"{catalog.snapshot.cursor}-{key}-{catalog.access_generation}")
 
     def corrupt():
@@ -366,7 +366,7 @@ def test_server_cache_rejects_symlink_ancestor_before_writing(tmp_path, monkeypa
     outside.mkdir()
     cache = tmp_path / "cache"
     cache.mkdir()
-    (cache / "interact").symlink_to(outside, target_is_directory=True)
+    (cache / "galaius").symlink_to(outside, target_is_directory=True)
     monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
     monkeypatch.setattr(AgentCatalog, "refresh", lambda *args, **kwargs: catalog)
     with pytest.raises(ValueError, match="safe directory"):
@@ -427,7 +427,7 @@ def test_denied_server_install_never_writes_consumer_state(tmp_path, monkeypatch
             generation = catalog.connection.session_path().with_suffix(".generation")
             generation.write_text(str(uuid4()))
             generation.chmod(0o600)
-        monkeypatch.setattr("interact.prompt_projection.compile_server_prompt_projection", lambda *args: compiled)
+        monkeypatch.setattr("galaius.prompt_projection.compile_server_prompt_projection", lambda *args: compiled)
     with pytest.raises(CatalogAuthenticationError):
         install_server_prompt_projection(catalog.connection, tmp_path / "home", tmp_path / "vscode", tmp_path / "state/installed.json")
     assert not (tmp_path / "home").exists()
@@ -469,8 +469,8 @@ def test_independent_connection_processes_lock_before_reading_shared_install_sta
 import sys
 from pathlib import Path
 from uuid import UUID
-from interact import prompt_projection as projection
-from interact.agents.catalog_connection import CatalogConnection
+from galaius import prompt_projection as projection
+from galaius.agents.catalog_connection import CatalogConnection
 root, source, ordinal = Path(sys.argv[1]), Path(sys.argv[2]), int(sys.argv[3])
 CatalogConnection.path = classmethod(lambda cls: root / 'connection.json')
 connection = CatalogConnection(endpoint=f'http://127.0.0.1:{8817 + ordinal}',
@@ -525,32 +525,32 @@ def _worker_header(outputs):
 
 
 def test_projection_lists_only_tools_this_server_can_dispatch(tmp_path):
-    """A listed tool is a callable tool: the projection resolves every `mcp__interact__…` name
+    """A listed tool is a callable tool: the projection resolves every `mcp__galaius__…` name
     against the registry `call_tool` reads, and refuses the install when one is missing (#224 —
     a role was told about tools its session could not dispatch, and read "No such tool
     available" mid-task)."""
-    from interact.server import dispatchable_tools
+    from galaius.server import dispatchable_tools
 
     dispatchable = sorted(dispatchable_tools())
     assert {'navigate', 'screenshot', 'session'} <= set(dispatchable)
-    listed = ['Read', *(f'mcp__interact__{name}' for name in dispatchable)]
+    listed = ['Read', *(f'mcp__galaius__{name}' for name in dispatchable)]
     outputs = _server_outputs(catalog_fixture(worker_tools=listed), tmp_path / 'home', tmp_path / 'projection')
     assert _worker_header(outputs)['tools'] == listed
 
-    with pytest.raises(ValueError, match=r"cannot dispatch: mcp__interact__teleport"):
-        _server_outputs(catalog_fixture(worker_tools=['Read', 'mcp__interact__teleport']),
+    with pytest.raises(ValueError, match=r"cannot dispatch: mcp__galaius__teleport"):
+        _server_outputs(catalog_fixture(worker_tools=['Read', 'mcp__galaius__teleport']),
                         tmp_path / 'home', tmp_path / 'projection')
 
 
 def test_projection_leaves_another_server_s_tools_alone(tmp_path):
-    """Only interact's own prefix is ours to judge — a foreign MCP tool is listed as written."""
-    listed = ['Bash', 'mcp__other__navigate', 'mcp__interact__navigate']
+    """Only galaius's own prefix is ours to judge — a foreign MCP tool is listed as written."""
+    listed = ['Bash', 'mcp__other__navigate', 'mcp__galaius__navigate']
     outputs = _server_outputs(catalog_fixture(worker_tools=listed), tmp_path / 'home', tmp_path / 'projection')
     assert _worker_header(outputs)['tools'] == listed
 
 
 @pytest.mark.parametrize(('worker_tools', 'expected'), [
-    (['Read'], ['Read', 'mcp__interact__ext__Context7__query-docs']),   # the server connected it: listed, so callable
+    (['Read'], ['Read', 'mcp__galaius__ext__Context7__query-docs']),   # the server connected it: listed, so callable
     ([], []),                                                           # no list = every tool already: stays unrestricted
 ])
 def test_projection_gives_a_role_the_external_tools_the_server_connects_it_to(tmp_path, worker_tools, expected):

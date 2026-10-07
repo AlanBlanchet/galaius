@@ -11,8 +11,8 @@ import { test } from "node:test";
 import { chatAction } from "./chatMessage.ts";
 
 const COMMANDS = [
-  { slash: "/team", title: "Team", detail: "", command: "interact.agents.team", needsAgent: false },
-  { slash: "/stop", title: "Stop", detail: "", command: "interact.agents.stop", needsAgent: true },
+  { slash: "/team", title: "Team", detail: "", command: "galaius.agents.team", needsAgent: false },
+  { slash: "/stop", title: "Stop", detail: "", command: "galaius.agents.stop", needsAgent: true },
 ];
 
 test("a reply carries its text through", () => {
@@ -27,11 +27,11 @@ test("an empty or whitespace-only reply is not a message", () => {
 });
 
 test("only a command the panel actually declares is accepted", () => {
-  assert.deepEqual(chatAction({ type: "command", command: "interact.agents.stop" }, COMMANDS),
-    { kind: "command", command: "interact.agents.stop" });
+  assert.deepEqual(chatAction({ type: "command", command: "galaius.agents.stop" }, COMMANDS),
+    { kind: "command", command: "galaius.agents.stop" });
   // Real, ours, and NOT offered by this panel — still refused. The webview renders agent output,
   // so "it exists" is not the test; "this surface offers it" is.
-  assert.equal(chatAction({ type: "command", command: "interact.agents.broadcast" }, COMMANDS), null);
+  assert.equal(chatAction({ type: "command", command: "galaius.agents.broadcast" }, COMMANDS), null);
   assert.equal(chatAction({ type: "command", command: "workbench.action.terminal.new" }, COMMANDS), null);
 });
 

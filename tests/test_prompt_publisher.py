@@ -5,9 +5,9 @@ from uuid import UUID
 
 import pytest
 
-from interact.prompt_publisher import publish_projection
-from interact.prompt_projection import MANIFEST_NAME
-from interact_core import (
+from galaius.prompt_publisher import publish_projection
+from galaius.prompt_projection import MANIFEST_NAME
+from galaius_core import (
     PromptCatalogPage,
     PromptChannelEntry,
     PromptKey,
@@ -40,14 +40,14 @@ def test_publisher_sends_complete_snapshot_and_only_changed_revisions(
         "source_timestamp": "2026-09-05T12:00:00+00:00", "outputs": outputs,
     }))
     same_key = PromptKey(
-        namespace="interact-projection",
+        namespace="galaius-projection",
         slug="output-" + hashlib.sha256(b"AGENTS.md").hexdigest()[:24],
     )
     changed_key = PromptKey(
-        namespace="interact-projection",
+        namespace="galaius-projection",
         slug="output-" + hashlib.sha256(b"instructions.md").hexdigest()[:24],
     )
-    removed_key = PromptKey(namespace="interact-projection", slug="removed")
+    removed_key = PromptKey(namespace="galaius-projection", slug="removed")
     prior_digest = "d" * 64
     catalog = PromptCatalogPage(
         entries=(
@@ -79,7 +79,7 @@ def test_publisher_sends_complete_snapshot_and_only_changed_revisions(
         requests.append(PromptPublicationRequest.model_validate(body))
         return catalog.model_dump(mode="json")
 
-    monkeypatch.setattr("interact.prompt_publisher._request", request)
+    monkeypatch.setattr("galaius.prompt_publisher._request", request)
     publish_projection(projection, "http://localhost", "secret")
 
     publication = requests.pop()
@@ -123,7 +123,7 @@ def test_identical_content_at_distinct_paths_keeps_distinct_prompt_keys(
             captured.append(PromptPublicationRequest.model_validate(body))
         return empty.model_dump(mode="json")
 
-    monkeypatch.setattr("interact.prompt_publisher._request", request)
+    monkeypatch.setattr("galaius.prompt_publisher._request", request)
     publish_projection(projection, "http://localhost", "secret")
     publication = captured.pop()
     assert len({(entry.key.namespace, entry.key.slug) for entry in publication.entries}) == 2

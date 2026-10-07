@@ -1,5 +1,5 @@
 // Display-currency conversion for the dashboard's spend figures. Usage cost is recorded in USD
-// (litellm pricing); this converts it to the user's interact.display.currency for display only.
+// (litellm pricing); this converts it to the user's galaius.display.currency for display only.
 // Rates are fetched LIVE from the ECB via frankfurter.app (no key, no hardcoded table — they
 // update when the ECB updates) and cached; formatting uses the built-in Intl currency formatter.
 // Offline / unknown currency falls back to USD so the panel never breaks.

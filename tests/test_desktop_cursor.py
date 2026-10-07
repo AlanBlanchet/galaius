@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from interact.desktop import Cursor
+from galaius.desktop import Cursor
 
 
 @pytest.mark.parametrize(
@@ -42,7 +42,7 @@ def test_cursor_label(cursor_type, expected):
 
 
 def test_get_cursor_type_no_libs():
-    with patch("interact.desktop.cursor._libx11", None):
+    with patch("galaius.desktop.cursor._libx11", None):
         assert Cursor.current_type() == "unknown"
 
 
@@ -60,7 +60,7 @@ def test_get_cursor_type_named_cursor():
         },
     )()
 
-    from interact.desktop import _XFixesCursorImage
+    from galaius.desktop import _XFixesCursorImage
 
     cursor_img = _XFixesCursorImage()
     cursor_img.name = b"hand2"
@@ -77,8 +77,8 @@ def test_get_cursor_type_named_cursor():
     )()
 
     with (
-        patch("interact.desktop.cursor._libx11", mock_x11),
-        patch("interact.desktop.cursor._libxfixes", mock_xfixes),
+        patch("galaius.desktop.cursor._libx11", mock_x11),
+        patch("galaius.desktop.cursor._libxfixes", mock_xfixes),
     ):
         assert Cursor.current_type() == "pointer"
 
@@ -97,7 +97,7 @@ def test_get_cursor_type_dimension_heuristic():
         },
     )()
 
-    from interact.desktop import _XFixesCursorImage
+    from galaius.desktop import _XFixesCursorImage
 
     cursor_img = _XFixesCursorImage()
     cursor_img.name = None
@@ -114,8 +114,8 @@ def test_get_cursor_type_dimension_heuristic():
     )()
 
     with (
-        patch("interact.desktop.cursor._libx11", mock_x11),
-        patch("interact.desktop.cursor._libxfixes", mock_xfixes),
+        patch("galaius.desktop.cursor._libx11", mock_x11),
+        patch("galaius.desktop.cursor._libxfixes", mock_xfixes),
     ):
         assert Cursor.current_type() == "text"
 
@@ -130,7 +130,7 @@ def test_get_cursor_type_exception_fallback():
             ),
         },
     )()
-    with patch("interact.desktop.cursor._libx11", mock_x11):
+    with patch("galaius.desktop.cursor._libx11", mock_x11):
         assert Cursor.current_type() == "unknown"
 
 
@@ -139,7 +139,7 @@ def test_get_cursor_type_exception_fallback():
 def _stub_x11(monkeypatch, cursor_name: bytes | None = b"xterm"):
     """Stub libX11/libXfixes so `current_type` runs its real logic against a fake display
     handle, and hand back the ctypes call log so the test can assert WHICH display was opened."""
-    import interact.desktop.cursor as cursor_mod
+    import galaius.desktop.cursor as cursor_mod
 
     calls = {}
 
@@ -183,14 +183,14 @@ def test_current_type_with_explicit_display_opens_that_display_not_the_default(m
 
 def test_nested_backend_cursor_type_reads_its_own_display_not_the_process_default(monkeypatch):
     """NestedBackend.cursor_type() must feed Cursor.current_type() ITS OWN `self.display`."""
-    from interact.desktop.nested import NestedBackend as _NB
+    from galaius.desktop.nested import NestedBackend as _NB
 
     nb = _NB.__new__(_NB)
     nb.display = ":99"
 
     seen = {}
     monkeypatch.setattr(
-        "interact.desktop.cursor.Cursor.current_type",
+        "galaius.desktop.cursor.Cursor.current_type",
         classmethod(lambda cls, display=None: (seen.__setitem__("display", display), "pointer")[1]),
     )
     assert nb.cursor_type() == "pointer"

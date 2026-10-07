@@ -16,10 +16,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from interact.agents import quota, registry as reg, run as run_module
-from interact.agents.events import AgentEvent
-from interact.agents.providers import CodexProvider
-from interact.agents.run import mesh_config, run_agent, validate_image_paths
+from galaius.agents import quota, registry as reg, run as run_module
+from galaius.agents.events import AgentEvent
+from galaius.agents.providers import CodexProvider
+from galaius.agents.run import mesh_config, run_agent, validate_image_paths
 from tests.support.agents import ScriptedProvider, install_provider, use_policy
 
 
@@ -155,15 +155,15 @@ async def test_a_child_is_attributed_to_its_parent(tmp_path):
     assert [c.run_id for c in reg.children_of(parent.run_id)] == [child.run_id]
 
 
-# ── the mesh config: how a spawned agent reaches back into interact ──────────────────────────
+# ── the mesh config: how a spawned agent reaches back into galaius ──────────────────────────
 
 
-def test_the_mesh_config_declares_interact_as_an_mcp_server():
+def test_the_mesh_config_declares_galaius_as_an_mcp_server():
     import json
 
     cfg = json.loads(mesh_config(run_id="r1"))
-    assert "interact" in cfg["mcpServers"]
-    entry = cfg["mcpServers"]["interact"]
+    assert "galaius" in cfg["mcpServers"]
+    entry = cfg["mcpServers"]["galaius"]
     assert entry["command"] and isinstance(entry["args"], list)
 
 
@@ -171,9 +171,9 @@ def test_the_mesh_config_tags_the_child_so_its_own_spawns_are_attributed():
     import json
 
     cfg = json.loads(mesh_config(run_id="r1"))
-    env = cfg["mcpServers"]["interact"]["env"]
+    env = cfg["mcpServers"]["galaius"]["env"]
     # Without this the tree is flat and "who started this agent" is unanswerable.
-    assert env["INTERACT_PARENT_RUN_ID"] == "r1"
+    assert env["GALAIUS_PARENT_RUN_ID"] == "r1"
 
 
 def test_the_mesh_config_carries_no_credential():
@@ -200,9 +200,9 @@ def codex_configuration(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mesh,entry", [
     (True, None), (False, None),
-    (True, {"name": "interact", "enabled": True, "transport": {"command": "system-wrapper"}}),
-    (True, {"name": "interact", "enabled": False, "transport": {"command": "system-wrapper"}}),
-    (True, {"name": "interact", "transport": {"url": "https://example.invalid/mcp"}}),
+    (True, {"name": "galaius", "enabled": True, "transport": {"command": "system-wrapper"}}),
+    (True, {"name": "galaius", "enabled": False, "transport": {"command": "system-wrapper"}}),
+    (True, {"name": "galaius", "transport": {"url": "https://example.invalid/mcp"}}),
 ])
 async def test_codex_launcher_mesh_reaches_spawn_boundary_without_overriding_opt_out(
     tmp_path, monkeypatch, codex_configuration, mesh, entry
@@ -230,9 +230,9 @@ async def test_codex_launcher_mesh_reaches_spawn_boundary_without_overriding_opt
 
 @pytest.mark.parametrize("mesh,entry", [
     (True, None), (False, None), (None, None),
-    (True, {"name": "interact", "enabled": True, "transport": {"command": "system-wrapper"}}),
-    (True, {"name": "interact", "enabled": False, "transport": {"command": "system-wrapper"}}),
-    (True, {"name": "interact", "transport": {"url": "https://example.invalid/mcp"}}),
+    (True, {"name": "galaius", "enabled": True, "transport": {"command": "system-wrapper"}}),
+    (True, {"name": "galaius", "enabled": False, "transport": {"command": "system-wrapper"}}),
+    (True, {"name": "galaius", "transport": {"url": "https://example.invalid/mcp"}}),
 ])
 def test_codex_resume_replays_only_recorded_mesh_opt_in(tmp_path, monkeypatch, codex_configuration, mesh, entry):
     codex_configuration(entry)
@@ -245,7 +245,7 @@ def test_codex_resume_replays_only_recorded_mesh_opt_in(tmp_path, monkeypatch, c
 
     def capture(argv, **kwargs):
         captured.extend(argv)
-        assert kwargs["env"]["INTERACT_PARENT_RUN_ID"] == run.run_id
+        assert kwargs["env"]["GALAIUS_PARENT_RUN_ID"] == run.run_id
         raise RuntimeError("fixture resume boundary")
 
     monkeypatch.setattr(run_module.subprocess, "Popen", capture)
@@ -256,7 +256,7 @@ def test_codex_resume_replays_only_recorded_mesh_opt_in(tmp_path, monkeypatch, c
     data = tomllib.loads("\n".join(overrides))
     assert ("mcp_servers" in data) == (mesh is True and entry is None)
     if mesh is True and entry is None:
-        assert data["mcp_servers"]["interact"]["env"] == {"INTERACT_PARENT_RUN_ID": run.run_id}
+        assert data["mcp_servers"]["galaius"]["env"] == {"GALAIUS_PARENT_RUN_ID": run.run_id}
     assert "approval_policy" not in data and "sandbox_mode" not in data
     assert reg.get_run(run.run_id).session_id == "fixture-owner"
 
@@ -281,7 +281,7 @@ def test_image_paths_are_absolute_supported_readable_and_bounded(tmp_path):
 
 
 def test_unknown_model_is_refused_for_image_attachments(monkeypatch):
-    import interact.agents.run as run_mod
+    import galaius.agents.run as run_mod
 
     monkeypatch.setattr(run_mod.Model, "catalog", lambda: [])
     monkeypatch.setattr(run_mod.Model, "match_published", lambda model: None)
@@ -290,8 +290,8 @@ def test_unknown_model_is_refused_for_image_attachments(monkeypatch):
 
 
 def test_non_vlm_model_is_refused_for_image_attachments(monkeypatch):
-    import interact.agents.run as run_mod
-    from interact.models import Model, ModelCapability
+    import galaius.agents.run as run_mod
+    from galaius.models import Model, ModelCapability
 
     candidate = Model(id="text-model", provider="openai", capabilities={ModelCapability.LLM})
     monkeypatch.setattr(run_mod.Model, "catalog", lambda: [candidate])
@@ -326,8 +326,8 @@ async def test_events_survive_the_spawning_loop_ending(tmp_path):
 
 @pytest.mark.asyncio
 async def test_the_normalised_stream_is_kept_current_while_a_run_is_alive(tmp_path, monkeypatch):
-    from interact.agents import registry as reg
-    from interact.agents.run import _mirror_while_alive
+    from galaius.agents import registry as reg
+    from galaius.agents.run import _mirror_while_alive
 
     reg.register(run_id="r1", name="a", provider="claude", task="t", pid=None)
     raw = reg.raw_events_path("r1")
@@ -356,8 +356,8 @@ async def test_the_normalised_stream_is_kept_current_while_a_run_is_alive(tmp_pa
 
 @pytest.mark.asyncio
 async def test_the_pump_stops_when_the_run_does(tmp_path, monkeypatch):
-    from interact.agents import registry as reg
-    from interact.agents.run import _mirror_while_alive
+    from galaius.agents import registry as reg
+    from galaius.agents.run import _mirror_while_alive
 
     reg.register(run_id="r1", name="a", provider="claude", task="t", pid=None)
     task = asyncio.create_task(_mirror_while_alive("r1", lambda: False, interval=0.01))
@@ -367,8 +367,8 @@ async def test_the_pump_stops_when_the_run_does(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_a_broken_read_never_kills_the_pump(tmp_path, monkeypatch):
     """It runs beside a live agent; a transient read failure must not take the stream down."""
-    from interact.agents import registry as reg
-    from interact.agents.run import _mirror_while_alive
+    from galaius.agents import registry as reg
+    from galaius.agents.run import _mirror_while_alive
 
     calls = {"n": 0}
 
@@ -394,9 +394,9 @@ async def test_a_broken_read_never_kills_the_pump(tmp_path, monkeypatch):
 def test_spawn_returns_the_run_id_without_waiting(monkeypatch, tmp_path, capsys):
     import importlib
 
-    # `interact.cli.app` is BOTH a module and the cyclopts App object the package re-exports; the
+    # `galaius.cli.app` is BOTH a module and the cyclopts App object the package re-exports; the
     # attribute shadows the module, so import it explicitly rather than by attribute access.
-    cli = importlib.import_module("interact.cli.app")
+    cli = importlib.import_module("galaius.cli.app")
 
     class _Handle:
         run_id = "abcd1234-0000-0000-0000-000000000000"
@@ -418,8 +418,8 @@ def test_spawn_returns_the_run_id_without_waiting(monkeypatch, tmp_path, capsys)
 
 
 async def _mirror_once(monkeypatch, read):
-    from interact.agents import registry as reg
-    from interact.agents.run import _mirror_running_runs
+    from galaius.agents import registry as reg
+    from galaius.agents.run import _mirror_running_runs
 
     monkeypatch.setattr(reg, "read_events", read)
     alive = {"value": True}
@@ -449,7 +449,7 @@ async def test_every_running_run_is_kept_current_and_nothing_else_is_read(monkey
 async def test_an_unchanged_stream_is_not_reparsed_on_every_tick(monkeypatch):
     """A live agent's transcript grows to megabytes; re-parsing it every second while nothing was
     written kept each idle MCP server at ~20% of a core."""
-    from interact.agents import registry as reg
+    from galaius.agents import registry as reg
     from tests.support import register_run
 
     register_run("quiet", name="quiet", provider="claude", task="t", pid=os.getpid())

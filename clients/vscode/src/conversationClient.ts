@@ -1,4 +1,4 @@
-/** One extension-window-owned newline-JSON connection to `interact agents console`.
+/** One extension-window-owned newline-JSON connection to `galaius agents console`.
  *
  * Prompts and provider payloads travel over stdin/stdout, never argv or logs.  The process is
  * deliberately one-shot: after EOF, malformed output, protocol mismatch or timeout the client is
@@ -53,7 +53,7 @@ export interface ConversationClient {
   start(request: ConversationRequest): Promise<AgentRun>;
   send(runId: string, prompt: string): Promise<AgentRun>;
   cancel(runId: string): Promise<AgentRun>;
-  interact(runId: string, submission: InteractionSubmission): Promise<AgentRun>;
+  galaius(runId: string, submission: InteractionSubmission): Promise<AgentRun>;
   state(): ConversationClientState;
   dispose(): void;
 }
@@ -268,7 +268,7 @@ export function createConversationClient(
     });
     process.on("error", (error) => fail((error as NodeJS.ErrnoException).code === "ENOENT"
       // NAME the program that is missing. A project-checkout spawn runs `uv run --directory …`,
-      // so a missing `uv` reported "Interact is not installed" — confident, wrong advice beside a
+      // so a missing `uv` reported "Galaius is not installed" — confident, wrong advice beside a
       // RELOAD BRIDGE button, sending the reader to reinstall something that was already there.
       ? `${spec.command} was not found. Install it, then reload the window.`
       : "The conversation bridge could not start. Reload the window to try again."));
@@ -331,7 +331,7 @@ export function createConversationClient(
         const missing = REQUIRED_METHODS.filter((method) => !methods.has(method));
         if (missing.length) {
           throw new Error("The conversation bridge is incompatible with this extension. " +
-            `Missing methods: ${missing.join(", ")}. Update interact, then reload the window.`);
+            `Missing methods: ${missing.join(", ")}. Update galaius, then reload the window.`);
         }
         setState("ready");
       })
@@ -394,7 +394,7 @@ export function createConversationClient(
         run_id: runId,
       })));
     },
-    async interact(runId: string, submission: InteractionSubmission): Promise<AgentRun> {
+    async galaius(runId: string, submission: InteractionSubmission): Promise<AgentRun> {
       return requireRun(await request((requestId) => ({
         version: PROTOCOL_VERSION,
         request_id: requestId,

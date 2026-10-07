@@ -7,7 +7,7 @@ test("the path names the tab and carries the ids back out", () => {
   const p = ioPath("run-1", "toolu_42", "out", "Bash");
   assert.equal(p, "/run-1/toolu_42/Bash.out.txt");
   assert.deepEqual(ioFromPath(p), { runId: "run-1", toolId: "toolu_42", side: "out" });
-  assert.equal(IO_SCHEME, "interact-agent-io");
+  assert.equal(IO_SCHEME, "galaius-agent-io");
 });
 
 test("a hostile tool name cannot smuggle a separator into the path", () => {

@@ -7,9 +7,9 @@
 import * as assert from "assert";
 import * as vscode from "vscode";
 
-const EXT = "AlanBlanchet.interact";
+const EXT = "AlanBlanchet.galaius";
 
-suite("interact extension", () => {
+suite("galaius extension", () => {
   test("the extension activates without throwing", async () => {
     const ext = vscode.extensions.getExtension(EXT);
     assert.ok(ext, `${EXT} is not installed in this test host`);
@@ -23,15 +23,15 @@ suite("interact extension", () => {
     const pkg = vscode.extensions.getExtension(EXT)!.packageJSON;
     const containers = pkg.contributes?.viewsContainers?.activitybar ?? [];
     assert.ok(containers.length > 0, "no activity-bar container — the panel has no entry point");
-    assert.ok(containers.some((c: { id: string }) => c.id === "interact"));
+    assert.ok(containers.some((c: { id: string }) => c.id === "galaius"));
   });
 
   test("the Agents view is declared inside that container", () => {
     const pkg = vscode.extensions.getExtension(EXT)!.packageJSON;
-    const views = pkg.contributes?.views?.interact ?? [];
+    const views = pkg.contributes?.views?.galaius ?? [];
     assert.ok(
-      views.some((v: { id: string }) => v.id === "interact.agentsView"),
-      "the Agents view is not in the interact container",
+      views.some((v: { id: string }) => v.id === "galaius.agentsView"),
+      "the Agents view is not in the galaius container",
     );
   });
 
@@ -40,12 +40,12 @@ suite("interact extension", () => {
     // class of defect the user ends up reporting instead of a test.
     const registered = new Set(await vscode.commands.getCommands(true));
     for (const id of [
-      "interact.openDashboard",
-      "interact.agents.refresh",
-      "interact.agents.groupBy",
-      "interact.agents.stop",
-      "interact.agents.showEvents",
-      "interact.agents.openConversation",
+      "galaius.openDashboard",
+      "galaius.agents.refresh",
+      "galaius.agents.groupBy",
+      "galaius.agents.stop",
+      "galaius.agents.showEvents",
+      "galaius.agents.openConversation",
     ]) {
       assert.ok(registered.has(id), `command not registered: ${id}`);
     }
@@ -53,11 +53,11 @@ suite("interact extension", () => {
 
   test("focusing the Agents view works — the path a user takes to reach it", async () => {
     // VS Code auto-generates `<viewId>.focus`; if the view were mis-declared this rejects.
-    await vscode.commands.executeCommand("interact.agentsView.focus");
+    await vscode.commands.executeCommand("galaius.agentsView.focus");
   });
 
   test("opening a conversation does not throw, even for an unknown run", async () => {
     // The panel must degrade rather than explode: a stale id from a pruned registry is normal.
-    await vscode.commands.executeCommand("interact.agents.openConversation", "no-such-run-id");
+    await vscode.commands.executeCommand("galaius.agents.openConversation", "no-such-run-id");
   });
 });

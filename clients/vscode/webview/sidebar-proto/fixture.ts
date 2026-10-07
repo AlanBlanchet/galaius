@@ -9,7 +9,7 @@
  *
  *  Selected: a lead with 3 reports (one out at web); a second lead with the SAME NAME in another
  *  project (colour is the only difference); a finished report; a dead one; one untouched 2+ min; a
- *  lone lead; a finished lead; a session interact never started.
+ *  lone lead; a finished lead; a session galaius never started.
  *
  *  Every building lead stays even with no reports selected: the hue allocator is greedy, resolving
  *  clashes against the WHOLE lead set — dropping one can shift another's colour. Same lead set =
@@ -45,7 +45,7 @@ export interface Board {
  *  Ordered as the board reads: lead, its reports, next lead, its reports.
  */
 const CLOCK: [runId: string, ago: number, ended: number | null][] = [
-  ["run-a", 2_460, null], // main · interact — the session driving this work
+  ["run-a", 2_460, null], // main · galaius — the session driving this work
   ["run-b", 1_320, null], //   artist · studio
   ["run-c", 372, null], //     researcher · out at the web
   ["run-f", 3_910, 3_480], //  Explore · finished, and pressed down the spike

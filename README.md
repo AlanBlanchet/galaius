@@ -1,38 +1,38 @@
 <p align="center">
-  <a href="https://alanblanchet.github.io/interact/">
-    <img src="site/assets/banner.png" alt="interact — give your agent eyes and hands" width="820">
+  <a href="https://alanblanchet.github.io/galaius/">
+    <img src="site/assets/banner.png" alt="galaius — give your agent eyes and hands" width="820">
   </a>
 </p>
 
 ## Repository boundaries
 
-Interact has a public client, a shared public contracts package, and a hosted server:
+Galaius has a public client, a shared public contracts package, and a hosted server:
 
-- `src/interact` — the `interact` Python import, CLI, MCP server, automation, local
+- `src/galaius` — the `galaius` Python import, CLI, MCP server, automation, local
   sessions, and explicit API routes.
-- `interact-core` — the standalone dependency-light contracts package and its generated JSON Schema,
+- `galaius-core` — the standalone dependency-light contracts package and its generated JSON Schema,
   shared by every surface; `clients/vscode` consumes the generated TypeScript form.
 - `clients/vscode` owns the VS Code extension, and `site` owns the static public website.
 - `prompts/` contains distributable product defaults and their manifest. Personal prompts live in the configured account's server catalog and never enter this repository.
 
 The hosted server consumes a released public schema version; nothing here imports it.
 
-The public package depends on the exact public `interact-core` Git revision declared in `pyproject.toml`.
+The public package depends on the exact public `galaius-core` Git revision declared in `pyproject.toml`.
 It installs without a sibling checkout. To work on both packages locally, use
-`uv run --with-editable ../interact-core interact --help` from this repository.
+`uv run --with-editable ../galaius-core galaius --help` from this repository.
 Local-session and local-compute routes
 stay distinct from separately billed `metered_api` routes; failure never silently crosses that
 charge boundary, and a vendor subscription is not described as universally free.
 
 ### Prompt distribution
 
-With a configured server, `interact prompts` reads and saves immutable personal prompt revisions
+With a configured server, `galaius prompts` reads and saves immutable personal prompt revisions
 through that server. Installed provider instructions and local catalogs are rebuildable caches.
-The older worktree at `${XDG_DATA_HOME:-~/.local/share}/interact/prompts` remains recovery evidence;
+The older worktree at `${XDG_DATA_HOME:-~/.local/share}/galaius/prompts` remains recovery evidence;
 server-connected writes do not overwrite it. Standalone local authoring remains available when no
 server is configured. `prompts/manifest.json` here defines shipped product defaults, digest-validated
 before publication.
-`interact.prompt_client._PromptClient.sync(account, cache)` downloads the authenticated typed catalog
+`galaius.prompt_client._PromptClient.sync(account, cache)` downloads the authenticated typed catalog
 and exact immutable revisions into an account-scoped `_PromptCache`. A conversation start may carry a
 `PromptSelection` beside the ordinary `prompt`: the console resolves it, sends the verified content as
 the provider's system instruction, and persists the server-derived `PromptExecutionRef` on `AgentRun`.
@@ -45,7 +45,7 @@ select another prompt or charge route.
 </p>
 
 <p align="center">
-  <a href="https://alanblanchet.github.io/interact/"><b>🌐 Website</b></a> ·
+  <a href="https://alanblanchet.github.io/galaius/"><b>🌐 Website</b></a> ·
   <a href="#60-second-quickstart">Quickstart</a> ·
   <a href="#install-and-connect">Install and connect</a> ·
   <a href="#ask-your-agent">Examples</a> ·
@@ -53,7 +53,7 @@ select another prompt or charge route.
 </p>
 
 <p align="center">
-  <a href="https://github.com/AlanBlanchet/interact/actions/workflows/ci.yml"><img src="https://github.com/AlanBlanchet/interact/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/AlanBlanchet/galaius/actions/workflows/ci.yml"><img src="https://github.com/AlanBlanchet/galaius/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.11+-blue.svg" alt="Python 3.11+"></a>
   <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-server-black.svg" alt="MCP"></a>
@@ -70,39 +70,39 @@ and the text that came back — that text is all your model sees.
 
 The same tools drive a **real desktop app** — `launch_app` puts it in an isolated display the agent owns.
 
-<p align="center"><img src="site/assets/demo-desktop.gif" alt="An agent launching gnome-calculator into interact's sandbox and clicking 7 x 6 = , the app showing 42" width="380"></p>
+<p align="center"><img src="site/assets/demo-desktop.gif" alt="An agent launching gnome-calculator into galaius's sandbox and clicking 7 x 6 = , the app showing 42" width="380"></p>
 
 ## 60-second quickstart
 
 ```bash
-# 1. install the `interact` command (installs uv if missing)
-curl -LsSf https://raw.githubusercontent.com/AlanBlanchet/interact/main/install.sh | sh
-# Windows (PowerShell): powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/AlanBlanchet/interact/main/install.ps1 | iex"
+# 1. install the `galaius` command (installs uv if missing)
+curl -LsSf https://raw.githubusercontent.com/AlanBlanchet/galaius/main/install.sh | sh
+# Windows (PowerShell): powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/AlanBlanchet/galaius/main/install.ps1 | iex"
 
 # 2. register it with Codex
-interact install codex
+galaius install codex
 
 # 3. start a fresh Codex session (or restart the IDE extension), then verify
-codex mcp get interact
+codex mcp get galaius
 
 # 4. check keys, providers, browser, desktop
-interact doctor
+galaius doctor
 ```
 
 That's it — your agent can now navigate, click, type, scroll, drag, see, hear and watch.
 
-Other hosts use the same bootstrap: `interact install claude`, `cursor`, `vscode`, `copilot`,
+Other hosts use the same bootstrap: `galaius install claude`, `cursor`, `vscode`, `copilot`,
 `windsurf`, `zed`, or `claude-desktop`.
 
 <details>
 <summary>Other install routes (Windows, no-install, VS Code)</summary>
 
 ```bash
-uv tool install git+https://github.com/AlanBlanchet/interact             # any platform, without the installer
-uvx --from git+https://github.com/AlanBlanchet/interact interact mcp     # run without installing
+uv tool install git+https://github.com/AlanBlanchet/galaius             # any platform, without the installer
+uvx --from git+https://github.com/AlanBlanchet/galaius galaius mcp     # run without installing
 ```
 
-interact isn't on PyPI — the bare name is taken there. `interact install vscode` registers the server
+galaius isn't on PyPI — the bare name is taken there. `galaius install vscode` registers the server
 with Copilot's agent mode; no extension needed.
 </details>
 
@@ -110,18 +110,18 @@ with Copilot's agent mode; no extension needed.
 
 Linux and Windows. A background service keeps the computer connected: a systemd user service on
 Linux, a task started at your logon on Windows (your own rights, no administrator). macOS: not yet —
-`interact machine connect` in a terminal keeps it connected while it runs.
+`galaius machine connect` in a terminal keeps it connected while it runs.
 
 1. **Install**
 
    ```bash
-   curl -LsSf https://raw.githubusercontent.com/AlanBlanchet/interact/main/install.sh | sh
+   curl -LsSf https://raw.githubusercontent.com/AlanBlanchet/galaius/main/install.sh | sh
    ```
 
    Windows, in PowerShell:
 
    ```powershell
-   powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/AlanBlanchet/interact/main/install.ps1 | iex"
+   powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/AlanBlanchet/galaius/main/install.ps1 | iex"
    ```
 
    Needs only `curl` (or `wget -qO-` in its place) on Linux, nothing on Windows: it brings uv and
@@ -130,10 +130,10 @@ Linux, a task started at your logon on Windows (your own rights, no administrato
 2. **Sign in**
 
    ```bash
-   interact login
+   galaius login
    ```
 
-   It asks once for your Interact server address, opens its sign-in page, and you allow this
+   It asks once for your Galaius server address, opens its sign-in page, and you allow this
    computer there, then answer `y`. It prints `Connected: <this computer> is now a machine in
    <workspace>` and `Synced: <n> agents, prompts installed`: the CLI is signed in, this computer is a
    machine of your workspace (started now and at every boot), your agents and prompts are installed.
@@ -142,15 +142,15 @@ Right after, it asks once whether agents may run on this computer from the web (
 in which folders under your home they may start (default none), then whether the web may continue
 your editor conversations here (as a copy) and answer the approvals a session asks for (both
 default no); `--agents` / `--no-agents`, `--agent-folder <name>`, `--continue-conversations` and
-`--answer-approvals` answer ahead. Change it later on that computer: run `interact login` again
+`--answer-approvals` answer ahead. Change it later on that computer: run `galaius login` again
 (already connected, it asks only these questions, Enter keeping each current answer; nothing to
-restart), or `interact machine agent-roots <folder…>`, `interact machine agents on|off --continue on|off --approvals on|off`. Every folder starts hidden from
-workflows, Data and agents: `interact machine places <folder under home> <level>` opens one (see,
+restart), or `galaius machine agent-roots <folder…>`, `galaius machine agents on|off --continue on|off --approvals on|off`. Every folder starts hidden from
+workflows, Data and agents: `galaius machine places <folder under home> <level>` opens one (see,
 read, write_on_review, sandbox, write); a wider level asked from the web waits until you run
-`interact machine approve` on that computer. `interact machine fence on` runs agents inside an OS
+`galaius machine approve` on that computer. `galaius machine fence on` runs agents inside an OS
 fence built from those levels (Linux: bubblewrap + Landlock); without it an agent can read every
 file your user can.
-`interact logout` removes it from your account and stops the service. `interact machine service
+`galaius logout` removes it from your account and stops the service. `galaius machine service
 status|start|stop|restart` reads or controls that service. On Windows the saved machine token and
 CLI key are sealed with Windows' own encryption for your user (DPAPI) in files only you may read;
 Script steps run in Python, PowerShell or cmd there (shell scripts need Linux or macOS). Codex
@@ -197,30 +197,30 @@ One tool per job. The generic ones take a `target` — unset for the browser, a 
 Visual jobs select your installed, authenticated **Claude Code session transport by
 default**—including screenshot descriptions, element grounding, `review_ui` / `verify_ui`, and
 sampled video/interaction analysis. Until you confirm the account settings below, each session
-provider still runs and interact logs one warning per process. No API key is needed, and `session_only` prevents interact from falling through
+provider still runs and galaius logs one warning per process. No API key is needed, and `session_only` prevents galaius from falling through
 to a metered API, but vendor CLIs can consume account-side credits after included plan usage.
 
 To silence that warning, open Claude **Settings → Usage**, keep Usage credits disabled, ensure the
 prepaid balance is zero, and turn auto-reload off ([Anthropic's usage-credit controls](https://support.claude.com/en/articles/12429409-manage-usage-credits-for-paid-claude-plans)). Anthropic's announced Agent SDK /
 `claude -p` monthly-credit change was paused on June 16; `claude -p` continues to draw plan
-usage limits ([Anthropic's paused-change notice](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan)), but the account-side Usage-credit controls still require this guard. CLI authentication cannot verify these account settings, and a later change is a residual race interact cannot detect.
+usage limits ([Anthropic's paused-change notice](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan)), but the account-side Usage-credit controls still require this guard. CLI authentication cannot verify these account settings, and a later change is a residual race galaius cannot detect.
 Video sessions receive ordered, timestamped frames (up to the configured frame cap; 12 by default),
 rather than uploading the original clip.
 
 The transport and spending policy are separate, explicit settings:
 
 ```bash
-# Session transport, with no metered API fallback by interact.
-interact config set media.backend auto               # auto | session | api
-interact config set media.billing session_only       # session_only | api_allowed
-interact config set media.providerOrder claude
+# Session transport, with no metered API fallback by galaius.
+galaius config set media.backend auto               # auto | session | api
+galaius config set media.billing session_only       # session_only | api_allowed
+galaius config set media.providerOrder claude
 
 # Only after disabling each named provider's account-side credits (silences the warning):
-interact config set media.noExtraUsageConfirmedFor claude
+galaius config set media.noExtraUsageConfirmedFor claude
 
 # Optional session model pins and process timeout.
-interact config set media.claudeModel <claude-model>
-interact config set media.timeout 120
+galaius config set media.claudeModel <claude-model>
+galaius config set media.timeout 120
 ```
 
 Without that attestation, sessions still run and warn once per process. To opt into metered
@@ -234,40 +234,40 @@ With `session_only`, `transcribe` fails before any API call. With
 transport, even when `media.backend=session`; after a transcription-only model produces text, a
 Claude session may answer questions over that transcript.
 
-Run `interact status` to see the media backend, billing policy, ordered CLI availability, API/local
-models, and usage. Run `interact` with no arguments for the terminal configuration UI. Settings live
-in `~/.interact/config.env` and are also exposed by the VS Code extension.
+Run `galaius status` to see the media backend, billing policy, ordered CLI availability, API/local
+models, and usage. Run `galaius` with no arguments for the terminal configuration UI. Settings live
+in `~/.galaius/config.env` and are also exposed by the VS Code extension.
 
 ## Platform support
 
 | | Linux | macOS | Windows |
 | --- | :-: | :-: | :-: |
 | Browser, MCP server, CLI, TUI | ✅ | ✅ | ✅ |
-| Install one-liner, `interact login`, background machine | ✅ (systemd user service) | ✅ install; the machine runs in a terminal (no background service yet) | ✅ (task at logon) |
+| Install one-liner, `galaius login`, background machine | ✅ (systemd user service) | ✅ install; the machine runs in a terminal (no background service yet) | ✅ (task at logon) |
 | Script steps | Python, shell, PowerShell if `pwsh` is installed | Python, shell, PowerShell if `pwsh` is installed | Python, PowerShell, cmd |
 | Desktop control (real windows) | ✅ (X11; uinput input also on Wayland) | ⏳ | ⏳ |
 
 Browser automation works everywhere. Native desktop control is Linux/X11 today; off Linux the desktop
 tools return one clear message pointing you at the browser target — macOS/Windows backends are tracked
-in [#24](https://github.com/AlanBlanchet/interact/issues/24). Known X11 limits, all under
-[#1](https://github.com/AlanBlanchet/interact/issues/1): GPU-rendered windows (emulators, games) grab
-black without a compositor — interact says so rather than handing back a black image; a software-GL blur
+in [#24](https://github.com/AlanBlanchet/galaius/issues/24). Known X11 limits, all under
+[#1](https://github.com/AlanBlanchet/galaius/issues/1): GPU-rendered windows (emulators, games) grab
+black without a compositor — galaius says so rather than handing back a black image; a software-GL blur
 can composite to a solid strip; transient popups need `target="nested"` to capture the whole sandbox.
 
 ## Development
 
 ```bash
-git clone https://github.com/AlanBlanchet/interact && cd interact
+git clone https://github.com/AlanBlanchet/galaius && cd galaius
 uv sync
 uv run pytest -m "not integration"      # fast, cross-platform suite
-uv tool install --force --editable .    # put your checkout's `interact` on PATH
+uv tool install --force --editable .    # put your checkout's `galaius` on PATH
 ```
 
 When an MCP process is already serving your editor, preserve its environment. Build the public
 and core wheels, then install a separate runtime and switch future CLI/MCP launches:
 
 ```sh
-python scripts/install_runtime.py --public-wheel /absolute/path/interact.whl --core-wheel /absolute/path/interact_core.whl
+python scripts/install_runtime.py --public-wheel /absolute/path/galaius.whl --core-wheel /absolute/path/galaius_core.whl
 ```
 
 The installer verifies package metadata and import location, retains the previous environment,
@@ -294,11 +294,11 @@ and exact prompt revisions from the server. Local snapshots and generated skill 
 replaceable caches. Transport failures may use a previously verified snapshot with a visible
 `STALE` notice; authentication or workspace refusal disables cached access.
 
-A PC linked to a server (`interact login`) reads the catalog with its own machine link:
+A PC linked to a server (`galaius login`) reads the catalog with its own machine link:
 
 ```bash
-interact agents sync --machine
-interact agents definitions codex
+galaius agents sync --machine
+galaius agents definitions codex
 ```
 
 For the existing token authentication path, pass `--token-file /absolute/private/token-file`
@@ -317,13 +317,13 @@ Without a configured server catalog, existing local role policy and definitions 
 ## Run workflows from scripts
 
 A server workflow can be one step of your own script: start it, wait for its end, continue with
-its outputs. Both entry points use the connection made by `interact agents sync` (preview session
+its outputs. Both entry points use the connection made by `galaius agents sync` (preview session
 or workspace API key token file).
 
 From a shell — progress goes to stderr, the result JSON to stdout:
 
 ```bash
-summary=$(interact workflows run "Write a report" --input topic=Q3 --download ./out) || exit
+summary=$(galaius workflows run "Write a report" --input topic=Q3 --download ./out) || exit
 echo "$summary" | jq -r .outputs.answer
 ```
 
@@ -332,17 +332,17 @@ echo "$summary" | jq -r .outputs.answer
 | 0 | run succeeded (with `--detach`: run accepted) |
 | 1 | run ended failed, cancelled or interrupted |
 | 2 | run could not be started, followed or its files saved (unknown workflow, refused, inputs rejected, unreachable, `--timeout`, file digest mismatch, a different file already there without `--overwrite`) |
-| 130 | Ctrl-C: the CLI stopped waiting, the run goes on (`interact workflows wait RUN_ID`) |
+| 130 | Ctrl-C: the CLI stopped waiting, the run goes on (`galaius workflows wait RUN_ID`) |
 
 `--input name=value` repeats (the value is JSON when it parses, text otherwise); `--input-json
-FILE` (`-` for stdin) passes an object. `--detach` returns at once; `interact workflows wait
+FILE` (`-` for stdin) passes an object. `--detach` returns at once; `galaius workflows wait
 RUN_ID` follows that run later. `--idempotency-key KEY` makes a retried script get back the run
-that key already started. See `interact workflows run --help`.
+that key already started. See `galaius workflows run --help`.
 
 From Python:
 
 ```python
-from interact.client import Client
+from galaius.client import Client
 
 run = Client().workflows.run("Write a report", inputs={"topic": "Q3"})
 print(run.outputs["answer"])          # raises WorkflowRunFailed unless the run succeeded
@@ -359,13 +359,13 @@ name, its id.
 
 ## Portable tool preferences
 
-Signed-in clients share account preferences through the server. `interact config status` reports
-the source and revision; `interact config sync` refreshes the verified cache. The web Account page,
+Signed-in clients share account preferences through the server. `galaius config status` reports
+the source and revision; `galaius config sync` refreshes the verified cache. The web Account page,
 TUI and VS Code settings use the same values. Connected writes require the revision the editor
 loaded, so another device's update produces a conflict instead of being overwritten.
 
 Portable fields cover model selection, capture dimensions, media limits and action waiting.
 Provider credentials, billing consent and device paths retain their existing local setup.
-An existing local override is not silently imported: review `interact config import-preview`
+An existing local override is not silently imported: review `galaius config import-preview`
 before explicitly applying its selected values. Authentication refusal invalidates cached access;
 a transport failure can expose a verified same-account snapshot marked stale.

@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-from interact.models import Model
+from galaius.models import Model
 
 from .harness import (
     ResultCollector,

@@ -9,7 +9,7 @@ import sys
 
 import pytest
 
-from interact.prompt_projection import (
+from galaius.prompt_projection import (
     MANIFEST_NAME,
     compile_prompt_projection,
     install_prompt_projection,
@@ -360,16 +360,16 @@ def test_full_recorded_consumer_topology_switches_atomically(
             raise OSError("injected state switch failure")
         return original_replace(source, destination, **kwargs)
 
-    monkeypatch.setattr("interact.prompt_projection.os.replace", fail_state_once)
+    monkeypatch.setattr("galaius.prompt_projection.os.replace", fail_state_once)
     with pytest.raises(OSError, match="injected"):
         install_prompt_projection(projection, home, vscode, state, adoption)
-    monkeypatch.setattr("interact.prompt_projection.os.replace", original_replace)
+    monkeypatch.setattr("galaius.prompt_projection.os.replace", original_replace)
     install_prompt_projection(projection, home, vscode, state, adoption)
 
     managed = json.loads(state.read_text())["managed"]
     assert len(managed) > 100
-    assert (home / ".interact" / "agents.json").read_bytes() == Path(
-        next(entry["path"] for entry in entries if entry["path"].endswith("/.interact/agents.json"))
+    assert (home / ".galaius" / "agents.json").read_bytes() == Path(
+        next(entry["path"] for entry in entries if entry["path"].endswith("/.galaius/agents.json"))
     ).read_bytes()
     assert all(_path_digest(path) == digest for path, digest in source_hashes.items())
 

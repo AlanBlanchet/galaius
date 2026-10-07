@@ -8,7 +8,7 @@ import math
 
 import pytest
 
-from interact.vision import MediaItem
+from galaius.vision import MediaItem
 from tests.support import solid_png
 
 

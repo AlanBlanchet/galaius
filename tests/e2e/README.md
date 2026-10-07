@@ -18,7 +18,7 @@ Outputs saved to: `out/tests/{session}/e2e/{provider}/{test_name}/`
 
 ```
 uv pip install -e ".[e2e]"
-INTERACT_E2E_VSCODE=1 uv run pytest tests/e2e/test_extension_statusbar.py -v
+GALAIUS_E2E_VSCODE=1 uv run pytest tests/e2e/test_extension_statusbar.py -v
 ```
 
 System tools required (Linux): `code`, `npx`, `maim`, `xdotool`,
@@ -26,5 +26,5 @@ System tools required (Linux): `code`, `npx`, `maim`, `xdotool`,
 from the `e2e` optional group. The test builds a VSIX, installs it into a
 disposable user/extensions dir, screenshots the bottom 28px of the VS Code
 window, upscales+binarizes the right 35% strip, and OCRs for any substring
-of "interact" (codicon fusion drops the leading "I"). Optional VLM tiebreaker
-via `INTERACT_IMAGE_MODEL` env var.
+of "galaius" (codicon fusion drops the leading "I"). Optional VLM tiebreaker
+via `GALAIUS_IMAGE_MODEL` env var.

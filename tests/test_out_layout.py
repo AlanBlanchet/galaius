@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from interact import debug_utils
-from interact.debug_utils import Debug
+from galaius import debug_utils
+from galaius.debug_utils import Debug
 
 
 _INVOCATION_RE = re.compile(r"out/vscode/(\d{8}_\d{6})/(\d{6}_screenshot)$")

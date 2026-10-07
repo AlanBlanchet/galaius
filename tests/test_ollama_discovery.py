@@ -12,8 +12,8 @@ import json
 import httpx
 import pytest
 
-from interact import ollama
-from interact.models import Model, ModelCapability
+from galaius import ollama
+from galaius.models import Model, ModelCapability
 
 # --- captured from a real daemon -------------------------------------------------------------
 
@@ -159,7 +159,7 @@ def test_capabilities_already_known_are_not_re_probed():
         ("sk-test-123", "http://localhost:11434", True),
         # THE ONE THAT MATTERS: a paid credential must never cross a network in cleartext.
         # `OLLAMA_HOST=box.lan:11434` is Ollama's own documented, scheme-less convention, so this
-        # is what a user pointing interact at a shared workstation actually gets.
+        # is what a user pointing galaius at a shared workstation actually gets.
         ("sk-test-123", "http://box.lan:11434", False),
         ("", "https://ollama.com", False),
     ],
@@ -326,7 +326,7 @@ def test_a_discovered_model_resolves_through_a_capability_criterion(discovered):
     discovered, served model is a genuine candidate for the role's bare capability default,
     reachable without pinning anything (the bundled catalog may still offer a cheaper candidate
     of its own, so this checks membership, not which one wins the price tie-break)."""
-    from interact.config import Config
+    from galaius.config import Config
 
     config = Config(image_criteria="cap.vlm")
     ranked_ids = [m.id for m in config.ranked_models("image")]
@@ -336,7 +336,7 @@ def test_a_discovered_model_resolves_through_a_capability_criterion(discovered):
 def test_a_per_call_override_still_forces_an_exact_discovered_id(discovered):
     """A literal id has no criteria-syntax equivalent; the per-call ``model=`` override is the
     one remaining way to force an exact self-hosted/discovered model."""
-    from interact.config import Config
+    from galaius.config import Config
 
     assert Config().resolve_model("image", override="ollama/kimi-k3:cloud") == "ollama/kimi-k3:cloud"
 
@@ -391,7 +391,7 @@ def test_a_catalog_model_the_daemon_does_not_serve_is_not_available(discovered):
 def test_every_availability_answer_agrees_about_an_unserved_model(discovered):
     """`is_available` and `available_by_capability` must not disagree: the second filters by
     PROVIDER, so once the daemon has named what it serves, a catalog row it did not name would
-    still be counted "ready" — and `interact doctor` would report grounding models that are not
+    still be counted "ready" — and `galaius doctor` would report grounding models that are not
     there."""
     unserved = {
         m.id for m in Model.registry() if m.provider == "ollama" and not m.is_available()
@@ -409,7 +409,7 @@ def test_an_explicit_per_call_choice_is_still_respected_for_a_model_not_listed_t
     made. A model the daemon does not list may be one they are about to pull — never walk past
     their choice over it. (No persisted literal-id pin field exists anymore; only the per-call
     ``model=`` override still accepts a bare id.)"""
-    from interact.config import Config
+    from galaius.config import Config
 
     assert Model.from_litellm_id("ollama/not-pulled-yet").key_missing() is False
     assert Config().resolve_model("image", override="ollama/not-pulled-yet") == "ollama/not-pulled-yet"
@@ -432,9 +432,9 @@ def test_a_dead_daemon_leaves_the_baked_catalog_untouched(monkeypatch):
 
 
 def test_doctor_names_what_the_daemon_has_pulled(monkeypatch, capsys):
-    """`interact doctor` is where he goes to ask "what will actually run?" — a model he pulled
+    """`galaius doctor` is where he goes to ask "what will actually run?" — a model he pulled
     and paid for must be named there."""
-    from interact.cli.app import _print_ollama
+    from galaius.cli.app import _print_ollama
 
     monkeypatch.setattr(ollama, "discover_cached", lambda: ollama.discover(client=client()))
     _print_ollama()
@@ -447,7 +447,7 @@ def test_doctor_names_what_the_daemon_has_pulled(monkeypatch, capsys):
 
 def test_doctor_says_nothing_when_there_is_no_daemon(monkeypatch, capsys):
     """No Ollama must mean no noise — not a warning line about a feature the user never asked for."""
-    from interact.cli.app import _print_ollama
+    from galaius.cli.app import _print_ollama
 
     monkeypatch.setattr(ollama, "discover_cached", list)
     _print_ollama()
@@ -534,13 +534,13 @@ def test_one_bad_probe_never_loses_the_other_models(monkeypatch):
 
 
 async def test_list_providers_names_the_models_the_daemon_serves(monkeypatch):
-    """An agent driving interact over MCP cannot see the user's daemon — so the tool that answers
+    """An agent driving galaius over MCP cannot see the user's daemon — so the tool that answers
     "what models can I pass?" has to name them, or they may as well not exist."""
     import json as _json
 
-    from interact.server.tools_meta import list_providers
+    from galaius.server.tools_meta import list_providers
 
-    monkeypatch.delenv("INTERACT_CONFIGURED_PROVIDERS", raising=False)
+    monkeypatch.delenv("GALAIUS_CONFIGURED_PROVIDERS", raising=False)
     monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
     monkeypatch.setattr(ollama, "discover_cached", lambda: ollama.discover(client=client()))
     Model.load_registry()

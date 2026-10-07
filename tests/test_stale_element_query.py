@@ -11,7 +11,7 @@ one thing labelled as another, which is the ideal setup for the confident wrong 
 
 import pytest
 
-from interact.desktop import DesktopElement
+from galaius.desktop import DesktopElement
 from tests.support import varied_png
 
 
@@ -34,7 +34,7 @@ async def test_a_stale_ref_loses_its_LABEL_but_still_gets_looked_at(monkeypatch)
     flips it — refusing there would make element queries unusable on any live window, which is a
     worse failure than the one being fixed. What must not survive a screen change is the LABEL:
     the model must never be told that these pixels are a widget detected on another frame."""
-    import interact.server as srv
+    import galaius.server as srv
 
     wid = 5150
 
@@ -67,8 +67,8 @@ async def test_a_stale_ref_loses_its_LABEL_but_still_gets_looked_at(monkeypatch)
 
 @pytest.mark.asyncio
 async def test_a_fresh_ref_keeps_its_label(monkeypatch):
-    import interact.server as srv
-    from interact.vision.detect import _page_signature
+    import galaius.server as srv
+    from galaius.vision.detect import _page_signature
 
     wid = 5151
     frame = varied_png()

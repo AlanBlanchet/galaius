@@ -6,7 +6,7 @@ Every `path` a tool accepts funnels into `core._save_to_path`, which used to be 
 started it with, invisible to the agent), and the tool then said nothing about the location or
 echoed the caller's own relative string back ("Saved to clip.webm."). One rule now, for every tool:
 `~` expands, an absolute path is kept, a relative path lands under `config.debug_dir`
-(~/.interact/out, where every other interact artifact already lives) — and the reply names the
+(~/.galaius/out, where every other galaius artifact already lives) — and the reply names the
 absolute file written plus its size."""
 
 import base64
@@ -17,11 +17,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import interact.server as srv
-from interact.browser import BrowserManager
-from interact.desktop import DesktopWindow
-from interact.runtime import config
-from interact.vision import VLMResult
+import galaius.server as srv
+from galaius.browser import BrowserManager
+from galaius.desktop import DesktopWindow
+from galaius.runtime import config
+from galaius.vision import VLMResult
 from tests.support import varied_png
 
 _DATA = b"MP4DATA"
@@ -31,14 +31,14 @@ _DATA = b"MP4DATA"
 _SHAPES = [
     ("~/x.webm", "{home}/x.webm"),                 # ~ expands
     ("{tmp}/abs/x.webm", "{tmp}/abs/x.webm"),      # absolute: kept as given
-    ("clip.webm", "{out}/clip.webm"),              # relative: interact's output dir, not the cwd
+    ("clip.webm", "{out}/clip.webm"),              # relative: galaius's output dir, not the cwd
     ("clips/clip.webm", "{out}/clips/clip.webm"),  # relative with a subdir: parents created
 ]
 
 
 @pytest.fixture
 def sandbox(monkeypatch, tmp_path):
-    """HOME, interact's output dir and the server's cwd all relocated under tmp: the tests never
+    """HOME, galaius's output dir and the server's cwd all relocated under tmp: the tests never
     touch the real home, and a write that still lands cwd-relative shows up as a MISSING file, not
     a pass."""
     home, out, cwd = tmp_path / "home", tmp_path / "out", tmp_path / "server-cwd"
@@ -187,7 +187,7 @@ async def test_session_save_and_load_share_the_same_resolved_path(sandbox, monke
 def test_a_per_call_debug_dir_follows_the_same_rule(sandbox):
     """`Debug.dump_dir("run1")` resolved against the server's cwd — the class of #120 with one
     more door in: ~ expands, an absolute dir is kept, a RELATIVE one lands under the output dir."""
-    from interact.debug_utils import Debug
+    from galaius.debug_utils import Debug
 
     assert Debug.dump_dir("run1") == sandbox["out"] / "run1"
     assert Debug.dump_dir("~/dumps") == sandbox["home"] / "dumps"

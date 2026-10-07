@@ -12,15 +12,15 @@ from pathlib import Path
 
 import pytest
 
-from interact.machines import MachineConfig, MachineRunner
-from interact.private_files import PRIVATE_FILES
-from interact.server_tool_settings import PORTABLE_ENV
-from interact.config.settings import Config
-from interact.upgrade.check import UpgradeCheck
-from interact.upgrade.release import BuildIdentity, Release, ReleaseFile, ReleaseRefused
-from interact.upgrade.source import ReleaseKeys, ReleaseSigner, ReleaseSource
-from interact.upgrade.store import Runtime, RuntimeReceipt, RuntimeStore, Uv
-from interact.upgrade.supervisor import Supervision, Supervisor
+from galaius.machines import MachineConfig, MachineRunner
+from galaius.private_files import PRIVATE_FILES
+from galaius.server_tool_settings import PORTABLE_ENV
+from galaius.config.settings import Config
+from galaius.upgrade.check import UpgradeCheck
+from galaius.upgrade.release import BuildIdentity, Release, ReleaseFile, ReleaseRefused
+from galaius.upgrade.source import ReleaseKeys, ReleaseSigner, ReleaseSource
+from galaius.upgrade.store import Runtime, RuntimeReceipt, RuntimeStore, Uv
+from galaius.upgrade.supervisor import Supervision, Supervisor
 
 WHEEL = b"not really a wheel"
 LOCK = b"# nothing\n"
@@ -90,7 +90,7 @@ def test_a_release_not_signed_by_a_trusted_key_is_refused_before_anything_is_fet
 
 
 def test_a_file_whose_bytes_differ_from_the_signed_sha256_is_refused() -> None:
-    wheel = release("0.44.0", 10).wheel("interact")
+    wheel = release("0.44.0", 10).wheel("galaius")
     assert wheel.check(WHEEL) == WHEEL
     with pytest.raises(ReleaseRefused, match="sha256 differs"):
         wheel.check(WHEEL + b"!")
@@ -139,21 +139,21 @@ def test_an_expired_release_is_refused(tmp_path, signer, published, monkeypatch)
 
 
 def test_releases_come_over_https_or_this_computers_loopback_only() -> None:
-    ReleaseSource.server("https://interact.example.com")
+    ReleaseSource.server("https://galaius.example.com")
     ReleaseSource.server("http://127.0.0.1:8817")
     with pytest.raises(ValueError, match="https"):
-        ReleaseSource.server("http://interact.example.com")
+        ReleaseSource.server("http://galaius.example.com")
 
 
 def test_upgrade_settings_are_never_synced_from_a_server() -> None:
-    assert not {"INTERACT_AUTO_UPGRADE", "INTERACT_UPGRADE_PIN", "INTERACT_UPGRADE_CHECK_SECONDS", "INTERACT_UPGRADE_GITHUB"} & set(PORTABLE_ENV)
+    assert not {"GALAIUS_AUTO_UPGRADE", "GALAIUS_UPGRADE_PIN", "GALAIUS_UPGRADE_CHECK_SECONDS", "GALAIUS_UPGRADE_GITHUB"} & set(PORTABLE_ENV)
 
 
 def test_no_folder_level_reaches_the_installed_runtimes(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("INTERACT_RUNTIMES", str(tmp_path / "work" / "runtimes"))
+    monkeypatch.setenv("GALAIUS_RUNTIMES", str(tmp_path / "work" / "runtimes"))
     (tmp_path / "work" / "runtimes" / "0.44.0-x").mkdir(parents=True)
     (tmp_path / "work" / "data").mkdir()
-    config = MachineConfig(server_url="https://interact.example.com", workspace_id="00000000-0000-0000-0000-000000000001", machine_id="00000000-0000-0000-0000-000000000002",
+    config = MachineConfig(server_url="https://galaius.example.com", workspace_id="00000000-0000-0000-0000-000000000001", machine_id="00000000-0000-0000-0000-000000000002",
                            token="t" * 32, permission_ceiling="read_only", working_directory=tmp_path / "work", places={"runtimes/0.44.0-x": "write", "runtimes": "write", "data": "write"})
     assert list(config.place_map().in_force()) == ["data"]
     assert {place.path for place in config.place_map().entries() if place.refused} == {"runtimes/0.44.0-x", "runtimes"}
@@ -192,7 +192,7 @@ def test_a_release_file_that_fails_to_download_or_verify_is_recorded_not_raised(
 
 def test_a_remembered_plain_http_server_elsewhere_is_refused_as_a_source(tmp_path, signer, monkeypatch) -> None:
     check = UpgradeCheck(store=RuntimeStore(root=tmp_path / "runtimes"), keys=signer.keys(), config=settings())
-    monkeypatch.setattr(UpgradeCheck, "server", staticmethod(lambda: "http://interact.example.com"))
+    monkeypatch.setattr(UpgradeCheck, "server", staticmethod(lambda: "http://galaius.example.com"))
     assert "not a release source" in check.run()
     assert check.store.events()[-1].kind == "refused"
 
@@ -203,8 +203,8 @@ def test_a_computer_enrolled_before_logins_were_remembered_upgrades_from_its_mac
     MachineRunner().save(MachineConfig(server_url="http://127.0.0.1:8817", workspace_id="00000000-0000-0000-0000-000000000001", machine_id="00000000-0000-0000-0000-000000000002",
                                        token="t" * 32, permission_ceiling="read_only", working_directory=tmp_path))
     assert UpgradeCheck.server() == "http://127.0.0.1:8817"
-    (tmp_path / "config" / "interact" / "login-server").write_text("https://interact.example.com\n")
-    assert UpgradeCheck.server() == "https://interact.example.com"
+    (tmp_path / "config" / "galaius" / "login-server").write_text("https://galaius.example.com\n")
+    assert UpgradeCheck.server() == "https://galaius.example.com"
 
 
 def test_the_supervisor_contract_v1_is_read_as_written_by_supervisors_already_running() -> None:
@@ -213,7 +213,7 @@ def test_the_supervisor_contract_v1_is_read_as_written_by_supervisors_already_ru
 
 
 def test_a_worker_that_cannot_read_its_contract_never_becomes_a_supervisor_itself(monkeypatch) -> None:
-    monkeypatch.setenv("INTERACT_SUPERVISE", "1")
+    monkeypatch.setenv("GALAIUS_SUPERVISE", "1")
     monkeypatch.setenv(Supervision.variable, '{"version": 2, "something": "newer"}')
     assert Supervision.current() is None and not Supervisor.eligible()
 
@@ -266,9 +266,9 @@ def test_an_older_runtime_rewriting_the_pointer_never_brings_a_retired_key_back(
     assert "failed" in store.pointer_path.read_text() and store.pointer().generation == 8
 
 
-@pytest.mark.parametrize("direct_url", ['{"url": "https://github.com/AlanBlanchet/interact/archive/%s.zip", "archive_info": {}}',
-                                        '{"url": "https://github.com/AlanBlanchet/interact", "vcs_info": {"vcs": "git", "commit_id": "%s"}}',
-                                        '{"url": "file:///D:/a/_temp/interact-install/source/interact-%s", "dir_info": {}}'])
+@pytest.mark.parametrize("direct_url", ['{"url": "https://github.com/AlanBlanchet/galaius/archive/%s.zip", "archive_info": {}}',
+                                        '{"url": "https://github.com/AlanBlanchet/galaius", "vcs_info": {"vcs": "git", "commit_id": "%s"}}',
+                                        '{"url": "file:///D:/a/_temp/galaius-install/source/galaius-%s", "dir_info": {}}'])
 def test_an_install_from_a_github_archive_or_checkout_knows_its_commit_and_is_up_to_date(tmp_path, signer, published, monkeypatch, direct_url) -> None:
     commit = "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567"
     document = release("0.44.0", 20, commit=commit)

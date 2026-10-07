@@ -1,5 +1,5 @@
 {
-  "_comment": "The ONE table both twins are held to: `bare_model_name` in src/interact/model_catalog.py and `bareModelName` in the VS Code client's competence.ts. Two hand-kept copies of these pairs drifted silently and hid 74 real litellm ids from every score lookup, so each suite now reads THIS file.",
+  "_comment": "The ONE table both twins are held to: `bare_model_name` in src/galaius/model_catalog.py and `bareModelName` in the VS Code client's competence.ts. Two hand-kept copies of these pairs drifted silently and hid 74 real litellm ids from every score lookup, so each suite now reads THIS file.",
   "pairs": {
     "azure/gpt-5.5": "gpt-5-5",
     "us.anthropic.claude-opus-4-7": "claude-opus-4-7",

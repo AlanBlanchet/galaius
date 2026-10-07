@@ -2,7 +2,7 @@
 
 The loop that answers `initialize` is the loop a client times out on: registry maintenance ran
 there, a pass over live runs' raw transcripts took 22 s of a 30 s connect budget, and a session
-that never connected still listed interact's tools to every agent it spawned (#224).
+that never connected still listed galaius's tools to every agent it spawned (#224).
 """
 
 import asyncio
@@ -10,14 +10,14 @@ import threading
 
 import pytest
 
-from interact.agents import run as run_module
-from interact.server import core, sandbox
+from galaius.agents import run as run_module
+from galaius.server import core, sandbox
 
 
 @pytest.fixture
 def quiet_lifespan(monkeypatch):
     """Everything the lifespan starts BESIDE the mirror, silenced — no network, no signals."""
-    monkeypatch.setattr("interact.live_sources.refresh_in_background", lambda: None)
+    monkeypatch.setattr("galaius.live_sources.refresh_in_background", lambda: None)
     monkeypatch.setattr(sandbox, "install_teardown_handlers", lambda: None)
 
     async def idle(*_args, **_kwargs):

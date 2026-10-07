@@ -1,9 +1,9 @@
 ---
 name: release
-description: Bump the interact version safely (semver, pyproject.toml + extension in sync) so CI tags the release on the remote. Use whenever shipping a feature/fix or asked to cut/bump a version.
+description: Bump the galaius version safely (semver, pyproject.toml + extension in sync) so CI tags the release on the remote. Use whenever shipping a feature/fix or asked to cut/bump a version.
 ---
 
-# Releasing interact
+# Releasing galaius
 
 `pyproject.toml` `[project].version` is the **single source of truth**; the VS Code
 extension `vscode-extension/package.json` `version` must match. You never create or push
@@ -26,7 +26,7 @@ impact since the last release:
 
 1. Bump **both files at once** (don't hand-edit one):
 
-       uv run python -m interact.versioning bump <major|minor|patch>
+       uv run python -m galaius.versioning bump <major|minor|patch>
 
    It rewrites `pyproject.toml` and `vscode-extension/package.json` and prints the new
    version.
@@ -34,7 +34,7 @@ impact since the last release:
 2. Verify they agree (the pre-commit hook runs this too, and CI refuses to tag on a
    mismatch):
 
-       uv run python -m interact.versioning check
+       uv run python -m galaius.versioning check
 
 3. Commit the version bump **with** the change it ships (one commit per user message).
    The tracked `.githooks/pre-commit` re-checks the sync.
@@ -42,8 +42,8 @@ impact since the last release:
 4. When the user asks to push: `git push origin main`. CI tags `vX.Y.Z` and publishes the
    release. Do **not** `git tag`/`git push --tags` yourself.
 
-5. Installed computers upgrade themselves from their Interact server's signed release
-   (`interact upgrade`, signed by the server's deploy); a GitHub release reaches them only when it
+5. Installed computers upgrade themselves from their Galaius server's signed release
+   (`galaius upgrade`, signed by the server's deploy); a GitHub release reaches them only when it
    carries `release.json` + `release.json.sig` signed with the release key and they turned
    `upgrade_github` on.
 
@@ -52,5 +52,5 @@ impact since the last release:
 - Bumping only one of the two files → pre-commit fails and CI refuses to tag. Always use
   `versioning bump`.
 - Editable installs cache the version; `uv tool install --force --editable .` refreshes
-  `interact --version` locally after a bump.
+  `galaius --version` locally after a bump.
 - Tag already exists for the current version → CI no-ops (safe to re-push).

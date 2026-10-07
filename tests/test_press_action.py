@@ -11,7 +11,7 @@ import asyncio
 import pytest
 from pydantic import ValidationError
 
-from interact.actions import PressAction
+from galaius.actions import PressAction
 from tests.support import browser_manager
 
 _PAGE = """

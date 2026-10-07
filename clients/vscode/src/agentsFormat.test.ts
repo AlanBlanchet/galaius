@@ -28,7 +28,7 @@ function run(over: Partial<AgentRun> = {}): AgentRun {
     provider: "claude",
     name: "worker",
     status: "running",
-    cwd: "/tmp/project/dev/interact",
+    cwd: "/tmp/project/dev/galaius",
     started_at: 1_000,
     ...over,
   } as AgentRun;
@@ -55,7 +55,7 @@ test("a run tooltip reports its billing path without inventing account coverage"
 });
 
 test("a project group is the directory's basename, not the whole path", () => {
-  assert.equal(groupKeyFor(run(), "project"), "interact");
+  assert.equal(groupKeyFor(run(), "project"), "galaius");
   assert.equal(groupKeyFor(run({ cwd: "" }), "project"), "(no project)");
 });
 
@@ -83,13 +83,13 @@ test("elapsed counts to now while running, and freezes once finished", () => {
 
 test("a run groups by its repo, not the subfolder it happened to run in", () => {
   // The whole point: an agent working in `<repo>/src` belongs to the repo, not to a "src" group.
-  const inSub = run({ cwd: "/tmp/project/dev/interact/src", project: "interact" }) as never;
-  assert.equal(groupKeyFor(inSub, "project"), "interact");
+  const inSub = run({ cwd: "/tmp/project/dev/galaius/src", project: "galaius" }) as never;
+  assert.equal(groupKeyFor(inSub, "project"), "galaius");
 });
 
 test("a record written before projects existed still groups sensibly", () => {
-  const old = run({ cwd: "/tmp/project/dev/interact", project: undefined }) as never;
-  assert.equal(groupKeyFor(old, "project"), "interact");
+  const old = run({ cwd: "/tmp/project/dev/galaius", project: undefined }) as never;
+  assert.equal(groupKeyFor(old, "project"), "galaius");
 });
 
 // The panel is narrow, and every row read "→ 2b7642ee: Reply wit…", "thanks, ship it :…" — the
@@ -127,14 +127,14 @@ test("a short message is left exactly as it is", () => {
   assert.equal(rowDescription({ ...base, last: "done", cost_usd: null }), "done");
 });
 
-// A session interact did not start reports a MODE, not an activity: `last` is "interactive" or
+// A session galaius did not start reports a MODE, not an activity: `last` is "interactive" or
 // "background". Rendered through the normal path, its row read "interactive" where a team member's
 // reads "delegating the workplace view…" — a different KIND of word in the same column, which the
 // eye parses as an activity that never happened.
 test("a foreign session's row says whose it is, not its transport mode", () => {
   const row = rowDescription({ last: "interactive", status: "foreign", foreign: true });
   assert.doesNotMatch(row, /^interactive$/, "a mode label is not an activity");
-  assert.match(row, /your own|not started by interact/i);
+  assert.match(row, /your own|not started by galaius/i);
 });
 
 test("a foreign session that IS doing something recognisable still says so", () => {

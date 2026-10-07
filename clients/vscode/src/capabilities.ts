@@ -1,13 +1,13 @@
 /** What each agent can actually DO, inherited from its own definition file.
  *
  *  Every agent definition already declares this in its frontmatter —
- *  tools: [Read, Grep, Bash, mcp__interact__screenshot, …] — and nothing had ever read it. So
+ *  tools: [Read, Grep, Bash, mcp__galaius__screenshot, …] — and nothing had ever read it. So
  *  the workplace drew every character identically whether it could only read files or could drive
  *  a browser, spawn other agents and spend money. A team where you can't see who can do what is
  *  not a team you can supervise.
  *
  *  Tools are grouped into a few human FACULTIES rather than listed raw. Nobody watching a
- *  workplace wants mcp__interact__get_interactive_elements floating over a sprite; they want to
+ *  workplace wants mcp__galaius__get_interactive_elements floating over a sprite; they want to
  *  know that one can SEE and another can only READ. A tool list is inventory; a faculty is what
  *  the character can do.
  *
@@ -47,9 +47,9 @@ function facultyOf(tool: string): string | null {
   if (/^(Bash|BashOutput|KillShell)$/.test(tool)) return "runs";
   if (/^(WebSearch|WebFetch)$/.test(tool)) return "searches";
   if (/^(Agent|Task|SendMessage|ListAgents)$/.test(tool)) return "delegates";
-  // interact's own surface: eyes and hands on a real screen. report_issue is not a faculty, it's
+  // galaius's own surface: eyes and hands on a real screen. report_issue is not a faculty, it's
   // paperwork — grants nothing so it doesn't dress a character up as an operator.
-  if (/^mcp__interact__(screenshot|run_actions|get_interactive_elements|get_page_state|record|launch_app|list_desktop_windows|session|navigate|measure_ui|review_ui|verify_ui|transcribe)$/.test(tool)) {
+  if (/^mcp__galaius__(screenshot|run_actions|get_interactive_elements|get_page_state|record|launch_app|list_desktop_windows|session|navigate|measure_ui|review_ui|verify_ui|transcribe)$/.test(tool)) {
     return "sees";
   }
   return null;

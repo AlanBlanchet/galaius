@@ -3,7 +3,7 @@
  *  "find a way that we could easily chose what models are ran for what."
  *
  *  Connected workspaces read agent choices from server revisions and fence local policy writes.
- *  Standalone installs keep choices in ~/.interact/agents.json, the policy their launcher reads.
+ *  Standalone installs keep choices in ~/.galaius/agents.json, the policy their launcher reads.
  *
  *  Deliberately plain readable JSON: he edits his own config by hand, and a file he can't read is
  *  a file he can't fix — also why a file that won't parse is never overwritten from here.
@@ -17,7 +17,7 @@ import { serverWorkspaceConfigured, workspaceView } from "./workspaceState.ts";
  *  config.env and NEVER under the debug dir: Python's policy_path() is anchored the same way,
  *  and tests/test_paths.py holds the two together. */
 export function agentsPolicyPath(): string {
-  return path.join(os.homedir(), ".interact", "agents.json");
+  return path.join(os.homedir(), ".galaius", "agents.json");
 }
 
 /** The tier aliases Claude Code's agent-file model: field accepts (sonnet / opus / haiku / fable,
@@ -28,7 +28,7 @@ export const CLAUDE_TIERS = ["haiku", "sonnet", "opus", "fable"] as const;
 
 /** Where v0.38 kept these choices, before the policy existed. Read once, to carry them over. */
 export function legacyChoicesPath(): string {
-  return path.join(os.homedir(), ".interact", "agent-models.json");
+  return path.join(os.homedir(), ".galaius", "agent-models.json");
 }
 
 /** A model id we're willing to store.
@@ -97,7 +97,7 @@ export function modelChosenFor(agent: string, file: string = agentsPolicyPath())
   return chosenModels(file)[agent] ?? null;
 }
 
-/** One agent's model rule as the policy reports it — interact agents policy --json-out. Shape
+/** One agent's model rule as the policy reports it — galaius agents policy --json-out. Shape
  *  test ("is this a criterion?") and resolution are BOTH Python's: re-deriving either here would
  *  let the panel disagree with the spawn — the failure this whole mechanism exists to prevent. */
 export type PolicyRule = {

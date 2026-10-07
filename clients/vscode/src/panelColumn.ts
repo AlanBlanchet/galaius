@@ -1,4 +1,4 @@
-/** Where interact's editor-tab surfaces open.
+/** Where galaius's editor-tab surfaces open.
  *
  *  Two failures bracket this, and the fix for the first caused the second:
  *
@@ -8,7 +8,7 @@
  *     each opened their OWN new group, so two clicks left the window four or five columns wide and
  *     visibly squeezed the side panel.
  *
- *  So: the FIRST interact surface goes beside your code, and every later one joins it there,
+ *  So: the FIRST galaius surface goes beside your code, and every later one joins it there,
  *  stacking as tabs in one column instead of breeding columns.
  */
 
@@ -16,7 +16,7 @@
  *  can therefore be unit-tested, like agentsFormat.ts and rail.ts. */
 export const BESIDE = -2;
 
-/** The column an interact surface should open in, given the columns its siblings currently hold.
+/** The column a galaius surface should open in, given the columns its siblings currently hold.
  *
  *  Lowest-numbered wins so the answer is deterministic — otherwise it would depend on which panel
  *  happened to be created first, and the same two clicks in a different order would lay the window
@@ -27,7 +27,7 @@ export function panelColumn(openColumns: readonly (number | undefined)[]): numbe
   return held.length ? Math.min(...held) : BESIDE;
 }
 
-/** The columns interact's editor-tab surfaces currently occupy, so a new one joins them rather
+/** The columns galaius's editor-tab surfaces currently occupy, so a new one joins them rather
  *  than opening yet another group. Registered by each panel; see panelColumn.ts for why. */
 const OPEN_COLUMNS = new Map<string, number | undefined>();
 

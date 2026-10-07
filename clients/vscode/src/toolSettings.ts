@@ -1,5 +1,5 @@
 /** Portable values and their allowlist come from the typed Python boundary. */
-import { interactCli } from "./interactCli.ts";
+import { galaiusCli } from "./galaiusCli.ts";
 import { serverWorkspaceConfigured } from "./workspaceState.ts";
 
 export interface ToolSettingsView {
@@ -14,7 +14,7 @@ export function parseToolSettings(value: unknown): ToolSettingsView {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid settings response");
   const view = value as ToolSettingsView;
   if (typeof view.configured !== "boolean" || typeof view.stale !== "boolean"
-      || !Array.isArray(view.portable_keys) || !view.portable_keys.every(k => typeof k === "string" && /^INTERACT_[A-Z_]+$/.test(k))
+      || !Array.isArray(view.portable_keys) || !view.portable_keys.every(k => typeof k === "string" && /^GALAIUS_[A-Z_]+$/.test(k))
       || !view.values || typeof view.values !== "object" || Array.isArray(view.values)
       || Object.entries(view.values).some(([k, v]) => !view.portable_keys.includes(k) || typeof v !== "string")
       || (view.configured && (!Number.isSafeInteger(view.revision) || view.revision! < 0
@@ -25,7 +25,7 @@ export function parseToolSettings(value: unknown): ToolSettingsView {
 }
 
 async function command(args: string[]): Promise<ToolSettingsView> {
-  const result = await interactCli(["config", ...args, "--json-out"]);
+  const result = await galaiusCli(["config", ...args, "--json-out"]);
   let payload;
   try { payload = JSON.parse(result.stdout); } catch { throw new Error("Personal settings unavailable. Check the matching CLI and server connection; draft retained."); }
   if (result.error || payload?.ok !== true) throw new Error(typeof payload?.message === "string" ? payload.message : "Personal settings refused; draft retained.");

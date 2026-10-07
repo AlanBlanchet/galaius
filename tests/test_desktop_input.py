@@ -16,17 +16,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from interact.desktop import ABS_MAX, DesktopWindow, NestedBackend, _DRAG_STEPS, screen_to_abs
-from interact.desktop.backend import PortableBackend
+from galaius.desktop import ABS_MAX, DesktopWindow, NestedBackend, _DRAG_STEPS, screen_to_abs
+from galaius.desktop.backend import PortableBackend
 from tests.support.desktop import desktop_window
 
 
 @pytest.fixture
 def mock_run():
     with (
-        patch("interact.desktop.DesktopWindow._run", new_callable=AsyncMock) as m,
+        patch("galaius.desktop.DesktopWindow._run", new_callable=AsyncMock) as m,
         patch(
-            "interact.desktop.DesktopWindow.active_id",
+            "galaius.desktop.DesktopWindow.active_id",
             new_callable=AsyncMock,
             return_value="60818159",
         ),
@@ -357,7 +357,7 @@ async def test_drag_emits_fine_time_spread_path(monkeypatch):
     async def fake_sleep(d):
         sleeps.append(d)
 
-    monkeypatch.setattr("interact.desktop.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("galaius.desktop.asyncio.sleep", fake_sleep)
     await win.drag(200, 700, 200, 100, steps=_DRAG_STEPS)
 
     step_moves = moves[1:]  # first move is the initial positioning

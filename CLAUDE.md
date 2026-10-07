@@ -1,4 +1,4 @@
-# interact
+# galaius
 
 @AGENTS.md
 

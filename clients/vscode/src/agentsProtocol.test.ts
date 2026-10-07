@@ -17,7 +17,7 @@ test("generated run and event fields cross the historical registry reader intact
     path.dirname(fileURLToPath(import.meta.url)), "..", "..", "out", "tests",
     `agents-protocol-${process.pid}-${Date.now()}`,
   );
-  const directory = path.join(root, ".interact", "out", "agents");
+  const directory = path.join(root, ".galaius", "out", "agents");
   fs.mkdirSync(directory, { recursive: true });
   const previousHome = process.env.HOME;
   process.env.HOME = root;
@@ -74,7 +74,7 @@ test("activityOf uses bounded history and incremental suffix reads at 100k event
     path.dirname(fileURLToPath(import.meta.url)), "..", "..", "out", "tests",
     `agents-scale-${process.pid}-${Date.now()}`,
   );
-  const directory = path.join(root, ".interact", "out", "agents");
+  const directory = path.join(root, ".galaius", "out", "agents");
   fs.mkdirSync(directory, { recursive: true });
   const previousHome = process.env.HOME;
   process.env.HOME = root;
@@ -116,7 +116,7 @@ for (const mode of ["torn", "rotation", "crash-replay"] as const) test(
   const reader = require_(built);
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "out", "tests",
     `agents-durability-${process.pid}-${Date.now()}`);
-  const directory = path.join(root, ".interact", "out", "agents");
+  const directory = path.join(root, ".galaius", "out", "agents");
   fs.mkdirSync(directory, { recursive: true });
   const previousHome = process.env.HOME;
   process.env.HOME = root;

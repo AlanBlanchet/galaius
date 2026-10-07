@@ -1,6 +1,6 @@
 /** What you can DO from the chat panel, not just say.
  *
- *  His ask: "you should ship every feature of claude code, codex, and copilot inside the interact
+ *  His ask: "you should ship every feature of claude code, codex, and copilot inside the galaius
  *  chat panel such that i can control everything from there." Today the panel can send a string.
  *  Everything else — stopping the agent you are reading, starting another, switching workspace,
  *  opening the team — lives in a tree context menu or the command palette, which is precisely
@@ -17,7 +17,7 @@ import { CHAT_COMMANDS, matchCommands, commandFor } from "./chatCommands.ts";
 test("every command names the extension command it actually invokes", () => {
   // A menu entry wired to nothing is the unreachable-capability defect wearing a different hat.
   for (const c of CHAT_COMMANDS) {
-    assert.match(c.command, /^interact\./, `${c.slash} invokes ${c.command}`);
+    assert.match(c.command, /^galaius\./, `${c.slash} invokes ${c.command}`);
     assert.ok(c.title.length > 0, `${c.slash} has no title`);
   }
 });

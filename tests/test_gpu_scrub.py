@@ -8,7 +8,7 @@ import sys
 
 import pytest
 
-from interact import gpu_scrub
+from galaius import gpu_scrub
 
 
 def _cuda_reachable() -> bool:
@@ -67,7 +67,7 @@ def test_a_tenant_marker_left_in_vram_after_a_hard_process_kill_does_not_survive
     before every tenant handoff, regardless of this result."""
     marker_hex = "cd" * 16
     plant = (
-        "from interact import gpu_scrub\n"
+        "from galaius import gpu_scrub\n"
         "import os\n"
         f"pointer = gpu_scrub.alloc_and_fill({_SIZE}, {_PATTERN})\n"
         f"assert gpu_scrub.read_device_bytes(pointer, 16).hex() == '{marker_hex}'\n"

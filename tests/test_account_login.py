@@ -1,4 +1,4 @@
-"""`interact login`: which server it signs in at, and the agents question it asks once."""
+"""`galaius login`: which server it signs in at, and the agents question it asks once."""
 
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,13 +8,13 @@ import httpx
 import pytest
 from pydantic import SecretStr
 
-from interact import account_login
-from interact.account_login import AccountLogin, LoginError
-from interact.agents.catalog_connection import CatalogConnection
-from interact.machine_service import MACHINE_SERVICE
-from interact.machines import MachineRunner
+from galaius import account_login
+from galaius.account_login import AccountLogin, LoginError
+from galaius.agents.catalog_connection import CatalogConnection
+from galaius.machine_service import MACHINE_SERVICE
+from galaius.machines import MachineRunner
 
-PUBLIC = "https://interact.example.org"
+PUBLIC = "https://galaius.example.org"
 TUNNEL = "http://127.0.0.1:8817"
 
 
@@ -47,7 +47,7 @@ def joining(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         (home / folder).mkdir(parents=True)
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
-    monkeypatch.setattr(CatalogConnection, "path", classmethod(lambda cls: home / ".config" / "interact" / "catalog.json"))
+    monkeypatch.setattr(CatalogConnection, "path", classmethod(lambda cls: home / ".config" / "galaius" / "catalog.json"))
     issued = SimpleNamespace(workspace=SimpleNamespace(id=uuid4(), name="My workspace"), approved_by="owner", machine=SimpleNamespace(id=uuid4(), name="pc2"),
                              machine_token=SecretStr(uuid4().hex * 2), **{"api_key": SimpleNamespace(**{"secret": SecretStr(uuid4().hex * 2)})})
     for name, value in {"skew": lambda self, http: None, "start": lambda self, http, runs: SimpleNamespace(verification_uri_complete="https://x/link", user_code="ABCD-EFGH", expires_in=600),
@@ -77,7 +77,7 @@ def test_agents_asked_once_at_login(joining: Path, monkeypatch: pytest.MonkeyPat
     replies = iter(answers)
     monkeypatch.setattr("sys.stdin.isatty", lambda: tty)
     monkeypatch.setattr("builtins.input", lambda question: next(replies))
-    account_login.login("https://interact.example.org", allow_runs=False, open_browser=False, **{"yes": False, **flags})
+    account_login.login("https://galaius.example.org", allow_runs=False, open_browser=False, **{"yes": False, **flags})
     machine = MachineRunner().load()
     assert (machine.run_agents, list(machine.agent_roots), machine.continue_conversations, machine.answer_approvals) == saved
     assert next(replies, None) is None  # every scripted answer was asked for, no more
@@ -91,14 +91,14 @@ def test_agents_asked_once_at_login(joining: Path, monkeypatch: pytest.MonkeyPat
 ])
 def test_bad_agent_flags_refused_before_sign_in(joining: Path, flags: dict, error: str) -> None:
     with pytest.raises(LoginError, match=error):
-        account_login.login("https://interact.example.org", allow_runs=False, yes=True, open_browser=False, **flags)
+        account_login.login("https://galaius.example.org", allow_runs=False, yes=True, open_browser=False, **flags)
     assert not MachineRunner.default_config_path().exists()
 
 
 def test_login_flags_parse(monkeypatch: pytest.MonkeyPatch) -> None:
     seen = {}
-    monkeypatch.setattr("interact.cli.login_command.sign_in", lambda server, **options: seen.update(options))
-    from interact.cli.app import app
+    monkeypatch.setattr("galaius.cli.login_command.sign_in", lambda server, **options: seen.update(options))
+    from galaius.cli.app import app
     with pytest.raises(SystemExit, match="0"):
         app(["login", "--server", "x.org", "--agent-folder", "dev", "--agent-folder", "work", "--no-agents",
              "--continue-conversations", "--no-answer-approvals"])

@@ -4,9 +4,9 @@
  *  `contributes.*` at every extension-host activation, and a rejected entry is DISCARDED SILENTLY
  *  as far as the product is concerned. The only trace is one line in the extension-host log:
  *
- *      [error] [AlanBlanchet.interact]: Expected 'label' to be a non-empty string.
+ *      [error] [AlanBlanchet.galaius]: Expected 'label' to be a non-empty string.
  *
- *  That is exactly what `mcpServerDefinitionProviders: [{ id: "interact" }]` produced — no `label`,
+ *  That is exactly what `mcpServerDefinitionProviders: [{ id: "galaius" }]` produced — no `label`,
  *  so the whole entry failed validation, the generated `onMcpCollection:` activation event was
  *  never wired, and MCP collection discovery never registered. The extension appeared to work only
  *  because `activate()` also calls `registerMcpServerDefinitionProvider` imperatively, which masks

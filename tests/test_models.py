@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from interact.models import (
+from galaius.models import (
     Benchmark,
     BenchmarkRecommendation,
     CircuitBreaker,
@@ -120,7 +120,7 @@ class TestModelCapability:
         see the model and carry its source price when present."""
         from types import SimpleNamespace
 
-        from interact import model_catalog
+        from galaius import model_catalog
 
         monkeypatch.setattr(model_catalog, "live_scores", lambda: {"new-live": 90.0})
         monkeypatch.setattr(model_catalog, "ranked_extras", lambda: {})
@@ -143,7 +143,7 @@ class TestModelCapability:
         "The 'gpt-5-6-luna' model is not supported when using Codex with a ChatGPT account"."""
         from types import SimpleNamespace
 
-        from interact import model_catalog
+        from galaius import model_catalog
 
         monkeypatch.setattr(model_catalog, "live_scores", lambda: {"gpt-5-6-luna": 80.0})
         monkeypatch.setattr(model_catalog, "ranked_extras", lambda: {})
@@ -201,7 +201,7 @@ class TestModelFromLitellmId:
                 "output_cost_per_token": 0.000002,
             }
         }
-        with patch("interact.models._litellm") as litellm_fn:
+        with patch("galaius.models._litellm") as litellm_fn:
             litellm_fn.return_value.model_cost = fake_cost
             result = Model.from_litellm_id("new/model")
         assert result.id == "new/model"
@@ -246,9 +246,9 @@ class TestRegistry:
         }
         # No catalog data (env or bundled) → load_registry falls through to litellm.
         with (
-            patch("interact.models._litellm") as litellm_fn,
-            patch("interact.models.PackageData.models_raw", return_value=None),
-            patch("interact.models.PackageData.grounding_raw", return_value=None),
+            patch("galaius.models._litellm") as litellm_fn,
+            patch("galaius.models.PackageData.models_raw", return_value=None),
+            patch("galaius.models.PackageData.grounding_raw", return_value=None),
         ):
             litellm_fn.return_value.model_cost = fake_cost
             Model.load_registry()
@@ -303,7 +303,7 @@ class TestIsAvailable:
         """A catalog provider's availability is a pure env-key check.
 
         Regression: ``is_available`` must NOT touch litellm at all — a litellm call can
-        trigger an interactive OpenAI/ChatGPT device-auth flow and hang ``interact
+        trigger an interactive OpenAI/ChatGPT device-auth flow and hang ``galaius
         providers`` / ``doctor`` (and the server's fallback chain) when no key is set.
         We make litellm itself explode to prove it is never reached.
         """
@@ -314,7 +314,7 @@ class TestIsAvailable:
         def _boom(*_args):
             raise RuntimeError("litellm must not be consulted by is_available")
 
-        monkeypatch.setattr("interact.models._litellm", _boom)
+        monkeypatch.setattr("galaius.models._litellm", _boom)
         monkeypatch.delenv("GEMINI_API_KEY", raising=False)
         assert gemini.is_available() is False
         monkeypatch.setenv("GEMINI_API_KEY", "test-key")
@@ -443,7 +443,7 @@ class TestBenchmarkRecommend:
                 }
             }
         )
-        monkeypatch.setenv("INTERACT_GROUNDING_JSON", grounding)
+        monkeypatch.setenv("GALAIUS_GROUNDING_JSON", grounding)
         Model.load_registry(sample)
 
         bench = Benchmark.by_id("screenspot")
@@ -542,13 +542,13 @@ class TestRecommendBoth:
 def test_the_served_check_joins_two_spellings_of_one_model():
     """The local daemon calls it `ollama/kimi-k3:cloud`; the Ollama cloud endpoint calls the same
     model `ollama/kimi-k3`. Whichever answered discovery in THIS process is the spelling the
-    served set holds, so a pin written in the other one read as "not served" — and `interact
+    served set holds, so a pin written in the other one read as "not served" — and `galaius
     providers` printed "key missing" beside a model that answers a live call.
 
     Every other cross-source join in this codebase goes through `bare_model_name`; this one
     compared raw strings.
     """
-    from interact.models import Model
+    from galaius.models import Model
 
     saved = dict(Model._served)
     try:

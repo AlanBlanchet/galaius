@@ -1,7 +1,7 @@
 """The explicit-completion transport (VS Code panel's non-Codex routes) hits a real vendor API
 directly through litellm, so a quota/rate-limit refusal arrives as a raised exception, never as a
 subprocess's stdout text. Nothing recorded it into the shared cooldown memory
-(`~/.interact/out/agents/quota-cooldowns.json`) before this: a refusal heard here was invisible to
+(`~/.galaius/out/agents/quota-cooldowns.json`) before this: a refusal heard here was invisible to
 every other launch, including `ConversationRoute.resolve`'s own cooldown check and a fresh
 CLI-subprocess spawn choosing the very model that just refused a moment ago on this route.
 """
@@ -9,8 +9,8 @@ CLI-subprocess spawn choosing the very model that just refused a moment ago on t
 import litellm
 import pytest
 
-from interact.agents import quota
-from interact.agents.completion_transport import _CompletionTransport
+from galaius.agents import quota
+from galaius.agents.completion_transport import _CompletionTransport
 
 
 @pytest.fixture(autouse=True)

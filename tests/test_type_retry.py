@@ -3,7 +3,7 @@ connection not-yet-ready, so XTEST keystrokes are dropped non-deterministically.
 the keys registered (band-scoped pixel diff at the focus point) and re-types if they didn't."""
 import pytest
 
-from interact.actions.dispatch import _field_changed, _type_desktop
+from galaius.actions.dispatch import _field_changed, _type_desktop
 from tests.support import solid_png
 
 
@@ -55,12 +55,12 @@ def _no_sleep(monkeypatch):
     async def _noop(_):
         return None
 
-    monkeypatch.setattr("interact.actions.dispatch.asyncio.sleep", _noop)
+    monkeypatch.setattr("galaius.actions.dispatch.asyncio.sleep", _noop)
 
 
 @pytest.mark.asyncio
 async def test_type_desktop_single_shot_when_registered(monkeypatch, _no_sleep):
-    monkeypatch.setattr("interact.actions.dispatch._field_changed", lambda *a: True)  # landed first try
+    monkeypatch.setattr("galaius.actions.dispatch._field_changed", lambda *a: True)  # landed first try
     win = _FakeWin()
     await _type_desktop(win, "hello", 150, 92)
     assert win.typed == ["hello"]  # no retry
@@ -70,7 +70,7 @@ async def test_type_desktop_single_shot_when_registered(monkeypatch, _no_sleep):
 @pytest.mark.asyncio
 async def test_type_desktop_retries_when_dropped(monkeypatch, _no_sleep):
     seq = iter([False, True])  # dropped once, then lands
-    monkeypatch.setattr("interact.actions.dispatch._field_changed", lambda *a: next(seq))
+    monkeypatch.setattr("galaius.actions.dispatch._field_changed", lambda *a: next(seq))
     win = _FakeWin()
     await _type_desktop(win, "hello", 150, 92)
     assert win.typed == ["hello", "hello"]  # exactly one retry
@@ -79,7 +79,7 @@ async def test_type_desktop_retries_when_dropped(monkeypatch, _no_sleep):
 
 @pytest.mark.asyncio
 async def test_type_desktop_gives_up_after_max_retries(monkeypatch, _no_sleep):
-    monkeypatch.setattr("interact.actions.dispatch._field_changed", lambda *a: False)  # never registers
+    monkeypatch.setattr("galaius.actions.dispatch._field_changed", lambda *a: False)  # never registers
     win = _FakeWin()
     await _type_desktop(win, "hi", 150, 92)
     assert win.typed == ["hi", "hi", "hi"]  # initial + 2 retries, then stops (no infinite loop)

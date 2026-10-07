@@ -18,7 +18,7 @@ const run = (over: Record<string, unknown> = {}) => ({
   ...over,
 }) as never;
 
-const html = (runs: unknown[] = [run()], scope = "interact") =>
+const html = (runs: unknown[] = [run()], scope = "galaius") =>
   railHtml(buildRail(runs as never[], scope, () => 0), "N0NCE", voiceOf,
     (r) => conversationTitle(r as never), (r) => ({ id: roleOf(r as never).id, label: roleOf(r as never).id }), (r) => actionsFor(r as never));
 
@@ -32,8 +32,8 @@ test("every destination is in the document at rest, with its word", () => {
   for (const label of ["Team", "+ Session", "Staff"]) {
     assert.ok(doc.includes(`>${label}<`), `"${label}" is not present without hovering`);
   }
-  assert.match(doc, /data-command="interact\.openDashboard"[^>]*>⚙ Settings</,
-    "the Team gear must open the same Interact settings workspace as Conversation");
+  assert.match(doc, /data-command="galaius\.openDashboard"[^>]*>⚙ Settings</,
+    "the Team gear must open the same Galaius settings workspace as Conversation");
 });
 
 test("the scope is stated on the surface, not hidden in a dialog", () => {
@@ -177,7 +177,7 @@ test("the wide rail shows the row's facts and actions at rest", () => {
 
 test("a row surfaces status, provider, model and effort only from its run", () => {
   const doc = railHtml(
-    buildRail([run({ provider: "codex", model: "gpt-5.6-luna", reasoning: "high" })] as never[], "interact", () => 0),
+    buildRail([run({ provider: "codex", model: "gpt-5.6-luna", reasoning: "high" })] as never[], "galaius", () => 0),
     "N0NCE", voiceOf, (r) => conversationTitle(r as never),
     (r) => ({ id: roleOf(r as never).id, label: roleOf(r as never).id }),
     () => actionsFor({ run_id: "r1", status: "running" }),
@@ -195,7 +195,7 @@ test("a row surfaces status, provider, model and effort only from its run", () =
 });
 
 test("the ledger is one line that opens, not seven rows that shout", () => {
-  const built = { header: { scope: "interact", working: 0, needsYou: 0, finished: 0 },
+  const built = { header: { scope: "galaius", working: 0, needsYou: 0, finished: 0 },
     chips: [], staff: [],
     ledger: { runs: [
       { run: { run_id: "o1", name: "t", provider: "claude", status: "done", started_at: 100, cost_usd: 2 }, attention: "finished", brain: false, depth: 0, note: "finished" },
@@ -210,7 +210,7 @@ test("the ledger is one line that opens, not seven rows that shout", () => {
 });
 
 test("staff rest below, named and quiet", () => {
-  const built = { header: { scope: "interact", working: 0, needsYou: 0, finished: 0 },
+  const built = { header: { scope: "galaius", working: 0, needsYou: 0, finished: 0 },
     chips: [], ledger: null,
     staff: [{ run: { run_id: "decl:critic", name: "Visual QA authority", provider: "claude", status: "declared" }, attention: "ready", brain: false, depth: 0, note: "ready" }],
     runs: [{ run: { run_id: "live", name: "live", provider: "claude", status: "running", started_at: 100 }, attention: "working", brain: false, depth: 0, note: "working" }] } as never;
@@ -349,7 +349,7 @@ test("the roster renders in whichever of the three views you chose", () => {
      One row model, three layouts: the view is a property of the CONTAINER, not of the row, so a
      table, a card grid and today's grouped list are three CSS regimes over identical markup
      rather than three renderers to keep in step. */
-  const built = { header: { scope: "interact", working: 0, needsYou: 0, finished: 0 },
+  const built = { header: { scope: "galaius", working: 0, needsYou: 0, finished: 0 },
     chips: [], ledger: null,
     runs: [{ run: { run_id: "r1", name: "tester", provider: "claude", status: "running",
                     started_at: 100 },
@@ -382,7 +382,7 @@ test("the view class sits on an ancestor of the rows it restyles", () => {
   /* VERDICT FAIL, round 45: `.rail` and `.runs` are SIBLINGS, so every `.view-table .runs .row`
      rule could never match — the chooser set a class that styled nothing. The unit test that
      passed asserted the class was PRESENT; presence is not containment. */
-  const built = { header: { scope: "interact", working: 0, needsYou: 0, finished: 0 },
+  const built = { header: { scope: "galaius", working: 0, needsYou: 0, finished: 0 },
     chips: [], ledger: null,
     runs: [{ run: { run_id: "r1", name: "tester", provider: "claude", status: "running",
                     started_at: 100 },

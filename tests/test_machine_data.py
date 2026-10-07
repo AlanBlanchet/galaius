@@ -9,9 +9,9 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from interact_core import MachineDataRequest, MachineRef
+from galaius_core import MachineDataRequest, MachineRef
 
-from interact.machines import MachineConfig, MachineDataFiles
+from galaius.machines import MachineConfig, MachineDataFiles
 
 pytestmark = pytest.mark.usefixtures("directory_backend")
 

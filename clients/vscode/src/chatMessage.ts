@@ -22,7 +22,7 @@ export type ChatAction =
 /** The action a message asks for, or null if it asks for nothing we offer.
  *
  *  A command is checked against the list THIS panel declares — not against "is it one of ours",
- *  which would let a message reach any interact command the panel never showed.
+ *  which would let a message reach any galaius command the panel never showed.
  */
 export function chatAction(
   message: unknown,

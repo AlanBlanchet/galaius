@@ -32,7 +32,7 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/v1/catalog":
             entries = [{
-                "key": {"namespace": "interact", "slug": "system"},
+                "key": {"namespace": "galaius", "slug": "system"},
                 "channel": "stable",
                 "revision": self.revision,
                 "digest": self.digest,
@@ -40,7 +40,7 @@ class _Handler(BaseHTTPRequestHandler):
             }]
             if self.second_digest is not None:
                 entries.append({
-                    "key": {"namespace": "interact", "slug": "review"},
+                    "key": {"namespace": "galaius", "slug": "review"},
                     "channel": "stable",
                     "revision": self.second_revision,
                     "digest": self.second_digest,
@@ -51,9 +51,9 @@ class _Handler(BaseHTTPRequestHandler):
                 "cursor": "complete-snapshot",
                 "server_timestamp": datetime.now(UTC).isoformat(),
             }
-        elif self.path == f"/v1/revisions/interact/system/{self.digest}":
+        elif self.path == f"/v1/revisions/galaius/system/{self.digest}":
             payload = {
-                "key": {"namespace": "interact", "slug": "system"},
+                "key": {"namespace": "galaius", "slug": "system"},
                 "revision": self.body_revision,
                 "digest": self.digest,
                 "content": self.content,
@@ -61,10 +61,10 @@ class _Handler(BaseHTTPRequestHandler):
                 "created_at": datetime.now(UTC).isoformat(),
             }
         elif self.second_digest is not None and self.path == (
-            f"/v1/revisions/interact/review/{self.second_digest}"
+            f"/v1/revisions/galaius/review/{self.second_digest}"
         ):
             payload = {
-                "key": {"namespace": "interact", "slug": "review"},
+                "key": {"namespace": "galaius", "slug": "review"},
                 "revision": self.second_revision,
                 "digest": self.second_digest,
                 "content": (

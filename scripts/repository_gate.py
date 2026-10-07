@@ -207,7 +207,7 @@ class RepositoryGate(BaseModel):
         return path
 
     def _confidential_terms(self):
-        configured = self._git(b"config", b"--local", b"--path", b"--get", b"interact.confidentialTermsFile", allowed_failure=True)
+        configured = self._git(b"config", b"--local", b"--path", b"--get", b"galaius.confidentialTermsFile", allowed_failure=True)
         if not configured:
             return []
         raw_path = os.fsdecode(configured.rstrip(b"\n"))

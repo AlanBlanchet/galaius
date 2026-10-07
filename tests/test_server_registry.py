@@ -1,4 +1,4 @@
-"""A long-lived `interact mcp` server serves the code it imported at startup, so after the package
+"""A long-lived `galaius mcp` server serves the code it imported at startup, so after the package
 advances it silently runs OLD code until reconnected — the trap behind "I shipped the fix but the
 bug persists". Servers register pid+version; the CLI flags any LIVE one behind the latest and prunes
 dead pids. (This is exactly why the user's aino sandbox bug persisted: a v0.2.5 server never reconnected.)
@@ -18,9 +18,9 @@ from pathlib import Path
 
 import pytest
 
-from interact import server_registry as sr
-from interact import server_registry as reg  # kept for the staleness block's readability
-from interact.cli import app_commands
+from galaius import server_registry as sr
+from galaius import server_registry as reg  # kept for the staleness block's readability
+from galaius.cli import app_commands
 
 # HOME isolation comes from tests/conftest.py's `_isolate_unit_configuration`; the runtime dir
 # below is derived from HOME so nothing here has to redirect it.
@@ -70,17 +70,17 @@ def test_unregister_removes_the_file():
     assert not path.exists()
 
 
-def test_is_interact_mcp_false_for_a_missing_pid():
-    # The safety gate before killing: an unknown pid can't be confirmed as interact → never signalled.
-    assert sr._is_interact_mcp(2_147_483_000) is False
+def test_is_galaius_mcp_false_for_a_missing_pid():
+    # The safety gate before killing: an unknown pid can't be confirmed as galaius → never signalled.
+    assert sr._is_galaius_mcp(2_147_483_000) is False
 
 
-def test_kill_stale_servers_only_signals_confirmed_interact_pids(monkeypatch):
-    """`doctor --fix` must restart stale interact servers but NEVER a recycled pid an unrelated
-    process now owns — so it only signals a pid whose cmdline still says interact, and prunes only
+def test_kill_stale_servers_only_signals_confirmed_galaius_pids(monkeypatch):
+    """`doctor --fix` must restart stale galaius servers but NEVER a recycled pid an unrelated
+    process now owns — so it only signals a pid whose cmdline still says galaius, and prunes only
     that one's registry file."""
     monkeypatch.setattr(sr, "stale_servers", lambda: [{"pid": 111}, {"pid": 222}])
-    monkeypatch.setattr(sr, "_is_interact_mcp", lambda pid: pid == 111)  # 222 = a recycled pid
+    monkeypatch.setattr(sr, "_is_galaius_mcp", lambda pid: pid == 111)  # 222 = a recycled pid
     # This test is about WHICH pids are signalled, not about the SIGTERM→SIGKILL escalation. Left
     # unpatched it stops here: pid 111 is a live kernel thread on this box, so the escalation
     # correctly fires a second signal and the assertion below would be measuring that instead.
@@ -100,7 +100,7 @@ def test_kill_stale_servers_only_signals_confirmed_interact_pids(monkeypatch):
 
 
 # ── A restart that does not restart ─────────────────────────────────────────────────────────
-# `interact doctor --fix` sent SIGTERM and reported "restarted N stale server(s)". Measured on a
+# `galaius doctor --fix` sent SIGTERM and reported "restarted N stale server(s)". Measured on a
 # real box: five of six servers ignored it and kept running on the old code, because the server
 # blocks reading stdio and had no handler. The tool's claim was simply false.
 
@@ -108,7 +108,7 @@ def test_kill_stale_servers_only_signals_confirmed_interact_pids(monkeypatch):
 def test_a_server_that_ignores_SIGTERM_is_killed(monkeypatch):
     sent: list[tuple[int, int]] = []
     monkeypatch.setattr(sr, "stale_servers", lambda: [{"pid": 4242, "version": "0.1.0"}])
-    monkeypatch.setattr(sr, "_is_interact_mcp", lambda pid: True)
+    monkeypatch.setattr(sr, "_is_galaius_mcp", lambda pid: True)
     monkeypatch.setattr(sr.os, "kill", lambda pid, sig: sent.append((pid, sig)))
     monkeypatch.setattr(sr, "_still_running", lambda pid: len(sent) < 2)
     monkeypatch.setattr(sr, "_runtime_dir", lambda: Path("/nonexistent"))
@@ -120,7 +120,7 @@ def test_a_server_that_ignores_SIGTERM_is_killed(monkeypatch):
 def test_a_server_that_stops_politely_is_not_killed(monkeypatch):
     sent: list[tuple[int, int]] = []
     monkeypatch.setattr(sr, "stale_servers", lambda: [{"pid": 4242, "version": "0.1.0"}])
-    monkeypatch.setattr(sr, "_is_interact_mcp", lambda pid: True)
+    monkeypatch.setattr(sr, "_is_galaius_mcp", lambda pid: True)
     monkeypatch.setattr(sr.os, "kill", lambda pid, sig: sent.append((pid, sig)))
     monkeypatch.setattr(sr, "_still_running", lambda pid: False)
     monkeypatch.setattr(sr, "_runtime_dir", lambda: Path("/nonexistent"))
@@ -193,7 +193,7 @@ def test_a_server_on_a_DIFFERENT_tree_is_judged_against_its_own(tmp_path, monkey
 
 # ───────────── Stale-server repair (formerly test_stale_server_repair.py, #144) ────────────────
 #
-# A Codex session showed no interact tools while `interact status` reported stale MCP servers.
+# A Codex session showed no galaius tools while `galaius status` reported stale MCP servers.
 # Two gaps let that happen: `kill_stale_servers` claimed "restarted" for a pid it never re-checked
 # after SIGKILL, and `status` had no `--fix` of its own — a second, undiscoverable command
 # (`doctor --fix`) was the only repair. Both closed here.
@@ -204,7 +204,7 @@ def test_a_pid_that_survives_SIGKILL_is_not_reported_killed(monkeypatch):
     back as "restarted" — the caller's success message would then be a claim this function cannot
     back with a fresh read (exactly what made #144's "restarted" message false)."""
     monkeypatch.setattr(sr, "stale_servers", lambda: [{"pid": 4242, "version": "0.1.0"}])
-    monkeypatch.setattr(sr, "_is_interact_mcp", lambda pid: True)
+    monkeypatch.setattr(sr, "_is_galaius_mcp", lambda pid: True)
     monkeypatch.setattr(sr.os, "kill", lambda pid, sig: None)  # both signals "succeed" to send
     monkeypatch.setattr(sr, "_still_running", lambda pid: True)  # yet the pid never actually dies
     monkeypatch.setattr(sr, "_runtime_dir", lambda: Path("/nonexistent"))
@@ -219,7 +219,7 @@ def test_a_pid_confirmed_dead_after_SIGKILL_is_reported_killed(monkeypatch):
         return len(sent) < 2  # dies only once SIGKILL (the 2nd signal) has been sent
 
     monkeypatch.setattr(sr, "stale_servers", lambda: [{"pid": 4242, "version": "0.1.0"}])
-    monkeypatch.setattr(sr, "_is_interact_mcp", lambda pid: True)
+    monkeypatch.setattr(sr, "_is_galaius_mcp", lambda pid: True)
     monkeypatch.setattr(sr.os, "kill", lambda pid, sig: sent.append(sig))
     monkeypatch.setattr(sr, "_still_running", fake_still_running)
     monkeypatch.setattr(sr, "_runtime_dir", lambda: Path("/nonexistent"))

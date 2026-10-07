@@ -152,7 +152,7 @@ function PromptWorkspace({ item }: { item: CellContent & { kind: "prompt-workspa
     <label>Publication service endpoint<input id="prompt-publish-endpoint" type="url"
       placeholder="https://prompts.example" aria-label="Publication service endpoint" /></label>
     <label>Private token file<input id="prompt-publish-token-file" type="text"
-      placeholder="/path/to/private-token" aria-label="Private token file read by Interact" /></label>
+      placeholder="/path/to/private-token" aria-label="Private token file read by Galaius" /></label>
     {item.status && <p role="status">{item.status}</p>}
     <div className="row-actions">
       <button onClick={(event: Event) => {

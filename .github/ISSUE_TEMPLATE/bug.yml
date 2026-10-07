@@ -1,21 +1,21 @@
 name: Bug
-description: interact did the wrong thing, or reported success without doing anything.
+description: galaius did the wrong thing, or reported success without doing anything.
 labels: ["bug"]
 body:
   - type: textarea
     id: what
     attributes:
-      label: What you asked for, and what interact did
+      label: What you asked for, and what galaius did
       placeholder: |
         Asked: click the "Sign in" button on localhost:3000
-        interact said: clicked ref=e12
+        galaius said: clicked ref=e12
         Actually happened: the page never changed
     validations: { required: true }
   - type: input
     id: version
     attributes:
       label: Version
-      description: "`interact --version`, and the VS Code extension version if you use it."
+      description: "`galaius --version`, and the VS Code extension version if you use it."
     validations: { required: true }
   - type: input
     id: platform
@@ -26,6 +26,6 @@ body:
   - type: textarea
     id: logs
     attributes:
-      label: Anything interact printed
+      label: Anything galaius printed
       description: Error text or the tool's reply. Remove tokens and private URLs first.
       render: shell

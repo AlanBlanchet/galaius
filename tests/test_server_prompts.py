@@ -9,13 +9,13 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from interact_core.accounts import Account, Bootstrap, Workspace
-from interact_core.prompts import PromptCreateRequest, PromptKey, PromptRevision
+from galaius_core.accounts import Account, Bootstrap, Workspace
+from galaius_core.prompts import PromptCreateRequest, PromptKey, PromptRevision
 
-from interact.agents.catalog_connection import CatalogConnection
-from interact.cli import prompts
-from interact.config import UserConfig
-from interact.server_prompts import MAX_EDITOR_BYTES, ServerPrompts
+from galaius.agents.catalog_connection import CatalogConnection
+from galaius.cli import prompts
+from galaius.config import UserConfig
+from galaius.server_prompts import MAX_EDITOR_BYTES, ServerPrompts
 
 
 @pytest.fixture
@@ -24,7 +24,7 @@ def remote_prompts(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     connection = CatalogConnection(endpoint="http://127.0.0.1:8767", auth_mode="preview", workspace_id=uuid4())
     connection.save()
-    source = tmp_path / "data" / "interact" / "prompts" / "fixture" / "primary.md"
+    source = tmp_path / "data" / "galaius" / "prompts" / "fixture" / "primary.md"
     source.parent.mkdir(parents=True)
     source.write_text("precious unpublished local work\n")
     head = PromptRevision(

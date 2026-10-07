@@ -115,7 +115,7 @@ function main(outDir: string): void {
     });
     writeFileSync(join(outDir, "chat", `${theme}.html`), standalone(chat, theme));
 
-    const rail = buildRail(RUNS as never[], "interact", () => 0);
+    const rail = buildRail(RUNS as never[], "galaius", () => 0);
     const railDoc = railDocument("N0NCE", railStyle(), railBody(
       rail, voiceOf,
       (r) => conversationTitle(r as never),

@@ -2,7 +2,7 @@
  *
  *  Which model an agent runs on is declared in the company file — which is GENERATED from the
  *  prompt repo, so anything the UI wrote there would be erased by the next sync. A choice made in
- *  the editor lives in the agents POLICY (`~/.interact/agents.json`), the one file the spawn
+ *  the editor lives in the agents POLICY (`~/.galaius/agents.json`), the one file the spawn
  *  reads: in its `agents` map, beside the profiles, toolsets and provider switches written by hand
  *  or by the CLI. One fact, one file — the choice the panel writes IS the choice the spawn uses.
  */
@@ -238,7 +238,7 @@ test("a model is the same model across two id namespaces", () => {
   // (`openrouter/anthropic/claude-opus-4.7`) while the browse catalogue speaks OpenRouter
   // (`anthropic/claude-opus-4.7`), so an exact set lookup missed by exactly one prefix and
   // `openai/gpt-5.5` "not scored" kept sitting two rows under `gpt-5.5` at "60.2 · joint 1st".
-  // The Python twin is `_bare_model_name` in `src/interact/cli/app.py`; the pairs match its test.
+  // The Python twin is `_bare_model_name` in `src/galaius/cli/app.py`; the pairs match its test.
   const same = (a: string, b: string) => assert.equal(bareModelName(a), bareModelName(b), `${a} = ${b}`);
   same("openrouter/anthropic/claude-opus-4.7", "anthropic/claude-opus-4.7");
   same("openai/gpt-5.5", "gpt-5.5");
@@ -353,7 +353,7 @@ test("a board name reduces the same way on both sides of the panel", () => {
   // Round 28, blocking: the Benchmarks tab counted 433 models where the picker counted 450, from
   // the same 633-row file, because this side re-normalised board NAMES with the id normalizer.
   // That manufactured keys like "deepseek" and "grok" which merge genuinely different models.
-  // The Python twin is `_leaderboard_key` in `src/interact/model_catalog.py`.
+  // The Python twin is `_leaderboard_key` in `src/galaius/model_catalog.py`.
   assert.equal(leaderboardKey("GPT-5.5 (xhigh)"), "gpt-5-5");
   assert.equal(leaderboardKey("Claude Fable 5.1 (Adaptive Reasoning, Max Effort)"), "claude-fable-5-1");
   assert.equal(leaderboardKey("Claude Opus 4.7"), "claude-opus-4-7");
@@ -527,8 +527,8 @@ test("without the CLI, a criterion is still not mistaken for a pin", () => {
 });
 
 test("the panel reads the board itself rather than trusting the CLI to have joined it", () => {
-  /* Every number in the product arrived pre-joined from `interact agents models --json-out`, so it
-     depended on the VERSION of whichever binary was on PATH. On a machine whose `interact` came
+  /* Every number in the product arrived pre-joined from `galaius agents models --json-out`, so it
+     depended on the VERSION of whichever binary was on PATH. On a machine whose `galaius` came
      from a different checkout than the panel, the join never happened: 436 models, 0 scored, and
      three sentences asserting "no ranking carries this model" — false against the Benchmarks tab
      in the same window, reading this very file. */

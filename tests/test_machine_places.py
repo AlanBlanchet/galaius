@@ -1,4 +1,4 @@
-"""Levels from the web, as the PC answers signed requests (`interact.machine_places.PlaceDesk`):
+"""Levels from the web, as the PC answers signed requests (`galaius.machine_places.PlaceDesk`):
 narrowing applies at once, widening waits on the PC until its owner confirms it there (no passkey
 here), every change lands in the PC's own log with its digest, browsing needs the PC's
 opt-in, and a review can be read or dropped from the web, never accepted."""
@@ -14,10 +14,10 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from interact_core import MACHINE_AGENT_REQUESTS
-from interact.machine_places import PlaceDesk
-from interact.machines import MachineConfig, MachineRunner
-from interact.place_reviews import PlaceReviews
+from galaius_core import MACHINE_AGENT_REQUESTS
+from galaius.machine_places import PlaceDesk
+from galaius.machines import MachineConfig, MachineRunner
+from galaius.place_reviews import PlaceReviews
 
 pytestmark = pytest.mark.usefixtures("directory_backend")
 
@@ -108,7 +108,7 @@ def test_the_pc_owner_declining_leaves_the_widening_pending(runner: MachineRunne
 
 
 def test_browsing_needs_the_pcs_own_opt_in(runner: MachineRunner, logged: list[dict]) -> None:
-    assert "interact machine browse on" in _ask(runner, "place_browse")["error"]
+    assert "galaius machine browse on" in _ask(runner, "place_browse")["error"]
     runner.update(lambda config: config.model_copy(update={"browse": True}))
     names = {entry["name"]: entry["level"] for entry in _ask(runner, "place_browse")["browse"]}
     assert names == {"docs": "write", "notes": "hidden", "photos": "hidden"}
@@ -137,8 +137,8 @@ def test_a_machine_file_from_before_levels_keeps_its_folders_as_sandboxes(runner
 def test_a_narrowing_stops_every_fenced_agent_turn_running_now(runner: MachineRunner, home: Path, logged: list[dict], monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Its next turn is built from the narrowed levels; the turn running now is not left with the
     old ones. A widening waits on the PC and stops nothing."""
-    from interact.agents import registry as reg
-    from interact.fence import FenceSpec
+    from galaius.agents import registry as reg
+    from galaius.fence import FenceSpec
     spec = FenceSpec(working_directory=home, levels_file=runner.config_path, start=home / "docs", state=tmp_path / "state")
     fenced, loose = reg.AgentRun(run_id="fenced", provider="claude", name="a", fence=spec), reg.AgentRun(run_id="loose", provider="claude", name="b")
     stopped: list[str] = []
@@ -152,7 +152,7 @@ def test_a_narrowing_stops_every_fenced_agent_turn_running_now(runner: MachineRu
 
 def test_confirming_without_asking_names_the_widening(runner: MachineRunner, logged: list[dict], monkeypatch: pytest.MonkeyPatch) -> None:
     """`--yes` alone would also confirm widenings queued after the owner last looked."""
-    from interact.cli.machine_command import machine_approve
+    from galaius.cli.machine_command import machine_approve
     _ask(runner, "place_level", path="notes", level="read")
     monkeypatch.setattr(MachineRunner, "default_config_path", staticmethod(lambda: runner.config_path))
     with pytest.raises(SystemExit, match="name the widening"):

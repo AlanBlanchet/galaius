@@ -16,10 +16,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from interact.actions.models import WaitForAction
-from interact.desktop import DesktopWindow
-from interact.server import _run_actions_desktop
-from interact.server.capture import _parse_wait_seconds
+from galaius.actions.models import WaitForAction
+from galaius.desktop import DesktopWindow
+from galaius.server import _run_actions_desktop
+from galaius.server.capture import _parse_wait_seconds
 
 
 @pytest.fixture
@@ -29,7 +29,7 @@ def desktop_spies():
     with (
         patch.object(DesktopWindow, "click", new_callable=AsyncMock) as click,
         patch.object(DesktopWindow, "resize", new_callable=AsyncMock, create=True) as resize,
-        patch("interact.actions.dispatch.DesktopState") as state,
+        patch("galaius.actions.dispatch.DesktopState") as state,
     ):
         state.capture.return_value = None
         yield click, resize
@@ -37,8 +37,8 @@ def desktop_spies():
 
 @pytest.fixture
 def srv():
-    import interact.server as _srv
-    from interact.server import breaker
+    import galaius.server as _srv
+    from galaius.server import breaker
 
     breaker.clear()
     _srv.config.component_criteria = "cap.gui_grounding"
@@ -84,7 +84,7 @@ def test_a_negative_duration_is_not_a_duration():
 
 @pytest.mark.asyncio
 async def test_type_text_without_a_target_types_into_the_focused_element():
-    from interact.actions import TypeTextAction
+    from galaius.actions import TypeTextAction
 
     typed = []
 
@@ -154,7 +154,7 @@ def test_wait_for_still_rejects_both_selector_and_text():
 
 @pytest.mark.asyncio
 async def test_bare_wait_for_pauses_for_the_timeout():
-    with patch("interact.actions.models.asyncio.sleep", new_callable=AsyncMock) as sleep:
+    with patch("galaius.actions.models.asyncio.sleep", new_callable=AsyncMock) as sleep:
         result = await WaitForAction(timeout=2000).execute(MagicMock())
     sleep.assert_awaited_once_with(2.0)
     assert result == "waited 2000ms (no selector/text given)"
@@ -163,7 +163,7 @@ async def test_bare_wait_for_pauses_for_the_timeout():
 @pytest.mark.asyncio
 async def test_bare_wait_for_runs_on_the_desktop_surface(desktop_spies):
     win = DesktopWindow(name="app", wid=42, w=1200, h=800, x=0, y=0)
-    with patch("interact.actions.models.asyncio.sleep", new_callable=AsyncMock) as sleep:
+    with patch("galaius.actions.models.asyncio.sleep", new_callable=AsyncMock) as sleep:
         report = await _run_actions_desktop(win, [WaitForAction(timeout=500)], None)
     sleep.assert_any_await(0.5)  # the runner's own inter-step sleeps share this patched module
     assert "waited 500ms" in report

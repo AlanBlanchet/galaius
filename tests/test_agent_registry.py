@@ -8,7 +8,7 @@ reports as crashed instead of spinning forever in the UI — the difference betw
 and a decoration.
 
 **The registry is a FIXED path, not debug_dir-relative.** It is cross-process IPC: the CLI
-writes, the extension reads, another shell stops a run. If one process had INTERACT_DEBUG_DIR set
+writes, the extension reads, another shell stops a run. If one process had GALAIUS_DEBUG_DIR set
 and another didn't they would look in different places — exactly the metering bug 0ef5fa4 fixed,
 reintroduced at the feature level. `server_registry._runtime_dir` is pinned for the same reason.
 """
@@ -27,19 +27,19 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from interact.agents import registry as reg
-from interact.agents.events import TOKEN_FIELDS, AgentEvent
-from interact.private_files import PRIVATE_FILES
-from interact.processes import process_exited
+from galaius.agents import registry as reg
+from galaius.agents.events import TOKEN_FIELDS, AgentEvent
+from galaius.private_files import PRIVATE_FILES
+from galaius.processes import process_exited
 from tests.support import register_run
 from tests.support.private_files import loosen
 
 
 @pytest.fixture(autouse=True)
 def _debug_dir_is_ignored(monkeypatch, tmp_path):
-    """Prove the registry ignores INTERACT_DEBUG_DIR — conftest already isolates HOME and
+    """Prove the registry ignores GALAIUS_DEBUG_DIR — conftest already isolates HOME and
     UserConfig.PATH, so only that specific redirection has to be set up here."""
-    monkeypatch.setenv("INTERACT_DEBUG_DIR", str(tmp_path / "somewhere-else"))
+    monkeypatch.setenv("GALAIUS_DEBUG_DIR", str(tmp_path / "somewhere-else"))
 
 
 @pytest.fixture
@@ -61,7 +61,7 @@ def test_registry_preserves_ranked_selection_and_tool_denials():
     first = reg.LaunchCandidate(provider="fixture-a", model="top", catalog_id="example/top", rank=0)
     second = reg.LaunchCandidate(provider="fixture-b", model="next", catalog_id="example/next", rank=1)
     original = register_run(candidates=(first, second), skipped=(reg.SkippedCandidate(candidate=first, reason="unauthenticated"),),
-                       denied_tools=("mcp__interact__report_issue",))
+                       denied_tools=("mcp__galaius__report_issue",))
     restored = reg.get_run("r1")
     assert restored.candidates == original.candidates
     assert restored.skipped == original.skipped
@@ -77,9 +77,9 @@ def test_historical_record_does_not_enable_mesh_on_resume():
 
 
 def test_the_registry_ignores_the_debug_dir_override(tmp_path):
-    # It must be findable by a process that never saw INTERACT_DEBUG_DIR.
+    # It must be findable by a process that never saw GALAIUS_DEBUG_DIR.
     assert "somewhere-else" not in str(reg.agents_dir())
-    assert reg.agents_dir() == tmp_path / ".interact" / "out" / "agents"
+    assert reg.agents_dir() == tmp_path / ".galaius" / "out" / "agents"
 
 
 @pytest.mark.parametrize(
@@ -87,9 +87,9 @@ def test_the_registry_ignores_the_debug_dir_override(tmp_path):
     [("codex", "openai/example-model"), ("fixture/local", "openai/gpt-real")],
 )
 def test_fixture_identity_cannot_write_without_an_isolated_registry(monkeypatch, provider, model):
-    monkeypatch.delenv("INTERACT_AGENTS_DIR", raising=False)
+    monkeypatch.delenv("GALAIUS_AGENTS_DIR", raising=False)
 
-    with pytest.raises(ValueError, match="isolated INTERACT_AGENTS_DIR"):
+    with pytest.raises(ValueError, match="isolated GALAIUS_AGENTS_DIR"):
         reg.register(
             run_id="fixture-model-leak",
             pid=None,
@@ -145,7 +145,7 @@ def test_registry_symlinks_cannot_redirect_private_bytes(attack: str, tmp_path) 
     original_digest = hashlib.sha256(external.read_bytes()).digest()
 
     if attack == "directory-component":
-        (tmp_path / ".interact").symlink_to(outside, target_is_directory=True)
+        (tmp_path / ".galaius").symlink_to(outside, target_is_directory=True)
         with pytest.raises(OSError):
             register_run(run_id="symlinked-directory")
         assert not (outside / "out").exists()
@@ -610,7 +610,7 @@ def test_stop_rejects_a_stale_lifecycle_token():
 
 
 def test_stop_fails_closed_when_queue_cancellation_cannot_persist(monkeypatch):
-    from interact.agents import agent_queue
+    from galaius.agents import agent_queue
 
     register_run(pid=None)
     monkeypatch.setattr(
@@ -887,10 +887,10 @@ def test_the_raw_stream_is_mirrored_into_a_provider_agnostic_file():
     assert all("kind" in m and "text" in m for m in mirrored)  # the shape agents.ts expects
 
 
-# ── the observed-at stamp: when interact first SAW an event, not when the vendor sent it ────────
+# ── the observed-at stamp: when galaius first SAW an event, not when the vendor sent it ────────
 # The vendor writes no timestamps, so idleness used to be derived from the run's start time — an
 # agent working for two minutes was stamped HELD and drawn asleep, the harder it worked the deader
-# the building looked. interact cannot know when the agent acted, but it observes the stream, so
+# the building looked. galaius cannot know when the agent acted, but it observes the stream, so
 # it stamps the moment it first saw each line — the honest clock for a watched workplace.
 
 
@@ -898,7 +898,7 @@ def _mirrored_events(run_id: str) -> list[dict]:
     return [json.loads(l) for l in reg.events_path(run_id).read_text().splitlines() if l.strip()]
 
 
-def test_an_event_is_stamped_when_interact_first_sees_it(monkeypatch):
+def test_an_event_is_stamped_when_galaius_first_sees_it(monkeypatch):
     monkeypatch.setattr(reg.time, "time", lambda: 1000.0)
     reg._mirror_normalised("r", [AgentEvent(kind="text", text="one")])
     assert _mirrored_events("r")[0]["at"] == 1000.0
@@ -1289,10 +1289,10 @@ def test_a_discovered_session_with_no_id_is_not_a_run(monkeypatch, tmp_path):
 @pytest.fixture
 def definition_link_home(tmp_path, monkeypatch):
     """A fake definitions directory, so PROVIDERS['claude'].definition_path can be steered per
-    test. `.interact` is created up front because `CatalogConnection.path()` writes there without
+    test. `.galaius` is created up front because `CatalogConnection.path()` writes there without
     creating the parent — conftest sets HOME here but does not populate the layout."""
     monkeypatch.setattr(reg, "agents_dir", lambda: tmp_path / "agents")
-    (tmp_path / ".interact").mkdir(exist_ok=True)
+    (tmp_path / ".galaius").mkdir(exist_ok=True)
 
 
 def test_a_run_that_IS_an_agent_records_where_its_system_prompt_lives(definition_link_home, monkeypatch, tmp_path):
@@ -1373,7 +1373,7 @@ def _claude_error_stream(text: str) -> str:
     """The real shape a Claude `-p --output-format stream-json` refusal ends on: an assistant
     turn, then a `result` line with `is_error: true` — exactly what `ClaudeCodeProvider.parse`
     turns into `AgentEvent(kind="error", text=...)`, matching the captured evidence
-    (`~/.interact/out/agents/4d1afafb*.jsonl` et al.)."""
+    (`~/.galaius/out/agents/4d1afafb*.jsonl` et al.)."""
     return (
         json.dumps({"type": "assistant", "session_id": "SID", "message": {
             "content": [{"type": "text", "text": "working on it"}], "usage": {}}}) + "\n"
@@ -1382,7 +1382,7 @@ def _claude_error_stream(text: str) -> str:
 
 
 def test_a_late_refusal_ending_a_fresh_run_records_a_cooldown():
-    from interact.agents import quota
+    from galaius.agents import quota
 
     reg.register(run_id="late1", pid=222, provider="claude", name="w",
                 agent="web-researcher", model="claude-fable-5-1")
@@ -1405,7 +1405,7 @@ def test_a_late_refusal_ending_a_RESUMED_run_records_a_cooldown():
     `agents send` produces. The refusal arrives on this second turn, after the first turn's own
     successful reply, exactly like the captured evidence's resumed run
     (`e3655140*` — a queued `agents send` delivery that died on the same Fable refusal)."""
-    from interact.agents import quota
+    from galaius.agents import quota
 
     reg.register(run_id="late2", pid=111, provider="claude", name="w",
                 agent="app-engineer", model="claude-fable-5-1")
@@ -1441,7 +1441,7 @@ def test_a_late_refusal_on_an_ORPHANED_run_records_a_cooldown_exactly_once():
     runs that died on the same refusal had exactly this shape (`exit_code: None` in their `.json`).
     Read repeatedly (as a panel polls), it must record the cooldown ONCE, never re-extend it
     forever."""
-    from interact.agents import quota
+    from galaius.agents import quota
 
     reg.register(run_id="orphan1", pid=999999, provider="claude", name="w",
                 agent="visual-critic", model="claude-fable-5-1")
@@ -1466,7 +1466,7 @@ def test_a_late_refusal_on_an_ORPHANED_run_records_a_cooldown_exactly_once():
 
 
 def test_a_clean_finish_records_no_cooldown():
-    from interact.agents import quota
+    from galaius.agents import quota
 
     reg.register(run_id="late3", pid=444, provider="claude", name="w",
                 agent="tester", model="claude-fable-5-1")
@@ -1504,7 +1504,7 @@ def test_a_pid_given_to_another_process_is_neither_the_run_nor_stopped_with_it()
     """A run's pid names its process only with the start time recorded beside it: once the system
     gives that pid to another program (Windows reuses pids within minutes), the run reads crashed
     and stopping it leaves that program alone. The run's own process is still stopped, whole tree."""
-    from interact.processes import process_group_options
+    from galaius.processes import process_group_options
 
     def sleeper() -> subprocess.Popen:
         return subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], **process_group_options())

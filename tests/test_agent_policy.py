@@ -1,9 +1,9 @@
 """One file that says how agents run here: profiles, toolsets, and which providers are on.
 
-"we should be able to, from interact, chose if we activate the agents or not for a provider
+"we should be able to, from galaius, chose if we activate the agents or not for a provider
 (claude, codex, other...)... profiles, such that we can write the rules and apply them to
 multiple models instead of having to write conditions for each agent... Same for tools, we don't
-have toolsets yet and are having to write interact__xxx to select some of our MCP tools..."
+have toolsets yet and are having to write galaius__xxx to select some of our MCP tools..."
 
 All three are the same shape — a NAME standing for a rule you would otherwise repeat — so they
 live in one file with one grammar rather than three conventions to remember.
@@ -13,7 +13,7 @@ import json
 
 import pytest
 
-from interact.agents.policy import Policy, PolicyError
+from galaius.agents.policy import Policy, PolicyError
 from tests.support.agents import use_policy
 from tests.support.models import catalog_of
 
@@ -72,20 +72,20 @@ def test_a_profile_that_does_not_exist_is_caught_when_the_file_is_read(policy_fi
 
 
 def test_toolsets_expand_so_nobody_types_the_prefix_twice(policy_file):
-    """"we don't have toolsets yet and are having to write interact__xxx" — a toolset is named
+    """"we don't have toolsets yet and are having to write galaius__xxx" — a toolset is named
     once and expands to the server-prefixed tool names the vendor CLI wants."""
     p = Policy.load(policy_file)
     assert p.tools_for("visual-critic") == [
-        "mcp__interact__navigate", "mcp__interact__screenshot",
-        "mcp__interact__review_ui", "mcp__interact__measure_ui",
-        "mcp__interact__get_page_state",
+        "mcp__galaius__navigate", "mcp__galaius__screenshot",
+        "mcp__galaius__review_ui", "mcp__galaius__measure_ui",
+        "mcp__galaius__get_page_state",
     ]
 
 
 def test_a_toolset_may_include_another(policy_file):
     """"browse" wears "vision" — sets compose, or every set repeats its neighbours."""
     p = Policy.load(policy_file)
-    assert "mcp__interact__screenshot" in p.expand_toolset("browse")
+    assert "mcp__galaius__screenshot" in p.expand_toolset("browse")
 
 
 def test_a_toolset_cycle_is_refused_rather_than_hanging(policy_file):
@@ -95,7 +95,7 @@ def test_a_toolset_cycle_is_refused_rather_than_hanging(policy_file):
     assert "cycle" in str(e.value).lower()
 
 
-def test_providers_can_be_switched_off_from_interact(policy_file):
+def test_providers_can_be_switched_off_from_galaius(policy_file):
     """"chose if we activate the agents or not for a provider (claude, codex, other...)"."""
     p = Policy.load(policy_file)
     assert p.provider_active("claude") is True
@@ -131,8 +131,8 @@ def test_switching_a_provider_off_and_on_round_trips(policy_file):
 def test_the_policy_reaches_the_spawn(policy_file, monkeypatch):
     """The seam that makes all three asks real: at spawn, an agent's profile decides its model,
     its toolset becomes the vendor's allow-list, and a switched-off provider refuses."""
-    import interact.agents.run as run_mod
-    from interact.agents.policy import Policy
+    import galaius.agents.run as run_mod
+    from galaius.agents.policy import Policy
 
     monkeypatch.setattr(run_mod, "load_policy", lambda: Policy.load(policy_file))
 
@@ -142,7 +142,7 @@ def test_the_policy_reaches_the_spawn(policy_file, monkeypatch):
 
     # A toolset becomes the vendor's allow-list, fully prefixed.
     tools = run_mod.tools_for_agent("visual-critic")
-    assert "mcp__interact__screenshot" in tools and "mcp__interact__navigate" in tools
+    assert "mcp__galaius__screenshot" in tools and "mcp__galaius__navigate" in tools
 
     # A provider switched off refuses to spawn at all, and says why.
     with pytest.raises(RuntimeError) as e:
@@ -153,33 +153,33 @@ def test_the_policy_reaches_the_spawn(policy_file, monkeypatch):
 
 def test_the_allow_list_reaches_the_vendor_command():
     """A toolset is only real if the vendor CLI is actually told about it."""
-    from interact.agents.providers import provider_for
+    from galaius.agents.providers import provider_for
 
     claude = provider_for("claude")
     argv = claude.command("t", cwd=".", model=None, mcp_config=None, run_id="r",
                           agent="fixture", agent_prompt="Pinned fixture role",
-                          allowed_tools=["mcp__interact__screenshot", "mcp__interact__navigate"])
+                          allowed_tools=["mcp__galaius__screenshot", "mcp__galaius__navigate"])
     assert "--allowedTools" not in argv
     assert json.loads(argv[argv.index("--agents") + 1])["fixture"]["tools"] == [
-        "mcp__interact__screenshot", "mcp__interact__navigate"]
+        "mcp__galaius__screenshot", "mcp__galaius__navigate"]
     # No toolset configured: no flag at all, so an unrestricted agent stays unrestricted.
     assert "--allowedTools" not in claude.command(
         "t", cwd=".", model=None, mcp_config=None, run_id="r")
 
 
-# ── the CLI surface: "from interact", not from a JSON file ─────────────────────────────────────
+# ── the CLI surface: "from galaius", not from a JSON file ─────────────────────────────────────
 
 @pytest.fixture
 def cli_policy(policy_file, monkeypatch):
     """Point every policy read/write at the fixture file."""
-    import interact.agents.policy as pol
+    import galaius.agents.policy as pol
     monkeypatch.setattr(pol, "policy_path", lambda: policy_file)
     return policy_file
 
 
 def test_variables_lists_every_comparison_with_its_source(capsys):
     """The discovery surface: you cannot write `aa.mmmu > 0.7` if nothing tells you it exists."""
-    from interact.cli.app import agents_variables
+    from galaius.cli.app import agents_variables
 
     agents_variables()
     out = capsys.readouterr().out
@@ -189,12 +189,12 @@ def test_variables_lists_every_comparison_with_its_source(capsys):
 
 
 def test_policy_shows_what_each_agent_resolves_to(cli_policy, capsys):
-    from interact.cli.app import agents_policy
+    from galaius.cli.app import agents_policy
 
     agents_policy()
     out = capsys.readouterr().out
     assert "visual-critic" in out and "@eyes" in out and "cap.vlm and price.in < 10" in out
-    assert "vision" in out and "mcp__interact__screenshot" in out
+    assert "vision" in out and "mcp__galaius__screenshot" in out
     assert "codex" in out and "off" in out
     # Preview gives one criteria order; local availability is evaluated at launch.
     line = next(l for l in out.splitlines() if l.strip().startswith("visual-critic"))
@@ -204,8 +204,8 @@ def test_policy_shows_what_each_agent_resolves_to(cli_policy, capsys):
 
 def test_providers_toggle_from_the_cli(cli_policy, capsys):
     """"chose if we activate the agents or not for a provider" — one command, and it persists."""
-    from interact.agents.policy import Policy
-    from interact.cli.app import agents_providers
+    from galaius.agents.policy import Policy
+    from galaius.cli.app import agents_providers
 
     agents_providers()                      # list
     out = capsys.readouterr().out
@@ -223,13 +223,13 @@ def test_providers_toggle_from_the_cli(cli_policy, capsys):
 # ── one file, for the panel and the spawn alike ────────────────────────────────────────────────
 
 def test_the_policy_lives_beside_config_env_not_under_the_debug_dir(monkeypatch):
-    """On a box that relocates its dumps (INTERACT_DEBUG_DIR), the policy must not move with
-    them: the CLI found `<repo>/out/agents.json` while the panel wrote `~/.interact/agents.json`
+    """On a box that relocates its dumps (GALAIUS_DEBUG_DIR), the policy must not move with
+    them: the CLI found `<repo>/out/agents.json` while the panel wrote `~/.galaius/agents.json`
     — one fact, two files, and a choice that never bit."""
-    from interact.agents.policy import policy_path
-    from interact.config import UserConfig
+    from galaius.agents.policy import policy_path
+    from galaius.config import UserConfig
 
-    monkeypatch.setenv("INTERACT_DEBUG_DIR", "/tmp/somewhere/else/out")
+    monkeypatch.setenv("GALAIUS_DEBUG_DIR", "/tmp/somewhere/else/out")
     assert policy_path() == UserConfig.PATH.parent / "agents.json"
 
 
@@ -237,8 +237,8 @@ def test_a_profile_may_be_named_wherever_a_model_is(policy_file, monkeypatch):
     """`--model @eyes` on the CLI, `@eyes` chosen in the panel: a profile is a NAME for a model
     rule, so it works everywhere a model id does — resolved to a real model before the vendor
     CLI sees it, and an unknown one refused by name."""
-    import interact.agents.run as run_mod
-    from interact.agents.policy import Policy
+    import galaius.agents.run as run_mod
+    from galaius.agents.policy import Policy
 
     monkeypatch.setattr(run_mod, "load_policy", lambda: Policy.load(policy_file))
     _, via_profile = run_mod.resolve_model("@eyes", {}, available_only=False)
@@ -285,15 +285,15 @@ def test_a_named_role_provider_pair_is_accepted(tmp_path):
 
 
 def test_the_cli_says_one_line_when_nothing_clears_a_criterion(monkeypatch, capsys):
-    """`interact agents spawn --model "aa.intelligence > 999"` printed a Python traceback where
-    every other interact failure prints one actionable ERROR line — and the model was resolved
+    """`galaius agents spawn --model "aa.intelligence > 999"` printed a Python traceback where
+    every other galaius failure prints one actionable ERROR line — and the model was resolved
     AFTER the vendor argv had been built, so the binary would have been handed the raw text."""
-    import interact.agents.providers as providers
-    from interact.cli.app import agents_spawn
+    import galaius.agents.providers as providers
+    from galaius.cli.app import agents_spawn
 
     monkeypatch.setattr(providers.ClaudeCodeProvider, "available", lambda self: True)
     # This test isolates criterion failure, with the caller's conversation already known.
-    monkeypatch.setenv("INTERACT_SESSION_ID", "fixture-criterion-session")
+    monkeypatch.setenv("GALAIUS_SESSION_ID", "fixture-criterion-session")
 
     class _Vendor:
         name = "claude"
@@ -325,8 +325,8 @@ def test_agents_models_ranks_what_can_be_compared(capsys, monkeypatch):
     the REGISTRY scores — id, score, rank — newest measure first, as JSON for the panel."""
     import json as _json
 
-    from interact.cli.app import agents_models
-    from interact.models import Model
+    from galaius.cli.app import agents_models
+    from galaius.models import Model
 
     with catalog_of(
         Model(id="big", provider="anthropic", capabilities=set(), intelligence_score=60.2),
@@ -345,8 +345,8 @@ def test_agents_models_lists_each_model_once_not_once_per_provider_alias(capsys,
     distinct model, the plainest id, its aliases counted; the rank is over DISTINCT models."""
     import json as _json
 
-    from interact.cli.app import agents_models
-    from interact.models import Model
+    from galaius.cli.app import agents_models
+    from galaius.models import Model
 
     with catalog_of(
         Model(id="azure/gpt-5.5", provider="azure", capabilities=set(), intelligence_score=60.2),
@@ -370,7 +370,7 @@ def test_bare_model_name_collapses_the_serving_tags_a_reseller_appends():
     comparison. Each pair differed only by something a reseller appends — a hosting tag
     (`:cloud`), a moving pointer (`-latest`), a Bedrock revision (`-v1`), a maturity label
     (`-preview`) or a mid-id MMDD revision (`-0309-`) — never by the model."""
-    from interact.cli.app import _bare_model_name
+    from galaius.cli.app import _bare_model_name
 
     pairs = [
         ("moonshot/kimi-k2.6", "ollama/kimi-k2.6:cloud"),
@@ -402,8 +402,8 @@ def test_agents_models_scores_the_alias_a_picker_offers(capsys):
     resolved to the best-scored model it stands for, and comes back carrying that model's score."""
     import json as _json
 
-    from interact.cli.app import agents_models
-    from interact.models import Model
+    from galaius.cli.app import agents_models
+    from galaius.models import Model
 
     with catalog_of(
         Model(id="gpt-5.5", provider="openai", capabilities=set(), intelligence_score=60.2),
@@ -429,8 +429,8 @@ def test_agents_models_ranks_by_competition_not_by_list_position(capsys):
     shared rank says so rather than pretending to break the tie."""
     import json as _json
 
-    from interact.cli.app import agents_models
-    from interact.models import Model
+    from galaius.cli.app import agents_models
+    from galaius.models import Model
 
     with catalog_of(
         Model(id="alpha", provider="a", capabilities=set(), intelligence_score=60.2),
@@ -451,8 +451,8 @@ def test_agents_models_names_the_aliases_it_absorbed(capsys):
     second list can drop what is already ranked above it."""
     import json as _json
 
-    from interact.cli.app import agents_models
-    from interact.models import Model
+    from galaius.cli.app import agents_models
+    from galaius.models import Model
 
     with catalog_of(
         Model(id="gpt-5.5", provider="openai", capabilities=set(), intelligence_score=60.2),
@@ -474,8 +474,8 @@ def test_agents_models_falls_back_to_the_closest_ranked_relative(capsys):
     model itself; a name sharing too little resolves to nothing at all."""
     import json as _json
 
-    from interact.cli.app import agents_models
-    from interact.models import Model
+    from galaius.cli.app import agents_models
+    from galaius.models import Model
 
     with catalog_of(
         Model(id="gpt-5.5", provider="openai", capabilities=set(), intelligence_score=60.2),
@@ -497,9 +497,9 @@ def test_rank_is_over_the_board_not_over_what_this_machine_can_reach(capsys, mon
     itself; which models you happen to be able to reach changes what is LISTED, never the place."""
     import json as _json
 
-    from interact import model_catalog as mcat
-    from interact.cli.app import agents_models
-    from interact.models import Model
+    from galaius import model_catalog as mcat
+    from galaius.cli.app import agents_models
+    from galaius.models import Model
 
     board = tmp_path / "board.json"
     board.write_text(_json.dumps({"scores": [
@@ -530,9 +530,9 @@ def test_the_ranking_scores_every_model_the_board_measures(capsys, monkeypatch, 
     scored by the board directly, wherever its id is known from."""
     import json as _json
 
-    from interact import model_catalog as mcat
-    from interact.cli.app import agents_models
-    from interact.models import Model
+    from galaius import model_catalog as mcat
+    from galaius.cli.app import agents_models
+    from galaius.models import Model
 
     board = tmp_path / "board.json"
     board.write_text(_json.dumps({"scores": [
@@ -571,9 +571,9 @@ def test_a_different_version_is_never_passed_off_as_the_one_asked_for(capsys, mo
     approximation that must say so."""
     import json as _json
 
-    from interact import model_catalog as mcat
-    from interact.cli.app import agents_models
-    from interact.models import Model
+    from galaius import model_catalog as mcat
+    from galaius.cli.app import agents_models
+    from galaius.models import Model
 
     board = tmp_path / "board.json"
     board.write_text(_json.dumps({"scores": [
@@ -605,9 +605,9 @@ def test_a_criterion_can_be_asked_what_it_picks_today(capsys, monkeypatch, tmp_p
     other model looks like it worked."""
     import json as _json
 
-    from interact import model_catalog as mcat
-    from interact.cli.app import agents_criterion
-    from interact.models import Model
+    from galaius import model_catalog as mcat
+    from galaius.cli.app import agents_criterion
+    from galaius.models import Model
 
     board = tmp_path / "board.json"
     board.write_text(_json.dumps({"scores": [
@@ -615,7 +615,7 @@ def test_a_criterion_can_be_asked_what_it_picks_today(capsys, monkeypatch, tmp_p
         {"name": "Mid One", "intelligence": 40.0},
     ]}))
     monkeypatch.setattr(mcat, "leaderboard_path", lambda: board)
-    monkeypatch.setattr("interact.agents.policy.policy_path", lambda: tmp_path / "agents.json")
+    monkeypatch.setattr("galaius.agents.policy.policy_path", lambda: tmp_path / "agents.json")
     monkeypatch.setenv("FIXTURE_KEY", "set")
     with catalog_of(
         Model(id="big-one", provider="x", capabilities=set(), intelligence_score=60.0,
@@ -647,9 +647,9 @@ def test_the_policy_says_which_rule_governs_an_agent_and_what_it_means_today(
     point is invisible — so the policy answers, per agent, the rule as written, whether that rule
     is a criterion at all, and the model it comes out as right now.
     """
-    from interact import model_catalog as mcat
-    from interact.cli.app import agents_policy
-    from interact.models import Model
+    from galaius import model_catalog as mcat
+    from galaius.cli.app import agents_policy
+    from galaius.models import Model
 
     board = tmp_path / "board.json"
     board.write_text(json.dumps({"scores": [{"name": "Mid One", "intelligence": 40.0}]}))
@@ -660,7 +660,7 @@ def test_the_policy_says_which_rule_governs_an_agent_and_what_it_means_today(
         "code-reviewer": "aa.intelligence > 35",
         "web-researcher": "mid-one",
     }}))
-    monkeypatch.setattr("interact.agents.policy.policy_path", lambda: policy)
+    monkeypatch.setattr("galaius.agents.policy.policy_path", lambda: policy)
 
     with catalog_of(
         Model(id="mid-one", provider="anthropic", capabilities=set(), intelligence_score=40.0,
@@ -685,14 +685,14 @@ def test_a_criterion_answers_PER_VENDOR_CLI_because_that_is_who_will_run_it(
     its login. So "what does this criterion pick" has no single answer, and a picker previewing
     the catalog-wide winner would offer a rule that refuses the moment it is used.
     """
-    from interact import model_catalog as mcat
-    from interact.cli.app import agents_criterion
-    from interact.models import Model
+    from galaius import model_catalog as mcat
+    from galaius.cli.app import agents_criterion
+    from galaius.models import Model
 
     board = tmp_path / "board.json"
     board.write_text(json.dumps({"scores": [{"name": "Only One", "intelligence": 50.0}]}))
     monkeypatch.setattr(mcat, "leaderboard_path", lambda: board)
-    monkeypatch.setattr("interact.agents.policy.policy_path", lambda: tmp_path / "agents.json")
+    monkeypatch.setattr("galaius.agents.policy.policy_path", lambda: tmp_path / "agents.json")
 
     class OneVendor:
         name = "onlyvendor"
@@ -703,8 +703,8 @@ def test_a_criterion_answers_PER_VENDOR_CLI_because_that_is_who_will_run_it(
         def model_id_for(self, model):
             return model.id
 
-    monkeypatch.setattr("interact.agents.providers.PROVIDERS", {"onlyvendor": OneVendor()})
-    monkeypatch.setattr("interact.agents.providers.provider_for", lambda _n: OneVendor())
+    monkeypatch.setattr("galaius.agents.providers.PROVIDERS", {"onlyvendor": OneVendor()})
+    monkeypatch.setattr("galaius.agents.providers.provider_for", lambda _n: OneVendor())
     monkeypatch.setenv("FIXTURE_KEY", "set")
     with catalog_of(
         Model(id="cheap-outsider", provider="other", capabilities=set(), intelligence_score=50.0,

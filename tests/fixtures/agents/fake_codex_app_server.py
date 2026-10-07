@@ -216,7 +216,7 @@ class _FakeCodexAppServer:
             capabilities = params.get("capabilities")
             return bool(
                 isinstance(client, dict)
-                and client.get("name") == "interact"
+                and client.get("name") == "galaius"
                 and isinstance(client.get("version"), str)
                 and client["version"]
                 and capabilities == {"experimentalApi": False}

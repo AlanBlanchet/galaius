@@ -11,7 +11,7 @@ import { restoreEnvironmentAfter } from "../test/fixtures/environment.ts";
 test("the verified project backend owns prompt catalog read and CAS write", async () => {
   const data = path.resolve("../out/tests/20260906-panels-conversation-workspace/prompt-client-data");
   fs.rmSync(data, { recursive: true, force: true });
-  const source = path.join(data, "interact", "prompts");
+  const source = path.join(data, "galaius", "prompts");
   fs.mkdirSync(source, { recursive: true });
   fs.writeFileSync(path.join(source, "instructions.md"), "first");
   const restore = restoreEnvironmentAfter(["XDG_DATA_HOME", "UV_OFFLINE", "PYTHONDONTWRITEBYTECODE", "GIT_ASKPASS", "BROWSER"]);
@@ -46,7 +46,7 @@ test("a missing Git author identity is actionable before the prompt source is st
   const root = path.resolve("../out/tests/20260906-panels-conversation-workspace/prompt-identity");
   fs.rmSync(root, { recursive: true, force: true });
   const data = path.join(root, "data");
-  const source = path.join(data, "interact", "prompts");
+  const source = path.join(data, "galaius", "prompts");
   fs.mkdirSync(source, { recursive: true });
   fs.writeFileSync(path.join(source, "instructions.md"), "initial\n");
   for (const args of [["init", "--initial-branch=main"], ["add", "."],
@@ -84,7 +84,7 @@ test("the typed prompt boundary publishes through one local service without expo
   const root = path.resolve("../out/tests/20260906-panels-conversation-workspace/prompt-publish");
   fs.rmSync(root, { recursive: true, force: true });
   const data = path.join(root, "data");
-  const source = path.join(data, "interact", "prompts");
+  const source = path.join(data, "galaius", "prompts");
   fs.cpSync(path.resolve("../../tests/fixtures/prompt_source"), source, { recursive: true });
   fs.chmodSync(path.join(source, "hooks", "hook.sh"), 0o755);
   const remote = path.join(root, "remote.git");
@@ -106,10 +106,10 @@ test("the typed prompt boundary publishes through one local service without expo
   const address = server.address();
   assert.ok(address && typeof address !== "string");
   const restore = restoreEnvironmentAfter(["XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME",
-    "INTERACT_PROMPT_CONSUMER_ROOT", "INTERACT_PROMPT_VSCODE_ROOT", "UV_OFFLINE", "PYTHONDONTWRITEBYTECODE"]);
+    "GALAIUS_PROMPT_CONSUMER_ROOT", "GALAIUS_PROMPT_VSCODE_ROOT", "UV_OFFLINE", "PYTHONDONTWRITEBYTECODE"]);
   Object.assign(process.env, { XDG_DATA_HOME: data, XDG_CACHE_HOME: path.join(root, "cache"),
-    XDG_STATE_HOME: path.join(root, "state"), INTERACT_PROMPT_CONSUMER_ROOT: path.join(root, "consumers"),
-    INTERACT_PROMPT_VSCODE_ROOT: path.join(root, "vscode"), UV_OFFLINE: "1", PYTHONDONTWRITEBYTECODE: "1" });
+    XDG_STATE_HOME: path.join(root, "state"), GALAIUS_PROMPT_CONSUMER_ROOT: path.join(root, "consumers"),
+    GALAIUS_PROMPT_VSCODE_ROOT: path.join(root, "vscode"), UV_OFFLINE: "1", PYTHONDONTWRITEBYTECODE: "1" });
   try {
     const backend = await resolveConversationBackend({ projectPath: path.resolve("../.."),
       extensionVersion: "0.39.0", workspaceRoot: root });

@@ -9,9 +9,9 @@ import threading
 from uuid import uuid4
 
 import pytest
-from interact_core import EgressAllowEntry, EgressPolicy
+from galaius_core import EgressAllowEntry, EgressPolicy
 
-from interact.sandbox import gvisor_available, run_pooled
+from galaius.sandbox import gvisor_available, run_pooled
 
 _METADATA_IP = "169.254.169.254"
 _ALLOWED_IP = "1.1.1.1"    # Cloudflare's own resolver — always up, used only as a reachability probe.
@@ -79,4 +79,4 @@ def test_egress_block_is_logged() -> None:
     marker_run_id = uuid4()
     run_pooled(run_id=marker_run_id, command=["python3", "-c", _CONNECT_SNIPPET, _UNLISTED_IP, "443"], egress=policy, timeout=30)
     log = subprocess.run(["sudo", "dmesg"], capture_output=True, text=True, timeout=10).stdout
-    assert f"POOL-EGRESS-BLOCKED-DEFAULT interact-pool-{marker_run_id.hex[:20]}" in log
+    assert f"POOL-EGRESS-BLOCKED-DEFAULT galaius-pool-{marker_run_id.hex[:20]}" in log

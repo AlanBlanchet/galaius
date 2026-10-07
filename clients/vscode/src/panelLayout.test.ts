@@ -24,7 +24,7 @@ type View = { id: string; name?: string; initialSize?: number; visibility?: stri
 
 const views: View[] = JSON.parse(
   readFileSync(join(import.meta.dirname, "..", "package.json"), "utf8"),
-).contributes.views.interactAgentsSecondary;
+).contributes.views.galaiusAgentsSecondary;
 
 const byId = (id: string): View => {
   const v = views.find((x) => x.id === id);
@@ -41,15 +41,15 @@ test("the side bar holds the conversation and nothing else", () => {
      panel. The side bar is for the single conversation you are having — "the sidepanel is there to
      view info about who we click on, and view the conversation. That's all." Stacking the roster
      in there was the mistake underneath every earlier squeeze-the-column fix. */
-  assert.deepEqual(views.map((v) => v.id), ["interactAgents.chat"],
+  assert.deepEqual(views.map((v) => v.id), ["galaiusAgents.chat"],
     "anything else in this container is the roster creeping back into the side bar");
 });
 
 test("the conversation needs no when-clause, being alone", () => {
-  /* It used to hide behind `interact.inConversation` so the roster could have the column back.
+  /* It used to hide behind `galaius.inConversation` so the roster could have the column back.
      With the roster gone to the main panel there is nothing to trade the column with — and a
      `when` clause is what made VS Code dispose this view and blank the sidebar on the second open. */
-  assert.equal(byId("interactAgents.chat").when, undefined);
+  assert.equal(byId("galaiusAgents.chat").when, undefined);
 });
 
 test("every view still declares a size, so none silently collapses to nothing", () => {
@@ -97,7 +97,7 @@ test("you cannot prompt an agent from the command palette", () => {
       .filter((e: { when?: string }) => e.when === "false")
       .map((e: { command: string }) => e.command),
   );
-  for (const cmd of ["interact.agents.spawn", "interact.agents.send", "interact.agents.broadcast"]) {
+  for (const cmd of ["galaius.agents.spawn", "galaius.agents.send", "galaius.agents.broadcast"]) {
     assert.ok(hidden.has(cmd), `${cmd} prompts, so it must not be reachable from the palette`);
   }
 });
@@ -111,8 +111,8 @@ test("no command that needs a subject is offered where it has none", () => {
       .filter((e: { when?: string }) => e.when === "false")
       .map((e: { command: string }) => e.command),
   );
-  for (const cmd of ["interact.agents.stop", "interact.agents.showEvents",
-                     "interact.agents.openConversation"]) {
+  for (const cmd of ["galaius.agents.stop", "galaius.agents.showEvents",
+                     "galaius.agents.openConversation"]) {
     assert.ok(hidden.has(cmd), `${cmd} needs a subject and would no-op from the palette`);
   }
 });
@@ -121,7 +121,7 @@ test("EVERY command that opens a prompt is hidden from the palette, not just the
   /* "Remove from everywhere the fact that we can prompt from the vscode CTRL+P box at the top.
      Everything should be in the dashboard."
 
-     Two earlier tests name three commands each, by hand. `interact.agents.newSession` was added
+     Two earlier tests name three commands each, by hand. `galaius.agents.newSession` was added
      later, was in neither list, and shipped in the palette opening "What do you want done?" — the
      exact box he asked to be rid of. A hand-kept list cannot cover a command nobody remembered to
      add to it, so this derives the list from the SOURCE: anything that calls `showInputBox` or

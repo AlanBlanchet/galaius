@@ -1,10 +1,10 @@
 name: windows
 
 # The Windows path a new user takes, end to end on a real Windows runner: the README's PowerShell
-# one-liner (install.ps1, Windows PowerShell 5.1), `interact login` approved like the owner does on
+# one-liner (install.ps1, Windows PowerShell 5.1), `galaius login` approved like the owner does on
 # /link (against tests/support/account_server.py, a server double speaking the real wire models),
 # the background logon task running and stopped / started from the CLI, credentials sealed and
-# private, `interact logout` undoing it all; then the Windows-specific unit tests.
+# private, `galaius logout` undoing it all; then the Windows-specific unit tests.
 
 on:
   push:
@@ -94,13 +94,13 @@ jobs:
         run: |
           $uv = Get-Command uv -ErrorAction SilentlyContinue
           Write-Host "uv before install: $(if ($uv) { $uv.Source } else { 'none (install.ps1 installs it)' })"
-          # The default route (source archive + pinned interact-core, no git), at this commit.
-          $env:INTERACT_ARCHIVE = "https://github.com/$env:GITHUB_REPOSITORY/archive/$env:GITHUB_SHA.zip"
+          # The default route (source archive + pinned galaius-core, no git), at this commit.
+          $env:GALAIUS_ARCHIVE = "https://github.com/$env:GITHUB_REPOSITORY/archive/$env:GITHUB_SHA.zip"
           $env:TEMP = $env:TMP = New-Item -ItemType Directory -Force (Join-Path $env:RUNNER_TEMP 'user name')
           powershell -ExecutionPolicy ByPass -c "irm http://127.0.0.1:8799/install.ps1 | iex"
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $bin = Join-Path $HOME '.local\bin'
-          & "$bin\interact.exe" version
+          & "$bin\galaius.exe" version
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $bin | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
 
@@ -113,25 +113,25 @@ jobs:
           foreach ($i in 1..120) { try { irm "$env:SERVER/v1/version"; exit 0 } catch { Start-Sleep -Milliseconds 500 } }
           Get-Content server.err; exit 1
 
-      - name: interact login, approved on the double like the owner on /link
+      - name: galaius login, approved on the double like the owner on /link
         run: |
-          $login = Start-Process -FilePath interact -ArgumentList 'login', '--server', $env:SERVER, '--yes', '--no-browser', '--no-agents' `
+          $login = Start-Process -FilePath galaius -ArgumentList 'login', '--server', $env:SERVER, '--yes', '--no-browser', '--no-agents' `
             -RedirectStandardOutput login.out -RedirectStandardError login.err -PassThru -WindowStyle Hidden
           $code = $null
           foreach ($i in 1..120) { $code = (Select-String -Path login.out -Pattern '[B-Z]{4}-[B-Z]{4}' -ErrorAction SilentlyContinue | Select-Object -First 1).Matches.Value; if ($code) { break }; Start-Sleep -Milliseconds 500 }
           if (-not $code) { Get-Content login.out, login.err; throw 'no sign-in code printed' }
           irm -Method Post "$env:SERVER/test/approve" -ContentType application/json -Body (@{ user_code = $code } | ConvertTo-Json) | ConvertTo-Json -Compress
-          if (-not $login.WaitForExit(180000)) { throw 'interact login did not finish' }
+          if (-not $login.WaitForExit(180000)) { throw 'galaius login did not finish' }
           Get-Content login.out, login.err
-          if ($login.ExitCode -ne 0 -or -not (Select-String -Path login.out -Pattern '^Connected: ' -Quiet)) { throw "interact login failed (exit $($login.ExitCode))" }
+          if ($login.ExitCode -ne 0 -or -not (Select-String -Path login.out -Pattern '^Connected: ' -Quiet)) { throw "galaius login failed (exit $($login.ExitCode))" }
           # The double serves no agent catalog (a 404 is expected there); refusing its own files is a Windows defect.
-          if (Select-String -Path login.out, login.err -Pattern 'must be private' -Quiet) { throw 'interact refused its own files as not private' }
+          if (Select-String -Path login.out, login.err -Pattern 'must be private' -Quiet) { throw 'galaius refused its own files as not private' }
 
       - name: The logon task runs; the machine is online with Windows' script languages
         run: |
-          interact machine service status | Tee-Object -Variable status
+          galaius machine service status | Tee-Object -Variable status
           if ("$status" -notmatch 'Background service: running') { throw 'service not running' }
-          Get-ScheduledTask -TaskName 'Interact machine *' | Format-List TaskName, State, Principal, Triggers, Actions
+          Get-ScheduledTask -TaskName 'Galaius machine *' | Format-List TaskName, State, Principal, Triggers, Actions
           $machine = (irm "$env:SERVER/test/state").machines[0]
           $machine | ConvertTo-Json -Compress
           if (-not $machine.online) { throw 'machine not online' }
@@ -140,7 +140,7 @@ jobs:
 
       - name: Credentials are DPAPI-sealed and private to this user
         run: |
-          $files = @("$HOME\.config\interact\machine.json") + (Get-ChildItem "$HOME\.interact\credentials\*.key").FullName
+          $files = @("$HOME\.config\galaius\machine.json") + (Get-ChildItem "$HOME\.galaius\credentials\*.key").FullName
           $token = (Get-Content -Raw $files[0] | ConvertFrom-Json).token
           if (-not $token.StartsWith('dpapi:')) { throw 'machine token stored unsealed' }
           foreach ($file in $files[1..($files.Length - 1)]) { if (-not (Get-Content -Raw $file).StartsWith('dpapi:')) { throw "$file stored unsealed" } }
@@ -151,19 +151,19 @@ jobs:
 
       - name: Stop and start it from the CLI
         run: |
-          interact machine service stop
+          galaius machine service stop
           foreach ($i in 1..60) { if (-not (irm "$env:SERVER/test/state").machines[0].online) { break }; Start-Sleep -Milliseconds 500 }
           if ((irm "$env:SERVER/test/state").machines[0].online) { throw 'still online after stop' }
-          interact machine service status | Tee-Object -Variable status
+          galaius machine service status | Tee-Object -Variable status
           if ("$status" -notmatch 'stopped') { throw 'status does not say stopped' }
-          interact machine service start
+          galaius machine service start
           foreach ($i in 1..60) { $m = (irm "$env:SERVER/test/state").machines[0]; if ($m.online -and $m.connections -ge 2) { break }; Start-Sleep -Milliseconds 500 }
           if (-not $m.online -or $m.connections -lt 2) { throw 'not reconnected after start' }
           "reconnected: connections=$($m.connections)"
 
       - name: Script steps run through the logon task (PowerShell, cmd, Python; shell refused), barred from the clipboard
         run: |
-          interact machine permission full_access
+          galaius machine permission full_access
           Set-Clipboard -Value 'clipboard-secret'
           if ((Get-Clipboard) -ne 'clipboard-secret') { throw 'this session has no clipboard: the clipboard check would prove nothing' }
           function Step($language, $source) { irm -Method Post "$env:SERVER/test/run" -ContentType application/json -Body (@{ language = $language; source = $source } | ConvertTo-Json) }
@@ -185,26 +185,26 @@ jobs:
           $password = "Aa1!" + [Guid]::NewGuid().ToString('N')
           $secure = ConvertTo-SecureString $password -AsPlainText -Force
           New-LocalUser -Name interacttest -Password $secure -AccountNeverExpires | Out-Null
-          # interact's own definition, from the installed build, naming the test user instead of this one.
-          $python = Join-Path (uv tool dir).Trim() 'interact\Scripts\python.exe'
-          & $python -c "from interact.machine_service import WindowsMachineService as S; print(S().definition().replace(S.user(), r'$env:COMPUTERNAME\interacttest'))" |
+          # galaius's own definition, from the installed build, naming the test user instead of this one.
+          $python = Join-Path (uv tool dir).Trim() 'galaius\Scripts\python.exe'
+          & $python -c "from galaius.machine_service import WindowsMachineService as S; print(S().definition().replace(S.user(), r'$env:COMPUTERNAME\interacttest'))" |
             Out-File -Encoding unicode "$env:PUBLIC\task-user.xml"
           Get-Content "$env:PUBLIC\task-user.xml"
-          $script = "try { Register-ScheduledTask -TaskName 'Interact machine test' -Xml (Get-Content -Raw '$env:PUBLIC\task-user.xml') | Out-Null; " +
+          $script = "try { Register-ScheduledTask -TaskName 'Galaius machine test' -Xml (Get-Content -Raw '$env:PUBLIC\task-user.xml') | Out-Null; " +
                     "`$admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole('Administrators'); " +
                     "'registered by ' + [Environment]::UserName + ', administrator: ' + `$admin | Out-File '$env:PUBLIC\result.txt'; " +
-                    "Unregister-ScheduledTask -TaskName 'Interact machine test' -Confirm:`$false } catch { 'refused: ' + `$_ | Out-File '$env:PUBLIC\result.txt' }"
+                    "Unregister-ScheduledTask -TaskName 'Galaius machine test' -Confirm:`$false } catch { 'refused: ' + `$_ | Out-File '$env:PUBLIC\result.txt' }"
           $credential = New-Object System.Management.Automation.PSCredential("$env:COMPUTERNAME\interacttest", $secure)
           Start-Process -FilePath powershell -ArgumentList '-NoProfile', '-Command', $script -Credential $credential -Wait -WorkingDirectory $env:PUBLIC
           Get-Content "$env:PUBLIC\result.txt" | Tee-Object -Variable result
           if ("$result" -notmatch '^registered by interacttest, administrator: False') { throw "unelevated registration: $result" }
 
-      - name: interact logout removes the task and the credentials
+      - name: galaius logout removes the task and the credentials
         run: |
-          interact logout
+          galaius logout
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          if (Get-ScheduledTask -TaskName 'Interact machine *' -ErrorAction SilentlyContinue) { throw 'logon task still registered' }
-          if (Test-Path "$HOME\.config\interact\machine.json") { throw 'machine credential left behind' }
+          if (Get-ScheduledTask -TaskName 'Galaius machine *' -ErrorAction SilentlyContinue) { throw 'logon task still registered' }
+          if (Test-Path "$HOME\.config\galaius\machine.json") { throw 'machine credential left behind' }
           $machine = (irm "$env:SERVER/test/state").machines[0]
           if (-not $machine.revoked -or $machine.online) { throw 'server did not see the logout' }
 
@@ -226,10 +226,10 @@ jobs:
       - name: Logs
         if: always()
         run: |
-          foreach ($file in 'server.err', 'login.out', 'login.err', "$HOME\.config\interact\machine-service.log") { if (Test-Path $file) { "== $file"; Get-Content $file -Tail 80 } }
+          foreach ($file in 'server.err', 'login.out', 'login.err', "$HOME\.config\galaius\machine-service.log") { if (Test-Path $file) { "== $file"; Get-Content $file -Tail 80 } }
 
   # Installed by the real one-liner, then a newer runtime lands in the store: the installer's own
-  # interact.exe must run it (every command follows the newest runtime); then a running MCP server
+  # galaius.exe must run it (every command follows the newest runtime); then a running MCP server
   # and machine connection upgrade N -> N+1 by themselves (tests/test_upgrade_integration.py).
   upgrade:
     name: windows (auto-upgrade after install.ps1)
@@ -249,35 +249,35 @@ jobs:
       - name: Install with the one-liner (this commit's GitHub archive)
         shell: powershell
         run: |
-          $env:INTERACT_ARCHIVE = "https://github.com/$env:GITHUB_REPOSITORY/archive/$env:GITHUB_SHA.zip"
+          $env:GALAIUS_ARCHIVE = "https://github.com/$env:GITHUB_REPOSITORY/archive/$env:GITHUB_SHA.zip"
           powershell -ExecutionPolicy ByPass -c "irm http://127.0.0.1:8799/install.ps1 | iex"
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Offered a release of the commit it was installed from, the fresh install is up to date
         run: |
-          $python = Join-Path (uv tool dir).Trim() 'interact\Scripts\python.exe'
+          $python = Join-Path (uv tool dir).Trim() 'galaius\Scripts\python.exe'
           & $python -I tests\support\fresh_install_check.py
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-      - name: interact-core at the commit this checkout pins
+      - name: galaius-core at the commit this checkout pins
         run: |
-          $sha = [regex]::Match((Get-Content -Raw pyproject.toml), 'interact-core\.git@([0-9a-f]{40})').Groups[1].Value
-          git clone -q https://github.com/AlanBlanchet/interact-core "$env:RUNNER_TEMP\interact-core"
-          git -C "$env:RUNNER_TEMP\interact-core" checkout -q $sha
-          "INTERACT_CORE_SOURCE=$env:RUNNER_TEMP\interact-core" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
-      - name: A newer runtime in the store is what the installer's interact.exe runs
+          $sha = [regex]::Match((Get-Content -Raw pyproject.toml), 'galaius-core\.git@([0-9a-f]{40})').Groups[1].Value
+          git clone -q https://github.com/AlanBlanchet/galaius-core "$env:RUNNER_TEMP\galaius-core"
+          git -C "$env:RUNNER_TEMP\galaius-core" checkout -q $sha
+          "GALAIUS_CORE_SOURCE=$env:RUNNER_TEMP\galaius-core" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+      - name: A newer runtime in the store is what the installer's galaius.exe runs
         run: |
           uv sync --frozen --quiet
           $newer = New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\newer"
           Copy-Item -Recurse src, pyproject.toml, uv.lock, README.md, LICENSE $newer
           (Get-Content -Raw "$newer\pyproject.toml") -replace '(?m)^version = "[^"]+"', 'version = "9.9.9"' | Set-Content -NoNewline "$newer\pyproject.toml"
           uv build --wheel --quiet -o "$env:RUNNER_TEMP\wheels" $newer
-          uv build --wheel --quiet -o "$env:RUNNER_TEMP\wheels" $env:INTERACT_CORE_SOURCE
-          $public = (Get-ChildItem "$env:RUNNER_TEMP\wheels\interact-9.9.9-*.whl").FullName
-          $core = (Get-ChildItem "$env:RUNNER_TEMP\wheels\interact_core-*.whl").FullName
+          uv build --wheel --quiet -o "$env:RUNNER_TEMP\wheels" $env:GALAIUS_CORE_SOURCE
+          $public = (Get-ChildItem "$env:RUNNER_TEMP\wheels\galaius-9.9.9-*.whl").FullName
+          $core = (Get-ChildItem "$env:RUNNER_TEMP\wheels\galaius_core-*.whl").FullName
           .venv\Scripts\python.exe scripts\install_runtime.py --public-wheel $public --core-wheel $core --checkout .
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          $installed = Join-Path (uv tool dir --bin).Trim() 'interact.exe'  # where the one-liner put it
+          $installed = Join-Path (uv tool dir --bin).Trim() 'galaius.exe'  # where the one-liner put it
           $version = (& $installed --version).Trim()
-          "installer's interact.exe runs $version"
-          if ($version -ne '9.9.9') { throw "the installer's interact.exe runs $version, not the active runtime 9.9.9" }
+          "installer's galaius.exe runs $version"
+          if ($version -ne '9.9.9') { throw "the installer's galaius.exe runs $version, not the active runtime 9.9.9" }
       - name: Running processes upgrade N -> N+1 (and the handoff / release rules)
         run: uv run --frozen python -m pytest -v -rfEs -p no:cacheprovider tests/test_upgrade_integration.py tests/test_upgrade_release.py tests/test_handoff.py

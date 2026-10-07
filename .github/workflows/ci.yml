@@ -41,7 +41,7 @@ jobs:
           node-version: 22
 
       - name: Version files in sync (single source of truth)
-        run: uv run python -m interact.versioning check
+        run: uv run python -m galaius.versioning check
 
       # -rs lists every SKIP with its reason. Without it a test that quietly stops running —
       # a browser that will not launch, a missing display — is indistinguishable from one that
@@ -168,7 +168,7 @@ jobs:
           fi
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "$tag" -m "interact $tag"
+          git tag -a "$tag" -m "galaius $tag"
           git push origin "$tag"
           echo "created=true" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"

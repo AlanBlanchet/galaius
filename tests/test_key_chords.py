@@ -4,7 +4,7 @@ uinput path now actually supports them — previously UinputPointer.key did geta
 
 import pytest
 
-from interact.desktop.backend import UinputPointer, _parse_chord
+from galaius.desktop.backend import UinputPointer, _parse_chord
 
 
 @pytest.mark.parametrize(
@@ -157,7 +157,7 @@ def test_a_plain_key_costs_only_the_two_frames_hardware_would_send():
 def test_every_modifier_the_grammar_accepts_is_actually_declared():
     ecodes = pytest.importorskip("evdev.ecodes", reason="uinput is Linux-only")
 
-    from interact.desktop.input import _keyboard_codes, _UINPUT_MODIFIERS
+    from galaius.desktop.input import _keyboard_codes, _UINPUT_MODIFIERS
 
     declared = set(_keyboard_codes(ecodes))
     for token, name in _UINPUT_MODIFIERS.items():
@@ -170,7 +170,7 @@ def test_every_modifier_the_grammar_accepts_is_actually_declared():
 def test_function_keys_are_declared():
     ecodes = pytest.importorskip("evdev.ecodes", reason="uinput is Linux-only")
 
-    from interact.desktop.input import _keyboard_codes
+    from galaius.desktop.input import _keyboard_codes
 
     declared = set(_keyboard_codes(ecodes))
     missing = [f"KEY_F{i}" for i in range(1, 13) if getattr(ecodes, f"KEY_F{i}") not in declared]
@@ -188,7 +188,7 @@ def test_an_undeclared_key_fails_loudly_rather_than_doing_nothing():
 def test_the_portable_backend_also_refuses_a_key_it_cannot_resolve():
     """It used to fall back to the raw token, which pynput TYPES — so a mistyped key name quietly
     wrote itself into the document instead of reporting anything."""
-    from interact.desktop.backend import PortableBackend
+    from galaius.desktop.backend import PortableBackend
 
     class _Key:
         enter = "ENTER"

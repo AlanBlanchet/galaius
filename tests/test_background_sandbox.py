@@ -2,9 +2,9 @@
 
 
 def test_nested_automation_is_background_by_default_and_reveal_is_explicit(monkeypatch, tmp_path):
-    from interact.config.settings import Config
-    from interact.desktop import nested
-    from interact.desktop.backend import nested_server_command
+    from galaius.config.settings import Config
+    from galaius.desktop import nested
+    from galaius.desktop.backend import nested_server_command
 
     reaped: list[bool] = []
     started: list[tuple[str, bool]] = []

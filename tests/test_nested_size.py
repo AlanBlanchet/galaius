@@ -7,7 +7,7 @@ shared sandbox (the first app's size no longer wins forever).
 
 import pytest
 
-from interact import server as srv
+from galaius import server as srv
 
 
 @pytest.mark.parametrize(
@@ -70,7 +70,7 @@ def test_get_sandbox_respawns_only_on_size_change(monkeypatch, _restore_sandbox)
             super().__init__(display, size, headless)
             created.append(size)
 
-    monkeypatch.setattr("interact.desktop.NestedBackend", Backend)
+    monkeypatch.setattr("galaius.desktop.NestedBackend", Backend)
 
     b1 = srv._get_sandbox("412x915")
     assert b1.size == "412x915"
@@ -94,7 +94,7 @@ def test_get_sandbox_without_size_never_resizes_a_running_sandbox(monkeypatch, _
             super().__init__(display, size, headless)
             created.append(size)
 
-    monkeypatch.setattr("interact.desktop.NestedBackend", Backend)
+    monkeypatch.setattr("galaius.desktop.NestedBackend", Backend)
     monkeypatch.setattr(srv.config, "nested_size", "1280x800")
 
     phone = srv._get_sandbox("412x915")  # launch_app(device="phone")
@@ -115,7 +115,7 @@ def test_get_sandbox_without_size_creates_at_default_when_none_running(monkeypat
             super().__init__(display, size, headless)
             created.append(size)
 
-    monkeypatch.setattr("interact.desktop.NestedBackend", Backend)
+    monkeypatch.setattr("galaius.desktop.NestedBackend", Backend)
     monkeypatch.setattr(srv.config, "nested_size", "1280x800")
 
     b = srv._get_sandbox()

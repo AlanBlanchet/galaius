@@ -11,9 +11,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import ValidationError
 
-from interact.actions.models import ClickAction, ClickElementAction, _click_selector
-from interact.desktop import DesktopWindow
-from interact.server import _run_actions_desktop
+from galaius.actions.models import ClickAction, ClickElementAction, _click_selector
+from galaius.desktop import DesktopWindow
+from galaius.server import _run_actions_desktop
 
 
 @pytest.fixture
@@ -23,7 +23,7 @@ def desktop_spies():
     with (
         patch.object(DesktopWindow, "click", new_callable=AsyncMock) as click,
         patch.object(DesktopWindow, "resize", new_callable=AsyncMock, create=True) as resize,
-        patch("interact.actions.dispatch.DesktopState") as state,
+        patch("galaius.actions.dispatch.DesktopState") as state,
     ):
         state.capture.return_value = None
         yield click, resize
@@ -65,7 +65,7 @@ async def test_desktop_click_report_names_a_non_left_button(desktop_spies, butto
 @pytest.mark.asyncio
 async def test_desktop_click_element_still_defaults_to_left(desktop_spies):
     """click_element carries no `button` field — it must not break the desktop click call."""
-    from interact.desktop.element import DesktopElement
+    from galaius.desktop.element import DesktopElement
 
     click, _ = desktop_spies
     win = DesktopWindow(name="app", wid=44, w=1200, h=800, x=0, y=0)

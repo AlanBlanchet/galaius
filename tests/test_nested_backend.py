@@ -7,7 +7,7 @@ resize nudge, then recapture. WM-less keyboard input also needs an explicit focu
 windowactivate which needs _NET_ACTIVE_WINDOW — the error that drove a consumer to give up, #6).
 
 Display-free: maim/xdotool are stubbed; the real GL behaviour is verified live in one opt-in
-e2e test (test_qt_combo_popup_is_captured_e2e, gated on INTERACT_LOCAL_E2E=1), not elsewhere here.
+e2e test (test_qt_combo_popup_is_captured_e2e, gated on GALAIUS_LOCAL_E2E=1), not elsewhere here.
 """
 
 import io
@@ -16,7 +16,7 @@ import subprocess
 import pytest
 from PIL import Image
 
-from interact.desktop import NestedBackend, _gl_unrendered
+from galaius.desktop import NestedBackend, _gl_unrendered
 from tests.support import solid_png
 from tests.support.desktop import bare_nested_backend
 
@@ -157,10 +157,10 @@ def test_force_repaint_shrinks_then_restores(monkeypatch):
     nb = bare_nested_backend(size=(412, 915))
     monkeypatch.setattr(nb, "_window_id", lambda name: "0x1")
     monkeypatch.setattr(nb, "window_geometry", lambda name: (0, 0, 412, 915))
-    monkeypatch.setattr("interact.desktop.nested.time.sleep", lambda *_: None)
+    monkeypatch.setattr("galaius.desktop.nested.time.sleep", lambda *_: None)
     sizes: list[tuple[str, str]] = []
     monkeypatch.setattr(
-        "interact.desktop.nested.subprocess.run",
+        "galaius.desktop.nested.subprocess.run",
         lambda cmd, **k: sizes.append((cmd[3], cmd[4])) if cmd[1] == "windowsize" else None,
     )
 
@@ -185,7 +185,7 @@ def test_force_repaint_noop_without_window(monkeypatch):
     ],
 )
 def test_rects_overlap(a, b, expect):
-    from interact.desktop.backend import _rects_overlap
+    from galaius.desktop.backend import _rects_overlap
 
     assert _rects_overlap(a, b) is expect
 
@@ -222,17 +222,17 @@ def test_composited_grab_plain_region_grabs_the_window_not_stale_pixmap(monkeypa
 
 
 # --- Live counterpart of the composited-grab tests above (from test_sandbox_e2e.py) ---------
-# Opt-in: spawns a real Xephyr + a real Qt app. Gated on INTERACT_LOCAL_E2E=1, self-skips when
+# Opt-in: spawns a real Xephyr + a real Qt app. Gated on GALAIUS_LOCAL_E2E=1, self-skips when
 # Xephyr/PySide6 isn't present, so normal CI is untouched. Run locally with:
-#     INTERACT_LOCAL_E2E=1 uv run --with PySide6 pytest tests/test_nested_repaint.py -v -k e2e
+#     GALAIUS_LOCAL_E2E=1 uv run --with PySide6 pytest tests/test_nested_repaint.py -v -k e2e
 
 
 def _require_e2e():
     import os
     import shutil
 
-    if not os.environ.get("INTERACT_LOCAL_E2E"):
-        pytest.skip("opt-in: set INTERACT_LOCAL_E2E=1 (spawns Xephyr + real apps)")
+    if not os.environ.get("GALAIUS_LOCAL_E2E"):
+        pytest.skip("opt-in: set GALAIUS_LOCAL_E2E=1 (spawns Xephyr + real apps)")
     if shutil.which("Xephyr") is None:
         pytest.skip("Xephyr not installed")
 
@@ -247,7 +247,7 @@ def test_qt_combo_popup_is_captured_e2e(tmp_path):
 
     from PIL import Image
 
-    from interact.desktop import DesktopWindow
+    from galaius.desktop import DesktopWindow
 
     app = tmp_path / "qtcombo.py"
     app.write_text(
@@ -298,7 +298,7 @@ def test_nested_captures_hide_the_cursor(monkeypatch):
         stdout = b"PNG"
 
     monkeypatch.setattr(
-        "interact.desktop.nested.subprocess.run", lambda cmd, **k: cmds.append(cmd) or _R()
+        "galaius.desktop.nested.subprocess.run", lambda cmd, **k: cmds.append(cmd) or _R()
     )
     nb.capture()
     nb._maim_window("0x1")
@@ -315,7 +315,7 @@ def test_focus_uses_windowfocus_sync_not_activate(monkeypatch):
     monkeypatch.setattr(nb, "_window_id", lambda name: "0x1")
     cmds: list[list[str]] = []
     monkeypatch.setattr(
-        "interact.desktop.nested.subprocess.run",
+        "galaius.desktop.nested.subprocess.run",
         lambda cmd, **k: cmds.append(cmd),
     )
     nb.focus("aino")
@@ -333,7 +333,7 @@ def test_focus_wid_targets_exact_window_and_skips_empty(monkeypatch):
     nb = bare_nested_backend(size=(412, 915))
     cmds: list[list[str]] = []
     monkeypatch.setattr(
-        "interact.desktop.nested.subprocess.run", lambda cmd, **k: cmds.append(cmd)
+        "galaius.desktop.nested.subprocess.run", lambda cmd, **k: cmds.append(cmd)
     )
     nb.focus_wid("0x7")
     xdo = [c for c in cmds if c and c[0] == "xdotool"]

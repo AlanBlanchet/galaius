@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-import interact.server as srv
-from interact.desktop.nested import KillReport
+import galaius.server as srv
+from galaius.desktop.nested import KillReport
 
 pytestmark = pytest.mark.usefixtures("desktop_gate_open")
 

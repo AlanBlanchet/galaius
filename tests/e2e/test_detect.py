@@ -1,6 +1,6 @@
 """E2E: VLM element detection tests against real providers.
 
-Uses :class:`interact.models.Model` directly — no provider/model classes
+Uses :class:`galaius.models.Model` directly — no provider/model classes
 are defined here. LLM-visible artifacts (``interpretation.txt``,
 ``vlm_elements.json``) reference elements by index/name only; pixel
 coordinates live in debug-only files (``vlm_raw.txt``, ``ground_truth.json``).
@@ -16,13 +16,13 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from interact.desktop import atspi
-from interact.browser import BrowserManager
-from interact.desktop import DesktopElement, DesktopWindow
-from interact.vision.detect import _vlm_detect_elements
-from interact.models import Model
-from interact.runtime import config
-from interact.state import annotate_screenshot
+from galaius.desktop import atspi
+from galaius.browser import BrowserManager
+from galaius.desktop import DesktopElement, DesktopWindow
+from galaius.vision.detect import _vlm_detect_elements
+from galaius.models import Model
+from galaius.runtime import config
+from galaius.state import annotate_screenshot
 
 from .harness import (
     OUT_DIR,
@@ -57,7 +57,7 @@ def gtk_window():
     deadline = time.time() + 10
     win = None
     while time.time() < deadline:
-        win = DesktopWindow.find("Interact Test")
+        win = DesktopWindow.find("Galaius Test")
         if win:
             break
         time.sleep(0.3)
@@ -72,7 +72,7 @@ def gtk_window():
 @pytest.fixture(scope="session")
 def ground_truth(gtk_window) -> list[DesktopElement]:
     time.sleep(0.5)
-    elements = atspi.AtSpi.detect_elements("Interact Test")
+    elements = atspi.AtSpi.detect_elements("Galaius Test")
     if not elements:
         pytest.skip("AT-SPI unavailable — cannot establish ground truth")
     return elements

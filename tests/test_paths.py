@@ -19,7 +19,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from interact.config import Config
+from galaius.config import Config
 
 PATHS_TS = Path(__file__).resolve().parents[1] / "clients" / "vscode" / "src" / "paths.ts"
 AGENT_MODELS_TS = PATHS_TS.with_name("agentModels.ts")
@@ -52,7 +52,7 @@ def _node_required():
 
 
 def _extension_usage_log(base_dir: str, tmp_path: Path) -> Path:
-    """Where the EXTENSION thinks the usage log is, for a given ``interact.debug.dir`` value."""
+    """Where the EXTENSION thinks the usage log is, for a given ``galaius.debug.dir`` value."""
     runner = tmp_path / "resolve.ts"
     runner.write_text(
         f'import {{ usageLogPathFor }} from {json.dumps(PATHS_TS.as_uri())};\n'
@@ -68,15 +68,15 @@ def _extension_usage_log(base_dir: str, tmp_path: Path) -> Path:
 
 
 def test_extension_default_matches_python_default(monkeypatch, tmp_path):
-    """With no `interact.debug.dir` set, the panel must read the file Python writes by default."""
-    monkeypatch.delenv("INTERACT_DEBUG_DIR", raising=False)
+    """With no `galaius.debug.dir` set, the panel must read the file Python writes by default."""
+    monkeypatch.delenv("GALAIUS_DEBUG_DIR", raising=False)
     assert _extension_usage_log("", tmp_path) == Config().usage_log
 
 
-@pytest.mark.parametrize("base", ["/tmp/interact-out", "~/.interact/out", "~/proj/out"])
+@pytest.mark.parametrize("base", ["/tmp/galaius-out", "~/.galaius/out", "~/proj/out"])
 def test_extension_matches_python_for_configured_base(monkeypatch, tmp_path, base):
     """A configured base dir must resolve identically on both sides — tilde included."""
-    monkeypatch.setenv("INTERACT_DEBUG_DIR", base)
+    monkeypatch.setenv("GALAIUS_DEBUG_DIR", base)
     assert _extension_usage_log(base, tmp_path) == Config().usage_log
 
 
@@ -84,11 +84,11 @@ def test_written_record_is_visible_to_the_reader(monkeypatch, tmp_path):
     """End to end: a record written through the real writer is found where the panel looks."""
     import litellm
 
-    from interact import runtime
-    from interact.vision.usage import log_api_attempt
+    from galaius import runtime
+    from galaius.vision.usage import log_api_attempt
 
     base = tmp_path / "out"
-    monkeypatch.setenv("INTERACT_DEBUG_DIR", str(base))
+    monkeypatch.setenv("GALAIUS_DEBUG_DIR", str(base))
     monkeypatch.setattr(runtime, "config", Config())
     monkeypatch.setattr(litellm, "completion_cost", lambda **_: 0.0012)
 
@@ -121,29 +121,29 @@ def test_the_agents_registry_dir_matches_python(monkeypatch, tmp_path):
     """The supervisor is cross-process IPC — the CLI writes run records, the extension reads them.
     A disagreement means the panel watches a directory nothing writes: the metering bug of 0ef5fa4
     one level up. Note both sides pin it OUTSIDE debug_dir deliberately."""
-    from interact.agents.registry import agents_dir
+    from galaius.agents.registry import agents_dir
 
-    monkeypatch.delenv("INTERACT_AGENTS_DIR", raising=False)
+    monkeypatch.delenv("GALAIUS_AGENTS_DIR", raising=False)
     assert _extension_agents_dir(tmp_path) == agents_dir()
 
 
 def test_the_agents_registry_ignores_a_debug_dir_override(monkeypatch, tmp_path):
-    """Setting INTERACT_DEBUG_DIR must NOT move the registry — a process that never saw the
+    """Setting GALAIUS_DEBUG_DIR must NOT move the registry — a process that never saw the
     override still has to find it."""
-    from interact.agents.registry import agents_dir
+    from galaius.agents.registry import agents_dir
 
-    monkeypatch.delenv("INTERACT_AGENTS_DIR", raising=False)
-    monkeypatch.setenv("INTERACT_DEBUG_DIR", str(tmp_path / "elsewhere"))
+    monkeypatch.delenv("GALAIUS_AGENTS_DIR", raising=False)
+    monkeypatch.setenv("GALAIUS_DEBUG_DIR", str(tmp_path / "elsewhere"))
     assert _extension_agents_dir(tmp_path) == agents_dir()
     assert "elsewhere" not in str(agents_dir())
 
 
 def test_the_agents_registry_uses_the_harness_isolation_path(monkeypatch, tmp_path):
     """A launched extension and its Python child must share the harness-owned store."""
-    from interact.agents import registry
+    from galaius.agents import registry
 
     isolated = tmp_path / "harness" / "agents"
-    monkeypatch.setenv("INTERACT_AGENTS_DIR", str(isolated))
+    monkeypatch.setenv("GALAIUS_AGENTS_DIR", str(isolated))
 
     assert registry.agents_dir() == isolated
     assert _extension_agents_dir(tmp_path) == isolated
@@ -155,7 +155,7 @@ def test_the_agents_registry_uses_the_harness_isolation_path(monkeypatch, tmp_pa
         model="openai/example-model",
     )
     assert (isolated / "isolated-harness-run.json").is_file()
-    assert not (tmp_path / ".interact" / "out" / "agents" / "isolated-harness-run.json").exists()
+    assert not (tmp_path / ".galaius" / "out" / "agents" / "isolated-harness-run.json").exists()
 
 
 def _extension_policy_path(tmp_path: Path) -> Path:
@@ -171,19 +171,19 @@ def _extension_policy_path(tmp_path: Path) -> Path:
     return Path(out.stdout.strip())
 
 
-@pytest.mark.parametrize("debug_dir", [None, "/tmp/interact-out", "~/proj/out"])
+@pytest.mark.parametrize("debug_dir", [None, "/tmp/galaius-out", "~/proj/out"])
 def test_the_agents_policy_is_one_file_for_both_sides(monkeypatch, tmp_path, debug_dir):
     """The panel WRITES an agent's model choice into the policy and the spawn READS it — a
     different answer on either side is a choice that silently never bites. It lives beside
     `config.env`, never under the debug dir: on a box that relocates its dumps
-    (`INTERACT_DEBUG_DIR`), the CLI looked for `<repo>/out/agents.json` while the panel wrote
-    `~/.interact/agents.json`."""
-    from interact.agents.policy import policy_path
-    from interact.config import UserConfig
+    (`GALAIUS_DEBUG_DIR`), the CLI looked for `<repo>/out/agents.json` while the panel wrote
+    `~/.galaius/agents.json`."""
+    from galaius.agents.policy import policy_path
+    from galaius.config import UserConfig
 
     if debug_dir is None:
-        monkeypatch.delenv("INTERACT_DEBUG_DIR", raising=False)
+        monkeypatch.delenv("GALAIUS_DEBUG_DIR", raising=False)
     else:
-        monkeypatch.setenv("INTERACT_DEBUG_DIR", debug_dir)
+        monkeypatch.setenv("GALAIUS_DEBUG_DIR", debug_dir)
     assert _extension_policy_path(tmp_path) == policy_path()
     assert policy_path().parent == UserConfig.PATH.parent

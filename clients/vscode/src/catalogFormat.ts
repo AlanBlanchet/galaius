@@ -37,7 +37,7 @@ export function describeAge(seconds: number): string {
   return `${Math.floor(seconds / 86400)}d ago`;
 }
 
-/** The models interact could actually drive a UI with: it works by LOOKING, so a model that
+/** The models galaius could actually drive a UI with: it works by LOOKING, so a model that
  *  can't take an image is not a candidate however cheap or large it is.
  *
  *  A filter only — no ordering, no cap. Used to also sort by context length and slice, making

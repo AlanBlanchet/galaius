@@ -3,7 +3,7 @@ VLM/AT-SPI element fusion (geometry from AT-SPI, role/name kept from the VLM det
 
 import pytest
 
-from interact.desktop import CoordTransform, DesktopElement
+from galaius.desktop import CoordTransform, DesktopElement
 
 
 def make_element(

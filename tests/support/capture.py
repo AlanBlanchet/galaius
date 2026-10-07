@@ -1,4 +1,4 @@
-"""Stubbing `interact.server.capture`'s async entry points with fixed data."""
+"""Stubbing `galaius.server.capture`'s async entry points with fixed data."""
 
 from __future__ import annotations
 

@@ -1,11 +1,11 @@
-# interact project instructions
+# galaius project instructions
 
 Canonical project rules. Provider files point here. Say nothing the code already enforces or the
 durable paradigms already carry — `bs-detector` verdicts an edit here before it lands.
 
 ## Product model
 
-`interact` gives an agent eyes and hands. Its surfaces, none of them primary:
+`galaius` gives an agent eyes and hands. Its surfaces, none of them primary:
 
 - MCP server — for agents working in code.
 - CLI — terminal workflows.
@@ -20,17 +20,17 @@ Client and server:
 - The hosted server consumes a released public schema version and is never imported here. This
   repository never names or describes it beyond that.
 - User feedback arrives as GitHub issues on the public repo — `.github/ISSUE_TEMPLATE/` shapes the
-  human ones, interact's own `report_issue` tool files the agent ones.
+  human ones, galaius's own `report_issue` tool files the agent ones.
 
-Ownership (short names map to the standalone `../interact-core` checkout and `src/interact`):
+Ownership (short names map to the standalone `../galaius-core` checkout and `src/galaius`):
 
-- `interact-core` — provider-independent contracts and generated API models shared by every surface.
+- `galaius-core` — provider-independent contracts and generated API models shared by every surface.
   Source of truth for tool APIs, schemas and payloads; the tool docstrings carry the behaviour. An
-  old parameter or tool name survives only if `interact-core` still declares it.
+  old parameter or tool name survives only if `galaius-core` still declares it.
 Tool target routing is defined by `_instructions()` in
-`src/interact/server/core.py` and individual tool docstrings.
+`src/galaius/server/core.py` and individual tool docstrings.
 
-- `src/interact` — the local implementation: `server` (service lifecycle, target resolution,
+- `src/galaius` — the local implementation: `server` (service lifecycle, target resolution,
   capture, analysis dispatch, tool surfaces), `desktop` (isolated displays, input, windows,
   coordinates, recording, accessibility), `cli`, and `config` (typed settings plus the schema every
   front end reads).
@@ -42,7 +42,7 @@ Tool target routing is defined by `_instructions()` in
 
 The server is the only source of truth for personal prompts and agent configuration.
 Clients read and write through its APIs; local catalogs and installed provider files are derived
-caches. Preserve `${XDG_DATA_HOME:-~/.local/share}/interact/prompts` and its Git history as recovery
+caches. Preserve `${XDG_DATA_HOME:-~/.local/share}/galaius/prompts` and its Git history as recovery
 evidence only. `prompts/` in this repository holds distributable defaults. After server save, update affected agent bindings to returned revisions before syncing; follow librarian’s authenticated read/save/bind/sync workflow.
 
 ## Team
@@ -56,7 +56,7 @@ evidence only. `prompts/` in this repository holds distributable defaults. After
 A change crossing an external seam — server, provider API, prompt sync, browser/desktop tools,
 extension host, audio/video paths — needs one real integration check.
 
-A user-facing interaction claim needs rendered evidence, in this order: an interact target surface
+A user-facing interaction claim needs rendered evidence, in this order: a galaius target surface
 in an isolated target, a nested display capture, a browser/WebView capture with the interaction
 exercised. If the environment cannot produce one, record the blocker and leave the claim open.
 

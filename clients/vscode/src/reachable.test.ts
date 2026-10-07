@@ -28,11 +28,11 @@ test("every command the manifest advertises is actually implemented", () => {
 
 /** Commands invoked only in code, never by a person.
  *
- *  Each takes an argument that a palette entry could not supply — `interact.agents.chat` needs a
+ *  Each takes an argument that a palette entry could not supply — `galaius.agents.chat` needs a
  *  run id — so declaring them would put a broken row in the command palette. Listed explicitly so
  *  that "internal" is a decision someone made, not a manifest entry someone forgot.
  */
-const INTERNAL = ["interact.agents.chat"];
+const INTERNAL = ["galaius.agents.chat"];
 
 test("every command the extension implements is reachable, or explicitly internal", () => {
   const hidden = registered.filter((c) => !declared.includes(c) && !INTERNAL.includes(c));
@@ -48,9 +48,9 @@ test("the workspace switcher is reachable from the panel's title bar", () => {
   // The specific one he could not reach: "i can't change the workspace... i have agents in the
   // 'sheets' folder elsewhere, and i can't change and see how they work."
   const menus = manifest.contributes.menus["view/title"] ?? [];
-  const entry = menus.find((m: { command: string }) => m.command === "interact.agents.workspace");
+  const entry = menus.find((m: { command: string }) => m.command === "galaius.agents.workspace");
   assert.ok(entry, "no title-bar button, so the only way in is the command palette");
-  assert.match(entry.when, /interactAgents\.board/);
+  assert.match(entry.when, /galaiusAgents\.board/);
 });
 
 test("every slash command in the chat invokes a command that exists", () => {

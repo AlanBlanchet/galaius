@@ -16,11 +16,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from interact.agents import registry as reg
-from interact.agents.providers import PROVIDERS, PermissionMode, UnsupportedToolPolicy
+from galaius.agents import registry as reg
+from galaius.agents.providers import PROVIDERS, PermissionMode, UnsupportedToolPolicy
 from tests.support.agents import ScriptedProvider, register_run, use_policy
-from interact.agents import quota
-from interact.agents.run import (
+from galaius.agents import quota
+from galaius.agents.run import (
     ModelUnavailable,
     _quota_probe as quota_probe,
     _child_output,
@@ -31,10 +31,10 @@ from interact.agents.run import (
     rank_candidates,
     run_agent,
 )
-from interact.criteria import ValueRule
-from interact.models import Benchmark
-import interact.server.tools_agents as tools_agents
-from interact.cli import app_commands as cli
+from galaius.criteria import ValueRule
+from galaius.models import Benchmark
+import galaius.server.tools_agents as tools_agents
+from galaius.cli import app_commands as cli
 from tests.support.models import catalog_of, model
 
 CRITERION = "cap.vlm and price.in >= 0"
@@ -93,8 +93,8 @@ def team(monkeypatch, tmp_path):
         cls.logged_in = True
         cls.probes = 0
         cls.last_timeout = None
-    monkeypatch.setattr("interact.agents.providers.PROVIDERS", {"alpha": alpha, "beta": beta})
-    monkeypatch.setattr("interact.agents.run.PROVIDERS", {"alpha": alpha, "beta": beta})
+    monkeypatch.setattr("galaius.agents.providers.PROVIDERS", {"alpha": alpha, "beta": beta})
+    monkeypatch.setattr("galaius.agents.run.PROVIDERS", {"alpha": alpha, "beta": beta})
     monkeypatch.setattr(reg, "PROVIDERS", {"alpha": alpha, "beta": beta})
     use_policy(monkeypatch, agents={"tester": CRITERION}, reasoning={"tester": "medium"})
     with catalog_of(
@@ -354,8 +354,8 @@ async def test_a_quota_refusal_falls_through_to_the_next_candidate(team, tmp_pat
     the SAME criterion and records which candidate it used and why the first was skipped."""
     alpha, beta = team
     refusing = _QuotaRefusing()
-    monkeypatch.setattr("interact.agents.run.PROVIDERS", {"alpha": alpha, "beta": refusing})
-    monkeypatch.setattr("interact.agents.providers.PROVIDERS", {"alpha": alpha, "beta": refusing})
+    monkeypatch.setattr("galaius.agents.run.PROVIDERS", {"alpha": alpha, "beta": refusing})
+    monkeypatch.setattr("galaius.agents.providers.PROVIDERS", {"alpha": alpha, "beta": refusing})
     monkeypatch.setattr(reg, "PROVIDERS", {"alpha": alpha, "beta": refusing})
     run = await run_agent(None, "t", agent="tester", cwd=str(tmp_path), mesh=False)
     await asyncio.wait_for(run.wait(), 30)
@@ -399,7 +399,7 @@ def _turn(model: str, text: str = "on it") -> dict:
 def test_the_startup_probe_reads_only_what_the_vendor_says(tmp_path, monkeypatch, lines, verdict, answered):
     """A child that read the launcher's code or a brief must not be killed as « refused »; only a
     turn the model wrote ends the look early."""
-    monkeypatch.setenv("INTERACT_AGENTS_DIR", str(tmp_path / "agents"))
+    monkeypatch.setenv("GALAIUS_AGENTS_DIR", str(tmp_path / "agents"))
     path = reg.raw_events_path("probe")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(json.dumps(line, ensure_ascii=False) + "\n"
@@ -410,7 +410,7 @@ def test_the_startup_probe_reads_only_what_the_vendor_says(tmp_path, monkeypatch
 
 @pytest.mark.asyncio
 async def test_a_refusal_after_an_allowed_line_is_still_caught_by_a_live_probe(tmp_path, monkeypatch):
-    monkeypatch.setenv("INTERACT_AGENTS_DIR", str(tmp_path / "agents"))
+    monkeypatch.setenv("GALAIUS_AGENTS_DIR", str(tmp_path / "agents"))
     raw = reg.raw_events_path("probe-live")
     raw.parent.mkdir(parents=True, exist_ok=True)
     raw.write_text(json.dumps(_ALLOWED_5H) + "\n")
@@ -483,7 +483,7 @@ class _ClaudeNamed(_Cli):
 async def test_a_terminal_launch_waits_longer_for_the_vendors_refusal(tmp_path, monkeypatch):
     """`run_agent` returns as soon as the child is alive — four seconds, less than a vendor takes
     to answer "you've reached your limit", so the fall-through never sees the refusal. A human
-    watching `interact agents spawn` can afford that wait; the supervisor cannot, so the longer
+    watching `galaius agents spawn` can afford that wait; the supervisor cannot, so the longer
     window belongs to the CLI and the short one stays the default."""
     seen = {}
 
@@ -505,7 +505,7 @@ async def test_the_launch_hands_its_window_to_the_probe(team, tmp_path, monkeypa
         seen["window"] = window
         return None
 
-    monkeypatch.setattr("interact.agents.run._quota_probe", probe)
+    monkeypatch.setattr("galaius.agents.run._quota_probe", probe)
     run = await run_agent(None, "t", agent="tester", cwd=str(tmp_path), mesh=False, quota_window=0.05)
     await asyncio.wait_for(run.wait(), 30)
     assert seen["window"] == 0.05
@@ -522,8 +522,8 @@ async def test_a_second_candidate_of_the_same_vendor_gets_its_own_session_id(tea
     (definitions / "tester.md").write_text("---\nname: tester\n---\nBe skeptical.\n", encoding="utf-8")
     vendor = _ClaudeNamed()
     _ClaudeNamed.sessions = []
-    monkeypatch.setattr("interact.agents.run.PROVIDERS", {"claude": vendor})
-    monkeypatch.setattr("interact.agents.providers.PROVIDERS", {"claude": vendor})
+    monkeypatch.setattr("galaius.agents.run.PROVIDERS", {"claude": vendor})
+    monkeypatch.setattr("galaius.agents.providers.PROVIDERS", {"claude": vendor})
     monkeypatch.setattr(reg, "PROVIDERS", {"claude": vendor})
     run = await run_agent(None, "t", agent="tester", cwd=str(tmp_path), mesh=False)
     await asyncio.wait_for(run.wait(), 30)
@@ -648,7 +648,7 @@ async def test_coarse_tool_policy_acceptance_is_per_role_per_provider_never_a_de
 async def test_a_failure_after_launch_is_the_runs_outcome_not_a_retry(team, tmp_path, monkeypatch):
     crashing = _Crashing()
     monkeypatch.setitem(PROVIDERS, "alpha", crashing)
-    monkeypatch.setattr("interact.agents.run.PROVIDERS", {"alpha": crashing})
+    monkeypatch.setattr("galaius.agents.run.PROVIDERS", {"alpha": crashing})
     monkeypatch.setitem(reg.PROVIDERS, "alpha", crashing)
     spawned = []
     original = asyncio.create_subprocess_exec
@@ -707,10 +707,10 @@ async def test_mcp_spawn_defaults_to_the_ranked_choice(monkeypatch):
 
 
 def test_cli_spawn_defaults_to_the_ranked_choice(monkeypatch):
-    # `interact.cli.app` is both a module and the re-exported App object; the command reads the
+    # `galaius.cli.app` is both a module and the re-exported App object; the command reads the
     # runner off the MODULE, so import it explicitly rather than by attribute access.
     commands = cli
-    cli_module = importlib.import_module("interact.cli.app")
+    cli_module = importlib.import_module("galaius.cli.app")
     seen = []
     monkeypatch.setattr(cli_module, "_run_agent_for_cli", _capture(seen), raising=False)
     with pytest.raises(SystemExit):

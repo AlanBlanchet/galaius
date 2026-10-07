@@ -8,7 +8,7 @@ VS Code discovers workspace-level customizations from four `.github/` subfolders
   .github/skills/             <name>/SKILL.md
 
 Those folders are gitignored — they are per-developer, never committed. Any developer who
-clones interact points this script at THEIR OWN prompts store and gets their own set; the
+clones galaius points this script at THEIR OWN prompts store and gets their own set; the
 default points at each user's live VS Code prompt folder (already synced from their own
 source of truth, so a `skillshare`-style store only enters the picture via --source):
 
@@ -44,7 +44,7 @@ _MANIFEST = REPO_ROOT / ".github" / "agents" / ".sync-prompts.json"
 def default_source(system: str | None = None, home: Path | None = None) -> Path:
     """This machine's VS Code user prompt folder.
 
-    Per-platform, because interact ships on all three and its CI drives real GUI sessions on macOS
+    Per-platform, because galaius ships on all three and its CI drives real GUI sessions on macOS
     and Windows. A hard-coded `~/.config/...` told a teammate on either that their own prompts store
     did not exist — and the project's own `vscode-sync.sh` already knew the per-platform paths, so
     this is following a convention that was already here rather than inventing one.

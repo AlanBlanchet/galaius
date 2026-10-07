@@ -1,5 +1,5 @@
 """A script starts a server workflow, gets the hand back when it ends, and continues with its
-outputs — through the SDK (`interact.Client` / `AsyncClient`) and the CLI (`interact workflows`)."""
+outputs — through the SDK (`galaius.Client` / `AsyncClient`) and the CLI (`galaius workflows`)."""
 
 import asyncio
 import hashlib
@@ -10,14 +10,14 @@ from uuid import UUID, uuid4
 
 import httpx
 import pytest
-from interact_core import ArtifactRef, TriggerInvocation, WorkflowEvent, WorkflowRevision, WorkflowRun
-from interact_core.accounts import Account, Bootstrap, Workspace
+from galaius_core import ArtifactRef, TriggerInvocation, WorkflowEvent, WorkflowRevision, WorkflowRun
+from galaius_core.accounts import Account, Bootstrap, Workspace
 
-from interact.agents.catalog_connection import CatalogConnection, CatalogConnectionError
-from interact.cli.app import app as cli
-from interact.client import AsyncClient, Client
-from interact.config import UserConfig
-from interact.workflows import WorkflowNotFound, WorkflowRunFailed
+from galaius.agents.catalog_connection import CatalogConnection, CatalogConnectionError
+from galaius.cli.app import app as cli
+from galaius.client import AsyncClient, Client
+from galaius.config import UserConfig
+from galaius.workflows import WorkflowNotFound, WorkflowRunFailed
 
 REPORT = b"quarterly report\n"
 

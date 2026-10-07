@@ -17,7 +17,7 @@ const runs = [
   { run_id: "d", cost_usd: 0.5, status: "foreign", foreign: true },
 ] as AgentRun[];
 
-test("the team total is what interact actually spawned", () => {
+test("the team total is what galaius actually spawned", () => {
   // A foreign run is the user's own editor session — real money, but not this team's, and
   // counting it would inflate every share below it.
   const s = teamSpend(runs, "a");

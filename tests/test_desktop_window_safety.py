@@ -13,7 +13,7 @@
 
 import pytest
 
-from interact.desktop import DesktopElement, DesktopWindow
+from galaius.desktop import DesktopElement, DesktopWindow
 from tests.support.desktop import desktop_window
 
 

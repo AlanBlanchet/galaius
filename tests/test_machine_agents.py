@@ -16,22 +16,22 @@ import hmac
 import logging
 import time
 
-from interact_core import MACHINE_AGENT_REQUESTS, MachineAgentModel, MachineAgentRequest, MachineAgentSettings, MachineAgentSettingsUpdate, MachineWorkspaceJob
-from interact.agents import registry as reg
-from interact.agents.host import ConversationRefused
-from interact.machine_agents import LogRing, MachineAgents, MachineSessions, WebRun, WebRuns, interaction_digest, redact
-from interact.fence import FenceSpec
-from interact.machines import MachineConfig, MachineRunner
-from interact.machine_workspaces import CloneFailure, Git, MachineWorkspaces, WorkspaceJobs
-from interact.agents.providers import PROJECT_SETTINGS_OFF
-from interact.place_reviews import PlaceReviews
-from interact.project_secrets import MARKER, ProjectEnv
-from interact_core.sealing import SecretsSeal
+from galaius_core import MACHINE_AGENT_REQUESTS, MachineAgentModel, MachineAgentRequest, MachineAgentSettings, MachineAgentSettingsUpdate, MachineWorkspaceJob
+from galaius.agents import registry as reg
+from galaius.agents.host import ConversationRefused
+from galaius.machine_agents import LogRing, MachineAgents, MachineSessions, WebRun, WebRuns, interaction_digest, redact
+from galaius.fence import FenceSpec
+from galaius.machines import MachineConfig, MachineRunner
+from galaius.machine_workspaces import CloneFailure, Git, MachineWorkspaces, WorkspaceJobs
+from galaius.agents.providers import PROJECT_SETTINGS_OFF
+from galaius.place_reviews import PlaceReviews
+from galaius.project_secrets import MARKER, ProjectEnv
+from galaius_core.sealing import SecretsSeal
 
 
 @pytest.fixture
 def base(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.setenv("INTERACT_AGENTS_DIR", str(tmp_path / "registry"))
+    monkeypatch.setenv("GALAIUS_AGENTS_DIR", str(tmp_path / "registry"))
     root = tmp_path / "dev"
     for folder in ("interact-files", "project/src/deep", "project/.secret", "other"):
         (root / folder).mkdir(parents=True)
@@ -160,8 +160,8 @@ PNG = b"\x89PNG\r\n\x1a\n" + b"\0" * 32
 def test_a_run_image_is_served_only_when_its_own_step_names_a_plain_image(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str, served: str | None) -> None:
     """Deny by default: the web asks by key, never by path; the PC serves only an image file a tool step
     of THAT web run wrote down — with agents switched off too (reading what ran stays possible)."""
-    import interact.machine_agents as machine_agents
-    from interact_core import media_key
+    import galaius.machine_agents as machine_agents
+    from galaius_core import media_key
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     monkeypatch.setattr(machine_agents, "MACHINE_AGENT_MEDIA", 64)
     agents = _agents(base, tmp_path, run_agents=False)
@@ -260,8 +260,8 @@ def test_logs_and_run_output_never_show_credentials() -> None:
     assert not any(secret in shown for secret in ("hunter22", "abc.def", "0123456789abcdef", "ABCDEFGHIJKLMNOP", "MYSECRETVALUE"))
     ring = LogRing(keep=2)
     for index in range(3):
-        logging.getLogger("interact.machines").addHandler(ring)
-        logging.getLogger("interact.machines").warning("line %d with iwk_0123456789abcdef", index)
+        logging.getLogger("galaius.machines").addHandler(ring)
+        logging.getLogger("galaius.machines").warning("line %d with iwk_0123456789abcdef", index)
         logging.getLogger("websockets.client").warning("header Authorization: Bearer leaked")
     assert len(ring.lines) == 2 and all("0123456789abcdef" not in line and "leaked" not in line for line in ring.lines)
 
@@ -287,7 +287,7 @@ def test_editor_conversations_are_listed_only_inside_agent_roots_and_continue_as
     listed = _answer(agents, _request("sessions")).sessions
     assert [(item.session_id, item.root, item.path, item.title, item.last, item.live) for item in listed] == [(inside, "project", "src", "Fix the header", "Header fixed.", False)]
     turns = []
-    monkeypatch.setattr("interact.machine_agents.launch_editor_turn", lambda provider, run, text, *, environment, fork_from=None: turns.append((run.cwd, text, fork_from, run.permission_mode)))
+    monkeypatch.setattr("galaius.machine_agents.launch_editor_turn", lambda provider, run, text, *, environment, fork_from=None: turns.append((run.cwd, text, fork_from, run.permission_mode)))
     started = _answer(agents, _request("continue", session_id=str(inside), text="- and the footer"))
     assert turns == [(str(base.resolve() / "project" / "src"), "- and the footer", str(inside), "workspace_write")]
     assert agents.runs.read()[-1].kind == "continued" and agents.runs.read()[-1].run_id == started.run_id
@@ -359,7 +359,7 @@ def test_a_message_to_a_session_on_its_turn_waits_for_the_turn_to_end(tmp_path: 
 def test_a_continued_copy_stops_taking_turns_once_the_opt_in_is_off(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     on = _agents(base, tmp_path, continue_conversations=True).model_copy(update={"editor_projects": tmp_path / "projects"})
     _, editor = _editor(tmp_path, base, base / "project")
-    monkeypatch.setattr("interact.machine_agents.launch_editor_turn", lambda *args, **kwargs: None)
+    monkeypatch.setattr("galaius.machine_agents.launch_editor_turn", lambda *args, **kwargs: None)
     copy = _answer(on, _request("continue", session_id=str(editor), text="go"))
     reg.finish(str(copy.run_id), exit_code=0)
     off = on.model_copy(update={"continue_conversations": False})
@@ -372,7 +372,7 @@ def test_a_failed_first_turn_never_leaves_the_copy_running(base: Path, tmp_path:
     _, editor = _editor(tmp_path, base, base / "project")
     def refuse(*args, **kwargs):
         raise OSError("claude is not installed")
-    monkeypatch.setattr("interact.machine_agents.launch_editor_turn", refuse)
+    monkeypatch.setattr("galaius.machine_agents.launch_editor_turn", refuse)
     with pytest.raises(OSError):
         _answer(agents, _request("continue", session_id=str(editor), text="go"))
     assert [run.status for run in _answer(agents, _request("runs")).runs] == ["failed"]
@@ -390,7 +390,7 @@ def test_questions_of_a_turn_that_ended_are_no_longer_waiting(monkeypatch: pytes
 def test_a_continued_copy_opens_with_the_editor_history(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     agents = _agents(base, tmp_path, continue_conversations=True).model_copy(update={"editor_projects": tmp_path / "projects"})
     _, editor = _editor(tmp_path, base, base / "project")
-    monkeypatch.setattr("interact.machine_agents.launch_editor_turn", lambda *args, **kwargs: None)
+    monkeypatch.setattr("galaius.machine_agents.launch_editor_turn", lambda *args, **kwargs: None)
     copy = _answer(agents, _request("continue", session_id=str(editor), text="go"))
     lines = [json.loads(line) for line in _answer(agents, _request("tail", run_id=str(copy.run_id))).lines]
     assert [(line["kind"], line["text"]) for line in lines][:2] == [("prompt", "Fix the header"), ("text", "Header fixed.")]
@@ -405,7 +405,7 @@ def test_codex_conversations_of_the_owner_continue_as_a_session_copy(base: Path,
     class Host:
         async def threads(self, route):
             return [{"id": owners, "preview": "Plan the page", "cwd": str(base / "project"), "originator": "codex_vscode", "updatedAt": 100},
-                    {"id": ours, "preview": "Run ls", "cwd": str(base / "project"), "originator": "interact", "updatedAt": 200},
+                    {"id": ours, "preview": "Run ls", "cwd": str(base / "project"), "originator": "galaius", "updatedAt": 200},
                     {"id": str(uuid4()), "preview": "elsewhere", "cwd": str(base / "other"), "originator": "codex_cli_rs", "updatedAt": 300}]
 
         async def fork(self, thread_id, prompt, workspace, *, route_id, model):
@@ -456,8 +456,8 @@ def test_settings_carry_each_tool_rule_as_the_pc_resolves_it(base: Path, tmp_pat
 
 
 def test_a_rule_that_cannot_be_read_says_why_instead_of_resolving(monkeypatch: pytest.MonkeyPatch) -> None:
-    from interact.cli import app_commands
-    from interact.config import Config
+    from galaius.cli import app_commands
+    from galaius.config import Config
 
     class Settings:  # the runtime proxy's surface, without reading this computer's account
         inner = Config(audio_criteria="cap.not_a_capability")
@@ -644,7 +644,7 @@ def _fenced_agents(base: Path, tmp_path: Path, cli: tuple[str, ...], **levels) -
 
 
 def test_with_the_fence_on_a_web_start_carries_the_spec_its_turns_are_fenced_by(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("interact.machine_agents.available", lambda: (True, ""))
+    monkeypatch.setattr("galaius.machine_agents.available", lambda: (True, ""))
     held = tmp_path / "fence.json"
     recorder = ("python3", "-c", f"import shutil,sys; shutil.copy(sys.argv[sys.argv.index('--fence') + 1], {str(held)!r}); print({str(uuid4())!r})")
     agents = _fenced_agents(base, tmp_path, recorder, project="write", other="read")
@@ -658,14 +658,14 @@ def test_with_the_fence_on_a_web_start_carries_the_spec_its_turns_are_fenced_by(
 
 def test_with_the_fence_on_an_agent_folder_never_opens_on_its_own(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The agent folder gets no level the owner did not set (it used to open as Write)."""
-    monkeypatch.setattr("interact.machine_agents.available", lambda: (True, ""))
+    monkeypatch.setattr("galaius.machine_agents.available", lambda: (True, ""))
     agents = _fenced_agents(base, tmp_path, ("false",), other="read")
     with pytest.raises(PermissionError, match="no level opens project"):
         _answer(agents, _request("start", root="project", role="app-engineer", text="tidy"))
 
 
 def test_with_the_fence_on_an_agent_never_starts_unfenced(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("interact.machine_agents.available", lambda: (False, "bubblewrap (bwrap) is not installed"))
+    monkeypatch.setattr("galaius.machine_agents.available", lambda: (False, "bubblewrap (bwrap) is not installed"))
     agents = _fenced_agents(base, tmp_path, ("false",))
     with pytest.raises(PermissionError, match="cannot be built: bubblewrap"):
         _answer(agents, _request("start", root="project", role="app-engineer", text="tidy"))
@@ -675,7 +675,7 @@ def test_with_the_fence_on_an_agent_never_starts_unfenced(base: Path, tmp_path: 
 
 
 def test_in_a_write_after_review_folder_the_agent_works_in_a_staging_copy(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("interact.machine_agents.available", lambda: (True, ""))
+    monkeypatch.setattr("galaius.machine_agents.available", lambda: (True, ""))
     held = tmp_path / "fence.json"
     run_id = uuid4()
     recorder = ("python3", "-c", f"import shutil,sys; shutil.copy(sys.argv[sys.argv.index('--fence') + 1], {str(held)!r}); print({str(run_id)!r})")

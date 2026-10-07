@@ -12,7 +12,7 @@ of a window positioned partly off-screen.
 
 import pytest
 
-from interact.desktop.nested import NestedBackend
+from galaius.desktop.nested import NestedBackend
 
 
 @pytest.fixture
@@ -58,7 +58,7 @@ def test_a_window_bigger_than_the_screen_still_records(backend, monkeypatch):
 
         return R()
 
-    monkeypatch.setattr("interact.desktop.nested.subprocess.run", fake_run)
+    monkeypatch.setattr("galaius.desktop.nested.subprocess.run", fake_run)
     data = backend.capture_video("Calculator", duration=1.0, fps=10)
     assert data == b"\x00" * 32
     assert "520x460" in captured["args"], f"grab region not clamped: {captured['args']}"

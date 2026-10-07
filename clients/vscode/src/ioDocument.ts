@@ -7,7 +7,7 @@
  *  activityDocument.ts (an untitled document would nag about saving a log nobody wrote).
  */
 
-export const IO_SCHEME = "interact-agent-io";
+export const IO_SCHEME = "galaius-agent-io";
 
 export type IoSide = "in" | "out";
 

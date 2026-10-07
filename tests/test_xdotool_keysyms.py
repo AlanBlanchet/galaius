@@ -11,13 +11,13 @@ a confusing failure mode" — and it is the more damaging half, because a silent
 indistinguishable from an app that ignored the key. The uinput backend accepts the lowercase
 names, so the SAME `key_press` argument works locally and disappears in the sandbox.
 
-Two fixes, both pinned here: translate the names interact accepts into real keysyms, and never let
+Two fixes, both pinned here: translate the names galaius accepts into real keysyms, and never let
 xdotool's ignore-and-succeed pass for success.
 """
 
 import pytest
 
-from interact.desktop.input import to_xdotool_key, XdotoolKeyError, check_xdotool_key_output
+from galaius.desktop.input import to_xdotool_key, XdotoolKeyError, check_xdotool_key_output
 
 
 @pytest.mark.parametrize(
@@ -36,7 +36,7 @@ from interact.desktop.input import to_xdotool_key, XdotoolKeyError, check_xdotoo
         ("pagedown", "Next"),
     ],
 )
-def test_the_names_interact_accepts_become_real_keysyms(given, expected):
+def test_the_names_galaius_accepts_become_real_keysyms(given, expected):
     assert to_xdotool_key(given) == expected
 
 

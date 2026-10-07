@@ -9,10 +9,10 @@
  *
  *      npx esbuild webview/workplace/dev/real.ts --bundle --outfile=/tmp/real.js \
  *        --format=cjs --platform=node --target=es2022
- *      HOME=/isolated/home node /tmp/real.js <outdir> [--project interact] [--discovered dump.json]
+ *      HOME=/isolated/home node /tmp/real.js <outdir> [--project galaius] [--discovered dump.json]
  *
  *  --project reproduces the panel's default scope (kind:"current" for the folder the user has
- *  open); omit it for "all workspaces". --discovered is a saved interact agents discovered
+ *  open); omit it for "all workspaces". --discovered is a saved galaius agents discovered
  *  stdout, merged exactly as ScopeStore.runs() merges it.
  */
 import { readFileSync, mkdirSync, writeFileSync } from "node:fs";

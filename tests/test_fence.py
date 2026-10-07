@@ -1,4 +1,4 @@
-"""The agent fence (`interact.fence`): an agent CLI started from this PC's levels sees only the
+"""The agent fence (`galaius.fence`): an agent CLI started from this PC's levels sees only the
 folders set to read or later, gets a private copy of its tool state, reaches only its model API
 through the runner's egress proxy, and cannot leave anything that runs later outside the fence
 (its run record, the owner's tool config, git hooks, editor / Claude settings). Every level is
@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from interact.fence import EgressProxy, FenceSpec, available
+from galaius.fence import EgressProxy, FenceSpec, available
 
 AGENT_HOSTS = ("api.anthropic.com",)
 
@@ -46,8 +46,8 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         ".claude/ide/50442.lock": "{\"authToken\": \"secret\"}",
         ".claude/projects/other-session/log.jsonl": "someone else's transcript",
         ".claude.json": "{\"mcpServers\": {}}",
-        ".interact/out/agents/run-1.json": "{\"fence\": \"recorded\"}",
-        ".interact/config.env": "OPENAI_API_KEY=x",
+        ".galaius/out/agents/run-1.json": "{\"fence\": \"recorded\"}",
+        ".galaius/config.env": "OPENAI_API_KEY=x",
     }
     for name, content in files.items():
         (home / name).parent.mkdir(parents=True, exist_ok=True)
@@ -72,7 +72,7 @@ def test_binds_follow_the_levels_and_nothing_else_of_home(home: Path, tmp_path: 
     binds = {(bind.source, bind.target, bind.writable) for bind in fence.binds}
     assert (home / "docs", home / "docs", False) in binds
     assert (tmp_path / "staging-review", home / "review", True) in binds  # writes land in the staging copy, never the folder
-    assert not any(bind.target in {home / "private", home / ".ssh", home, home / ".interact"} for bind in fence.binds)
+    assert not any(bind.target in {home / "private", home / ".ssh", home, home / ".galaius"} for bind in fence.binds)
 
 
 def test_a_write_on_review_folder_without_its_staging_copy_is_refused(home: Path, tmp_path: Path) -> None:
@@ -89,7 +89,7 @@ def test_the_desktop_and_session_sockets_are_unset_inside(home: Path, tmp_path: 
     command = _spec(home, tmp_path).build().command(["true"])
     for name in ("DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "SSH_AUTH_SOCK", "XDG_RUNTIME_DIR"):
         assert command[command.index(name) - 1] == "--unsetenv"
-    assert command[:4] == [sys.executable, "-m", "interact.fence", "outer"] and "--unshare-net" in command
+    assert command[:4] == [sys.executable, "-m", "galaius.fence", "outer"] and "--unshare-net" in command
 
 
 def test_each_turn_reads_the_levels_as_they_are_now(home: Path, tmp_path: Path) -> None:
@@ -180,8 +180,8 @@ print(json.dumps({
     "sandbox_top": attempt(write("sandbox/anything.txt")),
     "sandbox_git_hook": attempt(write("sandbox/app/.git/hooks/post-checkout")),
     "review_write": attempt(write("review/draft.txt", "edited")),
-    "run_record": attempt(write(".interact/out/agents/run-1.json", "{\"fence\": null}")),
-    "config_env": attempt(read(".interact/config.env")),
+    "run_record": attempt(write(".galaius/out/agents/run-1.json", "{\"fence\": null}")),
+    "config_env": attempt(read(".galaius/config.env")),
     "claude_json": attempt(write(".claude.json", "{\"mcpServers\": {\"x\": {\"command\": \"sh\"}}}")),
     "claude_settings": attempt(write(".claude/settings.json", "{\"hooks\": 1}")),
     "claude_bin": os.path.exists(os.path.join(home, ".claude/bin/claude-watch")),
@@ -226,13 +226,13 @@ def test_a_fenced_agent_cannot_leave_anything_that_runs_after_it(home: Path, tmp
     # Its run record is not there (a write lands in the fence's own empty home); what it wrote
     # to its tool config stays in its private copy. The owner's files are untouched.
     assert seen["claude_json"] == "ok" and json.loads((home / ".claude.json").read_text()) == {"mcpServers": {}}
-    assert (home / ".interact/out/agents/run-1.json").read_text() == "{\"fence\": \"recorded\"}"
+    assert (home / ".galaius/out/agents/run-1.json").read_text() == "{\"fence\": \"recorded\"}"
     assert (home / "work/app/src/main.py").read_text() == "print(2)\n" and (home / "review/draft.txt").read_text() == "draft"
     assert not (home / "work/app/.git/hooks/post-checkout").exists() and (home / "work/app/CLAUDE.md").read_text() == "the owner's instructions"
     # Steering files it created at the top of a writable folder or repository left the folder
     # for a review the owner reads on the PC.
     assert not any((home / name).exists() for name in ("work/CLAUDE.md", "work/.mcp.json", "work/app/.claude"))
-    from interact.place_reviews import PlaceReviews
+    from galaius.place_reviews import PlaceReviews
     held = {item.path for review in PlaceReviews(root=tmp_path / "reviews").list() for item in review.files}
     assert {"CLAUDE.md", ".mcp.json", "app/.claude/settings.json", "app/src/deep/CLAUDE.md"} <= held
     assert not (home / "work/app/src/deep/CLAUDE.md").exists()
@@ -246,8 +246,8 @@ async def test_a_fenced_launch_starts_inside_the_fence_and_its_run_keeps_the_spe
     from (the chosen candidate is registered twice: the second write must not drop it)."""
     import asyncio
 
-    from interact.agents import registry as reg
-    from interact.agents import run as run_module
+    from galaius.agents import registry as reg
+    from galaius.agents import run as run_module
     from tests.support.agents import install_provider, use_policy
     from tests.test_agent_run import _FakeProvider
 
@@ -259,5 +259,5 @@ async def test_a_fenced_launch_starts_inside_the_fence_and_its_run_keeps_the_spe
     spec = FenceSpec(working_directory=tmp_path, levels={"work": "write"}, start=tmp_path / "work", state=tmp_path / "state")
     run = await run_module.run_agent(_FakeProvider(), "t", agent="tester", name="w", cwd=str(tmp_path / "work"), fence=spec)
     await asyncio.wait_for(run.wait(), timeout=30)
-    assert started[0][:4] == [sys.executable, "-m", "interact.fence", "outer"]
+    assert started[0][:4] == [sys.executable, "-m", "galaius.fence", "outer"]
     assert reg.get_run(run.run_id).fence == spec

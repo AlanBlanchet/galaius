@@ -48,7 +48,7 @@ pos_file = sys.argv[1] if len(sys.argv) > 1 else None
 
 def main() -> None:
     root = tk.Tk()
-    root.title("interact-drag-window")  # xdotool search --name target
+    root.title("galaius-drag-window")  # xdotool search --name target
     root.overrideredirect(True)  # no WM needed: we are our own decoration
     root.geometry(GEOMETRY)
 

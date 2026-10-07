@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Scan MCP-client transcripts for real-world `interact` tool failures across all projects.
+"""Scan MCP-client transcripts for real-world `galaius` tool failures across all projects.
 
-`interact` is consumed by many projects as an MCP server; those clients (Claude Code) record
-every tool call + result under ~/.claude/projects. This surfaces the failures that interact's
+`galaius` is consumed by many projects as an MCP server; those clients (Claude Code) record
+every tool call + result under ~/.claude/projects. This surfaces the failures that galaius's
 own tests and the maintainer's runs never reproduce — run it BEFORE each iteration, not only
 when a bug is reported (see the "Dogfood Consumer Telemetry" coding rule).
 
@@ -26,7 +26,7 @@ import os
 import re
 from datetime import datetime, timedelta, timezone
 
-# Markers of an interact tool failure in the returned text (is_error already covers hard errors).
+# Markers of a galaius tool failure in the returned text (is_error already covers hard errors).
 _ERROR_MARKERS = (
     "ERROR:",
     "No window",
@@ -87,10 +87,10 @@ def _collect(root: str) -> tuple[dict, dict]:
                 if not isinstance(block, dict):
                     continue
                 if block.get("type") == "tool_use" and str(block.get("name", "")).startswith(
-                    "mcp__interact__"
+                    "mcp__galaius__"
                 ):
                     uses[block["id"]] = (
-                        block["name"].replace("mcp__interact__", ""),
+                        block["name"].replace("mcp__galaius__", ""),
                         block.get("input", {}),
                         project,
                         ts,
@@ -135,7 +135,7 @@ def main() -> int:
     else:
         since = (datetime.now(timezone.utc) - timedelta(hours=args.hours)).isoformat()
 
-    # Cover every surface a consumer runs interact from, and SAY which — a scan silently pointed at
+    # Cover every surface a consumer runs galaius from, and SAY which — a scan silently pointed at
     # one path manufactures false confidence that no consumer is failing. Claude Code (CLI and the
     # VS Code extension) both transcript to ~/.claude/projects; add more roots as clients gain them.
     roots = args.projects_root or _candidate_roots()
@@ -158,7 +158,7 @@ def main() -> int:
     recent = [(t, inp, proj, ts, *results.get(tid, ("", False))) for tid, (t, inp, proj, ts) in uses.items() if ts >= since]
 
     window = "all history" if args.all else f"since {since}"
-    print(f"interact tool calls ({window}): {len(recent)} across {len({r[2] for r in recent})} project(s)")
+    print(f"galaius tool calls ({window}): {len(recent)} across {len({r[2] for r in recent})} project(s)")
 
     grouped: dict[tuple, int] = collections.Counter()
     example: dict[tuple, tuple] = {}

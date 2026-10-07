@@ -4,13 +4,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from interact.config import LOG_MAXLEN
-from interact.state import InteractiveElement, PageState, _visible_text, ref_locator
+from galaius.config import LOG_MAXLEN
+from galaius.state import InteractiveElement, PageState, _visible_text, ref_locator
 from tests.support import browser_manager, interactive_element
 
 _ANNOTATE_JS = (
     Path(__file__).parents[1]
-    / "src" / "interact" / "js" / "annotate_elements.js"
+    / "src" / "galaius" / "js" / "annotate_elements.js"
 ).read_text()
 
 
@@ -66,7 +66,7 @@ def test_element_playwright_ref():
     el = InteractiveElement(
         index=1, ref="e42", role="button", name="x", x=0, y=0, width=10, height=10
     )
-    assert el.playwright_ref == '[data-interact-ref="e42"]'
+    assert el.playwright_ref == '[data-galaius-ref="e42"]'
 
 
 def test_element_center_coords():
@@ -81,7 +81,7 @@ def test_element_center_coords():
 
 
 def test_ref_locator():
-    assert ref_locator("e5") == '[data-interact-ref="e5"]'
+    assert ref_locator("e5") == '[data-galaius-ref="e5"]'
 
 
 # --- drain_network_log / drain_console_log ---
@@ -288,7 +288,7 @@ def test_chromium_launch_hides_automation_signals():
     """#69: Cloudflare & friends fingerprint the default automation flags. A chromium launch now
     drops --enable-automation and disables the AutomationControlled blink feature (navigator.webdriver)
     so a legitimate QA browse is less likely to be flagged. Non-chromium engines are untouched."""
-    from interact.browser import chromium_launch_kwargs
+    from galaius.browser import chromium_launch_kwargs
 
     kw = chromium_launch_kwargs("chromium", headless=True, slow_mo=0)
     assert "--disable-blink-features=AutomationControlled" in kw["args"]

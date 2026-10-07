@@ -4,13 +4,13 @@ import json
 
 from pydantic import TypeAdapter
 
-from interact.agents.events import AgentEvent
-from interact.agents.protocol import (
+from galaius.agents.events import AgentEvent
+from galaius.agents.protocol import (
     ConversationCommand,
     ConversationResponse,
     ConversationStreamEvent,
 )
-from interact.agents.registry import AgentRun
+from galaius.agents.registry import AgentRun
 
 SCHEMAS = {
     "ConversationCommand": TypeAdapter(ConversationCommand).json_schema(),

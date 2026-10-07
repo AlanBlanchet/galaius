@@ -11,8 +11,8 @@ the real page round-trip.
 
 import pytest
 
-from interact.actions import EvaluateJsAction, _wrap_js
-from interact.actions.dispatch import _render_js_result
+from galaius.actions import EvaluateJsAction, _wrap_js
+from galaius.actions.dispatch import _render_js_result
 
 
 @pytest.mark.parametrize(
@@ -143,7 +143,7 @@ def test_wrap_js_still_passes_anonymous_functions_untouched():
 def test_eval_js_type_and_code_field_alias():
     from pydantic import TypeAdapter
 
-    from interact.actions import AnyAction
+    from galaius.actions import AnyAction
 
     a = TypeAdapter(AnyAction).validate_python({"type": "eval_js", "code": "document.title"})
     assert isinstance(a, EvaluateJsAction)
@@ -154,7 +154,7 @@ def test_eval_js_type_and_code_field_alias():
 def test_canonical_evaluate_js_shape_unchanged():
     from pydantic import TypeAdapter
 
-    from interact.actions import AnyAction
+    from galaius.actions import AnyAction
 
     a = TypeAdapter(AnyAction).validate_python({"type": "evaluate_js", "script": "1+1"})
     assert isinstance(a, EvaluateJsAction) and a.script == "1+1"

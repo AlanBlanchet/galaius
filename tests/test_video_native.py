@@ -2,7 +2,7 @@
 Small clips go inline (Gemini `inline_data`); a clip too large for the inline request cap is
 uploaded to the Gemini Files API and sent by reference; everything else — non-Gemini providers
 (litellm has no inline-video transform and would silently drop the part), Vertex (needs a GCS
-bucket interact doesn't have), an upload failure, or a completion rejection — falls back to frame
+bucket galaius doesn't have), an upload failure, or a completion rejection — falls back to frame
 sampling, so video analysis is never worse than before."""
 
 import base64
@@ -11,10 +11,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-import interact.vision.core as vision
-from interact.config import Config
-from interact.vision import MediaItem, VLMResult
-from interact.vision.core import _build_media_content
+import galaius.vision.core as vision
+from galaius.config import Config
+from galaius.vision import MediaItem, VLMResult
+from galaius.vision.core import _build_media_content
 
 _RAW = b"\x00\x00\x00\x18ftypmp42"
 
@@ -85,7 +85,7 @@ async def test_oversized_gemini_clip_falls_back_to_frames_when_upload_fails(monk
 
 @pytest.mark.asyncio
 async def test_oversized_vertex_clip_samples_no_files_api(monkeypatch):
-    """Vertex's Files API needs a GCS bucket interact doesn't configure, so an over-cap Vertex clip
+    """Vertex's Files API needs a GCS bucket galaius doesn't configure, so an over-cap Vertex clip
     samples rather than attempting an upload."""
     monkeypatch.setattr(vision, "_NATIVE_VIDEO_MAX_BYTES", 8)
     monkeypatch.setattr(vision, "_extract_frames", AsyncMock(return_value=["F"]))

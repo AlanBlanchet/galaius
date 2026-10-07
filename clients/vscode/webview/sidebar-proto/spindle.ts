@@ -98,7 +98,7 @@ function tornEdge(steps = 13): string {
 function slip(d: Docket, depth: number, at: number, leadName: string | null): string {
   const fold = foldOf(d);
   // Only WORK can stall. A finished run's idle clock is just how long ago it ended, and a session
-  // interact did not start has no clock we own at all — sleeping either of them says the run is
+  // galaius did not start has no clock we own at all — sleeping either of them says the run is
   // stuck when it is simply over.
   const stalled = isHeld(d) ? 1 : 0;
   const stamp = stampFor(d);

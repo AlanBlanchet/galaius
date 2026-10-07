@@ -8,7 +8,7 @@ checked live, proving BOTH actions actually open a DOM Selection in a contentedi
 
 import pytest
 
-from interact.actions import DoubleClickAction, SelectTextAction
+from galaius.actions import DoubleClickAction, SelectTextAction
 
 
 @pytest.mark.parametrize("kwargs,ok", [({"ref": "e1"}, True), ({"selector": "#x"}, True), ({}, False)])

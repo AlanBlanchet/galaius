@@ -10,20 +10,20 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from interact.agents import registry as reg
-from interact.agents import run as run_module
-from interact.agents.providers import ClaudeCodeProvider, CodexProvider
+from galaius.agents import registry as reg
+from galaius.agents import run as run_module
+from galaius.agents.providers import ClaudeCodeProvider, CodexProvider
 from tests.support.agents import use_policy
-from interact.cli.app import app
-from interact.cli import app_commands
-from interact.server import tools_agents
-from interact.config import UserConfig
+from galaius.cli.app import app
+from galaius.cli import app_commands
+from galaius.server import tools_agents
+from galaius.config import UserConfig
 
 
 @pytest.fixture(autouse=True)
 def isolated_registry(tmp_path, monkeypatch):
-    monkeypatch.setattr(UserConfig, "PATH", tmp_path / ".interact" / "config.env")
-    for key in ("INTERACT_PARENT_RUN_ID", "INTERACT_SESSION_ID", *reg.CALLER_THREAD_ENV):
+    monkeypatch.setattr(UserConfig, "PATH", tmp_path / ".galaius" / "config.env")
+    for key in ("GALAIUS_PARENT_RUN_ID", "GALAIUS_SESSION_ID", *reg.CALLER_THREAD_ENV):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(reg, "_discover_foreign", lambda: [{"sessionId": "foreign-session", "name": "foreign-window", "cwd": "/same"}])
 
@@ -68,7 +68,7 @@ def test_missing_identity_never_means_global_and_foreign_requires_explicit_all(m
 
 def test_parent_owner_wins_and_conflicting_supplied_owner_is_rejected(monkeypatch):
     recorded("parent", "conversation-a")
-    monkeypatch.setenv("INTERACT_PARENT_RUN_ID", "parent")
+    monkeypatch.setenv("GALAIUS_PARENT_RUN_ID", "parent")
     assert reg.resolve_session_id() == "conversation-a"
     assert recorded("child").session_id == "conversation-a"
     with pytest.raises(ValueError, match="conflicts"):
@@ -79,7 +79,7 @@ def test_parent_owner_wins_and_conflicting_supplied_owner_is_rejected(monkeypatc
 @pytest.mark.parametrize("parent_id", ["old-parent", "missing-parent"])
 def test_child_harness_thread_cannot_invent_unknown_parent_owner(monkeypatch, parent_id):
     recorded("old-parent")
-    monkeypatch.setenv("INTERACT_PARENT_RUN_ID", parent_id)
+    monkeypatch.setenv("GALAIUS_PARENT_RUN_ID", parent_id)
     monkeypatch.setenv("CODEX_THREAD_ID", "child-vendor-thread")
     assert reg.resolve_session_id(cli_harness=True) is None
     assert reg.resolve_session_id("explicit-owner", cli_harness=True) == "explicit-owner"
@@ -117,7 +117,7 @@ async def test_concurrent_spawn_contexts_are_isolated_and_reset_on_exception():
 
 def test_provider_native_child_inherits_recorded_owner_not_readers_environment(monkeypatch):
     recorded("root", "conversation-a")
-    monkeypatch.setenv("INTERACT_SESSION_ID", "reader-b")
+    monkeypatch.setenv("GALAIUS_SESSION_ID", "reader-b")
     child = reg.upsert_provider_child(run_id="native", provider="claude", parent_run_id="root", root_run_id="root",
         spawned_by_event_id="event", cwd="/same", task="fixture", requested_model=None, status="running")
     assert child.session_id == "conversation-a"
@@ -156,7 +156,7 @@ async def test_mcp_spawn_records_explicit_scope_without_process_env_mutation(mon
     assert "Session: conversation-a" in first and "Session: conversation-b" in second
     assert reg.get_run("child-a").session_id == "conversation-a"
     assert reg.get_run("child-b").session_id == "conversation-b"
-    assert "INTERACT_SESSION_ID" not in os.environ
+    assert "GALAIUS_SESSION_ID" not in os.environ
 
 
 def test_cli_parser_scope_and_all_opt_in(capsys, monkeypatch):
@@ -196,11 +196,11 @@ def test_actual_cli_process_reads_scoped_registry_without_vendor_launch():
     recorded("visible-a", "conversation-a")
     for index in range(217):
         recorded(f"hidden-{index}", "conversation-b")
-    result = subprocess.run([str(Path(sys.executable).with_name("interact")), "agents", "list", "--session-id", "conversation-a"],
+    result = subprocess.run([str(Path(sys.executable).with_name("galaius")), "agents", "list", "--session-id", "conversation-a"],
                             capture_output=True, text=True, timeout=20)
     assert result.returncode == 0, result.stderr
     assert "visible-a" in result.stdout and "hidden-" not in result.stdout
-    command = [str(Path(sys.executable).with_name("interact")), "agents", "list"]
+    command = [str(Path(sys.executable).with_name("galaius")), "agents", "list"]
     missing = subprocess.run(command, capture_output=True, text=True, timeout=20)
     assert missing.returncode == 2 and "Session identity required" in missing.stderr
     assert "hidden-" not in missing.stdout
@@ -216,8 +216,8 @@ async def test_real_launcher_and_child_process_inherit_owner_through_recorded_pa
     monkeypatch.setattr(CodexProvider, "authenticated", AsyncMock(return_value=True))
     use_policy(monkeypatch, run_module, agents={"tester": "fixture-model"}, reasoning={"tester": "medium"})
     monkeypatch.setattr(run_module, "resolve_model", lambda model, env, **kwargs: ({}, model))
-    monkeypatch.setenv("INTERACT_SESSION_ID", "stale-launcher-conversation")
-    script = "import json; from interact.agents import registry; print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':registry.resolve_session_id()}}))"
+    monkeypatch.setenv("GALAIUS_SESSION_ID", "stale-launcher-conversation")
+    script = "import json; from galaius.agents import registry; print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':registry.resolve_session_id()}}))"
     monkeypatch.setattr(CodexProvider, "command", lambda self, *args, **kwargs: [sys.executable, "-c", script])
     with reg.session_context("conversation-a"):
         parent = await run_module.run_agent(provider, "fixture parent", agent="tester", cwd=str(tmp_path), mesh=False)

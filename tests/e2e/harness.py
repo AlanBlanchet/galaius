@@ -1,6 +1,6 @@
 """E2E harness — test-only result types + helpers.
 
-Provider/Model discovery lives in :mod:`interact.models`. This module
+Provider/Model discovery lives in :mod:`galaius.models`. This module
 deliberately holds nothing that duplicates a domain class from ``src/``.
 """
 
@@ -12,8 +12,8 @@ from typing import Any
 from dotenv import load_dotenv
 from pydantic import BaseModel
 
-from interact.models import Model, ModelCapability
-from interact.probe import Comparison, MatchedElement, UnmatchedElement
+from galaius.models import Model, ModelCapability
+from galaius.probe import Comparison, MatchedElement, UnmatchedElement
 
 load_dotenv()
 
@@ -25,9 +25,9 @@ __all__ = ["Comparison", "MatchedElement", "UnmatchedElement"]
 
 
 def ensure_registry_loaded() -> None:
-    """Populate the model registry from the catalog bundled in :mod:`interact.data`.
+    """Populate the model registry from the catalog bundled in :mod:`galaius.data`.
 
-    ``Model.load_registry`` already resolves ``INTERACT_MODELS_JSON`` (set by hosts)
+    ``Model.load_registry`` already resolves ``GALAIUS_MODELS_JSON`` (set by hosts)
     before falling back to the bundled ``models.json``, so tests need no path of their own.
     """
     if Model.registry():

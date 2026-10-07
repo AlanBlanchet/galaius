@@ -143,7 +143,7 @@ export interface SpawnChoice {
   detail?: string;
 }
 
-/** One provider reported by the installed interact CLI.
+/** One provider reported by the installed galaius CLI.
  *
  * This is deliberately separate from the prompt repo's `OrgProvider`: org.json says where a
  * role is designed to run, while this answer says which vendor CLI is installed and enabled now.
@@ -157,7 +157,7 @@ export interface AgentProviderStatus {
 
 const PROVIDER_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/;
 
-/** Parse the machine-readable `interact agents providers --json-out` response.
+/** Parse the machine-readable `galaius agents providers --json-out` response.
  *
  * Human provider output is intentionally not accepted here. It is a presentation surface and
  * its wording is allowed to change; using it as a protocol made a provider disappear silently.
@@ -238,7 +238,7 @@ export function spawnChoices(
  *  "definition-less" to match. Gives the panel the two things it needs: who coordinates, and
  *  which recorded names are merely a vendor's binary.
  *
- *  Null with no company file — interact works with no prompt repo, and then the provider is all
+ *  Null with no company file — galaius works with no prompt repo, and then the provider is all
  *  anyone knows.
  */
 export function companyOf(org: Org | null): { coordinator: { id: string; title: string }; binaries: string[] } | null {

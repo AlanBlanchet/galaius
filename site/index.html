@@ -3,15 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>interact — give your agent eyes and hands</title>
+<title>galaius — give your agent eyes and hands</title>
 <meta name="description" content="Browser and desktop automation for AI agents, over MCP. Vision-grounded control that reports what changed — not a screenshot. Works with Claude Code, Cursor, VS Code, Codex, Windsurf, Zed.">
 <meta name="theme-color" content="#0B0E14">
 <link rel="icon" href="assets/logo.svg" type="image/svg+xml">
 <meta property="og:type" content="website">
-<meta property="og:title" content="interact — give your agent eyes and hands">
+<meta property="og:title" content="galaius — give your agent eyes and hands">
 <meta property="og:description" content="Browser + desktop automation for AI agents, over MCP. Vision-grounded control that reports what changed, not a screenshot.">
-<meta property="og:url" content="https://alanblanchet.github.io/interact/">
-<meta property="og:image" content="https://alanblanchet.github.io/interact/assets/banner.png">
+<meta property="og:url" content="https://alanblanchet.github.io/galaius/">
+<meta property="og:image" content="https://alanblanchet.github.io/galaius/assets/banner.png">
 <meta name="twitter:card" content="summary_large_image">
 <style>
   :root{
@@ -200,18 +200,18 @@
 <nav><div class="wrap">
   <a class="brand" href="#top">
     <svg viewBox="0 0 64 64" aria-hidden="true"><g fill="none"><circle cx="32" cy="32" r="21" stroke="url(#g)" stroke-width="5"/><g stroke="url(#g)" stroke-width="5" stroke-linecap="round"><line x1="32" y1="3" x2="32" y2="12"/><line x1="32" y1="52" x2="32" y2="61"/><line x1="3" y1="32" x2="12" y2="32"/><line x1="52" y1="32" x2="61" y2="32"/></g><circle cx="32" cy="32" r="8.5" fill="url(#g)"/></g></svg>
-    interact
+    galaius
   </a>
   <div class="links">
     <a class="hideable" href="#capabilities">Capabilities</a>
     <a class="hideable" href="#demo">Demo</a>
     <a class="hideable" href="#quickstart">Quickstart</a>
-    <a class="btn ghost" href="https://github.com/AlanBlanchet/interact" target="_blank" rel="noopener">GitHub ↗</a>
+    <a class="btn ghost" href="https://github.com/AlanBlanchet/galaius" target="_blank" rel="noopener">GitHub ↗</a>
   </div>
 </div></nav>
 
 <header id="top"><div class="wrap">
-  <svg class="mark" viewBox="0 0 64 64" aria-label="interact">
+  <svg class="mark" viewBox="0 0 64 64" aria-label="galaius">
     <g fill="none">
       <circle class="ring" cx="32" cy="32" r="21" stroke="url(#g)" stroke-width="5"/>
       <g stroke="url(#g)" stroke-width="5" stroke-linecap="round">
@@ -228,12 +228,12 @@
   <p class="mcpline">// runs as an MCP server · plugs into any MCP client</p>
   <div class="cta">
     <a class="btn primary" href="#quickstart">Get started →</a>
-    <a class="btn ghost" href="https://github.com/AlanBlanchet/interact" target="_blank" rel="noopener">⭐ Star on GitHub</a>
+    <a class="btn ghost" href="https://github.com/AlanBlanchet/galaius" target="_blank" rel="noopener">⭐ Star on GitHub</a>
   </div>
   <div class="os center" data-os-install>
     <div class="install">
       <span class="dollar">$</span>
-      <code>curl -LsSf https://raw.githubusercontent.com/AlanBlanchet/interact/main/install.sh | sh</code>
+      <code>curl -LsSf https://raw.githubusercontent.com/AlanBlanchet/galaius/main/install.sh | sh</code>
       <button type="button" class="copy">Copy</button>
     </div>
   </div>
@@ -301,8 +301,8 @@
     <div class="card">
       <div class="ic"><svg viewBox="0 0 24 24"><path d="M9 2v6M15 2v6M7 8h10v4a5 5 0 0 1-10 0z"/><path d="M12 17v5"/></svg></div>
       <h3>Any MCP client</h3>
-      <p>One <code style="font-family:var(--mono);font-size:13px">interact install</code> registers the server with Claude Code, Cursor, VS Code, Codex, Windsurf, Zed, Claude Desktop.</p>
-      <div class="tools"><span class="chip">interact install</span></div>
+      <p>One <code style="font-family:var(--mono);font-size:13px">galaius install</code> registers the server with Claude Code, Cursor, VS Code, Codex, Windsurf, Zed, Claude Desktop.</p>
+      <div class="tools"><span class="chip">galaius install</span></div>
     </div>
     <div class="card">
       <div class="ic"><svg viewBox="0 0 24 24"><path d="M13 2L3 14h7l-1 8 10-12h-7z"/></svg></div>
@@ -320,7 +320,7 @@
     <p>No screenshot round-trips to burn your context — just what happened, in words.</p>
   </div>
   <div class="term">
-    <div class="bar"><i style="background:#FF5F57"></i><i style="background:#FEBC2E"></i><i style="background:#28C840"></i><span class="t">agent ▸ interact (MCP)</span></div>
+    <div class="bar"><i style="background:#FF5F57"></i><i style="background:#FEBC2E"></i><i style="background:#28C840"></i><span class="t">agent ▸ galaius (MCP)</span></div>
     <div class="body">
 <span class="call"><span class="fn">navigate</span>(<span class="str">"https://news.ycombinator.com"</span>)</span>
 <span class="out"><b>Hacker News</b> — 30 stories loaded. Top: "Show HN: a from-scratch autograd engine". 30 refs ready.</span>
@@ -342,31 +342,31 @@ FAIL — nav shows 3 tabs, not 4</span>
   <div class="shead">
     <span class="eyebrow">Three commands</span>
     <h2>Up and running in a minute</h2>
-    <p>Installs the global <code style="font-family:var(--mono)">interact</code> CLI, config TUI, and MCP server in one.</p>
+    <p>Installs the global <code style="font-family:var(--mono)">galaius</code> CLI, config TUI, and MCP server in one.</p>
   </div>
   <div class="steps">
     <div class="step">
       <h3>Install</h3>
       <div class="os" data-os-install>
         <div class="install">
-          <code>curl -LsSf https://raw.githubusercontent.com/AlanBlanchet/interact/main/install.sh | sh</code>
+          <code>curl -LsSf https://raw.githubusercontent.com/AlanBlanchet/galaius/main/install.sh | sh</code>
           <button type="button" class="copy">Copy</button>
         </div>
       </div>
-      <p>Or any platform: <code>uv tool install git+https://github.com/AlanBlanchet/interact</code></p>
+      <p>Or any platform: <code>uv tool install git+https://github.com/AlanBlanchet/galaius</code></p>
     </div>
     <div class="step">
       <h3>Connect your agent</h3>
-      <pre>interact install claude
+      <pre>galaius install claude
 # cursor · vscode · codex
 # windsurf · zed · claude-desktop</pre>
-      <p>Registers the MCP server with the client. <code>interact doctor</code> checks keys &amp; providers.</p>
+      <p>Registers the MCP server with the client. <code>galaius doctor</code> checks keys &amp; providers.</p>
     </div>
     <div class="step">
       <h3>Configure</h3>
-      <pre>interact          # config TUI
-interact status   # what's bound
-interact usage    # spend &amp; tokens</pre>
+      <pre>galaius          # config TUI
+galaius status   # what's bound
+galaius usage    # spend &amp; tokens</pre>
       <p>Set models &amp; keys in a terminal UI. Or leave models on <code>auto</code> — it picks a capable, cheaper-first model per job.</p>
     </div>
   </div>
@@ -382,7 +382,7 @@ interact usage    # spend &amp; tokens</pre>
     <thead><tr><th>Capability</th><th>Linux</th><th>macOS</th><th>Windows</th></tr></thead>
     <tbody>
       <tr><td>Browser · MCP server · CLI · TUI</td><td class="ok">✓</td><td class="ok">✓</td><td class="ok">✓</td></tr>
-      <tr><td>Install · <code>interact login</code> · background machine</td><td class="ok">✓<small>systemd user service</small></td><td class="ok">✓<small>install; the machine runs in a terminal (no background service yet)</small></td><td class="ok">✓<small>task at logon</small></td></tr>
+      <tr><td>Install · <code>galaius login</code> · background machine</td><td class="ok">✓<small>systemd user service</small></td><td class="ok">✓<small>install; the machine runs in a terminal (no background service yet)</small></td><td class="ok">✓<small>task at logon</small></td></tr>
       <tr><td>Desktop control (real windows)</td><td class="ok">✓</td><td class="soon">soon<small>Linux only today</small></td><td class="soon">soon<small>Linux only today</small></td></tr>
       <tr><td>Isolated sandbox (Xephyr/Xvfb)</td><td class="ok">✓</td><td class="soon">—</td><td class="soon">—</td></tr>
     </tbody>
@@ -392,22 +392,22 @@ interact usage    # spend &amp; tokens</pre>
 <footer><div class="wrap">
   <a class="brand" href="#top">
     <svg viewBox="0 0 64 64" aria-hidden="true"><g fill="none"><circle cx="32" cy="32" r="21" stroke="url(#g)" stroke-width="5"/><circle cx="32" cy="32" r="8.5" fill="url(#g)"/></g></svg>
-    interact
+    galaius
   </a>
   <div class="fl">
-    <a href="https://github.com/AlanBlanchet/interact" target="_blank" rel="noopener">GitHub</a>
-    <a href="https://github.com/AlanBlanchet/interact#readme" target="_blank" rel="noopener">Docs</a>
-    <a href="https://marketplace.visualstudio.com/items?itemName=AlanBlanchet.interact" target="_blank" rel="noopener">VS Code</a>
-    <a href="https://github.com/AlanBlanchet/interact/issues" target="_blank" rel="noopener">Report an issue</a>
+    <a href="https://github.com/AlanBlanchet/galaius" target="_blank" rel="noopener">GitHub</a>
+    <a href="https://github.com/AlanBlanchet/galaius#readme" target="_blank" rel="noopener">Docs</a>
+    <a href="https://marketplace.visualstudio.com/items?itemName=AlanBlanchet.galaius" target="_blank" rel="noopener">VS Code</a>
+    <a href="https://github.com/AlanBlanchet/galaius/issues" target="_blank" rel="noopener">Report an issue</a>
     <a href="https://modelcontextprotocol.io/" target="_blank" rel="noopener">MCP</a>
   </div>
   <div class="cr">MIT © Alan Blanchet · built to give agents eyes and hands.</div>
 </div></footer>
 
 <script>
-  // The install line per system (same tabs as the interact server's "Add a computer" step). A system
-  // with no line says where interact installs today; macOS shares the Linux script.
-  const RAW='https://raw.githubusercontent.com/AlanBlanchet/interact/main/';
+  // The install line per system (same tabs as the galaius server's "Add a computer" step). A system
+  // with no line says where galaius installs today; macOS shares the Linux script.
+  const RAW='https://raw.githubusercontent.com/AlanBlanchet/galaius/main/';
   const SYSTEMS={
     windows:{name:'Windows',line:`powershell -ExecutionPolicy ByPass -c "irm ${RAW}install.ps1 | iex"`,where:'Paste it in PowerShell: open the Start menu, type PowerShell, press Enter.',prompt:'PS>'},
     macos:{name:'macOS',line:`curl -LsSf ${RAW}install.sh | sh`,where:'Paste it in Terminal (Applications → Utilities).',prompt:'$'},
@@ -427,7 +427,7 @@ interact usage    # spend &amp; tokens</pre>
       `<button type="button" role="tab" class="os-tab" id="os-${n}-${k}" aria-controls="os-${n}-${k}-panel" data-os="${k}">${SYSTEMS[k].name}</button>`).join('')}</div>${ORDER.map(k=>{
       const s=SYSTEMS[k];
       const body=s.line?`<div class="install">${dollar?`<span class="dollar">${s.prompt}</span>`:''}<code>${tokens(s.line)}</code><button type="button" class="copy">Copy</button></div><p class="os-hint">${s.where}</p>`
-        :`<p class="os-hint">No installer for ${s.name} yet. interact installs on ${installs()} today.</p>`;
+        :`<p class="os-hint">No installer for ${s.name} yet. galaius installs on ${installs()} today.</p>`;
       return `<div role="tabpanel" id="os-${n}-${k}-panel" aria-labelledby="os-${n}-${k}" data-os-panel="${k}">${body}</div>`;}).join('')}`;
   });
   const show=(k,focus)=>{open=k;document.querySelectorAll('[data-os-install]').forEach(group=>{

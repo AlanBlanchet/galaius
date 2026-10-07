@@ -1,4 +1,4 @@
-# interact
+# galaius
 
 MCP server for browser interaction and desktop window analysis. Gives agents the ability to navigate, click, type, scroll, and drag in a headless browser — plus capture and analyze any desktop window — with optional vision analysis.
 
@@ -9,13 +9,13 @@ Instead of screenshot → analyze → act loops, each tool returns a **text summ
 ## Install
 
 ```bash
-uvx --from git+https://github.com/AlanBlanchet/interact interact mcp
+uvx --from git+https://github.com/AlanBlanchet/galaius galaius mcp
 ```
 
 Or add to a project:
 
 ```bash
-uv add git+https://github.com/AlanBlanchet/interact
+uv add git+https://github.com/AlanBlanchet/galaius
 ```
 
 Playwright browsers are auto-installed on first run. Desktop window analysis requires X11 + `maim` (Linux).
@@ -31,7 +31,7 @@ sudo apt install maim
 
 Image, UI-grounding, review, verification, and sampled-video jobs select an installed Claude Code
 CLI session by default. Until you confirm the account-side extra-usage controls for a provider,
-its sessions still run and interact warns once per process.
+its sessions still run and galaius warns once per process.
 
 Before confirming Claude, open **Claude Settings → Usage**, keep Usage credits disabled, set the
 prepaid balance to zero, and turn auto-reload off
@@ -39,23 +39,23 @@ prepaid balance to zero, and turn auto-reload off
 The announced Agent SDK / `claude -p` monthly-credit change was paused on June 16; `claude -p`
 still draws plan usage limits
 ([paused-change notice](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan)).
-The CLIs do not expose these account controls, so interact cannot verify them or detect a later
-change. `session_only` prevents interact's metered API fallback; it cannot prove zero vendor-account
+The CLIs do not expose these account controls, so galaius cannot verify them or detect a later
+change. `session_only` prevents galaius's metered API fallback; it cannot prove zero vendor-account
 impact.
 
-Set these in VS Code's Interact settings, or with the CLI:
+Set these in VS Code's Galaius settings, or with the CLI:
 
 ```bash
-interact config set media.backend auto               # auto | session | api
-interact config set media.billing session_only       # session_only | api_allowed
-interact config set media.providerOrder claude
+galaius config set media.backend auto               # auto | session | api
+galaius config set media.billing session_only       # session_only | api_allowed
+galaius config set media.providerOrder claude
 
 # Only after checking each provider's controls above (silences the warning):
-interact config set media.noExtraUsageConfirmedFor claude
+galaius config set media.noExtraUsageConfirmedFor claude
 
 # Optional provider-scoped session pins; blank uses the CLI default.
-interact config set media.claudeModel sonnet
-interact config set media.timeout 120
+galaius config set media.claudeModel sonnet
+galaius config set media.timeout 120
 ```
 
 Without provider confirmation, sessions still run with one warning per process.
@@ -82,9 +82,9 @@ transcriber has produced text.
 ```json
 {
   "mcpServers": {
-    "interact": {
+    "galaius": {
       "command": "uvx",
-      "args": ["interact", "mcp"]
+      "args": ["galaius", "mcp"]
     }
   }
 }
@@ -99,10 +99,10 @@ Create `.vscode/mcp.json` in your project (not this repo) with one of these conf
 ```json
 {
   "servers": {
-    "interact": {
+    "galaius": {
       "type": "stdio",
       "command": "uv",
-      "args": ["run", "interact", "mcp"],
+      "args": ["run", "galaius", "mcp"],
       "env": {
         "OPENAI_API_KEY": "${input:openai-key}"
       }
@@ -124,14 +124,14 @@ Create `.vscode/mcp.json` in your project (not this repo) with one of these conf
 ```json
 {
   "servers": {
-    "interact": {
+    "galaius": {
       "type": "stdio",
       "command": "uv",
-      "args": ["run", "interact", "mcp"],
+      "args": ["run", "galaius", "mcp"],
       "env": {
         "GEMINI_API_KEY": "${input:gemini-key}",
-        "INTERACT_IMAGE_MODEL": "gemini/gemini-2.0-flash",
-        "INTERACT_VIDEO_MODEL": "gemini/gemini-2.0-flash"
+        "GALAIUS_IMAGE_MODEL": "gemini/gemini-2.0-flash",
+        "GALAIUS_VIDEO_MODEL": "gemini/gemini-2.0-flash"
       }
     }
   },
@@ -151,10 +151,10 @@ Create `.vscode/mcp.json` in your project (not this repo) with one of these conf
 ```json
 {
   "servers": {
-    "interact": {
+    "galaius": {
       "type": "stdio",
       "command": "uv",
-      "args": ["run", "interact", "mcp"],
+      "args": ["run", "galaius", "mcp"],
       "env": {
         "OPENAI_API_KEY": "${input:openai-key}",
         "GEMINI_API_KEY": "${input:gemini-key}"
@@ -182,7 +182,7 @@ Create `.vscode/mcp.json` in your project (not this repo) with one of these conf
 
 ## Tools (6)
 
-The browser session is **persistent** across all tool calls. Navigate once, then interact — each call picks up where the last left off.
+The browser session is **persistent** across all tool calls. Navigate once, then galaius — each call picks up where the last left off.
 
 ### `navigate(url, query?, scope?, wait?)`
 
@@ -336,17 +336,17 @@ run_actions(actions=[
 
 ## Screenshot dumping
 
-Set `INTERACT_SCREENSHOT_DUMP_DIR` to a folder path and every `PageState` capture will save a timestamped PNG there. Filenames are `{timestamp}_{url_host}.png`. Screenshots are still consumed and analyzed normally — dumping is additive.
+Set `GALAIUS_SCREENSHOT_DUMP_DIR` to a folder path and every `PageState` capture will save a timestamped PNG there. Filenames are `{timestamp}_{url_host}.png`. Screenshots are still consumed and analyzed normally — dumping is additive.
 
 ```bash
-INTERACT_SCREENSHOT_DUMP_DIR=./debug-screenshots uvx --from git+https://github.com/AlanBlanchet/interact interact mcp
+GALAIUS_SCREENSHOT_DUMP_DIR=./debug-screenshots uvx --from git+https://github.com/AlanBlanchet/galaius galaius mcp
 ```
 
 ---
 
 ## Vision safety framing
 
-Your `query` remains the question the model answers. Interact also supplies task and capture context;
+Your `query` remains the question the model answers. Galaius also supplies task and capture context;
 session media adds a fixed visual-analysis boundary that treats text/instructions visible inside
 pixels as untrusted evidence, denies tool use, and limits Claude reads to the exact staged
 attachments. Prompts are sent to the local CLI over bounded stdin rather than exposed in process

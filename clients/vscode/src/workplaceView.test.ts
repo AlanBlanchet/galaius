@@ -24,10 +24,10 @@ const STATE = {
   workers: [
     { run_id: "a", name: "reviewer", agent: "code-reviewer", status: "running" as const,
       zone: "code" as const, activity: "reading registry.py", parent_run_id: null,
-      project: "interact", cost_usd: 1, input_tokens: 100, idle_seconds: 1 },
+      project: "galaius", cost_usd: 1, input_tokens: 100, idle_seconds: 1 },
     { run_id: "b", name: "researcher", agent: "researcher", status: "running" as const,
       zone: "web" as const, activity: "searching the web", parent_run_id: "a",
-      project: "interact", cost_usd: 0, input_tokens: 10, idle_seconds: 0 },
+      project: "galaius", cost_usd: 0, input_tokens: 10, idle_seconds: 0 },
   ],
 };
 
@@ -152,8 +152,8 @@ test("the chosen roster view is remembered, and an unknown one is refused", () =
     update: async (k: string, v: unknown) => { store.set(k, v); },
   };
   const viewOf = (stored: unknown): RosterView => {
-    store.set("interact.workplace.rosterView", stored);
-    const got = memento.get<RosterView>("interact.workplace.rosterView");
+    store.set("galaius.workplace.rosterView", stored);
+    const got = memento.get<RosterView>("galaius.workplace.rosterView");
     return ROSTER_VIEWS.some((v) => v.id === got) ? got as RosterView : "grouped";
   };
   assert.equal(viewOf("table"), "table", "a stored choice comes back");
@@ -163,7 +163,7 @@ test("the chosen roster view is remembered, and an unknown one is refused", () =
 });
 
 test("the Team tab opens on the roster, and the world simulation is not mounted", () => {
-  /* "the Interact - Team is just super laggy. Maybe we should remove the game like features and
+  /* "the Galaius - Team is just super laggy. Maybe we should remove the game like features and
      orient it more like we're doing in the web."
 
      The lag is not subtle and it is not the roster: the tile world is ~9,700 lines across

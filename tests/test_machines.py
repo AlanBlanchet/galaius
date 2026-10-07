@@ -16,15 +16,15 @@ from uuid import UUID, uuid4
 import pytest
 import websockets
 from pydantic import SecretStr
-from interact_core import ConnectionResourceRef, FunctionImplementation, MachineCommand, MachineDataRequest, MachineFileQuery, MachineRef, ModelImplementation, PortSpec, ScriptFile, ScriptImplementation, UserModelOrigin, WorkflowInterface, WorkflowKey, WorkflowNode, WorkflowRevision, WorkflowRevisionRef
+from galaius_core import ConnectionResourceRef, FunctionImplementation, MachineCommand, MachineDataRequest, MachineFileQuery, MachineRef, ModelImplementation, PortSpec, ScriptFile, ScriptImplementation, UserModelOrigin, WorkflowInterface, WorkflowKey, WorkflowNode, WorkflowRevision, WorkflowRevisionRef
 
-from interact import server_workspace
-from interact.cli import machine_command
-from interact.cli.machine_command import _described_step
-from interact.functions import FunctionRegistry, discover_python, discover_shell
-from interact.private_files import PRIVATE_FILES
+from galaius import server_workspace
+from galaius.cli import machine_command
+from galaius.cli.machine_command import _described_step
+from galaius.functions import FunctionRegistry, discover_python, discover_shell
+from galaius.private_files import PRIVATE_FILES
 from tests.support.private_files import loosen
-from interact.machines import CommandFiles, CommandLogs, MachineConfig, MachineFiles, MachineRunner, SCRIPT_RUNTIMES, ScriptRuntime
+from galaius.machines import CommandFiles, CommandLogs, MachineConfig, MachineFiles, MachineRunner, SCRIPT_RUNTIMES, ScriptRuntime
 
 
 def test_machine_config_round_trips_token_with_owner_only_permissions(tmp_path: Path) -> None:
@@ -47,11 +47,11 @@ def test_machine_config_round_trips_token_with_owner_only_permissions(tmp_path: 
     assert ("iwm_" in path.read_text()) != (sys.platform == "win32")  # Windows keeps the token DPAPI-sealed on disk
 
 
-from interact.machines import shell_path
+from galaius.machines import shell_path
 
 
 @pytest.mark.parametrize(("script", "expected"), [
-    ('echo "rc noise"\nprintf "__interact_path__/nvm/bin:/usr/bin__interact_path__"\necho "more noise"', "/nvm/bin:/usr/bin:/service/bin"),
+    ('echo "rc noise"\nprintf "__galaius_path__/nvm/bin:/usr/bin__galaius_path__"\necho "more noise"', "/nvm/bin:/usr/bin:/service/bin"),
     ("exit 1", "/usr/bin:/service/bin"),
 ])
 @pytest.mark.skipif(sys.platform == "win32", reason="no login shell on Windows: the logon task starts with the user's own PATH")
@@ -87,8 +87,8 @@ def test_accelerators_reports_none_when_no_gpu_is_detected(tmp_path: Path, monke
 
 def test_accelerators_reports_apple_silicon_without_a_subprocess(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PATH", "")
-    monkeypatch.setattr("interact.machines.sys.platform", "darwin")
-    monkeypatch.setattr("interact.machines.platform.machine", lambda: "arm64")
+    monkeypatch.setattr("galaius.machines.sys.platform", "darwin")
+    monkeypatch.setattr("galaius.machines.platform.machine", lambda: "arm64")
 
     assert MachineRunner._accelerators() == [{"kind": "mps", "name": "Apple GPU", "memory_mb": 0}]
 
@@ -104,7 +104,7 @@ def test_resources_reports_real_cpu_count_positive_ram_and_free_disk(tmp_path: P
 
 
 def test_resources_falls_back_to_one_cpu_when_the_count_is_unknown(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setattr("interact.machines.os.cpu_count", lambda: None)
+    monkeypatch.setattr("galaius.machines.os.cpu_count", lambda: None)
 
     assert MachineRunner._resources(tmp_path)["cpu_count"] == 1
 
@@ -143,7 +143,7 @@ def test_functions_advertises_registered_entries_as_wire_summaries(tmp_path: Pat
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     assert MachineRunner._functions() == []
     source = tmp_path / "greeter.py"
-    source.write_text("import interact\n\n@interact.function\ndef greet(name: str) -> str:\n    \"\"\"Greets.\"\"\"\n    return f'hi {name}'\n")
+    source.write_text("import galaius\n\n@galaius.function\ndef greet(name: str) -> str:\n    \"\"\"Greets.\"\"\"\n    return f'hi {name}'\n")
     entry = discover_python(source)[0]
     FunctionRegistry().add(entry)
 
@@ -155,7 +155,7 @@ def test_functions_advertises_registered_entries_as_wire_summaries(tmp_path: Pat
 def test_run_function_invokes_the_registered_function_under_the_working_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     source = tmp_path / "greeter.py"
-    source.write_text("import interact\n\n@interact.function\ndef greet(name: str) -> str:\n    \"\"\"Greets.\"\"\"\n    return f'hi {name}'\n")
+    source.write_text("import galaius\n\n@galaius.function\ndef greet(name: str) -> str:\n    \"\"\"Greets.\"\"\"\n    return f'hi {name}'\n")
     entry = discover_python(source)[0]
     FunctionRegistry().add(entry)
     config = _config(tmp_path, "read_only")
@@ -251,8 +251,8 @@ def test_run_script_kills_a_hanging_process_on_timeout(tmp_path: Path, monkeypat
 
 
 def test_run_agent_forwards_tool_calls_with_arguments_results_and_the_final_token_totals(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from interact.agents.events import AgentEvent
-    import interact.machines as machines
+    from galaius.agents.events import AgentEvent
+    import galaius.machines as machines
 
     events = [
         AgentEvent(kind="tool", tool="Bash", tool_input="ls -la", tool_id="t1"),
@@ -289,7 +289,7 @@ def test_run_agent_forwards_tool_calls_with_arguments_results_and_the_final_toke
     assert result == "finished"
     assert socket.sent == [
         # The launched CLI run's id comes first: the server links the step's span to that run's trace.
-        {"kind": "log", "level": "info", "logger": "interact.machines", "text": "agent run run-1 started", "agent_run_id": "run-1"},
+        {"kind": "log", "level": "info", "logger": "galaius.machines", "text": "agent run run-1 started", "agent_run_id": "run-1"},
         {"kind": "tool", "tool": "Bash", "tool_input": "ls -la", "tool_id": "t1"},
         {"kind": "tool_result", "text": "total 8", "tool_id": "t1"},
         {"kind": "done", "text": "finished", "input_tokens": 1200, "output_tokens": 300, "cost_usd": 0.01},
@@ -303,7 +303,7 @@ def test_a_server_mid_deploy_is_retried_and_a_refused_token_stops(tmp_path: Path
     A 401/403 at the handshake is a refused token: the runner stops, never retries forever."""
     import websockets
     from websockets.http11 import Response
-    import interact.machines as machines
+    import galaius.machines as machines
 
     attempts: list[int] = []
 
@@ -358,7 +358,7 @@ def test_run_user_model_dispatches_workspace_provider_before_the_vendor_catalog_
         called["ran"] = True
         return {"ok": True}
 
-    monkeypatch.setattr("interact.machines.MachineRunner._run_user_model", fake_run_user_model)
+    monkeypatch.setattr("galaius.machines.MachineRunner._run_user_model", fake_run_user_model)
 
     result = MachineRunner()._run_model(command, config)
 
@@ -370,7 +370,7 @@ def test_run_user_model_pulls_and_names_the_gap_for_a_docker_origin(tmp_path: Pa
     config = _config(tmp_path, "full_access")
     command = _user_model_command(config.machine_id, origin)
     pulled = {}
-    monkeypatch.setattr("interact.user_models.pull_docker_image", lambda o: pulled.setdefault("image", o.image) or o.image)
+    monkeypatch.setattr("galaius.user_models.pull_docker_image", lambda o: pulled.setdefault("image", o.image) or o.image)
 
     with pytest.raises(RuntimeError, match="not implemented"):
         MachineRunner()._run_user_model(command, config)
@@ -388,7 +388,7 @@ def test_run_user_model_fetches_then_names_the_gap_for_trust_remote_code(tmp_pat
         fetched["origin"] = org
         return tmp_path / "weights"
 
-    monkeypatch.setattr("interact.user_models.fetch_weights_dir", fake_fetch)
+    monkeypatch.setattr("galaius.user_models.fetch_weights_dir", fake_fetch)
 
     with pytest.raises(RuntimeError, match="trust_remote_code"):
         MachineRunner()._run_user_model(command, config)
@@ -409,7 +409,7 @@ def test_forwarded_log_lines_carry_the_time_they_were_written() -> None:
     """The runner sends its log lines after the step: each line keeps its own time (`at`), so the
     server's trace shows when the runner did it, not when the lines arrived."""
     handler = CommandLogs()
-    record = logging.LogRecord("interact.machines", logging.INFO, __file__, 1, "running model step", None, None)
+    record = logging.LogRecord("galaius.machines", logging.INFO, __file__, 1, "running model step", None, None)
     record.created = datetime(2026, 9, 24, 18, 21, 32, tzinfo=UTC).timestamp()
     handler.emit(record)
     (line,) = handler.drain()
@@ -421,7 +421,7 @@ def _file_command(machine: UUID, op: str, path: str, inputs: dict) -> MachineCom
                           impl={"kind": "builtin", "op": op}, config={"artifact_path": path}, inputs=inputs, expires_at=datetime.now(UTC) + timedelta(minutes=5), signature="0" * 64)
 
 
-@pytest.mark.parametrize("path", ("../escape.txt", "/etc/passwd", "a/../../escape.txt", "interact-files/link/out.txt", "outside-the-roots.txt", ".bashrc", "interact-files/.ssh/id_ed25519", ".config/interact/machine.json"))
+@pytest.mark.parametrize("path", ("../escape.txt", "/etc/passwd", "a/../../escape.txt", "interact-files/link/out.txt", "outside-the-roots.txt", ".bashrc", "interact-files/.ssh/id_ed25519", ".config/galaius/machine.json"))
 def test_a_file_op_never_leaves_the_working_directory(tmp_path: Path, path: str, monkeypatch: pytest.MonkeyPatch, directory_backend) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     root = tmp_path / "work"
@@ -460,7 +460,7 @@ def test_a_machine_saves_text_or_a_received_file_within_its_ceiling(tmp_path: Pa
     receipt = files.write()
     assert (root / "interact-files/saved/out.txt").read_bytes() == written
     assert receipt == {"machine": str(config.machine_id), "path": "interact-files/saved/out.txt", "digest": hashlib.sha256(written).hexdigest(), "size": len(written)}
-    assert json.loads((tmp_path / "config/interact/file-audit.log").read_text().splitlines()[-1])["op"] == "write"
+    assert json.loads((tmp_path / "config/galaius/file-audit.log").read_text().splitlines()[-1])["op"] == "write"
 
 
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="no named pipes in this file system")
@@ -521,12 +521,12 @@ def test_a_workflow_write_follows_its_folders_level(tmp_path: Path, level: str, 
 def test_the_runner_reports_the_folders_workflows_may_read_as_they_are_now(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """What the server shows is what file nodes can use: folders set to read or later whose level is
     in force (never the runner's own folder, a link, a hidden name), and a change made with
-    `interact machine places` is read on the next beat, no reconnect."""
+    `galaius machine places` is read on the next beat, no reconnect."""
     root = tmp_path / "work"
     (root / "exports" / "pc").mkdir(parents=True)
     (root / "linked").symlink_to(tmp_path)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    runner = MachineRunner(tmp_path / "config" / "interact" / "machine.json")
+    runner = MachineRunner(tmp_path / "config" / "galaius" / "machine.json")
     connected = MachineConfig(server_url="http://127.0.0.1:8817", workspace_id=uuid4(), machine_id=uuid4(), token="t" * 40, permission_ceiling="read_only", working_directory=root,
                               places={"interact-files": "sandbox", "exports/pc": "read", "linked": "read", "exports/pc/names": "see"})
     runner.save(connected)
@@ -562,10 +562,10 @@ def test_command_preserves_owner_changes_and_persists_replay_protection(tmp_path
 
 @pytest.mark.parametrize(("run_agents", "status"), [(False, "failed"), (True, "succeeded")])
 def test_an_agent_step_runs_only_once_the_owner_turned_agents_on_here(tmp_path, monkeypatch, run_agents, status):
-    """`interact login` adds a computer with agent steps off: a signed agent command is refused
-    until `interact machine agents on` on that computer, and the agent CLI never starts."""
-    from interact.machines import AgentRevisionRef
-    from interact_core import AgentImplementation
+    """`galaius login` adds a computer with agent steps off: a signed agent command is refused
+    until `galaius machine agents on` on that computer, and the agent CLI never starts."""
+    from galaius.machines import AgentRevisionRef
+    from galaius_core import AgentImplementation
 
     runner = MachineRunner(tmp_path / "config" / "machine.json")
     connected = _config(tmp_path, "read_only").model_copy(update={"run_agents": run_agents})
@@ -580,7 +580,7 @@ def test_an_agent_step_runs_only_once_the_owner_turned_agents_on_here(tmp_path, 
     result = json.loads(socket.send.await_args_list[-1].args[0])["result"]
     assert (result["status"], started.await_count) == (status, int(run_agents))
     if not run_agents:
-        assert "interact machine agents on" in result["error"]
+        assert "galaius machine agents on" in result["error"]
 
 
 @pytest.mark.parametrize("state", ["missing", "corrupt", "permissions"])
@@ -863,7 +863,7 @@ def test_file_query_needs_the_server_signature(tmp_path: Path) -> None:
 
 
 def test_approving_a_script_shows_the_file_as_it_is_on_this_machine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """`interact machine approve-script` shows what a digest stands for before the owner says yes:
+    """`galaius machine approve-script` shows what a digest stands for before the owner says yes:
     the file, how it starts, and — run on that machine — whether the file still is what was picked."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     config = _scripts_config(tmp_path)
@@ -900,7 +900,7 @@ def test_a_script_in_a_git_checkout_shows_its_repository_without_credentials(tmp
 
 
 
-@pytest.mark.parametrize(("language", "program"), [("python", "interact's own Python"), ("shell", SCRIPT_RUNTIMES["shell"].label)])
+@pytest.mark.parametrize(("language", "program"), [("python", "galaius's own Python"), ("shell", SCRIPT_RUNTIMES["shell"].label)])
 def test_approving_inline_code_names_its_execution_program(language: str, program: str) -> None:
     source = "echo 39\n"
     node = WorkflowNode(id=uuid4(), label="Weekly", x=0, y=0, impl={"kind": "script", "language": language, "source_digest": hashlib.sha256(source.encode()).hexdigest()},
@@ -919,7 +919,7 @@ def test_a_script_approved_as_python_is_refused_as_shell(tmp_path: Path) -> None
 
 
 def test_approve_script_pending_asks_once_per_waiting_version_on_this_machine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
-    """`interact machine approve-script --pending`: no digest to copy — every saved Script step placed
+    """`galaius machine approve-script --pending`: no digest to copy — every saved Script step placed
     on this machine and not approved yet is shown and asked for, one question per version (two
     steps running the same code share it); approved ones and other machines' steps are left alone."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))

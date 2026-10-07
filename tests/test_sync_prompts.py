@@ -104,7 +104,7 @@ def test_missing_source_fails_loudly(sync_mod, tmp_path, capsys):
 def test_the_default_source_is_found_on_every_platform(monkeypatch):
     """A hard-coded ~/.config/Code/User/prompts is a Linux path.
 
-    interact ships on macOS and Windows (CI drives real GUI sessions on both), and a teammate there
+    galaius ships on macOS and Windows (CI drives real GUI sessions on both), and a teammate there
     running `python scripts/sync_prompts.py` with no arguments would be told their own prompts store
     does not exist. The store's location is per-platform, and the project's own `vscode-sync.sh`
     already knew that — this just did not follow it.

@@ -33,7 +33,7 @@ test("a finished agent offers no stop — a dead item teaches you not to trust t
 });
 
 test("you cannot speak to one of your own editor sessions", () => {
-  // interact does not drive it: the message would go nowhere, and offering it would promise a
+  // galaius does not drive it: the message would go nowhere, and offering it would promise a
   // reach the product does not have.
   const got = ids(worker({ status: "foreign" }));
   assert.ok(!got.includes("message"));
@@ -56,7 +56,7 @@ test("only an agent WITH a definition offers to show its prompt", () => {
 test("every action says what it does and which command runs it", () => {
   for (const action of actionsFor(worker({ definition_path: "/d.md" }) as never)) {
     assert.ok(action.label.trim(), `${action.id} has no label`);
-    assert.match(action.command, /^interact\./, `${action.id} does not name an interact command`);
+    assert.match(action.command, /^galaius\./, `${action.id} does not name a galaius command`);
   }
 });
 
@@ -83,5 +83,5 @@ test("a run with no definition has nothing to remember a model against", () => {
      one errand runs on — so a bare session cannot offer it. */
   assert.ok(!ids(worker({ status: "running", agent: null })).includes("model"));
   assert.ok(!ids(worker({ status: "foreign", agent: "researcher" })).includes("model"),
-    "and interact cannot change what one of your own editor windows runs");
+    "and galaius cannot change what one of your own editor windows runs");
 });

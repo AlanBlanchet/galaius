@@ -13,12 +13,12 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-import interact_core
+import galaius_core
 from pydantic import ValidationError
 
-from interact.prompt_cache import _PromptCache
-from interact.prompt_client import _PromptClient
-from interact_core import PromptCatalogPage, PromptChannelEntry, PromptKey, PromptRevision
+from galaius.prompt_cache import _PromptCache
+from galaius.prompt_client import _PromptClient
+from galaius_core import PromptCatalogPage, PromptChannelEntry, PromptKey, PromptRevision
 
 
 def test_file_manifest_content_matches_its_declared_digest() -> None:
@@ -37,17 +37,17 @@ def test_contracts_reject_invalid_identity_and_content() -> None:
     content = "bounded prompt"
     with pytest.raises(ValidationError):
         PromptRevision(
-            key=PromptKey(namespace="interact", slug="system"), revision=uuid4(),
+            key=PromptKey(namespace="galaius", slug="system"), revision=uuid4(),
             digest="0" * 64, content=content, source_commit="abc", created_at=datetime.now(UTC),
         )
 
 
 def test_public_contracts_include_immutable_execution_prompt_binding() -> None:
-    assert hasattr(interact_core, "PromptExecutionRef")
+    assert hasattr(galaius_core, "PromptExecutionRef")
 
 
 def test_cache_scopes_catalog_and_exact_revision_by_account(tmp_path: Path) -> None:
-    key = PromptKey(namespace="interact", slug="system")
+    key = PromptKey(namespace="galaius", slug="system")
     records = []
     for account in ("tenant-a", "tenant-b"):
         content = f"bounded prompt for {account}"
@@ -89,7 +89,7 @@ def test_cache_keeps_equal_content_as_distinct_prompt_revisions(
     digest = hashlib.sha256(content.encode()).hexdigest()
     revisions = tuple(
         PromptRevision(
-            key=PromptKey(namespace="interact", slug=slug),
+            key=PromptKey(namespace="galaius", slug=slug),
             revision=uuid4(),
             digest=digest,
             content=content,
@@ -177,7 +177,7 @@ def test_cache_is_never_opened_through_a_link(tmp_path: Path, directory_backend)
 
 
 def test_cache_validates_revision_identity_and_applies_catalog_delta(tmp_path: Path) -> None:
-    key = PromptKey(namespace="interact", slug="system")
+    key = PromptKey(namespace="galaius", slug="system")
     content = "bounded prompt"
     digest = hashlib.sha256(content.encode()).hexdigest()
     revision = PromptRevision(
@@ -228,8 +228,8 @@ def test_complete_prompt_snapshot_is_atomic_and_removes_absent_channels(
     tmp_path: Path, corrupt_late: bool,
 ) -> None:
     token = "synthetic-token"
-    system_key = PromptKey(namespace="interact", slug="system")
-    obsolete_key = PromptKey(namespace="interact", slug="obsolete")
+    system_key = PromptKey(namespace="galaius", slug="system")
+    obsolete_key = PromptKey(namespace="galaius", slug="obsolete")
     old_content = {
         system_key: "prior system prompt",
         obsolete_key: "prior obsolete prompt",

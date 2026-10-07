@@ -1,16 +1,16 @@
-"""`interact --version` / `-v` report the installed build."""
+"""`galaius --version` / `-v` report the installed build."""
 
 from datetime import UTC, datetime
 
 import pytest
 
-from interact import cli
-from interact.upgrade.release import BuildIdentity
+from galaius import cli
+from galaius.upgrade.release import BuildIdentity
 
 
 @pytest.mark.parametrize("build", [None, BuildIdentity(version="0.43.0", released_at=datetime(2026, 9, 29, 1, 2, tzinfo=UTC), commit="40d6bc4090826a61")])
 def test_version_command_prints_the_installed_version_and_the_build_it_is(capsys, monkeypatch, build):
-    from interact import installed_version
+    from galaius import installed_version
 
     monkeypatch.setattr(BuildIdentity, "installed", classmethod(lambda cls: build))
     cli.version()

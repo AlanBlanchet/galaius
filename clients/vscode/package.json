@@ -1,7 +1,7 @@
 {
-  "name": "interact",
-  "displayName": "Interact",
-  "description": "Interact — browser + desktop automation via an MCP server",
+  "name": "galaius",
+  "displayName": "Galaius",
+  "description": "Galaius — browser + desktop automation via an MCP server",
   "version": "0.43.0",
   "preview": true,
   "publisher": "AlanBlanchet",
@@ -9,11 +9,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/AlanBlanchet/interact"
+    "url": "https://github.com/AlanBlanchet/galaius"
   },
-  "homepage": "https://github.com/AlanBlanchet/interact#readme",
+  "homepage": "https://github.com/AlanBlanchet/galaius#readme",
   "bugs": {
-    "url": "https://github.com/AlanBlanchet/interact/issues"
+    "url": "https://github.com/AlanBlanchet/galaius/issues"
   },
   "engines": {
     "vscode": "^1.101.0"
@@ -40,24 +40,24 @@
   "contributes": {
     "mcpServerDefinitionProviders": [
       {
-        "id": "interact",
-        "label": "Interact"
+        "id": "galaius",
+        "label": "Galaius"
       }
     ],
     "configuration": {
-      "title": "Interact",
+      "title": "Galaius",
       "properties": {
-        "interact.projectPath": {
+        "galaius.projectPath": {
           "type": "string",
           "default": "",
-          "description": "DEV ONLY — path to a local interact checkout to run via 'uv run' instead of the released build. Leave EMPTY (the default) to run the published interact from GitHub via uvx (zero-config). Never auto-detected, so opening a clone of the repo does not silently run your working tree. Can also be set with the INTERACT_PROJECT_PATH env var."
+          "description": "DEV ONLY — path to a local galaius checkout to run via 'uv run' instead of the released build. Leave EMPTY (the default) to run the published galaius from GitHub via uvx (zero-config). Never auto-detected, so opening a clone of the repo does not silently run your working tree. Can also be set with the GALAIUS_PROJECT_PATH env var."
         },
-        "interact.display.currency": {
+        "galaius.display.currency": {
           "type": "string",
           "default": "USD",
           "description": "Currency for displaying spend in the dashboard. Costs are recorded in USD and converted at live ECB rates (frankfurter.app); display-only."
         },
-        "interact.media.backend": {
+        "galaius.media.backend": {
           "type": "string",
           "default": "auto",
           "enum": [
@@ -67,21 +67,21 @@
           ],
           "description": "Where image and sampled-video analysis runs. Auto follows the billing policy."
         },
-        "interact.media.billing": {
+        "galaius.media.billing": {
           "type": "string",
           "default": "session_only",
           "enum": [
             "session_only",
             "api_allowed"
           ],
-          "description": "Session only prevents interact's metered API fallback; vendor CLI account credits are separate."
+          "description": "Session only prevents galaius's metered API fallback; vendor CLI account credits are separate."
         },
-        "interact.criteria.weights": {
+        "galaius.criteria.weights": {
           "type": "string",
           "default": "",
           "description": "Optional weights over normalized unit-safe criteria only, shared by every role below; raw accuracy, index, latency, and price units cannot be combined."
         },
-        "interact.media.noExtraUsageConfirmedFor": {
+        "galaius.media.noExtraUsageConfirmedFor": {
           "type": "string",
           "default": "",
           "enum": [
@@ -92,9 +92,9 @@
             "No provider confirmed; sessions run and warn once per process.",
             "Claude only"
           ],
-          "markdownDescription": "Provider-scoped confirmation that extra usage is unavailable. For Claude, check [Settings → Usage](https://claude.ai/settings/usage): Usage credits disabled, zero prepaid balance, auto-reload off. Unconfirmed providers still run, with one warning per process. Interact cannot verify these account settings."
+          "markdownDescription": "Provider-scoped confirmation that extra usage is unavailable. For Claude, check [Settings → Usage](https://claude.ai/settings/usage): Usage credits disabled, zero prepaid balance, auto-reload off. Unconfirmed providers still run, with one warning per process. Galaius cannot verify these account settings."
         },
-        "interact.media.providerOrder": {
+        "galaius.media.providerOrder": {
           "type": "string",
           "default": "claude",
           "enum": [
@@ -102,72 +102,72 @@
           ],
           "description": "Media-capable subscription CLI, currently Claude."
         },
-        "interact.media.claudeCriteria": {
+        "galaius.media.claudeCriteria": {
           "type": "string",
           "default": "",
           "description": "Requirement the Claude CLI's own model must clear (e.g. 'cap.vlm'); blank uses its subscription default."
         },
-        "interact.tierSovereign.criteria": {
+        "galaius.tierSovereign.criteria": {
           "type": "string",
           "default": "",
           "description": "Requirement for review_ui/verify_ui's low/medium quality tier (cheapest clearing model wins — self-hosted sorts first at zero cost); blank means any VLM."
         },
-        "interact.media.timeout": {
+        "galaius.media.timeout": {
           "type": "number",
           "default": 120,
           "description": "Hard timeout in seconds for a subscription media child process."
         },
-        "interact.media.maxItems": {
+        "galaius.media.maxItems": {
           "type": "number",
           "default": 16,
           "description": "Maximum number of image, video, or audio items accepted in one analysis."
         },
-        "interact.media.maxTotalBytes": {
+        "galaius.media.maxTotalBytes": {
           "type": "number",
           "default": 52428800,
           "description": "Maximum aggregate decoded media bytes accepted before any provider runs."
         },
-        "interact.media.maxContextChars": {
+        "galaius.media.maxContextChars": {
           "type": "number",
           "default": 32768,
           "description": "Maximum untrusted page, title, URL, or transcript context characters per request."
         },
-        "interact.image.criteria": {
+        "galaius.image.criteria": {
           "type": "string",
           "default": "",
-          "description": "Requirement for screenshots and images (e.g. 'cap.vlm and aa.intelligence > 80%'); blank means any VLM. Subscription sessions use interact.media.claudeCriteria instead."
+          "description": "Requirement for screenshots and images (e.g. 'cap.vlm and aa.intelligence > 80%'); blank means any VLM. Subscription sessions use galaius.media.claudeCriteria instead."
         },
-        "interact.video.criteria": {
+        "galaius.video.criteria": {
           "type": "string",
           "default": "",
           "description": "Requirement for video (falls back to cap.video). Subscription sessions always receive ordered sampled frames; APIs may use native video when supported."
         },
-        "interact.video.fps": {
+        "galaius.video.fps": {
           "type": "number",
           "default": 5,
           "description": "Frames per second for video capture"
         },
-        "interact.video.duration": {
+        "galaius.video.duration": {
           "type": "number",
           "default": 3,
           "description": "Duration in seconds for video capture"
         },
-        "interact.component.criteria": {
+        "galaius.component.criteria": {
           "type": "string",
           "default": "",
           "description": "Requirement for GUI grounding (falls back to cap.gui_grounding). Subscription sessions use their media session model."
         },
-        "interact.audio.criteria": {
+        "galaius.audio.criteria": {
           "type": "string",
           "default": "",
-          "description": "Requirement for transcribe (falls back to cap.audio). Claude subscription sessions do not hear audio; interact.media.billing must allow this separate path."
+          "description": "Requirement for transcribe (falls back to cap.audio). Claude subscription sessions do not hear audio; galaius.media.billing must allow this separate path."
         },
-        "interact.browser.headless": {
+        "galaius.browser.headless": {
           "type": "boolean",
           "default": true,
           "description": "Run browser in headless mode"
         },
-        "interact.browser.type": {
+        "galaius.browser.type": {
           "type": "string",
           "default": "chromium",
           "enum": [
@@ -177,44 +177,44 @@
           ],
           "description": "Browser engine"
         },
-        "interact.browser.viewportWidth": {
+        "galaius.browser.viewportWidth": {
           "type": "number",
           "default": 1280,
           "minimum": 1,
           "description": "Browser viewport width"
         },
-        "interact.browser.viewportHeight": {
+        "galaius.browser.viewportHeight": {
           "type": "number",
           "default": 720,
           "minimum": 1,
           "description": "Browser viewport height"
         },
-        "interact.browser.slowMo": {
+        "galaius.browser.slowMo": {
           "type": "number",
           "default": 0,
           "description": "Slow down browser actions by this many milliseconds (useful for observing automation)"
         },
-        "interact.browser.profileDir": {
+        "galaius.browser.profileDir": {
           "type": "string",
           "default": "",
           "description": "When set, browser sessions keep their cookies/login on disk here (under <dir>/<session>) so you log in once and stay authenticated across restarts. Blank = ephemeral (logged out every launch)."
         },
-        "interact.vlm.maxTokens": {
+        "galaius.vlm.maxTokens": {
           "type": "number",
           "default": 2048,
           "description": "Maximum tokens for VLM vision responses"
         },
-        "interact.vlm.waitTimeout": {
+        "galaius.vlm.waitTimeout": {
           "type": "number",
           "default": 10000,
           "description": "Default timeout in ms for waiting on elements"
         },
-        "interact.debug.dir": {
+        "galaius.debug.dir": {
           "type": "string",
-          "default": "~/.interact/out",
-          "description": "Where interact writes the usage log + debug artifacts (blank = ~/.interact/out; point at a project's out/ when working locally). Must match INTERACT_DEBUG_DIR — the dashboard reads the usage log from here."
+          "default": "~/.galaius/out",
+          "description": "Where galaius writes the usage log + debug artifacts (blank = ~/.galaius/out; point at a project's out/ when working locally). Must match GALAIUS_DEBUG_DIR — the dashboard reads the usage log from here."
         },
-        "interact.desktop.target": {
+        "galaius.desktop.target": {
           "type": "string",
           "default": "local",
           "enum": [
@@ -227,18 +227,18 @@
           ],
           "description": "Where desktop automation acts: the real session, or an isolated nested display"
         },
-        "interact.desktop.nestedDisplay": {
+        "galaius.desktop.nestedDisplay": {
           "type": "number",
           "default": 99,
           "description": "X display number for the nested desktop target (e.g. 99 → :99)"
         },
-        "interact.desktop.nestedSize": {
+        "galaius.desktop.nestedSize": {
           "type": "string",
           "default": "1280x800",
           "pattern": "^[1-9]\\d*x[1-9]\\d*$",
           "description": "Screen size of the nested desktop target (WIDTHxHEIGHT)"
         },
-        "interact.desktop.nestedHeadless": {
+        "galaius.desktop.nestedHeadless": {
           "type": "boolean",
           "default": true,
           "description": "Nested target only: ON = Xvfb in the background (CI/servers); OFF = Xephyr you can watch"
@@ -247,153 +247,153 @@
     },
     "commands": [
       {
-        "command": "interact.workspace",
-        "title": "Interact: Server Workspace"
+        "command": "galaius.workspace",
+        "title": "Galaius: Server Workspace"
       },
       {
-        "command": "interact.selectModel",
-        "title": "Interact: Select Model"
+        "command": "galaius.selectModel",
+        "title": "Galaius: Select Model"
       },
       {
-        "command": "interact.manageApiKeys",
-        "title": "Interact: Manage API Keys"
+        "command": "galaius.manageApiKeys",
+        "title": "Galaius: Manage API Keys"
       },
       {
-        "command": "interact.openDashboard",
-        "title": "Interact: Open Dashboard",
+        "command": "galaius.openDashboard",
+        "title": "Galaius: Open Dashboard",
         "icon": "$(graph)"
       },
       {
-        "command": "interact.reloadPanel",
-        "title": "Interact: Reload Panel"
+        "command": "galaius.reloadPanel",
+        "title": "Galaius: Reload Panel"
       },
       {
-        "command": "interact.agents.refresh",
+        "command": "galaius.agents.refresh",
         "title": "Refresh agents",
-        "category": "Interact",
+        "category": "Galaius",
         "icon": "$(refresh)"
       },
       {
-        "command": "interact.agents.groupBy",
+        "command": "galaius.agents.groupBy",
         "title": "Group agents by…",
-        "category": "Interact",
+        "category": "Galaius",
         "icon": "$(list-tree)"
       },
       {
-        "command": "interact.agents.stop",
+        "command": "galaius.agents.stop",
         "title": "Stop agent",
-        "category": "Interact",
+        "category": "Galaius",
         "icon": "$(debug-stop)"
       },
       {
-        "command": "interact.agents.showEvents",
+        "command": "galaius.agents.showEvents",
         "title": "Show agent activity",
-        "category": "Interact",
+        "category": "Galaius",
         "icon": "$(output)"
       },
       {
-        "command": "interact.agents.openConversation",
+        "command": "galaius.agents.openConversation",
         "title": "Open agent conversation",
-        "category": "Interact",
+        "category": "Galaius",
         "icon": "$(comment-discussion)"
       },
       {
-        "command": "interact.agents.show",
-        "title": "Interact: Show Agents Panel"
+        "command": "galaius.agents.show",
+        "title": "Galaius: Show Agents Panel"
       },
       {
-        "command": "interact.agents.sequence",
+        "command": "galaius.agents.sequence",
         "title": "Show agent sequence",
-        "category": "Interact",
+        "category": "Galaius",
         "icon": "$(git-merge)"
       },
       {
-        "command": "interact.agents.send",
+        "command": "galaius.agents.send",
         "title": "Send message to agent",
         "icon": "$(comment-discussion)"
       },
       {
-        "command": "interact.agents.team",
-        "title": "Interact: Show Team",
+        "command": "galaius.agents.team",
+        "title": "Galaius: Show Team",
         "icon": "$(organization)"
       },
       {
-        "command": "interact.agents.newSession",
-        "title": "Interact: New Session",
+        "command": "galaius.agents.newSession",
+        "title": "Galaius: New Session",
         "icon": "$(add)"
       },
       {
-        "command": "interact.agents.spawn",
-        "title": "Interact: Start an Agent",
+        "command": "galaius.agents.spawn",
+        "title": "Galaius: Start an Agent",
         "icon": "$(person-add)"
       },
       {
-        "command": "interact.agents.providers",
-        "title": "Interact: Providers That Run Agents",
+        "command": "galaius.agents.providers",
+        "title": "Galaius: Providers That Run Agents",
         "icon": "$(plug)"
       },
       {
-        "command": "interact.agents.workspace",
-        "title": "Interact: Show Agents From Workspace…",
+        "command": "galaius.agents.workspace",
+        "title": "Galaius: Show Agents From Workspace…",
         "icon": "$(folder-library)"
       },
       {
-        "command": "interact.agents.pick",
-        "title": "Interact: Read an Agent…",
+        "command": "galaius.agents.pick",
+        "title": "Galaius: Read an Agent…",
         "icon": "$(comment-discussion)"
       },
       {
-        "command": "interact.agents.broadcast",
-        "title": "Interact: Message Every Running Agent…",
+        "command": "galaius.agents.broadcast",
+        "title": "Galaius: Message Every Running Agent…",
         "icon": "$(megaphone)"
       },
       {
-        "command": "interact.agents.permissions",
-        "title": "Interact: Default Agent Autonomy…",
+        "command": "galaius.agents.permissions",
+        "title": "Galaius: Default Agent Autonomy…",
         "icon": "$(shield)"
       },
       {
-        "command": "interact.showLogs",
-        "title": "Interact: Show Logs",
+        "command": "galaius.showLogs",
+        "title": "Galaius: Show Logs",
         "icon": "$(output)"
       },
       {
-        "command": "interact.agents.backToTeam",
+        "command": "galaius.agents.backToTeam",
         "title": "Back to the Team",
-        "category": "Interact"
+        "category": "Galaius"
       },
       {
-        "command": "interact.agents.model",
+        "command": "galaius.agents.model",
         "title": "Choose the Model an Agent Runs On",
-        "category": "Interact"
+        "category": "Galaius"
       },
       {
-        "command": "interact.agents.agent",
+        "command": "galaius.agents.agent",
         "title": "Show an Agent and the Tasks It Was Given",
-        "category": "Interact"
+        "category": "Galaius"
       },
       {
-        "command": "interact.agents.definition",
+        "command": "galaius.agents.definition",
         "title": "Open an Agent's Instructions",
-        "category": "Interact"
+        "category": "Galaius"
       }
     ],
     "viewsContainers": {
       "secondarySidebar": [
         {
-          "id": "interactAgentsSecondary",
-          "title": "Interact",
-          "icon": "media/interact.svg"
+          "id": "galaiusAgentsSecondary",
+          "title": "Galaius",
+          "icon": "media/galaius.svg"
         }
       ]
     },
     "views": {
-      "interactAgentsSecondary": [
+      "galaiusAgentsSecondary": [
         {
-          "id": "interactAgents.chat",
+          "id": "galaiusAgents.chat",
           "name": "Conversation",
           "type": "webview",
-          "contextualTitle": "Interact agent chat",
+          "contextualTitle": "Galaius agent chat",
           "visibility": "visible",
           "initialSize": 5
         }
@@ -402,147 +402,147 @@
     "menus": {
       "view/title": [
         {
-          "command": "interact.agents.team",
-          "when": "view == interactAgents.board",
+          "command": "galaius.agents.team",
+          "when": "view == galaiusAgents.board",
           "group": "navigation@0"
         },
         {
-          "command": "interact.agents.spawn",
-          "when": "view == interactAgents.board",
+          "command": "galaius.agents.spawn",
+          "when": "view == galaiusAgents.board",
           "group": "navigation@1"
         },
         {
-          "command": "interact.agents.workspace",
-          "when": "view == interactAgents.board",
+          "command": "galaius.agents.workspace",
+          "when": "view == galaiusAgents.board",
           "group": "navigation@2"
         },
         {
-          "command": "interact.agents.refresh",
-          "when": "view == interactAgents.board",
+          "command": "galaius.agents.refresh",
+          "when": "view == galaiusAgents.board",
           "group": "navigation@3"
         },
         {
-          "command": "interact.agents.sequence",
-          "when": "view == interactAgents.board",
-          "group": "1_interact@0"
+          "command": "galaius.agents.sequence",
+          "when": "view == galaiusAgents.board",
+          "group": "1_galaius@0"
         },
         {
-          "command": "interact.agents.groupBy",
-          "when": "view == interactAgents.board",
-          "group": "1_interact@1"
+          "command": "galaius.agents.groupBy",
+          "when": "view == galaiusAgents.board",
+          "group": "1_galaius@1"
         },
         {
-          "command": "interact.openDashboard",
-          "when": "view == interactAgents.board",
-          "group": "1_interact@2"
+          "command": "galaius.openDashboard",
+          "when": "view == galaiusAgents.board",
+          "group": "1_galaius@2"
         },
         {
-          "command": "interact.agents.providers",
-          "when": "view == interactAgents.board",
-          "group": "1_interact@3"
+          "command": "galaius.agents.providers",
+          "when": "view == galaiusAgents.board",
+          "group": "1_galaius@3"
         },
         {
-          "command": "interact.showLogs",
-          "when": "view == interactAgents.board",
-          "group": "1_interact@4"
+          "command": "galaius.showLogs",
+          "when": "view == galaiusAgents.board",
+          "group": "1_galaius@4"
         },
         {
-          "command": "interact.agents.team",
-          "when": "view == interactAgents.chat",
+          "command": "galaius.agents.team",
+          "when": "view == galaiusAgents.chat",
           "group": "navigation@0"
         },
         {
-          "command": "interact.agents.spawn",
-          "when": "view == interactAgents.chat",
+          "command": "galaius.agents.spawn",
+          "when": "view == galaiusAgents.chat",
           "group": "navigation@1"
         },
         {
-          "command": "interact.agents.pick",
-          "when": "view == interactAgents.chat",
+          "command": "galaius.agents.pick",
+          "when": "view == galaiusAgents.chat",
           "group": "navigation@2"
         },
         {
-          "command": "interact.agents.sequence",
-          "when": "view == interactAgents.chat",
-          "group": "1_interact@0"
+          "command": "galaius.agents.sequence",
+          "when": "view == galaiusAgents.chat",
+          "group": "1_galaius@0"
         },
         {
-          "command": "interact.openDashboard",
-          "when": "view == interactAgents.chat",
-          "group": "1_interact@1"
+          "command": "galaius.openDashboard",
+          "when": "view == galaiusAgents.chat",
+          "group": "1_galaius@1"
         },
         {
-          "command": "interact.agents.providers",
-          "when": "view == interactAgents.chat",
-          "group": "1_interact@2"
+          "command": "galaius.agents.providers",
+          "when": "view == galaiusAgents.chat",
+          "group": "1_galaius@2"
         },
         {
-          "command": "interact.showLogs",
-          "when": "view == interactAgents.chat",
-          "group": "1_interact@3"
+          "command": "galaius.showLogs",
+          "when": "view == galaiusAgents.chat",
+          "group": "1_galaius@3"
         }
       ],
       "view/item/context": [
         {
-          "command": "interact.agents.openConversation",
-          "when": "view == interactAgents.board && viewItem =~ /interact(Running|Foreign)?Run/",
+          "command": "galaius.agents.openConversation",
+          "when": "view == galaiusAgents.board && viewItem =~ /galaius(Running|Foreign)?Run/",
           "group": "inline@0"
         },
         {
-          "command": "interact.agents.stop",
-          "when": "view == interactAgents.board && viewItem == interactRunningRun",
+          "command": "galaius.agents.stop",
+          "when": "view == galaiusAgents.board && viewItem == galaiusRunningRun",
           "group": "inline"
         },
         {
-          "command": "interact.agents.showEvents",
-          "when": "view == interactAgents.board && viewItem =~ /interact(Running)?Run/",
+          "command": "galaius.agents.showEvents",
+          "when": "view == galaiusAgents.board && viewItem =~ /galaius(Running)?Run/",
           "group": "inline"
         },
         {
-          "command": "interact.agents.send",
-          "when": "view == interactAgents.board && viewItem =~ /interact(Running)?Run/",
+          "command": "galaius.agents.send",
+          "when": "view == galaiusAgents.board && viewItem =~ /galaius(Running)?Run/",
           "group": "inline@1"
         }
       ],
       "commandPalette": [
         {
-          "command": "interact.agents.broadcast",
+          "command": "galaius.agents.broadcast",
           "when": "false"
         },
         {
-          "command": "interact.agents.definition",
+          "command": "galaius.agents.definition",
           "when": "false"
         },
         {
-          "command": "interact.agents.groupBy",
+          "command": "galaius.agents.groupBy",
           "when": "false"
         },
         {
-          "command": "interact.agents.model",
+          "command": "galaius.agents.model",
           "when": "false"
         },
         {
-          "command": "interact.agents.openConversation",
+          "command": "galaius.agents.openConversation",
           "when": "false"
         },
         {
-          "command": "interact.agents.refresh",
+          "command": "galaius.agents.refresh",
           "when": "false"
         },
         {
-          "command": "interact.agents.send",
+          "command": "galaius.agents.send",
           "when": "false"
         },
         {
-          "command": "interact.agents.showEvents",
+          "command": "galaius.agents.showEvents",
           "when": "false"
         },
         {
-          "command": "interact.agents.stop",
+          "command": "galaius.agents.stop",
           "when": "false"
         },
         {
-          "command": "interact.agents.spawn",
+          "command": "galaius.agents.spawn",
           "when": "false"
         }
       ]

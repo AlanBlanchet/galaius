@@ -22,15 +22,15 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from interact.browser import BrowserManager
-from interact.vision import VLMResult
+from galaius.browser import BrowserManager
+from galaius.vision import VLMResult
 from tests.support import browser_manager, ready_or_skip
 
 
 @pytest.fixture
 def srv():
-    import interact.server as _srv
-    from interact.server import breaker
+    import galaius.server as _srv
+    from galaius.server import breaker
     from unittest.mock import patch
 
     breaker.clear()
@@ -338,8 +338,8 @@ async def test_the_recorded_frames_are_the_emulated_size_on_a_real_recording():
 
 @pytest.mark.asyncio
 async def test_browser_recording_keeps_requested_fps_until_stop(monkeypatch):
-    from interact.server import tools_desktop
-    from interact.vision.types import RecordingResult, RecordingCapture, MediaAnalysis
+    from galaius.server import tools_desktop
+    from galaius.vision.types import RecordingResult, RecordingCapture, MediaAnalysis
 
     mgr = browser_manager()
     monkeypatch.setattr(mgr, 'ensure_ready', AsyncMock())
@@ -369,7 +369,7 @@ async def test_browser_recording_keeps_requested_fps_until_stop(monkeypatch):
 async def test_record_metadata_reads_encoded_fps_not_requested_sampling(tmp_path):
     import shutil
     import subprocess
-    from interact.server.tools_desktop import _record_metadata
+    from galaius.server.tools_desktop import _record_metadata
 
     executable = shutil.which('ffmpeg')
     if executable is None or shutil.which('ffprobe') is None:
@@ -391,7 +391,7 @@ async def test_record_metadata_reads_encoded_fps_not_requested_sampling(tmp_path
     ({'streams': 'invalid shape'}, (None, None)),
 ])
 async def test_record_metadata_validates_probe_boundary(monkeypatch, payload, expected):
-    from interact.server import tools_desktop
+    from galaius.server import tools_desktop
 
     process = AsyncMock(return_value=(0, json.dumps(payload).encode(), b''))
     monkeypatch.setattr(tools_desktop, 'run_isolated_process', process)
@@ -401,7 +401,7 @@ async def test_record_metadata_validates_probe_boundary(monkeypatch, payload, ex
 
 @pytest.mark.asyncio
 async def test_record_metadata_failure_does_not_invent_an_effective_rate(monkeypatch):
-    from interact.server import tools_desktop
+    from galaius.server import tools_desktop
 
     monkeypatch.setattr(tools_desktop, 'run_isolated_process', AsyncMock(side_effect=TimeoutError))
     assert await tools_desktop._record_metadata(b'fixture clip') == (None, None)
@@ -421,7 +421,7 @@ async def test_failed_browser_recording_drops_requested_fps(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('fps', [0, -1])
 async def test_record_refuses_invalid_fps_before_target_lookup(monkeypatch, fps):
-    from interact.server import tools_desktop
+    from galaius.server import tools_desktop
     from unittest.mock import Mock
 
     lookup = Mock(side_effect=AssertionError('must reject before target lookup'))
@@ -438,7 +438,7 @@ async def test_record_refuses_invalid_fps_before_target_lookup(monkeypatch, fps)
 def _rec_win():
     """A mock desktop window with the record-session surface (#61)."""
     from unittest.mock import MagicMock
-    from interact.desktop import DesktopWindow
+    from galaius.desktop import DesktopWindow
 
     win = MagicMock(spec=DesktopWindow)
     win.name = "aino"
@@ -461,7 +461,7 @@ async def test_record_desktop_start_opens_a_session_not_a_fixed_clip(srv):
 @pytest.mark.asyncio
 async def test_record_desktop_stop_analyzes_the_session_clip(srv, monkeypatch):
     """#61: record(start=False) stops the open session, then analyzes its clip like any video."""
-    import interact.desktop as dt
+    import galaius.desktop as dt
 
     win = _rec_win()
     win.stop_video.return_value = b"MP4DATA"
@@ -554,7 +554,7 @@ async def test_record_desktop_stop_without_a_session_explains(srv):
 async def test_record_desktop_explicit_duration_stays_a_one_shot_clip(srv, monkeypatch):
     """Backward compat (#62): an explicit duration= is still a blocking one-shot clip — never a
     session — so existing duration-based callers are unaffected."""
-    import interact.desktop as dt
+    import galaius.desktop as dt
 
     win = _rec_win()
     win.capture_video.return_value = b"MP4"

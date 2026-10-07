@@ -12,9 +12,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from interact import server as srv
-from interact.desktop import NestedBackend
-from interact.server import sandbox as _sandbox_mod, targets as _targets_mod
+from galaius import server as srv
+from galaius.desktop import NestedBackend
+from galaius.server import sandbox as _sandbox_mod, targets as _targets_mod
 from tests.support.desktop import bare_nested_backend
 
 # Spawn real short-lived processes the cross-platform way — `sh`/`sleep` don't exist on Windows
@@ -30,7 +30,7 @@ _SLEEP = [sys.executable, "-c", "import time; time.sleep(0.3)"]
 def test_is_alive_false_when_server_exited(monkeypatch):
     nb = bare_nested_backend()
     nb._xserver = type("P", (), {"poll": lambda self: 1})()  # exited
-    monkeypatch.setattr("interact.desktop.nested._x11_screen_size", lambda env: (400, 400))
+    monkeypatch.setattr("galaius.desktop.nested._x11_screen_size", lambda env: (400, 400))
     assert nb.is_alive() is False
 
 
@@ -39,14 +39,14 @@ def test_is_alive_false_when_display_unresponsive(monkeypatch):
     nb._xserver = type("P", (), {"poll": lambda self: None})()  # running...
     def boom(env):
         raise subprocess.CalledProcessError(1, "xdotool")
-    monkeypatch.setattr("interact.desktop.nested._x11_screen_size", boom)  # ...but not answering
+    monkeypatch.setattr("galaius.desktop.nested._x11_screen_size", boom)  # ...but not answering
     assert nb.is_alive() is False
 
 
 def test_is_alive_true_when_running_and_answering(monkeypatch):
     nb = bare_nested_backend()
     nb._xserver = type("P", (), {"poll": lambda self: None})()
-    monkeypatch.setattr("interact.desktop.nested._x11_screen_size", lambda env: (400, 400))
+    monkeypatch.setattr("galaius.desktop.nested._x11_screen_size", lambda env: (400, 400))
     assert nb.is_alive() is True
 
 
@@ -90,7 +90,7 @@ def _reset_sandbox_global():
 def test_free_displays_skips_taken(monkeypatch):
     """A display is taken if its X lock or socket exists; _free_displays returns free ones from the
     preferred number up, so concurrent sandboxes don't collide on :99 (#33)."""
-    import interact.desktop.nested as db
+    import galaius.desktop.nested as db
 
     taken = {"/tmp/.X99-lock", "/tmp/.X11-unix/X100", "/tmp/.X101-lock"}
     monkeypatch.setattr(db.os.path, "exists", lambda p: p in taken)
@@ -100,7 +100,7 @@ def test_free_displays_skips_taken(monkeypatch):
 
 
 def test_get_sandbox_respawns_a_dead_display(monkeypatch):
-    monkeypatch.setattr("interact.desktop.NestedBackend", _FakeNested)
+    monkeypatch.setattr("galaius.desktop.NestedBackend", _FakeNested)
     dead = _FakeNested(alive=False)
     srv.sandbox._sandbox = dead
 
@@ -112,7 +112,7 @@ def test_get_sandbox_respawns_a_dead_display(monkeypatch):
 
 
 def test_get_sandbox_reuses_a_live_display(monkeypatch):
-    monkeypatch.setattr("interact.desktop.NestedBackend", _FakeNested)
+    monkeypatch.setattr("galaius.desktop.NestedBackend", _FakeNested)
     live = _FakeNested(alive=True)
     srv.sandbox._sandbox = live
     assert srv._get_sandbox() is live
@@ -125,7 +125,7 @@ def test_get_sandbox_reuses_a_live_display(monkeypatch):
 def test_get_sandbox_respawn_records_the_death_reason(monkeypatch):
     """`_get_sandbox`'s self-heal must not silently swap in a fresh sandbox — the next caller
     (targets._sandbox_death_diagnostics) needs to say WHY the previous one vanished (#141)."""
-    monkeypatch.setattr("interact.desktop.NestedBackend", _FakeNested)
+    monkeypatch.setattr("galaius.desktop.NestedBackend", _FakeNested)
     dead = _FakeNested(alive=False)
     dead.display_health = lambda: "The sandbox Xephyr :99 is DOWN (SIGKILL — likely OOM-killed)"
     srv.sandbox._sandbox = dead
@@ -140,7 +140,7 @@ def test_get_sandbox_respawn_records_the_death_reason(monkeypatch):
 def test_get_sandbox_respawn_without_display_health_still_records_a_reason(monkeypatch):
     """A backend with no `display_health` (the reservation/#159 fake used elsewhere) must still
     get SOME reason recorded — never a silent respawn."""
-    monkeypatch.setattr("interact.desktop.NestedBackend", _FakeNested)
+    monkeypatch.setattr("galaius.desktop.NestedBackend", _FakeNested)
     dead = _FakeNested(alive=False)
     srv.sandbox._sandbox = dead
 
@@ -150,7 +150,7 @@ def test_get_sandbox_respawn_without_display_health_still_records_a_reason(monke
 
 
 def test_reservation_replaced_reason_none_while_still_the_live_sandbox(monkeypatch):
-    monkeypatch.setattr("interact.desktop.NestedBackend", _FakeNested)
+    monkeypatch.setattr("galaius.desktop.NestedBackend", _FakeNested)
     reservation = srv.sandbox.reserve_sandbox()
     assert reservation.replaced_reason() is None
 
@@ -159,7 +159,7 @@ def test_reservation_replaced_reason_names_the_resize_that_replaced_it(monkeypat
     """#159: caller A reserves the sandbox; caller B's launch_app asks for a different explicit
     size, which respawns the singleton. A's reservation must now say it was replaced, and why —
     never hand back stale state with no explanation."""
-    monkeypatch.setattr("interact.desktop.NestedBackend", _FakeNested)
+    monkeypatch.setattr("galaius.desktop.NestedBackend", _FakeNested)
     reservation = srv.sandbox.reserve_sandbox(size="640x480")
 
     srv._get_sandbox(size="800x600")  # a different caller, explicit new size → respawns it
@@ -172,7 +172,7 @@ def test_reservation_replaced_reason_names_the_resize_that_replaced_it(monkeypat
 def test_reservation_replaced_reason_after_death_respawn(monkeypatch):
     """#141 + #159 together: a reservation holder whose sandbox died and self-healed under it (via
     someone else's call) can ask why its handle is now stale."""
-    monkeypatch.setattr("interact.desktop.NestedBackend", _FakeNested)
+    monkeypatch.setattr("galaius.desktop.NestedBackend", _FakeNested)
     reservation = srv.sandbox.reserve_sandbox()
     srv.sandbox._sandbox.alive = False  # the X server dies after the reservation was taken
 
@@ -200,7 +200,7 @@ def test_capture_reaps_exited_apps(monkeypatch):
     proc = nb.spawn(_EXIT0)
     proc.wait(timeout=5)
     monkeypatch.setattr(
-        "interact.desktop.nested.subprocess.run",
+        "galaius.desktop.nested.subprocess.run",
         lambda *a, **k: types.SimpleNamespace(stdout=b"PNG"),
     )
     nb.capture()
@@ -222,7 +222,7 @@ def test_capture_video_grabs_nested_display_not_zero(monkeypatch):
             fh.write(b"\x00\x00FAKEMP4")
         return types.SimpleNamespace(returncode=0)
 
-    monkeypatch.setattr("interact.desktop.nested.subprocess.run", fake_run)
+    monkeypatch.setattr("galaius.desktop.nested.subprocess.run", fake_run)
     data = nb.capture_video("aino", duration=1, fps=5)
     cmd = captured["cmd"]
     grab = cmd[cmd.index("-i") + 1]
@@ -255,10 +255,10 @@ def test_close_kills_through_the_sweeps_and_forgets_its_apps(monkeypatch):
     nb._xserver = type("X", (), {"poll": lambda self: None, "terminate": lambda self: None,
                                  "wait": lambda self, timeout: 0})()
     swept: list[tuple[str, bool]] = []
-    monkeypatch.setattr("interact.desktop.orphans.sweep_if_owned",
+    monkeypatch.setattr("galaius.desktop.orphans.sweep_if_owned",
                         lambda display, *, owned: swept.append((display, owned)) or [])
-    monkeypatch.setattr("interact.desktop.orphans.display_clients", lambda display: [])
-    monkeypatch.setattr("interact.launch.sandbox_profiles", lambda display: [])
+    monkeypatch.setattr("galaius.desktop.orphans.display_clients", lambda display: [])
+    monkeypatch.setattr("galaius.launch.sandbox_profiles", lambda display: [])
     proc = nb.spawn([sys.executable, "-c", "import time; time.sleep(30)"])
     nb.close()
     assert proc.poll() is not None
@@ -302,8 +302,8 @@ class _DummyProc:
 
 def _construct_without_xserver(monkeypatch):
     """Run NestedBackend.__init__ without actually starting an X server."""
-    monkeypatch.setattr("interact.desktop.backend.shutil.which", lambda _: "/usr/bin/Xephyr")
-    monkeypatch.setattr("interact.desktop.nested.subprocess.Popen", lambda *a, **k: _DummyProc())
+    monkeypatch.setattr("galaius.desktop.backend.shutil.which", lambda _: "/usr/bin/Xephyr")
+    monkeypatch.setattr("galaius.desktop.nested.subprocess.Popen", lambda *a, **k: _DummyProc())
     monkeypatch.setattr(NestedBackend, "_open_log", staticmethod(lambda label: os.devnull))
     monkeypatch.setattr(NestedBackend, "_await_ready", lambda self, timeout: None)
 
@@ -375,7 +375,7 @@ def _fake_sandbox(idle: float, recording: bool = False):
 def test_idle_sandbox_is_reaped(monkeypatch):
     """The user kept finding agent-left Xephyr windows on his desktop: agents open the sandbox and
     never close it. Browser sessions already idle-reap (#36); the sandbox now does too — same TTL."""
-    import interact.server as srv
+    import galaius.server as srv
 
     closed = []
     monkeypatch.setattr(srv.sandbox, "_sandbox", _fake_sandbox(idle=901.0))
@@ -386,7 +386,7 @@ def test_idle_sandbox_is_reaped(monkeypatch):
 
 
 def test_active_or_recording_sandbox_survives(monkeypatch):
-    import interact.server as srv
+    import galaius.server as srv
 
     closed = []
     monkeypatch.setattr(srv.sandbox, "_close_sandbox", lambda reason=None: closed.append(True))
@@ -402,7 +402,7 @@ def test_sandbox_touch_marks_use(monkeypatch):
     never hits the TTL."""
     import time as _time
 
-    from interact.desktop import NestedBackend
+    from galaius.desktop import NestedBackend
 
     nb = NestedBackend.__new__(NestedBackend)
     nb.touch()
@@ -416,7 +416,7 @@ def test_sandbox_reaping_runs_even_with_browser_ttl_disabled(monkeypatch):
     ttl gates only its own half."""
     import asyncio
 
-    import interact.server as srv
+    import galaius.server as srv
 
     monkeypatch.setattr(srv.config, "sandbox_idle_ttl", 300)
     reaped = []

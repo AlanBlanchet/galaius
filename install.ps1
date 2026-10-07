@@ -1,10 +1,10 @@
-# Install the `interact` CLI on Windows, then connect this computer to your Interact account.
-#   powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/AlanBlanchet/interact/main/install.ps1 | iex"
+# Install the `galaius` CLI on Windows, then connect this computer to your Galaius account.
+#   powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/AlanBlanchet/galaius/main/install.ps1 | iex"
 #
-# Twin of install.sh: installs uv (the Python tool manager) and a Python if missing, then `interact`
+# Twin of install.sh: installs uv (the Python tool manager) and a Python if missing, then `galaius`
 # from GitHub's source archives (no git needed). Run in a PowerShell window, it goes straight on to
-# `interact login`. Override the source with $env:INTERACT_REPO = <path-or-git-url>, or another
-# source archive of this repository (a branch or tag .zip) with $env:INTERACT_ARCHIVE = <url>.
+# `galaius login`. Override the source with $env:GALAIUS_REPO = <path-or-git-url>, or another
+# source archive of this repository (a branch or tag .zip) with $env:GALAIUS_ARCHIVE = <url>.
 # Windows PowerShell 5.1 and PowerShell 7 alike; your own user, no administrator needed.
 
 $ErrorActionPreference = 'Stop'
@@ -19,11 +19,11 @@ function Invoke-Tool([string]$What, [scriptblock]$Command) {
 }
 
 # uv's own installer, this exact release, its bytes pinned (it pins each uv binary's sha256 in
-# turn); the same pins as the Interact server's installer.
+# turn); the same pins as the Galaius server's installer.
 $UvVersion = '0.11.25'
 $UvInstallerSha256 = 'e9d26d1b6c34553831c5334189c1e9e821e53bedc5ad9a37d88992b0355af965'
 
-function Install-Interact {
+function Install-Galaius {
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
     $uvBin = Join-Path $HOME '.local\bin'
     if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
@@ -40,67 +40,67 @@ function Install-Interact {
         $env:Path = "$uvBin;$env:Path"  # uv edits the user PATH for new windows, not this one
     }
 
-    if ($env:INTERACT_REPO) {
-        Write-Host "Installing interact from $($env:INTERACT_REPO)..."
-        Invoke-Tool 'installing interact' { uv tool install --force $env:INTERACT_REPO }
+    if ($env:GALAIUS_REPO) {
+        Write-Host "Installing galaius from $($env:GALAIUS_REPO)..."
+        Invoke-Tool 'installing galaius' { uv tool install --force $env:GALAIUS_REPO }
     } else {
         Install-FromArchives
     }
 
-    # Put uv's tool folder on PATH for future windows, so `interact` is found there.
-    Invoke-Tool 'adding interact to PATH' { uv tool update-shell 2>&1 | Out-Null }
-    $bin = (Invoke-Tool 'finding interact' { uv tool dir --bin }).Trim()
-    $interact = Join-Path $bin 'interact.exe'
+    # Put uv's tool folder on PATH for future windows, so `galaius` is found there.
+    Invoke-Tool 'adding galaius to PATH' { uv tool update-shell 2>&1 | Out-Null }
+    $bin = (Invoke-Tool 'finding galaius' { uv tool dir --bin }).Trim()
+    $galaius = Join-Path $bin 'galaius.exe'
 
     Write-Host ''
-    Write-Host 'interact installed.'
-    # $env:INTERACT_ADDRESS names the server; a computer connected elsewhere moves there when that
+    Write-Host 'galaius installed.'
+    # $env:GALAIUS_ADDRESS names the server; a computer connected elsewhere moves there when that
     # server holds it (the server moved).
-    $server = if ($env:INTERACT_ADDRESS) { @('--server', $env:INTERACT_ADDRESS) } else { @() }
+    $server = if ($env:GALAIUS_ADDRESS) { @('--server', $env:GALAIUS_ADDRESS) } else { @() }
     # `irm | iex` keeps this window's keyboard: ask there, and only when a person is at it.
     if (-not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected) {
-        Write-Host 'Connecting this computer to your Interact account...'
-        & $interact login @server
-        if ($LASTEXITCODE -ne 0) { Write-Host 'Not connected. Run it again any time:  interact login' }
+        Write-Host 'Connecting this computer to your Galaius account...'
+        & $galaius login @server
+        if ($LASTEXITCODE -ne 0) { Write-Host 'Not connected. Run it again any time:  galaius login' }
     } elseif ($server.Count -gt 0) {
-        Write-Host "Connecting this computer to $($env:INTERACT_ADDRESS)..."
-        & $interact login @server --yes
-        if ($LASTEXITCODE -ne 0) { Write-Host 'Not connected. Run it again any time:  interact login' }
+        Write-Host "Connecting this computer to $($env:GALAIUS_ADDRESS)..."
+        & $galaius login @server --yes
+        if ($LASTEXITCODE -ne 0) { Write-Host 'Not connected. Run it again any time:  galaius login' }
     } else {
-        Write-Host 'Next, connect this computer to your Interact account:  interact login'
+        Write-Host 'Next, connect this computer to your Galaius account:  galaius login'
     }
-    Write-Host "(In a new window ``interact`` is on your PATH; here: $interact)"
+    Write-Host "(In a new window ``galaius`` is on your PATH; here: $galaius)"
     Write-Host ''
-    Write-Host 'Also: interact install <claude|cursor|codex|vscode|windsurf|zed|claude-desktop>   # register the MCP server'
-    Write-Host '      interact status | interact doctor | interact    # bindings, checks, settings UI'
+    Write-Host 'Also: galaius install <claude|cursor|codex|vscode|windsurf|zed|claude-desktop>   # register the MCP server'
+    Write-Host '      galaius status | galaius doctor | galaius    # bindings, checks, settings UI'
     Write-Host 'On Windows the browser tools work fully; driving native desktop windows is Linux-only today.'
 }
 
-# The main branch and the exact interact-core it pins, as source archives: no git on the computer.
+# The main branch and the exact galaius-core it pins, as source archives: no git on the computer.
 function Install-FromArchives {
-    $work = Join-Path ([IO.Path]::GetTempPath()) ("interact-install-" + [Guid]::NewGuid().ToString('N'))
+    $work = Join-Path ([IO.Path]::GetTempPath()) ("galaius-install-" + [Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $work | Out-Null
     try {
-        Write-Host 'Downloading interact...'
+        Write-Host 'Downloading galaius...'
         # main's exact commit: the archive's folder then names it, and the install knows which build it
         # is (an automatic upgrade never re-installs it). No answer from GitHub's API: main as is.
-        $commit = try { (Invoke-RestMethod -UseBasicParsing -Uri 'https://api.github.com/repos/AlanBlanchet/interact/commits/main').sha } catch { $null }
-        $archive = if ($env:INTERACT_ARCHIVE) { $env:INTERACT_ARCHIVE } elseif ($commit -match '^[0-9a-f]{40}$') { "https://github.com/AlanBlanchet/interact/archive/$commit.zip" } else { 'https://github.com/AlanBlanchet/interact/archive/refs/heads/main.zip' }
-        $zip = Join-Path $work 'interact.zip'
+        $commit = try { (Invoke-RestMethod -UseBasicParsing -Uri 'https://api.github.com/repos/AlanBlanchet/galaius/commits/main').sha } catch { $null }
+        $archive = if ($env:GALAIUS_ARCHIVE) { $env:GALAIUS_ARCHIVE } elseif ($commit -match '^[0-9a-f]{40}$') { "https://github.com/AlanBlanchet/galaius/archive/$commit.zip" } else { 'https://github.com/AlanBlanchet/galaius/archive/refs/heads/main.zip' }
+        $zip = Join-Path $work 'galaius.zip'
         Invoke-WebRequest -UseBasicParsing -Uri $archive -OutFile $zip
         Expand-Archive -Path $zip -DestinationPath (Join-Path $work 'source')
         $source = (Get-ChildItem -Directory (Join-Path $work 'source') | Select-Object -First 1).FullName
-        $pin = [regex]::Match((Get-Content -Raw (Join-Path $source 'pyproject.toml')), 'interact-core\.git@([0-9a-f]{40})')
-        if (-not $pin.Success) { throw 'cannot read the pinned interact-core version' }
+        $pin = [regex]::Match((Get-Content -Raw (Join-Path $source 'pyproject.toml')), 'galaius-core\.git@([0-9a-f]{40})')
+        if (-not $pin.Success) { throw 'cannot read the pinned galaius-core version' }
         $overrides = Join-Path $work 'overrides.txt'
-        [IO.File]::WriteAllText($overrides, "interact-core @ https://github.com/AlanBlanchet/interact-core/archive/$($pin.Groups[1].Value).tar.gz`n")
-        Write-Host 'Installing interact (this takes a minute the first time)...'
+        [IO.File]::WriteAllText($overrides, "galaius-core @ https://github.com/AlanBlanchet/galaius-core/archive/$($pin.Groups[1].Value).tar.gz`n")
+        Write-Host 'Installing galaius (this takes a minute the first time)...'
         # From its own folder: uv refuses an --overrides path holding a space (a user name often does).
         Push-Location $work
-        try { Invoke-Tool 'installing interact' { uv tool install --force --quiet --overrides overrides.txt $source } } finally { Pop-Location }
+        try { Invoke-Tool 'installing galaius' { uv tool install --force --quiet --overrides overrides.txt $source } } finally { Pop-Location }
     } finally {
         Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
     }
 }
 
-Install-Interact
+Install-Galaius

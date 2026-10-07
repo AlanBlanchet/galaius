@@ -1,11 +1,11 @@
 """Which model a role actually resolves to — best/cheapest first, and only what clears its
 criterion right now. Every role carries ONE requirement string
-(``interact_core.tool_settings.PortableToolSettingsValues``); there is no separate pinned-model
+(``galaius_core.tool_settings.PortableToolSettingsValues``); there is no separate pinned-model
 field and no separate fallback-chain field — ``Criteria.qualifying`` already returns every
 clearing model in rank order, so the second entry IS the fallback.
 
 A bare capability filter with no ranking term (``cap.vlm``) resolves CHEAPEST-clearing, same as
-every other criterion in this product (`interact/criteria.py`); a bare measured benchmark switches
+every other criterion in this product (`galaius/criteria.py`); a bare measured benchmark switches
 to best-measured-first. Real cases this covers: no provider configured at all, a criterion that
 resolves once a key is set, an explicit per-call override beating everything, and a criterion
 that clears nothing REFUSING loudly rather than silently substituting a model nobody asked for.
@@ -13,8 +13,8 @@ that clears nothing REFUSING loudly rather than silently substituting a model no
 
 import pytest
 
-from interact.config import Config
-from interact.models import Benchmark, Model
+from galaius.config import Config
+from galaius.models import Benchmark, Model
 from tests.support.models import catalog_of
 from tests.support.models import model as _m
 
@@ -24,7 +24,7 @@ _RANK_STRONGEST = "cap.vlm and fx.strength"
 @pytest.fixture
 def registry():
     """Two reachable-once-keyed VLMs plus a keyless subscription wrapper that must never be
-    auto-selected (interact never drives someone's subscription credentials on its own). A
+    auto-selected (galaius never drives someone's subscription credentials on its own). A
     throwaway measured benchmark (never the live Artificial Analysis board, which these fixture
     ids aren't on) gives a rankable "strength" independent of price."""
     bench = Benchmark(id="strength", name="Fixture Strength", description="d", namespace="fx")
@@ -111,7 +111,7 @@ def test_ranked_models_second_entry_is_the_fallback(registry, monkeypatch):
 
 
 def test_circuit_broken_model_is_skipped_in_favour_of_the_next(registry, monkeypatch):
-    from interact.models import CircuitBreaker
+    from galaius.models import CircuitBreaker
 
     monkeypatch.setenv("ALPHA_KEY", "k")
     monkeypatch.setenv("BETA_KEY", "k")

@@ -9,7 +9,7 @@ Every subject the batch runner is on the hook for:
   before returning (without blocking on infinite spinners).
 - Batch resilience (#138 / #139 / #140 / #147 / #149 / #162): one failing step keeps earlier
   reports and the batch keeps going; a zero-match selector embeds candidates; wait_for timeout
-  attaches page state; navigate classifies unreachable vs interact-side; sleep ceiling covers a
+  attaches page state; navigate classifies unreachable vs galaius-side; sleep ceiling covers a
   slow app start.
 - Playwright wording that explains nothing gets rephrased with what to do next (opaque
   "execution context was destroyed" → "the page navigated, use wait_for").
@@ -28,7 +28,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from playwright.async_api import Error as PlaywrightError, TimeoutError as PlaywrightTimeout
 
-from interact.actions import (
+from galaius.actions import (
     ClickAction,
     EvaluateJsAction,
     HandleDialogAction,
@@ -37,16 +37,16 @@ from interact.actions import (
     ScrollAction,
     WaitForAction,
 )
-from interact.actions.dispatch import (
+from galaius.actions.dispatch import (
     _classify_navigate_failure,
     _execute_browser_action,
     _run_actions_browser,
 )
-from interact.actions.models import SleepAction, _click_selector
-from interact.actions.models import EvaluateJsAction as _EvalModel  # real class the monkeypatch targets
-from interact.browser import BrowserManager
-from interact.desktop import DesktopWindow
-from interact.server import _run_actions_desktop
+from galaius.actions.models import SleepAction, _click_selector
+from galaius.actions.models import EvaluateJsAction as _EvalModel  # real class the monkeypatch targets
+from galaius.browser import BrowserManager
+from galaius.desktop import DesktopWindow
+from galaius.server import _run_actions_desktop
 
 from tests.support import browser_manager, ready_or_skip
 
@@ -265,12 +265,12 @@ async def test_wait_for_timeout_attaches_the_final_page_state():
 def test_navigate_failure_classifies_target_unreachable(message, timed_out, expect):
     msg = _classify_navigate_failure("https://x/", message, timed_out=timed_out)
     assert expect in msg
-    assert "not interact" in msg
+    assert "not galaius" in msg
 
 
-def test_navigate_failure_classifies_interact_side_separately():
+def test_navigate_failure_classifies_galaius_side_separately():
     msg = _classify_navigate_failure("https://x/", "some internal playwright glitch", timed_out=False)
-    assert "interact's side" in msg
+    assert "galaius's side" in msg
     assert "unreachable" not in msg
 
 
@@ -344,7 +344,7 @@ async def test_the_real_action_type_reaches_the_message(monkeypatch):
 def scroll_spy():
     with (
         patch.object(DesktopWindow, "scroll", new_callable=AsyncMock) as spy,
-        patch("interact.actions.dispatch.DesktopState") as st,
+        patch("galaius.actions.dispatch.DesktopState") as st,
     ):
         st.capture.return_value = None
         yield spy
@@ -366,7 +366,7 @@ async def test_desktop_scroll_defaults_to_window_center(scroll_spy):
 
 @pytest.mark.asyncio
 async def test_desktop_scroll_anchors_on_a_ref_element(scroll_spy):
-    from interact.desktop.element import DesktopElement
+    from galaius.desktop.element import DesktopElement
 
     win = DesktopWindow(name="app", wid=43, w=1200, h=800, x=0, y=0)
     el = DesktopElement(index=3, ref="e3", role="list", name="dock", x=650, y=700, w=100, h=60)
@@ -385,9 +385,9 @@ async def test_desktop_scroll_anchors_on_a_ref_element(scroll_spy):
 
 @pytest.mark.asyncio
 async def test_desktop_waits_before_capture_after_input_and_before_final_state(monkeypatch):
-    import interact.server as srv
-    from interact.actions import ScreenshotAction, KeyPressAction
-    from interact.actions import dispatch
+    import galaius.server as srv
+    from galaius.actions import ScreenshotAction, KeyPressAction
+    from galaius.actions import dispatch
     from types import SimpleNamespace
 
     events = []
@@ -408,9 +408,9 @@ async def test_desktop_waits_before_capture_after_input_and_before_final_state(m
 
 @pytest.mark.asyncio
 async def test_desktop_selector_wait_refuses_before_sending_input(monkeypatch):
-    import interact.server as srv
-    from interact.actions import KeyPressAction
-    from interact.actions import dispatch
+    import galaius.server as srv
+    from galaius.actions import KeyPressAction
+    from galaius.actions import dispatch
     from types import SimpleNamespace
 
     win = SimpleNamespace(wid=1, name='fixture', w=800, h=600, capture=lambda: b'png', press_key=AsyncMock())
@@ -423,9 +423,9 @@ async def test_desktop_selector_wait_refuses_before_sending_input(monkeypatch):
 @pytest.mark.asyncio
 async def test_desktop_screenshot_wait_elapses_before_each_capture(monkeypatch):
     import time
-    import interact.server as srv
-    from interact.actions import ScreenshotAction
-    from interact.actions import dispatch
+    import galaius.server as srv
+    from galaius.actions import ScreenshotAction
+    from galaius.actions import dispatch
     from types import SimpleNamespace
 
     captured = []
@@ -449,7 +449,7 @@ async def test_desktop_screenshot_wait_elapses_before_each_capture(monkeypatch):
 
 
 def test_el_report_never_leaks_coordinates(monkeypatch):
-    import interact.actions.dispatch as dispatch
+    import galaius.actions.dispatch as dispatch
 
     monkeypatch.setattr(dispatch, "_fmt_cursor", lambda win=None: "default")
 
@@ -465,7 +465,7 @@ def test_xy_report_states_the_coordinates_it_acted_on(monkeypatch):
     """A coordinate action is reported factually — no prescriptive 'use refs instead' nudge
     (it fights coordinate-capable agents). It DOES state the coordinates: they are the agent's
     own literal input, and omitting them left it unable to tell where the click landed (#81)."""
-    import interact.actions.dispatch as dispatch
+    import galaius.actions.dispatch as dispatch
 
     monkeypatch.setattr(dispatch, "_fmt_cursor", lambda win=None: "default")
     report = dispatch._xy_report("clicked", 137, 451)
@@ -477,8 +477,8 @@ def test_element_at_finds_the_smallest_containing_box():
     """`_element_at` is the lookup behind the HEDGED "cached detection says: …" annotation on a
     coordinate action — it no longer SNAPS the click onto that element (#81/#88), so this
     covers the containment logic only. Smallest box wins (button > panel)."""
-    import interact.actions.dispatch as dispatch
-    from interact.desktop import DesktopElement, _element_cache
+    import galaius.actions.dispatch as dispatch
+    from galaius.desktop import DesktopElement, _element_cache
 
     wid = 4242
     panel = DesktopElement(index=1, role="panel", name="board", x=0, y=0, w=800, h=800)

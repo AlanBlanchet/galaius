@@ -1,4 +1,4 @@
-"""debug_dir: the single, overridable base for interact's logs + debug artifacts, and what
+"""debug_dir: the single, overridable base for galaius's logs + debug artifacts, and what
 `Debug` writes into it (tool-input dumps, output dumps, per-invocation/per-step paths)."""
 
 import json
@@ -9,15 +9,15 @@ from unittest.mock import patch
 import pytest
 from pydantic import ValidationError
 
-from interact import debug_utils
-from interact.cli import usage
-from interact.config import Config
+from galaius import debug_utils
+from galaius.cli import usage
+from galaius.config import Config
 
 
 @pytest.fixture
 def srv():
-    import interact.server as _srv
-    from interact.server import breaker
+    import galaius.server as _srv
+    from galaius.server import breaker
 
     breaker.clear()
     _srv.config.component_criteria = "cap.gui_grounding"
@@ -27,18 +27,18 @@ def srv():
     breaker.clear()
 
 
-def test_debug_dir_default_is_home_interact_out(monkeypatch):
-    # Output lives under ~/.interact/out so the ~/.interact root stays clean (config.env + out/).
-    # delenv first: importing interact.runtime loads the developer's OWN ~/.interact/config.env
-    # into os.environ, so on a machine that sets INTERACT_DEBUG_DIR this asserted the developer's
+def test_debug_dir_default_is_home_galaius_out(monkeypatch):
+    # Output lives under ~/.galaius/out so the ~/.galaius root stays clean (config.env + out/).
+    # delenv first: importing galaius.runtime loads the developer's OWN ~/.galaius/config.env
+    # into os.environ, so on a machine that sets GALAIUS_DEBUG_DIR this asserted the developer's
     # override instead of the default — green in CI, permanently red locally.
-    monkeypatch.delenv("INTERACT_DEBUG_DIR", raising=False)
-    assert Config().debug_dir == Path.home() / ".interact" / "out"
-    assert Config().usage_log == Path.home() / ".interact" / "out" / "usage.jsonl"
+    monkeypatch.delenv("GALAIUS_DEBUG_DIR", raising=False)
+    assert Config().debug_dir == Path.home() / ".galaius" / "out"
+    assert Config().usage_log == Path.home() / ".galaius" / "out" / "usage.jsonl"
 
 
 def test_debug_dir_env_override(monkeypatch, tmp_path):
-    monkeypatch.setenv("INTERACT_DEBUG_DIR", str(tmp_path))
+    monkeypatch.setenv("GALAIUS_DEBUG_DIR", str(tmp_path))
     config = Config()
     assert config.debug_dir == tmp_path
     assert config.usage_log == tmp_path / "usage.jsonl"
@@ -47,9 +47,9 @@ def test_debug_dir_env_override(monkeypatch, tmp_path):
 @pytest.mark.parametrize(
     "field, attr",
     [
-        ("INTERACT_DEBUG_DIR", "debug_dir"),
-        ("INTERACT_SCREENSHOT_DUMP_DIR", "screenshot_dump_dir"),
-        ("INTERACT_BROWSER_PROFILE_DIR", "browser_profile_dir"),
+        ("GALAIUS_DEBUG_DIR", "debug_dir"),
+        ("GALAIUS_SCREENSHOT_DUMP_DIR", "screenshot_dump_dir"),
+        ("GALAIUS_BROWSER_PROFILE_DIR", "browser_profile_dir"),
     ],
 )
 def test_path_settings_expand_tilde(monkeypatch, field, attr):
@@ -61,19 +61,19 @@ def test_path_settings_expand_tilde(monkeypatch, field, attr):
 
 
 def test_usage_log_follows_expanded_tilde(monkeypatch):
-    monkeypatch.setenv("INTERACT_DEBUG_DIR", "~/.interact/out")
-    assert Config().usage_log == Path.home() / ".interact" / "out" / "usage.jsonl"
+    monkeypatch.setenv("GALAIUS_DEBUG_DIR", "~/.galaius/out")
+    assert Config().usage_log == Path.home() / ".galaius" / "out" / "usage.jsonl"
 
 
 def test_bare_tilde_is_home(monkeypatch):
-    monkeypatch.setenv("INTERACT_DEBUG_DIR", "~")
+    monkeypatch.setenv("GALAIUS_DEBUG_DIR", "~")
     assert Config().debug_dir == Path.home()
 
 
 def test_unexpandable_tilde_gives_a_readable_error(monkeypatch):
     """`~nosuchuser` makes expanduser raise RuntimeError, which pydantic does NOT wrap — without
     the ValueError conversion the server dies with a bare traceback instead of a field error."""
-    monkeypatch.setenv("INTERACT_DEBUG_DIR", "~nosuchuser12345/out")
+    monkeypatch.setenv("GALAIUS_DEBUG_DIR", "~nosuchuser12345/out")
     with pytest.raises(ValidationError, match="cannot expand"):
         Config()
 
@@ -98,14 +98,14 @@ def test_dump_dir_expands_tilde(monkeypatch, tmp_path):
 
 
 def test_usage_default_log_follows_debug_dir(monkeypatch, tmp_path):
-    from interact.runtime import config as runtime_config
+    from galaius.runtime import config as runtime_config
 
     monkeypatch.setattr(runtime_config, "debug_dir", tmp_path)
     assert usage.default_log_path() == tmp_path / "usage.jsonl"
 
 
 def test_dump_input_writes_both_files(tmp_path):
-    from interact.debug_utils import Debug
+    from galaius.debug_utils import Debug
 
     inv = str(tmp_path / "inv")
     Debug.dump_input(inv, {"tool": "screenshot", "query": "q"}, {"image_model": "m", "headless": True})
@@ -116,7 +116,7 @@ def test_dump_input_writes_both_files(tmp_path):
 
 
 def test_dump_output_records_exact_return_including_errors(tmp_path):
-    from interact.debug_utils import Debug
+    from galaius.debug_utils import Debug
 
     inv = str(tmp_path / "ok")
     Debug.dump_output(inv, "clicked [3] button: 'Play'")
@@ -159,7 +159,7 @@ def test_new_invocation_dir(srv, tmp_path):
     """Debug.new_invocation_dir creates HHMMSS_tool subfolder under session timestamp, deduplicates on collision."""
     now = datetime(2026, 4, 23, 14, 52, 14)
     with (
-        patch("interact.debug_utils._dt", wraps=datetime) as mock_dt,
+        patch("galaius.debug_utils._dt", wraps=datetime) as mock_dt,
         patch.object(srv.Debug, "SESSION_TS", "20260423_140000"),
     ):
         mock_dt.now.return_value = now
@@ -174,7 +174,7 @@ def test_new_invocation_dir(srv, tmp_path):
 
     # Second call in same second creates _2 suffix
     with (
-        patch("interact.debug_utils._dt", wraps=datetime) as mock_dt,
+        patch("galaius.debug_utils._dt", wraps=datetime) as mock_dt,
         patch.object(srv.Debug, "SESSION_TS", "20260423_140000"),
     ):
         mock_dt.now.return_value = now

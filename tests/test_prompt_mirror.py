@@ -1,12 +1,12 @@
 """Folder names a PC derives from server text (a workspace name) stay one safe folder each,
-and two workspaces sharing a name never share a folder (`interact.prompt_mirror`)."""
+and two workspaces sharing a name never share a folder (`galaius.prompt_mirror`)."""
 
 import json
 from uuid import uuid4
 
 import pytest
 
-from interact.prompt_mirror import PromptWorkspace, folder_name, folders, follow_renames, freeze_legacy
+from galaius.prompt_mirror import PromptWorkspace, folder_name, folders, follow_renames, freeze_legacy
 
 
 @pytest.mark.parametrize(("text", "name"), [

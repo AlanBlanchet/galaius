@@ -26,31 +26,31 @@ import pytest
 from jsonschema.exceptions import SchemaError
 from PIL import Image
 
-import interact.processes as isolated_processes
-import interact.server.vlm as server_vlm
-import interact.vision.core as vision
-import interact.vision.session as vision_session
-import interact.vision.workspace as vision_workspace
-from interact.agents.events import AgentEvent
+import galaius.processes as isolated_processes
+import galaius.server.vlm as server_vlm
+import galaius.vision.core as vision
+import galaius.vision.session as vision_session
+import galaius.vision.workspace as vision_workspace
+from galaius.agents.events import AgentEvent
 from tests.support import solid_png
-from interact.agents.providers import (
+from galaius.agents.providers import (
     ClaudeCodeProvider,
     CodexProvider,
     _MediaProcessFailure,
     _MediaResult,
 )
-from interact.config import Config
-from interact.models import CircuitBreaker, Model, ModelCapability
-from interact.vision import MediaItem
-from interact.vision.core import analyze_media, transcribe_audio
-from interact.vision.core import VLMResult
+from galaius.config import Config
+from galaius.models import CircuitBreaker, Model, ModelCapability
+from galaius.vision import MediaItem
+from galaius.vision.core import analyze_media, transcribe_audio
+from galaius.vision.core import VLMResult
 
 
 @pytest.fixture(autouse=True)
 def _workspace_owned_media_output(media_output_root: Path, monkeypatch):
     """Keep sensitive session stages under the owned workspace, never pytest's global /tmp."""
     monkeypatch.setenv(
-        "INTERACT_MEDIA_SESSION_NO_EXTRA_USAGE_CONFIRMED_FOR", "claude"
+        "GALAIUS_MEDIA_SESSION_NO_EXTRA_USAGE_CONFIRMED_FOR", "claude"
     )
     def session_log_dir(config: Config) -> Path:
         return media_output_root / "sessions" / config.debug_dir.name
@@ -254,9 +254,9 @@ async def test_media_prompt_stdin_is_bounded_before_process_spawn(tmp_path: Path
 
 
 def test_production_media_defaults_are_session_only(monkeypatch) -> None:
-    monkeypatch.delenv("INTERACT_MEDIA_BACKEND", raising=False)
-    monkeypatch.delenv("INTERACT_MEDIA_BILLING", raising=False)
-    monkeypatch.delenv("INTERACT_MEDIA_SESSION_NO_EXTRA_USAGE_CONFIRMED_FOR", raising=False)
+    monkeypatch.delenv("GALAIUS_MEDIA_BACKEND", raising=False)
+    monkeypatch.delenv("GALAIUS_MEDIA_BILLING", raising=False)
+    monkeypatch.delenv("GALAIUS_MEDIA_SESSION_NO_EXTRA_USAGE_CONFIRMED_FOR", raising=False)
     config = Config()
     assert config.media_backend == "auto"
     assert config.media_billing == "session_only"
@@ -1251,8 +1251,8 @@ async def test_transcription_uses_configured_private_media_workspace(
 
 @pytest.mark.asyncio
 async def test_transcribe_audio_without_config_uses_the_fail_closed_default(monkeypatch) -> None:
-    monkeypatch.delenv("INTERACT_MEDIA_BACKEND", raising=False)
-    monkeypatch.delenv("INTERACT_MEDIA_BILLING", raising=False)
+    monkeypatch.delenv("GALAIUS_MEDIA_BACKEND", raising=False)
+    monkeypatch.delenv("GALAIUS_MEDIA_BILLING", raising=False)
 
     def forbidden_validation(*args, **kwargs):
         raise AssertionError("billing must be checked before API validation or temp staging")

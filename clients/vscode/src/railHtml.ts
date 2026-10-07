@@ -653,7 +653,7 @@ export function railBody(
     ? `<div class="legend">Artificial Analysis intelligence · one measure, not a verdict</div>` : "";
   const chips = rail.chips
     .map((c) => `<button class="chip" data-command="${esc(c.command)}">${esc(c.label)}</button>`)
-    .concat('<button class="chip" data-command="interact.openDashboard" title="Interact settings">⚙ Settings</button>')
+    .concat('<button class="chip" data-command="galaius.openDashboard" title="Galaius settings">⚙ Settings</button>')
     .join("");
 
   // At team level a row is a COLLEAGUE: the name leads (the same name the world's plaque
@@ -770,7 +770,7 @@ export function railBody(
   return `<div class="roster view-${view}">
 <div class="rail">
   ${legend}
-  <div><button class="scope" data-command="interact.agents.workspace"
+  <div><button class="scope" data-command="galaius.agents.workspace"
     title="Show agents from another project">${esc(rail.header.scope || "all workspaces")}</button><span
     class="counts">${esc(headerLine(rail.header))}</span></div>
   <div class="chips">${chips}</div>

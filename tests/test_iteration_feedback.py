@@ -12,9 +12,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 
-from interact import server as srv
-from interact.actions import WaitForAction
-from interact.actions.dispatch import _execute_browser_action
+from galaius import server as srv
+from galaius.actions import WaitForAction
+from galaius.actions.dispatch import _execute_browser_action
 
 pytestmark = pytest.mark.usefixtures("desktop_gate_open")
 

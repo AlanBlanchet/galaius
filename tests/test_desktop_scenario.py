@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from interact.desktop import DesktopBackend, DesktopWindow, NestedBackend
+from galaius.desktop import DesktopBackend, DesktopWindow, NestedBackend
 from tests.support.desktop import RecordingBackend
 
 FIXTURE = Path(__file__).parent / "fixtures" / "drag_window.py"
@@ -104,7 +104,7 @@ def test_drag_window_in_circle(tmp_path: Path) -> None:
         deadline = time.monotonic() + 8
         geom = None
         while time.monotonic() < deadline:
-            geom = backend.window_geometry("interact-drag-window")
+            geom = backend.window_geometry("galaius-drag-window")
             if geom:
                 break
             time.sleep(0.2)
@@ -129,7 +129,7 @@ def test_drag_window_in_circle(tmp_path: Path) -> None:
         assert min(ys) < y < max(ys), "window circled above and below home"
         assert max(xs) - min(xs) >= radius and max(ys) - min(ys) >= radius, "full-size orbit"
 
-        end_geom = backend.window_geometry("interact-drag-window")
+        end_geom = backend.window_geometry("galaius-drag-window")
         assert end_geom is not None
         assert abs(end_geom[0] - x) <= 4 and abs(end_geom[1] - y) <= 4, "window returned home"
     finally:
@@ -167,7 +167,7 @@ def test_panel_interactions_nested(tmp_path: Path) -> None:
         widgets = state["widgets"]
 
         # Window-targeted capture works even though we never raised/focused the panel.
-        assert len(backend.capture_window("interact-panel")) > 1000
+        assert len(backend.capture_window("galaius-panel")) > 1000
 
         def center(name: str) -> tuple[int, int]:
             wx, wy, ww, wh = widgets[name]
@@ -256,11 +256,11 @@ def test_window_id_prefers_the_largest_same_titled_window(tmp_path):
         chosen = None
         for _ in range(60):
             ids = subprocess.run(
-                ["xdotool", "search", "--name", "interact-panel"],
+                ["xdotool", "search", "--name", "galaius-panel"],
                 env=backend.env, capture_output=True, text=True,
             ).stdout.split()
             if len(ids) >= 2:
-                chosen = backend._window_id("interact-panel")
+                chosen = backend._window_id("galaius-panel")
                 break
             time.sleep(0.25)
         assert chosen is not None, "the two panel windows never both appeared"
@@ -281,7 +281,7 @@ def test_desktop_window_drives_nested_backend(tmp_path: Path) -> None:
     through DesktopWindow without touching the real session."""
     import asyncio
 
-    from interact.desktop import DesktopWindow
+    from galaius.desktop import DesktopWindow
 
     state_path = tmp_path / "state.json"
     state_path.write_text("{}")
@@ -290,7 +290,7 @@ def test_desktop_window_drives_nested_backend(tmp_path: Path) -> None:
         backend.spawn([_tk_python(), str(PANEL), str(state_path), "360x420+120+90"])
         widgets = _wait_for_state(state_path, lambda s: "widgets" in s)["widgets"]
 
-        win = DesktopWindow.find_in(backend, "interact-panel")
+        win = DesktopWindow.find_in(backend, "galaius-panel")
         assert win is not None and win.w > 0
 
         def rel(name: str) -> tuple[int, int]:
@@ -323,7 +323,7 @@ def test_double_click_fires_the_apps_dblclick_binding_in_the_nested_sandbox(tmp_
     try:
         backend.spawn([_tk_python(), str(PANEL), str(state_path), "360x420+120+90"])
         widgets = _wait_for_state(state_path, lambda s: "widgets" in s)["widgets"]
-        win = DesktopWindow.find_in(backend, "interact-panel")
+        win = DesktopWindow.find_in(backend, "galaius-panel")
         assert win is not None
         wx, wy, ww, wh = widgets["Click Me"]
         asyncio.run(win.click(wx + ww // 2 - win.x, wy + wh // 2 - win.y, count=2))
@@ -334,8 +334,8 @@ def test_double_click_fires_the_apps_dblclick_binding_in_the_nested_sandbox(tmp_
 
 
 def _local_skip_reason() -> str | None:
-    if not os.environ.get("INTERACT_LOCAL_E2E"):
-        return "opt-in (set INTERACT_LOCAL_E2E=1) — drives the REAL cursor via uinput"
+    if not os.environ.get("GALAIUS_LOCAL_E2E"):
+        return "opt-in (set GALAIUS_LOCAL_E2E=1) — drives the REAL cursor via uinput"
     if not os.environ.get("DISPLAY"):
         return "no real X display"
     if not os.access("/dev/uinput", os.W_OK):
@@ -362,15 +362,15 @@ def test_local_backend_creates_pointer_and_keyboard() -> None:
     now display-server-agnostic and the Wayland skip is gone. (Injection itself does reach both
     Wayland and XWayland clients: XWayland receives them forwarded via the compositor's own
     wl_seat, so there is no separate X11 injection path to verify.)"""
-    from interact.desktop.backend import LocalBackend, _x11_root_size, _x11_screen_size
-    from interact.desktop.input import kernel_input_device_names
+    from galaius.desktop.backend import LocalBackend, _x11_root_size, _x11_screen_size
+    from galaius.desktop.input import kernel_input_device_names
 
     backend = LocalBackend()
     try:
         time.sleep(0.8)  # let udev/libinput register the new devices
         names = kernel_input_device_names()
-        assert "interact-virtual-pointer" in names, f"absolute pointer device not created: {names}"
-        assert "interact-virtual-keyboard" in names, "keyboard device not created (typing would silently no-op)"
+        assert "galaius-virtual-pointer" in names, f"absolute pointer device not created: {names}"
+        assert "galaius-virtual-keyboard" in names, "keyboard device not created (typing would silently no-op)"
 
         root_w, root_h = _x11_root_size()
         primary_w, _ = _x11_screen_size()
@@ -385,8 +385,8 @@ def test_local_backend_creates_pointer_and_keyboard() -> None:
 def test_local_backend_drives_real_panel(tmp_path: Path) -> None:
     """The real-PC path: LocalBackend (system-wide uinput) clicks and types into a panel
     on the REAL display, verified against the panel's recorded state. Opt-in
-    (INTERACT_LOCAL_E2E=1) because it moves the real cursor and needs /dev/uinput."""
-    from interact.desktop.backend import LocalBackend
+    (GALAIUS_LOCAL_E2E=1) because it moves the real cursor and needs /dev/uinput."""
+    from galaius.desktop.backend import LocalBackend
 
     state_path = tmp_path / "state.json"
     state_path.write_text("{}")
@@ -405,7 +405,7 @@ def test_local_backend_drives_real_panel(tmp_path: Path) -> None:
 
         def activate_panel() -> None:
             wids = subprocess.run(
-                ["xdotool", "search", "--name", "interact-panel"], capture_output=True, text=True
+                ["xdotool", "search", "--name", "galaius-panel"], capture_output=True, text=True
             ).stdout.split()
             if wids:
                 subprocess.run(["xdotool", "windowactivate", "--sync", wids[-1]])
@@ -435,7 +435,7 @@ def test_local_backend_drives_real_panel(tmp_path: Path) -> None:
 
 
 def test_nested_server_command() -> None:
-    from interact.desktop.backend import nested_server_command
+    from galaius.desktop.backend import nested_server_command
 
     visible = nested_server_command(":99", "800x600", headless=False)
     assert visible[0] == "Xephyr" and "800x600" in visible
@@ -446,16 +446,16 @@ def test_nested_server_command() -> None:
 
 @pytest.mark.integration  # uses a REAL model → exempt from the unit-test litellm block, keys-gated
 @pytest.mark.skipif(
-    not os.environ.get("INTERACT_DESKTOP_E2E") or _skip_reason() is not None,
-    reason="opt-in (set INTERACT_DESKTOP_E2E=1 + a grounding API key) — uses a paid VLM call",
+    not os.environ.get("GALAIUS_DESKTOP_E2E") or _skip_reason() is not None,
+    reason="opt-in (set GALAIUS_DESKTOP_E2E=1 + a grounding API key) — uses a paid VLM call",
 )
 def test_desktop_scenario_full_e2e() -> None:
     """The full grounding-driven desktop scenario (panel → detect → act), the desktop
     analogue of the browser Scenario. Off by default because detection costs a VLM call;
-    enable with INTERACT_DESKTOP_E2E=1. Runs in the nested sandbox."""
+    enable with GALAIUS_DESKTOP_E2E=1. Runs in the nested sandbox."""
     import asyncio
 
-    from interact.probe import DesktopScenario
+    from galaius.probe import DesktopScenario
 
     run = DesktopScenario.build(model=None, all_providers=False, session_ts="e2e", target="nested")
     asyncio.run(run.run())  # asserts via its own per-step reports; smoke that it completes

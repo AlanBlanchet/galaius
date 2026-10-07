@@ -98,6 +98,6 @@ export function runTooltip(run: Omit<AgentRun, "status"> & { status?: string }):
     `- project: \`${run.cwd || "—"}\``,
     `- billing: ${billing}`,
     `- id: \`${run.run_id}\``,
-    run.foreign ? "\n_Not started by interact — one of your own sessions._" : "",
+    run.foreign ? "\n_Not started by galaius — one of your own sessions._" : "",
   ].join("\n");
 }

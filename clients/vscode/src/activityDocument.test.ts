@@ -23,7 +23,7 @@ test("a name with slashes or spaces cannot break the path", () => {
 });
 
 test("the scheme is ours, so VS Code never offers to save it", () => {
-  assert.equal(ACTIVITY_SCHEME, "interact-agent-activity");
+  assert.equal(ACTIVITY_SCHEME, "galaius-agent-activity");
 });
 
 test("each event renders as an aligned kind plus its detail", () => {

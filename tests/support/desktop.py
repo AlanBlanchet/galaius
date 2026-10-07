@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from interact.desktop import DesktopBackend, DesktopWindow, NestedBackend
+from galaius.desktop import DesktopBackend, DesktopWindow, NestedBackend
 
 
 def desktop_window(

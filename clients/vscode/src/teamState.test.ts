@@ -26,7 +26,7 @@ test("spawning or messaging a teammate is management", () => {
 });
 
 test("driving or looking at a screen is studio work", () => {
-  for (const tool of ["mcp__interact__screenshot", "mcp__interact__run_actions", "review_ui"]) {
+  for (const tool of ["mcp__galaius__screenshot", "mcp__galaius__run_actions", "review_ui"]) {
     assert.equal(zoneOf({ kind: "tool", tool }, "running"), "studio");
   }
 });
@@ -44,7 +44,7 @@ test("a finished worker has gone back to the entrance", () => {
 });
 
 test("your own editor sessions stand at the main entrance — that is where work comes from", () => {
-  // They are real people working, not idle. But they are never shown mid-task: interact does not
+  // They are real people working, not idle. But they are never shown mid-task: galaius does not
   // supervise them, and drawing one "in the code" would claim a supervision it does not have.
   assert.equal(zoneOf({ kind: "tool", tool: "Read" }, "foreign"), "entry");
   assert.equal(zoneOf({ kind: "tool", tool: "WebFetch" }, "foreign", "researcher"), "entry");
@@ -80,12 +80,12 @@ import { buildTeam } from "./teamState.ts";
 
 const RUNS = [
   { run_id: "lead", name: "reviewer", agent: "code-reviewer", status: "running",
-    project: "interact", cost_usd: 1.2, input_tokens: 90000, parent_run_id: null,
+    project: "galaius", cost_usd: 1.2, input_tokens: 90000, parent_run_id: null,
     started_at: 1000, last: "" },
   { run_id: "sub", name: "researcher", agent: "researcher", status: "running",
-    project: "interact", cost_usd: 0.1, input_tokens: 5000, parent_run_id: "lead",
+    project: "galaius", cost_usd: 0.1, input_tokens: 5000, parent_run_id: "lead",
     started_at: 1000, last: "" },
-  { run_id: "old", name: "perf", agent: null, status: "done", project: "interact",
+  { run_id: "old", name: "perf", agent: null, status: "done", project: "galaius",
     cost_usd: 0.5, input_tokens: 100, parent_run_id: null, started_at: 1, last: "" },
 ] as any[];
 
@@ -153,16 +153,16 @@ test("a finished worker is at the entrance whatever their role", () => {
 });
 
 test("your own session says what it is, not that it is waiting", () => {
-  // interact does not supervise your editor sessions, so it must not narrate their work — but
+  // galaius does not supervise your editor sessions, so it must not narrate their work — but
   // "waiting" is worse than saying nothing: it claims they are doing nothing at all.
   const team = buildTeam(
-    [{ run_id: "mine", name: "interact-32", status: "foreign", parent_run_id: null,
-       started_at: 1, project: "interact" } as any],
+    [{ run_id: "mine", name: "galaius-32", status: "foreign", parent_run_id: null,
+       started_at: 1, project: "galaius" } as any],
     () => [],
     100,
   );
   assert.equal(team.workers[0].zone, "entry");
-  assert.match(team.workers[0].activity, /your (own )?session|not started by interact/i);
+  assert.match(team.workers[0].activity, /your (own )?session|not started by galaius/i);
 });
 
 // "And be able to see the agents actually communicate (send messages etc...)" — a room full of
@@ -468,7 +468,7 @@ test("with several roots, the one that started first is the brain", () => {
 });
 
 test("one of your own editor sessions is never the brain", () => {
-  // interact does not drive it, so crowning it would claim an authority the view does not have.
+  // galaius does not drive it, so crowning it would claim an authority the view does not have.
   const team = buildTeam([
     { run_id: "mine", name: "my window", status: "foreign", started_at: 1 },
     { run_id: "ours", name: "main", status: "running", started_at: 500 },
@@ -526,7 +526,7 @@ test("a resolver that throws leaves the character unplaced, never crashes the bu
 });
 
 test("one character per agent, not one per errand", () => {
-  /* His words: "Interact Team still does not have the correct or all the agents. I can see multiple
+  /* His words: "Galaius Team still does not have the correct or all the agents. I can see multiple
      'claude' agents... They're all duplicates or don't have the correct name."
 
      The world drew one body per RUN, so an agent asked to do three things stood in the room three

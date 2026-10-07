@@ -106,7 +106,7 @@ export function rowDescription(run: {
 }): string {
   const said = (run.last ?? "").trim();
   if (run.foreign && (!said || TRANSPORT_LABELS.has(said.toLowerCase()))) {
-    // Says whose it is instead. That IS the useful fact about a session interact didn't start:
+    // Says whose it is instead. That IS the useful fact about a session galaius didn't start:
     // you can't drive it, and it's not part of the team's work or its cost.
     return "your own session";
   }

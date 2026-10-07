@@ -2,7 +2,7 @@
  *
  *  The bundled benchmarks.json says WHICH benchmarks matter; it cannot carry SCORES, because
  *  AA's free tier is "internal use only, no redistribution" — so scores are fetched at runtime
- *  with the user's own key and cached under their home dir by interact.benchmark_source.
+ *  with the user's own key and cached under their home dir by galaius.benchmark_source.
  *
  *  Same invariant as the model catalog: the board carries its SOURCE and AGE, and isLive goes
  *  false once stale. Serving old numbers offline is fine; serving them as today's truth is not.
@@ -28,7 +28,7 @@ export interface Leaderboard {
 }
 
 export function leaderboardPath(): string {
-  return path.join(os.homedir(), ".interact", "out", "benchmark_scores.json");
+  return path.join(os.homedir(), ".galaius", "out", "benchmark_scores.json");
 }
 
 export function describeAge(seconds: number): string {

@@ -1,4 +1,4 @@
-"""Levels per folder of a PC (`interact.places.PlaceMap`): every folder starts hidden, a level holds
+"""Levels per folder of a PC (`galaius.places.PlaceMap`): every folder starts hidden, a level holds
 for the folder and everything beneath it until a deeper one, credential stores and links are never
 opened whatever an ancestor says, and browsing yields names only, page by page."""
 
@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from interact.places import NEVER_GRANTABLE, BrowseBudget, PlaceMap, split
+from galaius.places import NEVER_GRANTABLE, BrowseBudget, PlaceMap, split
 
 pytestmark = pytest.mark.usefixtures("directory_backend")
 

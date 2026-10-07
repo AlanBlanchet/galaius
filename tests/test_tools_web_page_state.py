@@ -5,7 +5,7 @@ stateful dependency; the capture/scan plumbing already accepts it."""
 
 import pytest
 
-import interact.server as srv
+import galaius.server as srv
 from tests.support import browser_manager
 
 

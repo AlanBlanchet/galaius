@@ -7,8 +7,8 @@ import json
 
 import pytest
 
-from interact.agents.paradigms import ParadigmError, plan_projections, read_paradigm
-from interact.agents.policy import Policy, PolicyError
+from galaius.agents.paradigms import ParadigmError, plan_projections, read_paradigm
+from galaius.agents.policy import Policy, PolicyError
 
 
 @pytest.fixture

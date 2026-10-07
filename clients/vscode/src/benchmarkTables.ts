@@ -2,7 +2,7 @@
  *
  *  benchmarks.json is baked into the extension at BUILD time, so its scores can never change
  *  once packaged — which is how a months-old model stayed on screen as the best at MMMU. Python
- *  fetches the upstream leaderboards at runtime into ~/.interact/out/benchmark_tables.json;
+ *  fetches the upstream leaderboards at runtime into ~/.galaius/out/benchmark_tables.json;
  *  this reads that and lets it win, per benchmark, falling back to the snapshot for any the
  *  upstreams could not answer.
  */
@@ -25,8 +25,8 @@ export interface LiveTable {
 
 export function tablesPath(): string {
   // The same fixed location Python writes, and the one leaderboard.ts already reads from —
-  // deliberately not following INTERACT_DEBUG_DIR, since two front ends must find one file.
-  return path.join(os.homedir(), ".interact", "out", "benchmark_tables.json");
+  // deliberately not following GALAIUS_DEBUG_DIR, since two front ends must find one file.
+  return path.join(os.homedir(), ".galaius", "out", "benchmark_tables.json");
 }
 
 /** What Python cached, keyed by benchmark id. Empty when absent — never throws at a panel. */

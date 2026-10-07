@@ -1,13 +1,13 @@
-"""The configuration TUI (bare `interact`) — driven headlessly via Textual's Pilot."""
+"""The configuration TUI (bare `galaius`) — driven headlessly via Textual's Pilot."""
 
 import pytest
 from textual.widgets import Input, Select, Static, Switch, TabbedContent
 
-from interact.config import by_key
-from interact.cli.tui import InteractTUI, _field_id, _mask
-from interact.config import UserConfig
-from interact.upgrade.store import EXIT_UPGRADE, RuntimeStore
-from interact.upgrade.supervisor import Supervision
+from galaius.config import by_key
+from galaius.cli.tui import GalaiusTUI, _field_id, _mask
+from galaius.config import UserConfig
+from galaius.upgrade.store import EXIT_UPGRADE, RuntimeStore
+from galaius.upgrade.supervisor import Supervision
 
 
 def _sid(key: str) -> str:
@@ -36,7 +36,7 @@ _PICK = "cap.vlm and aa.intelligence > 80%"
 async def test_tui_saves_config(temp_config):
     # All panes' widgets are always in the DOM (TabbedContent keeps them mounted), so we
     # set values and invoke the save handler directly — no dependence on tab-switch timing.
-    app = InteractTUI()
+    app = GalaiusTUI()
     async with app.run_test():
         app.query_one(_sid("image.criteria"), Input).value = _PICK  # a free-text criterion
         app.query_one(_sid("desktop.target"), Select).value = "nested"
@@ -45,42 +45,42 @@ async def test_tui_saves_config(temp_config):
         app._save_config()
 
     data = UserConfig.read()
-    assert data["INTERACT_IMAGE_CRITERIA"] == _PICK
-    assert data["INTERACT_DESKTOP_TARGET"] == "nested"
-    assert "INTERACT_NESTED_HEADLESS" not in data, "the declarative default is not a persisted override"
-    assert data["INTERACT_DEBUG_DIR"] == "/tmp/x/out"
+    assert data["GALAIUS_IMAGE_CRITERIA"] == _PICK
+    assert data["GALAIUS_DESKTOP_TARGET"] == "nested"
+    assert "GALAIUS_NESTED_HEADLESS" not in data, "the declarative default is not a persisted override"
+    assert data["GALAIUS_DEBUG_DIR"] == "/tmp/x/out"
 
 
 async def test_tui_reset_to_defaults(temp_config):
     UserConfig.set("image.criteria", _PICK)
     UserConfig.set("desktop.target", "nested")
     UserConfig.set("debug.dir", "/x/out")
-    app = InteractTUI()
+    app = GalaiusTUI()
     async with app.run_test():
         app._reset_config()
         assert app.query_one(_sid("image.criteria"), Input).value == ""  # back to blank/default
         assert app.query_one(_sid("desktop.target"), Select).value == "local"
     data = UserConfig.read()
-    assert "INTERACT_IMAGE_CRITERIA" not in data
-    assert "INTERACT_DESKTOP_TARGET" not in data
-    assert "INTERACT_DEBUG_DIR" not in data
+    assert "GALAIUS_IMAGE_CRITERIA" not in data
+    assert "GALAIUS_DESKTOP_TARGET" not in data
+    assert "GALAIUS_DEBUG_DIR" not in data
 
 
 async def test_tui_save_blank_unsets_criterion(temp_config):
     # Clearing the field must remove the persisted criterion (the clear-doesn't-save bug fix) —
     # a free-text field needs no auto-sentinel, blank already means "unset".
     UserConfig.set("image.criteria", _PICK)
-    app = InteractTUI()
+    app = GalaiusTUI()
     async with app.run_test():
         app.query_one(_sid("image.criteria"), Input).value = ""
         app._save_config()
-    assert "INTERACT_IMAGE_CRITERIA" not in UserConfig.read()
+    assert "GALAIUS_IMAGE_CRITERIA" not in UserConfig.read()
 
 
 async def test_tui_survives_invalid_enum(temp_config):
     """An invalid persisted enum value falls back to the setting's default, never crashes."""
     UserConfig.set("desktop.target", "wayland-nonsense")
-    app = InteractTUI()
+    app = GalaiusTUI()
     async with app.run_test():
         sel = app.query_one(_sid("desktop.target"), Select)
         assert sel.value == by_key("desktop.target").default
@@ -90,7 +90,7 @@ async def test_tui_enter_in_key_input_sets_it(temp_config):
     """Enter in an API-key field saves that key (no need to tab to the Set button)."""
     from textual.widgets import Input as _Input
 
-    app = InteractTUI()
+    app = GalaiusTUI()
     async with app.run_test() as pilot:
         app.query_one(TabbedContent).active = "tab-keys"
         await pilot.pause()
@@ -107,7 +107,7 @@ async def test_tui_enter_in_config_input_saves(temp_config):
     """Enter in a Config text field persists the whole config (Enter == Ctrl+S there)."""
     from textual.widgets import Input as _Input
 
-    app = InteractTUI()
+    app = GalaiusTUI()
     async with app.run_test() as pilot:
         app.query_one(TabbedContent).active = "tab-config"
         await pilot.pause()
@@ -117,13 +117,13 @@ async def test_tui_enter_in_config_input_saves(temp_config):
         await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
-    assert UserConfig.read()["INTERACT_DEBUG_DIR"] == "/tmp/entered/out"
+    assert UserConfig.read()["GALAIUS_DEBUG_DIR"] == "/tmp/entered/out"
 
 
 def test_select_value_always_in_its_options():
     """The shared resolver never returns a value outside the Select's options — so building OR
     resetting a Select can't raise InvalidSelectValueError, even for a stale enum value."""
-    from interact.cli import tui
+    from galaius.cli import tui
 
     enum = by_key("desktop.target")
     valid = {v for _, v in tui._select_options(enum)}
@@ -135,7 +135,7 @@ def test_select_value_always_in_its_options():
 async def test_tui_save_and_reset_show_a_toast(temp_config):
     """Save / Reset surface a visible toast — the inline #save-status sits at the bottom of a
     scrolling pane and is easily off-screen, which made Ctrl+S look like it did nothing."""
-    app = InteractTUI()
+    app = GalaiusTUI()
     async with app.run_test():
         toasts = []
         app.notify = lambda msg, **kw: toasts.append(msg)
@@ -152,7 +152,7 @@ async def test_set_and_clear_key_update_process_env(temp_config, monkeypatch):
     import os as _os
 
     monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
-    app = InteractTUI()
+    app = GalaiusTUI()
     async with app.run_test() as pilot:
         app.query_one(TabbedContent).active = "tab-keys"
         await pilot.pause()
@@ -169,7 +169,7 @@ async def test_set_and_clear_key_update_process_env(temp_config, monkeypatch):
 async def test_tui_quit_disabled_while_editing_a_control(temp_config):
     """Bare q/r must not fire while a form control is focused (fat-finger mid-config would quit
     and lose unsaved edits); they stay live elsewhere, and unrelated actions are never touched."""
-    app = InteractTUI()
+    app = GalaiusTUI()
     async with app.run_test() as pilot:
         app.query_one(TabbedContent).active = "tab-config"
         await pilot.pause()
@@ -184,7 +184,7 @@ async def test_tui_quit_disabled_while_editing_a_control(temp_config):
 
 def test_known_key_names_from_registry_sorted():
     """Key names come from the bundled registry data (not hardcoded) and are alphabetical."""
-    from interact.cli.tui import _known_key_names
+    from galaius.cli.tui import _known_key_names
 
     names = _known_key_names()
     assert names == sorted(names)
@@ -192,7 +192,7 @@ def test_known_key_names_from_registry_sorted():
 
 
 async def test_tui_set_and_clear_known_key(temp_config):
-    app = InteractTUI()
+    app = GalaiusTUI()
     async with app.run_test():
         app.query_one("#in-OPENAI_API_KEY", Input).value = "sk-secret-value-123"
         app._set_key("OPENAI_API_KEY")
@@ -204,7 +204,7 @@ async def test_tui_set_and_clear_known_key(temp_config):
 
 async def test_tui_key_dispatch_via_button(temp_config):
     """Per-row Set button routes to the handler (covers on_button_pressed)."""
-    app = InteractTUI()
+    app = GalaiusTUI()
     async with app.run_test() as pilot:
         app.query_one(TabbedContent).active = "tab-keys"
         await pilot.pause()
@@ -222,7 +222,7 @@ async def test_tui_prefills_existing_key_masked(temp_config, monkeypatch):
     from textual.widgets import Static as _Static
 
     monkeypatch.setenv("GEMINI_API_KEY", "gm-abcd1234wxyz")
-    app = InteractTUI()
+    app = GalaiusTUI()
     async with app.run_test():
         state = str(app.query_one("#state-GEMINI_API_KEY", _Static).render())
     assert "gm-a…wxyz" in state and "environment" in state
@@ -231,7 +231,7 @@ async def test_tui_prefills_existing_key_masked(temp_config, monkeypatch):
 
 async def test_tui_mounts_all_tabs(temp_config):
     """Smoke: the app builds every tab without error (they read clients, config, usage)."""
-    app = InteractTUI()
+    app = GalaiusTUI()
     async with app.run_test():
         for tab in ("tab-status", "tab-connectors", "tab-config", "tab-keys", "tab-usage"):
             app.query_one(TabbedContent).active = tab
@@ -242,9 +242,9 @@ async def test_tui_lists_all_connectors_with_install_buttons(temp_config):
     can add VS Code, Cursor, Codex, … not just whatever happens to be registered."""
     from textual.widgets import Button
 
-    from interact.cli.clients import ClientTarget
+    from galaius.cli.clients import ClientTarget
 
-    app = InteractTUI()
+    app = GalaiusTUI()
     async with app.run_test():
         for target in ClientTarget.all():
             app.query_one(f"#conn-install-{target.id}", Button)  # raises if missing
@@ -257,16 +257,16 @@ async def test_supervised_tui_says_a_new_version_waits_and_leaves_for_it_once_id
     (newer / "bin").mkdir(parents=True)
     (newer / "bin" / "python").write_text("")
     store._update(lambda pointer: pointer.model_copy(update={"active": newer}))
-    monkeypatch.setenv("INTERACT_RUNTIMES", str(store.root))
+    monkeypatch.setenv("GALAIUS_RUNTIMES", str(store.root))
     monkeypatch.setenv(Supervision.variable, Supervision(runtime=tmp_path / "running", mode="exit").model_dump_json())
-    app = InteractTUI()
+    app = GalaiusTUI()
     async with app.run_test() as pilot:
         app._upgrade_when_idle()
         await pilot.pause()
         banner = app.query_one("#update-banner", Static)
         assert "restarts on it" in str(banner.render()) and not banner.has_class("hidden")
         assert app.return_code is None  # someone used it just now: it stays
-        app._last_input -= InteractTUI.upgrade_idle_seconds
+        app._last_input -= GalaiusTUI.upgrade_idle_seconds
         app._upgrade_when_idle()
         await pilot.pause()
     assert app.return_code == EXIT_UPGRADE
@@ -274,7 +274,7 @@ async def test_supervised_tui_says_a_new_version_waits_and_leaves_for_it_once_id
 
 async def test_tui_fields_have_descriptions(temp_config):
     """Each config field carries a human description (keyboard users can't hover)."""
-    app = InteractTUI()
+    app = GalaiusTUI()
     async with app.run_test():
         descriptions = " ".join(str(label.render()) for label in app.query(".desc"))
         assert "GUI grounding" in descriptions

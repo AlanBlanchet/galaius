@@ -3,13 +3,13 @@
 Two failure modes were reported on the same clean file: the tool answered an acoustic-quality
 question over a TRANSCRIPT without saying so, and — even on a genuinely listening model — the
 verdict flipped with the wording and inverted an A/B comparison against an objectively measured
-relationship. interact can't make a model hear better, but it can refuse to present a caption as
+relationship. galaius can't make a model hear better, but it can refuse to present a caption as
 a measurement: label the evidence basis, and never let a quality question pass unqualified.
 """
 
 import pytest
 
-from interact.server.tools_vision import _asks_about_sound_quality
+from galaius.server.tools_vision import _asks_about_sound_quality
 
 
 @pytest.mark.parametrize(

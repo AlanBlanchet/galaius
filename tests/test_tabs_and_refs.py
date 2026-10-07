@@ -1,11 +1,11 @@
 """Tab and ref resolution against real Chromium (self-skip in bare CI; no VLM / key):
 
-- #35 / #29: data-interact-ref is STABLE across scans (a node keeps its ref; only new nodes get a
+- #35 / #29: data-galaius-ref is STABLE across scans (a node keeps its ref; only new nodes get a
   fresh one from a session-monotonic counter) and never collides — uniqueness without clearing.
 - #29: a selector that matches several nodes clicks the first VISIBLE one, not a hidden first.
 - #30: tab-less tool captures follow the session's active tab after new_tab / switch_tab.
 - #34: a ref from one tool call survives into the next — the element map keys on the active tab
-  (not None vs 0), and a ref also resolves via the live data-interact-ref attribute.
+  (not None vs 0), and a ref also resolves via the live data-galaius-ref attribute.
 - #108: the DOM ref scan sees a `<details>` disclosure's `<summary>` (the click target), and a
   raw non-HTML document (`.svg` navigated to directly, no `<body>`) degrades to "nothing to act
   on" instead of throwing.
@@ -19,9 +19,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from interact.actions import ClickAction, HoverAction
-from interact.actions.dispatch import _named_locator
-from interact.state import InteractiveElement
+from galaius.actions import ClickAction, HoverAction
+from galaius.actions.dispatch import _named_locator
+from galaius.state import InteractiveElement
 
 from tests.support import browser_manager, ready_or_skip
 
@@ -31,7 +31,7 @@ async def test_refs_stable_and_unique_across_rerender():
     """#35: a node keeps its ref across rescans (no renumber); only NEW nodes get a fresh ref from
     the session's monotonic counter, which never resets mid-session and never reuses a number — so
     refs also stay unique (#29) without the old clear-every-scan."""
-    from interact.server import _scan_elements
+    from galaius.server import _scan_elements
 
     mgr = browser_manager()
     await ready_or_skip(mgr)
@@ -58,8 +58,8 @@ async def test_refs_stable_and_unique_across_rerender():
 
         duplicate_refs = await page.evaluate(
             "() => { const c = {}; let dup = 0;"
-            " document.querySelectorAll('[data-interact-ref]').forEach(e => {"
-            "  const r = e.getAttribute('data-interact-ref'); c[r] = (c[r]||0)+1;"
+            " document.querySelectorAll('[data-galaius-ref]').forEach(e => {"
+            "  const r = e.getAttribute('data-galaius-ref'); c[r] = (c[r]||0)+1;"
             "  if (c[r] > 1) dup++; }); return dup; }"
         )
         assert duplicate_refs == 0  # uniqueness holds via the monotonic counter
@@ -85,7 +85,7 @@ async def test_selector_click_prefers_visible_match():
 
 @pytest.mark.asyncio
 async def test_active_tab_follows_new_and_switch():
-    from interact.server import _capture
+    from galaius.server import _capture
 
     mgr = browser_manager()
     await ready_or_skip(mgr)
@@ -121,8 +121,8 @@ def test_element_map_shared_between_tabless_scan_and_active_tab_lookup():
 async def test_ref_from_prior_scan_clicks_in_a_later_run_actions():
     """#34 end-to-end: a ref handed out by a tab-less scan clicks in a SEPARATE later run_actions
     call, through the real dispatch + Chromium (the exact two-call sequence agents reported)."""
-    from interact.actions.dispatch import _run_actions_browser
-    from interact.server import _scan_elements
+    from galaius.actions.dispatch import _run_actions_browser
+    from galaius.server import _scan_elements
 
     mgr = browser_manager()
     await ready_or_skip(mgr)
@@ -140,9 +140,9 @@ async def test_ref_from_prior_scan_clicks_in_a_later_run_actions():
 @pytest.mark.asyncio
 async def test_ref_clicks_via_live_dom_when_element_map_lost():
     """#34 resilience: even with the server-side element map gone, a ref still clicks via the live
-    data-interact-ref attribute — it survives across calls until the next scan."""
-    from interact.actions.dispatch import _run_actions_browser
-    from interact.server import _scan_elements
+    data-galaius-ref attribute — it survives across calls until the next scan."""
+    from galaius.actions.dispatch import _run_actions_browser
+    from galaius.server import _scan_elements
 
     mgr = browser_manager()
     await ready_or_skip(mgr)
@@ -160,11 +160,11 @@ async def test_ref_clicks_via_live_dom_when_element_map_lost():
 @pytest.mark.asyncio
 async def test_a_cloned_annotated_node_is_healed_to_a_unique_ref():
     """A framework that clones an annotated node (cloneNode/template stamping/portal duplication)
-    copies its data-interact-ref — from then on clicks by that ref throw a strict-mode violation
+    copies its data-galaius-ref — from then on clicks by that ref throw a strict-mode violation
     ('resolved to N elements', 9x in client logs), and re-scanning never healed it because both
     nodes kept the ref. The scan now strips duplicates (first in document order wins), so a
     re-scan returns unique refs again."""
-    import interact.server as srv
+    import galaius.server as srv
 
     mgr = browser_manager()
     await ready_or_skip(mgr)
@@ -180,7 +180,7 @@ async def test_a_cloned_annotated_node_is_healed_to_a_unique_ref():
         elements = await srv._scan_elements(mgr)
         for el in elements:
             n = await page.evaluate(
-                "(ref) => document.querySelectorAll(`[data-interact-ref='${ref}']`).length",
+                "(ref) => document.querySelectorAll(`[data-galaius-ref='${ref}']`).length",
                 el.ref,
             )
             assert n == 1, f"{el.ref} still resolves to {n} nodes"
@@ -250,8 +250,8 @@ async def test_final_state_reflects_the_last_action_in_the_batch():
     """#65 (minor): 'Final state' was captured right after a mid-batch click and never refreshed,
     so a later action's effect (a login redirect, an evaluate_js mutation) was missing — the
     summary showed the page as it was mid-batch. It must reflect the state AFTER the whole batch."""
-    from interact.actions import EvaluateJsAction
-    from interact.actions.dispatch import _run_actions_browser
+    from galaius.actions import EvaluateJsAction
+    from galaius.actions.dispatch import _run_actions_browser
 
     mgr = browser_manager()
     await ready_or_skip(mgr)
@@ -279,7 +279,7 @@ async def test_final_state_reflects_the_last_action_in_the_batch():
 
 @pytest.mark.asyncio
 async def test_a_details_summary_is_a_detected_trigger():
-    from interact.server import _scan_elements
+    from galaius.server import _scan_elements
 
     mgr = browser_manager()
     try:
@@ -304,7 +304,7 @@ async def test_a_tabindex_only_hover_marker_is_a_detected_trigger():
     AND keyboard focus). Before this it was invisible to every scan-based tool (get_interactive_
     elements, run_actions by ref, audit_ui): a tag/role allowlist with no bare-tabindex fallback
     means a real keyboard-operable control is silently never offered as a ref."""
-    from interact.server import _scan_elements
+    from galaius.server import _scan_elements
 
     mgr = browser_manager()
     try:
@@ -326,7 +326,7 @@ async def test_a_tabindex_only_hover_marker_is_a_detected_trigger():
 async def test_scanning_a_raw_image_document_does_not_throw():
     # Chromium renders a navigated .svg in its standalone image viewer: no <body> at all. The scan
     # must degrade to "nothing to act on" rather than raising (#108).
-    from interact.server import _scan_elements
+    from galaius.server import _scan_elements
 
     mgr = browser_manager()
     try:

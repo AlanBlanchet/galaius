@@ -9,8 +9,8 @@
 import pytest
 from pydantic import ValidationError
 
-from interact.actions import EmulateDeviceAction
-from interact.browser import BrowserManager
+from galaius.actions import EmulateDeviceAction
+from galaius.browser import BrowserManager
 
 from tests.support import browser_manager, ready_or_skip
 

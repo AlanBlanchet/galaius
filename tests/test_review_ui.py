@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from interact import server as srv
-from interact.vision.critique import (
+from galaius import server as srv
+from galaius.vision.critique import (
     UIFinding,
     UIReview,
     build_review_prompt,
@@ -15,9 +15,9 @@ from interact.vision.critique import (
     format_review,
     parse_review,
 )
-from interact.state import InteractiveElement
+from galaius.state import InteractiveElement
 from tests.support import interactive_element
-from interact.vision import VLMResult
+from galaius.vision import VLMResult
 
 
 def _review(**kw) -> UIReview:

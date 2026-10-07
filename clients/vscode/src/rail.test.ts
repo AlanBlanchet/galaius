@@ -19,7 +19,7 @@ const run = (over: Record<string, unknown> = {}) => ({
 }) as never;
 
 const rail = (runs: unknown[], idle: (r: never) => number = () => 0, asked = () => false) =>
-  buildRail(runs as never[], "interact", idle as never, asked as never);
+  buildRail(runs as never[], "galaius", idle as never, asked as never);
 
 test("a run that failed outranks everything else", () => {
   const built = rail([
@@ -78,7 +78,7 @@ test("the header counts what NEEDS you, not what is merely running", () => {
 test("every destination carries a word, and each invokes a real command", () => {
   for (const chip of CHIPS) {
     assert.ok(chip.label.trim(), `${chip.id} has no label — an icon you must hover is a guess`);
-    assert.match(chip.command, /^interact\./);
+    assert.match(chip.command, /^galaius\./);
   }
   assert.ok(CHIPS.some((c) => c.id === "team"), "the team must be a first-class destination");
 });
@@ -93,11 +93,11 @@ test("the destinations stay few enough to fit a narrow sidebar", () => {
 // command id because a message said so would be a real hole — the chat view already validates
 // against its declared list, and the rail must not be the softer sibling.
 test("only a command the rail actually offers is accepted", () => {
-  assert.deepEqual(railAction({ type: "command", command: "interact.agents.team" }),
-    { kind: "command", command: "interact.agents.team" });
+  assert.deepEqual(railAction({ type: "command", command: "galaius.agents.team" }),
+    { kind: "command", command: "galaius.agents.team" });
   assert.equal(railAction({ type: "command", command: "workbench.action.terminal.new" }), null,
     "a command the rail does not offer must be refused, however real it is");
-  assert.equal(railAction({ type: "command", command: "interact.agents.stop" }), null,
+  assert.equal(railAction({ type: "command", command: "galaius.agents.stop" }), null,
     "even one of OUR commands is refused unless the rail offers it");
 });
 
@@ -115,17 +115,17 @@ test("junk is refused rather than guessed at", () => {
 
 test("a chip the rail offers runs its command", () => {
   const done: string[] = [];
-  railRoute({ type: "command", command: "interact.agents.team" }, {
+  railRoute({ type: "command", command: "galaius.agents.team" }, {
     run: (c) => done.push(c), open: () => {}, act: () => {},
   });
-  assert.deepEqual(done, ["interact.agents.team"]);
+  assert.deepEqual(done, ["galaius.agents.team"]);
 });
 
 test("a command the rail does NOT offer runs nothing", () => {
   // The rail renders agent output. A postMessage naming any command id would be a real hole, so
   // "is it a real command" is not the test — "does this surface offer it" is.
   const done: string[] = [];
-  for (const command of ["interact.agents.stop", "workbench.action.terminal.new", ""]) {
+  for (const command of ["galaius.agents.stop", "workbench.action.terminal.new", ""]) {
     railRoute({ type: "command", command }, { run: (c) => done.push(c), open: () => {}, act: () => {} });
   }
   assert.deepEqual(done, []);
@@ -215,17 +215,17 @@ test("the rail and the workplace agree on who the brain is", () => {
 
 test("a row action names both the command and the agent it acts on", () => {
   const acted: string[] = [];
-  railRoute({ type: "act", command: "interact.agents.stop", runId: "r7" },
+  railRoute({ type: "act", command: "galaius.agents.stop", runId: "r7" },
     { run: () => {}, open: () => {}, act: (c, id) => acted.push(`${c}@${id}`) });
-  assert.deepEqual(acted, ["interact.agents.stop@r7"]);
+  assert.deepEqual(acted, ["galaius.agents.stop@r7"]);
 });
 
 test("a row action with no agent, or an unoffered command, does nothing", () => {
   const acted: string[] = [];
   const h = { run: () => {}, open: () => {}, act: (c: string, id: string) => acted.push(c + id) };
-  railRoute({ type: "act", command: "interact.agents.stop" }, h);
+  railRoute({ type: "act", command: "galaius.agents.stop" }, h);
   railRoute({ type: "act", command: "workbench.action.terminal.new", runId: "r7" }, h);
-  railRoute({ type: "act", command: "interact.agents.broadcast", runId: "r7" }, h);
+  railRoute({ type: "act", command: "galaius.agents.broadcast", runId: "r7" }, h);
   assert.deepEqual(acted, []);
 });
 
@@ -251,7 +251,7 @@ test("the scope label can change the scope, without becoming a destination", () 
     { kind: "command", command: SCOPE_COMMAND },
   );
   assert.ok(!CHIPS.some((c) => c.command === SCOPE_COMMAND), "it must not take a chip slot");
-  assert.equal(railAction({ type: "command", command: "interact.somethingElse" }), null,
+  assert.equal(railAction({ type: "command", command: "galaius.somethingElse" }), null,
     "and nothing else gets in through the same door");
 });
 
@@ -389,7 +389,7 @@ test("finished work older than a day leaves the list for the ledger", () => {
     run({ run_id: "old1", status: "done", started_at: now - 8 * DAY, cost_usd: 1.98 }),
     run({ run_id: "old2", status: "stopped", started_at: now - 7 * DAY, cost_usd: 0.76 }),
     run({ run_id: "live", status: "running", started_at: now - 60 }),
-  ] as never[], "interact", (() => 0) as never, (() => false) as never, undefined, undefined, now);
+  ] as never[], "galaius", (() => 0) as never, (() => false) as never, undefined, undefined, now);
   assert.deepEqual(built.runs.map((r) => r.run.run_id), ["live"], "old work must stop competing");
   assert.equal(built.ledger?.runs.length, 2);
   assert.ok(Math.abs((built.ledger?.cost ?? 0) - 2.74) < 1e-9, "the ledger carries the bill");
@@ -400,7 +400,7 @@ test("a finish from this morning keeps its seat", () => {
   const now = 10 * DAY;
   const built = buildRail([
     run({ run_id: "fresh", status: "done", started_at: now - 3600 }),
-  ] as never[], "interact", (() => 0) as never, (() => false) as never, undefined, undefined, now);
+  ] as never[], "galaius", (() => 0) as never, (() => false) as never, undefined, undefined, now);
   assert.equal(built.runs.length, 1);
   assert.equal(built.runs[0].attention, "finished");
   assert.equal(built.ledger, null);
@@ -410,7 +410,7 @@ test("an ancient failure is history, not a standing alarm", () => {
   const now = 10 * DAY;
   const built = buildRail([
     run({ run_id: "oldbad", status: "crashed", started_at: now - 8 * DAY }),
-  ] as never[], "interact", (() => 0) as never, (() => false) as never, undefined, undefined, now);
+  ] as never[], "galaius", (() => 0) as never, (() => false) as never, undefined, undefined, now);
   assert.equal(built.header.needsYou, 0);
   assert.equal(built.ledger?.failed, 1, "but the ledger line says it plainly");
 });
@@ -421,7 +421,7 @@ test("an agent whose every errand is ancient rests as staff, never as a stale ta
   const built = buildRail([
     run({ run_id: "a1", name: "tester", status: "done", started_at: now - 8 * DAY }),
     run({ run_id: "a2", name: "tester", status: "stopped", started_at: now - 7 * DAY }),
-  ] as never[], "interact", (() => 0) as never, (() => false) as never, undefined, identify as never, now);
+  ] as never[], "galaius", (() => 0) as never, (() => false) as never, undefined, identify as never, now);
   assert.equal(built.runs.length, 0, "no 8-day-old junk task speaking for a living agent");
   assert.deepEqual(built.staff.map((r) => r.attention), ["ready"]);
   assert.equal(built.ledger?.runs.length, 2, "the errands themselves are still reachable");
@@ -441,7 +441,7 @@ test("drilling into an agent shows its whole history, ledger and all", () => {
   const built = buildRail([
     run({ run_id: "old", name: "tester", status: "done", started_at: now - 8 * DAY }),
     run({ run_id: "new", name: "tester", status: "running", started_at: now - 60 }),
-  ] as never[], "interact", (() => 0) as never, (() => false) as never,
+  ] as never[], "galaius", (() => 0) as never, (() => false) as never,
     { agent: "tester", roleOf: (r: { name: string }) => r.name } as never, undefined, now);
   assert.equal(built.runs.length, 2, "inside an agent you asked for the history");
   assert.equal(built.ledger, null);
@@ -453,7 +453,7 @@ test("an old failure never outshouts today's work in a grouped row", () => {
   const built = buildRail([
     run({ run_id: "oldbad", name: "tester", status: "crashed", started_at: now - 8 * DAY }),
     run({ run_id: "live", name: "tester", status: "running", started_at: now - 60 }),
-  ] as never[], "interact", (() => 0) as never, (() => false) as never, undefined, identify as never, now);
+  ] as never[], "galaius", (() => 0) as never, (() => false) as never, undefined, identify as never, now);
   assert.equal(built.runs.length, 1);
   assert.equal(built.runs[0].attention, "working", "the recent run speaks; the relic is ledger");
   assert.equal(built.runs[0].tasks, 1, "the count describes what the row stands for now");
@@ -465,14 +465,14 @@ test("the rail's first action starts a SESSION, not a staffing decision", () => 
      others to work. The roster picker stays, one step over. */
   const ids = CHIPS.map((c) => c.id);
   assert.ok(ids.includes("session"), "no way to start a session at all");
-  assert.equal(CHIPS.find((c) => c.id === "session")!.command, "interact.agents.newSession");
-  assert.ok(CHIPS.some((c) => c.command === "interact.agents.spawn"),
+  assert.equal(CHIPS.find((c) => c.id === "session")!.command, "galaius.agents.newSession");
+  assert.ok(CHIPS.some((c) => c.command === "galaius.agents.spawn"),
     "the deliberate one-specialist path must stay reachable");
 });
 
 
 test("the visible Settings control opens the dashboard while unknown commands stay blocked", () => {
-  assert.deepEqual(railAction({ type: "command", command: "interact.openDashboard" }),
-    { kind: "command", command: "interact.openDashboard" });
+  assert.deepEqual(railAction({ type: "command", command: "galaius.openDashboard" }),
+    { kind: "command", command: "galaius.openDashboard" });
   assert.equal(railAction({ type: "command", command: "workbench.action.reloadWindow" }), null);
 });

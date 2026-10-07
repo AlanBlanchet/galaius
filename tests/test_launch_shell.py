@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from interact.launch import _browser_isolate, _clear_stale_locks, _editor_isolate, needs_shell
-from interact.launch import apply_launch_rewrites
+from galaius.launch import _browser_isolate, _clear_stale_locks, _editor_isolate, needs_shell
+from galaius.launch import apply_launch_rewrites
 
 
 @pytest.mark.parametrize(
@@ -55,7 +55,7 @@ def test_plain_exec_commands_do_not(cmd):
 
 
 def test_vscode_gets_its_own_user_data_dir():
-    argv, note = _editor_isolate(["code", "/tmp/project/dev/interact"], ":99")
+    argv, note = _editor_isolate(["code", "/tmp/project/dev/galaius"], ":99")
     joined = " ".join(argv)
     assert "--user-data-dir" in joined, "without this it joins the running instance"
     assert "99" in joined, "the profile is per-display so two sandboxes never share a lock"
@@ -157,7 +157,7 @@ def test_a_missing_profile_is_not_an_error(tmp_path):
 
 def test_the_isolation_rewrite_clears_the_lock_it_will_trip_over(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
-    profile = tmp_path / ".interact" / "out" / "sandbox-profiles" / "editor-99"
+    profile = tmp_path / ".galaius" / "out" / "sandbox-profiles" / "editor-99"
     profile.mkdir(parents=True)
     (profile / "code.lock").write_text(str(_dead_pid()))
     _editor_isolate(["code", "/tmp/p"], ":99")
@@ -169,7 +169,7 @@ def test_the_browser_profile_gets_its_stale_lock_cleared_too(tmp_path, monkeypat
     creates the profiles that carry it — clearing it only for editors fixed the sibling that
     happened to be reported and left the one the lock is actually named after."""
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
-    profile = tmp_path / ".interact" / "out" / "sandbox-profiles" / "99-google-chrome"
+    profile = tmp_path / ".galaius" / "out" / "sandbox-profiles" / "99-google-chrome"
     profile.mkdir(parents=True)
     (profile / "SingletonLock").symlink_to(f"host-{_dead_pid()}")
     _browser_isolate(["google-chrome", "https://example.com"], ":99")

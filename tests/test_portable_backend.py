@@ -18,7 +18,7 @@ pytestmark = pytest.mark.timeout(60)  # never let a stuck GUI call hang the matr
 def _backend():
     if sys.platform.startswith("linux"):
         pytest.skip("Linux uses LocalBackend; PortableBackend is the macOS/Windows path")
-    from interact.desktop.backend import PortableBackend
+    from galaius.desktop.backend import PortableBackend
 
     try:
         return PortableBackend()
@@ -66,7 +66,7 @@ def test_screen_target_resolves_and_captures_through_the_tool_path():
     backend and captures the real desktop — the MCP tool path agents actually use (#24)."""
     if sys.platform.startswith("linux"):
         pytest.skip("Linux uses LocalBackend; PortableBackend is the macOS/Windows path")
-    import interact.server as server
+    import galaius.server as server
 
     win, mgr, err = server._resolve_target("screen", "default")
     if err and ("Screen" in err or "Accessibility" in err):

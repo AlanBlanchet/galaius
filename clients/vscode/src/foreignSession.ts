@@ -4,7 +4,7 @@
  *  ~/.claude/projects/<cwd with "/" and "." as "-">/<session-id>.jsonl. Mapping that shape
  *  into ours is what turns a "your session" row from a grey dead thing into a place — the
  *  panel can SHOW the session, which is the half of "chat just like in claude code" a session
- *  interact did not start can honestly have (watching, not steering: it is already being
+ *  galaius did not start can honestly have (watching, not steering: it is already being
  *  steered, by you, in its window).
  *
  *  Runtime-import-free apart from node builtins, so node --test can load it directly — the

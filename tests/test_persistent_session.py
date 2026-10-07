@@ -1,6 +1,6 @@
 """#43: a profile-backed browser session persists cookies/login on disk so an authenticated flow
 survives a restart — running through the reliable DOM-ref path instead of the flaky desktop-window
-VLM path. Opt in with INTERACT_BROWSER_PROFILE_DIR (config.browser_profile_dir); each session gets
+VLM path. Opt in with GALAIUS_BROWSER_PROFILE_DIR (config.browser_profile_dir); each session gets
 its own <base>/<session> subdir (Playwright locks a user-data-dir to one live context)."""
 
 import time
@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from interact.browser import BrowserManager, SessionRegistry
-from interact.config import Config
+from galaius.browser import BrowserManager, SessionRegistry
+from galaius.config import Config
 from tests.support import browser_config, browser_manager
 
 

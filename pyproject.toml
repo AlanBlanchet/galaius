@@ -1,5 +1,5 @@
 [project]
-name = "interact"
+name = "galaius"
 version = "0.43.0"
 description = "MCP server for browser + desktop automation with vision analysis"
 readme = "README.md"
@@ -9,7 +9,7 @@ license-files = ["LICENSE"]
 keywords = ["mcp", "automation", "browser", "desktop", "playwright", "vision", "agent", "llm"]
 requires-python = ">=3.11"
 dependencies = [
-    "interact-core @ git+https://github.com/AlanBlanchet/interact-core.git@cbe6b40e727b8994f9490da46ff781da9b1293a2",
+    "galaius-core @ git+https://github.com/AlanBlanchet/galaius-core.git@cbe6b40e727b8994f9490da46ff781da9b1293a2",
     "cyclopts>=3.0",
     "rich>=13.0",
     # /dev/uinput absolute input (X11 + Wayland). Same `evdev` import either way: prebuilt wheels
@@ -19,9 +19,9 @@ dependencies = [
     "python-xlib>=0.33; sys_platform == 'linux'", # enumerate override-redirect popups to composite into captures (#31)
     "mss>=9.0", # cross-platform screen capture for the macOS/Windows desktop backend (#24)
     "pynput>=1.7; sys_platform != 'linux'", # pointer + keyboard for the macOS/Windows desktop backend (#24); on Linux it would pull source-only evdev
-    "pywin32>=306; sys_platform == 'win32'", # Windows: owner-only file ACLs + DPAPI for saved credentials (interact/private_files.py)
+    "pywin32>=306; sys_platform == 'win32'", # Windows: owner-only file ACLs + DPAPI for saved credentials (galaius/private_files.py)
     "httpx>=0.28.1",
-    "cryptography>=44",  # imported directly: verifies the ed25519 signature on every automatic upgrade (interact/upgrade/source.py)
+    "cryptography>=44",  # imported directly: verifies the ed25519 signature on every automatic upgrade (galaius/upgrade/source.py)
     "websockets>=14,<16",
     "litellm>=1.83.4,<2",
     "openai>=1.0",  # imported directly (vision/core.py maps its exception tree), not only via litellm
@@ -34,7 +34,7 @@ dependencies = [
     "jsonschema>=4.23,<5",
     "datasets>=2.20",
     "textual>=8.2.7",
-    "huggingface_hub>=0.35",  # fetches a workspace's own huggingface_repo model weights (interact/user_models.py); no torch dependency
+    "huggingface_hub>=0.35",  # fetches a workspace's own huggingface_repo model weights (galaius/user_models.py); no torch dependency
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -47,10 +47,10 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/AlanBlanchet/interact"
-Repository = "https://github.com/AlanBlanchet/interact"
-Issues = "https://github.com/AlanBlanchet/interact/issues"
-Changelog = "https://github.com/AlanBlanchet/interact/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/AlanBlanchet/galaius"
+Repository = "https://github.com/AlanBlanchet/galaius"
+Issues = "https://github.com/AlanBlanchet/galaius/issues"
+Changelog = "https://github.com/AlanBlanchet/galaius/blob/main/CHANGELOG.md"
 
 [dependency-groups]
 dev = [
@@ -73,17 +73,17 @@ allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = [
-    "src/interact",
+    "src/galaius",
 ]
 artifacts = [
-    "src/interact/js/*.js",
-    "src/interact/data/*.json",
-    "src/interact/agents/codex_app_server_schema/*.json",
+    "src/galaius/js/*.js",
+    "src/galaius/data/*.json",
+    "src/galaius/agents/codex_app_server_schema/*.json",
 ]
 
 [project.scripts]
-interact = "interact.cli:main"
-interact-fetch-upstream = "interact.benchmarks.upstream:_main"
+galaius = "galaius.cli:main"
+galaius-fetch-upstream = "galaius.benchmarks.upstream:_main"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

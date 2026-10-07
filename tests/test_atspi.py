@@ -6,9 +6,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 from PIL import Image
 
-from interact.desktop import atspi
-from interact.desktop.atspi import AtSpi
-from interact.desktop import CoordTransform, DesktopElement, DesktopWindow
+from galaius.desktop import atspi
+from galaius.desktop.atspi import AtSpi
+from galaius.desktop import CoordTransform, DesktopElement, DesktopWindow
 
 
 class _MockExtents:
@@ -70,12 +70,12 @@ def test_atspi_available_returns_bool():
 
 
 def test_detect_elements_returns_none_when_unavailable():
-    with patch("interact.desktop.atspi._Atspi", None):
+    with patch("galaius.desktop.atspi._Atspi", None):
         assert AtSpi.detect_elements("test window") is None
 
 
 def test_find_element_by_name_returns_none_when_unavailable():
-    with patch("interact.desktop.atspi._Atspi", None):
+    with patch("galaius.desktop.atspi._Atspi", None):
         assert AtSpi.find_element_by_name("test window", "OK") is None
 
 
@@ -107,8 +107,8 @@ def test_element_filtering(name, role, component, expected_included):
     mock_atspi.get_desktop.return_value = desktop_obj
 
     with (
-        patch("interact.desktop.atspi._Atspi", mock_atspi),
-        patch("interact.desktop.DesktopWindow.find", return_value=None),
+        patch("galaius.desktop.atspi._Atspi", mock_atspi),
+        patch("galaius.desktop.DesktopWindow.find", return_value=None),
     ):
         result = AtSpi.detect_elements("Test Window")
 
@@ -138,8 +138,8 @@ def test_multiple_elements_indexed():
     mock_atspi.get_desktop.return_value = desktop_obj
 
     with (
-        patch("interact.desktop.atspi._Atspi", mock_atspi),
-        patch("interact.desktop.DesktopWindow.find", return_value=None),
+        patch("galaius.desktop.atspi._Atspi", mock_atspi),
+        patch("galaius.desktop.DesktopWindow.find", return_value=None),
     ):
         result = AtSpi.detect_elements("Test Window")
 
@@ -166,8 +166,8 @@ def test_find_element_by_name_exact_match():
     mock_atspi.get_desktop.return_value = desktop_obj
 
     with (
-        patch("interact.desktop.atspi._Atspi", mock_atspi),
-        patch("interact.desktop.DesktopWindow.find", return_value=None),
+        patch("galaius.desktop.atspi._Atspi", mock_atspi),
+        patch("galaius.desktop.DesktopWindow.find", return_value=None),
     ):
         result = AtSpi.find_element_by_name("Test Window", "Submit")
 
@@ -189,8 +189,8 @@ def test_find_element_by_name_substring_fallback():
     mock_atspi.get_desktop.return_value = desktop_obj
 
     with (
-        patch("interact.desktop.atspi._Atspi", mock_atspi),
-        patch("interact.desktop.DesktopWindow.find", return_value=None),
+        patch("galaius.desktop.atspi._Atspi", mock_atspi),
+        patch("galaius.desktop.DesktopWindow.find", return_value=None),
     ):
         result = AtSpi.find_element_by_name("Test Window", "search")
 
@@ -210,8 +210,8 @@ def test_find_element_by_name_no_match():
     mock_atspi.get_desktop.return_value = desktop_obj
 
     with (
-        patch("interact.desktop.atspi._Atspi", mock_atspi),
-        patch("interact.desktop.DesktopWindow.find", return_value=None),
+        patch("galaius.desktop.atspi._Atspi", mock_atspi),
+        patch("galaius.desktop.DesktopWindow.find", return_value=None),
     ):
         assert AtSpi.find_element_by_name("Test Window", "nonexistent") is None
 
@@ -236,7 +236,7 @@ def test_detect_elements_no_matching_window():
     mock_atspi.CoordType.WINDOW = 0
     mock_atspi.get_desktop.return_value = desktop_obj
 
-    with patch("interact.desktop.atspi._Atspi", mock_atspi):
+    with patch("galaius.desktop.atspi._Atspi", mock_atspi):
         assert AtSpi.detect_elements("Nonexistent Window") is None
 
 
@@ -252,8 +252,8 @@ def test_negative_coords_clamped_to_zero():
     mock_atspi.get_desktop.return_value = desktop_obj
 
     with (
-        patch("interact.desktop.atspi._Atspi", mock_atspi),
-        patch("interact.desktop.DesktopWindow.find", return_value=None),
+        patch("galaius.desktop.atspi._Atspi", mock_atspi),
+        patch("galaius.desktop.DesktopWindow.find", return_value=None),
     ):
         result = AtSpi.detect_elements("Test Window")
 
@@ -281,8 +281,8 @@ def test_filler_with_action_detected():
     mock_atspi.get_desktop.return_value = desktop_obj
 
     with (
-        patch("interact.desktop.atspi._Atspi", mock_atspi),
-        patch("interact.desktop.DesktopWindow.find", return_value=None),
+        patch("galaius.desktop.atspi._Atspi", mock_atspi),
+        patch("galaius.desktop.DesktopWindow.find", return_value=None),
     ):
         result = AtSpi.detect_elements("Test Window")
 
@@ -308,8 +308,8 @@ def test_panel_with_child_label_uses_label_name():
     mock_atspi.get_desktop.return_value = desktop_obj
 
     with (
-        patch("interact.desktop.atspi._Atspi", mock_atspi),
-        patch("interact.desktop.DesktopWindow.find", return_value=None),
+        patch("galaius.desktop.atspi._Atspi", mock_atspi),
+        patch("galaius.desktop.DesktopWindow.find", return_value=None),
     ):
         result = AtSpi.detect_elements("Test Window")
 
@@ -333,8 +333,8 @@ def test_filler_no_actions_no_label_excluded():
     mock_atspi.get_desktop.return_value = desktop_obj
 
     with (
-        patch("interact.desktop.atspi._Atspi", mock_atspi),
-        patch("interact.desktop.DesktopWindow.find", return_value=None),
+        patch("galaius.desktop.atspi._Atspi", mock_atspi),
+        patch("galaius.desktop.DesktopWindow.find", return_value=None),
     ):
         result = AtSpi.detect_elements("Test Window")
 
@@ -345,7 +345,7 @@ def test_filler_no_actions_no_label_excluded():
 
 
 def test_get_window_text_no_atspi():
-    with patch("interact.desktop.atspi._Atspi", None):
+    with patch("galaius.desktop.atspi._Atspi", None):
         assert AtSpi.window_text("Text Editor") == ""
 
 
@@ -353,7 +353,7 @@ def test_get_window_text_no_app():
     desktop_obj = _MockAccessible("desktop", "desktop", children=[])
     mock_atspi = MagicMock()
     mock_atspi.get_desktop.return_value = desktop_obj
-    with patch("interact.desktop.atspi._Atspi", mock_atspi):
+    with patch("galaius.desktop.atspi._Atspi", mock_atspi):
         assert AtSpi.window_text("Nonexistent") == ""
 
 
@@ -443,7 +443,7 @@ def test_get_window_text_collects_names_and_text():
 
     mock_atspi = MagicMock()
     mock_atspi.get_desktop.return_value = desktop_obj
-    with patch("interact.desktop.atspi._Atspi", mock_atspi):
+    with patch("galaius.desktop.atspi._Atspi", mock_atspi):
         result = AtSpi.window_text("Text Editor")
 
     assert "File" in result
@@ -457,7 +457,7 @@ def test_get_window_text_collects_names_and_text():
 
 
 def test_get_focused_element_no_atspi():
-    with patch("interact.desktop.atspi._Atspi", None):
+    with patch("galaius.desktop.atspi._Atspi", None):
         assert AtSpi.focused_element("Text Editor") is None
 
 
@@ -481,7 +481,7 @@ def test_get_focused_element_finds_focused():
     desktop_obj = _MockAccessible("desktop", "desktop", children=[app])
 
     mock_atspi.get_desktop.return_value = desktop_obj
-    with patch("interact.desktop.atspi._Atspi", mock_atspi):
+    with patch("galaius.desktop.atspi._Atspi", mock_atspi):
         result = AtSpi.focused_element("Text Editor")
 
     assert result == "entry: Search query"
@@ -506,7 +506,7 @@ def test_get_focused_element_none_focused():
     desktop_obj = _MockAccessible("desktop", "desktop", children=[app])
 
     mock_atspi.get_desktop.return_value = desktop_obj
-    with patch("interact.desktop.atspi._Atspi", mock_atspi):
+    with patch("galaius.desktop.atspi._Atspi", mock_atspi):
         result = AtSpi.focused_element("Text Editor")
 
     assert result is None
@@ -548,9 +548,9 @@ _MOCK_WINDOW = DesktopWindow(name="Test Window", wid=12345, w=800, h=600, x=0, y
 )
 def test_find_element(name, role, expected_name):
     with (
-        patch("interact.desktop.DesktopWindow.find", return_value=_MOCK_WINDOW),
+        patch("galaius.desktop.DesktopWindow.find", return_value=_MOCK_WINDOW),
         patch(
-            "interact.desktop.DesktopElement.cached", return_value=_FIND_ELEMENTS
+            "galaius.desktop.DesktopElement.cached", return_value=_FIND_ELEMENTS
         ),
     ):
         result = AtSpi.find_element("Test Window", name=name, role=role)
@@ -570,9 +570,9 @@ def test_find_element(name, role, expected_name):
 )
 def test_find_element_ambiguous(name, role):
     with (
-        patch("interact.desktop.DesktopWindow.find", return_value=_MOCK_WINDOW),
+        patch("galaius.desktop.DesktopWindow.find", return_value=_MOCK_WINDOW),
         patch(
-            "interact.desktop.DesktopElement.cached", return_value=_FIND_ELEMENTS
+            "galaius.desktop.DesktopElement.cached", return_value=_FIND_ELEMENTS
         ),
     ):
         with pytest.raises(ValueError, match="Ambiguous"):
@@ -581,10 +581,10 @@ def test_find_element_ambiguous(name, role):
 
 def test_find_element_cache_miss_falls_back():
     with (
-        patch("interact.desktop.DesktopWindow.find", return_value=_MOCK_WINDOW),
-        patch("interact.desktop.DesktopElement.cached", return_value=None),
+        patch("galaius.desktop.DesktopWindow.find", return_value=_MOCK_WINDOW),
+        patch("galaius.desktop.DesktopElement.cached", return_value=None),
         patch(
-            "interact.desktop.atspi.AtSpi.detect_elements", return_value=_FIND_ELEMENTS
+            "galaius.desktop.atspi.AtSpi.detect_elements", return_value=_FIND_ELEMENTS
         ) as mock_detect,
     ):
         result = AtSpi.find_element("Test Window", name="Cancel")
@@ -604,8 +604,8 @@ def test_tooltip_description_is_captured(monkeypatch):
     mock_atspi.get_desktop.return_value = desktop_obj
 
     with (
-        patch("interact.desktop.atspi._Atspi", mock_atspi),
-        patch("interact.desktop.DesktopWindow.find", return_value=None),
+        patch("galaius.desktop.atspi._Atspi", mock_atspi),
+        patch("galaius.desktop.DesktopWindow.find", return_value=None),
     ):
         result = AtSpi.detect_elements("Test Window")
 
@@ -613,9 +613,9 @@ def test_tooltip_description_is_captured(monkeypatch):
 
 
 # --- Live AT-SPI coords against a real running window (from test_desktop_integration.py) ----
-# Everything above mocks _Atspi; these need "Interact Test" actually running and skip otherwise.
+# Everything above mocks _Atspi; these need "Galaius Test" actually running and skip otherwise.
 
-_WINDOW_TITLE = "Interact Test"
+_WINDOW_TITLE = "Galaius Test"
 
 
 @pytest.fixture

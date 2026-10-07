@@ -27,7 +27,7 @@ let current: WorkspaceView | null = null;
 let knownConfigured = false;
 
 export function serverWorkspaceConfigured(): boolean {
-  return knownConfigured || fs.existsSync(path.join(os.homedir(), ".interact", "agent-catalog-connection.json"));
+  return knownConfigured || fs.existsSync(path.join(os.homedir(), ".galaius", "agent-catalog-connection.json"));
 }
 export function workspaceView(): WorkspaceView | null { return current; }
 export function acceptWorkspace(value: WorkspaceView | null, configured = true): void {

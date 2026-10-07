@@ -1,4 +1,4 @@
-"""interact must not drive the editor window that is hosting the caller.
+"""galaius must not drive the editor window that is hosting the caller.
 
 An agent typing a command into its own editor can destroy the process issuing the command —
 "Developer: Reload Window" ends the session mid-task, and nothing survives to notice or repair
@@ -11,22 +11,22 @@ the caller's own editor window is refused by default, with the reason and the es
 
 import pytest
 
-from interact.desktop.selfguard import is_self_window, self_window_hints
+from galaius.desktop.selfguard import is_self_window, self_window_hints
 
 
 @pytest.fixture(autouse=True)
 def _caller(monkeypatch):
-    monkeypatch.setenv("CLAUDE_PROJECT_DIR", "/tmp/project/dev/interact")
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", "/tmp/project/dev/galaius")
     yield
 
 
 @pytest.mark.parametrize(
     "title",
     [
-        "interact - Visual Studio Code",
-        "interact — Visual Studio Code",       # em dash, some builds
-        "● interact - Visual Studio Code",     # unsaved-changes marker
-        "INTERACT - Visual Studio Code",       # case
+        "galaius - Visual Studio Code",
+        "galaius — Visual Studio Code",       # em dash, some builds
+        "● galaius - Visual Studio Code",     # unsaved-changes marker
+        "GALAIUS - Visual Studio Code",       # case
     ],
 )
 def test_the_callers_own_editor_window_is_recognised(title):
@@ -50,13 +50,13 @@ def test_other_windows_are_not_mistaken_for_it(title):
 def test_a_caller_with_no_project_dir_claims_no_self_window(monkeypatch):
     # Guessing here would be worse than not guarding: it would block legitimate targets.
     monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
-    monkeypatch.setattr("interact.desktop.selfguard._cwd_name", lambda: "")
+    monkeypatch.setattr("galaius.desktop.selfguard._cwd_name", lambda: "")
     assert self_window_hints() == []
     assert is_self_window("anything - Visual Studio Code") is False
 
 
 def test_the_hint_is_the_project_name_not_a_path():
-    assert "interact" in self_window_hints()
+    assert "galaius" in self_window_hints()
     assert not any("/" in h for h in self_window_hints())
 
 
@@ -73,21 +73,21 @@ def test_run_actions_refuses_the_callers_own_editor(monkeypatch):
     """
     import asyncio
 
-    import interact.server as srv
+    import galaius.server as srv
 
-    monkeypatch.setenv("CLAUDE_PROJECT_DIR", "/tmp/project/dev/interact")
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", "/tmp/project/dev/galaius")
     # Stub the RESOLUTION, not the desktop: what matters is that a resolved window bearing the
     # caller's own project name is refused.
     class _Win:
-        name = "interact - Visual Studio Code"
+        name = "galaius - Visual Studio Code"
 
     monkeypatch.setattr(srv.targets, "_resolve_target", lambda target, session: (_Win(), None, None))
-    from interact.actions import KeyPressAction
+    from galaius.actions import KeyPressAction
 
     out = asyncio.run(
         srv.run_actions(
             [KeyPressAction(key="ctrl+shift+p")],
-            target="interact - Visual Studio Code",
+            target="galaius - Visual Studio Code",
         )
     )
     assert "REFUSED" in out and "hosting THIS session" in out
@@ -96,42 +96,42 @@ def test_run_actions_refuses_the_callers_own_editor(monkeypatch):
 def test_reading_the_callers_own_window_is_NOT_refused():
     """Looking is harmless and useful — the guard is about INPUT. Blocking a read would make the
     agent blind to its own editor for no safety gain."""
-    from interact.actions import HoverAction
-    from interact.desktop.selfguard import refusal_for
+    from galaius.actions import HoverAction
+    from galaius.desktop.selfguard import refusal_for
 
-    assert refusal_for("interact - Visual Studio Code", [HoverAction(x=1, y=1)],
+    assert refusal_for("galaius - Visual Studio Code", [HoverAction(x=1, y=1)],
                        allow_self=False) is None
 
 
 def test_input_at_the_callers_own_window_IS_refused():
-    from interact.actions import KeyPressAction
-    from interact.desktop.selfguard import refusal_for
+    from galaius.actions import KeyPressAction
+    from galaius.desktop.selfguard import refusal_for
 
-    out = refusal_for("interact - Visual Studio Code", [KeyPressAction(key="ctrl+r")],
+    out = refusal_for("galaius - Visual Studio Code", [KeyPressAction(key="ctrl+r")],
                       allow_self=False)
     assert out and "REFUSED" in out and "hosting THIS session" in out
 
 
 def test_one_mutating_action_in_a_batch_is_enough_to_refuse():
     """A read followed by a keystroke is still a keystroke into the caller's own editor."""
-    from interact.actions import HoverAction, KeyPressAction
-    from interact.desktop.selfguard import refusal_for
+    from galaius.actions import HoverAction, KeyPressAction
+    from galaius.desktop.selfguard import refusal_for
 
     batch = [HoverAction(x=1, y=1), KeyPressAction(key="ctrl+r")]
-    assert refusal_for("interact - Visual Studio Code", batch, allow_self=False)
+    assert refusal_for("galaius - Visual Studio Code", batch, allow_self=False)
 
 
 def test_allow_self_is_the_deliberate_escape_hatch():
-    from interact.actions import KeyPressAction
-    from interact.desktop.selfguard import refusal_for
+    from galaius.actions import KeyPressAction
+    from galaius.desktop.selfguard import refusal_for
 
-    assert refusal_for("interact - Visual Studio Code", [KeyPressAction(key="ctrl+r")],
+    assert refusal_for("galaius - Visual Studio Code", [KeyPressAction(key="ctrl+r")],
                        allow_self=True) is None
 
 
 def test_another_window_is_never_refused():
-    from interact.actions import KeyPressAction
-    from interact.desktop.selfguard import refusal_for
+    from galaius.actions import KeyPressAction
+    from galaius.desktop.selfguard import refusal_for
 
     assert refusal_for("some-other-app", [KeyPressAction(key="ctrl+r")], allow_self=False) is None
 
@@ -144,7 +144,7 @@ async def test_typing_verifies_the_window_actually_has_focus(monkeypatch):
     """`windowactivate` is asynchronous and best-effort — it can lose a race or be refused by the
     WM. Typing anyway sends the keystrokes to WHATEVER holds focus, which is how a reload aimed
     at one window landed in another and killed the session. Verify, then type."""
-    from interact.desktop import DesktopWindow
+    from galaius.desktop import DesktopWindow
 
     win = DesktopWindow(name="target", wid=4242, w=800, h=600, x=0, y=0)
     typed: list[str] = []
@@ -165,7 +165,7 @@ async def test_typing_verifies_the_window_actually_has_focus(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_typing_proceeds_when_focus_landed(monkeypatch):
-    from interact.desktop import DesktopWindow
+    from galaius.desktop import DesktopWindow
 
     win = DesktopWindow(name="target", wid=4242, w=800, h=600, x=0, y=0)
     typed: list[str] = []

@@ -8,7 +8,7 @@
  *  construction: there is nothing to save, and nothing to prompt about.
  */
 
-export const ACTIVITY_SCHEME = "interact-agent-activity";
+export const ACTIVITY_SCHEME = "galaius-agent-activity";
 
 /** One recorded step of an agent run, as the panel reads it. */
 export interface Activity {

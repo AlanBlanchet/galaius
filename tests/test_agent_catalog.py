@@ -14,25 +14,25 @@ from uuid import uuid4
 import httpx
 import pytest
 from pydantic import SecretStr, ValidationError
-from interact_core import AgentCatalogSnapshot, AgentRevision, AgentRevisionRef, PromptExecutionRef, PromptKey, PromptRevision
+from galaius_core import AgentCatalogSnapshot, AgentRevision, AgentRevisionRef, PromptExecutionRef, PromptKey, PromptRevision
 
-from interact.agents.catalog import AgentCatalog, AgentInstructionSet, CatalogSnapshot
-from interact.agents import codex_policy_hook
-from interact.agents import registry as reg
-from interact.agents.catalog_connection import (
+from galaius.agents.catalog import AgentCatalog, AgentInstructionSet, CatalogSnapshot
+from galaius.agents import codex_policy_hook
+from galaius.agents import registry as reg
+from galaius.agents.catalog_connection import (
     CatalogAuthenticationError,
     CatalogConnection,
     CatalogConnectionError,
 )
-from interact.agents.policy import Policy
-from interact.agents.providers import AgentProvider, ClaudeCodeProvider, CodexProvider
+from galaius.agents.policy import Policy
+from galaius.agents.providers import AgentProvider, ClaudeCodeProvider, CodexProvider
 from unittest.mock import AsyncMock
-from interact.agents.run import ModelUnavailable, launch_continuation, run_agent
-from interact.config import UserConfig
-from interact.private_files import PRIVATE_FILES
+from galaius.agents.run import ModelUnavailable, launch_continuation, run_agent
+from galaius.config import UserConfig
+from galaius.private_files import PRIVATE_FILES
 from tests.support.private_files import loosen
-from interact.cli.app import app
-from interact.cli import app_commands
+from galaius.cli.app import app
+from galaius.cli import app_commands
 
 
 def snapshot(version=1, tools=None):
@@ -65,7 +65,7 @@ def snapshot(version=1, tools=None):
 def catalog_home(monkeypatch, tmp_path):
     monkeypatch.setattr(AgentProvider, "authenticated", AsyncMock(return_value=True))
     monkeypatch.setattr(UserConfig, "PATH", tmp_path / "config.env")
-    monkeypatch.delenv("INTERACT_PARENT_RUN_ID", raising=False)
+    monkeypatch.delenv("GALAIUS_PARENT_RUN_ID", raising=False)
     return tmp_path
 
 
@@ -73,7 +73,7 @@ def catalog_home(monkeypatch, tmp_path):
 #: children import their target by name - hence the module-level targets below.
 PROCESSES = multiprocessing.get_context("fork" if "fork" in multiprocessing.get_all_start_methods() else "spawn")
 #: How many race at once: a forked child shares its parent's memory; a spawned one re-imports
-#: interact in a process of its own (~150 MB each), and fifty of those exhaust a CI runner.
+#: galaius in a process of its own (~150 MB each), and fifty of those exhaust a CI runner.
 RACERS = 50 if PROCESSES.get_start_method() == "fork" else 8
 
 
@@ -193,15 +193,15 @@ async def test_common_launcher_uses_one_catalog_for_prompt_and_policy(catalog_ho
 
     monkeypatch.setattr(provider_type, "available", lambda self: True)
     monkeypatch.setattr(provider_type, "command", command)
-    monkeypatch.setattr("interact.agents.run.resolve_model", lambda rule, env, **kwargs: ({}, "fixture-model"))
+    monkeypatch.setattr("galaius.agents.run.resolve_model", lambda rule, env, **kwargs: ({}, "fixture-model"))
     # The ranked list is stubbed at its entry point for the same reason the resolver is: the
     # fixture role weights `gui.screenspot`, which no catalog row scores, so a real ranking finds
     # nothing — and a real launch is not what these tests measure.
-    monkeypatch.setattr("interact.agents.run.rank_candidates", lambda rule, env, *, providers, weights="", role=None: (
+    monkeypatch.setattr("galaius.agents.run.rank_candidates", lambda rule, env, *, providers, weights="", role=None: (
         reg.LaunchCandidate(provider=providers[0].name, model=rule, rank=0),))
     for version in (1, 2):
         catalog = AgentCatalog.refresh(connection, transport=catalog_transport(snapshot(version, tools=() if provider_type is CodexProvider else None)))
-        monkeypatch.setattr("interact.agents.run.load_policy", lambda: Policy.from_catalog(catalog))
+        monkeypatch.setattr("galaius.agents.run.load_policy", lambda: Policy.from_catalog(catalog))
         handle = await run_agent(provider_type(), "bounded task", cwd=str(catalog_home), agent="fixture-worker", mesh=False)
         await asyncio.wait_for(handle.wait(), 10)
         assert handle.criterion == f"price.in >= {version}"
@@ -298,7 +298,7 @@ def test_a_linked_pc_reads_the_catalog_with_its_own_link_and_follows_a_relink(li
     """The loopback preview sign-in is gone from every server: a PC whose saved connection still
     names it, or names its link, reads with its machine token; a re-link (new token, new company)
     is followed with no step; an unlinked PC is told to link again, in words."""
-    from interact.machines import MachineRunner
+    from galaius.machines import MachineRunner
 
     CatalogConnection(endpoint="http://127.0.0.1:8767", workspace_id=uuid4(), auth_mode=saved).save()
     connection = CatalogConnection.load()
@@ -310,16 +310,16 @@ def test_a_linked_pc_reads_the_catalog_with_its_own_link_and_follows_a_relink(li
     connection = CatalogConnection.load()
     assert connection.workspace_id == relinked.workspace_id
     AgentCatalog.refresh(connection, transport=machine_transport(snapshot(2), "iwm_" + "b" * 48))
-    with pytest.raises(CatalogAuthenticationError, match="interact login"):
+    with pytest.raises(CatalogAuthenticationError, match="galaius login"):
         AgentCatalog.refresh(connection, transport=machine_transport(snapshot(2), "iwm_" + "b" * 48, status=401))
     MachineRunner().config_path.unlink()
     assert CatalogConnection.load() is None if saved == "machine" else CatalogConnection.load().auth_mode == "preview"
-    with pytest.raises(CatalogAuthenticationError, match="interact login"):
+    with pytest.raises(CatalogAuthenticationError, match="galaius login"):
         AgentCatalog.refresh(connection)  # a machine connection held in hand: the link is gone
 
 
 def test_a_linked_pc_whose_key_is_revoked_reads_the_catalog_through_its_link(linked_pc, catalog_home):
-    """A PC given a key (`interact login`) keeps starting agents after that key is revoked: the
+    """A PC given a key (`galaius login`) keeps starting agents after that key is revoked: the
     refused key falls back to the PC's own link on the same server; another server's key does not."""
     key = catalog_home / "key"
     PRIVATE_FILES.write_secret(key, "iwk_" + "r" * 40)
@@ -338,7 +338,7 @@ def test_a_linked_pc_whose_key_is_revoked_reads_the_catalog_through_its_link(lin
 
 def test_a_linked_pc_keeps_no_catalog_file_so_nothing_rewrites_what_running_processes_read(linked_pc, capsys):
     """The PC link is the only record of a machine connection: syncing removes a stale file instead of
-    writing a mode older running interact processes cannot read; with no file the link is used."""
+    writing a mode older running galaius processes cannot read; with no file the link is used."""
     CatalogConnection(endpoint="http://127.0.0.1:8767", workspace_id=uuid4(), auth_mode="preview").save()
     connection = CatalogConnection.load()
     assert connection.auth_mode == "machine"
@@ -348,19 +348,19 @@ def test_a_linked_pc_keeps_no_catalog_file_so_nothing_rewrites_what_running_proc
 
 
 @pytest.mark.parametrize(("payload", "said"), [
-    ('{"endpoint":"http://127.0.0.1:8767","workspace_id":"%s","auth_mode":"passkey"}' % uuid4(), "written by a newer interact; restart this process"),
+    ('{"endpoint":"http://127.0.0.1:8767","workspace_id":"%s","auth_mode":"passkey"}' % uuid4(), "written by a newer galaius; restart this process"),
     ('{"auth_mode":"token"}', "invalid catalog connection configuration"),
     ("not json", "invalid catalog connection configuration"),
 ])
 def test_an_unreadable_catalog_file_names_why_and_never_breaks_local_settings(catalog_home, payload, said):
-    from interact.server_tool_settings import ServerToolSettings
+    from galaius.server_tool_settings import ServerToolSettings
 
     CatalogConnection.replace_text(CatalogConnection.path(), payload)
     with pytest.raises(CatalogConnectionError, match=said):
         CatalogConnection.load()
-    UserConfig.PATH.write_text("INTERACT_EXAMPLE=kept\n")
+    UserConfig.PATH.write_text("GALAIUS_EXAMPLE=kept\n")
     assert ServerToolSettings.configured() is None
-    assert UserConfig.read()["INTERACT_EXAMPLE"] == "kept"
+    assert UserConfig.read()["GALAIUS_EXAMPLE"] == "kept"
 
 
 def test_corrupt_configuration_never_becomes_unconfigured(tmp_path):
@@ -385,7 +385,7 @@ def machine_transport(value, token: str, status=200):
 @pytest.fixture
 def linked_pc(catalog_home, monkeypatch):
     """This PC linked to a server: its machine link carries server, company and machine token."""
-    from interact.machines import MachineConfig, MachineRunner
+    from galaius.machines import MachineConfig, MachineRunner
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(catalog_home / "xdg"))
     link = MachineConfig(server_url="http://127.0.0.1:8767", workspace_id=uuid4(), machine_id=uuid4(), token="iwm_" + "a" * 48,
@@ -719,7 +719,7 @@ def test_head_instruction_validation_precedes_lazy_file_exports(catalog_home):
 @pytest.mark.parametrize("recorded", [False, True])
 async def test_missing_parent_revision_cannot_silently_use_latest_policy(advanced_catalogs, catalog_home, monkeypatch, recorded):
     _, current, _, _ = advanced_catalogs
-    monkeypatch.setattr("interact.agents.run.load_policy", lambda: Policy.from_catalog(current))
+    monkeypatch.setattr("galaius.agents.run.load_policy", lambda: Policy.from_catalog(current))
     monkeypatch.setattr(CodexProvider, "available", lambda self: True)
     if recorded:
         reg.register(run_id="fixture-parent", pid=None, provider="codex", name="Fixture parent", cwd=str(catalog_home))
@@ -731,7 +731,7 @@ async def test_missing_parent_revision_cannot_silently_use_latest_policy(advance
 @pytest.mark.parametrize("by_capability", [False, True])
 async def test_local_delegation_and_resume_run_exact_parent_pin(advanced_catalogs, historical_http, catalog_home, monkeypatch, by_capability):
     old, current, worker_ref, lead_ref = advanced_catalogs
-    monkeypatch.setattr("interact.agents.run.load_policy", lambda: Policy.from_catalog(current))
+    monkeypatch.setattr("galaius.agents.run.load_policy", lambda: Policy.from_catalog(current))
     parent = reg.register(run_id=str(uuid4()), pid=None, provider="codex", name="Fixture lead",
                           agent="fixture-lead", agent_ref=lead_ref, cwd=str(catalog_home))
     captured = []
@@ -739,16 +739,16 @@ async def test_local_delegation_and_resume_run_exact_parent_pin(advanced_catalog
 
     def command(self, task, **kwargs):
         captured.append((task, kwargs, original_command(self, task, **kwargs)))
-        return [sys.executable, "-c", "import json, os; print(json.dumps({'run': os.environ.get('INTERACT_RUN_ID'), 'parent': os.environ.get('INTERACT_PARENT_RUN_ID')}))"]
+        return [sys.executable, "-c", "import json, os; print(json.dumps({'run': os.environ.get('GALAIUS_RUN_ID'), 'parent': os.environ.get('GALAIUS_PARENT_RUN_ID')}))"]
 
     monkeypatch.setattr(ClaudeCodeProvider, "available", lambda self: True)
     monkeypatch.setattr(ClaudeCodeProvider, "command", command)
     monkeypatch.setattr(ClaudeCodeProvider, "resume_command", lambda self, session_id, task, **kwargs: command(self, task, cwd=str(catalog_home), run_id="resume", **kwargs))
-    monkeypatch.setattr("interact.agents.run.resolve_model", lambda rule, env, **kwargs: ({}, f"fixture-model-{rule.rsplit(' ', 1)[-1]}"))
+    monkeypatch.setattr("galaius.agents.run.resolve_model", lambda rule, env, **kwargs: ({}, f"fixture-model-{rule.rsplit(' ', 1)[-1]}"))
     # The ranked list is stubbed at its entry point for the same reason the resolver is: the
     # fixture role weights `gui.screenspot`, which no catalog row scores, so a real ranking finds
     # nothing — and a real launch is not what these tests measure.
-    monkeypatch.setattr("interact.agents.run.rank_candidates", lambda rule, env, *, providers, weights="", role=None: (
+    monkeypatch.setattr("galaius.agents.run.rank_candidates", lambda rule, env, *, providers, weights="", role=None: (
         reg.LaunchCandidate(provider=providers[0].name, model=rule, rank=0),))
     handle = await run_agent(ClaudeCodeProvider(), "Pinned task", agent=None if by_capability else "fixture-worker",
         delegate="ask_worker" if by_capability else None, parent_run_id=parent.run_id, cwd=str(catalog_home), mesh=False)
@@ -1067,7 +1067,7 @@ def test_workspace_denial_fences_inflight_bootstrap_cookie_alias(catalog_home, s
 # ───────────── Real HTTP server (formerly test_agent_catalog_http.py) ──────────────────────────
 #
 # Public consumer against an explicitly supplied account-server executable, gated on
-# INTERACT_TEST_ACCOUNT_CLI so a bare box never fails on the absent binary.
+# GALAIUS_TEST_ACCOUNT_CLI so a bare box never fails on the absent binary.
 
 
 import hashlib as _hashlib
@@ -1078,7 +1078,7 @@ import time as _time
 from datetime import UTC as _UTC, datetime as _datetime
 
 
-@pytest.mark.skipif(not _os.environ.get("INTERACT_TEST_ACCOUNT_CLI"), reason="set INTERACT_TEST_ACCOUNT_CLI to exercise the real HTTP boundary")
+@pytest.mark.skipif(not _os.environ.get("GALAIUS_TEST_ACCOUNT_CLI"), reason="set GALAIUS_TEST_ACCOUNT_CLI to exercise the real HTTP boundary")
 def test_real_server_two_revisions_cli_sync_and_cache_recreation(tmp_path):
     public = Path(__file__).resolve().parents[1]
     root = tmp_path
@@ -1089,10 +1089,10 @@ def test_real_server_two_revisions_cli_sync_and_cache_recreation(tmp_path):
     env = {'PATH': _os.defpath, 'HOME': str(root), 'TMPDIR': str(root), 'PYTHONDONTWRITEBYTECODE': '1',
            'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': _os.devnull,
            'PYTHONPATH': _os.pathsep.join(filter(None, (_os.environ.get('PYTHONPATH'), str(public / 'src')))),
-           'INTERACT_CSRF_SECRET_HEX': 'ab' * 32, 'INTERACT_MAIL_KEY_HEX': 'cd' * 32,
+           'GALAIUS_CSRF_SECRET_HEX': 'ab' * 32, 'GALAIUS_MAIL_KEY_HEX': 'cd' * 32,
            'OLLAMA_DISCOVERY': '0', 'BENCHMARK_SCORES': ''}
     with (root / 'server.log').open('w+') as log:
-        process = _subprocess.Popen([_os.environ['INTERACT_TEST_ACCOUNT_CLI'],
+        process = _subprocess.Popen([_os.environ['GALAIUS_TEST_ACCOUNT_CLI'],
             '--database', str(root / 'accounts.sqlite3'), '--prompt-database', str(root / 'prompts.sqlite3'),
             '--prompt-authoring-root', str(root / 'authoring'), '--workflow-storage', str(root / 'artifacts'),
             '--origin', origin, '--port', str(port), '--smtp-host', '127.0.0.1', '--smtp-port', '9',
@@ -1142,7 +1142,7 @@ def test_real_server_two_revisions_cli_sync_and_cache_recreation(tmp_path):
                     agent = revised
                     if original_agent is None:
                         original_agent = revised
-                    command = [str(Path(sys.executable).with_name('interact')), 'agents', 'sync']
+                    command = [str(Path(sys.executable).with_name('galaius')), 'agents', 'sync']
                     if version == 1:
                         command += ['--endpoint', origin, '--preview']
                     result = _subprocess.run(command, env=env, cwd=public, capture_output=True, text=True, timeout=15)
@@ -1150,9 +1150,9 @@ def test_real_server_two_revisions_cli_sync_and_cache_recreation(tmp_path):
                         raise RuntimeError(result.stderr)
                     summary = json.loads(result.stdout)
                     cursors.append(summary['cursor'])
-                    cached = json.loads((root / '.interact/agent-catalog-cache.json').read_text())
+                    cached = json.loads((root / '.galaius/agent-catalog-cache.json').read_text())
                     assert cached['snapshot']['agents'][0]['reasoning'] == revised.reasoning
-                    definitions = _subprocess.run([str(Path(sys.executable).with_name('interact')), 'agents', 'definitions', 'codex'], env=env, cwd=public, capture_output=True, text=True, timeout=15)
+                    definitions = _subprocess.run([str(Path(sys.executable).with_name('galaius')), 'agents', 'definitions', 'codex'], env=env, cwd=public, capture_output=True, text=True, timeout=15)
                     assert definitions.returncode == 0, definitions.stderr
                     assert definitions.stdout.strip() == 'fixture-worker'
                 assert cursors[0] != cursors[1]
@@ -1171,7 +1171,7 @@ def test_real_server_two_revisions_cli_sync_and_cache_recreation(tmp_path):
                     }),),
                 })
                 client.post(base + '/agents', headers=headers, json=advanced_lead.model_dump(mode='json')).raise_for_status()
-                (root / '.interact/agent-catalog-cache.json').unlink()
+                (root / '.galaius/agent-catalog-cache.json').unlink()
                 rebuilt = _subprocess.run(command, env=env, cwd=public, capture_output=True, text=True, timeout=15)
                 assert rebuilt.returncode == 0, rebuilt.stderr
                 current = client.get(base + '/agent-catalog').json()
@@ -1198,11 +1198,11 @@ _PINNED_CONSUMER = '''
 import asyncio, json, sys
 from pathlib import Path
 from unittest.mock import patch
-from interact_core import AgentRevisionRef
-from interact.agents.catalog import AgentCatalog
-from interact.agents import registry as reg
-from interact.agents.providers import CodexProvider
-from interact.agents.run import run_agent, launch_continuation
+from galaius_core import AgentRevisionRef
+from galaius.agents.catalog import AgentCatalog
+from galaius.agents import registry as reg
+from galaius.agents.providers import CodexProvider
+from galaius.agents.run import run_agent, launch_continuation
 
 lead = AgentRevisionRef(id=sys.argv[1], revision=sys.argv[2])
 worker = AgentRevisionRef(id=sys.argv[3], revision=sys.argv[4])
@@ -1248,7 +1248,7 @@ async def main():
     assert AgentCatalog.model_validate_json(AgentCatalog.cache_path().read_bytes()).snapshot == before
     print(json.dumps({"pinned_launches": 3, "latest_launches": 1, "continuations": 1, "head_cache_preserved": True}))
 
-with patch.object(CodexProvider, "available", return_value=True), patch.object(CodexProvider, "command", command), patch.object(CodexProvider, "resume_command", resume), patch("interact.agents.run.resolve_model", lambda rule, env, **kwargs: ({}, "fixture-model-" + rule.rsplit(" ", 1)[-1])):
+with patch.object(CodexProvider, "available", return_value=True), patch.object(CodexProvider, "command", command), patch.object(CodexProvider, "resume_command", resume), patch("galaius.agents.run.resolve_model", lambda rule, env, **kwargs: ({}, "fixture-model-" + rule.rsplit(" ", 1)[-1])):
     asyncio.run(main())
 '''
 

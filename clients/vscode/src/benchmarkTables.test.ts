@@ -109,8 +109,8 @@ test("VS Code registers both media selection settings", () => {
   );
   const properties = manifest.contributes.configuration.properties;
   for (const [key, description] of [
-    ["interact.media.criteria", /threshold/i],
-    ["interact.media.criteriaWeights", /normalized|unit/i],
+    ["galaius.media.criteria", /threshold/i],
+    ["galaius.media.criteriaWeights", /normalized|unit/i],
   ] as const) {
     assert.equal(properties[key]?.type, "string");
     assert.equal(properties[key]?.default, "");

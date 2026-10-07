@@ -1,4 +1,4 @@
-"""`interact.vision.detect._vlm_detect_elements` — how a screenshot becomes UI elements.
+"""`galaius.vision.detect._vlm_detect_elements` — how a screenshot becomes UI elements.
 
 The component→image model fallback chain (with a circuit breaker to skip a known-broken
 component model), model_override bypassing that chain, the session-backend path, structured
@@ -15,9 +15,9 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from PIL import Image as PILImage
 
-import interact.vision.detect as det
-from interact.models import Model, ModelCapability
-from interact.vision import MediaItem, VLMResult
+import galaius.vision.detect as det
+from galaius.models import Model, ModelCapability
+from galaius.vision import MediaItem, VLMResult
 from tests.support.models import catalog_of
 
 _DESKTOP_CTX = "Desktop window: Test (800x600)"
@@ -37,8 +37,8 @@ _VLM_JSON = '[{"role":"button","name":"Save","x":100,"y":200,"w":150,"h":30}]'
 
 @pytest.fixture
 def srv():
-    import interact.server as _srv
-    from interact.server import breaker
+    import galaius.server as _srv
+    from galaius.server import breaker
 
     breaker.clear()
     _srv.config.component_criteria = "cap.gui_grounding"
@@ -99,7 +99,7 @@ async def test_vlm_detect_elements_soft_failure_no_fallback(srv, soft_fail_msg):
 
 
 def test_element_detection_prompt_generic():
-    from interact.formats import CoordFormat
+    from galaius.formats import CoordFormat
 
     prompt = CoordFormat().prompt(1920, 1080)
     assert "pixel coordinates" in prompt
@@ -112,7 +112,7 @@ def test_element_detection_prompt_generic():
 @pytest.mark.asyncio
 async def test_vlm_detect_elements_fallback_uses_generic_prompt(srv):
     """When component model fails, it uses format-specific prompt."""
-    from interact.formats import CoordFormat
+    from galaius.formats import CoordFormat
 
     fail = AsyncMock(side_effect=RuntimeError("missing API key"))
     CoordFormat.load_from_config(
@@ -182,7 +182,7 @@ async def test_circuit_breaker_skips_after_failure(srv, one_component_candidate)
 
 @pytest.mark.asyncio
 async def test_circuit_breaker_resets_after_ttl(srv, one_component_candidate):
-    from interact.server import breaker
+    from galaius.server import breaker
 
     component_model = srv.config.resolve_model("component")
     # Trip the breaker with a timestamp in the past (beyond TTL)
@@ -205,7 +205,7 @@ async def test_low_element_count_warning(srv, caplog):
     with patch.object(srv.vlm, "_vlm", mock_vlm):
         import logging
 
-        with caplog.at_level(logging.WARNING, logger="interact"):
+        with caplog.at_level(logging.WARNING, logger="galaius"):
             await det._vlm_detect_elements(_PNG, "ctx", 800, 600)
 
     assert any("Low element count" in r.message for r in caplog.records)
@@ -288,7 +288,7 @@ async def test_structured_fallback_on_invalid_json(
         patch.object(srv.vlm, "_vlm", mock_vlm),
         patch.object(det, "_model_supports_structured", return_value=True),
     ):
-        with caplog.at_level(logging.WARNING, logger="interact"):
+        with caplog.at_level(logging.WARNING, logger="galaius"):
             elements, elapsed, raw, _ = await det._vlm_detect_elements(
                 _PNG, "ctx", 800, 600
             )
@@ -358,7 +358,7 @@ async def test_enqueue_no_structured_passes_none_format(srv):
 
 
 def _desktop_el(name, role="push button", y=10):
-    from interact.desktop import DesktopElement
+    from galaius.desktop import DesktopElement
 
     return DesktopElement(index=1, role=role, name=name, x=0, y=y, w=30, h=20)
 
@@ -502,7 +502,7 @@ async def test_shadow_crop_applied_when_dimensions_match(
 ):
     """Shadow crop applied only when captured image size matches win.w x win.h."""
     from unittest.mock import MagicMock
-    from interact.desktop import CoordTransform, DesktopElement, DesktopWindow
+    from galaius.desktop import CoordTransform, DesktopElement, DesktopWindow
 
     win_w, win_h = 820, 610
     shadow = CoordTransform(

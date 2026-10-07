@@ -12,8 +12,8 @@ export interface PromptEditorState {
 
 function promptSpec(backend: Extract<ConversationBackend, { available: true }>, args: string[]): [string, string[]] {
   if (backend.origin === "local_path") return [backend.command, ["prompts", ...args]];
-  const interact = backend.args.indexOf("interact");
-  return [backend.command, [...backend.args.slice(0, interact + 1), "prompts", ...args]];
+  const galaius = backend.args.indexOf("galaius");
+  return [backend.command, [...backend.args.slice(0, galaius + 1), "prompts", ...args]];
 }
 
 export function promptRequest(

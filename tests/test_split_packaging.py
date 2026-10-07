@@ -1,6 +1,6 @@
-"""Build acceptance for the split packages: the `interact` wheel must
-carry only its own import plus its pinned `interact-core` git dependency (never a local
-`interact_core` package folded in), and the client codegen script that runs before it must
+"""Build acceptance for the split packages: the `galaius` wheel must
+carry only its own import plus its pinned `galaius-core` git dependency (never a local
+`galaius_core` package folded in), and the client codegen script that runs before it must
 resolve that same split deterministically (pinned git dep vs an editable sibling checkout).
 """
 
@@ -15,13 +15,13 @@ from pathlib import Path
 
 import pytest
 
-from interact.agents.events import AgentEvent
-from interact.agents.protocol import (
+from galaius.agents.events import AgentEvent
+from galaius.agents.protocol import (
     ConversationCommand,
     ConversationResponse,
     ConversationStreamEvent,
 )
-from interact.agents.registry import AgentRun
+from galaius.agents.registry import AgentRun
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -36,9 +36,9 @@ def build_cache():
 def test_root_build_configuration_targets_only_the_new_python_packages() -> None:
     configuration = tomllib.loads((ROOT / "pyproject.toml").read_text())
     assert configuration["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"] == [
-        "src/interact",
+        "src/galaius",
     ]
-    assert configuration["project"]["scripts"]["interact"] == "interact.cli:main"
+    assert configuration["project"]["scripts"]["galaius"] == "galaius.cli:main"
 
 
 def test_root_wheel_contains_only_the_local_public_import_and_cli(tmp_path: Path, build_cache: str) -> None:
@@ -58,21 +58,21 @@ def test_root_wheel_contains_only_the_local_public_import_and_cli(tmp_path: Path
     wheel, = tmp_path.glob("*.whl")
     with zipfile.ZipFile(wheel) as archive:
         names = archive.namelist()
-        assert any(name.startswith("interact/") for name in names)
-        assert not any(name.startswith("interact_core/") for name in names)
+        assert any(name.startswith("galaius/") for name in names)
+        assert not any(name.startswith("galaius_core/") for name in names)
         entry_points, = (name for name in names if name.endswith(".dist-info/entry_points.txt"))
-        assert "interact = interact.cli:main" in archive.read(entry_points).decode()
+        assert "galaius = galaius.cli:main" in archive.read(entry_points).decode()
         metadata_name, = (name for name in names if name.endswith(".dist-info/METADATA"))
-        assert re.search(r"^Requires-Dist: interact-core\s*@ git\+https://github\.com/AlanBlanchet/interact-core\.git@[0-9a-f]{40}$", archive.read(metadata_name).decode(), re.MULTILINE)
+        assert re.search(r"^Requires-Dist: galaius-core\s*@ git\+https://github\.com/AlanBlanchet/galaius-core\.git@[0-9a-f]{40}$", archive.read(metadata_name).decode(), re.MULTILINE)
     subprocess.run(
-        [sys.executable, "-I", "-c", "import sys; sys.path.insert(0, sys.argv[1]); import interact", str(wheel)],
+        [sys.executable, "-I", "-c", "import sys; sys.path.insert(0, sys.argv[1]); import galaius", str(wheel)],
         cwd=tmp_path,
         check=True,
     )
 
 
 # ── Client codegen: same split, resolved before the build runs ─────────────────────────────
-# `generate-types.sh` imports catalog modules from `interact-core`; it must resolve the same
+# `generate-types.sh` imports catalog modules from `galaius-core`; it must resolve the same
 # pinned-git-vs-editable-sibling split the wheel build above resolves, deterministically.
 
 
@@ -83,7 +83,7 @@ def test_type_generation_disables_external_catalog_discovery(tmp_path, sibling) 
     script = repo / "clients/vscode/scripts/generate-types.sh"
     script.parent.mkdir(parents=True)
     shutil.copyfile("clients/vscode/scripts/generate-types.sh", script)
-    core = tmp_path / "interact-core"
+    core = tmp_path / "galaius-core"
     if sibling:
         core.mkdir()
         (core / "pyproject.toml").touch()
@@ -105,7 +105,7 @@ def test_type_generation_disables_external_catalog_discovery(tmp_path, sibling) 
     assert "pydantic-to-typescript not installed; skipping" in result.stderr
     expected = ["True", "0", "run", "--directory", str(repo)]
     if sibling:
-        expected += ["--with-editable", str(repo / ".." / "interact-core")]
+        expected += ["--with-editable", str(repo / ".." / "galaius-core")]
     assert capture.read_text().splitlines() == expected + ["python", "-c", "import pydantic2ts"]
 
 

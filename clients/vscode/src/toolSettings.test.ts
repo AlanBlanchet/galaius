@@ -6,7 +6,7 @@ import { acceptWorkspace } from "./workspaceState.ts";
 import { parseToolSettings, refreshToolSettings, saveToolSetting, stripPortableEnvironment, toolSettingsView } from "./toolSettings.ts";
 
 const view = { configured: true, revision: 3, account_id: "00000000-0000-0000-0000-000000000001", stale: false,
-  portable_keys: ["INTERACT_IMAGE_MODEL", "INTERACT_VIDEO_FPS"], values: { INTERACT_VIDEO_FPS: "12" } };
+  portable_keys: ["GALAIUS_IMAGE_MODEL", "GALAIUS_VIDEO_FPS"], values: { GALAIUS_VIDEO_FPS: "12" } };
 
 test("late refresh cannot replace a newer response or clear it on failure", async () => {
   const callbacks: ((error: Error | null, stdout: string, stderr: string) => void)[] = [];
@@ -38,19 +38,19 @@ test("late refresh cannot replace a newer response or clear it on failure", asyn
 });
 
 test("server settings remove old launcher pins while retaining local grants and paths", () => {
-  const env = { INTERACT_IMAGE_MODEL: "old", INTERACT_VIDEO_FPS: "5", OPENAI_API_KEY: "fake", INTERACT_MEDIA_BILLING: "session_only", INTERACT_DEBUG_DIR: "local-path" };
+  const env = { GALAIUS_IMAGE_MODEL: "old", GALAIUS_VIDEO_FPS: "5", OPENAI_API_KEY: "fake", GALAIUS_MEDIA_BILLING: "session_only", GALAIUS_DEBUG_DIR: "local-path" };
   stripPortableEnvironment(env, parseToolSettings(view));
-  assert.deepEqual(env, { OPENAI_API_KEY: "fake", INTERACT_MEDIA_BILLING: "session_only", INTERACT_DEBUG_DIR: "local-path" });
+  assert.deepEqual(env, { OPENAI_API_KEY: "fake", GALAIUS_MEDIA_BILLING: "session_only", GALAIUS_DEBUG_DIR: "local-path" });
 });
 
-for (const change of [{ revision: -1 }, { account_id: "invalid" }, { stale: "false" }, { values: { OPENAI_API_KEY: "fake" } }, { values: { INTERACT_VIDEO_FPS: 12 } }]) {
+for (const change of [{ revision: -1 }, { account_id: "invalid" }, { stale: "false" }, { values: { OPENAI_API_KEY: "fake" } }, { values: { GALAIUS_VIDEO_FPS: 12 } }]) {
   test(`invalid CLI settings boundary ${JSON.stringify(change)}`, () => assert.throws(() => parseToolSettings({ ...view, ...change })));
 }
 
 test("standalone launch settings remain local; server staleness stays explicit", () => {
-  const env = { INTERACT_IMAGE_MODEL: "local" };
+  const env = { GALAIUS_IMAGE_MODEL: "local" };
   stripPortableEnvironment(env, null);
-  assert.equal(env.INTERACT_IMAGE_MODEL, "local");
+  assert.equal(env.GALAIUS_IMAGE_MODEL, "local");
   assert.equal(parseToolSettings({ ...view, stale: true }).stale, true);
 });
 
@@ -69,14 +69,14 @@ test("editor save keeps the displayed account/revision and literal argument; ref
   acceptWorkspace(null, true);
   const base = parseToolSettings(view);
   try {
-    await saveToolSetting("INTERACT_IMAGE_MODEL", "literal ; $(no-shell)", base);
-    assert.equal(calls[0][0], "interact");
-    assert.deepEqual(calls[0][1], ["config", "set", "INTERACT_IMAGE_MODEL", "literal ; $(no-shell)",
+    await saveToolSetting("GALAIUS_IMAGE_MODEL", "literal ; $(no-shell)", base);
+    assert.equal(calls[0][0], "galaius");
+    assert.deepEqual(calls[0][1], ["config", "set", "GALAIUS_IMAGE_MODEL", "literal ; $(no-shell)",
       "--expected-revision", "3", "--account-id", view.account_id, "--json-out"]);
     refused = true;
-    await assert.rejects(saveToolSetting("INTERACT_IMAGE_MODEL", "corrected", base), /draft retained/);
+    await assert.rejects(saveToolSetting("GALAIUS_IMAGE_MODEL", "corrected", base), /draft retained/);
     assert.equal(base.revision, 3);
-    await assert.rejects(saveToolSetting("INTERACT_IMAGE_MODEL", "corrected", { ...base, stale: true }), /stale/);
+    await assert.rejects(saveToolSetting("GALAIUS_IMAGE_MODEL", "corrected", { ...base, stale: true }), /stale/);
     assert.equal(calls.length, 2, "stale cache cannot send a write");
   } finally {
     patched.mock.restore();

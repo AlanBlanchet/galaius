@@ -109,13 +109,13 @@ export interface RailChip {
  *  to start someone new — the two things you can't do anywhere else.
  */
 export const CHIPS: RailChip[] = [
-  { id: "team", label: "Team", command: "interact.agents.team" },
+  { id: "team", label: "Team", command: "galaius.agents.team" },
   /* "I should always be able to create a new session." A session is the DEFAULT way in: the
      entry agent takes the brief and puts specialists to work, exactly as a Claude Code session
      does. Picking one of forty specialists yourself is a staffing decision, and it stays — one
      step over, honestly labelled — for when that is genuinely what you mean. */
-  { id: "session", label: "+ Session", command: "interact.agents.newSession" },
-  { id: "company", label: "Staff", command: "interact.agents.spawn" },
+  { id: "session", label: "+ Session", command: "galaius.agents.newSession" },
+  { id: "company", label: "Staff", command: "galaius.agents.spawn" },
 ];
 
 export interface RailHeader {
@@ -356,15 +356,15 @@ export function buildRail(
  *  can't import each other under the test loader, and an allowlist drifting from the buttons
  *  either breaks a control or admits one nobody offered. */
 const ROW_COMMANDS = new Set([
-  "interact.agents.send",
-  "interact.agents.show",
-  "interact.agents.openConversation",
-  "interact.agents.showEvents",
-  "interact.agents.stop",
-  "interact.agents.model",
+  "galaius.agents.send",
+  "galaius.agents.show",
+  "galaius.agents.openConversation",
+  "galaius.agents.showEvents",
+  "galaius.agents.stop",
+  "galaius.agents.model",
   // Opens the definition FILE — "See their instructions" used to open the transcript, a label
   // the professional sweep caught lying.
-  "interact.agents.definition",
+  "galaius.agents.definition",
 ]);
 
 export type RailAction =
@@ -380,7 +380,7 @@ export type RailAction =
 /** Changing which project you are looking at. Not a destination chip — the chips are capped to
  *  what fits a narrow sidebar, and this belongs on the scope label itself, which is the thing that
  *  states the answer it changes. Allow-listed here so the webview can ask for it by name. */
-export const SCOPE_COMMAND = "interact.agents.workspace";
+export const SCOPE_COMMAND = "galaius.agents.workspace";
 
 /** What the webview asked for, or null.
  *
@@ -399,7 +399,7 @@ export function railAction(message: unknown): RailAction | null {
   }
   if (msg.type === "command" && typeof msg.command === "string") {
     const offered = CHIPS.some((c) => c.command === msg.command) || msg.command === SCOPE_COMMAND
-      || msg.command === "interact.openDashboard";
+      || msg.command === "galaius.openDashboard";
     return offered ? { kind: "command", command: msg.command } : null;
   }
   if (msg.type === "open" && typeof msg.runId === "string" && msg.runId) {

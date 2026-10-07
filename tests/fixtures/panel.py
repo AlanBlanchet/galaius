@@ -45,7 +45,7 @@ def main() -> None:
             Path(state_file).write_text(json.dumps(state))
 
     root = tk.Tk()
-    root.title("interact-panel")
+    root.title("galaius-panel")
     # A normal, WM-managed window (not override-redirect): on a real desktop the window
     # manager only grants keyboard focus to managed windows, so a click can focus the
     # field and typing lands. Under a bare nested server (no WM) it still maps fine and

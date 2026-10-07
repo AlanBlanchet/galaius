@@ -31,17 +31,17 @@ test("conversation backend resolution is explicit, local, version-bound, and spa
   const nonRegular = path.join(root, "non-regular-bin");
   for (const directory of [compatible, stale, unverifiable, nonExecutable, nonRegular]) {
     fs.mkdirSync(directory, { recursive: true });
-    const executable = path.join(directory, "interact");
+    const executable = path.join(directory, "galaius");
     fs.rmSync(executable, { force: true });
     fs.copyFileSync(fixture, executable);
     fs.chmodSync(executable, 0o700);
   }
-  fs.chmodSync(path.join(nonExecutable, "interact"), 0o600);
-  fs.writeFileSync(`${path.join(stale, "interact")}.version`, "0.29.0\n");
-  fs.writeFileSync(`${path.join(compatible, "interact")}.version`, "0.39.0\n");
-  fs.writeFileSync(`${path.join(unverifiable, "interact")}.version`, "not-semver\n");
-  fs.rmSync(path.join(nonRegular, "interact"), { force: true });
-  fs.mkdirSync(path.join(nonRegular, "interact"));
+  fs.chmodSync(path.join(nonExecutable, "galaius"), 0o600);
+  fs.writeFileSync(`${path.join(stale, "galaius")}.version`, "0.29.0\n");
+  fs.writeFileSync(`${path.join(compatible, "galaius")}.version`, "0.39.0\n");
+  fs.writeFileSync(`${path.join(unverifiable, "galaius")}.version`, "not-semver\n");
+  fs.rmSync(path.join(nonRegular, "galaius"), { force: true });
+  fs.mkdirSync(path.join(nonRegular, "galaius"));
 
   const canonicalProject = fs.realpathSync(path.resolve(".."));
   const projectAlias = path.join(root, "project-alias");
@@ -58,7 +58,7 @@ test("conversation backend resolution is explicit, local, version-bound, and spa
     available: true,
     command: "uv",
     origin: "project_checkout",
-    args: ["run", "--directory", canonicalProject, "interact", "agents", "console",
+    args: ["run", "--directory", canonicalProject, "galaius", "agents", "console",
       "--workspace-root", fs.realpathSync(root)],
   });
 
@@ -68,7 +68,7 @@ test("conversation backend resolution is explicit, local, version-bound, and spa
   assert.equal(local.available, true);
   if (local.available) {
     assert.equal(local.origin, "local_path");
-    assert.equal(local.command, path.join(compatible, "interact"));
+    assert.equal(local.command, path.join(compatible, "galaius"));
     assert.deepEqual(local.args, ["agents", "console", "--workspace-root", root]);
     assert.doesNotMatch(`${local.command} ${local.args.join(" ")}`, /uvx|https?:|git\+|\b(?:sh|bash|cmd)\b/);
     const { createConversationClient } = require_("../out/conversationClient.js");
@@ -106,11 +106,11 @@ test("conversation backend resolution is explicit, local, version-bound, and spa
     path: [stale, compatible].join(path.delimiter),
   });
   assert.equal(exhaustive.available, true, "a stale first candidate must not hide a later exact version");
-  if (exhaustive.available) assert.equal(exhaustive.command, fs.realpathSync(path.join(compatible, "interact")));
+  if (exhaustive.available) assert.equal(exhaustive.command, fs.realpathSync(path.join(compatible, "galaius")));
 
   const windows = path.join(root, "windows-bin");
   fs.mkdirSync(windows, { recursive: true });
-  const windowsExecutable = path.join(windows, "interact.CMD");
+  const windowsExecutable = path.join(windows, "galaius.CMD");
   fs.rmSync(windowsExecutable, { force: true });
   fs.symlinkSync(fixture, windowsExecutable);
   const windowsResolved = await backend.resolveConversationBackend({
@@ -136,11 +136,11 @@ test("conversation backend resolution is explicit, local, version-bound, and spa
     assert.match(resolved.reason ?? "", /configured.*directory.*reload/i, name);
   }
 
-  const hadVersionMode = Object.hasOwn(process.env, "INTERACT_FAKE_VERSION_MODE");
-  const restoreEnvironment = restoreEnvironmentAfter(["INTERACT_FAKE_VERSION_MODE"]);
+  const hadVersionMode = Object.hasOwn(process.env, "GALAIUS_FAKE_VERSION_MODE");
+  const restoreEnvironment = restoreEnvironmentAfter(["GALAIUS_FAKE_VERSION_MODE"]);
   try {
     for (const versionMode of ["malformed", "failure", "timeout"] as const) {
-      process.env.INTERACT_FAKE_VERSION_MODE = versionMode;
+      process.env.GALAIUS_FAKE_VERSION_MODE = versionMode;
       const resolved = await backend.resolveConversationBackend({
         extensionVersion: "0.39.0", workspaceRoot: root, path: unverifiable,
       });
@@ -151,7 +151,7 @@ test("conversation backend resolution is explicit, local, version-bound, and spa
   } finally {
     restoreEnvironment();
   }
-  assert.equal(Object.hasOwn(process.env, "INTERACT_FAKE_VERSION_MODE"), hadVersionMode,
+  assert.equal(Object.hasOwn(process.env, "GALAIUS_FAKE_VERSION_MODE"), hadVersionMode,
     "a test-only mode absent on entry must remain absent after the resolver matrix");
   fs.rmSync(root, { recursive: true });
 });

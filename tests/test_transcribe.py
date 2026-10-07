@@ -10,11 +10,11 @@ from pathlib import Path
 
 import pytest
 
-import interact.server as srv
-import interact.vision.core as vis
-from interact.config import Config
-from interact.vision import MediaItem, VLMResult
-from interact.vision.core import _audio_content, transcribe_audio
+import galaius.server as srv
+import galaius.vision.core as vis
+from galaius.config import Config
+from galaius.vision import MediaItem, VLMResult
+from galaius.vision.core import _audio_content, transcribe_audio
 
 
 class _FakeConfig:

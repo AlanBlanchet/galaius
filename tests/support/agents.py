@@ -1,7 +1,7 @@
 """Register a run for the registry and messaging test suites.
 
 `test_agent_registry.py` and `test_agent_messaging.py` each carried their own `_record` factory
-around `interact.agents.registry.register`, with drifted defaults (the registry suite cared about
+around `galaius.agents.registry.register`, with drifted defaults (the registry suite cared about
 `pid`/`cwd`, the messaging suite about `pid`/`agent`/`provider_session_id`) but the same shape.
 One typed factory covers both call sites; a caller only names what its scenario needs.
 """
@@ -13,10 +13,10 @@ import sys
 import tempfile
 from pathlib import Path
 
-from interact.agents import registry as reg
-from interact.agents import run as _run_module
-from interact.agents.policy import Policy
-from interact.agents.providers import AgentProvider, ClaudeCodeProvider
+from galaius.agents import registry as reg
+from galaius.agents import run as _run_module
+from galaius.agents.policy import Policy
+from galaius.agents.providers import AgentProvider, ClaudeCodeProvider
 
 #: A real init+result stream, the shape every scripted provider below emits. A subclass with its
 #: own payload (cost, extra fields) sets its own `script`; this is just the common default.
@@ -74,17 +74,17 @@ def install_provider(monkeypatch, provider: AgentProvider) -> None:
     """Register `provider` into the live `PROVIDERS` registry for the test's duration. A run's
     raw stream is parsed by the provider named on its record, looked up in that global registry,
     so a test double has to be registered exactly like a real provider is. Four files reached the
-    module via `__import__("interact.agents.providers", fromlist=["PROVIDERS"]).PROVIDERS` to
+    module via `__import__("galaius.agents.providers", fromlist=["PROVIDERS"]).PROVIDERS` to
     dodge a stale-binding import; `monkeypatch.setitem` on the module's own dict never goes stale,
     so a plain import serves every call site."""
-    from interact.agents.providers import PROVIDERS
+    from galaius.agents.providers import PROVIDERS
 
     monkeypatch.setitem(PROVIDERS, provider.name, provider)
 
 
 def use_policy(monkeypatch, *targets, **fields) -> Policy:
     """Patch `load_policy` to return `Policy(**fields)`, in every module in `targets` (the
-    `interact.agents.run` module that defines it by default; pass `interact.agents.messaging` too
+    `galaius.agents.run` module that defines it by default; pass `galaius.agents.messaging` too
     when the exercised code path reads its own separately-imported name — patching one binding
     never moves the other). Eight files rebuilt the same `lambda: Policy(...)` stub; this covers
     the static single-value case every one of them actually needed."""

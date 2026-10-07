@@ -3,7 +3,7 @@ import * as vscode from "vscode";
 import { ACTIVITY_SCHEME, activityPath, formatActivity, runIdFromPath } from "./activityDocument";
 import { IO_INLINE, IO_SCHEME, ioFromPath } from "./ioDocument";
 import { ChatViewProvider } from "./chatView";
-import { interactCli } from "./interactCli";
+import { galaiusCli } from "./galaiusCli";
 import { ServerWorkspaceControls } from "./serverWorkspaceControls";
 import { serverWorkspaceConfigured } from "./workspaceState.ts";
 import { refreshToolSettings, saveToolSetting, stripPortableEnvironment, toolSettingsView } from "./toolSettings.ts";
@@ -31,13 +31,13 @@ import {
   SETTING_TO_TASK,
 } from "./shared";
 
-const SETTING_SECTION = "interact";
+const SETTING_SECTION = "galaius";
 const IS_SECRET_RE = /KEY|SECRET|TOKEN/i;
 
 /** The autonomy new agents get in THIS workspace. Per workspace because "what may an agent do
  *  here" is a property of the repo you are in, not of the editor — and it APPLIES rather than
  *  merely pre-selecting, which is what `/permissions` promises when it sets it. */
-const DEFAULT_MODE_KEY = "interact.agents.defaultPermissionMode";
+const DEFAULT_MODE_KEY = "galaius.agents.defaultPermissionMode";
 
 interface ModelSettingItem extends vscode.QuickPickItem {
   settingKey: string;
@@ -58,11 +58,11 @@ function permissionModeKey(provider: string): string {
 /** Errors from the child CLI are diagnostic data, not user-facing copy. In particular, stderr can
  * contain vendor output with account details; keep it out of notifications and logs. */
 function cliFailure(action: string): string {
-  return `Interact: ${action} could not be completed. Check the Interact output for details.`;
+  return `Galaius: ${action} could not be completed. Check the Galaius output for details.`;
 }
 
 async function agentProviderStatuses(): Promise<AgentProviderStatus[] | null> {
-  const result = await interactCli(["agents", "providers", "--json-out"]);
+  const result = await galaiusCli(["agents", "providers", "--json-out"]);
   if (result.error || !result.stdout.trim()) return null;
   const providers = parseAgentProviders(result.stdout);
   return providers.length ? providers : null;
@@ -78,13 +78,13 @@ async function chooseAgentProvider(title: string, allowRanked = false): Promise<
   const available = active.filter((provider) => provider.available);
   if (!active.length) {
     void vscode.window.showErrorMessage(
-      "Interact: every agent provider is switched off. Enable one under Providers that Run Agents.",
+      "Galaius: every agent provider is switched off. Enable one under Providers that Run Agents.",
     );
     return undefined;
   }
   if (!available.length) {
     void vscode.window.showErrorMessage(
-      "Interact: no enabled agent provider is installed or available on PATH.",
+      "Galaius: no enabled agent provider is installed or available on PATH.",
     );
     return undefined;
   }
@@ -146,13 +146,13 @@ function buildEnv(
     }
   }
   if (configuredProviders.length > 0) {
-    env["INTERACT_CONFIGURED_PROVIDERS"] = configuredProviders.join(",");
+    env["GALAIUS_CONFIGURED_PROVIDERS"] = configuredProviders.join(",");
   }
 
-  env["INTERACT_MODELS_JSON"] = JSON.stringify(modelsData);
+  env["GALAIUS_MODELS_JSON"] = JSON.stringify(modelsData);
 
   // The catalog's "defaults" are NOT written into the environment. They used to be, and that one
-  // block defeated model selection entirely: interact reads these vars as a user's explicit pin,
+  // block defeated model selection entirely: galaius reads these vars as a user's explicit pin,
   // so every extension user looked pinned, the best-available walk never ran, and somebody with
   // only an OpenAI key got a Gemini id and an auth error. Leaving them unset lets the server rank
   // the catalog by capability and walk down to the first model actually configured — which is
@@ -427,7 +427,7 @@ export async function activate(
   const keyManager = new KeyManager();
   await keyManager.loadAll([...allEnvKeys]);
 
-  const log = vscode.window.createOutputChannel("Interact");
+  const log = vscode.window.createOutputChannel("Galaius");
 
   // Show the panel once, the first time the extension runs. VS Code registers a newly-contributed
   // container HIDDEN, so without this it sits in the secondary side bar with no icon to click and
@@ -461,7 +461,7 @@ export async function activate(
   // running, this is where you talk to it.
   const chatProvider = new ChatViewProvider(log);
   const workspaceControls = new ServerWorkspaceControls(() => { agentsProvider.refresh(); refreshWorkplace(); });
-  context.subscriptions.push(workspaceControls, vscode.commands.registerCommand("interact.workspace", () => workspaceControls.open()));
+  context.subscriptions.push(workspaceControls, vscode.commands.registerCommand("galaius.workspace", () => workspaceControls.open()));
   void workspaceControls.refresh().catch(() => {});
   // Clicking somebody in the rail aims the chat at them, exactly as clicking a tree row does —
   // one behaviour, so the two surfaces cannot teach different things.
@@ -472,7 +472,7 @@ export async function activate(
   context.subscriptions.push(
     // "See their instructions" opened the TRANSCRIPT — a label that lied, caught by the sweep.
     // This opens the definition file itself, resolved against the prompt repo's real location.
-    vscode.commands.registerCommand("interact.agents.definition", async (arg?: { run?: { agent?: string | null; definition_path?: string | null } }) => {
+    vscode.commands.registerCommand("galaius.agents.definition", async (arg?: { run?: { agent?: string | null; definition_path?: string | null } }) => {
       const run = arg?.run;
       if (serverWorkspaceConfigured()) { await workspaceControls.open(run?.agent ?? undefined); return; }
       const path = run?.definition_path
@@ -481,7 +481,7 @@ export async function activate(
       else void vscode.window.showInformationMessage("This run has no definition file — it is a bare session.");
     }),
     // The middle depth: an agent and the tasks it was given.
-    vscode.commands.registerCommand("interact.agents.agent", async (arg?: string | { run?: { agent?: string } }) => {
+    vscode.commands.registerCommand("galaius.agents.agent", async (arg?: string | { run?: { agent?: string } }) => {
       let agent = typeof arg === "string" ? arg : arg?.run?.agent;
       if (!agent) {
         // Called with nothing: offer the whole company. Until now the only door into an agent was a
@@ -501,7 +501,7 @@ export async function activate(
       if (agent) chatProvider.showAgent(agent);
     }),
     // Connected choices edit immutable server revisions. Standalone choices use local policy.
-    vscode.commands.registerCommand("interact.agents.model", async (arg?: string | { run?: { agent?: string } }) => {
+    vscode.commands.registerCommand("galaius.agents.model", async (arg?: string | { run?: { agent?: string } }) => {
       if (serverWorkspaceConfigured()) { await workspaceControls.open(typeof arg === "string" ? arg : arg?.run?.agent); return; }
       const org = readOrg();
       const named = typeof arg === "string" ? arg : arg?.run?.agent ?? undefined;
@@ -529,7 +529,7 @@ export async function activate(
           { rule: "aa.intelligence >= p90", means: "beats nine tenths, cheapest such — a workhorse" },
         ];
         const resolved = await Promise.all(offered.map(({ rule }) =>
-          interactCli(["agents", "criterion", rule, "--json-out"])
+          galaiusCli(["agents", "criterion", rule, "--json-out"])
             .then(({ stdout, error }) => (error ? null : JSON.parse(stdout) as
               { model: string | null; providers?: Record<string, string | null> }))
             .catch(() => null)));
@@ -553,7 +553,7 @@ export async function activate(
               label: rule,
               description: means,
               detail: [reads?.line
-                         ?? "your installed interact cannot preview this — it still resolves at spawn",
+                         ?? "your installed galaius cannot preview this — it still resolves at spawn",
                        "stored as the rule, not as the model it means today"].join(" · "),
             };
           }),
@@ -597,14 +597,14 @@ export async function activate(
             typed = text;
             await new Promise((done) => setTimeout(done, 400));
             if (text !== typed) return null;
-            const { stdout, error } = await interactCli(
+            const { stdout, error } = await galaiusCli(
               ["agents", "criterion", text, "--json-out"])
-              .catch(() => ({ stdout: "", error: "interact could not be run" }));
+              .catch(() => ({ stdout: "", error: "galaius could not be run" }));
             if (error && !stdout) {
               return /unknown command|no such command/i.test(error)
                 // Not a verdict on THEIR criterion — a fact about the binary. Refusing here would
                 // block a rule the spawn would have honoured.
-                ? { message: "your installed interact cannot check this here; it still resolves at spawn",
+                ? { message: "your installed galaius cannot check this here; it still resolves at spawn",
                     severity: vscode.InputBoxValidationSeverity.Warning }
                 : "could not evaluate that criterion";
             }
@@ -620,7 +620,7 @@ export async function activate(
             `${agent} now resolves its model from: ${written.trim()}`);
         } else {
           void vscode.window.showWarningMessage(
-            `Interact could not store that criterion — is ${agentsPolicyPath()} valid JSON?`);
+            `Galaius could not store that criterion — is ${agentsPolicyPath()} valid JSON?`);
         }
         refreshWorkplace();
         chatProvider.repaintAgent(agent);
@@ -633,7 +633,7 @@ export async function activate(
         void vscode.window.showInformationMessage(`${agent} will run on ${pick.label}.`);
       } else {
         void vscode.window.showWarningMessage(
-          `Interact could not store that choice — is ${agentsPolicyPath()} valid JSON?`,
+          `Galaius could not store that choice — is ${agentsPolicyPath()} valid JSON?`,
         );
       }
       refreshWorkplace();
@@ -641,14 +641,14 @@ export async function activate(
       // navigate away and back — which defeats the reason it is rendered at all.
       chatProvider.repaintAgent(agent);
     }),
-    vscode.commands.registerCommand("interact.agents.backToTeam", () => {
-      void vscode.commands.executeCommand("setContext", "interact.inConversation", false);
+    vscode.commands.registerCommand("galaius.agents.backToTeam", () => {
+      void vscode.commands.executeCommand("setContext", "galaius.inConversation", false);
       // Clear the panel's own depth and repaint it. Flipping the key alone left every "back"
       // control inert once the roster moved out of the side bar and the key stopped gating
       // anything — a context key is not navigation.
       chatProvider.backToTeam();
       // The team lives in the big panel now, so this reveals the room rather than a side-bar view.
-      void vscode.commands.executeCommand("interact.agents.team");
+      void vscode.commands.executeCommand("galaius.agents.team");
     }),
   );
   context.subscriptions.push(
@@ -657,7 +657,7 @@ export async function activate(
     // Switching which agent you are reading meant leaving the chat for the tree, which is half of
     // "i can't control everything from there". Scoped to the current workspace, so the list is the
     // team you are actually looking at.
-    vscode.commands.registerCommand("interact.agents.pick", async () => {
+    vscode.commands.registerCommand("galaius.agents.pick", async () => {
       const runs = scope.runs();
       if (runs.length === 0) {
         void vscode.window.showInformationMessage(`No agents in ${scope.describe()}.`);
@@ -674,7 +674,7 @@ export async function activate(
       );
       if (chosen) chatProvider.show(chosen.runId);
     }),
-    vscode.commands.registerCommand("interact.agents.chat", (arg?: string | { run?: { run_id: string } }) => {
+    vscode.commands.registerCommand("galaius.agents.chat", (arg?: string | { run?: { run_id: string } }) => {
       const runId = typeof arg === "string" ? arg : arg?.run?.run_id;
       if (runId) chatProvider.show(runId);
     }),
@@ -705,12 +705,12 @@ export async function activate(
           ?? "(the raw stream no longer holds this call — it may predate the id stamping)";
       },
     }),
-    vscode.commands.registerCommand("interact.agents.refresh", () => agentsProvider.refresh()),
+    vscode.commands.registerCommand("galaius.agents.refresh", () => agentsProvider.refresh()),
     // "i have agents in the 'sheets' folder elsewhere, and i can't change and see how they work"
-    // One brief to everyone working. interact supervises a team, so this is a capability the
+    // One brief to everyone working. galaius supervises a team, so this is a capability the
     // single-agent panels cannot have — and the reason it asks first is that it reaches every
     // running agent at once, which is not something to discover by mistyping.
-    vscode.commands.registerCommand("interact.agents.broadcast", async () => {
+    vscode.commands.registerCommand("galaius.agents.broadcast", async () => {
       const running = scope.runs().filter((r) => r.status === "running" && !r.foreign);
       if (running.length === 0) {
         void vscode.window.showInformationMessage(`Nobody is running in ${scope.describe()}.`);
@@ -731,7 +731,7 @@ export async function activate(
       const { execFile } = await import("child_process");
       let failed = 0;
       await Promise.all(running.map((r) => new Promise<void>((done) => {
-        execFile("interact", ["agents", "send", r.run_id, text], (err) => {
+        execFile("galaius", ["agents", "send", r.run_id, text], (err) => {
           if (err) failed++;
           done();
         });
@@ -742,12 +742,12 @@ export async function activate(
           : `Sent to all ${running.length}.`,
       );
     }),
-    /* WHICH PROVIDERS DRIVE AGENTS HERE. "we should be able to, from interact, chose if we
+    /* WHICH PROVIDERS DRIVE AGENTS HERE. "we should be able to, from galaius, chose if we
      *  activate the agents or not for a provider (claude, codex, other...)". A checklist of the
-     *  providers interact knows; unticking one switches it off at the one place every spawn
-     *  passes through ("~/.interact/agents.json", via the CLI, so the panel and the terminal
+     *  providers galaius knows; unticking one switches it off at the one place every spawn
+     *  passes through ("~/.galaius/agents.json", via the CLI, so the panel and the terminal
      *  agree on a single fact). */
-    vscode.commands.registerCommand("interact.agents.providers", async () => {
+    vscode.commands.registerCommand("galaius.agents.providers", async () => {
       const providers = await agentProviderStatuses();
       if (!providers) {
         void vscode.window.showErrorMessage(cliFailure("read installed agent providers"));
@@ -762,12 +762,12 @@ export async function activate(
           provider,
         })),
         { title: "Providers that run agents", canPickMany: true,
-          placeHolder: "Tick a provider to let interact drive agents through it" },
+          placeHolder: "Tick a provider to let galaius drive agents through it" },
       );
       if (!picked) return;  // Escape cancels; nothing changes
       const on = new Set(picked.map((p) => p.provider.id));
       for (const provider of providers) {
-        const result = await interactCli([
+        const result = await galaiusCli([
           "agents", "providers", "--name", provider.id, "--state", on.has(provider.id) ? "on" : "off",
         ]);
         if (result.error) {
@@ -777,7 +777,7 @@ export async function activate(
       }
       agentsProvider.refresh();
     }),
-    vscode.commands.registerCommand("interact.agents.workspace", async () => {
+    vscode.commands.registerCommand("galaius.agents.workspace", async () => {
       if (await scope.pick()) {
         agentsProvider.refresh();
         refreshWorkplace();
@@ -787,13 +787,13 @@ export async function activate(
     // Starting an agent from the panel. Without this the panel could only WATCH — you had to
     // leave it for a terminal to put anyone to work, which is not a team you manage.
     // Conversations use the existing route-aware composer. Named delegation goes through spawn.
-    vscode.commands.registerCommand("interact.agents.newSession", async () => {
+    vscode.commands.registerCommand("galaius.agents.newSession", async () => {
       await chatProvider.newConversation();
     }),
-    vscode.commands.registerCommand("interact.agents.spawn", async () => {
+    vscode.commands.registerCommand("galaius.agents.spawn", async () => {
       const provider = await chooseAgentProvider("Start an agent", true);
       if (provider === undefined) return;
-      const listed = await interactCli(["agents", "definitions", ...(provider ? ["--provider", provider.id] : [])]);
+      const listed = await galaiusCli(["agents", "definitions", ...(provider ? ["--provider", provider.id] : [])]);
       if (listed.error) {
         void vscode.window.showErrorMessage(cliFailure("read agent roles"));
         return;
@@ -801,7 +801,7 @@ export async function activate(
       const definitions = listed.stdout.split("\n").map((name) => name.trim()).filter(Boolean);
       if (!definitions.length) {
         void vscode.window.showErrorMessage(
-          `Interact: ${provider?.label ?? "the available providers"} has no verified agent roles available here.`,
+          `Galaius: ${provider?.label ?? "the available providers"} has no verified agent roles available here.`,
         );
         return;
       }
@@ -867,7 +867,7 @@ export async function activate(
         // The launcher reads the named role's current policy and resolves model/effort there.
         // Passing the editor's old model pin here would bypass that single policy decision.
       });
-      const result = await interactCli(args);
+      const result = await galaiusCli(args);
       if (result.error) {
         void vscode.window.showErrorMessage(cliFailure(`start ${picked.label}`));
         return;
@@ -883,13 +883,13 @@ export async function activate(
     // The autonomy a new agent gets here, set WITHOUT having to spawn one to be asked. A
     // workspace-wide default is the setting people actually want: "in this repo, agents plan
     // first" is a property of the repo, and choosing it per spawn is how you end up not choosing.
-    vscode.commands.registerCommand("interact.agents.permissions", async () => {
+    vscode.commands.registerCommand("galaius.agents.permissions", async () => {
       const provider = await chooseAgentProvider("Default agent autonomy — choose a provider");
       if (!provider) return;
       const modes = await knownModes(provider.id);
       if (!modes.length) {
         void vscode.window.showInformationMessage(
-          `Interact: ${provider.label} does not expose a permission setting we have verified.`);
+          `Galaius: ${provider.label} does not expose a permission setting we have verified.`);
         return;
       }
       const key = permissionModeKey(provider.id);
@@ -908,13 +908,13 @@ export async function activate(
     }),
     // The log the extension already writes, made reachable from the panel rather than only from
     // the Output dropdown — a place people look only after being told it exists.
-    vscode.commands.registerCommand("interact.showLogs", () => log.show(true)),
+    vscode.commands.registerCommand("galaius.showLogs", () => log.show(true)),
     // The team as a workplace: who is here, and what room the work has them in.
-    vscode.commands.registerCommand("interact.agents.team", async () => {
+    vscode.commands.registerCommand("galaius.agents.team", async () => {
       const { WorkplacePanel } = await import("./workplacePanel");
       WorkplacePanel.show(log, context.globalState);
     }),
-    vscode.commands.registerCommand("interact.agents.sequence", async () => {
+    vscode.commands.registerCommand("galaius.agents.sequence", async () => {
       const { SequencePanel } = await import("./sequencePanel");
       SequencePanel.show();
     }),
@@ -922,13 +922,13 @@ export async function activate(
     // VISIBLE — VS Code registers a new container hidden, so there is no icon to click until
     // something reveals it. This is that something, and it is also how you get the panel back
     // after closing it.
-    vscode.commands.registerCommand("interact.agents.show", () =>
+    vscode.commands.registerCommand("galaius.agents.show", () =>
       vscode.commands.executeCommand(REVEAL_COMMAND),
     ),
     // Talking BACK to an agent, not only watching it. The agent resumes its own session, so it
     // answers with everything it has already done still in context, and the reply lands in the
     // same transcript the conversation view shows.
-    vscode.commands.registerCommand("interact.agents.send", async (node?: { run?: { run_id: string; name: string } }) => {
+    vscode.commands.registerCommand("galaius.agents.send", async (node?: { run?: { run_id: string; name: string } }) => {
       const run = node?.run;
       if (!run) return;
       const message = await vscode.window.showInputBox({
@@ -939,7 +939,7 @@ export async function activate(
       });
       if (!message) return;
       const { execFile } = await import("child_process");
-      execFile("interact", ["agents", "send", run.run_id, message], (err, stdout, stderr) => {
+      execFile("galaius", ["agents", "send", run.run_id, message], (err, stdout, stderr) => {
         const said = (stdout || stderr || "").trim();
         if (err || said.startsWith("ERROR")) {
           vscode.window.showErrorMessage(said || `Could not reach ${run.name}.`);
@@ -950,12 +950,12 @@ export async function activate(
         refreshWorkplace();
       });
     }),
-    vscode.commands.registerCommand("interact.agents.openConversation", async (arg?: string | { run?: { run_id: string } }) => {
+    vscode.commands.registerCommand("galaius.agents.openConversation", async (arg?: string | { run?: { run_id: string } }) => {
       const runId = typeof arg === "string" ? arg : arg?.run?.run_id;
       if (!runId) return;
       chatProvider.show(runId);
     }),
-    vscode.commands.registerCommand("interact.agents.groupBy", async () => {
+    vscode.commands.registerCommand("galaius.agents.groupBy", async () => {
       const pick = await vscode.window.showQuickPick(
         [
           { label: "Project", value: "project", description: "the directory each agent works in" },
@@ -967,18 +967,18 @@ export async function activate(
       );
       if (pick) await agentsProvider.setGroupBy(pick.value as GroupBy);
     }),
-    vscode.commands.registerCommand("interact.agents.stop", async (node?: { run?: { run_id: string; name: string } }) => {
+    vscode.commands.registerCommand("galaius.agents.stop", async (node?: { run?: { run_id: string; name: string } }) => {
       const run = node?.run;
       if (!run) return;
       // Stopping is Python's job (it owns the process group); the extension only asks.
       const { execFile } = await import("child_process");
-      execFile("interact", ["agents", "stop", run.run_id], (err) => {
+      execFile("galaius", ["agents", "stop", run.run_id], (err) => {
         if (err) vscode.window.showErrorMessage(`Could not stop ${run.name}: ${err.message}`);
         agentsProvider.refresh();
         refreshWorkplace();
       });
     }),
-    vscode.commands.registerCommand("interact.agents.showEvents", async (node?: { run?: { run_id: string; name: string } }) => {
+    vscode.commands.registerCommand("galaius.agents.showEvents", async (node?: { run?: { run_id: string; name: string } }) => {
       const run = node?.run;
       if (!run) return;
       // Served by our own scheme, so it opens READ-ONLY. An untitled document would be dirty,
@@ -998,7 +998,7 @@ export async function activate(
   void revealAgentsPanelOnce();
   context.subscriptions.push(log);
 
-  // No secrets.onDidChange listener: KeyManager stores keys in ~/.interact/config.env (the
+  // No secrets.onDidChange listener: KeyManager stores keys in ~/.galaius/config.env (the
   // file the CLI + server share), not SecretStorage, so nothing ever writes a secret for that
   // event to fire on. Key edits refresh the panel through KeyManager.set/remove directly.
   const emitter = new vscode.EventEmitter<void>();
@@ -1006,7 +1006,7 @@ export async function activate(
 
   try {
     const serverDef = (vscode.lm as any).registerMcpServerDefinitionProvider(
-      "interact",
+      "galaius",
       {
         async provideMcpServerDefinitions() {
           await refreshToolSettings();
@@ -1015,7 +1015,7 @@ export async function activate(
           log.appendLine(`Starting: ${cmd} ${args.join(" ")}`);
           return [
             new (vscode as any).McpStdioServerDefinition(
-              "Interact",
+              "Galaius",
               cmd,
               args,
               env,
@@ -1031,7 +1031,7 @@ export async function activate(
     const msg = err instanceof Error ? err.message : String(err);
     log.appendLine(`MCP registration failed: ${msg}`);
     vscode.window.showWarningMessage(
-      `Interact: MCP server registration failed — ${msg}`,
+      `Galaius: MCP server registration failed — ${msg}`,
     );
   }
 
@@ -1047,9 +1047,9 @@ export async function activate(
     vscode.StatusBarAlignment.Right,
     100,
   );
-  statusBar.text = "$(eye) Interact";
-  statusBar.tooltip = "Open Interact dashboard";
-  statusBar.command = "interact.openDashboard";
+  statusBar.text = "$(eye) Galaius";
+  statusBar.tooltip = "Open Galaius dashboard";
+  statusBar.command = "galaius.openDashboard";
   statusBar.show();
   context.subscriptions.push(statusBar);
 
@@ -1074,18 +1074,18 @@ export async function activate(
         const val = c.get<string>(key);
         if (val && !providerOf(val, modelsData)) {
           vscode.window.showWarningMessage(
-            `Model '${val}' not recognized. Use the "Interact: Select Model" command to pick from available vision models.`,
+            `Model '${val}' not recognized. Use the "Galaius: Select Model" command to pick from available vision models.`,
           );
         }
       }
     }),
-    vscode.commands.registerCommand("interact.selectModel", () =>
+    vscode.commands.registerCommand("galaius.selectModel", () =>
       selectModel(modelsData, keyManager, emitter),
     ),
-    vscode.commands.registerCommand("interact.manageApiKeys", () =>
+    vscode.commands.registerCommand("galaius.manageApiKeys", () =>
       manageApiKeys(keyManager, modelsData, emitter),
     ),
-    vscode.commands.registerCommand("interact.openDashboard", () =>
+    vscode.commands.registerCommand("galaius.openDashboard", () =>
       DashboardPanel.createOrShow(
         context.extensionUri,
         keyManager,
@@ -1095,7 +1095,7 @@ export async function activate(
         () => chatProvider.conversationCatalog(),
       ),
     ),
-    vscode.commands.registerCommand("interact.reloadPanel", () =>
+    vscode.commands.registerCommand("galaius.reloadPanel", () =>
       DashboardPanel.instance?.reload(),
     ),
   );

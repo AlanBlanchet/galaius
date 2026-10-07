@@ -5,7 +5,7 @@
  *  the selected agent's transcript, and has a composer that sends a message back. The agent
  *  resumes its own session, so it answers with everything it has already done still in context.
  *
- *  Sending shells out to `interact agents send` rather than reimplementing delivery: the CLI and
+ *  Sending shells out to `galaius agents send` rather than reimplementing delivery: the CLI and
  *  the MCP tool share one set of refusals (an unknown run, one of your own editor sessions, a
  *  provider that cannot resume), and this must not drift from them.
  */
@@ -23,7 +23,7 @@ import { modelChosenFor } from "./agentModels";
 import { companyOf, definitionFile, readOrg } from "./org";
 import { teamSpend } from "./teamSpend";
 import { scopeStore } from "./scopeStore";
-import { interactCli } from "./interactCli";
+import { galaiusCli } from "./galaiusCli";
 import { describeMode, knownModes, type PermissionMode } from "./permissionModes";
 import { runStatusOf, type RunStatus } from "./runStatus";
 import { billingPresentation, type BillingPresentation } from "./billingPresentation";
@@ -80,11 +80,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   public conversationCatalog(): import("./generated/types").ConversationCatalog | undefined {
     return this.catalogSnapshot;
   }
-  public static readonly viewId = "interactAgents.chat";
+  public static readonly viewId = "galaiusAgents.chat";
 
   /** Set while a conversation is open. The roster views' `when` clauses watch it, so the column
    *  belongs to whichever of the two you are actually using. */
-  public static readonly IN_CONVERSATION = "interact.inConversation";
+  public static readonly IN_CONVERSATION = "galaius.inConversation";
 
   /** Hand the column back to the roster. */
   public static leaveConversation(): void {
@@ -120,11 +120,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.backToTeam();
     await vscode.commands.executeCommand("setContext", ChatViewProvider.IN_CONVERSATION, true);
     if (this.view) void this.view.show?.(true);
-    await vscode.commands.executeCommand("interactAgents.chat.focus");
+    await vscode.commands.executeCommand("galaiusAgents.chat.focus");
     this.render();
   }
 
-  private static readonly IN_CONVERSATION_CLEAR = "interact.agents.backToTeam";
+  private static readonly IN_CONVERSATION_CLEAR = "galaius.agents.backToTeam";
 
   private view: vscode.WebviewView | undefined;
   /** What each model is measured at — the one store every surface shares. */
@@ -192,11 +192,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.render();
     await vscode.commands.executeCommand("setContext", ChatViewProvider.IN_CONVERSATION, true);
     if (this.view) { void this.view.show?.(true); }
-    await vscode.commands.executeCommand("interactAgents.chat.focus");
+    await vscode.commands.executeCommand("galaiusAgents.chat.focus");
     this.render();
   }
 
-  /** Awaited, because the Chat view now carries `when: interact.inConversation` — it does not
+  /** Awaited, because the Chat view now carries `when: galaius.inConversation` — it does not
    *  exist to focus until that key is actually set, and `setContext` is asynchronous. Firing both
    *  and hoping is how a click lands on nothing. */
   private async reveal(runId: string): Promise<void> {
@@ -217,12 +217,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       void this.view.show?.(true);
       return;
     }
-    await vscode.commands.executeCommand("interactAgents.chat.focus");
+    await vscode.commands.executeCommand("galaiusAgents.chat.focus");
   }
 
   public resolveWebviewView(view: vscode.WebviewView): void {
     this.view = view;
-    // This view now carries `when: interact.inConversation`, so VS Code DISPOSES it every time the
+    // This view now carries `when: galaius.inConversation`, so VS Code DISPOSES it every time the
     // clause goes false — and a disposed webview whose reference we kept throws on the next write.
     // That made the SECOND conversation you opened blank the whole sidebar with no visible way
     // back: `Error: Webview is disposed` out of render(), sidebar chrome and nothing in it.
@@ -277,10 +277,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       if (msg?.type === "back") { this.agentId = null; void ChatViewProvider.leaveConversation(); }
       // The empty state's door: an empty panel must lead somewhere, not describe a missing list.
-      if (msg?.type === "openTeam") void vscode.commands.executeCommand("interact.agents.team");
+      if (msg?.type === "openTeam") void vscode.commands.executeCommand("galaius.agents.team");
       // The two things you MANAGE about an agent, from the depth where the agent IS the subject.
       if (msg?.type === "agentAction" && typeof msg.agent === "string") {
-        if (msg.action === "model") void vscode.commands.executeCommand("interact.agents.model", msg.agent);
+        if (msg.action === "model") void vscode.commands.executeCommand("galaius.agents.model", msg.agent);
         if (msg.action === "definition" && typeof msg.path === "string") {
           void vscode.window.showTextDocument(vscode.Uri.file(msg.path));
         }
@@ -353,7 +353,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /** Start through the conversation backend: an explicit dev checkout or a same-version local
-   * `interact` executable from PATH. It does not consult the general server resolver or network. */
+   * `galaius` executable from PATH. It does not consult the general server resolver or network. */
   private async loadConversationConsole(): Promise<void> {
     if (this.conversationClient) return;
     const generation = ++this.conversationGeneration;
@@ -361,8 +361,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     try {
       const workspaceRoot = this.workspaceRoot();
       const backend = await resolveConversationBackend({
-        projectPath: vscode.workspace.getConfiguration("interact").get<string>("projectPath")
-          || process.env.INTERACT_PROJECT_PATH,
+        projectPath: vscode.workspace.getConfiguration("galaius").get<string>("projectPath")
+          || process.env.GALAIUS_PROJECT_PATH,
         extensionVersion: conversationExtensionVersion(),
         workspaceRoot,
       });
@@ -781,7 +781,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       await vscode.commands.executeCommand("vscode.open", uri, { preview: true });
     } catch (err) {
       this.log.appendLine(`could not open ${target}: ${err}`);
-      void vscode.window.showErrorMessage(`Interact: could not open ${target} — ${err}`);
+      void vscode.window.showErrorMessage(`Galaius: could not open ${target} — ${err}`);
     }
   }
 
@@ -856,7 +856,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
     if (!usesConversationTransport(run)) {
-      const { error, stdout } = await interactCli(["agents", "send", run.run_id, text]);
+      const { error, stdout } = await galaiusCli(["agents", "send", run.run_id, text]);
       const failed = Boolean(error) || stdout.trim().startsWith("ERROR");
       void this.view?.webview.postMessage({ type: "sent", ok: !failed });
       if (failed) {
@@ -928,7 +928,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const key = conversationApprovalKey(runId, submission.interaction_id);
     if (!this.conversationClient || !this.approvals.has(key)) return;
     try {
-      const run = await this.conversationClient.interact(runId, submission);
+      const run = await this.conversationClient.galaius(runId, submission);
       const incoming = conversationRun(run);
       if (!incoming) throw new Error("The conversation host returned an invalid run status.");
       const displayed = this.rememberConversationRun(incoming);

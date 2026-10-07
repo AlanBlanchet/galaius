@@ -22,7 +22,7 @@ function fake(mode = "healthy") {
     command: process.execPath,
     args: ["--experimental-strip-types", fakeHost],
     cwd: path.dirname(fakeHost),
-    env: { ...process.env, INTERACT_FAKE_CONVERSATION_MODE: mode },
+    env: { ...process.env, GALAIUS_FAKE_CONVERSATION_MODE: mode },
   };
 }
 
@@ -92,7 +92,7 @@ test("one stdio process negotiates, catalogs, starts, streams, resumes, interact
     ], "UTF-8 framing survives split bytes; dedupe is scoped by run id plus event id");
 
     assert.equal((await client.send("root-run", "continue")).run_id, "root-run");
-    assert.equal((await client.interact("root-run", {
+    assert.equal((await client.galaius("root-run", {
       interaction_id: "interaction-1", values: { decision: "decline" },
     })).run_id, "root-run");
     assert.equal((await client.cancel("root-run")).status, "stopped");
@@ -137,7 +137,7 @@ test("dispose and protocol failure close stdin long enough for host cleanup", as
   for (const mode of ["cleanup", "malformed_cleanup"] as const) {
     const marker = path.join(artifactDir, `cleanup-${mode}-${process.pid}-${Date.now()}.txt`);
     const spec = fake(mode);
-    spec.env.INTERACT_FAKE_CLEANUP_MARKER = marker;
+    spec.env.GALAIUS_FAKE_CLEANUP_MARKER = marker;
     const client = createConversationClient(spec);
     try {
       await client.catalog();
@@ -237,7 +237,7 @@ test("pre-initialize launch failures are distinct, safe, terminal, and explicitl
     },
     {
       name: "missing executable",
-      spec: { command: path.join(path.dirname(fakeHost), "absent-interact"), args: [], cwd: path.dirname(fakeHost) },
+      spec: { command: path.join(path.dirname(fakeHost), "absent-galaius"), args: [], cwd: path.dirname(fakeHost) },
       expected: /was not found.*Install it.*reload/i,
     },
     { name: "incompatible methods", spec: fake("incompatible"), expected: /incompatible.*reload/i },
@@ -280,7 +280,7 @@ test("a bridge that dies at startup logs WHAT it said, without showing it", () =
 test("a missing program is named, and the diagnostic actually reaches a listener", () => {
   /* Two round-48 findings in one place.
 
-     ENOENT said "Interact is not installed" when the missing program was `uv` — the spawn uses
+     ENOENT said "Galaius is not installed" when the missing program was `uv` — the spawn uses
      `uv run --directory` for a project checkout. The user got confident, wrong advice next to a
      RELOAD BRIDGE button, which compounds with any other fault in that path.
 

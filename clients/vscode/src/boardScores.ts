@@ -1,12 +1,12 @@
 /** The live leaderboard, read straight off disk by the panel.
  *
- *  Scores used to arrive pre-joined from interact agents models --json-out, which made every
- *  number in this product depend on the VERSION of whichever interact happens to be on PATH. On
+ *  Scores used to arrive pre-joined from galaius agents models --json-out, which made every
+ *  number in this product depend on the VERSION of whichever galaius happens to be on PATH. On
  *  a machine where that binary came from a different checkout than the panel, the join simply
  *  didn't happen: 436 models, 0 scored, three different sentences asserting "no ranking carries
  *  this model" — all false against the Benchmarks tab in the same window, reading this same file.
  *
- *  So the panel joins for itself. ~/.interact/out/benchmark_scores.json is a fixed path both
+ *  So the panel joins for itself. ~/.galaius/out/benchmark_scores.json is a fixed path both
  *  front ends already read (ttl_cache.py says so in as many words), and leaderboardKey is the
  *  same normalizer the webview already applies to its own rows.
  */
@@ -17,7 +17,7 @@ import * as path from "path";
 import { bareModelName, leaderboardKey } from "./competence.ts";
 
 export function boardPath(): string {
-  return path.join(os.homedir(), ".interact", "out", "benchmark_scores.json");
+  return path.join(os.homedir(), ".galaius", "out", "benchmark_scores.json");
 }
 
 interface BoardRow { name?: unknown; intelligence?: unknown }

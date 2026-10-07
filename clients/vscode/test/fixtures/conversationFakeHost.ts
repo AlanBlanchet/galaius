@@ -10,25 +10,25 @@ import * as fs from "node:fs";
 /** @typedef {"healthy" | "exit_before_initialize" | "controlled_post_catalog_exit" |
  * "adversarial_error" | "incompatible" | "api_catalog" | "crash" | "malformed" |
  * "malformed_cleanup" | "crash_on_start" | "same_chunk_terminal" | "cleanup"} Mode */
-const rawMode = process.env.INTERACT_FAKE_CONVERSATION_MODE ?? "healthy";
+const rawMode = process.env.GALAIUS_FAKE_CONVERSATION_MODE ?? "healthy";
 /** @type {readonly Mode[]} */
 const MODES = ["healthy", "exit_before_initialize", "controlled_post_catalog_exit",
   "adversarial_error", "incompatible", "api_catalog", "crash", "malformed", "malformed_cleanup",
   "crash_on_start", "same_chunk_terminal", "cleanup"];
 if (!MODES.includes(rawMode)) throw new Error("unknown fake conversation mode");
 const mode = rawMode;
-const commandLog = process.env.INTERACT_FAKE_CONVERSATION_LOG;
-const launchLog = process.env.INTERACT_FAKE_LAUNCH_LOG;
-const readyMarker = process.env.INTERACT_FAKE_READY_MARKER;
-const releaseMarker = process.env.INTERACT_FAKE_RELEASE_MARKER;
+const commandLog = process.env.GALAIUS_FAKE_CONVERSATION_LOG;
+const launchLog = process.env.GALAIUS_FAKE_LAUNCH_LOG;
+const readyMarker = process.env.GALAIUS_FAKE_READY_MARKER;
+const releaseMarker = process.env.GALAIUS_FAKE_RELEASE_MARKER;
 
 if (process.argv.includes("--version")) {
-  if (process.env.INTERACT_FAKE_VERSION_MODE === "malformed") {
-    process.stdout.write("interact development\n");
+  if (process.env.GALAIUS_FAKE_VERSION_MODE === "malformed") {
+    process.stdout.write("galaius development\n");
     process.exit(0);
   }
-  if (process.env.INTERACT_FAKE_VERSION_MODE === "failure") process.exit(1);
-  if (process.env.INTERACT_FAKE_VERSION_MODE === "timeout") {
+  if (process.env.GALAIUS_FAKE_VERSION_MODE === "failure") process.exit(1);
+  if (process.env.GALAIUS_FAKE_VERSION_MODE === "timeout") {
     setTimeout(() => process.exit(0), 4_000);
   } else {
     const versionPath = `${process.argv[1]}.version`;
@@ -40,7 +40,7 @@ if (process.argv.includes("--version")) {
       if (!/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/.test(configured)) process.exit(1);
       version = configured;
     }
-    process.stdout.write(`interact ${version}\n`);
+    process.stdout.write(`galaius ${version}\n`);
     process.exit(0);
   }
 }
@@ -273,7 +273,7 @@ input.on("line", (line) => {
 input.on("close", () => {
   if (mode !== "cleanup" && mode !== "malformed_cleanup") return;
   setTimeout(() => {
-    const marker = process.env.INTERACT_FAKE_CLEANUP_MARKER;
+    const marker = process.env.GALAIUS_FAKE_CLEANUP_MARKER;
     if (marker) fs.writeFileSync(marker, "stdin closed");
     process.exit(0);
   }, 25);

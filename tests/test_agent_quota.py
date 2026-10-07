@@ -10,9 +10,9 @@ from datetime import UTC, datetime
 
 import pytest
 
-from interact.agents import quota
-from interact.agents import registry as reg
-from interact.agents.events import AgentEvent
+from galaius.agents import quota
+from galaius.agents import registry as reg
+from galaius.agents.events import AgentEvent
 from tests.support.agents import register_run
 
 
@@ -49,7 +49,7 @@ def _own_store(tmp_path, monkeypatch):
         # refusal nor, therefore, the window behind it.
         ("You’ve hit your usage limit. Upgrade to Pro to continue.", True),
         # Claude Code names the pool it refused for (every quota-failed run on record, 2026-10), and
-        # interact's own launcher says a recorded window is still open.
+        # galaius's own launcher says a recorded window is still open.
         ("You've hit your weekly limit · resets Oct 6, 12am (Europe/Paris)", True),
         ("You've hit your limit · resets 9pm (Europe/Paris)", True),
         ("quota intent: claude/claude-opus-5-5 is still exhausted; the recorded window clears after 2026-10-05T22:01:00+00:00.", True),
@@ -178,7 +178,7 @@ def test_the_model_serving_again_clears_its_block_at_once():
 def test_only_the_model_answering_clears_its_block(tmp_path, monkeypatch):
     """A warning, or the five-hour pool allowing while the seven-day one refuses, proves nothing;
     a turn the model wrote (it read tokens; the CLI's own notice reads none) does."""
-    monkeypatch.setenv("INTERACT_AGENTS_DIR", str(tmp_path / "agents"))
+    monkeypatch.setenv("GALAIUS_AGENTS_DIR", str(tmp_path / "agents"))
     register_run("r1", provider="claude", model="claude-opus-5-5")
     reg.append_event("r1", AgentEvent(kind="rate_limit", text="seven_day limit: rejected"))
     assert quota.blocked_until("claude", "claude-opus-5-5") is not None
@@ -212,7 +212,7 @@ def test_forgotten_notes_do_not_accumulate():
 
 @pytest.mark.parametrize("stored", ["{not json", '{"claude/m": 1891237660.0}', '{"claude/m": {"until": "soon"}}'])
 def test_anything_but_a_block_in_the_store_reads_as_nothing(stored):
-    """A corrupt file, or an older interact's bare deadline — the 39 h kind — is no evidence."""
+    """A corrupt file, or an older galaius's bare deadline — the 39 h kind — is no evidence."""
     quota._path().parent.mkdir(parents=True, exist_ok=True)
     quota._path().write_text(stored, encoding="utf-8")
     assert quota.blocked_until("claude", "m", now=NOW) is None

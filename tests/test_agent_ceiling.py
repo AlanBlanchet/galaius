@@ -1,4 +1,4 @@
-"""Every agent interact starts shares one capped slice, so a swarm cannot take the desktop down, and
+"""Every agent galaius starts shares one capped slice, so a swarm cannot take the desktop down, and
 sits in its own capped scope, so one run's memory cannot end another."""
 
 import os
@@ -9,8 +9,8 @@ import sys
 import pytest
 from pydantic import ValidationError
 
-from interact.agents import ceiling as ceiling_module
-from interact.agents.ceiling import SLICE, Ceiling, contained, end_run_scope
+from galaius.agents import ceiling as ceiling_module
+from galaius.agents.ceiling import SLICE, Ceiling, contained, end_run_scope
 
 CEILING = Ceiling(memory_max_percent=45, run_memory_max_percent=20, oomd_pressure_percent=80, cpu_percent=75, cpu_weight=20)
 
@@ -63,9 +63,9 @@ def test_a_slice_that_cannot_be_prepared(monkeypatch, failure, scoped):
 
 
 @pytest.mark.parametrize("unit, stopped", [
-    pytest.param("interact-run-run-1-0a1b2c3d.scope", True, id="own_scope"),
-    pytest.param("interact-run-parent-9-0a1b2c3d.scope", False, id="launchers_scope"),
-    pytest.param("interact-run-run-10-0a1b2c3d.scope", False, id="longer_id_sharing_a_prefix"),
+    pytest.param("galaius-run-run-1-0a1b2c3d.scope", True, id="own_scope"),
+    pytest.param("galaius-run-parent-9-0a1b2c3d.scope", False, id="launchers_scope"),
+    pytest.param("galaius-run-run-10-0a1b2c3d.scope", False, id="longer_id_sharing_a_prefix"),
     pytest.param("app-com.microsoft.VSCode-1.scope", False, id="editor_scope"),
     pytest.param(None, False, id="no_unit"),
 ])
@@ -94,7 +94,7 @@ def test_a_contained_agent_keeps_its_pid_and_lands_in_its_own_capped_scope():
     out, _ = process.communicate(timeout=30)
     pid, cgroup = out.split("\n", 1)
     assert int(pid) == process.pid
-    assert f"/{SLICE}/interact-run-probe-1-" in cgroup
+    assert f"/{SLICE}/galaius-run-probe-1-" in cgroup
     limits = subprocess.run(
         ["systemctl", "--user", "show", SLICE, "-p", "MemoryHigh", "-p", "MemorySwapMax", "-p", "CPUWeight"],
         capture_output=True, text=True, check=True,
@@ -107,7 +107,7 @@ async def test_every_launched_agent_goes_through_the_ceiling(tmp_path, monkeypat
     """The one thing that must never regress: a spawn path that bypasses the slice."""
     import asyncio
 
-    from interact.agents import run as run_module
+    from galaius.agents import run as run_module
     from tests.support.agents import install_provider, use_policy
     from tests.test_agent_run import _FakeProvider
 

@@ -1,9 +1,9 @@
 """Build a client release from source snapshots (run by the server's deploy, never on a worktree).
 
-    release.py build --source <interact snapshot> --core <interact-core snapshot> --commit <sha> --released-at <iso> --out <folder> [--key <pem>]
+    release.py build --source <galaius snapshot> --core <galaius-core snapshot> --commit <sha> --released-at <iso> --out <folder> [--key <pem>]
 
-Stamps the snapshot's `interact/data/build.json`, builds both wheels, exports the snapshot's uv.lock
-with hashes (interact-core comes as its wheel, not from the lock) and writes `release.json`: every
+Stamps the snapshot's `galaius/data/build.json`, builds both wheels, exports the snapshot's uv.lock
+with hashes (galaius-core comes as its wheel, not from the lock) and writes `release.json`: every
 file a client verifies before installing. The release key lives on the release host only and signs
 there; `--key` signs here, for tests with their own key.
 """
@@ -15,8 +15,8 @@ import tomllib
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from interact.upgrade.release import BuildIdentity, Release
-from interact.upgrade.source import ReleaseSigner
+from galaius.upgrade.release import BuildIdentity, Release
+from galaius.upgrade.source import ReleaseSigner
 
 
 class Publisher:
@@ -41,7 +41,7 @@ class Publisher:
         kept, skipping = [], False
         for line in exported.splitlines():
             if line and not line.startswith((" ", "#")):
-                skipping = line.split()[0].split("==")[0].split("@")[0].strip().lower() in {"interact", "interact-core"}
+                skipping = line.split()[0].split("==")[0].split("@")[0].strip().lower() in {"galaius", "galaius-core"}
             if not skipping:
                 kept.append(line)
         path = self.out / "requirements.lock"
@@ -50,7 +50,7 @@ class Publisher:
 
     def build(self, commit: str, released_at: datetime, signer: ReleaseSigner | None) -> Release:
         self.out.mkdir(parents=True, exist_ok=True)
-        stamped = self.source / "src" / "interact" / "data" / BuildIdentity.path
+        stamped = self.source / "src" / "galaius" / "data" / BuildIdentity.path
         version = tomllib.loads((self.source / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
         stamped.write_text(BuildIdentity(version=version, released_at=released_at, commit=commit).model_dump_json() + "\n", encoding="utf-8")
         wheels = (self.wheel(self.source), self.wheel(self.core))

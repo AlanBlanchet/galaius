@@ -7,7 +7,7 @@ import copy
 import json
 from contextlib import contextmanager
 
-from interact.models import Model, ModelCapability
+from galaius.models import Model, ModelCapability
 
 
 def model(
@@ -103,5 +103,5 @@ def catalog_dict(
 
 def catalog_json(*args: str | tuple[str, float, float], **kwargs) -> str:
     """`catalog_dict`, serialized — what every call site actually wants: a string for
-    `INTERACT_MODELS_JSON` / `Model.load_registry(...)`."""
+    `GALAIUS_MODELS_JSON` / `Model.load_registry(...)`."""
     return json.dumps(catalog_dict(*args, **kwargs))

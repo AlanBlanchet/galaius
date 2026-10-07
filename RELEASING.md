@@ -1,4 +1,4 @@
-# Releasing interact
+# Releasing galaius
 
 Releases are **mechanical and CI-driven**. You bump one number and push; CI tags, builds, and
 publishes. This doc is the source of truth for how versions, branches, tags, and publishing work.
@@ -9,25 +9,25 @@ publishes. This doc is the source of truth for how versions, branches, tags, and
 must match it (the pre-commit hook and CI both fail on drift). Change them only via:
 
 ```bash
-uv run python -m interact.versioning bump <patch|minor|major>   # writes both files
-uv run python -m interact.versioning check                       # verify they agree
-uv run python -m interact.versioning current                     # print the version
+uv run python -m galaius.versioning bump <patch|minor|major>   # writes both files
+uv run python -m galaius.versioning check                       # verify they agree
+uv run python -m galaius.versioning current                     # print the version
 ```
 
 - **patch** — a bug fix, no behaviour change (`0.2.0 → 0.2.1`).
 - **minor** — a backward-compatible feature (`0.2.1 → 0.3.0`).
 - **major** — a breaking change (`0.3.0 → 1.0.0`).
 
-The package is named **`interact`** throughout — import package, CLI command, and distribution.
-`interact.DIST_NAME` is the single source for that name in code (a test asserts it matches
-`pyproject.toml`). interact is **not on PyPI** (the bare `interact` name is taken there by an
+The package is named **`galaius`** throughout — import package, CLI command, and distribution.
+`galaius.DIST_NAME` is the single source for that name in code (a test asserts it matches
+`pyproject.toml`). galaius is **not on PyPI** (the bare `galaius` name is taken there by an
 unrelated package); it's distributed from GitHub via the installer + `uv`, and the extension via
 the Marketplace / Open VSX.
 
 ## The flow
 
 1. Land your changes on `main` (or a `release/X.Y` branch — see below).
-2. Bump: `uv run python -m interact.versioning bump <part>`.
+2. Bump: `uv run python -m galaius.versioning bump <part>`.
 3. Note it in `CHANGELOG.md` (move items out of *Unreleased*).
 4. Commit and push.
 5. CI does the rest: runs the full matrix + desktop tests, and **only if they pass** —
@@ -47,7 +47,7 @@ moved on — e.g. `main` is on `0.4.x` but `0.3.x` users need a fix:
 ```bash
 git switch --detach v0.3.0 && git switch -c release/0.3
 git cherry-pick <fix-commit>
-uv run python -m interact.versioning bump patch     # 0.3.0 → 0.3.1
+uv run python -m galaius.versioning bump patch     # 0.3.0 → 0.3.1
 git push -u origin release/0.3
 ```
 
@@ -78,15 +78,15 @@ cutting GitHub Releases with no red builds.
 
 ## Distribution channels we deliberately skip (for now)
 
-- **PyPI** — the bare `interact` name is taken on PyPI by an unrelated package, and the name stays
-  `interact`, so we install from GitHub instead (`uv`/`pipx` handle git sources on every platform).
-  `pip install interact` would mean claiming the name via PyPI's PEP 541 process — pursue only if
+- **PyPI** — the bare `galaius` name is taken on PyPI by an unrelated package, and the name stays
+  `galaius`, so we install from GitHub instead (`uv`/`pipx` handle git sources on every platform).
+  `pip install galaius` would mean claiming the name via PyPI's PEP 541 process — pursue only if
   you specifically want the PyPI entry.
-- **Standalone `.exe`** — interact is a Python CLI + MCP server; `uv` installs it cleanly on
+- **Standalone `.exe`** — galaius is a Python CLI + MCP server; `uv` installs it cleanly on
   Windows already, and the desktop-control value-add is Linux/X11-only, so a frozen Windows binary
   adds maintenance (PyInstaller, signing) for little gain. Revisit if there's demand.
 - **Ubuntu PPA / `.deb`** — Launchpad + GPG signing + `debian/` packaging is heavy upkeep; `uv`
-  covers Linux. A **Homebrew tap** (`brew install AlanBlanchet/tap/interact`) is the lighter native
+  covers Linux. A **Homebrew tap** (`brew install AlanBlanchet/tap/galaius`) is the lighter native
   option if/when wanted — it also covers macOS.
 - **macOS native** — the `curl | sh` installer and `pipx`/`uvx` already work on macOS (browser +
   CLI + MCP). Native *desktop* control there is not implemented yet (errors clearly).

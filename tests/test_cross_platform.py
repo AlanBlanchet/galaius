@@ -7,8 +7,8 @@ import importlib
 
 import pytest
 
-from interact.desktop import backend as db
-from interact.config import Config
+from galaius.desktop import backend as db
+from galaius.config import Config
 from tests.support import browser_manager
 
 
@@ -16,7 +16,7 @@ def test_server_module_imports_on_any_platform():
     # The import chain must not pull in a Linux-only native module at load time (evdev/uinput are
     # lazy + sys_platform-marked; atspi is try/except). If this fails, the server won't even start
     # on macOS/Windows.
-    server = importlib.import_module("interact.server")
+    server = importlib.import_module("galaius.server")
     assert server.mcp is not None
 
 
@@ -49,7 +49,7 @@ def test_select_backend_off_linux(monkeypatch, plat):
 
 
 def test_server_desktop_guard_off_linux(monkeypatch):
-    import interact.server as server
+    import galaius.server as server
 
     monkeypatch.setattr(db.sys, "platform", "win32")
     # window-title / nested targets stay unsupported off Linux, with an actionable message…
@@ -60,19 +60,19 @@ def test_server_desktop_guard_off_linux(monkeypatch):
 
 
 def test_server_desktop_guard_passes_on_linux(monkeypatch):
-    import interact.server as server
+    import galaius.server as server
 
     monkeypatch.setattr(db.sys, "platform", "linux")
     assert server._desktop_unsupported() is None
 
 
 def test_doctor_diagnostics_are_clean_off_linux(monkeypatch, capsys):
-    # A Mac/Windows colleague running `interact doctor` must not see Linux-only advice
+    # A Mac/Windows colleague running `galaius doctor` must not see Linux-only advice
     # (`apt install maim`, `/dev/uinput … udev rule`) — that reads as "broken" when browser
     # automation is actually ready. Report N/A cleanly instead.
-    import interact.cli as cli
+    import galaius.cli as cli
 
-    monkeypatch.setattr("interact.desktop.backend.desktop_supported", lambda: False)
+    monkeypatch.setattr("galaius.desktop.backend.desktop_supported", lambda: False)
     cli.doctor()
     out = capsys.readouterr().out
     assert "not available on" in out
@@ -81,9 +81,9 @@ def test_doctor_diagnostics_are_clean_off_linux(monkeypatch, capsys):
 
 
 def test_status_desktop_line_clean_off_linux(monkeypatch, capsys):
-    import interact.cli as cli
+    import galaius.cli as cli
 
-    monkeypatch.setattr("interact.desktop.backend.desktop_supported", lambda: False)
+    monkeypatch.setattr("galaius.desktop.backend.desktop_supported", lambda: False)
     cli.status()
     out = capsys.readouterr().out
     assert "desktop" in out and "not available on this OS" in out

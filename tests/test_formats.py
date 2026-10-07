@@ -7,8 +7,8 @@ import logging
 
 import pytest
 
-from interact.desktop import DesktopElement
-from interact.formats import BoxOrder, CoordFormat
+from galaius.desktop import DesktopElement
+from galaius.formats import BoxOrder, CoordFormat
 
 _QWEN_RESPONSE = json.dumps(
     [
@@ -129,7 +129,7 @@ def test_get_format_warns_on_miss(caplog):
     CoordFormat.load_from_config(
         {"gemini/": {"normalized": True, "box_order": "yxyx", "box_key": "box_2d"}}
     )
-    with caplog.at_level(logging.DEBUG, logger="interact.formats"):
+    with caplog.at_level(logging.DEBUG, logger="galaius.formats"):
         result = CoordFormat.for_model("unknown/model-xyz")
     assert "No coord format registered for model" in caplog.text
     assert "'unknown/model-xyz'" in caplog.text
@@ -184,7 +184,7 @@ def test_a_misspelled_box_key_is_still_a_box(caplog):
     "0 elements". A four-number list under a key one edit away from a box key is read as the
     box — and said so in the log — while a four-list under an unrelated key stays out."""
     fmt = CoordFormat(box_order=BoxOrder.YXYX, normalized=True, box_key="box_2d")
-    with caplog.at_level(logging.WARNING, logger="interact.formats"):
+    with caplog.at_level(logging.WARNING, logger="galaius.formats"):
         elements = fmt.parse(_TYPO_RESPONSE, 1000, 1000)
     assert elements is not None and len(elements) == 1, elements
     assert elements[0].name == "OK"
@@ -258,7 +258,7 @@ def test_unrelated_near_spelling_is_not_a_coordinate():
 
 def test_parse_vlm_elements_no_transform():
     """CoordFormat.parse returns raw VLM-space coords; caller applies CoordTransform."""
-    from interact.formats import CoordFormat
+    from galaius.formats import CoordFormat
 
     response = '[{"role":"button","name":"OK","x":200,"y":100,"w":80,"h":30}]'
     elements = CoordFormat().parse(response, 800, 600)

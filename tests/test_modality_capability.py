@@ -3,12 +3,12 @@
 The bug this guards: the `video` role used to require only `vlm`, so its dropdown mirrored the
 image dropdown and offered models (Claude, GPT) that don't take video at all. litellm's
 `supports_video_input`/`_audio_input` flags don't populate, so capability comes from a curated
-family table (interact.models) grounded in each provider's docs. These tests pin that the video
+family table (galaius.models) grounded in each provider's docs. These tests pin that the video
 picker is a genuine subset, the matchers are right, and the new MLVU/MMAU benchmarks exist."""
 
 import pytest
 
-from interact.models import (
+from galaius.models import (
     Benchmark,
     Model,
     ModelCapability,
@@ -17,8 +17,8 @@ from interact.models import (
     is_transcription_only_model,
     supports_native_video_inline,
 )
-from interact.config.settings import _ROLE_DEFAULT_CRITERIA
-from interact.criteria import Criteria
+from galaius.config.settings import _ROLE_DEFAULT_CRITERIA
+from galaius.criteria import Criteria
 
 
 @pytest.mark.parametrize(
@@ -90,7 +90,7 @@ def test_transcription_only(model_id, only):
 
 def test_an_explicit_video_criterion_selects_only_native_video_models_not_the_image_list():
     """The regression: video must NOT mirror image. ``video.criteria`` defaults to the loosest
-    ``cap.vlm`` bar (interact frame-samples for any VLM), but a person who writes ``cap.video``
+    ``cap.vlm`` bar (galaius frame-samples for any VLM), but a person who writes ``cap.video``
     explicitly gets genuinely video-capable models (Gemini/Qwen-VL/Nova) — never a frames-only
     model (Claude/GPT), and never the same set as the image role."""
     video_ids = {m.id for m in Criteria.parse("cap.video").qualifying(available_only=False)}
@@ -107,10 +107,10 @@ def test_an_explicit_video_criterion_selects_only_native_video_models_not_the_im
 
 
 def test_video_role_still_resolves_a_model_without_a_native_video_key(monkeypatch):
-    """No regression: even with no native-video provider keyed, video still resolves (interact
+    """No regression: even with no native-video provider keyed, video still resolves (galaius
     frame-samples a recording, so any VLM works) — the default criterion is cap.vlm, not
     cap.video, precisely so an OpenAI-only user still gets a video model."""
-    from interact.config import Config
+    from galaius.config import Config
 
     # Only an OpenAI key present → no Gemini/Qwen native-video model is available.
     for var in list(__import__("os").environ):

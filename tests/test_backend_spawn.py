@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from interact.desktop.backend import LocalBackend, PortableBackend
+from galaius.desktop.backend import LocalBackend, PortableBackend
 
 
 # PATH is still there underneath it.

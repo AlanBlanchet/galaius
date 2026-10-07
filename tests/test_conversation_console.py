@@ -15,34 +15,34 @@ import pytest
 from jsonschema import Draft7Validator
 from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 from pydantic import JsonValue, ValidationError
-from interact_core import PromptKey, PromptSelection
+from galaius_core import PromptKey, PromptSelection
 from referencing import Registry, Resource
 from referencing.jsonschema import DRAFT7
 
-from interact.agents import registry as reg
-from interact.agents.assembly import _TransportRegistry
-from interact.agents.codex_schema import encode_supported_response
-from interact.agents.codex_transport import _CodexTransport, _RpcMessage
-from interact.agents.events import AgentEvent, ConversationInteraction, InteractionField
-from interact.agents.host import _ConversationHost
-from interact.agents.protocol import (
+from galaius.agents import registry as reg
+from galaius.agents.assembly import _TransportRegistry
+from galaius.agents.codex_schema import encode_supported_response
+from galaius.agents.codex_transport import _CodexTransport, _RpcMessage
+from galaius.agents.events import AgentEvent, ConversationInteraction, InteractionField
+from galaius.agents.host import _ConversationHost
+from galaius.agents.protocol import (
     ConversationRequest,
     InteractionSubmission,
     ModelSelection,
 )
-from interact.agents.providers import CodexProvider
-from interact.data import PackageData
-from interact.config import Config
-from interact.private_files import PRIVATE_FILES
-from interact.processes import process_group_options, stop_process_tree
-from interact.server_registry import _alive as process_alive
+from galaius.agents.providers import CodexProvider
+from galaius.data import PackageData
+from galaius.config import Config
+from galaius.private_files import PRIVATE_FILES
+from galaius.processes import process_group_options, stop_process_tree
+from galaius.server_registry import _alive as process_alive
 from tests.support import catalog_json
 from tests.support.agents import install_fake_cli
 from tests.support.private_files import loosen
 
 FIXTURES = Path(__file__).parent / "fixtures" / "agents"
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
-CODEX_SCHEMA_CAPTURE = PROJECT_ROOT / "src/interact/agents/codex_app_server_schema"
+CODEX_SCHEMA_CAPTURE = PROJECT_ROOT / "src/galaius/agents/codex_app_server_schema"
 
 
 @pytest.fixture
@@ -58,7 +58,7 @@ def console_workspace(monkeypatch):
                 monkeypatch.setenv(env_key, "")
     monkeypatch.setenv("OLLAMA_DISCOVERY", "0")
     monkeypatch.setenv("LITELLM_LOCAL_MODEL_COST_MAP", "True")
-    monkeypatch.setenv("INTERACT_MODELS_JSON", "{}")
+    monkeypatch.setenv("GALAIUS_MODELS_JSON", "{}")
 
     root = Path("out/tests/conversation-console") / str(uuid.uuid4())
     workspace = root / "workspace"
@@ -76,14 +76,14 @@ def console_workspace(monkeypatch):
     ))
     monkeypatch.setenv("HOME", str(home.resolve()))
     monkeypatch.setenv("USERPROFILE", str(home.resolve()))
-    monkeypatch.setenv("INTERACT_AGENTS_DIR", str(home.resolve() / ".interact" / "out" / "agents"))
+    monkeypatch.setenv("GALAIUS_AGENTS_DIR", str(home.resolve() / ".galaius" / "out" / "agents"))
     yield root, workspace.resolve(), binary_dir
     shutil.rmtree(root)
 
 
 async def _open_console(workspace: Path):
     return await asyncio.create_subprocess_exec(
-        "uv", "run", "--project", str(PROJECT_ROOT), "interact", "agents", "console",
+        "uv", "run", "--project", str(PROJECT_ROOT), "galaius", "agents", "console",
         "--workspace-root", str(workspace),
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
@@ -392,7 +392,7 @@ async def test_codex_handshake_failure_is_shown_in_catalog_reason(
     async def open_failed(*_args: object, **_kwargs: object) -> FailedConnection:
         return FailedConnection()
 
-    monkeypatch.setattr("interact.agents.assembly._CodexTransport.open", open_failed)
+    monkeypatch.setattr("galaius.agents.assembly._CodexTransport.open", open_failed)
     registry = _TransportRegistry(workspace_root=tmp_path)
 
     await registry._open_session()
@@ -416,7 +416,7 @@ async def test_codex_model_catalog_failure_is_shown_in_route_reason(
         async def models(self) -> tuple[list[str], str | None]:
             raise ValueError("model/list response validation failed: data")
 
-    monkeypatch.setattr("interact.agents.assembly.Policy.load", lambda: ActivePolicy())
+    monkeypatch.setattr("galaius.agents.assembly.Policy.load", lambda: ActivePolicy())
     registry = _TransportRegistry(workspace_root=tmp_path)
     registry._session = FailedCatalogConnection()
     registry._session_authenticated = True
@@ -443,7 +443,7 @@ async def test_codex_empty_model_catalog_is_actionable(
         async def models(self) -> tuple[list[str], str | None]:
             return [], None
 
-    monkeypatch.setattr("interact.agents.assembly.Policy.load", lambda: ActivePolicy())
+    monkeypatch.setattr("galaius.agents.assembly.Policy.load", lambda: ActivePolicy())
     registry = _TransportRegistry(workspace_root=tmp_path)
     registry._session = EmptyCatalogConnection()
     registry._session_authenticated = True
@@ -470,7 +470,7 @@ async def test_codex_unauthenticated_route_names_the_login_action(
     async def open_unauthenticated(*_args: object, **_kwargs: object) -> UnauthenticatedConnection:
         return UnauthenticatedConnection()
 
-    monkeypatch.setattr("interact.agents.assembly._CodexTransport.open", open_unauthenticated)
+    monkeypatch.setattr("galaius.agents.assembly._CodexTransport.open", open_unauthenticated)
     registry = _TransportRegistry(workspace_root=tmp_path)
 
     await registry._open_session()
@@ -690,7 +690,7 @@ async def test_fake_app_server_crosses_catalog_thread_turn_and_stream(console_wo
         }
         initialize = next(record for record in _codex_log(binary_dir)
                           if record["method"] == "initialize")
-        assert initialize["params"]["clientInfo"]["name"] == "interact"
+        assert initialize["params"]["clientInfo"]["name"] == "galaius"
         assert initialize["params"]["clientInfo"]["version"]
         assert initialize["params"]["capabilities"] == {"experimentalApi": False}
         account = next(record for record in _codex_log(binary_dir)
@@ -765,8 +765,8 @@ async def test_console_binds_server_prompt_before_starting_provider(
         ),
     )
     endpoint = "http://127.0.0.1:1" if case == "offline-uncached" else f"http://127.0.0.1:{port}"
-    monkeypatch.setenv("INTERACT_PROMPT_ENDPOINT", endpoint)
-    monkeypatch.setenv("INTERACT_PROMPT_ACCOUNT", "tenant-a")
+    monkeypatch.setenv("GALAIUS_PROMPT_ENDPOINT", endpoint)
+    monkeypatch.setenv("GALAIUS_PROMPT_ACCOUNT", "tenant-a")
     token_file = root / "prompt-token"
     token_file.write_text(token if case != "token-file-oversize" else "x" * 4097)
     PRIVATE_FILES.restrict(token_file)
@@ -778,16 +778,16 @@ async def test_console_binds_server_prompt_before_starting_provider(
         configured_file.symlink_to(token_file)
     file_case = case.startswith("token-file") or case in {"verified-file", "token-ambiguous"}
     monkeypatch.setenv(
-        "INTERACT_PROMPT_TOKEN",
+        "GALAIUS_PROMPT_TOKEN",
         "wrong" if case == "wrong-token" else (token if not file_case or case == "token-ambiguous" else ""),
     )
     if file_case:
-        monkeypatch.setenv("INTERACT_PROMPT_TOKEN_FILE", str(configured_file.resolve()))
+        monkeypatch.setenv("GALAIUS_PROMPT_TOKEN_FILE", str(configured_file.resolve()))
     else:
-        monkeypatch.delenv("INTERACT_PROMPT_TOKEN_FILE", raising=False)
-    monkeypatch.setenv("INTERACT_PROMPT_CACHE", str((root / "prompts.sqlite3").resolve()))
+        monkeypatch.delenv("GALAIUS_PROMPT_TOKEN_FILE", raising=False)
+    monkeypatch.setenv("GALAIUS_PROMPT_CACHE", str((root / "prompts.sqlite3").resolve()))
     if case == "missing-config":
-        monkeypatch.setenv("INTERACT_PROMPT_ACCOUNT", "")
+        monkeypatch.setenv("GALAIUS_PROMPT_ACCOUNT", "")
     process = await _open_console(workspace)
     try:
         catalog_response = await _exchange(process, {
@@ -799,7 +799,7 @@ async def test_console_binds_server_prompt_before_starting_provider(
             route_id=route["id"],
             prompt="What should the user do next?",
             prompt_selection=PromptSelection(
-                key=PromptKey(namespace="interact", slug="system"),
+                key=PromptKey(namespace="galaius", slug="system"),
                 channel="stable",
                 digest="0" * 64 if case == "digest-mismatch" else digest,
             ),
@@ -884,7 +884,7 @@ async def test_criterion_resolves_only_inside_the_selected_route(
     _, workspace, binary_dir = console_workspace
     model_ids = ["openai/expensive-example", "openai/cheap-example"]
     _scenario(binary_dir, mode="success", models=model_ids)
-    monkeypatch.setenv("INTERACT_MODELS_JSON", _models(
+    monkeypatch.setenv("GALAIUS_MODELS_JSON", _models(
         (model_ids[0], 10.0), (model_ids[1], 0.5)
     ))
     process = await _open_console(workspace)
@@ -961,7 +961,7 @@ async def test_explicit_api_route_executes_the_resolved_model_exactly_once(
     api_process, port, api_log = await _open_api_server(root)
     monkeypatch.setenv("OPENAI_API_KEY", "synthetic-test-value")
     monkeypatch.setenv("OPENAI_API_BASE", f"http://127.0.0.1:{port}/v1")
-    monkeypatch.setenv("INTERACT_MODELS_JSON", _models(
+    monkeypatch.setenv("GALAIUS_MODELS_JSON", _models(
         ("openai/alpha-default", 10.0),
         ("openai/zeta-selected", 0.5),
     ))
@@ -1021,14 +1021,14 @@ async def test_prompt_selected_api_keeps_instruction_separate_from_user_turn(
     monkeypatch.setenv("OPENAI_API_KEY", "synthetic-test-value")
     monkeypatch.setenv("OPENAI_API_BASE", f"http://127.0.0.1:{api_port}/v1")
     monkeypatch.setenv(
-        "INTERACT_MODELS_JSON", _models(("openai/example-model", 1.0))
+        "GALAIUS_MODELS_JSON", _models(("openai/example-model", 1.0))
     )
-    monkeypatch.setenv("INTERACT_PROMPT_ENDPOINT", f"http://127.0.0.1:{prompt_port}")
-    monkeypatch.setenv("INTERACT_PROMPT_ACCOUNT", "tenant-a")
-    monkeypatch.setenv("INTERACT_PROMPT_TOKEN", token)
-    monkeypatch.delenv("INTERACT_PROMPT_TOKEN_FILE", raising=False)
+    monkeypatch.setenv("GALAIUS_PROMPT_ENDPOINT", f"http://127.0.0.1:{prompt_port}")
+    monkeypatch.setenv("GALAIUS_PROMPT_ACCOUNT", "tenant-a")
+    monkeypatch.setenv("GALAIUS_PROMPT_TOKEN", token)
+    monkeypatch.delenv("GALAIUS_PROMPT_TOKEN_FILE", raising=False)
     cache_path = (root / "prompts.sqlite3").resolve()
-    monkeypatch.setenv("INTERACT_PROMPT_CACHE", str(cache_path))
+    monkeypatch.setenv("GALAIUS_PROMPT_CACHE", str(cache_path))
     process = await _open_console(workspace)
     try:
         started = await _exchange(process, {
@@ -1039,7 +1039,7 @@ async def test_prompt_selected_api_keeps_instruction_separate_from_user_turn(
                 "route_id": "openai:api",
                 "prompt": "What changed in the repository?",
                 "prompt_selection": {
-                    "key": {"namespace": "interact", "slug": "system"},
+                    "key": {"namespace": "galaius", "slug": "system"},
                     "channel": "stable",
                     "digest": digest,
                 },
@@ -1069,14 +1069,14 @@ async def test_prompt_selected_api_keeps_instruction_separate_from_user_turn(
             {"role": "user", "content": "What changed in the repository?"},
         ]
         assert started["run"]["prompt"] == {
-            "key": {"namespace": "interact", "slug": "system"},
+            "key": {"namespace": "galaius", "slug": "system"},
             "channel": "stable",
             "revision": revision,
             "digest": digest,
         }
         assert prompt_requests == [
             {"path": "/v1/catalog", "status": 200},
-            {"path": f"/v1/revisions/interact/system/{digest}", "status": 200},
+            {"path": f"/v1/revisions/galaius/system/{digest}", "status": 200},
         ]
     finally:
         await _stop_console(process)
@@ -1092,7 +1092,7 @@ async def test_explicit_api_active_history_includes_assistant_response(
     api_process, port, api_log = await _open_api_server(root)
     monkeypatch.setenv("OPENAI_API_KEY", "synthetic-test-value")
     monkeypatch.setenv("OPENAI_API_BASE", f"http://127.0.0.1:{port}/v1")
-    monkeypatch.setenv("INTERACT_MODELS_JSON", _models(("openai/example-model", 1.0)))
+    monkeypatch.setenv("GALAIUS_MODELS_JSON", _models(("openai/example-model", 1.0)))
     process = await _open_console(workspace)
     try:
         started = await _exchange(process, {
@@ -1130,7 +1130,7 @@ async def test_explicit_api_cancel_stops_inflight_completion(
     api_process, port, api_log = await _open_api_server(root, delay=1.0)
     monkeypatch.setenv("OPENAI_API_KEY", "synthetic-test-value")
     monkeypatch.setenv("OPENAI_API_BASE", f"http://127.0.0.1:{port}/v1")
-    monkeypatch.setenv("INTERACT_MODELS_JSON", _models(("openai/example-model", 1.0)))
+    monkeypatch.setenv("GALAIUS_MODELS_JSON", _models(("openai/example-model", 1.0)))
     process = await _open_console(workspace)
     try:
         started = await _exchange(process, {
@@ -1168,7 +1168,7 @@ async def test_explicit_api_terminal_races_never_record_false_cancellation(
     api_process, port, _ = await _open_api_server(root)
     monkeypatch.setenv("OPENAI_API_KEY", "synthetic-test-value")
     monkeypatch.setenv("OPENAI_API_BASE", f"http://127.0.0.1:{port}/v1")
-    monkeypatch.setenv("INTERACT_MODELS_JSON", _models(("openai/example-model", 1.0)))
+    monkeypatch.setenv("GALAIUS_MODELS_JSON", _models(("openai/example-model", 1.0)))
     if terminal == "provider_unavailable":
         api_process.terminate()
         await api_process.wait()
@@ -1208,7 +1208,7 @@ async def test_session_failure_never_falls_through_to_api(
     api_process, port, api_log = await _open_api_server(root)
     monkeypatch.setenv("OPENAI_API_KEY", "synthetic-test-value")
     monkeypatch.setenv("OPENAI_API_BASE", f"http://127.0.0.1:{port}/v1")
-    monkeypatch.setenv("INTERACT_MODELS_JSON", _models(("openai/example-model", 1.0)))
+    monkeypatch.setenv("GALAIUS_MODELS_JSON", _models(("openai/example-model", 1.0)))
     process = await _open_console(workspace)
     try:
         response = await _exchange(process, {
@@ -1282,7 +1282,7 @@ async def test_continuation_conflict_cancel_and_process_restart_resume(
         assert failed["ok"] is False
         assert failed["error_code"] == "provider_failed"
         stored = json.loads(
-            (Path.home() / ".interact" / "out" / "agents" / f"{run_id}.json").read_text()
+            (Path.home() / ".galaius" / "out" / "agents" / f"{run_id}.json").read_text()
         )
         assert stored["status"] not in ("starting", "running")
     finally:
@@ -1321,11 +1321,11 @@ async def test_continuation_conflict_cancel_and_process_restart_resume(
 async def test_resumed_conversation_skips_a_cooled_model_and_uses_the_next_ranked_one(
     console_workspace, monkeypatch
 ) -> None:
-    from interact.agents import quota
+    from galaius.agents import quota
 
     _, workspace, binary_dir = console_workspace
     model_ids = ["openai/expensive-example", "openai/cheap-example"]
-    monkeypatch.setenv("INTERACT_MODELS_JSON", _models(
+    monkeypatch.setenv("GALAIUS_MODELS_JSON", _models(
         (model_ids[0], 10.0), (model_ids[1], 0.5)
     ))
     _scenario(binary_dir, mode="hold", models=model_ids)
@@ -1373,11 +1373,11 @@ async def test_resumed_conversation_skips_a_cooled_model_and_uses_the_next_ranke
 async def test_resumed_conversation_refuses_when_every_candidate_is_cooled(
     console_workspace, monkeypatch
 ) -> None:
-    from interact.agents import quota
+    from galaius.agents import quota
 
     _, workspace, binary_dir = console_workspace
     model_ids = ["openai/expensive-example", "openai/cheap-example"]
-    monkeypatch.setenv("INTERACT_MODELS_JSON", _models(
+    monkeypatch.setenv("GALAIUS_MODELS_JSON", _models(
         (model_ids[0], 10.0), (model_ids[1], 0.5)
     ))
     _scenario(binary_dir, mode="hold", models=model_ids)
@@ -1583,7 +1583,7 @@ async def test_collaboration_is_discrete_idempotent_and_enriched_out_of_order(
         assert len([message for message in child_events
                     if message["event"]["kind"] == "spawn"
                     if message["event"]["event_id"].endswith(":completed")]) == 1
-        child_path = root / "home" / ".interact" / "out" / "agents" / "thread-child.json"
+        child_path = root / "home" / ".galaius" / "out" / "agents" / "thread-child.json"
         child = json.loads(child_path.read_text())
         assert child["parent_run_id"] == "thread-root"
         assert child["root_run_id"] == "thread-root"
@@ -1607,7 +1607,7 @@ async def test_collaboration_is_discrete_idempotent_and_enriched_out_of_order(
         assert tool_pair[0]["tool_id"] == tool_pair[1]["tool_id"] == "child-command"
         root_transcript = [
             json.loads(line)
-            for line in (root / "home" / ".interact" / "out" / "agents" / "thread-root.jsonl")
+            for line in (root / "home" / ".galaius" / "out" / "agents" / "thread-root.jsonl")
             .read_text().splitlines()
         ]
         assert any(event["kind"] == "other"
@@ -1915,7 +1915,7 @@ async def test_workspace_symlink_escape_is_refused_without_path_disclosure(
         })
         assert hostile["ok"] is False
         assert hostile["error_code"] == "provider_failed"
-        assert not (root / "home" / ".interact" / "outside-owned.json").exists()
+        assert not (root / "home" / ".galaius" / "outside-owned.json").exists()
     finally:
         await _stop_console(process)
 
@@ -2061,7 +2061,7 @@ async def _fragmented_two_turn_result(console_workspace):
         await _event(process, "done")
         run_id = started["run"]["run_id"]
         events = [json.loads(line) for line in (
-            root / "home" / ".interact" / "out" / "agents" / f"{run_id}.jsonl"
+            root / "home" / ".galaius" / "out" / "agents" / f"{run_id}.jsonl"
         ).read_text().splitlines()]
         stored = reg.get_run(run_id)
         assert stored is not None
@@ -2243,7 +2243,7 @@ def test_codex_schema_capture_drives_complete_request_policy_without_handwritten
     assert refs and len(refs) == len(set(refs))
     for relative in refs:
         assert (fixture / relative.removeprefix("./")).is_file()
-    generated = Path("src/interact/agents/codex_schema.py")
+    generated = Path("src/galaius/agents/codex_schema.py")
     assert generated.is_file()
     source = generated.read_text()
     assert hashlib.sha256(server_request_path.read_bytes()).hexdigest() in source
@@ -2284,14 +2284,14 @@ def test_codex_schema_capture_imports_from_an_offline_wheel(wheel_build_cache: P
             check=False,
         )
         assert built.returncode == 0, built.stderr
-        wheel = next(wheelhouse.glob("interact-*.whl"))
+        wheel = next(wheelhouse.glob("galaius-*.whl"))
         shutil.unpack_archive(wheel, unpacked, "zip")
 
-        source = (unpacked / "interact/agents/codex_schema.py").read_text()
+        source = (unpacked / "galaius/agents/codex_schema.py").read_text()
         assert "tests/" not in source and '"tests"' not in source
-        assert (unpacked / "interact/agents/codex_app_server_schema/manifest.json").is_file()
+        assert (unpacked / "galaius/agents/codex_app_server_schema/manifest.json").is_file()
         imported = subprocess.run(
-            [sys.executable, "-m", "interact.agents.codex_schema"],
+            [sys.executable, "-m", "galaius.agents.codex_schema"],
             cwd=unpacked,
             # Windows needs SYSTEMROOT to load its socket layer and USERPROFILE to name a home.
             env={
@@ -2344,8 +2344,8 @@ def test_codex_schema_boundary_validates_derived_requests_results_and_rejections
         entry["method"] for entry in entries
     }
 
-    module_path = Path("src/interact/agents/codex_schema.py")
-    spec = importlib.util.spec_from_file_location("interact_codex_schema_test", module_path)
+    module_path = Path("src/galaius/agents/codex_schema.py")
+    spec = importlib.util.spec_from_file_location("galaius_codex_schema_test", module_path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -2490,7 +2490,7 @@ async def test_cli_secret_forms_are_redacted_without_hiding_safe_context(
             },
         })
         await _event(process, "done")
-        events = (root / "home" / ".interact" / "out" / "agents" / "thread-child.jsonl").read_text()
+        events = (root / "home" / ".galaius" / "out" / "agents" / "thread-child.jsonl").read_text()
         if sensitive_text is not None:
             assert sensitive_text not in events
         assert safe_context in events
@@ -2531,9 +2531,9 @@ async def test_protocol_failure_immediately_reaps_owned_provider_process(
 
 def test_transport_and_cli_import_contracts_are_explicit_and_lightweight() -> None:
     """Architecture and entrypoint invariants are executable without importing provider code."""
-    transport = Path("src/interact/agents/transport.py")
+    transport = Path("src/galaius/agents/transport.py")
     assert transport.exists(), "one private capability-typed transport owner must exist"
-    host_source = Path("src/interact/agents/host.py").read_text()
+    host_source = Path("src/galaius/agents/host.py").read_text()
     host_tree = ast.parse(host_source)
     imported_modules = {
         node.module
@@ -2541,15 +2541,15 @@ def test_transport_and_cli_import_contracts_are_explicit_and_lightweight() -> No
         if isinstance(node, ast.ImportFrom) and node.module is not None
     }
     assert not imported_modules.intersection({
-        "interact.agents.codex_transport",
-        "interact.agents.completion_transport",
-        "interact.agents.providers",
-        "interact.models",
+        "galaius.agents.codex_transport",
+        "galaius.agents.completion_transport",
+        "galaius.agents.providers",
+        "galaius.models",
     }), "the host must receive a route-to-transport registry without concrete provider imports"
     assert "run.connection ==" not in host_source
     assert "route.connection ==" not in host_source
     assert "transport_registry" in _ConversationHost.model_fields
-    tree = ast.parse(Path("src/interact/cli/app.py").read_text())
+    tree = ast.parse(Path("src/galaius/cli/app.py").read_text())
     local_imports = [node for node in ast.walk(tree)
                      if isinstance(node, (ast.Import, ast.ImportFrom)) and node.col_offset > 0]
     assert not local_imports
@@ -2562,12 +2562,12 @@ def test_cli_import_and_help_do_not_load_or_discover_conversation_dependencies()
         "UV_OFFLINE": "1",
         "OLLAMA_DISCOVERY": "0",
         "LITELLM_LOCAL_MODEL_COST_MAP": "True",
-        "INTERACT_MODELS_JSON": "{}",
+        "GALAIUS_MODELS_JSON": "{}",
     }
     imported = subprocess.run(
         [sys.executable, "-c", (
-            "import sys; import interact.cli.app; "
-            "forbidden={'interact.agents.host','interact.models'}; "
+            "import sys; import galaius.cli.app; "
+            "forbidden={'galaius.agents.host','galaius.models'}; "
             "loaded=sorted(forbidden.intersection(sys.modules)); "
             "raise SystemExit('loaded:'+','.join(loaded) if loaded else 0)"
         )],
@@ -2576,7 +2576,7 @@ def test_cli_import_and_help_do_not_load_or_discover_conversation_dependencies()
     )
     assert imported.returncode == 0, imported.stderr
     helped = subprocess.run(
-        ["uv", "run", "interact", "--help"],
+        ["uv", "run", "galaius", "--help"],
         cwd=PROJECT_ROOT, env=environment, text=True, capture_output=True, timeout=10,
         check=False,
     )
@@ -2601,7 +2601,7 @@ async def test_console_initializes_before_media_cost_discovery(console_workspace
     environment["LITELLM_MODEL_COST_MAP_URL"] = f"http://127.0.0.1:{port}/cost-map"
     process = await asyncio.create_subprocess_exec(
         "uv", "run", "--project", str(PROJECT_ROOT),
-        "interact", "agents", "console",
+        "galaius", "agents", "console",
         "--workspace-root", str(workspace),
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,

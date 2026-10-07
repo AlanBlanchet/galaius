@@ -2,8 +2,8 @@ import re
 
 import pytest
 
-from interact.models import Model
-from interact.probe import ArtifactRun
+from galaius.models import Model
+from galaius.probe import ArtifactRun
 from tests.support import catalog_json
 
 # Two gemini grounding models (priced high vs free) + an unconfigured chatgpt model.

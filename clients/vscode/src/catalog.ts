@@ -2,8 +2,8 @@
  *
  *  The extension used to read ./models.json — a file baked into the bundle by sync-data.js at
  *  BUILD time. It looked current and wasn't: prices and context windows aged with every release
- *  and nothing said so. This reads the catalog Python refreshes (interact.model_catalog,
- *  ~/.interact/out/model_catalog.json) and, when that's missing or stale, fetches OpenRouter's
+ *  and nothing said so. This reads the catalog Python refreshes (galaius.model_catalog,
+ *  ~/.galaius/out/model_catalog.json) and, when that's missing or stale, fetches OpenRouter's
  *  public endpoint directly — a plain unauthenticated GET, no key.
  *
  *  The invariant, same as the Python side: the catalog carries its SOURCE and its AGE, and isLive
@@ -28,7 +28,7 @@ export * from "./catalogFormat";
 
 
 /** The file Python writes. It sits beside the agent registry on the same fixed path, so a process
- *  that never saw INTERACT_DEBUG_DIR still finds it. */
+ *  that never saw GALAIUS_DEBUG_DIR still finds it. */
 export function catalogPath(): string {
   return path.join(path.dirname(agentsDir()), "model_catalog.json");
 }
@@ -64,12 +64,12 @@ export async function loadCatalog(): Promise<Catalog | null> {
   return readCatalog() ?? cached;
 }
 
-/** Run interact refresh, best-effort: a panel must render whatever it has even with no CLI. */
+/** Run galaius refresh, best-effort: a panel must render whatever it has even with no CLI. */
 function refreshViaCli(): Promise<void> {
   return new Promise((resolve) => {
     import("child_process")
       .then(({ execFile }) => {
-        const child = execFile("interact", ["refresh"], { timeout: 20000 }, () => resolve());
+        const child = execFile("galaius", ["refresh"], { timeout: 20000 }, () => resolve());
         child.on("error", () => resolve());
       })
       .catch(() => resolve());

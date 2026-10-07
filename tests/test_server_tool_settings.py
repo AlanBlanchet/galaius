@@ -8,13 +8,13 @@ from uuid import uuid4
 import httpx
 import pytest
 from textual.widgets import Button, Input, Static, TabbedContent
-from interact_core import PortableToolSettings, PortableToolSettingsUpdate
-from interact_core.accounts import Account, Bootstrap, Workspace
+from galaius_core import PortableToolSettings, PortableToolSettingsUpdate
+from galaius_core.accounts import Account, Bootstrap, Workspace
 
-from interact.agents.catalog_connection import CatalogAuthenticationError, CatalogConnection, CatalogConnectionError
-from interact.config import SETTINGS, UserConfig
-from interact.cli.tui import InteractTUI, WorkspacePane, _build_widget, _field_id
-from interact.server_tool_settings import ServerToolSettings, ToolSettingsConflict
+from galaius.agents.catalog_connection import CatalogAuthenticationError, CatalogConnection, CatalogConnectionError
+from galaius.config import SETTINGS, UserConfig
+from galaius.cli.tui import GalaiusTUI, WorkspacePane, _build_widget, _field_id
+from galaius.server_tool_settings import ServerToolSettings, ToolSettingsConflict
 
 
 def test_delayed_revision_cannot_replace_newer_cache(settings_server):
@@ -31,9 +31,9 @@ def test_delayed_revision_cannot_replace_newer_cache(settings_server):
 
 @pytest.mark.parametrize("action,failure", [("save", "disconnect"), ("reset", "disconnect"), ("reset", "offline"), ("reset", 409), ("reset", None)])
 async def test_tui_actions_preserve_server_draft_until_save_succeeds(settings_server, monkeypatch, action, failure):
-    UserConfig.PATH.write_bytes(b"# recovery\r\nINTERACT_VIDEO_FPS=7\r\n")
+    UserConfig.PATH.write_bytes(b"# recovery\r\nGALAIUS_VIDEO_FPS=7\r\n")
     before = UserConfig.PATH.read_bytes()
-    app = InteractTUI()
+    app = GalaiusTUI()
     base = ServerToolSettings.configured().read()
     app._settings_snapshot = base
     app._settings_data = dict(base.env)
@@ -43,8 +43,8 @@ async def test_tui_actions_preserve_server_draft_until_save_succeeds(settings_se
     monkeypatch.setattr(asyncio, "to_thread", in_process)
     widgets = [_build_widget(setting, base.env) for setting in SETTINGS]
     widgets.extend([Static(id="save-status"), Static(id="status-body")])
-    monkeypatch.setattr(InteractTUI, "compose", lambda self: iter(widgets))
-    monkeypatch.setattr(InteractTUI, "on_mount", lambda self: None)
+    monkeypatch.setattr(GalaiusTUI, "compose", lambda self: iter(widgets))
+    monkeypatch.setattr(GalaiusTUI, "on_mount", lambda self: None)
     monkeypatch.setattr(app, "_status_text", lambda: "fixture status")
     async with app.run_test(size=(120, 48)) as pilot:
         field = app.query_one("#set-video-fps", Input)
@@ -103,14 +103,14 @@ def settings_server(tmp_path, monkeypatch):
 
 
 def test_two_consumers_conflict_and_local_bytes_unchanged(settings_server):
-    UserConfig.PATH.write_text("# recovery\nINTERACT_IMAGE_CRITERIA=old\nOPENAI_API_KEY=s3c\n")
+    UserConfig.PATH.write_text("# recovery\nGALAIUS_IMAGE_CRITERIA=old\nOPENAI_API_KEY=s3c\n")
     original = UserConfig.PATH.read_bytes()
     first, second = ServerToolSettings.configured(), ServerToolSettings.configured()
     a, b = first.read(), second.read()
-    first.update({"INTERACT_IMAGE_CRITERIA": "fixture/new"}, base=a)
+    first.update({"GALAIUS_IMAGE_CRITERIA": "fixture/new"}, base=a)
     with pytest.raises(ToolSettingsConflict):
-        second.update({"INTERACT_IMAGE_CRITERIA": "fixture/other"}, base=b)
-    assert UserConfig.read()["INTERACT_IMAGE_CRITERIA"] == "fixture/new"
+        second.update({"GALAIUS_IMAGE_CRITERIA": "fixture/other"}, base=b)
+    assert UserConfig.read()["GALAIUS_IMAGE_CRITERIA"] == "fixture/new"
     assert UserConfig.PATH.read_bytes() == original
     assert all(b"s3c" not in request.content for request in settings_server["requests"])
 
@@ -133,36 +133,36 @@ def test_transport_cache_is_explicit_and_never_writable(settings_server):
     settings_server["failure"] = "offline"
     assert server.read().stale
     with pytest.raises(CatalogConnectionError):
-        server.update({"INTERACT_VIDEO_FPS": "20"}, base=fresh)
+        server.update({"GALAIUS_VIDEO_FPS": "20"}, base=fresh)
 
 
 def test_runtime_server_removal_clears_process_and_recovery_pins(settings_server, monkeypatch):
-    from interact.runtime import _LiveConfig
-    monkeypatch.setenv("INTERACT_IMAGE_CRITERIA", "process-old")
-    UserConfig.PATH.write_text("INTERACT_IMAGE_CRITERIA=recovery-old\n")
+    from galaius.runtime import _LiveConfig
+    monkeypatch.setenv("GALAIUS_IMAGE_CRITERIA", "process-old")
+    UserConfig.PATH.write_text("GALAIUS_IMAGE_CRITERIA=recovery-old\n")
     live = _LiveConfig()
     assert live.refresh().image_criteria == ""
     server = ServerToolSettings.configured()
-    server.update({"INTERACT_IMAGE_CRITERIA": "fixture/new"}, base=server.read())
+    server.update({"GALAIUS_IMAGE_CRITERIA": "fixture/new"}, base=server.read())
     assert live.refresh().image_criteria == "fixture/new"
-    server.update({"INTERACT_IMAGE_CRITERIA": None}, base=server.read())
+    server.update({"GALAIUS_IMAGE_CRITERIA": None}, base=server.read())
     assert live.refresh().image_criteria == ""
 
 
 def test_local_unset_keeps_recovery_bytes_and_cached_portable_values(settings_server):
     server = ServerToolSettings.configured()
-    server.update({"INTERACT_IMAGE_CRITERIA": "fixture/new"}, base=server.read())
-    UserConfig.PATH.write_bytes(b"# preserved\r\nINTERACT_IMAGE_CRITERIA='recovery old'\r\nOPENAI_API_KEY=fixture\r\n")
+    server.update({"GALAIUS_IMAGE_CRITERIA": "fixture/new"}, base=server.read())
+    UserConfig.PATH.write_bytes(b"# preserved\r\nGALAIUS_IMAGE_CRITERIA='recovery old'\r\nOPENAI_API_KEY=fixture\r\n")
     before = server.cache_path.read_bytes()
     settings_server["failure"] = "offline"
     assert UserConfig.unset("OPENAI_API_KEY")
-    assert UserConfig.PATH.read_bytes() == b"# preserved\r\nINTERACT_IMAGE_CRITERIA='recovery old'\r\n"
+    assert UserConfig.PATH.read_bytes() == b"# preserved\r\nGALAIUS_IMAGE_CRITERIA='recovery old'\r\n"
     assert server.cache_path.read_bytes() == before
 
 
 @pytest.mark.parametrize("changes", [
-    {"OPENAI_API_KEY": "fake"}, {"INTERACT_DEBUG_DIR": "fixture"},
-    {"INTERACT_MEDIA_PROVIDER_ORDER": "invented-provider"}, {"INTERACT_VLM_MIN_DIM": "9999"},
+    {"OPENAI_API_KEY": "fake"}, {"GALAIUS_DEBUG_DIR": "fixture"},
+    {"GALAIUS_MEDIA_PROVIDER_ORDER": "invented-provider"}, {"GALAIUS_VLM_MIN_DIM": "9999"},
 ])
 def test_actual_config_boundary_rejects_nonportable_or_unusable_values(settings_server, changes):
     server = ServerToolSettings.configured()
@@ -179,7 +179,7 @@ def test_account_switch_refuses_retained_editor_base(settings_server):
     bootstrap = settings_server["bootstrap"]
     settings_server["bootstrap"] = bootstrap.model_copy(update={"account": bootstrap.account.model_copy(update={"account_id": uuid4()})})
     with pytest.raises(ToolSettingsConflict, match="account changed"):
-        server.update({"INTERACT_IMAGE_CRITERIA": "fixture/new"}, base=base)
+        server.update({"GALAIUS_IMAGE_CRITERIA": "fixture/new"}, base=base)
     assert not server.cache_path.exists()
 
 
@@ -200,8 +200,8 @@ def test_workspace_token_refused_before_credential_file_access(tmp_path):
 
 
 def test_cli_status_and_revision_guard_never_project_secrets(settings_server, capsys):
-    from interact.cli.app_commands import config_status, config_set
-    UserConfig.PATH.write_text("OPENAI_API_KEY=s3c\nINTERACT_IMAGE_CRITERIA=recovery\n")
+    from galaius.cli.app_commands import config_status, config_set
+    UserConfig.PATH.write_text("OPENAI_API_KEY=s3c\nGALAIUS_IMAGE_CRITERIA=recovery\n")
     config_status(json_out=True)
     view = json.loads(capsys.readouterr().out)
     assert view["ok"] and view["configured"] and view["revision"] == 0 and not view["stale"]
@@ -214,11 +214,11 @@ def test_cli_status_and_revision_guard_never_project_secrets(settings_server, ca
 
 
 async def test_tui_keyboard_save_conflict_retains_draft(settings_server, monkeypatch):
-    from interact.cli.tui import InteractTUI, WorkspacePane
+    from galaius.cli.tui import GalaiusTUI, WorkspacePane
     from textual.widgets import Button, Input, Static, TabbedContent
-    monkeypatch.setattr(InteractTUI, "_load_registry_info", lambda self: None)
+    monkeypatch.setattr(GalaiusTUI, "_load_registry_info", lambda self: None)
     monkeypatch.setattr(WorkspacePane, "on_mount", lambda self: None)
-    app = InteractTUI()
+    app = GalaiusTUI()
     async with app.run_test(size=(120, 48)) as pilot:
         app.query_one(TabbedContent).active = "tab-config"
         field = app.query_one("#set-video-fps", Input)
@@ -237,25 +237,25 @@ async def test_tui_keyboard_save_conflict_retains_draft(settings_server, monkeyp
 
 @pytest.mark.parametrize("client", ["tui", "cli"])
 def test_removed_connection_never_turns_server_draft_into_local_write(settings_server, monkeypatch, client):
-    from interact.cli.app_commands import _settings_change
+    from galaius.cli.app_commands import _settings_change
     base = ServerToolSettings.configured().read()
-    UserConfig.PATH.write_text("# recovery\nINTERACT_VIDEO_FPS=7\n")
+    UserConfig.PATH.write_text("# recovery\nGALAIUS_VIDEO_FPS=7\n")
     before = UserConfig.PATH.read_bytes()
     monkeypatch.setattr(CatalogConnection, "load", lambda: None)
     with pytest.raises(ToolSettingsConflict, match="connection removed"):
         if client == "tui":
-            UserConfig.update({"INTERACT_VIDEO_FPS": "12"}, base=base)
+            UserConfig.update({"GALAIUS_VIDEO_FPS": "12"}, base=base)
         else:
             _settings_change("video.fps", "12", base.settings.revision, base.account_id)
     assert UserConfig.PATH.read_bytes() == before
 
 
 def test_import_preview_is_allowlisted_diff_without_upload(settings_server, capsys):
-    from interact.cli.app_commands import config_import_preview
-    UserConfig.PATH.write_text("INTERACT_VIDEO_FPS=12\nOPENAI_API_KEY=s3c\nINTERACT_MEDIA_BILLING=api_allowed\n")
+    from galaius.cli.app_commands import config_import_preview
+    UserConfig.PATH.write_text("GALAIUS_VIDEO_FPS=12\nOPENAI_API_KEY=s3c\nGALAIUS_MEDIA_BILLING=api_allowed\n")
     config_import_preview(json_out=True)
     output = capsys.readouterr().out
-    assert json.loads(output)["changes"] == {"INTERACT_VIDEO_FPS": {"current": None, "proposed": "12"}}
+    assert json.loads(output)["changes"] == {"GALAIUS_VIDEO_FPS": {"current": None, "proposed": "12"}}
     assert "s3c" not in output and "api_allowed" not in output
     assert all(request.method != "PUT" for request in settings_server["requests"])
 
@@ -279,13 +279,13 @@ def test_malformed_save_never_publishes_cache_or_claims_success(settings_server,
     base = server.read()
     settings_server["save_response"] = response
     with pytest.raises(CatalogConnectionError, match="Invalid settings save response"):
-        server.update({"INTERACT_VIDEO_FPS": "12"}, base=base)
+        server.update({"GALAIUS_VIDEO_FPS": "12"}, base=base)
     assert not server.cache_path.exists()
     assert base.settings.revision == 0
 
 
 def test_cli_structured_argv_reaches_typed_cas(settings_server, capsys):
-    from interact.cli.app_commands import config_app
+    from galaius.cli.app_commands import config_app
     with pytest.raises(SystemExit) as exited:
         config_app(["set", "video.fps", "12", "--expected-revision", "0", "--account-id",
             str(settings_server["bootstrap"].account.account_id), "--json-out"])
@@ -301,8 +301,8 @@ def test_cli_structured_argv_reaches_typed_cas(settings_server, capsys):
     ({"vlm_min_dim": 1400, "vlm_max_dim": 1500}, True),
 ])
 def test_sparse_dimensions_use_client_defaults_not_host_environment(settings_server, monkeypatch, values, compatible):
-    monkeypatch.setenv("INTERACT_VLM_MIN_DIM", "1600")
-    monkeypatch.setenv("INTERACT_VLM_MAX_DIM", "2000")
+    monkeypatch.setenv("GALAIUS_VLM_MIN_DIM", "1600")
+    monkeypatch.setenv("GALAIUS_VLM_MAX_DIM", "2000")
     server = ServerToolSettings.configured()
     server.read()
     assert server.cache_path.exists()
@@ -320,24 +320,24 @@ def test_sparse_dimensions_use_client_defaults_not_host_environment(settings_ser
 
 @pytest.fixture
 def machine_connection(tmp_path, monkeypatch):
-    """`interact login` / `machine connect` leave a workspace-token connection: a machine, no person."""
+    """`galaius login` / `machine connect` leave a workspace-token connection: a machine, no person."""
     for name in ("LC_ALL", "LC_MESSAGES"):
         monkeypatch.delenv(name, raising=False)
-    connection = CatalogConnection(endpoint="https://interact.example.invalid", auth_mode="token", workspace_id=uuid4(), token_file=tmp_path / "machine.key")
+    connection = CatalogConnection(endpoint="https://galaius.example.invalid", auth_mode="token", workspace_id=uuid4(), token_file=tmp_path / "machine.key")
     connection.save()
     UserConfig.PATH.parent.mkdir(parents=True, exist_ok=True)
-    UserConfig.PATH.write_text("INTERACT_VIDEO_FPS=9\nOPENAI_API_KEY=s3c\n")
+    UserConfig.PATH.write_text("GALAIUS_VIDEO_FPS=9\nOPENAI_API_KEY=s3c\n")
     return connection
 
 
 @pytest.mark.parametrize("fps", ["9", "5"])  # 5 = the default, kept in config.env from before the PC was connected
 async def test_machine_connection_runs_on_local_settings(machine_connection, fps):
-    from interact.runtime import _LiveConfig
+    from galaius.runtime import _LiveConfig
     from textual.widgets import Select
-    UserConfig.PATH.write_text(f"INTERACT_VIDEO_FPS={fps}\nOPENAI_API_KEY=s3c\n")
-    assert UserConfig.read()["INTERACT_VIDEO_FPS"] == fps
+    UserConfig.PATH.write_text(f"GALAIUS_VIDEO_FPS={fps}\nOPENAI_API_KEY=s3c\n")
+    assert UserConfig.read()["GALAIUS_VIDEO_FPS"] == fps
     assert _LiveConfig().refresh().video_fps == int(fps)
-    app = InteractTUI()  # bare `interact` on a terminal
+    app = GalaiusTUI()  # bare `galaius` on a terminal
     async with app.run_test(size=(120, 48)) as pilot:
         await pilot.pause()
         assert "work machine" in str(app.query_one("#save-status", Static).render())
@@ -346,12 +346,12 @@ async def test_machine_connection_runs_on_local_settings(machine_connection, fps
         app.query_one(f"#{_field_id(target)}", Select).value = "nested"  # a machine setting, portable ones untouched
         app._save_config()
         await pilot.pause()
-    assert UserConfig.read_local() == {"INTERACT_VIDEO_FPS": fps, "OPENAI_API_KEY": "s3c", "INTERACT_DESKTOP_TARGET": "nested"}
+    assert UserConfig.read_local() == {"GALAIUS_VIDEO_FPS": fps, "OPENAI_API_KEY": "s3c", "GALAIUS_DESKTOP_TARGET": "nested"}
 
 
 @pytest.mark.parametrize("lang,sentence", [("fr_FR.UTF-8", "Ce PC est connecté comme machine de travail"), ("en_US.UTF-8", "This PC is connected as a work machine")])
 def test_machine_connection_refuses_personal_write_in_plain_words(machine_connection, monkeypatch, capsys, lang, sentence):
-    from interact.cli.app_commands import config_set, config_unset
+    from galaius.cli.app_commands import config_set, config_unset
     monkeypatch.setenv("LANG", lang)
     before = UserConfig.PATH.read_bytes()
     for write in (lambda: config_set("video.fps", "12"), lambda: config_unset("video.fps")):
@@ -366,13 +366,13 @@ def test_machine_connection_refuses_personal_write_in_plain_words(machine_connec
     assert view["code"] == "authorization" and sentence in view["message"]
     assert UserConfig.PATH.read_bytes() == before
     UserConfig.set("desktop.target", "local")  # machine settings stay writable here
-    assert UserConfig.read_local()["INTERACT_VIDEO_FPS"] == "9"
+    assert UserConfig.read_local()["GALAIUS_VIDEO_FPS"] == "9"
 
 
 def test_machine_connection_notice_is_said_once(machine_connection, monkeypatch, capsys):
     import io
-    from interact.cli.app_commands import config_set
-    from interact.server_tool_settings import MachineNotice
+    from galaius.cli.app_commands import config_set
+    from galaius.server_tool_settings import MachineNotice
     class Terminal(io.StringIO):
         def isatty(self):
             return True
@@ -393,7 +393,7 @@ def test_machine_connection_notice_is_said_once(machine_connection, monkeypatch,
 @pytest.mark.parametrize("auth_mode", ["token", "preview"])
 def test_session_directory_left_open_by_the_notice_is_made_private(tmp_path, auth_mode):
     import io
-    from interact.server_tool_settings import MachineNotice
+    from galaius.server_tool_settings import MachineNotice
     connection = CatalogConnection(endpoint="http://127.0.0.1:8767", auth_mode=auth_mode, workspace_id=uuid4(),
                                    token_file=tmp_path / "machine.key" if auth_mode == "token" else None)
     connection.save()

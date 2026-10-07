@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from interact.pinned_directory import PathDirectory, PinnedDirectory
+from galaius.pinned_directory import PathDirectory, PinnedDirectory
 
 
 @pytest.mark.parametrize(("mode", "attributes", "tag", "link"), [

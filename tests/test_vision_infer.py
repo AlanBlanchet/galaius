@@ -1,7 +1,7 @@
 """`vision_infer._bounded_thumbnail`: the machine-local thumbnail every vision workflow step
 embeds in its result — for the overlay it produces AND (the bug this covers) the photo it read —
 so the workflow editor's node card shows a picture, never a raw file path. Bounded so a run event
-never bloats: at most 256 px on its long side, at most 64 KB once WebP-encoded (interact_core's
+never bloats: at most 256 px on its long side, at most 64 KB once WebP-encoded (galaius_core's
 VALUE_PREVIEW_MAX_PIXELS / VALUE_PREVIEW_MAX_BYTES, duplicated here since this script stays
 dependency-free — see its module docstring).
 """
@@ -11,7 +11,7 @@ import io
 
 from PIL import Image
 
-from interact.vision_infer import _PREVIEW_MAX_BYTES, _PREVIEW_MAX_PIXELS, _bounded_thumbnail
+from galaius.vision_infer import _PREVIEW_MAX_BYTES, _PREVIEW_MAX_PIXELS, _bounded_thumbnail
 
 
 def _decode(encoded: str) -> Image.Image:

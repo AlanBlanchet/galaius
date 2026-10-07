@@ -2,10 +2,10 @@
  *
  *  His ask: "we also have way more agents that are shared between providers... They are not all in
  *  the env... librarian, can't you make a kind of hierarchy of agents in the yaml or something like
- *  that? Just so that interact would pick these files up? to make a real company!"
+ *  that? Just so that galaius would pick these files up? to make a real company!"
  *
  *  The librarian emits that hierarchy to `~/.claude/org.json`. This is the reader. It must survive
- *  the file being absent — plenty of people run interact with no prompt repo at all — and it must
+ *  the file being absent — plenty of people run galaius with no prompt repo at all — and it must
  *  keep an agent whose department is unknown rather than dropping it, because a roster that
  *  silently omits people is worse than one with an "unassigned" desk.
  */

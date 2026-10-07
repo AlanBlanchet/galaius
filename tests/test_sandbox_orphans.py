@@ -1,6 +1,6 @@
 """Leaked Xephyr displays.
 
-Two complaints, one cause. Every interact MCP server owns its own sandbox, so several servers
+Two complaints, one cause. Every galaius MCP server owns its own sandbox, so several servers
 (one per editor window) means several Xephyr windows — "2 at the start". And when a server dies
 without tearing down, its X server survives as an orphan: reparented to init, invisible to the
 owner that could have cleaned it up, sitting on the user's screen until they kill it by hand.
@@ -14,9 +14,9 @@ from pathlib import Path
 
 import pytest
 
-from interact.desktop import orphans
-from interact.desktop.backend import nested_server_command
-from interact.server_registry import HARD_KILL
+from galaius.desktop import orphans
+from galaius.desktop.backend import nested_server_command
+from galaius.server_registry import HARD_KILL
 
 
 @pytest.fixture(autouse=True)
@@ -42,7 +42,7 @@ def _proc(pid, ppid, cmdline):
 # actually spawn is how the reaper silently stops recognising our own displays.
 _OURS = " ".join(nested_server_command(":99", "1280x800", headless=False))
 #: One of OUR sandbox profiles (the editor's isolated --user-data-dir for display :99).
-_PROFILE = str(Path.home() / ".interact/out/sandbox-profiles/editor-99")
+_PROFILE = str(Path.home() / ".galaius/out/sandbox-profiles/editor-99")
 #: Stand-in for SOME OTHER user's home — never under our own profile root, which is the whole
 #: safety property under test below.
 _OTHER_HOME = os.path.join(os.sep, "tmp", "other-user")
@@ -218,7 +218,7 @@ def test_a_client_that_ignores_SIGTERM_is_killed(monkeypatch, source, sweep):
 
 
 # ── Never sweep a display we no longer own ──────────────────────────────────────────────────
-# Display numbers are reclaimed the moment a Xephyr's lock drops, and several interact servers
+# Display numbers are reclaimed the moment a Xephyr's lock drops, and several galaius servers
 # running at once is the NORMAL state. So if OUR X server died and server B claimed :99, sweeping
 # ":99" on our way out would SIGKILL B's live sandbox. Our Xephyr still running is the proof that
 # nobody else can hold that display — so that, and only that, licenses the sweep.
@@ -281,9 +281,9 @@ def test_a_headless_xvfb_is_deliberately_left_alone():
 
 
 def test_doctor_labels_an_ownerless_sandbox_so_the_extra_window_is_explained(capsys, monkeypatch):
-    """"Why do I see two Xephyr windows?" — one per interact server is BY DESIGN, one with no
+    """"Why do I see two Xephyr windows?" — one per galaius server is BY DESIGN, one with no
     owner left is the leak. The report has to tell those two apart, or every window looks wrong."""
-    from interact.cli.app import _print_sandboxes
+    from galaius.cli.app import _print_sandboxes
 
     monkeypatch.setattr(orphans, "_list_x_servers", lambda: [
         _proc(10, 1, _OURS),        # adopted → orphan
@@ -299,7 +299,7 @@ def test_doctor_labels_an_ownerless_sandbox_so_the_extra_window_is_explained(cap
 
 
 # ── The window says whose it is ─────────────────────────────────────────────────────────────
-# "sometimes (usually at the start) i always see 2 xephyr windows" — one per interact server is
+# "sometimes (usually at the start) i always see 2 xephyr windows" — one per galaius server is
 # by design, but an unlabelled `Xephyr on :99.0` window gives no way to know that. Titling it
 # also gives us a marker WE control: `-noreset -no-host-grab` is the canonical hand-typed Xephyr
 # line, so it could never really distinguish ours from someone else's.
@@ -309,7 +309,7 @@ def test_the_sandbox_window_says_what_it_is():
     argv = nested_server_command(":99", "1280x800", headless=False)
     assert "-title" in argv
     title = argv[argv.index("-title") + 1]
-    assert "interact" in title.lower() and ":99" in title
+    assert "galaius" in title.lower() and ":99" in title
 
 
 def test_a_display_we_titled_is_recognised_as_ours():
@@ -357,7 +357,7 @@ def test_it_refuses_a_profile_outside_our_own_sandbox_directory(monkeypatch, pro
 
 
 def test_it_refuses_a_lookalike_profile_root(monkeypatch, tmp_path):
-    profile = tmp_path / ".interact" / "out" / "sandbox-profiles" / "editor-99"
+    profile = tmp_path / ".galaius" / "out" / "sandbox-profiles" / "editor-99"
     monkeypatch.setattr(orphans, "_process_table", lambda: [(10, f"code --user-data-dir={profile}")])
     assert orphans.profile_clients(str(profile)) == []
 
@@ -368,7 +368,7 @@ def test_the_process_table_is_read_untruncated(tmp_path, monkeypatch):
     processes. /proc/<pid>/cmdline is the untruncated, authoritative copy."""
     proc = tmp_path / "42"
     proc.mkdir()
-    long_flag = f"--user-data-dir={_OTHER_HOME}/.interact/out/sandbox-profiles/editor-99"
+    long_flag = f"--user-data-dir={_OTHER_HOME}/.galaius/out/sandbox-profiles/editor-99"
     (proc / "cmdline").write_bytes(b"\0".join(
         [b"/usr/share/code/code", *(b"--padding-flag-that-is-long" for _ in range(40)),
          long_flag.encode()]

@@ -1,5 +1,5 @@
 """A provider fault on the model call — no credits, a rejected key, an unknown model id, no answer —
-reaches the agent in interact's own words with the way out, never as a raw ``litellm.RateLimitError``
+reaches the agent in galaius's own words with the way out, never as a raw ``litellm.RateLimitError``
 traceback (#124, #125). The translation lives at the ONE litellm seam (``_vision_completion`` and
 ``transcribe_audio``); ``@instrumented`` closes the ``ERROR:`` contract. The same contract is what
 ``srv._vlm``'s own model-chain fallback (breaker-gated primary → fallback) resolves to: a
@@ -13,16 +13,16 @@ import litellm
 import pytest
 from PIL import Image as PILImage
 
-import interact.vision.core as v
-from interact.config import Config
-from interact.vision import VLMResult
-from interact.vision.core import VisionError
+import galaius.vision.core as v
+from galaius.config import Config
+from galaius.vision import VLMResult
+from galaius.vision.core import VisionError
 
 
 @pytest.fixture
 def srv():
-    import interact.server as _srv
-    from interact.server import breaker
+    import galaius.server as _srv
+    from galaius.server import breaker
 
     breaker.clear()
     _srv.config.component_criteria = "cap.gui_grounding"
@@ -107,8 +107,8 @@ async def test_a_provider_fault_becomes_a_vision_error_saying_the_way_out(monkey
 
 @pytest.mark.asyncio
 async def test_a_non_provider_exception_is_not_dressed_up(monkeypatch):
-    """Only litellm's provider faults are translated: a bug in interact's own code stays a bug."""
-    monkeypatch.setattr(v.litellm, "acompletion", _raising(ValueError("interact bug")))
+    """Only litellm's provider faults are translated: a bug in galaius's own code stays a bug."""
+    monkeypatch.setattr(v.litellm, "acompletion", _raising(ValueError("galaius bug")))
     with pytest.raises(ValueError):
         await v._vision_completion(_MSGS, "openai/gpt-x")
 
@@ -140,9 +140,9 @@ async def test_transcription_shares_the_translation(monkeypatch, media_output_ro
 async def test_vlm_rate_limit_triggers_fallback(srv):
     """RateLimitError in _vlm trips breaker and tries fallback model."""
     from litellm.exceptions import RateLimitError
-    from interact.config import Config
-    from interact.models import Model, ModelCapability
-    from interact.server import breaker
+    from galaius.config import Config
+    from galaius.models import Model, ModelCapability
+    from galaius.server import breaker
 
     call_count = 0
 
@@ -164,7 +164,7 @@ async def test_vlm_rate_limit_triggers_fallback(srv):
         id="fallback/model", provider="test", capabilities={ModelCapability.VLM}
     )
     with (
-        patch("interact.vision.core._api_media_completion", _mock_analyze),
+        patch("galaius.vision.core._api_media_completion", _mock_analyze),
         patch.object(Config, "ranked_models", return_value=[primary, fallback]),
         patch.object(Model, "is_available", return_value=True),
     ):
@@ -192,8 +192,8 @@ async def test_vlm_rate_limit_triggers_fallback(srv):
 @pytest.mark.asyncio
 async def test_vlm_falls_back_on_error(srv, make_error):
     """Any non-cancellation exception triggers fallback chain (not only RateLimitError)."""
-    from interact.config import Config
-    from interact.models import Model, ModelCapability
+    from galaius.config import Config
+    from galaius.models import Model, ModelCapability
 
     call_count = 0
 
@@ -213,7 +213,7 @@ async def test_vlm_falls_back_on_error(srv, make_error):
         id="fallback/model", provider="test", capabilities={ModelCapability.VLM}
     )
     with (
-        patch("interact.vision.core._api_media_completion", _mock),
+        patch("galaius.vision.core._api_media_completion", _mock),
         patch.object(Config, "ranked_models", return_value=[primary, fallback]),
         patch.object(Model, "is_available", return_value=True),
     ):
@@ -247,9 +247,9 @@ async def test_a_provider_fault_on_a_page_query_reaches_the_agent_as_an_ERROR_st
 
     monkeypatch.setattr(srv.targets, "_resolve_target", lambda *a, **k: (None, MagicMock(), None))
     monkeypatch.setattr(srv.capture, "_capture", AsyncMock(return_value=state))
-    monkeypatch.setattr("interact.vision.core.litellm.acompletion", no_credits)
+    monkeypatch.setattr("galaius.vision.core.litellm.acompletion", no_credits)
     monkeypatch.setattr(
-        "interact.vision.core.litellm.validate_environment", lambda model: {"keys_in_environment": True}
+        "galaius.vision.core.litellm.validate_environment", lambda model: {"keys_in_environment": True}
     )
     fn = getattr(srv.screenshot, "fn", srv.screenshot)
     out = await fn(query="what is on this page?")
@@ -275,8 +275,8 @@ async def test_vlm_exhausted_chain_is_an_ERROR_line_that_says_why(srv, make_erro
     """Every model failed → the agent used to get "[All 2 fallbacks failed — last error on X:
     RateLimitError]": a class name, no ERROR: prefix, no way out. Now it is an ERROR: line carrying
     the last failure's own words — a VisionError's guidance, or the class + message of anything else."""
-    from interact.config import Config
-    from interact.models import Model, ModelCapability
+    from galaius.config import Config
+    from galaius.models import Model, ModelCapability
 
     async def _mock(
         media, context, cfg, query, max_tokens, response_format, model, _dispatch_state,
@@ -286,7 +286,7 @@ async def test_vlm_exhausted_chain_is_an_ERROR_line_that_says_why(srv, make_erro
     primary = Model(id="primary/model", provider="test", capabilities={ModelCapability.VLM})
     fallback = Model(id="fallback/model", provider="test", capabilities={ModelCapability.VLM})
     with (
-        patch("interact.vision.core._api_media_completion", _mock),
+        patch("galaius.vision.core._api_media_completion", _mock),
         patch.object(Config, "ranked_models", return_value=[primary, fallback]),
         patch.object(Model, "is_available", return_value=True),
     ):

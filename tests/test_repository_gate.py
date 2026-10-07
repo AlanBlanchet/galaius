@@ -131,7 +131,7 @@ def test_configured_confidential_term_in_filename_is_redacted(git_repo: Path):
     terms = git_repo / ".git" / "confidential-terms"
     terms.write_text(confidential + "\n")
     terms.chmod(0o600)
-    git_out(git_repo, "config", "--local", "interact.confidentialTermsFile", "confidential-terms")
+    git_out(git_repo, "config", "--local", "galaius.confidentialTermsFile", "confidential-terms")
     stage(git_repo, confidential + ".txt", b"-----BEGIN PRI" + b"VATE KEY-----\n")
 
     result = run_gate(git_repo, "scan-staged")
@@ -305,7 +305,7 @@ def test_confidential_term_file_is_private_and_redacted(git_repo: Path, mode: in
     confidential = b"project-codename"
     terms.write_bytes(confidential + b"\n")
     terms.chmod(mode)
-    git_out(git_repo, "config", "--local", "interact.confidentialTermsFile", "confidential-terms")
+    git_out(git_repo, "config", "--local", "galaius.confidentialTermsFile", "confidential-terms")
     stage(git_repo, "candidate.txt", b"reference: " + confidential + b"\n")
 
     result = run_gate(git_repo, "scan-staged")
@@ -320,7 +320,7 @@ def test_confidential_term_file_rejects_same_inode_mutation(git_repo: Path):
     terms = git_repo / ".git" / "confidential-terms"
     terms.write_bytes(b"unmatched-confidential-term\n" * 200000)
     terms.chmod(0o600)
-    git_out(git_repo, "config", "--local", "interact.confidentialTermsFile", "confidential-terms")
+    git_out(git_repo, "config", "--local", "galaius.confidentialTermsFile", "confidential-terms")
     stage(git_repo, "candidate.txt", b"ordinary content\n")
     running = threading.Event()
     running.set()

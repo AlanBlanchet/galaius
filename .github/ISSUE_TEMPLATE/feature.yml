@@ -1,5 +1,5 @@
 name: Feature or limitation
-description: Something you needed interact to do that it can't.
+description: Something you needed galaius to do that it can't.
 labels: ["enhancement"]
 body:
   - type: textarea

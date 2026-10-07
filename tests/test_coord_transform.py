@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from interact.desktop import Box, CoordTransform
-from interact.desktop.frames import Frame
+from galaius.desktop import Box, CoordTransform
+from galaius.desktop.frames import Frame
 from tests.support.desktop import desktop_window
 
 
@@ -97,14 +97,14 @@ WM_NAME(UTF8_STRING) = "Test"
 )
 def test_from_xprop_parsing(xprop_output, expected):
     with patch(
-        "interact.desktop.subprocess.check_output", return_value=xprop_output
+        "galaius.desktop.subprocess.check_output", return_value=xprop_output
     ):
         assert CoordTransform.from_xprop(12345) == expected
 
 
 def test_from_xprop_subprocess_failure():
     with patch(
-        "interact.desktop.subprocess.check_output", side_effect=FileNotFoundError
+        "galaius.desktop.subprocess.check_output", side_effect=FileNotFoundError
     ):
         assert CoordTransform.from_xprop(12345) == CoordTransform()
 
@@ -140,9 +140,9 @@ def mock_run_with_offsets():
         ),
     )
     with (
-        patch("interact.desktop.DesktopWindow._run", new_callable=AsyncMock) as m,
+        patch("galaius.desktop.DesktopWindow._run", new_callable=AsyncMock) as m,
         patch(
-            "interact.desktop.DesktopWindow.active_id",
+            "galaius.desktop.DesktopWindow.active_id",
             new_callable=AsyncMock,
             return_value="60818159",
         ),

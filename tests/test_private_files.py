@@ -1,4 +1,4 @@
-"""Owner-only files (`PRIVATE_FILES`): what `interact login` and the machine runner save their
+"""Owner-only files (`PRIVATE_FILES`): what `galaius login` and the machine runner save their
 credentials in, on POSIX (mode + uid) and Windows (a DACL naming only this user, DPAPI-sealed)."""
 
 import os
@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from interact.file_lock import exclusive
-from interact.private_files import PRIVATE_FILES
+from galaius.file_lock import exclusive
+from galaius.private_files import PRIVATE_FILES
 from tests.support.private_files import loosen
 
 WINDOWS = sys.platform == "win32"
@@ -52,7 +52,7 @@ def test_lock_is_exclusive_and_released(tmp_path: Path) -> None:
     lock = tmp_path / "state.lock"
     with exclusive(os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)):
         probe = subprocess.run([sys.executable, "-c", (
-            "import os, sys, threading; from interact.file_lock import exclusive\n"
+            "import os, sys, threading; from galaius.file_lock import exclusive\n"
             f"d = os.open({str(lock)!r}, os.O_RDWR)\n"
             "t = threading.Thread(target=lambda: exclusive(d).__enter__(), daemon=True); t.start(); t.join(1.5)\n"
             "sys.exit(0 if t.is_alive() else 3)")], timeout=30)

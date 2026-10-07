@@ -4,7 +4,7 @@ And it must NEVER raise — reporting a bug can't itself blow up."""
 
 import pytest
 
-import interact.feedback as fb
+import galaius.feedback as fb
 
 
 @pytest.fixture(autouse=True)
@@ -18,7 +18,7 @@ def no_real_browser(monkeypatch):
 
 class _Ok:
     returncode = 0
-    stdout = "https://github.com/AlanBlanchet/interact/issues/42\n"
+    stdout = "https://github.com/AlanBlanchet/galaius/issues/42\n"
 
 
 def test_files_github_issue_when_gh_available(monkeypatch):
@@ -41,7 +41,7 @@ def test_kind_prefixes_title_and_appends_env_footer(monkeypatch):
     cmd = captured["cmd"]
     assert cmd[cmd.index("--title") + 1].startswith("[limitation] ")
     body = cmd[cmd.index("--body") + 1]
-    assert "interact" in body and "Python" in body  # auto footer, no caller effort
+    assert "galaius" in body and "Python" in body  # auto footer, no caller effort
 
 
 def test_invalid_kind_becomes_feedback(monkeypatch):
@@ -183,15 +183,15 @@ def test_prefilled_url_stays_valid_for_huge_bodies(monkeypatch, tmp_path, huge):
 
 
 def test_cli_report_command_sends_through_feedback(monkeypatch, capsys):
-    """`interact report` is the shell-accessible twin of the MCP report_issue tool, so any
+    """`galaius report` is the shell-accessible twin of the MCP report_issue tool, so any
     agent with a terminal can file feedback without an MCP connection."""
-    import interact.cli as cli
+    import galaius.cli as cli
 
     sent: dict = {}
 
     def fake_report(title, body, kind="bug"):
         sent.update(title=title, body=body, kind=kind)
-        return "Reported to interact — https://github.com/AlanBlanchet/interact/issues/7"
+        return "Reported to galaius — https://github.com/AlanBlanchet/galaius/issues/7"
 
     monkeypatch.setattr(fb, "report", fake_report)
     cli.report("emulator black", "frames are black", kind="limitation")
@@ -205,11 +205,11 @@ def test_footer_survives_platform_platform_raising(monkeypatch):
     falls back to os.uname-backed pieces. Regression for the cross-OS CI failure."""
     import platform as _pl
 
-    import interact.feedback as fb
+    import galaius.feedback as fb
 
     monkeypatch.setattr(_pl, "platform", lambda *a, **k: (_ for _ in ()).throw(AttributeError("boom")))
     footer = fb._footer()
-    assert "reported via report_issue" in footer and "interact" in footer
+    assert "reported via report_issue" in footer and "galaius" in footer
 
 
 @pytest.mark.parametrize(
@@ -229,22 +229,22 @@ def test_version_lt_compares_numerically(a, b, expected):
 
 def test_stale_warning_fires_when_the_reporting_process_is_behind(monkeypatch):
     # A long-lived MCP server froze __version__ at an older startup; the install has since advanced.
-    monkeypatch.setattr("interact.__version__", "0.19.0")
-    monkeypatch.setattr("interact.installed_version", lambda: "0.19.3")
+    monkeypatch.setattr("galaius.__version__", "0.19.0")
+    monkeypatch.setattr("galaius.installed_version", lambda: "0.19.3")
     banner = fb._stale_warning()
     assert "0.19.0" in banner and "0.19.3" in banner and "may already be fixed" in banner
 
 
 def test_stale_warning_silent_on_a_current_process(monkeypatch):
     # A fresh process: __version__ == the live installed metadata → no false banner.
-    monkeypatch.setattr("interact.__version__", "0.19.3")
-    monkeypatch.setattr("interact.installed_version", lambda: "0.19.3")
+    monkeypatch.setattr("galaius.__version__", "0.19.3")
+    monkeypatch.setattr("galaius.installed_version", lambda: "0.19.3")
     assert fb._stale_warning() == ""
 
 
 def test_report_prepends_the_stale_banner(monkeypatch):
-    monkeypatch.setattr("interact.__version__", "0.19.0")
-    monkeypatch.setattr("interact.installed_version", lambda: "0.19.3")
+    monkeypatch.setattr("galaius.__version__", "0.19.0")
+    monkeypatch.setattr("galaius.installed_version", lambda: "0.19.3")
     captured: dict = {}
 
     def fake_run(cmd, **k):

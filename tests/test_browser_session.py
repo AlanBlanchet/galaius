@@ -23,8 +23,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import interact.server as srv
-from interact.actions import NavigateAction
+import galaius.server as srv
+from galaius.actions import NavigateAction
 
 from tests.support import browser_manager, ready_or_skip
 

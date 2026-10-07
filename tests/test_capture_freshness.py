@@ -16,15 +16,15 @@ from unittest.mock import patch
 import pytest
 from PIL import Image
 
-from interact.desktop import DesktopElement
-from interact.state import PageState
+from galaius.desktop import DesktopElement
+from galaius.state import PageState
 from tests.support import browser_manager, ready_or_skip
 
 
 @pytest.fixture
 def srv():
-    import interact.server as _srv
-    from interact.server import breaker
+    import galaius.server as _srv
+    from galaius.server import breaker
 
     breaker.clear()
     _srv.config.component_criteria = "cap.gui_grounding"
@@ -47,7 +47,7 @@ def test_cached_for_returns_refs_only_when_signature_matches():
 
 @pytest.mark.asyncio
 async def test_media_response_saves_file_even_when_vlm_errors(monkeypatch, tmp_path):
-    import interact.server as srv
+    import galaius.server as srv
 
     saved = {}
     monkeypatch.setattr(srv.core, "_save_to_path", lambda p, d: saved.update(path=p, data=d))
@@ -125,7 +125,7 @@ async def test_an_element_capture_settles_too():
     paths, not through PageState.capture — so fixing only the funnel leaves the same staleness
     reachable two other ways. Worse for the annotated capture, where boxes are drawn at
     coordinates scanned before the page finished moving."""
-    from interact.server import capture as cap
+    from galaius.server import capture as cap
 
     mgr = browser_manager()
     await ready_or_skip(mgr)
@@ -179,7 +179,7 @@ async def test_get_interactive_elements_fresh_invalidates_the_cache_first(srv):
     """#57: fresh=True clears the window's accumulated element cache BEFORE detecting, so the
     returned refs reflect only the current frame — the recovery path for a stale cache."""
     from unittest.mock import AsyncMock, MagicMock
-    from interact.desktop import DesktopElement, DesktopWindow
+    from galaius.desktop import DesktopElement, DesktopWindow
 
     win = MagicMock(spec=DesktopWindow)
     win.wid = 4242
@@ -199,7 +199,7 @@ async def test_get_interactive_elements_fresh_invalidates_the_cache_first(srv):
 async def test_get_interactive_elements_default_keeps_the_cache(srv):
     """Without fresh, the accumulating cache (the #19 same-screen union) is left intact."""
     from unittest.mock import AsyncMock, MagicMock
-    from interact.desktop import DesktopElement, DesktopWindow
+    from galaius.desktop import DesktopElement, DesktopWindow
 
     win = MagicMock(spec=DesktopWindow)
     win.wid = 4242

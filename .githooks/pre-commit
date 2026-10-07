@@ -20,7 +20,7 @@ py=$(sed -nE 's/^version *= *"([^"]+)".*/\1/p' pyproject.toml | head -1)
 ext=$(sed -nE 's/.*"version" *: *"([^"]+)".*/\1/p' clients/vscode/package.json | head -1)
 if [ -n "$ext" ] && [ "$py" != "$ext" ]; then
     echo "[hook] FAIL: version mismatch — pyproject.toml=$py but clients/vscode/package.json=$ext"
-    echo "[hook]   fix both at once:  python -m interact.versioning bump <major|minor|patch>"
+    echo "[hook]   fix both at once:  python -m galaius.versioning bump <major|minor|patch>"
     exit 1
 fi
 
@@ -43,7 +43,7 @@ _load_node() {
 
 # 2) Regenerate TS bindings when the Pydantic API surface changes (keeps the committed
 #    generated/types.ts in lock-step with the models).
-if git diff --cached --name-only | grep -qE '^src/interact/(models|formats|api_types)\.py$|^src/interact/benchmarks/(published|upstream)\.py$|^pyproject\.toml$|^clients/vscode/scripts/generate-types\.sh$'; then
+if git diff --cached --name-only | grep -qE '^src/galaius/(models|formats|api_types)\.py$|^src/galaius/benchmarks/(published|upstream)\.py$|^pyproject\.toml$|^clients/vscode/scripts/generate-types\.sh$'; then
     if _load_node; then
         echo "[hook] Pydantic API changed — regenerating TS types..."
         if bash clients/vscode/scripts/generate-types.sh >/dev/null 2>&1; then
@@ -62,7 +62,7 @@ git_dir=$(git rev-parse --absolute-git-dir 2>/dev/null) || {
     echo "[hook] FAIL: cannot resolve repository Git directory"
     exit 1
 }
-gate_exec=$(mktemp "$git_dir/interact-repository-gate.XXXXXX") || {
+gate_exec=$(mktemp "$git_dir/galaius-repository-gate.XXXXXX") || {
     echo "[hook] FAIL: cannot create private staged-gate artifact"
     exit 1
 }

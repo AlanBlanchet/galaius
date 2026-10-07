@@ -1,4 +1,4 @@
-import { interactCli } from "./interactCli.ts";
+import { galaiusCli } from "./galaiusCli.ts";
 import { acceptWorkspace, parseWorkspace, serverWorkspaceConfigured, type WorkspaceView } from "./workspaceState.ts";
 
 export class WorkspaceCommandError extends Error {
@@ -7,9 +7,9 @@ export class WorkspaceCommandError extends Error {
 }
 
 export async function workspaceCommand(args: readonly string[]): Promise<Record<string, unknown>> {
-  const result = await interactCli(["workspace", ...args, "--json-out"]);
+  const result = await galaiusCli(["workspace", ...args, "--json-out"]);
   let value: Record<string, unknown>;
-  try { value = JSON.parse(result.stdout); } catch { throw new Error("Workspace CLI unavailable. Install the matching Interact build and retry."); }
+  try { value = JSON.parse(result.stdout); } catch { throw new Error("Workspace CLI unavailable. Install the matching Galaius build and retry."); }
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid workspace CLI response.");
   if (value.ok !== true || result.error) {
     const messages: Record<string, string> = {

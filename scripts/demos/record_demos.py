@@ -1,4 +1,4 @@
-"""Record the README demo animations by actually driving interact — no mockups.
+"""Record the README demo animations by actually driving galaius — no mockups.
 
 Every GIF in `site/assets/` is produced by this script, so a claim in the README is a recording of
 the real tool doing the real thing, and any of them can be regenerated after a behaviour change:
@@ -7,7 +7,7 @@ the real tool doing the real thing, and any of them can be regenerated after a b
     uv run python scripts/demos/record_demos.py desktop    # just one
 
 Needs a running X display plus the sandbox's own dependencies (Xephyr, xdotool, maim, ffmpeg).
-Each demo records into interact's isolated nested display, so nothing touches your real windows.
+Each demo records into galaius's isolated nested display, so nothing touches your real windows.
 """
 
 from __future__ import annotations
@@ -58,7 +58,7 @@ class Caption:
 
     at: float
     call: str                 # the tool call, rendered as code
-    result: str = ""          # what interact returned, rendered as the agent would read it
+    result: str = ""          # what galaius returned, rendered as the agent would read it
     ok: bool = False          # colour the result as a success line
 
 
@@ -141,8 +141,8 @@ def demo_desktop(out: Path) -> None:
 
     A calculator is deliberately chosen: a reader knows instantly what the right answer is, so the
     clip proves the clicks landed rather than asking them to take the recording's word for it."""
-    from interact.desktop import DesktopWindow
-    from interact.desktop.nested import NestedBackend
+    from galaius.desktop import DesktopWindow
+    from galaius.desktop.nested import NestedBackend
 
     backend = NestedBackend(display=120, size="460x620")
     try:
@@ -232,10 +232,10 @@ def demo_browser(out: Path) -> None:
     The controls are the ordinary ones an agent meets — a filter that re-renders a list, a search
     box, a counter that changes — so the clip shows targeting and state-change reporting, not a
     scripted happy path."""
-    from interact.actions import _run_actions_browser
-    from interact.actions.models import ClickAction, TypeTextAction
-    from interact.browser import BrowserManager
-    from interact.runtime import config
+    from galaius.actions import _run_actions_browser
+    from galaius.actions.models import ClickAction, TypeTextAction
+    from galaius.browser import BrowserManager
+    from galaius.runtime import config
 
     async def run() -> bytes:
         mgr = BrowserManager(config, session_id="demo")

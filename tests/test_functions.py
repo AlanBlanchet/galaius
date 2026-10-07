@@ -1,4 +1,4 @@
-"""Local function registry: a `@interact.function`-decorated Python callable, or a registered
+"""Local function registry: a `@galaius.function`-decorated Python callable, or a registered
 shell command, invocable from a workflow's "On my PC" machine-function node."""
 
 import json
@@ -7,16 +7,16 @@ from pathlib import Path
 
 import pytest
 
-import interact
-from interact.private_files import PRIVATE_FILES
-from interact.functions import FunctionRegistry, discover_python, discover_shell, invoke
+import galaius
+from galaius.private_files import PRIVATE_FILES
+from galaius.functions import FunctionRegistry, discover_python, discover_shell, invoke
 
 
 def test_bare_decorator_marks_a_typed_function_with_its_docstring(tmp_path: Path) -> None:
     source = tmp_path / "greeter.py"
     source.write_text(
-        "import interact\n\n"
-        "@interact.function\n"
+        "import galaius\n\n"
+        "@galaius.function\n"
         "def greet(name: str) -> str:\n"
         "    \"\"\"Greets someone by name.\"\"\"\n"
         "    return f'hello {name}'\n"
@@ -35,8 +35,8 @@ def test_bare_decorator_marks_a_typed_function_with_its_docstring(tmp_path: Path
 def test_parameterized_decorator_types_every_port_from_hints_and_defaults(tmp_path: Path) -> None:
     source = tmp_path / "counter.py"
     source.write_text(
-        "import interact\n\n"
-        "@interact.function(description='Adds two numbers.', permission='full_access')\n"
+        "import galaius\n\n"
+        "@galaius.function(description='Adds two numbers.', permission='full_access')\n"
         "def add(a: int, b: int = 1) -> int:\n"
         "    return a + b\n"
     )
@@ -50,7 +50,7 @@ def test_parameterized_decorator_types_every_port_from_hints_and_defaults(tmp_pa
 
 def test_untyped_parameter_is_rejected(tmp_path: Path) -> None:
     source = tmp_path / "bad.py"
-    source.write_text("import interact\n\n@interact.function\ndef broken(x) -> str:\n    return str(x)\n")
+    source.write_text("import galaius\n\n@galaius.function\ndef broken(x) -> str:\n    return str(x)\n")
     with pytest.raises(ValueError, match="type hint"):
         discover_python(source)
 
@@ -87,7 +87,7 @@ def test_registered_python_function_survives_its_original_file_disappearing(tmp_
     source_dir = tmp_path / "scratch"
     source_dir.mkdir()
     source = source_dir / "greeter.py"
-    source.write_text("import interact\n\n@interact.function\ndef greet(name: str) -> str:\n    \"\"\"Greets.\"\"\"\n    return f'hi {name}'\n")
+    source.write_text("import galaius\n\n@galaius.function\ndef greet(name: str) -> str:\n    \"\"\"Greets.\"\"\"\n    return f'hi {name}'\n")
     registry = FunctionRegistry(tmp_path / "config" / "functions.json")
     entry = discover_python(source)[0]
     stored = registry.add(entry)
@@ -109,7 +109,7 @@ def test_registry_get_raises_for_unknown_name(tmp_path: Path) -> None:
 
 def test_function_summary_carries_a_stable_content_version(tmp_path: Path) -> None:
     source = tmp_path / "fn.py"
-    source.write_text("import interact\n\n@interact.function\ndef ping() -> str:\n    return 'pong'\n")
+    source.write_text("import galaius\n\n@galaius.function\ndef ping() -> str:\n    return 'pong'\n")
     entry = discover_python(source)[0]
     assert entry.version == entry.digest()
     summary = entry.summary()
@@ -119,8 +119,8 @@ def test_function_summary_carries_a_stable_content_version(tmp_path: Path) -> No
 def test_cli_functions_add_python_list_and_test_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     source = tmp_path / "greeter.py"
-    source.write_text("import interact\n\n@interact.function\ndef greet(name: str) -> str:\n    \"\"\"Greets.\"\"\"\n    return f'hi {name}'\n")
-    from interact.cli.app import app as cli
+    source.write_text("import galaius\n\n@galaius.function\ndef greet(name: str) -> str:\n    \"\"\"Greets.\"\"\"\n    return f'hi {name}'\n")
+    from galaius.cli.app import app as cli
 
     with pytest.raises(SystemExit) as result:
         cli(["functions", "add", str(source)])
@@ -140,7 +140,7 @@ def test_cli_functions_add_python_list_and_test_round_trip(tmp_path: Path, monke
 
 def test_cli_functions_add_shell_uses_end_of_options_delimiter(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    from interact.cli.app import app as cli
+    from galaius.cli.app import app as cli
 
     with pytest.raises(SystemExit) as result:
         cli(["functions", "add", "echoer", "--", "echo", "-n", "{value}"])

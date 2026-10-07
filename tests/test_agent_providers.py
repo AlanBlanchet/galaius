@@ -1,11 +1,11 @@
-"""Provider adapters for the agent CLIs interact supervises.
+"""Provider adapters for the agent CLIs galaius supervises.
 
 Parsing is pinned against a synthetic stream (`tests/fixtures/agents/claude_stream.jsonl`) shaped
 exactly like `claude -p --output-format stream-json` output — same event types, same field names,
 same nesting — with all content replaced by neutral placeholders so no real session data ships in
 the repo.
 
-The legal line these tests also encode: interact builds an argv and reads stdout. It never reads,
+The legal line these tests also encode: galaius builds an argv and reads stdout. It never reads,
 stores or forwards a credential — the CLI authenticates itself with the user's own login.
 """
 
@@ -18,28 +18,28 @@ from pathlib import Path
 
 import pytest
 
-from interact.agents.events import TOKEN_FIELDS, AgentEvent, UsageLedger
-from interact.agents.providers import (
+from galaius.agents.events import TOKEN_FIELDS, AgentEvent, UsageLedger
+from galaius.agents.providers import (
     PROJECT_SETTINGS_OFF,
     PROVIDERS, ClaudeCodeProvider, CodexProvider, UnsupportedToolPolicy, provider_for,
 )
-from interact.models import Model
-from interact.processes import NpmShim
+from galaius.models import Model
+from galaius.processes import NpmShim
 
 
 @pytest.mark.parametrize("resume", [False, True])
 def test_claude_role_tools_and_denials_are_available_tool_restrictions_on_every_turn(resume):
     provider = ClaudeCodeProvider()
     options = dict(model="fixture-model", agent="visual-critic", agent_prompt="Pinned role instructions",
-                   allowed_tools=["Read", "Bash", "mcp__interact__screenshot", "mcp__interact__report_issue"],
-                   denied_tools=("mcp__interact__report_issue",))
+                   allowed_tools=["Read", "Bash", "mcp__galaius__screenshot", "mcp__galaius__report_issue"],
+                   denied_tools=("mcp__galaius__report_issue",))
     command = provider.resume_command("fixture-session", "Review", **options) if resume else provider.command(
         "Review", cwd="/tmp", mcp_config=None, run_id="fixture-run", **options)
     definition = json.loads(command[command.index("--agents") + 1])["visual-critic"]
     assert definition["prompt"] == "Pinned role instructions"
     assert definition["tools"] == options["allowed_tools"]
     assert command[command.index("--agent") + 1] == "visual-critic"
-    assert command[command.index("--disallowedTools") + 1] == "mcp__interact__report_issue"
+    assert command[command.index("--disallowedTools") + 1] == "mcp__galaius__report_issue"
     assert "--allowedTools" not in command
     assert "--permission-mode" not in command
 
@@ -167,9 +167,9 @@ def test_shared_permission_intents_translate_for_each_provider(
 @pytest.mark.parametrize("resume", [False, True])
 def test_codex_projects_mesh_without_changing_permissions(resume):
     provider = CodexProvider()
-    config = json.dumps({"mcpServers": {"interact": {
-        "command": '/fixture path/\U00010400/interact', "args": ["mcp", 'quoted"arg'],
-        "env": {"INTERACT_PARENT_RUN_ID": "fixture-run"},
+    config = json.dumps({"mcpServers": {"galaius": {
+        "command": '/fixture path/\U00010400/galaius', "args": ["mcp", 'quoted"arg'],
+        "env": {"GALAIUS_PARENT_RUN_ID": "fixture-run"},
     }}})
     # A pure-read role: no write, no network tool named, so no extra `-c` table beyond the mesh's
     # own two — isolates "does the mesh smuggle permission flags" from the sandbox-mapping tests.
@@ -180,7 +180,7 @@ def test_codex_projects_mesh_without_changing_permissions(resume):
         argv = provider.command("read", cwd=".", model=None, mcp_config=config, run_id="fixture-run", **kwargs)
     overrides = [argv[i + 1] for i, value in enumerate(argv) if value == "-c"]
     data = tomllib.loads("\n".join(overrides))
-    assert data["mcp_servers"]["interact"] == json.loads(config)["mcpServers"]["interact"]
+    assert data["mcp_servers"]["galaius"] == json.loads(config)["mcpServers"]["galaius"]
     # Beside the mesh only the system's own table (Windows: the sandbox Codex runs in).
     platform = tomllib.loads("\n".join(CodexProvider.platform_flags()[1::2]))
     assert set(data) == {"features", "mcp_servers", *platform}
@@ -203,7 +203,7 @@ def test_codex_projects_mesh_without_changing_permissions(resume):
     (["Read", "Grep", "Glob"], "read-only", True, False),                          # pure read: no reason for a shell
     (["Read", "Grep", "Glob", "Bash"], "read-only", False, False),                 # read-only critic
     (["Read", "Write", "Edit"], "workspace-write", True, False),                   # writes, no shell (e.g. teacher)
-    # A builder runs dev servers, test suites and the interact launcher through its shell, and
+    # A builder runs dev servers, test suites and the galaius launcher through its shell, and
     # codex's sandbox cannot tell loopback from the internet: without the toggle a builder
     # cannot even bind 127.0.0.1 (live: PermissionError: [Errno 1] Operation not permitted).
     (["Read", "Bash", "Write", "Edit"], "workspace-write", False, True),           # builder
@@ -250,18 +250,18 @@ def test_codex_network_without_write_has_no_documented_sandbox_equivalent(resume
 
 @pytest.mark.parametrize("resume", [False, True])
 def test_codex_needs_no_coarse_acceptance_for_its_own_mcp_tools(resume):
-    """Unlike native tools, `mcp__interact__*` names ARE fully expressible — no tradeoff, no
+    """Unlike native tools, `mcp__galaius__*` names ARE fully expressible — no tradeoff, no
     opt-in, because nothing is left unenforced."""
     provider = CodexProvider()
-    kwargs = dict(allowed_tools=["mcp__interact__screenshot", "mcp__interact__run_actions"],
-                  denied_tools=("mcp__interact__report_issue",))
+    kwargs = dict(allowed_tools=["mcp__galaius__screenshot", "mcp__galaius__run_actions"],
+                  denied_tools=("mcp__galaius__report_issue",))
     if resume:
         argv = provider.resume_command("thread", "continue", **kwargs)
     else:
         argv = provider.command("read", cwd=".", model=None, mcp_config=None, run_id="fixture-run", **kwargs)
     joined = " ".join(argv)
-    assert 'mcp_servers.interact.enabled_tools=["run_actions", "screenshot"]' in joined
-    assert 'mcp_servers.interact.disabled_tools=["report_issue"]' in joined
+    assert 'mcp_servers.galaius.enabled_tools=["run_actions", "screenshot"]' in joined
+    assert 'mcp_servers.galaius.disabled_tools=["report_issue"]' in joined
 
 
 @pytest.mark.parametrize("resume", [False, True])
@@ -271,7 +271,7 @@ def test_codex_mixed_native_and_mcp_tools_needs_acceptance_but_still_enforces_th
     name it already covers, and never on a native name (Bash, Write, ...) codex CAN map; once
     accepted, the mcp restriction still applies exactly."""
     provider = CodexProvider()
-    kwargs = dict(allowed_tools=["NotebookEdit", "mcp__interact__screenshot"])
+    kwargs = dict(allowed_tools=["NotebookEdit", "mcp__galaius__screenshot"])
     with pytest.raises(UnsupportedToolPolicy) as excinfo:
         if resume:
             provider.resume_command("thread", "continue", **kwargs)
@@ -283,12 +283,12 @@ def test_codex_mixed_native_and_mcp_tools_needs_acceptance_but_still_enforces_th
     else:
         argv = provider.command("read", cwd=".", model=None, mcp_config=None,
                                 run_id="fixture-run", coarse_accepted=True, **kwargs)
-    assert 'mcp_servers.interact.enabled_tools=["screenshot"]' in " ".join(argv)
+    assert 'mcp_servers.galaius.enabled_tools=["screenshot"]' in " ".join(argv)
 
 
 @pytest.mark.parametrize("rows,expected", [
-    ([{"name": "interact", "enabled": True, "transport": {"command": "system-wrapper"}}], True),
-    ([{"name": "interact", "enabled": False, "transport": {"url": "https://example.invalid/mcp"}}], True),
+    ([{"name": "galaius", "enabled": True, "transport": {"command": "system-wrapper"}}], True),
+    ([{"name": "galaius", "enabled": False, "transport": {"url": "https://example.invalid/mcp"}}], True),
     ([{"name": "another-server"}], False),
     ([], False),
 ])
@@ -302,7 +302,7 @@ def test_codex_registration_uses_provider_effective_configuration(tmp_path, monk
         return subprocess.CompletedProcess(argv, 0, json.dumps(rows), "")
 
     monkeypatch.setattr(subprocess, "run", configured)
-    assert provider.has_mcp_server("interact", cwd=str(tmp_path)) is expected
+    assert provider.has_mcp_server("galaius", cwd=str(tmp_path)) is expected
     assert calls == [(["fixture-codex", "mcp", "list", "--json"], {
         "cwd": str(tmp_path), "capture_output": True, "text": True, "timeout": 10,
     })]
@@ -323,18 +323,18 @@ def test_codex_registration_discovery_fails_closed_without_echoing_output(tmp_pa
 
     monkeypatch.setattr(subprocess, "run", failed)
     with pytest.raises(ValueError, match="^Cannot inspect Codex MCP configuration safely$"):
-        provider.has_mcp_server("interact", cwd=str(tmp_path))
+        provider.has_mcp_server("galaius", cwd=str(tmp_path))
 
 
 @pytest.mark.parametrize("field,value", [
-    ("env", {"INTERACT_PARENT_RUN_ID": "fixture-run", "TOKEN": "leak"}),
+    ("env", {"GALAIUS_PARENT_RUN_ID": "fixture-run", "TOKEN": "leak"}),
     ("enabled", True), ("command", ""), ("args", [42]),
 ])
 def test_codex_mesh_rejects_extra_fields_and_invalid_values_without_echoing_them(field, value):
-    server = {"command": "fixture-interact", "args": ["mcp"],
-              "env": {"INTERACT_PARENT_RUN_ID": "fixture-run"}, field: value}
+    server = {"command": "fixture-galaius", "args": ["mcp"],
+              "env": {"GALAIUS_PARENT_RUN_ID": "fixture-run"}, field: value}
     with pytest.raises(ValueError, match="^Invalid credential-free Codex mesh configuration$"):
-        CodexProvider.mesh_arguments(json.dumps({"mcpServers": {"interact": server}}))
+        CodexProvider.mesh_arguments(json.dumps({"mcpServers": {"galaius": server}}))
 
 
 def test_codex_image_support_is_verified_from_installed_help(monkeypatch):
@@ -345,7 +345,7 @@ def test_codex_image_support_is_verified_from_installed_help(monkeypatch):
         returncode = 0
         stdout = "  -i, --image <FILE>...  Optional image(s)"
 
-    monkeypatch.setattr("interact.agents.providers.subprocess.run", lambda *a, **k: _Help())
+    monkeypatch.setattr("galaius.agents.providers.subprocess.run", lambda *a, **k: _Help())
     assert provider.image_attachment_support() is True
 
     _Help.stdout = "  -m, --model <MODEL>"
@@ -421,7 +421,7 @@ def test_codex_resume_does_not_re_inject_the_role_definition(monkeypatch, tmp_pa
     definition into every RESUMED message doubles input tokens per turn and was observed live to
     make the model re-answer the original task instead of the new message. A resumed turn sends
     exactly the new message."""
-    root = tmp_path / "interact" / "prompts" / "agents"
+    root = tmp_path / "galaius" / "prompts" / "agents"
     root.mkdir(parents=True)
     (root / "tester.md").write_text(
         "---\nname: tester\n---\nAGENT_ROLE: tester\nDo the assigned check.\n",
@@ -436,7 +436,7 @@ def test_codex_resume_does_not_re_inject_the_role_definition(monkeypatch, tmp_pa
 
 def test_codex_command_injects_the_named_role_definition(monkeypatch, tmp_path):
     """The FIRST turn has no other channel to seed the role, so it must bake the definition in."""
-    root = tmp_path / "interact" / "prompts" / "agents"
+    root = tmp_path / "galaius" / "prompts" / "agents"
     root.mkdir(parents=True)
     (root / "tester.md").write_text(
         "---\nname: tester\n---\nAGENT_ROLE: tester\nDo the assigned check.\n",
@@ -472,8 +472,8 @@ def test_codex_routes_a_base_url_through_a_named_isolated_provider():
         run_id="fixture-run", base_url="http://gpubox.lan:8000/v1",
     )
     joined = " ".join(command)
-    assert 'model_providers.interact_openai_compat.base_url="http://gpubox.lan:8000/v1"' in joined
-    assert 'model_provider="interact_openai_compat"' in joined
+    assert 'model_providers.galaius_openai_compat.base_url="http://gpubox.lan:8000/v1"' in joined
+    assert 'model_provider="galaius_openai_compat"' in joined
     assert "openai_base_url" not in joined, "must never touch the native openai provider's base url"
     assert '-c model_providers.openai.' not in joined
     assert '-c model_providers.chatgpt.' not in joined
@@ -483,14 +483,14 @@ def test_codex_omits_openai_compat_routing_when_no_base_url_is_given():
     command = CodexProvider().command(
         "Reply once", cwd="/tmp", model="fixture-model", mcp_config=None, run_id="fixture-run",
     )
-    assert "model_providers.interact_openai_compat" not in " ".join(command)
+    assert "model_providers.galaius_openai_compat" not in " ".join(command)
 
 
 def test_codex_resume_also_carries_the_routed_base_url():
     command = CodexProvider().resume_command(
         "vendor-thread", "continue", base_url="http://gpubox.lan:8000/v1", model="glm-5.2",
     )
-    assert 'model_providers.interact_openai_compat.base_url="http://gpubox.lan:8000/v1"' in " ".join(command)
+    assert 'model_providers.galaius_openai_compat.base_url="http://gpubox.lan:8000/v1"' in " ".join(command)
 
 
 def test_claude_cannot_claim_an_openai_protocol_model_even_when_its_base_url_is_set():
@@ -597,7 +597,7 @@ def test_the_run_id_is_the_session_id():
 
 
 def test_the_mesh_config_is_passed_through():
-    cfg = '{"mcpServers":{"interact":{"command":"interact"}}}'
+    cfg = '{"mcpServers":{"galaius":{"command":"galaius"}}}'
     argv = ClaudeCodeProvider().command("t", cwd="/tmp", model=None, mcp_config=cfg, run_id="r")
     assert argv[argv.index("--mcp-config") + 1] == cfg
 
@@ -638,13 +638,13 @@ def test_a_verified_providers_real_caveat_still_shows():
     """`verified` says the flags were checked against a real binary; it is NOT permission to hide
     a caveat that stays true regardless — every one of the three surfaces that print this
     (`agent_providers`, the CLI `providers` command, the per-spawn NOTE) shares this one line."""
-    from interact.agents.providers import provider_caveat_note
+    from galaius.agents.providers import provider_caveat_note
 
     assert "no codex-documented equivalent" in provider_caveat_note(CodexProvider())
 
 
 def test_an_unverified_provider_with_no_written_caveat_falls_back_to_saying_so():
-    from interact.agents.providers import provider_caveat_note
+    from galaius.agents.providers import provider_caveat_note
 
     class _Untested(ClaudeCodeProvider):
         verified = False
@@ -654,7 +654,7 @@ def test_an_unverified_provider_with_no_written_caveat_falls_back_to_saying_so()
 
 
 def test_a_verified_provider_with_no_caveat_says_nothing():
-    from interact.agents.providers import provider_caveat_note
+    from galaius.agents.providers import provider_caveat_note
 
     class _Solid(ClaudeCodeProvider):
         verified = True
@@ -746,7 +746,7 @@ def test_a_provider_that_cannot_resume_says_so():
     ["thinking_tokens", "hook_started", "hook_response"],
 )
 def test_vendor_housekeeping_is_dropped_not_shown_as_other(subtype):
-    from interact.agents.providers import ClaudeCodeProvider
+    from galaius.agents.providers import ClaudeCodeProvider
 
     event = ClaudeCodeProvider().parse(
         json.dumps({"type": "system", "subtype": subtype, "session_id": "s"})
@@ -756,7 +756,7 @@ def test_vendor_housekeeping_is_dropped_not_shown_as_other(subtype):
 
 def test_a_spawned_subagent_is_real_activity_and_is_kept():
     """An agent starting a Task IS the team behaviour the panel exists to show."""
-    from interact.agents.providers import ClaudeCodeProvider
+    from galaius.agents.providers import ClaudeCodeProvider
 
     event = ClaudeCodeProvider().parse(
         json.dumps({"type": "system", "subtype": "task_started", "session_id": "s"})
@@ -766,7 +766,7 @@ def test_a_spawned_subagent_is_real_activity_and_is_kept():
 
 def test_an_unknown_system_subtype_is_still_kept_as_other():
     """A vendor adding a new event must not vanish — dropping is for the known-noisy only."""
-    from interact.agents.providers import ClaudeCodeProvider
+    from galaius.agents.providers import ClaudeCodeProvider
 
     event = ClaudeCodeProvider().parse(
         json.dumps({"type": "system", "subtype": "something_new", "session_id": "s"})
@@ -777,7 +777,7 @@ def test_an_unknown_system_subtype_is_still_kept_as_other():
 def test_the_incoming_prompt_is_named_not_lumped_as_other():
     """A `user` line carrying text is what was ASKED of the agent — the other half of the
     conversation. Left as `other` the activity view showed only the agent's replies."""
-    from interact.agents.providers import ClaudeCodeProvider
+    from galaius.agents.providers import ClaudeCodeProvider
 
     event = ClaudeCodeProvider().parse(json.dumps({
         "type": "user", "session_id": "s",
@@ -794,7 +794,7 @@ def test_the_incoming_prompt_is_named_not_lumped_as_other():
 
 
 def test_a_provider_lists_the_agent_definitions_it_can_resolve(tmp_path, monkeypatch):
-    from interact.agents.providers import ClaudeCodeProvider
+    from galaius.agents.providers import ClaudeCodeProvider
 
     home = tmp_path / ".claude" / "agents"
     home.mkdir(parents=True)
@@ -805,7 +805,7 @@ def test_a_provider_lists_the_agent_definitions_it_can_resolve(tmp_path, monkeyp
 
 
 def test_no_definitions_directory_is_an_empty_list_not_an_error(tmp_path, monkeypatch):
-    from interact.agents.providers import ClaudeCodeProvider
+    from galaius.agents.providers import ClaudeCodeProvider
 
     assert ClaudeCodeProvider().agent_definitions() == []
 
@@ -814,7 +814,7 @@ def test_codex_lists_installed_role_definitions(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
     provider = CodexProvider()
     assert provider.agent_definitions() == []
-    root = tmp_path / "interact/prompts/agents"
+    root = tmp_path / "galaius/prompts/agents"
     root.mkdir(parents=True)
     (root / "tester.md").write_text("Verify the assigned change.")
     assert provider.agent_definitions() == ["tester"]
@@ -906,7 +906,7 @@ def test_session_usage_sums_to_vendor_truth(provider, stream, truth):
 
 def test_no_usage_at_all_reports_nothing_rather_than_zero():
     """Zero would render as a real measurement of an empty context."""
-    from interact.agents.providers import ClaudeCodeProvider
+    from galaius.agents.providers import ClaudeCodeProvider
 
     event = ClaudeCodeProvider().parse(json.dumps({
         "type": "assistant", "session_id": "s",
@@ -927,7 +927,7 @@ def test_definitions_command_prints_one_name_per_line(capsys, tmp_path, monkeypa
     home.mkdir(parents=True)
     for name in ("code-reviewer", "researcher"):
         (home / f"{name}.md").write_text("---\n---\n")
-    cli = importlib.import_module("interact.cli.app")
+    cli = importlib.import_module("galaius.cli.app")
     cli.agents_definitions()
     assert capsys.readouterr().out.split() == ["code-reviewer", "researcher"]
 
@@ -936,7 +936,7 @@ def test_definitions_command_is_silent_when_there_are_none(capsys, tmp_path, mon
     """Empty output, not a message: the caller is a parser, and prose would become a fake agent."""
     import importlib
 
-    cli = importlib.import_module("interact.cli.app")
+    cli = importlib.import_module("galaius.cli.app")
     cli.agents_definitions()
     assert capsys.readouterr().out.strip() == ""
 
@@ -1057,8 +1057,8 @@ def test_a_real_definition_is_accepted(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_spawn_refuses_an_unknown_definition_and_says_which_exist(monkeypatch):
-    import interact.server as srv
-    from interact.agents.providers import ClaudeCodeProvider
+    import galaius.server as srv
+    from galaius.agents.providers import ClaudeCodeProvider
 
     monkeypatch.setattr(ClaudeCodeProvider, "available", lambda self: True)
     monkeypatch.setattr(ClaudeCodeProvider, "agent_definitions", lambda self: ["tester", "researcher"])
@@ -1092,7 +1092,7 @@ def test_claude_resumes_an_editor_conversation_into_a_copy():
 
 
 @pytest.mark.parametrize(("system", "config", "expected"), [
-    ("win32", None, ("-c", 'windows.sandbox="unelevated"')),                 # nothing chosen: interact sets it
+    ("win32", None, ("-c", 'windows.sandbox="unelevated"')),                 # nothing chosen: galaius sets it
     ("win32", '[windows]\nsandbox = "elevated"\n', ()),                      # the owner's own choice stands
     ("win32", "not toml [", ("-c", 'windows.sandbox="unelevated"')),         # unreadable config: still sandboxed
     ("linux", None, ()),
@@ -1101,7 +1101,7 @@ def test_codex_runs_in_its_windows_sandbox_on_windows(monkeypatch, tmp_path, sys
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
     if config is not None:
         (tmp_path / "config.toml").write_text(config)
-    monkeypatch.setattr("interact.agents.providers.sys.platform", system)
+    monkeypatch.setattr("galaius.agents.providers.sys.platform", system)
     assert CodexProvider.platform_flags() == expected
     argv = CodexProvider().command("hi", cwd=str(tmp_path), model=None, mcp_config=None, run_id="r1")
     assert (argv[argv.index("exec") + 1:].count('windows.sandbox="unelevated"') == 1) == bool(expected)

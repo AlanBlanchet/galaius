@@ -20,7 +20,7 @@ const ROOMS: [ZoneId, RegExp][] = [
   ["web", /^(WebFetch|WebSearch)$/],
   ["code", /^(Read|Edit|Write|Grep|Glob|NotebookEdit|MultiEdit)$/],
   ["managers", /^(Agent|Task|SendMessage|ListAgents|TaskOutput|TaskStop)$/],
-  // Anything that looks at or drives a surface — interact's own tools live here.
+  // Anything that looks at or drives a surface — galaius's own tools live here.
   ["studio", /(screenshot|run_actions|review_ui|verify_ui|measure_ui|launch_app|record|get_interactive)/i],
   ["lab", /^(Bash|BashOutput|KillShell)$/],
   ["data", /(registry|cache|catalog|benchmark)/i],
@@ -42,14 +42,14 @@ const HOME: [ZoneId, RegExp][] = [
 /** Where a worker stands.
  *
  *  Three things decide it, in order. Status first: a finished worker is back at the entrance
- *  whatever it was last holding, and a session interact didn't start is never shown mid-task —
+ *  whatever it was last holding, and a session galaius didn't start is never shown mid-task —
  *  watching it work would claim a supervision we don't have. Then the WORK in hand, because a
  *  position has to be earned: a librarian reading source is in the code, not at their desk.
  *  Only then their ROLE, so a thinking agent sits somewhere that means something.
  */
 export function zoneOf(step: Step | undefined, status: string, agent?: string | null): ZoneId {
   // Own editor sessions stand at the main entrance: where work originates. Never placed mid-task
-  // — interact doesn't supervise them (see doc above).
+  // — galaius doesn't supervise them (see doc above).
   if (status === "foreign") return "entry";
   if (status !== "running") return "entry";
   if (step?.kind === "spawn") return "managers";
@@ -186,7 +186,7 @@ export interface RunLike {
 
 /** When this agent was last SEEN doing something, if the events carry a time at all.
  *
- *  interact observes the vendor's stream, stamping when it first saw a line even though the
+ *  galaius observes the vendor's stream, stamping when it first saw a line even though the
  *  vendor writes no timestamp of its own. That observation time is exactly the right clock for a
  *  watched workplace: not when the agent acted (unknowable), but when we noticed.
  */
@@ -223,7 +223,7 @@ function placeByDomain(
  *
  *  A ROOT (nobody sent it) that others report to, earliest first. Roots ranked by start time
  *  rather than array order, so the answer doesn't depend on how the filesystem happened to list
- *  records. Your own editor sessions are excluded: interact doesn't drive them, so putting one
+ *  records. Your own editor sessions are excluded: galaius doesn't drive them, so putting one
  *  at the head of the company would claim authority this view doesn't have.
  */
 function brainOf(runs: readonly RunLike[], nowSeconds?: number): string | null {
@@ -365,7 +365,7 @@ export function buildTeam(
       ...placeByDomain(run.agent, departmentFor),
       // The whole window, not one step: a finished worker keeps the room it last worked in.
       zone: zoneOfSteps(steps, run.status, run.agent ?? null),
-      // A session interact didn't start gets named, never narrated: we don't read its stream,
+      // A session galaius didn't start gets named, never narrated: we don't read its stream,
       // and "waiting" would claim it is doing nothing when it is somebody working.
       activity: run.status === "foreign" ? "your own session" : activityOf(step),
       parent_run_id: run.parent_run_id ?? null,

@@ -23,7 +23,7 @@ export class SequencePanel {
 
   private constructor(private readonly panel: vscode.WebviewPanel) {
     this.panel.onDidDispose(() => this.dispose());
-    // One column for interact's surfaces: a new one joins the group its siblings already
+    // One column for galaius's surfaces: a new one joins the group its siblings already
     // hold rather than opening yet another beside your code.
     claimColumn("sequence", this.panel.viewColumn);
     try {
@@ -46,7 +46,7 @@ export class SequencePanel {
     }
     SequencePanel.current = new SequencePanel(
       vscode.window.createWebviewPanel(
-        "interact.sequence",
+        "galaius.sequence",
         "Agent sequence",
       nextColumn() as vscode.ViewColumn,
         { enableScripts: false, retainContextWhenHidden: true },

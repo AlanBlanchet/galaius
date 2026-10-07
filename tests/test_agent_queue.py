@@ -8,9 +8,9 @@ import sys
 
 import pytest
 
-from interact.agents import agent_queue, messaging
-from interact.agents import registry as reg
-from interact.agents.policy import Policy
+from galaius.agents import agent_queue, messaging
+from galaius.agents import registry as reg
+from galaius.agents.policy import Policy
 from tests.support.agents import ScriptedProvider, install_provider, use_policy
 
 
@@ -147,7 +147,7 @@ def test_separate_process_enqueue_calls_are_serialized(monkeypatch, tmp_path):
     _setup(monkeypatch)
     script = (
         "import sys; "
-        "from interact.agents import agent_queue; "
+        "from galaius.agents import agent_queue; "
         "item=agent_queue.enqueue('r1', message_id=sys.argv[1], sender='operator'); "
         "raise SystemExit(0 if item else 1)"
     )
@@ -219,8 +219,8 @@ def test_crash_after_queue_intent_leaves_recoverable_bounded_failure(monkeypatch
     provider = _setup(monkeypatch)
     script = """
 import os
-from interact.agents import messaging, registry
-from interact.agents.policy import Policy
+from galaius.agents import messaging, registry
+from galaius.agents.policy import Policy
 from tests.support.agents import ScriptedProvider
 
 class Provider(ScriptedProvider):
@@ -354,7 +354,7 @@ def test_reused_dispatcher_pid_does_not_stall_on_unrelated_process(monkeypatch):
 def test_a_dispatcher_is_trusted_only_while_the_recorded_process_lives():
     """Its pid + start time name one process on Linux and Windows alike: a live dispatcher is never
     doubled, and a pid reused by a later process (another start time) or a dead one is not it."""
-    from interact.processes import process_started
+    from galaius.processes import process_started
 
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     try:

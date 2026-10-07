@@ -9,9 +9,9 @@ import * as vscode from "vscode";
 import { readAgentRuns, type AgentRun } from "./agents";
 import { projectFor, scopeRuns, describeScope, scopeChoices, type Scope } from "./workspaceScope";
 import { mergeDiscovered, parseDiscovered, isFresh, type Discovery } from "./discovered";
-import { interactCli } from "./interactCli";
+import { galaiusCli } from "./galaiusCli";
 
-const SCOPE_KEY = "interact.agents.scope";
+const SCOPE_KEY = "galaius.agents.scope";
 
 export class ScopeStore {
   private readonly changed = new vscode.EventEmitter<void>();
@@ -25,7 +25,7 @@ export class ScopeStore {
     private readonly log?: vscode.OutputChannel,
   ) {}
 
-  /** The last answer from interact agents discovered, and when it arrived. */
+  /** The last answer from galaius agents discovered, and when it arrived. */
   private discovered: Discovery | null = null;
   private discovering = false;
 
@@ -43,7 +43,7 @@ export class ScopeStore {
     return (vscode.workspace.workspaceFolders ?? []).map(({ uri }) => uri.fsPath);
   }
 
-  /** Every run the panel should be showing — including the sessions interact didn't start.
+  /** Every run the panel should be showing — including the sessions galaius didn't start.
    *
    *  Those have no record on disk, so a directory read alone never saw them: the panel couldn't
    *  show the user's own editor windows, nor offer the folders they're working in. Kept SYNC by
@@ -61,7 +61,7 @@ export class ScopeStore {
   private refreshDiscovery(): void {
     if (this.discovering || isFresh(this.discovered, Date.now())) return;
     this.discovering = true;
-    void interactCli(["agents", "discovered"])
+    void galaiusCli(["agents", "discovered"])
       .then(({ stdout, error }) => {
         // A stamp on failure too, so a machine without the CLI on PATH is not re-probed on every
         // repaint — it retries on the same slow cadence as a success.
@@ -69,7 +69,7 @@ export class ScopeStore {
                             at: Date.now() };
         // Said once per failure rather than swallowed. A silent failure is indistinguishable from
         // "you have no other sessions", which is a wrong answer wearing a plausible face.
-        if (error) this.log?.appendLine(`interact agents discovered: ${error}`);
+        if (error) this.log?.appendLine(`galaius agents discovered: ${error}`);
         else this.changed.fire();
       })
       // The flag is cleared in finally, never only on the happy path: leaving it set disables

@@ -1,4 +1,4 @@
-"""Write after review (`interact.place_reviews.PlaceReviews`): writes into a `write_on_review`
+"""Write after review (`galaius.place_reviews.PlaceReviews`): writes into a `write_on_review`
 folder land in a staging copy; the owner accepts one exact diff by its digest, and the PC applies
 exactly that diff — or nothing, when the folder or the copy changed since, or the digest differs."""
 
@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import pytest
 
-from interact.place_reviews import PlaceReviews
+from galaius.place_reviews import PlaceReviews
 
 pytestmark = pytest.mark.usefixtures("directory_backend")
 
@@ -131,7 +131,7 @@ def test_a_new_steering_file_is_held_for_review_and_gone_from_the_folder(folder:
 def test_accept_writes_the_bytes_it_checked_even_if_the_copy_changes_meanwhile(folder: Path, reviews: PlaceReviews, monkeypatch: pytest.MonkeyPatch) -> None:
     """The staging copy may still be writable by its agent; what reaches the folder is what the
     digest covered, never bytes swapped in after the check."""
-    import interact.place_reviews as module
+    import galaius.place_reviews as module
     review_id, tree = reviews.stage_copy("notes", folder, origin="agent", run_id=None)
     (tree / "a.txt").write_text("reviewed text")
     [seen] = reviews.list()

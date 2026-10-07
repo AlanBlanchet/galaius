@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-import interact
-from interact import versioning
+import galaius
+from galaius import versioning
 
 _ROOT = versioning.repo_root(Path(__file__).parent)
 _PYPROJECT = tomllib.loads((_ROOT / "pyproject.toml").read_text())
@@ -40,11 +40,11 @@ def test_bump(version, part, expected):
 
 
 def _project(tmp_path, py="0.1.0", pkg="0.1.0"):
-    (tmp_path / "pyproject.toml").write_text(f'[project]\nname = "interact"\nversion = "{py}"\n')
+    (tmp_path / "pyproject.toml").write_text(f'[project]\nname = "galaius"\nversion = "{py}"\n')
     ext = tmp_path / "clients" / "vscode"
     ext.mkdir(parents=True)
     if pkg is not None:
-        (ext / "package.json").write_text(json.dumps({"name": "interact", "version": pkg}))
+        (ext / "package.json").write_text(json.dumps({"name": "galaius", "version": pkg}))
     return tmp_path
 
 
@@ -80,12 +80,12 @@ def test_main_check_returns_nonzero_on_mismatch(tmp_path, monkeypatch):
 
 
 # Packaging single-source-of-truth. These guard the drift that silently breaks a release:
-# interact.DIST_NAME diverging from the real package name (version lookups → 0.0.0), an
-# unbuildable wheel (no package dir selected), or the `interact` command going missing.
+# galaius.DIST_NAME diverging from the real package name (version lookups → 0.0.0), an
+# unbuildable wheel (no package dir selected), or the `galaius` command going missing.
 
 
 def test_dist_name_matches_pyproject():
-    assert interact.DIST_NAME == _PYPROJECT["project"]["name"] == "interact"
+    assert galaius.DIST_NAME == _PYPROJECT["project"]["name"] == "galaius"
 
 
 def test_wheel_packages_point_at_a_real_dir():
@@ -95,5 +95,5 @@ def test_wheel_packages_point_at_a_real_dir():
     assert packages and all((_ROOT / p).is_dir() for p in packages)
 
 
-def test_interact_command_is_defined():
-    assert _PYPROJECT["project"]["scripts"].get("interact", "").startswith("interact.cli")
+def test_galaius_command_is_defined():
+    assert _PYPROJECT["project"]["scripts"].get("galaius", "").startswith("galaius.cli")

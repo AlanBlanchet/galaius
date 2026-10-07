@@ -3,7 +3,7 @@ import { test } from "node:test";
 
 import { chatDocument, CHAT_EMPTY_HINT, isAwaitingReply, transcriptFragment, turnClass } from "./conversationFormat.ts";
 
-// "We have the configuration panel for interact, but not a seperate chat panel !!!!" — the
+// "We have the configuration panel for galaius, but not a seperate chat panel !!!!" — the
 // transcript existed, but only as a read-only EDITOR tab. A chat panel lives in the side bar
 // beside the agent list and lets you TALK to the agent, not just read it.
 
@@ -133,7 +133,7 @@ const RUN = {
   run_id: "abcd1234-0000-0000-0000-000000000000",
   name: "code-reviewer", provider: "claude", model: "sonnet", status: "running",
   agent: "code-reviewer", task: "Review the diff for correctness",
-  cwd: "/tmp/project/dev/interact", project: "interact", pid: 4242,
+  cwd: "/tmp/project/dev/galaius", project: "galaius", pid: 4242,
   cost_usd: 1.25, input_tokens: 120000, output_tokens: 8000,
 } as any;
 
@@ -209,11 +209,11 @@ test("an unsupported external provider run keeps its history without offering a 
     "detecting an external provider must not invent a supported conversation route");
 });
 
-test("the Conversation gear opens the Interact settings workspace", () => {
+test("the Conversation gear opens the Galaius settings workspace", () => {
   const rendered = chatDocument({ nonce: "n", commands: [], turns: [], name: "agent",
     status: "waiting", run: RUN });
   assert.match(rendered, /id="openSettings"[^>]*>⚙/);
-  assert.match(rendered, /command: "interact\.openDashboard"/);
+  assert.match(rendered, /command: "galaius\.openDashboard"/);
 });
 
 test("the answer stays primary while agent activity is a truthful collapsed disclosure", () => {
@@ -319,8 +319,8 @@ test("the slash menu actually has entries when commands are supplied", () => {
   const doc = chatDocument({
     nonce: "n", turns: [], name: "visual-critic",
     commands: [
-      { slash: "/team", title: "Open the team", detail: "the workplace", command: "interact.agents.team", needsAgent: false },
-      { slash: "/stop", title: "Stop", detail: "interrupt it", command: "interact.agents.stop", needsAgent: true },
+      { slash: "/team", title: "Open the team", detail: "the workplace", command: "galaius.agents.team", needsAgent: false },
+      { slash: "/stop", title: "Stop", detail: "interrupt it", command: "galaius.agents.stop", needsAgent: true },
     ],
   } as never);
   const items = doc.match(/<li[^>]*data-command=/g) ?? [];
@@ -331,7 +331,7 @@ test("the slash menu actually has entries when commands are supplied", () => {
 test("a command needing an agent is marked when none is selected", () => {
   const withNoAgent = chatDocument({
     nonce: "n", turns: [],
-    commands: [{ slash: "/stop", title: "Stop", detail: "x", command: "interact.agents.stop", needsAgent: true }],
+    commands: [{ slash: "/stop", title: "Stop", detail: "x", command: "galaius.agents.stop", needsAgent: true }],
   } as never);
   assert.match(withNoAgent, /data-needs-agent="1"/,
     "greying it out is the honest answer; hiding the whole menu was not");
@@ -361,7 +361,7 @@ test("the header is drawn in the theme's own colours, not an inverted plate", ()
 
 test("one of your own sessions reads in full but cannot pretend to send", () => {
   const doc = chatDocument({
-    nonce: "n", commands: [], turns: [], name: "interact", status: "foreign",
+    nonce: "n", commands: [], turns: [], name: "galaius", status: "foreign",
     readOnly: true, awaitingReply: false, run: undefined as never, files: [], sentBy: null,
   } as never);
   assert.match(doc, /watch here, reply in its window/,

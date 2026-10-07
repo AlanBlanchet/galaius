@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from interact.server import core, tools_web
+from galaius.server import core, tools_web
 
 
 @pytest.fixture(autouse=True)
@@ -253,7 +253,7 @@ async def test_an_explicit_default_still_shares_one_browser(monkeypatch):
 async def test_a_desktop_target_still_refuses_a_session_the_caller_named(monkeypatch):
     """The minted name is not a session the caller CHOSE, so it must not trip the guard that
     keeps a desktop window and a browser session from being driven by one call."""
-    from interact.server import targets
+    from galaius.server import targets
 
     _connect(monkeypatch, _Connection())
     monkeypatch.setattr(targets, "_find_desktop_window", lambda title: "ERROR: no such window")

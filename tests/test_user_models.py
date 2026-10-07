@@ -1,4 +1,4 @@
-"""`interact.user_models`: the fetch half of running a workspace's own registered model. No real
+"""`galaius.user_models`: the fetch half of running a workspace's own registered model. No real
 network or Docker daemon here (that is this feature's separate live-GPU proof) — these pin the
 DISPATCH logic and the safety gate integration: a Hugging Face fetch is restricted to the pinned
 safetensors + safe metadata, a server-mediated fetch refuses a disguised pickle payload exactly
@@ -11,9 +11,9 @@ import threading
 from pathlib import Path
 
 import pytest
-from interact_core import ConnectionResourceRef, UnsafeModelWeightsError, UserModelOrigin
+from galaius_core import ConnectionResourceRef, UnsafeModelWeightsError, UserModelOrigin
 
-from interact import user_models
+from galaius import user_models
 
 _CONNECTION = ConnectionResourceRef(id="00000000-0000-0000-0000-000000000001", revision="00000000-0000-0000-0000-000000000002", capability="read")
 

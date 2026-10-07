@@ -5,7 +5,7 @@ from unittest.mock import patch
 import pytest
 from PIL import Image
 
-from interact.state import (
+from galaius.state import (
     DesktopState,
     PageState,
     StateChange,
@@ -157,10 +157,10 @@ def test_desktop_compute_change(before_kw, after_kw, expected_fragments):
 def test_desktop_capture_calls_atspi():
     with (
         patch(
-            "interact.desktop.atspi.AtSpi.window_text", return_value="Menu Bar\nContent area"
+            "galaius.desktop.atspi.AtSpi.window_text", return_value="Menu Bar\nContent area"
         ) as mock_text,
         patch(
-            "interact.desktop.atspi.AtSpi.focused_element", return_value="entry: URL bar"
+            "galaius.desktop.atspi.AtSpi.focused_element", return_value="entry: URL bar"
         ) as mock_focus,
     ):
         state = DesktopState.capture("Firefox")

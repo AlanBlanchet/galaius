@@ -9,18 +9,18 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-# Set BEFORE any interact module is imported: importing `interact.runtime` loads the model
+# Set BEFORE any galaius module is imported: importing `galaius.runtime` loads the model
 # registry, which now asks a running Ollama daemon what it has. A unit test must never reach the
 # network — and on a developer box with a real daemon it silently would. `setdefault` so an
 # integration run can force it back on.
 #
-# The name is deliberately NOT `INTERACT_`-prefixed: `_LiveConfig.refresh()` deletes every
-# `INTERACT_*` var that config.env does not define, and any test whose code path refreshes config
+# The name is deliberately NOT `GALAIUS_`-prefixed: `_LiveConfig.refresh()` deletes every
+# `GALAIUS_*` var that config.env does not define, and any test whose code path refreshes config
 # (every `@instrumented` MCP tool does) would silently re-enable discovery for the REST of the run.
 os.environ.setdefault("OLLAMA_DISCOVERY", "0")
 
 # Same reason, same timing: the registry is rescored from the live Artificial Analysis board AT
-# LOAD, and importing `interact.runtime` loads it before any fixture can run. A developer box with
+# LOAD, and importing `galaius.runtime` loads it before any fixture can run. A developer box with
 # a real fetch would give the suite different scores from CI — and did. Empty means "no board"; a
 # test that wants one passes its own path to `live_scores`.
 os.environ.setdefault("BENCHMARK_SCORES", "")
@@ -29,13 +29,13 @@ os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 # Unit tests retain the historical mocked-LiteLLM default.  Production Config defaults to the
 # subscription session path; the explicit test override prevents an old test that patches only
 # `_vision_completion` from launching the user's real Claude/Codex login by accident.
-os.environ.setdefault("INTERACT_MEDIA_BACKEND", "api")
-os.environ.setdefault("INTERACT_MEDIA_BILLING", "api_allowed")
+os.environ.setdefault("GALAIUS_MEDIA_BACKEND", "api")
+os.environ.setdefault("GALAIUS_MEDIA_BILLING", "api_allowed")
 
-from interact.config import UserConfig, load_dotenv_for_cli
-from interact.agents.providers import AgentProvider, ClaudeCodeProvider
-from interact.models import Model
-from interact.pinned_directory import PinnedDirectory
+from galaius.config import UserConfig, load_dotenv_for_cli
+from galaius.agents.providers import AgentProvider, ClaudeCodeProvider
+from galaius.models import Model
+from galaius.pinned_directory import PinnedDirectory
 
 
 @pytest.fixture
@@ -56,9 +56,9 @@ def desktop_gate_open(monkeypatch: pytest.MonkeyPatch) -> None:
     for themselves merely by importing its name (a live-by-import trick pytest allows but that
     hides which tests actually need it); the off-Linux behaviour has its own coverage in
     test_cross_platform.py."""
-    from interact import server as srv
+    from galaius import server as srv
 
-    monkeypatch.setattr("interact.desktop.backend.desktop_supported", lambda: True)
+    monkeypatch.setattr("galaius.desktop.backend.desktop_supported", lambda: True)
     monkeypatch.setattr(srv.targets, "_desktop_unsupported", lambda *a, **k: None)
 
 
@@ -80,8 +80,8 @@ def _isolate_unit_configuration(
     HOME alone cannot relocate UserConfig.PATH, which was captured at module import.
     Integration tests explicitly retain their configured environment and dotenv behaviour.
     """
-    monkeypatch.setenv("INTERACT_AGENTS_DIR", str(tmp_path / ".interact" / "out" / "agents"))
-    monkeypatch.setenv("INTERACT_AGENT_CEILING", "false")  # never reshape the real agent slice
+    monkeypatch.setenv("GALAIUS_AGENTS_DIR", str(tmp_path / ".galaius" / "out" / "agents"))
+    monkeypatch.setenv("GALAIUS_AGENT_CEILING", "false")  # never reshape the real agent slice
     if "integration" in request.keywords:
         load_dotenv_for_cli()
         return
@@ -94,17 +94,17 @@ def _isolate_unit_configuration(
         ("XDG_STATE_HOME", ".local/state"),
     ):
         monkeypatch.setenv(key, str(tmp_path / directory))
-    for key in ("INTERACT_PARENT_RUN_ID", "INTERACT_RUN_ID", "INTERACT_SESSION_ID", "CODEX_THREAD_ID", "CLAUDE_CODE_SESSION_ID"):
+    for key in ("GALAIUS_PARENT_RUN_ID", "GALAIUS_RUN_ID", "GALAIUS_SESSION_ID", "CODEX_THREAD_ID", "CLAUDE_CODE_SESSION_ID"):
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setattr(UserConfig, "PATH", tmp_path / ".interact" / "config.env")
-    monkeypatch.setattr(UserConfig, "_process_interact_env", None)
+    monkeypatch.setattr(UserConfig, "PATH", tmp_path / ".galaius" / "config.env")
+    monkeypatch.setattr(UserConfig, "_process_galaius_env", None)
 
 
 @pytest.fixture(autouse=True)
 def _default_unit_media_to_mocked_api(monkeypatch):
     """Re-apply after every live-config refresh, which intentionally clears file-absent env keys."""
-    monkeypatch.setenv("INTERACT_MEDIA_BACKEND", "api")
-    monkeypatch.setenv("INTERACT_MEDIA_BILLING", "api_allowed")
+    monkeypatch.setenv("GALAIUS_MEDIA_BACKEND", "api")
+    monkeypatch.setenv("GALAIUS_MEDIA_BILLING", "api_allowed")
 
 
 @pytest.fixture(autouse=True)
@@ -182,14 +182,14 @@ def _block_real_subscription_cli(monkeypatch, request):
 
 
 @pytest.fixture(autouse=True)
-def _isolate_interact_logs(tmp_path):
-    """Keep test artifacts out of the user's real ~/.interact/logs: route Debug dumps to a per-test
+def _isolate_galaius_logs(tmp_path):
+    """Keep test artifacts out of the user's real ~/.galaius/logs: route Debug dumps to a per-test
     tmp via the screenshot_dump_dir override, which survives config.refresh() (unlike a plain field
     set, which review_ui's refresh would reset). A test that needs the real dump path overrides it."""
-    from interact.runtime import config
+    from galaius.runtime import config
 
     saved = (config.screenshot_dump_dir, config.media_backend, config.media_billing)
-    config.screenshot_dump_dir = tmp_path / "interact-debug"
+    config.screenshot_dump_dir = tmp_path / "galaius-debug"
     config.media_backend = "api"
     config.media_billing = "api_allowed"
     try:
@@ -254,7 +254,7 @@ def _forget_desktop_caches() -> None:
     26 pixels, which is only visible when the two run in the same session — ten failures in the
     full suite, green file by file. Clearing here fixes the class, not the pair.
     """
-    from interact.desktop import coords, element
+    from galaius.desktop import coords, element
 
     coords._coord_cache.clear()
     element._element_cache.clear()

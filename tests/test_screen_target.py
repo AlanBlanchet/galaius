@@ -10,8 +10,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from interact import server as srv
-from interact.desktop import DesktopWindow, _SCREEN_WID
+from galaius import server as srv
+from galaius.desktop import DesktopWindow, _SCREEN_WID
 
 pytestmark = pytest.mark.usefixtures("desktop_gate_open")
 
@@ -27,12 +27,12 @@ _MONS = [
 
 
 def test_monitors_parses_index_geometry_and_clean_output_name():
-    with patch("interact.desktop.subprocess.check_output", return_value=_XRANDR):
+    with patch("galaius.desktop.subprocess.check_output", return_value=_XRANDR):
         assert DesktopWindow.monitors() == _MONS
 
 
 def test_monitors_empty_when_xrandr_missing():
-    with patch("interact.desktop.subprocess.check_output", side_effect=FileNotFoundError):
+    with patch("galaius.desktop.subprocess.check_output", side_effect=FileNotFoundError):
         assert DesktopWindow.monitors() == []
 
 
@@ -80,8 +80,8 @@ def test_window_input_unaffected_uses_coordtransform():
 )
 def test_capture_command_per_target(win_kwargs, expected_cmd):
     win = DesktopWindow(name="t", wid=123, x=0, y=0, w=10, h=10, **win_kwargs)
-    with patch("interact.desktop.subprocess.run", return_value=MagicMock(returncode=0)), \
-         patch("interact.desktop.subprocess.check_output", return_value=b"PNG") as co:
+    with patch("galaius.desktop.subprocess.run", return_value=MagicMock(returncode=0)), \
+         patch("galaius.desktop.subprocess.check_output", return_value=b"PNG") as co:
         win.capture()
     assert co.call_args.args[0] == expected_cmd
 
@@ -100,15 +100,15 @@ def _nonblank_png() -> bytes:
 def test_capture_raises_window_before_grabbing(monkeypatch):
     """A window the user moved or buried must be brought to the front before capture, or maim
     grabs whatever occludes it. This is the consumer red flag: an agent had to xdotool-activate
-    by hand because interact captured the wrong window."""
+    by hand because galaius captured the wrong window."""
     win = DesktopWindow(name="App", wid=4242, x=0, y=0, w=100, h=100)
     order: list[str] = []
     monkeypatch.setattr(
-        "interact.desktop.subprocess.run",
+        "galaius.desktop.subprocess.run",
         lambda cmd, *a, **k: order.append(" ".join(map(str, cmd))) or MagicMock(returncode=0),
     )
     monkeypatch.setattr(
-        "interact.desktop.subprocess.check_output",
+        "galaius.desktop.subprocess.check_output",
         lambda cmd, *a, **k: order.append(" ".join(map(str, cmd))) or _nonblank_png(),
     )
     win.capture()
@@ -122,8 +122,8 @@ def test_screen_target_capture_does_not_activate(monkeypatch):
     with patch.object(DesktopWindow, "monitors", return_value=_MONS):
         mon = DesktopWindow.screen("screen:1")
     run = MagicMock(returncode=0)
-    with patch("interact.desktop.subprocess.run", return_value=run) as r, \
-         patch("interact.desktop.subprocess.check_output", return_value=_nonblank_png()):
+    with patch("galaius.desktop.subprocess.run", return_value=run) as r, \
+         patch("galaius.desktop.subprocess.check_output", return_value=_nonblank_png()):
         mon.capture()
     assert not any("windowactivate" in " ".join(map(str, c.args[0])) for c in r.call_args_list)
 
@@ -156,8 +156,8 @@ async def test_window_target_input_stays_window_relative(monkeypatch):
     monkeypatch.setattr(DesktopWindow, "_run", AsyncMock())
     monkeypatch.setattr(DesktopWindow, "_xdo", AsyncMock())
     monkeypatch.setattr(
-        "interact.desktop.CoordTransform.get",
-        lambda wid: __import__("interact.desktop", fromlist=["CoordTransform"]).CoordTransform(),
+        "galaius.desktop.CoordTransform.get",
+        lambda wid: __import__("galaius.desktop", fromlist=["CoordTransform"]).CoordTransform(),
     )
     await win.hover(5, 6)
     DesktopWindow._xdo.assert_awaited()  # window path uses --window via _xdo
@@ -192,8 +192,8 @@ def _run_capture_video(win):
             raise AssertionError("a screen target must not query xdotool for geometry")
         return "WIDTH=800\nHEIGHT=600\nX=10\nY=20\n"
 
-    with patch("interact.desktop.subprocess.run", fake_run), \
-         patch("interact.desktop.subprocess.check_output", no_xdotool):
+    with patch("galaius.desktop.subprocess.run", fake_run), \
+         patch("galaius.desktop.subprocess.check_output", no_xdotool):
         win.capture_video(duration=1, fps=5)
     return run_cmds[0]
 
@@ -214,8 +214,8 @@ def test_capture_video_window_target_still_queries_xdotool():
         assert cmd[:2] == ["xdotool", "getwindowgeometry"]
         return "WIDTH=800\nHEIGHT=600\nX=10\nY=20\n"
 
-    with patch("interact.desktop.subprocess.run", lambda c, **k: run_cmds.append(c) or MagicMock()), \
-         patch("interact.desktop.subprocess.check_output", fake_co):
+    with patch("galaius.desktop.subprocess.run", lambda c, **k: run_cmds.append(c) or MagicMock()), \
+         patch("galaius.desktop.subprocess.check_output", fake_co):
         win.capture_video(duration=1, fps=5)
     ff = next(c for c in run_cmds if c[0] == "ffmpeg")  # skip the pre-record window-raise
     assert "800x600" in ff and ff[ff.index("-i") + 1] == ":0+10,20"
@@ -259,7 +259,7 @@ def test_resolve_nested_unknown_title_lists_sandbox_windows(monkeypatch):
 
 
 def test_a_capture_failure_reaches_the_agent_as_an_ERROR_string(monkeypatch):
-    """interact's whole tool contract is "a short prose summary, errors prefixed ERROR: so an
+    """galaius's whole tool contract is "a short prose summary, errors prefixed ERROR: so an
     agent can branch" (CLAUDE.md). A CaptureError RAISED instead becomes a transport-level error:
     the text still arrives, but not in the shape every other failure takes, so an agent testing
     `result.startswith("ERROR:")` sees an exception where it expected a string it can read.
@@ -269,7 +269,7 @@ def test_a_capture_failure_reaches_the_agent_as_an_ERROR_string(monkeypatch):
     """
     import asyncio
 
-    from interact.desktop import CaptureError, DesktopWindow
+    from galaius.desktop import CaptureError, DesktopWindow
 
     win = DesktopWindow(name="doomed", wid=9, x=0, y=0, w=10, h=10)
 

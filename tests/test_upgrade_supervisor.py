@@ -15,10 +15,10 @@ from pathlib import Path
 
 import pytest
 
-from interact.upgrade.handoff import Handoff
-from interact.upgrade.release import BuildIdentity
-from interact.upgrade.store import Runtime, RuntimeReceipt, RuntimeStore, active_interpreter
-from interact.upgrade.supervisor import RelayHandover
+from galaius.upgrade.handoff import Handoff
+from galaius.upgrade.release import BuildIdentity
+from galaius.upgrade.store import Runtime, RuntimeReceipt, RuntimeStore, active_interpreter
+from galaius.upgrade.supervisor import RelayHandover
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="fake runtimes are shebang scripts")
 
@@ -33,7 +33,7 @@ WORKER = textwrap.dedent('''\
         stream.write(f"{{version}} {{os.getpid()}}\\n")
     if mode == "crash-on-start":
         sys.exit(3)
-    from interact.upgrade.quiet import QuietPoint, UpgradeReady
+    from galaius.upgrade.quiet import QuietPoint, UpgradeReady
     quiet = QuietPoint.current()
     if quiet.supervision.mode == "exit":
         while True:
@@ -99,14 +99,14 @@ def store(tmp_path: Path) -> RuntimeStore:
 
 
 class Client:
-    """An MCP client holding one pipe to `interact mcp` for the whole test."""
+    """An MCP client holding one pipe to `galaius mcp` for the whole test."""
 
     def __init__(self, store: RuntimeStore, *arguments: str) -> None:
         # The supervisor under test runs this checkout's code, never the (fake) active runtime's.
-        environment = {**os.environ, "INTERACT_SUPERVISE": "1", "INTERACT_RUNTIMES": str(store.root), Handoff.child: "1",
-                       "INTERACT_SUPERVISOR_TICK_SECONDS": "0.05", "INTERACT_SUPERVISOR_PROBATION_SECONDS": "2", "INTERACT_SUPERVISOR_STOP_SECONDS": "5", "INTERACT_SUPERVISOR_REPLACE_ITSELF": "false"}
-        environment.pop("INTERACT_SUPERVISED", None)
-        self.process = subprocess.Popen([sys.executable, "-m", "interact", *(arguments or ("mcp",))], stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=environment)
+        environment = {**os.environ, "GALAIUS_SUPERVISE": "1", "GALAIUS_RUNTIMES": str(store.root), Handoff.child: "1",
+                       "GALAIUS_SUPERVISOR_TICK_SECONDS": "0.05", "GALAIUS_SUPERVISOR_PROBATION_SECONDS": "2", "GALAIUS_SUPERVISOR_STOP_SECONDS": "5", "GALAIUS_SUPERVISOR_REPLACE_ITSELF": "false"}
+        environment.pop("GALAIUS_SUPERVISED", None)
+        self.process = subprocess.Popen([sys.executable, "-m", "galaius", *(arguments or ("mcp",))], stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=environment)
         self.lines: queue.Queue[dict] = queue.Queue()
         self.notifications: list[dict] = []
         self.next_id = 0
@@ -346,12 +346,12 @@ def test_a_new_long_lived_child_starts_on_the_active_runtime_not_on_its_callers(
     """A dispatcher keeps its runtime until its run ends, so the one it is GIVEN must be the active one:
     started from a supervisor that still ran an older build, it kept that build alive for hours."""
     old, new = fake_runtime(store, "0.1.0", 1), fake_runtime(store, "0.2.0", 2)
-    monkeypatch.setenv("INTERACT_RUNTIMES", str(store.root))
+    monkeypatch.setenv("GALAIUS_RUNTIMES", str(store.root))
     store.activate(old)
     assert active_interpreter() == str(old.python)
     store.activate(new)
     assert active_interpreter() == str(new.python)
     # A store with no runtime (a checkout, a first install): a real interpreter, and never a fake one.
-    monkeypatch.setenv("INTERACT_RUNTIMES", str(store.root / "nothing-here"))
+    monkeypatch.setenv("GALAIUS_RUNTIMES", str(store.root / "nothing-here"))
     fallback = active_interpreter()
     assert Path(fallback).is_file() and fallback not in {str(old.python), str(new.python)}

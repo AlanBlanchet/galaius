@@ -67,7 +67,7 @@ export function conversationTitle(run: Run): string {
 
 /** What the company knows: who coordinates, and which names are just a vendor's binary.
  *
- *  Read from org.json, which the prompt repo generates. Optional throughout — interact must
+ *  Read from org.json, which the prompt repo generates. Optional throughout — galaius must
  *  work for someone with no prompt repo at all, where the provider is genuinely all we know. */
 export type Company = {
   coordinator: { id: string; title: string };

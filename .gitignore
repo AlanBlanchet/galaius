@@ -20,7 +20,7 @@ test_output/
 .pytest_cache/
 .ruff_cache/
 
-# VS Code extension build copies — source of truth is src/interact/data/
+# VS Code extension build copies — source of truth is src/galaius/data/
 vscode-extension/src/models.json
 vscode-extension/src/benchmarks.json
 vscode-extension/src/settings.json
@@ -41,4 +41,4 @@ vscode-extension/src/settings.json
 .recovery/
 
 # Stamped by scripts/release.py into a source snapshot, never committed
-src/interact/data/build.json
+src/galaius/data/build.json

@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from interact.models import Model, ModelCapability
+from galaius.models import Model, ModelCapability
 from tests.support.models import model
 
 

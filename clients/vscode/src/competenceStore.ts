@@ -16,7 +16,7 @@
 import { bareModelName, competenceIndex, competenceOf, resolvedIndex, scoreIndex,
   type ScoredRow } from "./competence.ts";
 import { boardMatch, boardScores } from "./boardScores.ts";
-import { interactCli } from "./interactCli.ts";
+import { galaiusCli } from "./galaiusCli.ts";
 
 /** How many names one ask carries. The CLI resolves each by name and a very long argv is its own
  *  failure mode; all four surfaces chose 60 independently, so it is stated once here. */
@@ -26,11 +26,11 @@ export class CompetenceStore {
   /** Its two sources, both injectable. Defaulted to the real ones; a test reaching the real CLI
    *  and the reader's own board would pass or fail on the machine it ran on — the behaviours
    *  worth pinning here are precisely what happens when one of the two is missing. */
-  private readonly ask: typeof interactCli;
+  private readonly ask: typeof galaiusCli;
   private readonly board: typeof boardScores;
 
   constructor(
-    ask: typeof interactCli = interactCli,
+    ask: typeof galaiusCli = galaiusCli,
     board: typeof boardScores = boardScores,
   ) {
     this.ask = ask;
@@ -139,6 +139,6 @@ export class CompetenceStore {
  *  is the common case and worth naming, because the fix is a version, not a missing model. */
 export function whyUnavailable(error: string): string {
   return /unknown command|no such command/i.test(error)
-    ? "your installed interact cannot report scores — it needs a newer version"
-    : "interact could not be asked for scores";
+    ? "your installed galaius cannot report scores — it needs a newer version"
+    : "galaius could not be asked for scores";
 }
