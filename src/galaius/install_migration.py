@@ -37,6 +37,9 @@ class InstallMigration(BaseModel):
 
     former: ClassVar[str] = "interact"
     current: ClassVar[str] = "galaius"
+    #: Folder entries an installer recreates before `galaius migrate` runs (its own uv, the server it
+    #: signs in to): galaius's fresh copy wins and the former one is deleted, never a conflict.
+    regenerated: ClassVar[tuple[str, ...]] = ("uv", "login-server")
     #: Shell start-up files that may export the former variables; read, never edited.
     shell_files: ClassVar[tuple[str, ...]] = (".bashrc", ".bash_profile", ".profile", ".zshrc", ".zprofile", ".config/fish/config.fish")
 
@@ -48,9 +51,9 @@ class InstallMigration(BaseModel):
         return [(path.with_name(path.name.replace(self.current, self.former)), path) for path in current]
 
     def move_folders(self) -> list[Step]:
-        """Each former folder becomes the current one; one the installer already started (its
-        `login-server`, its own uv) takes the former's entries it lacks, and a name both hold is left
-        for the person."""
+        """Each former folder becomes the current one; one the installer already started takes the
+        former's entries it lacks, keeps its own `regenerated` ones, and leaves any other name both
+        hold for the person."""
         steps = []
         for former, current in self.folders():
             if not former.exists():
@@ -61,9 +64,11 @@ class InstallMigration(BaseModel):
                 os.replace(former, current)
                 steps.append(Step(name=str(current), outcome="done", detail=f"moved from {former}"))
                 continue
-            both = sorted(entry.name for entry in former.iterdir() if (current / entry.name).exists())
+            both = sorted(entry.name for entry in former.iterdir() if (current / entry.name).exists() and entry.name not in self.regenerated)
             for entry in former.iterdir():
-                if entry.name not in both:
+                if entry.name in self.regenerated and (current / entry.name).exists():
+                    shutil.rmtree(entry) if entry.is_dir() and not entry.is_symlink() else entry.unlink()
+                elif entry.name not in both:
                     os.replace(entry, current / entry.name)
             if both:
                 steps.append(Step(name=str(current), outcome="conflict", detail=f"{', '.join(both)} in both {former} and {current}; the rest moved — keep one of each, delete the other, run `galaius migrate` again"))

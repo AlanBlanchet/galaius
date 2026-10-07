@@ -745,7 +745,7 @@ http = [
 
 [[package]]
 name = "galaius"
-version = "0.44.1"
+version = "0.44.2"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },

@@ -4,6 +4,11 @@ Notable changes to **galaius** (named interact before 2026-10-07). Follows [Sema
 [Keep a Changelog](https://keepachangelog.com). Releases are cut from `main` (and `release/X.Y`
 maintenance branches) — see [RELEASING.md](RELEASING.md).
 
+## 0.44.2 — 2026-10-07
+
+- `galaius migrate` no longer stops on `uv` or `login-server` held by both folders: the installer
+  recreates them first, so galaius's copy is kept and the former one deleted.
+
 ## 0.44.1 — 2026-10-07
 
 - `galaius migrate` moves the former folders' entries into a galaius folder the installer already

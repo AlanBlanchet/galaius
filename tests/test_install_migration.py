@@ -44,3 +44,19 @@ def test_a_folder_the_installer_started_takes_the_former_entries(home):
     assert sorted(path.name for path in (home / ".config" / "galaius").iterdir()) == ["login-server", "machine.json"]
     assert steps[str(home / ".galaius")].outcome == "conflict" and "config.env" in steps[str(home / ".galaius")].detail
     assert (home / ".interact" / "config.env").exists() and (home / ".galaius" / "config.env").read_text() == "GALAIUS_IMAGE_MODEL=y\n"
+
+
+def test_the_installers_own_uv_and_login_server_win_over_the_former_copies(home):
+    data = home / ".local" / "share"
+    for product in ("interact", "galaius"):
+        (data / product / "uv" / "bin").mkdir(parents=True)
+        (data / product / "uv" / "bin" / "uv").write_text(product)
+        (home / ".config" / product).mkdir(exist_ok=True)
+        (home / ".config" / product / "login-server").write_text(f"https://{product}.ai\n")
+    (data / "interact" / "workspaces").mkdir()
+    steps = {step.name: step for step in InstallMigration(home=home).move_folders()}
+    assert steps[str(data / "galaius")].outcome == "done" and steps[str(home / ".config" / "galaius")].outcome == "done"
+    assert (data / "galaius" / "uv" / "bin" / "uv").read_text() == "galaius" and (data / "galaius" / "workspaces").is_dir()
+    assert (home / ".config" / "galaius" / "login-server").read_text() == "https://galaius.ai\n"
+    assert sorted(path.name for path in (home / ".config" / "galaius").iterdir()) == ["login-server", "machine.json"]
+    assert not (data / "interact").exists() and not (home / ".config" / "interact").exists()
