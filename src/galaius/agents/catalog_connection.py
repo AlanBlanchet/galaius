@@ -9,12 +9,14 @@ import hashlib
 import ipaddress
 import json
 import os
+import time
 import typing
 import warnings
+from collections.abc import Callable
 from contextlib import ExitStack, contextmanager
 from http.cookiejar import LWPCookieJar, LoadError
 from pathlib import Path
-from typing import Literal, Self
+from typing import Any, ClassVar, Literal, Self, TypeVar
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
@@ -34,6 +36,8 @@ class CatalogConnectionError(ValueError):
 class CatalogAuthenticationError(CatalogConnectionError):
     """Authentication or workspace access was refused; cached access is forbidden."""
 
+
+T = TypeVar("T")
 
 _PREVIEW_SIGN_IN = "/v1/auth/local-preview"
 _UNLINKED = "this PC is no longer linked to its Galaius server; run `galaius login` to link it again"
@@ -65,6 +69,12 @@ class CatalogConnection(BaseModel):
     #: no install or sync rewrites a file other running galaius processes read.
     auth_mode: Literal["preview", "token", "machine"]
     token_file: Path | None = None
+
+    #: Seconds one process reuses a server read it just made instead of asking again: one start or
+    #: message reads the catalog and the tool list several times (policy, revision pin, model
+    #: ranking). Also how long a rule changed on the web can go unseen by a process that read it.
+    REUSE_SECONDS: ClassVar[float] = 5.0
+    _recent: ClassVar[dict[tuple[str, Any, UUID], tuple[float, Any]]] = {}
 
     @model_validator(mode="after")
     def validate_connection(self) -> Self:
@@ -284,16 +294,38 @@ class CatalogConnection(BaseModel):
             raise CatalogConnectionError("invalid catalog workspace bootstrap") from error
         return self.model_copy(update={"workspace_id": bootstrap.current_workspace_id})
 
+    def recent(self, what: str, read: Callable[[T | None], T]) -> T:
+        """`read(previous)`, or what it returned less than `REUSE_SECONDS` ago in this process for
+        this connection and access generation (a denial starts a new generation: nothing read
+        before it is reused). `previous` is the last value read, however old: the validator a
+        conditional read sends, so an unchanged answer costs a 304."""
+        key = (what, self, self.access_generation())
+        held = self._recent.get(key)
+        if held is not None and time.monotonic() - held[0] < self.REUSE_SECONDS:
+            return held[1]
+        value = read(held[1] if held is not None else None)
+        self._recent[key] = (time.monotonic(), value)
+        return value
+
     def request(self, client: httpx.Client, method: Literal["GET", "POST"], path: str) -> bytes:
+        payload = self._send(client, method, path, etag=None)
+        assert payload is not None  # only a conditional read answers 304
+        return payload
+
+    def request_if_changed(self, client: httpx.Client, path: str, etag: str | None) -> bytes | None:
+        """GET `path`, or None when the server answers that its entity is still `etag` (304)."""
+        return self._send(client, "GET", path, etag=etag)
+
+    def _send(self, client: httpx.Client, method: Literal["GET", "POST"], path: str, *, etag: str | None) -> bytes | None:
         try:
-            return self._request_once(client, method, path)
+            return self._request_once(client, method, path, etag=etag)
         except _Refused as refused:
             status = refused.status
             # A cached preview session can stop being honoured (expired, signed out elsewhere);
             # the loopback preview grants a fresh one, so ask once more before calling it a denial.
             if self.auth_mode == "preview" and path != _PREVIEW_SIGN_IN and self._sign_in_again(client):
                 try:
-                    return self._request_once(client, method, path)
+                    return self._request_once(client, method, path, etag=etag)
                 except _Refused as again:
                     status = again.status
             self.invalidate_access(client)
@@ -312,8 +344,10 @@ class CatalogConnection(BaseModel):
             self.replace_text(self.session_path(), _session_payload(client))
         return True
 
-    def _request_once(self, client: httpx.Client, method: Literal["GET", "POST"], path: str) -> bytes:
-        with client.stream(method, path) as response:
+    def _request_once(self, client: httpx.Client, method: Literal["GET", "POST"], path: str, *, etag: str | None = None) -> bytes | None:
+        with client.stream(method, path, headers={"if-none-match": f'"{etag}"'} if etag else None) as response:
+            if etag and response.status_code == 304:
+                return None
             workspace_refused = response.status_code == 404 and path.startswith("/v1/workspaces/")
             if response.status_code in {401, 403} or workspace_refused:
                 raise _Refused(response.status_code)

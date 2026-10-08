@@ -135,6 +135,28 @@ def test_server_revisions_replace_prompt_policy_skills_and_team(catalog_home):
         policy.criterion_for("unknown")
 
 
+def test_an_unchanged_catalog_is_a_304_and_one_process_reads_it_once_per_reuse_window(catalog_home, monkeypatch):
+    connection = CatalogConnection(endpoint="http://127.0.0.1:8767", auth_mode="preview", workspace_id=uuid4())
+    served, asked = [snapshot(1)], []
+
+    def respond(request):
+        if request.url.path == "/v1/auth/local-preview":
+            return httpx.Response(200, headers={"Set-Cookie": "session=fixture-cookie; Path=/"}, json={})
+        asked.append(request.headers.get("if-none-match"))
+        tag = f'"{served[0].cursor}"'
+        return httpx.Response(304) if asked[-1] == tag else httpx.Response(200, content=served[0].model_dump_json())
+
+    read = lambda known: AgentCatalog.refresh(connection, transport=httpx.MockTransport(respond), known=known)
+    first = connection.recent("agent-catalog", read)
+    assert connection.recent("agent-catalog", read) is first and asked == [None]
+    monkeypatch.setattr(CatalogConnection, "REUSE_SECONDS", 0.0)
+    unchanged = connection.recent("agent-catalog", read)
+    assert asked[-1] == f'"{first.snapshot.cursor}"' and unchanged.snapshot == first.snapshot and not unchanged.stale
+    served[0] = snapshot(2)  # the owner changed a rule on the web
+    changed = AgentCatalog.refresh(connection, transport=httpx.MockTransport(respond))  # cold process: the cache file's tag
+    assert asked[-1] == f'"{first.snapshot.cursor}"' and Policy.from_catalog(changed).criterion_for("fixture-worker") == "price.in >= 2"
+
+
 @pytest.mark.parametrize("refusal", [401, 403, 404])
 def test_deleted_cache_resync_and_network_fallback_auth_revocation(catalog_home, capsys, refusal):
     connection = CatalogConnection(endpoint="http://127.0.0.1:8767", auth_mode="preview", workspace_id=uuid4())

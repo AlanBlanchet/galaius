@@ -88,10 +88,13 @@ class ToolGateway(BaseModel):
 
     @classmethod
     def current(cls, *, online: bool) -> AgentToolList:
-        """This PC's listing: read again when `online` (the server just answered for the catalog),
-        else the cached one; empty when the PC is not linked."""
+        """This PC's listing: read again when `online` (the server just answered for the catalog;
+        at most once per `CatalogConnection.REUSE_SECONDS`), else the cached one; empty when the PC
+        is not linked."""
         gateway = cls.linked()
-        return AgentToolList() if gateway is None else gateway.refreshed() if online else gateway.cached()
+        if gateway is None:
+            return AgentToolList()
+        return gateway.connection.recent("agent-tools", lambda _: gateway.refreshed()) if online else gateway.cached()
 
     @property
     def cache_path(self) -> Path:

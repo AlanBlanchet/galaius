@@ -180,10 +180,26 @@ class AgentCatalog(BaseModel):
                 target.unlink(missing_ok=True)
 
     @classmethod
+    def cached(cls, target: Path) -> Self | None:
+        """The catalog last written to `target`, None when there is none this galaius reads."""
+        try:
+            with target.open("rb") as source:
+                payload = source.read(16 * 1024 * 1024 + 1)
+            if len(payload) > 16 * 1024 * 1024:
+                return None
+            return cls.model_validate_json(payload)
+        except (OSError, ValueError):
+            return None
+
+    @classmethod
     def refresh(
         cls, connection: CatalogConnection, *, allow_stale: bool = False,
         cache_path: Path | None = None, transport: httpx.BaseTransport | None = None,
+        known: Self | None = None,
     ) -> Self:
+        """The server's current catalog. Asked conditionally on the snapshot already held
+        (`known`, else the cache file): its cursor is the entity tag the server answers 304 to
+        while nothing changed, so an unchanged catalog costs no download."""
         target = cache_path if cache_path is not None else cls.cache_path()
         generation = connection.access_generation()
         resolved = connection
@@ -192,7 +208,17 @@ class AgentCatalog(BaseModel):
                 resolved = connection.authenticate(client)
                 if resolved != connection:
                     generation = resolved.access_generation()
-                payload = resolved.request(client, "GET", f"/v1/workspaces/{resolved.workspace_id}/agent-catalog")
+                held = known if known is not None else cls.cached(target)
+                if held is not None and (held.selection is not None or held.connection != resolved or held.access_generation != generation):
+                    held = None
+                payload = resolved.request_if_changed(
+                    client, f"/v1/workspaces/{resolved.workspace_id}/agent-catalog",
+                    held.snapshot.cursor if held is not None else None,
+                )
+            if payload is None:
+                assert held is not None  # a 304 answers only the tag sent
+                with resolved.access_guard(generation):
+                    return held.model_copy(update={"stale": False})
             try:
                 snapshot = CatalogSnapshot.model_validate_json(payload)
             except ValueError as error:
@@ -232,8 +258,12 @@ class AgentCatalog(BaseModel):
 
     @classmethod
     def active(cls) -> Self | None:
+        """The catalog this process launches from: read at most once per
+        `CatalogConnection.REUSE_SECONDS`, each read a conditional one."""
         connection = CatalogConnection.load()
-        return None if connection is None else cls.refresh(connection, allow_stale=True)
+        if connection is None:
+            return None
+        return connection.recent("agent-catalog", lambda known: cls.refresh(connection, allow_stale=True, known=known))
 
     def at_revision(self, reference: AgentRevisionRef) -> Self:
         with self.connection.access_guard(self.access_generation):

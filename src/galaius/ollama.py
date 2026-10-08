@@ -425,13 +425,12 @@ def discover_cached() -> list[OllamaModel]:
                 capabilities[model.digest] = list(model.capabilities)
                 failures.pop(model.digest, None)
             elif model.probed:
-                # Only a model actually ASKED about counts as a failure. Stamping one the budget
-                # skipped would suppress it for the whole failure window with no request ever
-                # made.
-                #
-                # setdefault, never assign: a stamp merely REPLAYED from cache must keep its
-                # original time, or it's renewed forever and never retried.
-                failures.setdefault(model.digest, now)
+                # Only a model actually ASKED about counts as a failure, stamped with when it was
+                # asked. Stamping one the budget skipped would suppress it for the whole failure
+                # window with no request ever made; a stamp merely REPLAYED from cache never
+                # reaches here (not probed), so it keeps its original time. Keeping the old time on
+                # a real re-probe instead left an expired stamp asked again in every process.
+                failures[model.digest] = now
         _CAPABILITY_CACHE.write(
             CapabilityCache(
                 fetched_at=now, capabilities=capabilities, failures=failures
