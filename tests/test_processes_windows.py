@@ -89,5 +89,7 @@ def test_the_service_logs_from_a_hidden_console(tmp_path: Path, monkeypatch: pyt
     try:
         WindowsMachineService().run()
     finally:
+        if sys.stdout is not stdout:
+            sys.stdout.close()
         sys.stdout, sys.stderr = stdout, stderr
     assert "connecting" in WindowsMachineService.log_path().read_text(encoding="utf-8")

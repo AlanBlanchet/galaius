@@ -6,6 +6,9 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ## Unreleased
 
+- Windows: the PC program no longer opens console windows. Every program a galaius process with no
+  console window starts gets none either (`galaius.windowless`), and its Python children run
+  under a hidden console that what they start shares (a script step's own git, an agent CLI).
 - `galaius login` never asks anything in the terminal (no server address, no agent question, no
   `--yes` any more). `galaius login --detach`, what the install lines run, opens the approval page
   in the browser, hands the waiting to a background process (its output in `login.log`) and ends on
