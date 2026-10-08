@@ -3,11 +3,14 @@ loaded at their login, restarted after a crash, never after a clean exit (a revo
 
 import plistlib
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from galaius.machine_service import LaunchdMachineService, ServiceUnavailable
+
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="the macOS agent's POSIX paths (Windows' home ignores HOME)")
 
 
 @pytest.fixture
