@@ -232,7 +232,9 @@ class MachineSessions:
             self._deliveries[run_id] = asyncio.get_running_loop().create_task(self._deliver(run_id))
         return "queued"
 
-    async def _deliver(self, run_id: str, every: float = 2.0) -> None:
+    async def _deliver(self, run_id: str, every: float = 0.25) -> None:
+        """Hand the queued messages over in order, each as soon as the session refuses it no
+        longer (its turn ended): asked every `every` seconds, an in-process call, never the network."""
         try:
             while self._queued.get(run_id):
                 await asyncio.sleep(every)
