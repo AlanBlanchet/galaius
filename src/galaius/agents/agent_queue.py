@@ -259,7 +259,7 @@ def ensure_dispatcher(run_id: str, *, cwd: str = ".") -> int:
 def inbox_hook(run_id: str) -> str:
     """The command a turn of `run_id` runs after each of its tool calls (`galaius.inbox_hook`): it
     hands the turn every message sent to it meanwhile (`inject`)."""
-    argv = [active_interpreter(), "-I", "-m", "galaius.inbox_hook", run_id, str(path(run_id))]
+    argv = [active_interpreter(), "-m", "galaius.inbox_hook", run_id, str(path(run_id))]
     return subprocess.list2cmdline(argv) if sys.platform == "win32" else shlex.join(argv)
 
 
@@ -291,7 +291,8 @@ def _active(run: reg.AgentRun) -> bool:
 
 
 def _fresh_policy(run: reg.AgentRun):
-    # Imported only in the detached child. The parent imports messaging -> this module.
+    # Circular layers: messaging imports this module (enqueue), and run imports it too (the inbox
+    # hook); imported only in the detached child.
     from galaius.agents.messaging import _policy_for_continuation, provider_for
 
     provider = provider_for(run.provider)
@@ -365,6 +366,7 @@ def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
                         else:
                             try:
                                 provider, criterion, model, reasoning = _fresh_policy(run)
+                                # Circular layers: run imports this module (its turns' inbox hook).
                                 from galaius.agents.run import launch_continuation
                                 lifecycle = launch_continuation(
                                     provider, run, run.provider_session_id or run.run_id,

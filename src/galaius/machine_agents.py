@@ -43,6 +43,7 @@ from galaius.agents.host import ConversationHost, ConversationRefused
 from galaius.agents.messaging import deliver_message
 from galaius.agents.providers import PROJECT_SETTINGS_OFF, PROVIDERS, provider_for
 from galaius.agents.run import LAUNCH_STAMP, launch_editor_turn, load_policy, rank_candidates, run_agent
+from galaius.config import UserConfig
 from galaius.fence import EGRESS, FenceSpec, available
 from galaius.file_lock import exclusive
 from galaius.machine_workspaces import MachineWorkspaces
@@ -58,6 +59,8 @@ T = TypeVar("T")
 
 #: Web-started runs working at once on one computer; one more start is refused until one ends.
 LIVE_WEB_RUNS = 4
+#: Seconds a start request waits for its agent to be running; the start itself goes on past it.
+START_SECONDS = 120.0
 #: What a cold `tail` (no cursor) reads back from the end of a run's stream.
 COLD_TAIL = 48 * 1024
 #: Lines one `tail` answer carries at most (`MachineAgentAnswer.lines`); the cursor stops after the last.
@@ -393,6 +396,12 @@ class MachineAgents(BaseModel):
         untrusted = self.workspaces is not None and self.workspaces.prepared(folder)
         return {**self.environment, PROJECT_SETTINGS_OFF: "1"} if untrusted else self.environment
 
+    def launcher_environment_in(self, folder: Path) -> dict[str, str]:
+        """What the launcher runs a role's agent in `folder` with: `environment_in` and this PC's
+        persisted settings, as a galaius command started in that environment applies them (its
+        keys and routes decide which models can run)."""
+        return UserConfig.applied(self.environment_in(folder), portable=False)
+
     def _kind(self, run_id: UUID) -> AgentRunKind:
         return next((item.kind for item in self.runs.read() if item.run_id == run_id), "agent")
 
@@ -637,29 +646,34 @@ class MachineAgents(BaseModel):
 
     async def _start(self, request: AgentStartRequest) -> MachineAgentAnswer:
         folder, written, fence, review = await asyncio.to_thread(self._prepare_start, request)
-        environment = self.environment_in(folder)
+        environment = await asyncio.to_thread(self.launcher_environment_in, folder)
 
-        async def launch():
-            with reg.session_context(self.session):
-                # The launcher's supervisor window (not the terminal's 20 s): the run shows at once;
-                # a quota refusal after it is that run's failure, in the list.
-                return await run_agent(
-                    provider_for(request.provider) if request.provider is not None else None, request.text,
-                    cwd=str(folder), agent=str(request.role), permission_mode=self.scope(request.permission),
-                    quota_window=4.0, fence=fence, environment=environment,
-                )
+        async def launch() -> UUID:
+            """The whole start, recorded as a web run even when the request that asked for it is
+            gone (cancelled, past its bound): a started agent is never left untracked."""
+            try:
+                with reg.session_context(self.session, environment=environment):
+                    # The launcher's supervisor window (not the terminal's 20 s): the run shows at
+                    # once; a quota refusal after it is that run's failure, in the list.
+                    handle = await run_agent(
+                        provider_for(request.provider) if request.provider is not None else None, request.text,
+                        cwd=str(folder), agent=str(request.role), permission_mode=self.scope(request.permission),
+                        quota_window=4.0, fence=fence, environment=environment,
+                    )
+            except BaseException:
+                if review is not None:
+                    self.reviews.discard(review)
+                raise
+            run_id = UUID(handle.run_id)
+            if review is not None:
+                self.reviews.attach(review, run_id)
+            self.runs.add(WebRun(run_id=run_id, root=request.root, path=request.path, fenced=fence is not None))
+            return run_id
 
         try:
-            run_id = UUID((await AgentSpawns.run(launch)).run_id)
-        except BaseException as error:
-            if review is not None:
-                self.reviews.discard(review)
-            if isinstance(error, (ValueError, RuntimeError)):
-                raise RuntimeError(self._said(str(error)) or "the agent did not start") from error
-            raise
-        if review is not None:
-            self.reviews.attach(review, run_id)
-        self.runs.add(WebRun(run_id=run_id, root=request.root, path=request.path, fenced=fence is not None))
+            run_id = await asyncio.wait_for(asyncio.shield(AgentSpawns.run(launch)), START_SECONDS)
+        except (ValueError, RuntimeError) as error:
+            raise RuntimeError(self._said(str(error)) or "the agent did not start") from error
         return MachineAgentAnswer(request_id=request.id, run_id=run_id, fenced=fence is not None, detail=f"{written} project secrets written to .env" if written else "")
 
     def _prepare_start(self, request: AgentStartRequest) -> tuple[Path, int, FenceSpec | None, UUID | None]:
@@ -731,7 +745,7 @@ class MachineAgents(BaseModel):
             return self._continue_turn(run, request.text, request_id=request.id)
         # Answered once the message is durably queued: its run's dispatcher resumes the agent, and
         # a resume refused after this point is that run's failure, in its events.
-        delivery = deliver_message(str(request.run_id), request.text, sender="operator", environment=self.environment_in(Path(run.cwd)))
+        delivery = deliver_message(str(request.run_id), request.text, sender="operator", environment=self.launcher_environment_in(Path(run.cwd)))
         if delivery.state == "error":
             raise RuntimeError(delivery.text.removeprefix("ERROR: ") or "not delivered")
         return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=delivery.text)
@@ -1058,7 +1072,7 @@ class MachineAgents(BaseModel):
                 raise PermissionError("it is still answering; send this once it has finished")
             reg.record_message(from_run="operator", to_run=run.run_id, text=text)
             try:
-                launch_editor_turn(PROVIDERS["claude"], current, text, environment=self.environment, fork_from=fork_from)
+                launch_editor_turn(PROVIDERS["claude"], current, text, environment=self.environment_in(Path(current.cwd)), fork_from=fork_from)
             except BaseException:
                 reg.finish(run.run_id, exit_code=1)  # never left "running" by a turn that did not start
                 raise

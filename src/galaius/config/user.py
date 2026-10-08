@@ -6,6 +6,7 @@ evidence. Standalone clients also use its portable values; connected clients nev
 
 import os
 import re
+from collections.abc import Mapping
 from pathlib import Path
 
 from galaius.config.schema import SETTINGS, by_key
@@ -177,17 +178,30 @@ class UserConfig:
     def apply(cls, *, portable: bool = True) -> None:
         """Load persisted settings into ``os.environ`` without overriding live vars."""
         cls.process_galaius_env()
+        applied = cls.applied(os.environ, portable=portable)
+        for name in [name for name in os.environ if name not in applied]:
+            del os.environ[name]
+        for name, value in applied.items():
+            os.environ.setdefault(name, value)
+
+    @classmethod
+    def applied(cls, environment: Mapping[str, str], *, portable: bool = True) -> dict[str, str]:
+        """`environment` with the persisted settings added as `apply` adds them to this process's
+        own (live values win; a server-connected install takes its portable ones from the server),
+        never touching ``os.environ``: what a galaius command started in `environment` runs with."""
         from galaius.server_tool_settings import PORTABLE_ENV  # circular Config/UserConfig wiring
 
+        result = dict(environment)
         connected = cls.server() is not None
         if connected:
             for name in PORTABLE_ENV:
-                os.environ.pop(name, None)
+                result.pop(name, None)
         data = cls.read() if portable else cls.read_local()
         for name, value in data.items():
             if connected and not portable and name in PORTABLE_ENV:
                 continue
-            os.environ.setdefault(name, value)
+            result.setdefault(name, value)
+        return result
 
     @classmethod
     def _write(cls, data: dict[str, str]) -> None:

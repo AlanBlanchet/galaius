@@ -20,6 +20,7 @@ import stat
 import subprocess
 import sys
 import time
+from collections.abc import Mapping
 from contextlib import ExitStack, contextmanager, suppress
 from contextvars import ContextVar
 from pathlib import Path
@@ -59,6 +60,9 @@ ConversationCapability = Literal[
 ]
 _RUN_ID = re.compile(r"^[A-Za-z0-9._:@+-]{1,160}$")
 _SESSION_ID: ContextVar[str | None] = ContextVar("agent_session_id", default=None)
+#: The environment of the caller a spawn is bound to (`session_context`): where its parent run and
+#: session identity are read from; this process's own when unset.
+_CALLER_ENVIRONMENT: ContextVar[Mapping[str, str] | None] = ContextVar("agent_caller_environment", default=None)
 #: Why a ranked candidate was passed over. Every value but one is a fact about this machine or
 #: the caller's request, checked BEFORE anything ran: a denial or failure once the child could
 #: act is otherwise a run outcome, recorded on that run, never a reason to try the next
@@ -647,7 +651,9 @@ def resolve_session_id(session_id: str | None = None, *, parent_run_id: str | No
     Vendor thread environment is read only for an explicit CLI caller: an MCP server may
     be shared. This is a listing scope, not a new authorization boundary.
     """
-    parent_id = parent_run_id or os.environ.get("GALAIUS_PARENT_RUN_ID")
+    environment = _CALLER_ENVIRONMENT.get()
+    environment = os.environ if environment is None else environment
+    parent_id = parent_run_id or environment.get("GALAIUS_PARENT_RUN_ID")
     parent = _read_record(parent_id) if parent_id else None
     supplied = session_id if session_id is not None else _SESSION_ID.get()
     if supplied is not None:
@@ -657,25 +663,34 @@ def resolve_session_id(session_id: str | None = None, *, parent_run_id: str | No
             raise ValueError("Session identity conflicts with the recorded parent conversation")
         return parent.session_id
     if supplied is None:
-        inherited = os.environ.get("GALAIUS_SESSION_ID")
+        inherited = environment.get("GALAIUS_SESSION_ID")
         supplied = _safe_run_id(inherited) if inherited is not None else None
     # A child's vendor thread cannot establish its unknown parent's owning conversation.
     if supplied is None and cli_harness and parent_id is None:
-        supplied = next((os.environ[name] for name in CALLER_THREAD_ENV if os.environ.get(name)), None)
+        supplied = next((environment[name] for name in CALLER_THREAD_ENV if environment.get(name)), None)
         if supplied is not None:
             supplied = _safe_run_id(supplied)
     return supplied
 
 
 @contextmanager
-def session_context(session_id: str | None = None, *, parent_run_id: str | None = None, cli_harness: bool = False):
-    """Bind one asynchronous spawn to its caller without mutating process-global environment."""
-    identity = resolve_session_id(session_id, parent_run_id=parent_run_id, cli_harness=cli_harness)
-    token = _SESSION_ID.set(identity)
+def session_context(
+    session_id: str | None = None, *, parent_run_id: str | None = None, cli_harness: bool = False,
+    environment: Mapping[str, str] | None = None,
+):
+    """Bind one asynchronous spawn to its caller without mutating process-global environment:
+    its session, and the `environment` its parent and session identity are read from (this
+    process's own when None; a long-lived runner launching for others passes theirs)."""
+    bound = _CALLER_ENVIRONMENT.set(environment)
     try:
-        yield identity
+        identity = resolve_session_id(session_id, parent_run_id=parent_run_id, cli_harness=cli_harness)
+        token = _SESSION_ID.set(identity)
+        try:
+            yield identity
+        finally:
+            _SESSION_ID.reset(token)
     finally:
-        _SESSION_ID.reset(token)
+        _CALLER_ENVIRONMENT.reset(bound)
 
 
 def session_runs(*, session_id: str | None = None, all_sessions: bool = False, include_foreign: bool = False):

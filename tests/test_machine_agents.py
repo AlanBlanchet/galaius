@@ -23,6 +23,7 @@ from galaius.agents import registry as reg
 from galaius.agents.host import ConversationRefused
 from galaius.machine_agents import LogRing, MachineAgents, MachineSessions, WebRun, WebRuns, interaction_digest, redact
 from galaius.fence import FenceSpec
+from galaius.config import UserConfig
 from galaius.machines import MachineConfig, MachineRunner
 from galaius.machine_workspaces import CloneFailure, Git, MachineWorkspaces, WorkspaceJobs
 from galaius.agents.providers import PROJECT_SETTINGS_OFF, ClaudeCodeProvider
@@ -70,7 +71,7 @@ def _launches(monkeypatch: pytest.MonkeyPatch, run_id: UUID | None = None) -> li
     seen: list[dict] = []
 
     async def launch(provider, task, **options):
-        seen.append({"provider": provider, "task": task, **options})
+        seen.append({"provider": provider, "task": task, "session": reg.resolve_session_id(), **options})
         return SimpleNamespace(run_id=str(run_id or uuid4()))
 
     monkeypatch.setattr("galaius.machine_agents.run_agent", launch)
@@ -529,15 +530,23 @@ def test_web_settings_apply_once_from_the_revision_the_page_read(base: Path, tmp
 
 
 def test_a_start_asks_less_never_more_and_a_cloned_workspace_loads_no_project_settings(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Launched in this process, in the scrubbed machine environment, never this process's own."""
+    """Launched in this process, in the scrubbed machine environment with this PC's persisted
+    settings applied (as the CLI child had it), never this process's own: not even the identity of
+    a run whose shell started the runner."""
     seen = _launches(monkeypatch)
+    UserConfig.PATH.parent.mkdir(parents=True, exist_ok=True)
+    UserConfig.PATH.write_text("OLLAMA_HOST=http://gpu-box:11434\n")
+    runner_parent = str(uuid4())
+    reg.save_run(reg.AgentRun(run_id=runner_parent, provider="claude", name="p", cwd=str(base), started_at=1.0, session_id="another-conversation"))
+    monkeypatch.setenv("GALAIUS_PARENT_RUN_ID", runner_parent)
     agents = _agents(base, tmp_path, agent_permission="workspace_write")
     agents.workspaces.jobs.put(MachineWorkspaceJob(id=uuid4(), root="project", name="src", origin="github.com/o/r", state="ready", started_at=datetime.now(UTC)))
     for asked, path, scope, untrusted in ((None, "", "workspace_write", None), ("read_only", "src/deep", "read_only", "1"), ("full_access", "", "workspace_write", None)):
         _answer(agents, _request("start", root="project", path=path, role="tester", text="- go", **({"permission": asked} if asked else {})))
         launched = seen[-1]
         assert (launched["permission_mode"], launched["environment"].get(PROJECT_SETTINGS_OFF), launched["task"]) == (scope, untrusted, "- go")
-        assert launched["environment"].keys() <= {"PATH", PROJECT_SETTINGS_OFF} and launched["quota_window"] == 4.0
+        assert launched["environment"].keys() <= {"PATH", PROJECT_SETTINGS_OFF, "OLLAMA_HOST"} and launched["environment"]["OLLAMA_HOST"] == "http://gpu-box:11434"
+        assert launched["session"] == "web-test" and launched["quota_window"] == 4.0
 
 
 def test_a_cloned_workspace_start_tells_the_agent_cli_to_load_no_folder_settings() -> None:

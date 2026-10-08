@@ -239,16 +239,9 @@ class AgentCatalog(BaseModel):
             if not allow_stale:
                 raise CatalogConnectionError("agent catalog service is unreachable; sync was not applied") from error
             with connection.access_guard(generation):
-                try:
-                    with target.open("rb") as source:
-                        payload = source.read(16 * 1024 * 1024 + 1)
-                    if len(payload) > 16 * 1024 * 1024:
-                        raise ValueError("oversized cache")
-                    cached = cls.model_validate_json(payload)
-                    if cached.selection is not None:
-                        raise ValueError("active cache contains a launch selection")
-                except (OSError, ValueError) as cache_error:
-                    raise CatalogConnectionError("agent catalog is unreachable and no validated cache is available") from cache_error
+                cached = cls.cached(target)
+                if cached is None or cached.selection is not None:
+                    raise CatalogConnectionError("agent catalog is unreachable and no validated cache is available") from error
                 if cached.connection != connection:
                     raise CatalogConnectionError("cached agent catalog belongs to a different connection") from error
                 if cached.access_generation != generation:
