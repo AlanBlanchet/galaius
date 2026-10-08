@@ -302,12 +302,17 @@ class CatalogConnection(BaseModel):
             raise CatalogConnectionError("invalid catalog workspace bootstrap") from error
         return self.model_copy(update={"workspace_id": bootstrap.current_workspace_id})
 
+    #: How many renewal periods a renewed read is reused for (`renew_every`).
+    RENEWALS_REUSED: ClassVar[int] = 10
+
     @classmethod
     def renew_every(cls, seconds: float) -> None:
-        """This process renews its reads itself (`renewing`) every `seconds`: each read is reused
-        until the renewal after next is due, so a start never waits on the server for one. A rule
-        changed on the web then reaches this process's starts within `seconds`."""
-        cls.REUSE_SECONDS = 2 * seconds
+        """This process renews its reads itself (`renewing`) every `seconds`: a start or a message
+        reuses the last renewed read for up to `RENEWALS_REUSED` periods, so it never waits on the
+        server, even one answering in seconds (a 304 took 5-7 s at times, 2026-10-08) or not at all
+        while renewal falls behind. A rule changed on the web reaches this process's starts with the
+        next renewal; one stalled that long, a start asks the server itself."""
+        cls.REUSE_SECONDS = cls.RENEWALS_REUSED * seconds
 
     @classmethod
     @contextmanager

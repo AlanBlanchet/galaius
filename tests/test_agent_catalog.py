@@ -17,7 +17,7 @@ from pydantic import SecretStr, ValidationError
 from galaius_core import AgentCatalogSnapshot, AgentRevision, AgentRevisionRef, PromptExecutionRef, PromptKey, PromptRevision
 
 from galaius.agents.catalog import AgentCatalog, AgentInstructionSet, CatalogSnapshot
-from galaius.agents import codex_policy_hook
+from galaius.agents import catalog_connection, codex_policy_hook
 from galaius.agents import registry as reg
 from galaius.agents.catalog_connection import (
     CatalogAuthenticationError,
@@ -180,6 +180,20 @@ def test_deleted_cache_resync_and_network_fallback_auth_revocation(catalog_home,
     assert not AgentCatalog.cache_path().exists()
     with pytest.raises(CatalogConnectionError, match="no validated cache"):
         AgentCatalog.refresh(connection, allow_stale=True, transport=httpx.MockTransport(offline))
+
+
+def test_a_process_renewing_in_the_background_never_waits_on_a_slow_renewal(monkeypatch):
+    """The PC's runner renews every 15 s; a server answering its 304s in 5-7 s puts the renewal
+    after next 30+ s away: a message sent then still reuses the last renewed read."""
+    clock = [1000.0]
+    monkeypatch.setattr(catalog_connection, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(CatalogConnection, "REUSE_SECONDS", CatalogConnection.REUSE_SECONDS)
+    CatalogConnection.renew_every(15)
+    connection, reads = CatalogConnection(endpoint="http://127.0.0.1:8767", auth_mode="preview", workspace_id=uuid4()), []
+    with CatalogConnection.renewing():
+        connection.recent("agent-catalog", lambda known: reads.append(known) or "renewed")
+    clock[0] += 45  # two renewals late
+    assert connection.recent("agent-catalog", lambda known: reads.append(known) or "asked") == "renewed" and reads == [None]
 
 
 @pytest.mark.parametrize("failure", [httpx.ConnectError, httpx.ReadTimeout, httpx.RemoteProtocolError])
