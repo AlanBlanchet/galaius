@@ -81,7 +81,8 @@ class MachineErrorReports(BaseModel):
 
     def prepare(self, config: MachineEndpoint, kind: MachineErrorKind, message: str, lines: Iterable[str], secrets: tuple[str, ...] = ()) -> ErrorReportDraft | None:
         """Keeps the report and asks its owner (best effort, never raises): the draft, None when it could
-        not be kept. The same problem already waiting is one draft, its question asked until taken."""
+        not be kept or the server refused its question for good. The same problem already waiting is one
+        draft, its question asked until taken."""
         hidden = (config.token.get_secret_value(), *secrets)
         said = " ".join(self._masked(message, hidden).split())[: self.MAX_MESSAGE] or kind  # one line: tabs, newlines folded
         waiting = next((draft for draft in self.drafts() if draft.question.message == said), None)
@@ -99,7 +100,8 @@ class MachineErrorReports(BaseModel):
         """Asks again the questions the server has not taken, then uploads the report its owner accepted,
         if it is one of these drafts: 1 when one left, else 0. A draft the server no longer waits for is
         removed."""
-        drafts = {draft.id: self._ask(config, draft) for draft in self.drafts()}
+        asked = [self._ask(config, kept) for kept in self.drafts()]
+        drafts = {draft.id: draft for draft in asked if draft is not None}
         if not drafts:
             return 0
         try:
@@ -116,7 +118,7 @@ class MachineErrorReports(BaseModel):
         if sent.status_code in (201, 404, 409):  # sent now, or no longer wanted: the draft has done its part
             if sent.status_code != 201:
                 logger.info("error report %s no longer wanted by the server (%s): dropped", draft.id, sent.status_code)
-            (self.folder / f"{draft.id}.json").unlink(missing_ok=True)
+            self._path(draft.id).unlink(missing_ok=True)
         else:
             logger.warning("error report %s refused by the server (%s); kept", draft.id, sent.status_code)
         return int(sent.status_code == 201)
@@ -144,8 +146,9 @@ class MachineErrorReports(BaseModel):
         """Whether a report waits here whose question the server took (its owner can answer it now)."""
         return any(draft.asked for draft in self.drafts())
 
-    def _ask(self, config: MachineEndpoint, draft: ErrorReportDraft) -> ErrorReportDraft:
-        """The draft, its question posted unless the server already took it (then marked asked)."""
+    def _ask(self, config: MachineEndpoint, draft: ErrorReportDraft) -> ErrorReportDraft | None:
+        """The draft, its question posted unless the server already took it (then marked asked); None
+        when the server refused it for good (the draft is dropped)."""
         if draft.asked:
             return draft
         try:
@@ -156,9 +159,9 @@ class MachineErrorReports(BaseModel):
         if not answer.is_success:
             if 400 <= answer.status_code < 500 and answer.status_code not in (408, 429):  # refused for good: never asked again
                 logger.warning("error report %s question refused (%s): dropped", draft.id, answer.status_code)
-                (self.folder / f"{draft.id}.json").unlink(missing_ok=True)
-            else:
-                logger.warning("error report question not taken now (%s); asked again in a minute", answer.status_code)
+                self._path(draft.id).unlink(missing_ok=True)
+                return None
+            logger.warning("error report question not taken now (%s); asked again in a minute", answer.status_code)
             return draft
         taken = draft.model_copy(update={"asked": True})
         try:
@@ -168,7 +171,11 @@ class MachineErrorReports(BaseModel):
         return taken
 
     def _keep(self, draft: ErrorReportDraft) -> None:
-        PRIVATE_FILES.write_text(PRIVATE_FILES.directory(self.folder) / f"{draft.id}.json", draft.model_dump_json())
+        PRIVATE_FILES.directory(self.folder)
+        PRIVATE_FILES.write_text(self._path(draft.id), draft.model_dump_json())
+
+    def _path(self, identifier: UUID) -> Path:
+        return self.folder / f"{identifier}.json"
 
     @staticmethod
     def own_lines(text: str) -> tuple[str, ...]:
