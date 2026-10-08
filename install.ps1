@@ -31,7 +31,10 @@ function Install-Galaius {
         $uvInstaller = Join-Path ([IO.Path]::GetTempPath()) ("uv-installer-" + [Guid]::NewGuid().ToString('N') + '.ps1')
         try {
             Invoke-WebRequest -UseBasicParsing -Uri "https://astral.sh/uv/$UvVersion/install.ps1" -OutFile $uvInstaller
-            if ((Get-FileHash -Algorithm SHA256 $uvInstaller).Hash.ToLower() -ne $UvInstallerSha256) { throw 'the uv installer is not the expected file (checksum differs); nothing was installed' }
+            # .NET itself, never Get-FileHash: Windows PowerShell started from PowerShell 7 cannot load it.
+            $stream = [IO.File]::OpenRead($uvInstaller)
+            try { $digest = -join ([Security.Cryptography.SHA256]::Create().ComputeHash($stream) | ForEach-Object { $_.ToString('x2') }) } finally { $stream.Dispose() }
+            if ($digest -ne $UvInstallerSha256) { throw 'the uv installer is not the expected file (checksum differs); nothing was installed' }
             # Its own process: uv's installer ends with `exit`, which would close this window.
             Invoke-Tool 'installing uv' { powershell -NoProfile -ExecutionPolicy ByPass -File $uvInstaller }
         } finally {
