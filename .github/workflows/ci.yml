@@ -44,6 +44,11 @@ jobs:
       - name: Version files in sync (single source of truth)
         run: uv run python -m galaius.versioning check
 
+      # The webview tests (chat composer, workplace) bundle with the extension's own esbuild.
+      - name: Extension toolchain
+        working-directory: clients/vscode
+        run: npm ci
+
       # The page tests (chat composer, workplace) drive Playwright's own Chromium.
       - name: Playwright's Chromium
         run: uv run playwright install ${{ runner.os == 'Linux' && '--with-deps' || '' }} chromium
