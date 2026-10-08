@@ -1832,8 +1832,8 @@ class MachineRunner:
 
     async def _renew_policy(self) -> None:
         """Keep what a start reads first (`load_policy`: the agent catalog, the tool list) renewed in
-        the background, every `policy_renew_seconds`. A failed renewal is logged; the next start then
-        reads the server itself, as it always did."""
+        the background, every `policy_renew_seconds`. A failed renewal is logged; starts keep the last
+        renewed read for up to `CatalogConnection.RENEWALS_REUSED` periods, then read the server themselves."""
         CatalogConnection.renew_every(self.policy_renew_seconds)
         while True:
             try:

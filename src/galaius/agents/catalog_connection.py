@@ -309,8 +309,7 @@ class CatalogConnection(BaseModel):
     def renew_every(cls, seconds: float) -> None:
         """This process renews its reads itself (`renewing`) every `seconds`: a start or a message
         reuses the last renewed read for up to `RENEWALS_REUSED` periods, so it never waits on the
-        server, even one answering in seconds (a 304 took 5-7 s at times, 2026-10-08) or not at all
-        while renewal falls behind. A rule changed on the web reaches this process's starts with the
+        server, even one answering in seconds or not at all, while renewal falls behind. A rule changed on the web reaches this process's starts with the
         next renewal; one stalled that long, a start asks the server itself."""
         cls.REUSE_SECONDS = cls.RENEWALS_REUSED * seconds
 
