@@ -149,6 +149,9 @@ def test_an_unchanged_catalog_is_a_304_and_one_process_reads_it_once_per_reuse_w
     read = lambda known: AgentCatalog.refresh(connection, transport=httpx.MockTransport(respond), known=known)
     first = connection.recent("agent-catalog", read)
     assert connection.recent("agent-catalog", read) is first and asked == [None]
+    with CatalogConnection.renewing():  # the PC's runner, in the background, within the window
+        renewed = connection.recent("agent-catalog", read)
+    assert asked == [None, f'"{first.snapshot.cursor}"'] and connection.recent("agent-catalog", read) is renewed
     monkeypatch.setattr(CatalogConnection, "REUSE_SECONDS", 0.0)
     unchanged = connection.recent("agent-catalog", read)
     assert asked[-1] == f'"{first.snapshot.cursor}"' and unchanged.snapshot == first.snapshot and not unchanged.stale

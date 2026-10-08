@@ -185,6 +185,28 @@ class AgentProvider(ABC):
     #: Whether a turn of this CLI reads a message sent while it works after its current tool call
     #: (`command` / `resume_command` take `inbox_hook`); otherwise the message waits for the turn's end.
     reads_mid_turn: ClassVar[bool] = False
+    #: Seconds a confirmed login is believed before `authenticated` asks the CLI again: its status
+    #: command is a CLI start of its own (`claude auth status`: 0.6 s), paid by every start before.
+    #: A login lost within it fails that run at its start instead of passing to the next candidate.
+    LOGIN_REUSE_SECONDS: ClassVar[float] = 300.0
+    _logged_in: ClassVar[dict[tuple[str, str], float]] = {}
+    #: Whether a child can start before its task is known and read it as its first message
+    #: (`ahead_command`, `task_message`, `startup_files`): its own startup is then paid while
+    #: nobody waits (`galaius.agents.warm.WarmStart`).
+    starts_ahead: ClassVar[bool] = False
+
+    def ahead_command(self, **arguments) -> list[str]:
+        """`command`'s child with no task: it starts now and reads the task `task_message` writes."""
+        raise UnsupportedToolPolicy(f"{self.name} cannot start before its task")
+
+    def task_message(self, task: str) -> bytes:
+        """`task` as the first message an `ahead_command` child reads on its stdin."""
+        raise UnsupportedToolPolicy(f"{self.name} cannot start before its task")
+
+    def startup_files(self, cwd: Path, environment: Mapping[str, str]) -> tuple[Path, ...]:
+        """The files this CLI reads once, when it starts in `cwd`: a child started ahead is used only
+        while none of them changed since."""
+        return ()
 
     def _setting_sources(self, environment: Mapping[str, str] | None = None) -> list[str]:
         """`folder_settings_off` when the folder's own settings must not load (`PROJECT_SETTINGS_OFF`
@@ -276,9 +298,19 @@ class AgentProvider(ABC):
         return status is not None and status[0] == 0 and self.accepts_subscription_auth(*status[1:])
 
     async def authenticated(self, env: dict[str, str], *, timeout: float = 10) -> bool | None:
-        """CLI login state; None means its status check could not complete."""
+        """CLI login state; None means its status check could not complete. A login confirmed less
+        than `LOGIN_REUSE_SECONDS` ago in this process, for the same environment, is not checked
+        again; a missing or unanswered one always is."""
+        key = (self.name, hashlib.sha256(json.dumps(env, sort_keys=True).encode()).hexdigest())
+        if time.monotonic() - self._logged_in.get(key, -self.LOGIN_REUSE_SECONDS) < self.LOGIN_REUSE_SECONDS:
+            return True
         status = await self._auth_status(env, timeout=timeout)
-        return None if status is None else status[0] == 0 and self.accepts_any_auth(*status[1:])
+        logged_in = None if status is None else status[0] == 0 and self.accepts_any_auth(*status[1:])
+        if logged_in:
+            self._logged_in[key] = time.monotonic()
+        else:
+            self._logged_in.pop(key, None)
+        return logged_in
 
     #: Catalog providers whose models this CLI runs through its OWN login — no API key in our env.
     native_providers: frozenset[str] = frozenset()
@@ -525,6 +557,7 @@ class ClaudeCodeProvider(AgentProvider):
     name = "claude"
     folder_settings_off = ("--setting-sources", "user")
     reads_mid_turn = True
+    starts_ahead = True
     native_providers = frozenset({"anthropic"})
     media_model_field = "claude_media_criteria"
     auth_home_env = ("CLAUDE_CONFIG_DIR",)
@@ -760,7 +793,12 @@ class ClaudeCodeProvider(AgentProvider):
             arguments += ["--disallowedTools", ",".join(denied_tools)]
         return arguments
 
-    def command(self, task: str, *, cwd: str, model: str | None, mcp_config: str | None,
+    def command(self, task: str, **arguments) -> list[str]:
+        # The prompt goes LAST, after "--": one starting with "-" (a markdown bullet) is the
+        # prompt, never an option Claude refuses ("unknown option").
+        return [*self._options(**arguments), "--", task]
+
+    def _options(self, *, cwd: str, model: str | None, mcp_config: str | None,
                 run_id: str, agent: str | None = None,
                 permission_mode: str | None = None,
                 allowed_tools: list[str] | None = None,
@@ -791,9 +829,50 @@ class ClaudeCodeProvider(AgentProvider):
         argv += self._permission_flag(permission_mode) + self._setting_sources(environment) + self.inbox_arguments(inbox_hook)
         if reasoning is not None:
             argv += ["--effort", self.provider_thinking_level(reasoning)]
-        # The prompt goes LAST, after "--": one starting with "-" (a markdown bullet) is the
-        # prompt, never an option Claude refuses ("unknown option").
-        return [*argv, "--", task]
+        return argv
+
+    def ahead_command(self, **arguments) -> list[str]:
+        """`command`'s options, the task read as stream-json input instead: the CLI does its startup
+        (settings, hooks, agents, MCP servers) at once and then waits for it."""
+        return [*self._options(**arguments), "--input-format", "stream-json"]
+
+    def task_message(self, task: str) -> bytes:
+        return (json.dumps({"type": "user", "message": {"role": "user", "content": task}}) + "\n").encode()
+
+    #: What Claude Code reads under the user's folder and under each enclosing folder's `.claude`.
+    _SCOPE_FILES: ClassVar[tuple[str, ...]] = ("settings.json", "settings.local.json", "agents/*.md", "skills/*/SKILL.md", "commands/**/*.md", "rules/**/*.md")
+    #: Instruction files it reads in each enclosing folder, and the `@path` imports they name.
+    _INSTRUCTIONS: ClassVar[tuple[str, ...]] = ("CLAUDE.md", "CLAUDE.local.md", "AGENTS.md")
+    _IMPORT: ClassVar[re.Pattern[str]] = re.compile(r"(?<![\w`])@((?:~/|\.{0,2}/)?[\w.-]+(?:/[\w.-]+)*)")
+
+    def startup_files(self, cwd: Path, environment: Mapping[str, str]) -> tuple[Path, ...]:
+        """The user's and every enclosing folder's instructions (with the files they import),
+        settings, MCP servers, agents, skills, commands and rules; the folder's memory index; the
+        installed plugins. The user's `~/.claude.json` is left out: Claude rewrites it at every start."""
+        home = Path(environment.get("CLAUDE_CONFIG_DIR") or Path(environment.get("HOME") or Path.home()) / ".claude")
+        folders = (cwd, *cwd.parents)
+        scopes = (home, *(folder / ".claude" for folder in folders))
+        instructions = [home / "CLAUDE.md", *(folder / name for folder in folders for name in self._INSTRUCTIONS)]
+        return (
+            home / "plugins" / "installed_plugins.json",
+            home / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(cwd)) / "memory" / "MEMORY.md",
+            *(folder / ".mcp.json" for folder in folders),
+            *(path for scope in scopes for pattern in self._SCOPE_FILES for path in sorted(scope.glob(pattern))),
+            *instructions, *self._imports(instructions, home.parent),
+        )
+
+    def _imports(self, files: list[Path], user_home: Path, depth: int = 3) -> list[Path]:
+        """The files `files` import (`@path`, relative to the importing file; `~/` the user's home),
+        followed `depth` levels deep, as Claude Code follows them."""
+        found: list[Path] = []
+        for file in files:
+            try:
+                text = file.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            for name in self._IMPORT.findall(text):
+                found.append(user_home / name[2:] if name.startswith("~/") else file.parent / name)
+        return found + (self._imports(found, user_home, depth - 1) if found and depth > 1 else [])
 
     def definition_path(self, agent: str) -> Path | None:
         catalog = AgentCatalog.active()

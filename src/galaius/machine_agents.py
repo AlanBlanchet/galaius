@@ -43,6 +43,7 @@ from galaius.agents.host import ConversationHost, ConversationRefused
 from galaius.agents.messaging import deliver_message
 from galaius.agents.providers import PROJECT_SETTINGS_OFF, PROVIDERS, provider_for
 from galaius.agents.run import LAUNCH_STAMP, launch_editor_turn, load_policy, rank_candidates, run_agent
+from galaius.agents.warm import WarmStart
 from galaius.config import UserConfig
 from galaius.fence import EGRESS, FenceSpec, available
 from galaius.file_lock import exclusive
@@ -317,6 +318,8 @@ class MachineAgents(BaseModel):
     #: machine's server).
     levels_file: Path | None = None
     egress: tuple[str, ...] = ()
+    #: The runner's agent child started ahead of the next start (`galaius.agents.warm`).
+    warm: WarmStart | None = None
 
     @staticmethod
     def own_cli() -> tuple[str, ...]:
@@ -658,7 +661,7 @@ class MachineAgents(BaseModel):
                     handle = await run_agent(
                         provider_for(request.provider) if request.provider is not None else None, request.text,
                         cwd=str(folder), agent=str(request.role), permission_mode=self.scope(request.permission),
-                        quota_window=4.0, fence=fence, environment=environment,
+                        quota_window=4.0, fence=fence, environment=environment, warm=self.warm,
                     )
             except BaseException:
                 if review is not None:

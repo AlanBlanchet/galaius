@@ -44,7 +44,8 @@ from galaius.machine_agents import LogRing, MachineAgents, MachineSessions, WebR
 from galaius.machine_workspaces import MachineWorkspaces, WorkspaceJobs
 from galaius_core.sealing import SecretsSeal
 from galaius.agents.events import AgentEvent
-from galaius.agents.run import run_agent
+from galaius.agents.run import load_policy, run_agent
+from galaius.agents.warm import WarmStart
 from galaius.agents import registry as reg
 from galaius.agents.profiles import ALLOWED_ENV
 from galaius.functions import FunctionRegistry, PermissionLevel, invoke as invoke_function
@@ -812,6 +813,9 @@ class MachineRunner:
     #: How often this PC checks whether the prompts it runs changed (a company granted or withdrew
     #: it, a prompt or agent was saved); a check is one 304 per workspace when nothing moved.
     prompt_sync_seconds = 300
+    #: How often this PC renews the agent catalog and tool list a start reads (a 304 each while
+    #: nothing changed): a start reads them from memory instead of waiting on the server.
+    policy_renew_seconds = 15
     #: How often this PC's run records are settled against their processes (`registry.settle_gone`).
     settle_seconds = 60
     reconnect_seconds = (1, 2, 5, 10, 20)
@@ -847,6 +851,8 @@ class MachineRunner:
         #: Staged writes waiting for the owner's review, and the web's whole-PC browse budget.
         self.reviews = PlaceReviews.default()
         self.browse_budget = BrowseBudget()
+        #: The agent child started ahead of the next web start (`WarmStart`).
+        self.warm = WarmStart()
 
     def _vision_worker(self, config: MachineConfig) -> VisionWorker:
         if self._vision is None or self._vision.keep_warm != config.model_keep_warm_seconds:
@@ -922,6 +928,7 @@ class MachineRunner:
         finally:
             settler.cancel()
             await asyncio.gather(settler, return_exceptions=True)
+            self.warm.close()  # a child started ahead never outlives its runner
 
     async def _settle_runs(self) -> None:
         """Every `settle_seconds`, mark ended the runs whose process is gone (`registry.settle_gone`)."""
@@ -1003,6 +1010,7 @@ class MachineRunner:
         heartbeat = asyncio.create_task(self._heartbeat(socket, config))
         upgrade = asyncio.create_task(self._leave_when_quiet(commands))
         prompts = asyncio.create_task(self._sync_prompts())
+        policy = asyncio.create_task(self._renew_policy())
         try:
             done, _ = await asyncio.wait((receiver, worker, heartbeat, upgrade), return_when=asyncio.FIRST_COMPLETED)
             for task in done:
@@ -1013,12 +1021,13 @@ class MachineRunner:
             heartbeat.cancel()
             upgrade.cancel()
             prompts.cancel()
+            policy.cancel()
             while not commands.empty():
                 commands.get_nowait()
             commands.put_nowait(None)
             for query in self._queries:
                 query.cancel()
-            await asyncio.gather(receiver, heartbeat, upgrade, prompts, *self._queries, return_exceptions=True)
+            await asyncio.gather(receiver, heartbeat, upgrade, prompts, policy, *self._queries, return_exceptions=True)
             await asyncio.shield(worker)
 
     async def _command_worker(self, socket, config: MachineConfig, commands: asyncio.Queue[MachineCommand | None]) -> None:
@@ -1214,7 +1223,7 @@ class MachineRunner:
                                                                 working_directory=current.working_directory, register_root=self._register_agent_root,
                                                                 environment={**self._safe_environment(), **{key: os.environ[key] for key in ("SSH_AUTH_SOCK",) if key in os.environ}}),
                                    places=current.place_map(), fence_agents=current.fence_agents, reviews=self.reviews,
-                                   levels_file=self.config_path, egress=(urlsplit(current.server_url).hostname or "",))
+                                   levels_file=self.config_path, egress=(urlsplit(current.server_url).hostname or "",), warm=self.warm)
             answer = await agents.answer(request)
             # Reading (the page polls every few seconds) stays out of the owner's log; actions go in.
             run_id = answer.run_id or getattr(request, "run_id", None)
@@ -1792,6 +1801,23 @@ class MachineRunner:
                 seen.clear()
                 logger.warning("prompt sync failed: %s", error)
             await asyncio.sleep(self.prompt_sync_seconds)
+
+    async def _renew_policy(self) -> None:
+        """Keep what a start reads first (`load_policy`: the agent catalog, the tool list) renewed in
+        the background, every `policy_renew_seconds`. A failed renewal is logged; the next start then
+        reads the server itself, as it always did."""
+        CatalogConnection.renew_every(self.policy_renew_seconds)
+        while True:
+            try:
+                await asyncio.to_thread(self._renewed_policy)
+            except Exception:  # one failed renewal never stops the next; starts then read the server themselves
+                logger.exception("agent catalog not renewed")
+            await asyncio.sleep(self.policy_renew_seconds)
+
+    @staticmethod
+    def _renewed_policy() -> None:
+        with CatalogConnection.renewing():
+            load_policy()
 
     async def _heartbeat(self, socket, config: MachineConfig) -> None:
         while True:

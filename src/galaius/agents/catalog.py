@@ -299,12 +299,14 @@ class AgentCatalog(BaseModel):
 
     def role_prompt(self, role: str) -> str:
         """Complete pinned role instructions, independent of a delegated task."""
-        status = "stale" if self.stale else "current"
         agent = self.role(role)
+        # Only what names the content: this text heads the system prompt, so a byte that changes
+        # between starts (when it was fetched, whether the server answered) makes the vendor
+        # write the whole prompt to its cache again instead of reading it.
         return (
             f"AGENT_ROLE: {role}\n\n"
             f"Server agent identity: {agent.id}; revision: {agent.revision}\n\n"
-            f"Head catalog: {status}; cursor={self.snapshot.cursor}; fetched={self.fetched_at.isoformat()}\n\n"
+            f"Head catalog: cursor={self.snapshot.cursor}\n\n"
             f"{self.instructions(role)}"
         )
 

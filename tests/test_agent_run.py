@@ -18,8 +18,9 @@ import pytest
 
 from galaius.agents import quota, registry as reg, run as run_module
 from galaius.agents.events import AgentEvent
-from galaius.agents.providers import CodexProvider
-from galaius.agents.run import mesh_config, run_agent, validate_image_paths
+from galaius.agents.providers import ClaudeCodeProvider, CodexProvider
+from galaius.agents.run import ChildLaunch, mesh_config, run_agent, validate_image_paths
+from galaius.agents.warm import WarmStart
 from tests.support.agents import ScriptedProvider, install_provider, use_policy
 
 
@@ -30,6 +31,7 @@ def _home(monkeypatch, tmp_path):
     install_provider(monkeypatch, _CrashingProvider())
     install_provider(monkeypatch, _LateRefusalProvider())
     install_provider(monkeypatch, _UnsupportedModelProvider())
+    install_provider(monkeypatch, _AheadProvider())
     yield
 
 
@@ -44,6 +46,29 @@ class _FakeProvider(ScriptedProvider):
         'print(json.dumps({"type":"result","subtype":"success","is_error":False,'
         '"total_cost_usd":0.5,"usage":{"output_tokens":7},"session_id":"SID"}), flush=True)\n'
     )
+
+
+class _AheadProvider(_FakeProvider):
+    """Starts ahead as Claude Code does: its task arrives as the first stream-json line on its stdin.
+    Each child says how it got its task, and a child given its task as an argument says what its
+    stdin is."""
+
+    name = "ahead"
+    starts_ahead = True
+    said = (
+        'print(json.dumps({"type":"system","subtype":"init","session_id":"SID"}), flush=True)\n'
+        'print(json.dumps({"type":"assistant","message":{"content":[{"type":"text","text":said}]}}), flush=True)\n'
+        'print(json.dumps({"type":"result","subtype":"success","is_error":False,"usage":{"output_tokens":1},"session_id":"SID"}), flush=True)\n'
+    )
+
+    def command(self, task, **_arguments):
+        return [sys.executable, "-c", 'import json,os,sys\nsaid=f"cold {os.path.realpath(\'/proc/self/fd/0\')} {sys.argv[1]}"\n' + self.said, task]
+
+    def ahead_command(self, **_arguments):
+        return [sys.executable, "-c", 'import json,sys\nsaid="ahead " + json.loads(sys.stdin.readline())["message"]["content"]\n' + self.said]
+
+    def task_message(self, task):
+        return ClaudeCodeProvider().task_message(task)
 
 
 class _UnsupportedModelProvider(_FakeProvider):
@@ -492,3 +517,83 @@ async def test_a_model_the_vendor_refuses_for_this_login_is_passed_over_and_reme
     assert run_module._startup_refusal("The 'gpt-6-astra' model is not supported when using Codex with a ChatGPT account.") == "model_capability_unsupported"
     assert run_module._startup_refusal("You have reached your weekly limit") == "quota_exceeded"
     assert run_module._startup_refusal("Selected model is at capacity") is None
+
+
+async def _held(warm: WarmStart) -> str:
+    for _ in range(200):
+        if warm.holding is not None:
+            return warm.holding
+        await asyncio.sleep(0.05)
+    raise AssertionError("no child was started ahead")
+
+
+def _said(run_id: str) -> str:
+    return next(event.text for event in reg.read_events(run_id) if event.kind == "text")
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="the child reads its stdin through /proc")
+async def test_the_next_start_of_the_same_launch_runs_on_the_child_started_ahead(tmp_path):
+    warm = WarmStart(delay=0, check_every=0.05)
+    other = tmp_path / "other"
+    other.mkdir()
+    try:
+        # The launcher's stdin is a pipe, as a galaius MCP server's is (its protocol).
+        read, write = os.pipe()
+        saved = os.dup(0)
+        os.dup2(read, 0)
+        try:
+            first = await run_agent(_AheadProvider(), "first task", agent="tester", cwd=str(tmp_path), warm=warm)
+        finally:
+            os.dup2(saved, 0)
+            for descriptor in (saved, read, write):
+                os.close(descriptor)
+        await asyncio.wait_for(first.wait(), timeout=30)
+        assert _said(first.run_id).startswith("cold /dev/null "), "a child started with its task never reads the launcher's stdin"
+
+        held = await _held(warm)
+        second = await run_agent(_AheadProvider(), "second task", agent="tester", cwd=str(tmp_path), warm=warm)
+        await asyncio.wait_for(second.wait(), timeout=30)
+        assert second.run_id == held and _said(second.run_id).startswith("ahead ") and "second task" in _said(second.run_id)
+
+        held = await _held(warm)
+        third = await run_agent(_AheadProvider(), "third task", agent="tester", cwd=str(other), warm=warm)
+        await asyncio.wait_for(third.wait(), timeout=30)
+        assert third.run_id != held and _said(third.run_id).startswith("cold "), "another folder is another launch"
+        assert not reg.raw_events_path(held).exists() and reg.get_run(held) is None, "the unused child left nothing behind"
+    finally:
+        warm.close()
+
+
+def _launch(folder: Path, home: Path, *, arguments: dict | None = None, env: dict | None = None) -> ChildLaunch:
+    return ChildLaunch(
+        provider=ClaudeCodeProvider(), cwd=str(folder), environment={"HOME": str(home), **(env or {})}, meshed=True,
+        arguments={"cwd": str(folder), "model": "claude-opus-5-5", "agent": "tester", "permission_mode": "manual",
+                   "reasoning": "medium", **(arguments or {})},
+    )
+
+
+@pytest.mark.parametrize("change", [
+    {"arguments": {"model": "claude-sonnet-5"}}, {"arguments": {"agent": "visual-critic"}},
+    {"arguments": {"permission_mode": "bypassPermissions"}}, {"env": {"ANTHROPIC_BASE_URL": "http://other"}},
+    {"edit": ".claude/CLAUDE.md"}, {"edit": ".claude/settings.json"}, {"edit": ".claude/agents/tester.md"},
+    {"edit": "work/CLAUDE.md"}, {"edit": "work/.claude/settings.local.json"}, {"edit": "AGENTS.md"},
+    {"edit": "work/.claude/agents/tester.md"}, {"edit": "work/.mcp.json"}, {"edit": "work/docs/imported.md"},
+    {"edit": "work/.claude/rules/style.md"}, {"edit": "work/.claude/skills/x/SKILL.md"},
+    {"edit": "work/.claude/commands/ship.md"},
+])
+def test_a_child_started_ahead_serves_only_its_own_launch(tmp_path, change):
+    """Each input a Claude child takes at its start is in its launch key: a held child started before
+    any of them changed is never handed a task."""
+    home, folder = tmp_path, tmp_path / "work"
+    (home / ".claude" / "agents").mkdir(parents=True)
+    (folder / "docs").mkdir(parents=True)
+    (home / ".claude" / "CLAUDE.md").write_text("be brief")
+    (folder / "CLAUDE.md").write_text("see @docs/imported.md")
+    (folder / "docs" / "imported.md").write_text("an imported rule")
+    held = _launch(folder, home).key()
+    assert _launch(folder, home).key() == held
+    if (edited := change.pop("edit", None)) is not None:
+        (tmp_path / edited).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / edited).write_text("changed rule, longer")
+    assert _launch(folder, home, **change).key() != held

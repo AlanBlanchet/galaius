@@ -8,7 +8,8 @@ tree, else killing just the parent orphans its spawned subprocesses. Same reason
 import asyncio
 from contextlib import suppress
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+import hashlib
 import json
 import os
 import re
@@ -20,7 +21,7 @@ import uuid
 from pathlib import Path
 import subprocess
 import tempfile
-from typing import BinaryIO, Mapping, Sequence
+from typing import BinaryIO, ClassVar, Mapping, Sequence
 from galaius_core import AgentRevisionRef
 from pydantic import BaseModel, ConfigDict
 
@@ -34,6 +35,7 @@ from galaius.agents.policy import Policy, policy_path
 from galaius.agents.profiles import overlay_for, profiles_from
 from galaius.agents.providers import PROVIDERS, AgentProvider, CodexProvider, UnsupportedToolPolicy, validate_denied_tools, _safe_process_detail
 from galaius.agents.vocabulary import TouchScope
+from galaius.agents.warm import WarmStart
 from galaius.criteria import Criteria, CriteriaError, Dropped, Variables
 from galaius.models import Model, ModelCapability
 
@@ -699,6 +701,89 @@ def mesh_config(*, run_id: str) -> str:
     })
 
 
+class ChildLaunch(BaseModel):
+    """How one ranked candidate's child starts, whichever run id it starts as: its provider's
+    command and environment, its folder, its fence. A run's own child and a child started ahead of
+    the next start (`WarmStart`) are the same launch."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    provider: AgentProvider
+    cwd: str
+    #: The child's environment before its run id joins it.
+    environment: dict[str, str]
+    #: `provider.command`'s arguments that do not name the run.
+    arguments: dict[str, object]
+    #: Whether the child gets galaius's MCP server from `mesh_config` (its CLI registers none itself).
+    meshed: bool
+    fence: FenceSpec | None = None
+
+    #: The run id launches are compared under (`key`).
+    _ANY_RUN: ClassVar[str] = str(uuid.UUID(int=0))
+
+    def env(self, run_id: str) -> dict[str, str]:
+        """The environment MINUS any parent tag, set explicitly: a grandchild would otherwise inherit
+        its grandparent's id and the tree would be wrong."""
+        return {**self.environment, "GALAIUS_RUN_ID": run_id, "GALAIUS_PARENT_RUN_ID": run_id}
+
+    def command_arguments(self, run_id: str, session: str) -> dict[str, object]:
+        arguments = {**self.arguments, "run_id": session, "environment": self.env(run_id),
+                     "mcp_config": mesh_config(run_id=run_id) if self.meshed else None}
+        if self.provider.reads_mid_turn:
+            arguments["inbox_hook"] = agent_queue.inbox_hook(run_id)
+        return arguments
+
+    def command(self, task: str, run_id: str, session: str) -> list[str]:
+        return self.provider.command(task, **self.command_arguments(run_id, session))
+
+    def key(self) -> str:
+        """What a child started ahead must have started with to serve this launch: the same command,
+        environment and folder, each file its CLI reads at start unchanged, and today's date (its
+        prompt states it)."""
+        files = []
+        for path in self.provider.startup_files(Path(self.cwd), self.environment):
+            try:
+                facts = path.stat()
+            except OSError:
+                files.append((str(path), None, None))
+            else:
+                files.append((str(path), facts.st_mtime_ns, facts.st_size))
+        argv = self.provider.ahead_command(**self.command_arguments(self._ANY_RUN, self._ANY_RUN))
+        fence = self.fence.model_dump(mode="json") if self.fence is not None else None
+        payload = json.dumps([argv, self.env(self._ANY_RUN), self.cwd, fence, files, date.today().isoformat()], sort_keys=True)
+        return hashlib.sha256(payload.encode()).hexdigest()
+
+    async def start(self, run_id: str, argv: list[str], *, ahead: bool = False) -> asyncio.subprocess.Process:
+        """`argv` started as run `run_id`'s child, its OWN stream written straight to disk: piping it
+        through a coroutine tied events to the caller's event loop, and a caller that spawned and
+        returned lost every event. At OS level the stream survives the caller, or galaius, dying."""
+        env = self.env(run_id)
+        sink = reg.open_raw_events(run_id, append=False)
+        stderr = reg.open_stderr(run_id, append=False)
+        try:
+            return await asyncio.create_subprocess_exec(
+                *contained(fenced(spawnable(argv, env), self.fence), run_id=run_id), cwd=self.cwd, env=env,
+                # Never the launcher's own stdin: Claude Code waits 3 s for input on one that is no
+                # terminal, and an MCP server's stdin carries its protocol.
+                stdin=asyncio.subprocess.PIPE if ahead else asyncio.subprocess.DEVNULL,
+                stdout=sink, stderr=stderr,
+                **process_group_options(),  # own process tree, so stop() can end the whole of it
+            )
+        finally:
+            sink.close()  # the child holds its own dup of the fd
+            stderr.close()
+
+    async def start_ahead(self, run_id: str) -> asyncio.subprocess.Process:
+        """A child started as run `run_id` before its task, reading it from its stdin."""
+        return await self.start(run_id, self.provider.ahead_command(**self.command_arguments(run_id, run_id)), ahead=True)
+
+    async def hand(self, process: asyncio.subprocess.Process, task: str) -> None:
+        """Give a child started ahead its task: its first and only stdin message."""
+        process.stdin.write(self.provider.task_message(task))
+        await process.stdin.drain()
+        process.stdin.close()
+
+
 @dataclass
 class RunHandle:
     """A live run: its id, its process, and the task draining its output."""
@@ -871,7 +956,8 @@ def _spawn_turn(
     stderr_file = tempfile.TemporaryFile()
     try:
         process = subprocess.Popen(
-            contained(fenced(spawnable(argv, env), run.fence), run_id=run.run_id), cwd=run.cwd or ".", env=env, stdout=sink, stderr=stderr_file,
+            contained(fenced(spawnable(argv, env), run.fence), run_id=run.run_id), cwd=run.cwd or ".", env=env,
+            stdin=subprocess.DEVNULL, stdout=sink, stderr=stderr_file,  # never the launcher's stdin (`ChildLaunch.start`)
             **process_group_options(),
         )
     except BaseException:
@@ -1006,6 +1092,7 @@ async def run_agent(
     quota_window: float | None = None,
     fence: FenceSpec | None = None,
     environment: Mapping[str, str] | None = None,
+    warm: WarmStart | None = None,
 ) -> RunHandle:
     """Spawn an agent run and register it, returning as soon as it is alive.
 
@@ -1129,6 +1216,7 @@ async def run_agent(
     #: ("Session ID ... is already in use") and the fall-through would die on arrival.
     vendor_sessions = 0
     chosen: reg.LaunchCandidate | None = None
+    chosen_ahead: ChildLaunch | None = None
     chosen_provider: AgentProvider | None = None
     process: "asyncio.subprocess.Process | None" = None
     model: str | None = None
@@ -1196,13 +1284,10 @@ async def run_agent(
         # A run named after its agent DEFINITION ("visual-critic") self-describes in the panel;
         # falling back to the provider ("claude") says nothing about what it's for.
         label = name or agent or candidate_provider.name
-        # Child inherits our environment MINUS any parent tag, set explicitly below — else a
-        # grandchild would inherit its grandparent's id and the tree would be wrong.
-        env = {**environment, "GALAIUS_RUN_ID": run_id, "GALAIUS_PARENT_RUN_ID": run_id}
         # The agent's policy is authoritative; caller profiles were rejected above. Its model id
         # can still carry a provider prefix resolved through the operator's allowed routing.
         candidate_routed, candidate_model = resolve_model(candidate.model, environment, provider=candidate_provider, weights=weights)
-        env.update(candidate_routed)
+        env = {**environment, **candidate_routed}
         if validated_images:
             _require_vlm_model(candidate_model)
         if candidate_provider.name == "claude":
@@ -1222,8 +1307,12 @@ async def run_agent(
                     f"Agent definition {agent!r} has a model pin conflicting with its resolved policy; "
                     "remove the source pin and regenerate instead of bypassing the criterion"
                 )
+        # Said in the brief, never in the role prompt: a line that changes between starts there makes
+        # the vendor write the whole system prompt to its cache again.
+        stale = (f"Agent catalog: stale (the server did not answer; snapshot fetched {policy.catalog.fetched_at.isoformat(timespec='seconds')}).\n"
+                 if policy.catalog is not None and policy.catalog.stale else "")
         brief = (
-            f"{LAUNCH_STAMP}{agent}; model={candidate_model}; reasoning={candidate_effort}; criterion={required_model}.\n"
+            f"{LAUNCH_STAMP}{agent}; model={candidate_model}; reasoning={candidate_effort}; criterion={required_model}.\n{stale}"
             f"First progress message: [{agent}] followed by your concrete task; then start immediately.\n"
             "You run headless: ending your turn ends this run, and a background job's completion notice never "
             "reaches it. Wait for a job you started (tests, deploy, generation) with a bounded foreground poll "
@@ -1238,17 +1327,10 @@ async def run_agent(
             vendor_sessions += 1
         else:
             vendor_session = run_id
-        command_kwargs = dict(
-            cwd=cwd, model=candidate_model,
-            # Once, never twice: skip the mesh when the provider's own config already registers
-            # galaius — else the child would carry two registrations of the same server.
-            mcp_config=mesh_config(run_id=run_id) if mesh and not already_meshed(candidate_provider.name, cwd=cwd) else None,
-            run_id=vendor_session, agent=agent, permission_mode=candidate_permission_mode,
+        command_kwargs: dict[str, object] = dict(
+            cwd=cwd, model=candidate_model, agent=agent, permission_mode=candidate_permission_mode,
             allowed_tools=allowed_tools, reasoning=candidate_effort, coarse_accepted=candidate_coarse_accepted,
-            environment=env,
         )
-        if candidate_provider.reads_mid_turn:
-            command_kwargs["inbox_hook"] = agent_queue.inbox_hook(run_id)
         if candidate_routed.get("OPENAI_BASE_URL"):
             command_kwargs["base_url"] = candidate_routed["OPENAI_BASE_URL"]
         if policy.catalog is not None:
@@ -1257,22 +1339,28 @@ async def run_agent(
             command_kwargs["denied_tools"] = denied_tools
         if validated_images:
             command_kwargs["image_paths"] = validated_images
-        argv = candidate_provider.command(brief, **command_kwargs)
-        # Child writes its OWN stream straight to disk. Piping it through a coroutine tied events to
-        # the caller's event loop: a caller that spawned and returned lost every event, run then
-        # looked HEALTHY (done, exit 0, no cost, no activity) — worse than looking crashed. At OS
-        # level the stream survives the caller, or galaius, dying.
-        sink = reg.open_raw_events(run_id, append=False)
-        stderr = reg.open_stderr(run_id, append=False)
-        try:
-            candidate_process = await asyncio.create_subprocess_exec(
-                *contained(fenced(spawnable(argv, env), fence), run_id=run_id), cwd=cwd, env=env,
-                stdout=sink, stderr=stderr,
-                **process_group_options(),  # own process tree, so stop() can end the whole of it
-            )
-        finally:
-            sink.close()  # the child holds its own dup of the fd
-            stderr.close()
+        launch = ChildLaunch(
+            provider=candidate_provider, cwd=cwd, environment=env, arguments=command_kwargs,
+            # Once, never twice: skip the mesh when the provider's own config already registers
+            # galaius — else the child would carry two registrations of the same server.
+            meshed=mesh and not already_meshed(candidate_provider.name, cwd=cwd), fence=fence,
+        )
+        # A child started ahead for this very launch skips its CLI's own startup. Its run id is the
+        # vendor session id, so it serves only the first child handed to that vendor.
+        ahead = (warm is not None and candidate_provider.starts_ahead and not validated_images
+                 and fence is None and vendor_session == run_id)
+        held = warm.claim(launch.key()) if warm is not None and ahead else None
+        candidate_process = None
+        if held is not None:
+            try:
+                await launch.hand(held.process, brief)
+            except (BrokenPipeError, ConnectionResetError):
+                held.end()
+            else:
+                run_id = vendor_session = held.run_id
+                candidate_process = held.process
+        if candidate_process is None:
+            candidate_process = await launch.start(run_id, launch.command(brief, run_id, vendor_session))
         # The child resolves its owning conversation from this run's record, so the record must
         # exist before it can ask — the probe otherwise sits between spawn and register and the
         # child reads a stale owner. Registering here also means a candidate skipped for quota
@@ -1316,6 +1404,7 @@ async def run_agent(
             continue
         chosen = candidate
         chosen_provider = candidate_provider
+        chosen_ahead = launch if ahead else None
         process = candidate_process
         permission_mode = candidate_permission_mode
         model = candidate_model
@@ -1346,5 +1435,8 @@ async def run_agent(
     asyncio.create_task(
         _mirror_while_alive(run_id, lambda: process.returncode is None)
     )
+    if warm is not None and chosen_ahead is not None:
+        # The next start of this same launch finds its child already started.
+        warm.prepare(chosen_ahead.key, chosen_ahead.start_ahead)
     return RunHandle(run_id=run_id, process=process, pump=pump,
                      model=model, criterion=required_model, reasoning=effort)

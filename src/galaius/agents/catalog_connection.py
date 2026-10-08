@@ -12,8 +12,9 @@ import os
 import time
 import typing
 import warnings
-from collections.abc import Callable
-from contextlib import ExitStack, contextmanager
+from collections.abc import Callable, Iterator
+from contextlib import ExitStack, contextmanager, suppress
+from contextvars import ContextVar
 from http.cookiejar import LWPCookieJar, LoadError
 from pathlib import Path
 from typing import Any, ClassVar, Literal, Self, TypeVar
@@ -75,6 +76,8 @@ class CatalogConnection(BaseModel):
     #: ranking). Also how long a rule changed on the web can go unseen by a process that read it.
     REUSE_SECONDS: ClassVar[float] = 5.0
     _recent: ClassVar[dict[tuple[str, Any, UUID], tuple[float, Any]]] = {}
+    #: Set inside `renewing`: every `recent` read asks the server again, whatever its age.
+    _renewing: ClassVar[ContextVar[bool]] = ContextVar("catalog_renewing", default=False)
 
     @model_validator(mode="after")
     def validate_connection(self) -> Self:
@@ -162,7 +165,12 @@ class CatalogConnection(BaseModel):
 
     @staticmethod
     def replace_text(path: Path, payload: str) -> None:
-        """Atomically replace one local document, private to this user; a failed write keeps its predecessor."""
+        """Atomically replace one local document, private to this user; a failed write keeps its
+        predecessor. One already holding `payload` is left as it is: each start writes its role's
+        definition and skills again (an fsync each, 0.17 s for 25 files)."""
+        with suppress(OSError, ValueError):
+            if PRIVATE_FILES.read_text(path) == payload:
+                return
         PRIVATE_FILES.write_text(path, payload)
 
     def save(self, path: Path | None = None) -> None:
@@ -294,6 +302,23 @@ class CatalogConnection(BaseModel):
             raise CatalogConnectionError("invalid catalog workspace bootstrap") from error
         return self.model_copy(update={"workspace_id": bootstrap.current_workspace_id})
 
+    @classmethod
+    def renew_every(cls, seconds: float) -> None:
+        """This process renews its reads itself (`renewing`) every `seconds`: each read is reused
+        until the renewal after next is due, so a start never waits on the server for one. A rule
+        changed on the web then reaches this process's starts within `seconds`."""
+        cls.REUSE_SECONDS = 2 * seconds
+
+    @classmethod
+    @contextmanager
+    def renewing(cls) -> Iterator[None]:
+        """Within: every `recent` read asks the server again (conditionally), whatever its age."""
+        token = cls._renewing.set(True)
+        try:
+            yield
+        finally:
+            cls._renewing.reset(token)
+
     def recent(self, what: str, read: Callable[[T | None], T]) -> T:
         """`read(previous)`, or what it returned less than `REUSE_SECONDS` ago in this process for
         this connection and access generation (a denial starts a new generation: nothing read
@@ -301,7 +326,7 @@ class CatalogConnection(BaseModel):
         conditional read sends, so an unchanged answer costs a 304."""
         key = (what, self, self.access_generation())
         held = self._recent.get(key)
-        if held is not None and time.monotonic() - held[0] < self.REUSE_SECONDS:
+        if held is not None and not self._renewing.get() and time.monotonic() - held[0] < self.REUSE_SECONDS:
             return held[1]
         value = read(held[1] if held is not None else None)
         self._recent[key] = (time.monotonic(), value)
