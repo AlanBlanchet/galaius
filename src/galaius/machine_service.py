@@ -7,16 +7,24 @@ operating system (`MACHINE_SERVICE`), started, stopped and read by `galaius mach
   machine service run` (no console window). Task Scheduler restarts a task only when it fails to
   START, so `run` itself restarts the connection after a crash, and holds every program it starts
   in a job that closes with it: stopping the task stops the scripts and agents it started.
-- Anywhere else (macOS): no background service yet, said as such; `galaius machine connect` in a
-  terminal keeps it connected."""
+- macOS: a launchd agent of this user (`~/Library/LaunchAgents/ai.galaius.machine.plist`), loaded
+  at their login, restarted by launchd after a crash.
+- Anywhere else: no background service, said as such; `galaius machine connect` in a terminal
+  keeps it connected.
+
+Each says its own last words (`last_words`): what `galaius login` shows, and sends to the
+computer's page, when the service does not bring the computer online."""
 
 import asyncio
 import getpass
 import logging
+import os
+import plistlib
 import shutil
 import subprocess
 import sys
 import time
+import traceback
 from pathlib import Path
 from typing import ClassVar
 from xml.sax.saxutils import escape
@@ -53,7 +61,16 @@ class MachineService(BaseModel):
     @property
     def logs(self) -> str:
         """Where to read what it did, in this operating system's words."""
-        raise NotImplementedError
+        return str(self.log_path())
+
+    @staticmethod
+    def executable() -> Path:
+        """This install's own `galaius` (the service must run the same build as this CLI)."""
+        beside = Path(sys.executable).with_name("galaius")
+        found = beside if beside.is_file() else Path(shutil.which("galaius") or "")
+        if not found.is_file():
+            raise ServiceUnavailable("cannot find the galaius program to start at logon; install it with the line from your Galaius page")
+        return found.absolute()
 
     def install(self) -> None:
         """Set up and started; ServiceUnavailable says why it could not."""
@@ -77,6 +94,23 @@ class MachineService(BaseModel):
     def after_logout(self) -> bool:
         """Whether it keeps running once this person signs out of the desktop."""
         return False
+
+    def last_words(self) -> str:
+        """The end of what it last wrote (its log), to say why it is not running or not connected."""
+        return self._tail(self.log_path())
+
+    @staticmethod
+    def log_path() -> Path:
+        """Where the service writes what it does when no service manager keeps its output."""
+        return MachineRunner.default_config_path().parent / "machine-service.log"
+
+    @staticmethod
+    def _tail(path: Path, lines: int = 3) -> str:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
+        return "\n".join([line for line in text.splitlines() if line.strip()][-lines:])
 
     def run(self) -> None:
         """The connection in this process, restarted after a crash, until the server revokes this
@@ -108,15 +142,6 @@ class SystemdMachineService(MachineService):
     """Linux: the systemd user unit, restarted by systemd itself (`Restart=on-failure`)."""
 
     name: ClassVar[str] = "galaius-machine.service"
-
-    @staticmethod
-    def executable() -> Path:
-        """This install's own `galaius` (the service must run the same build as this CLI)."""
-        beside = Path(sys.executable).with_name("galaius")
-        found = beside if beside.is_file() else Path(shutil.which("galaius") or "")
-        if not found.is_file():
-            raise ServiceUnavailable("cannot find the galaius program to start at logon; install it with the line from your Galaius page")
-        return found.absolute()
 
     @property
     def path(self) -> Path:
@@ -175,6 +200,10 @@ class SystemdMachineService(MachineService):
     def installed(self) -> bool:
         return self.path.exists()
 
+    def last_words(self) -> str:
+        done = subprocess.run(["journalctl", "--user", "-u", self.name, "-n", "3", "-o", "cat", "--no-pager"], capture_output=True, text=True, timeout=15) if shutil.which("journalctl") else None
+        return done.stdout.strip() if done is not None and done.returncode == 0 else ""
+
     def after_logout(self) -> bool:
         """Lingering keeps it running after sign-out; some systems refuse."""
         if shutil.which("loginctl") is None:
@@ -195,17 +224,9 @@ class WindowsMachineService(MachineService):
     states: ClassVar[dict[int, str]] = {1: "disabled", 3: "ready", 4: "running"}
 
     @property
-    def logs(self) -> str:
-        return str(self.log_path())
-
-    @property
     def task(self) -> str:
         """Task names are shared by every user of the computer: this user's SID keeps theirs apart."""
         return f"Galaius machine {win32security.ConvertSidToStringSid(WindowsPrivateFiles.user())}"
-
-    @staticmethod
-    def log_path() -> Path:
-        return MachineRunner.default_config_path().parent / "machine-service.log"
 
     @staticmethod
     def executable() -> Path:
@@ -289,19 +310,29 @@ class WindowsMachineService(MachineService):
     def installed(self) -> bool:
         return self._task() is not None
 
+    def last_words(self) -> str:
+        task = self._task()
+        result = f"Task Scheduler: last result 0x{task.LastTaskResult & 0xFFFFFFFF:x}" if task is not None else "Task Scheduler: no task"
+        return "\n".join(filter(None, (result, super().last_words())))
+
     def run(self) -> None:
-        """What the task starts: its programs held in a job that closes with it, its output in
-        `log_path` (pythonw has no console), then the restarting connection."""
-        job = self.held_children()
+        """What the task starts: its output in `log_path` first (pythonw has no console: an early
+        failure must still be readable), its programs held in a job that closes with it, then the
+        restarting connection."""
         if sys.stdout is None or sys.stderr is None:
             path = self.log_path()
             if path.exists() and path.stat().st_size > 5 << 20:
                 path.replace(path.with_suffix(".log.1"))
             sys.stdout = sys.stderr = open(path, "a", encoding="utf-8", buffering=1)  # noqa: SIM115 - lives as long as the process
         try:
-            super().run()
-        finally:
-            job.Close()  # the last handle: every program still in the job ends with it
+            job = self.held_children()
+            try:
+                super().run()
+            finally:
+                job.Close()  # the last handle: every program still in the job ends with it
+        except BaseException:
+            traceback.print_exc()
+            raise
 
     @staticmethod
     def held_children():
@@ -319,15 +350,76 @@ class WindowsMachineService(MachineService):
         return job
 
 
+class LaunchdMachineService(MachineService):
+    """macOS: a launchd agent of this user, loaded at their login (`RunAtLoad`), restarted by
+    launchd when the connection crashes (`KeepAlive` unless it exits cleanly, as a revoked computer
+    does); its output in `log_path`."""
+
+    label: ClassVar[str] = "ai.galaius.machine"
+
+    @property
+    def path(self) -> Path:
+        return Path.home() / "Library" / "LaunchAgents" / f"{self.label}.plist"
+
+    @property
+    def domain(self) -> str:
+        return f"gui/{os.getuid()}"
+
+    def definition(self) -> bytes:
+        """The agent, as launchd's property list: nothing the server sent goes in here."""
+        log = str(self.log_path())
+        return plistlib.dumps({
+            "Label": self.label, "ProgramArguments": [str(self.executable()), "machine", "connect"],
+            "RunAtLoad": True, "KeepAlive": {"SuccessfulExit": False}, "ThrottleInterval": int(self.restart_seconds),
+            "ProcessType": "Background", "StandardOutPath": log, "StandardErrorPath": log,
+        })
+
+    def _launchctl(self, *arguments: str, tolerated: bool = False) -> subprocess.CompletedProcess:
+        done = subprocess.run(["launchctl", *arguments], capture_output=True, text=True, timeout=30)
+        if done.returncode != 0 and not tolerated:
+            raise ServiceUnavailable((done.stderr or done.stdout).strip() or f"launchctl {' '.join(arguments)} failed")
+        return done
+
+    def install(self) -> None:
+        definition = self.definition()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.log_path().parent.mkdir(parents=True, exist_ok=True)
+        self._launchctl("bootout", f"{self.domain}/{self.label}", tolerated=True)
+        self.path.write_bytes(definition)
+        self._launchctl("bootstrap", self.domain, str(self.path))
+
+    def remove(self) -> None:
+        self._launchctl("bootout", f"{self.domain}/{self.label}", tolerated=True)
+        self.path.unlink(missing_ok=True)
+
+    def start(self) -> None:
+        if not self.installed():
+            raise ServiceUnavailable("this computer is not connected: run  galaius login")
+        if self._launchctl("print", f"{self.domain}/{self.label}", tolerated=True).returncode != 0:
+            self._launchctl("bootstrap", self.domain, str(self.path))
+        self._launchctl("kickstart", f"{self.domain}/{self.label}")
+
+    def stop(self) -> None:
+        """Unloaded until the next login or `start` (launchd would restart a killed one)."""
+        self._launchctl("bootout", f"{self.domain}/{self.label}", tolerated=True)
+
+    def running(self) -> bool:
+        done = self._launchctl("print", f"{self.domain}/{self.label}", tolerated=True)
+        return done.returncode == 0 and "state = running" in done.stdout
+
+    def installed(self) -> bool:
+        return self.path.exists()
+
+
 class TerminalMachineService(MachineService):
-    """No background service on this system yet (macOS): the connection runs in a terminal."""
+    """No background service on this system: the connection runs in a terminal."""
 
     @property
     def logs(self) -> str:
         return "the terminal running  galaius machine connect"
 
     def install(self) -> None:
-        raise ServiceUnavailable(f"{sys.platform} has no Galaius background service yet: keep it connected with  galaius machine connect  in a terminal")
+        raise ServiceUnavailable(f"{sys.platform} has no Galaius background service: keep it connected with  galaius machine connect  in a terminal")
 
     def remove(self) -> None:
         return None
@@ -346,4 +438,5 @@ class TerminalMachineService(MachineService):
 
 
 MACHINE_SERVICE: MachineService = (
-    WindowsMachineService() if sys.platform == "win32" else SystemdMachineService() if sys.platform.startswith("linux") else TerminalMachineService())
+    WindowsMachineService() if sys.platform == "win32" else SystemdMachineService() if sys.platform.startswith("linux")
+    else LaunchdMachineService() if sys.platform == "darwin" else TerminalMachineService())

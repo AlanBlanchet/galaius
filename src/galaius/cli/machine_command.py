@@ -36,7 +36,7 @@ def machine_connect(
 @machine_app.command(name="service")
 def machine_service(action: Literal["status", "start", "stop", "restart", "run"] = "status") -> None:
     """The background service keeping this computer connected after `galaius login` (Linux: a
-    systemd user unit; Windows: a task started at your logon; macOS: none yet). status (default)
+    systemd user unit; macOS: a launchd agent; Windows: a task started at your logon). status (default)
     says whether it runs and where its log is; start / stop / restart act on it; run is what the
     Windows task itself starts."""
     try:

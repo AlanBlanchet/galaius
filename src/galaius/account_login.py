@@ -204,17 +204,47 @@ class AccountLogin(BaseModel):
             permission_ceiling="read_only", working_directory=Path.home(), script_roots=(), run_agents=False,
         ))
 
-    def online(self, http: httpx.Client, issued: DeviceLoginIssued, within: float = 30) -> bool:
-        headers = {"Authorization": f"Bearer {issued.api_key.secret.get_secret_value()}"}
-        deadline = time.monotonic() + within
+    #: How long `galaius login` waits for the server to see this computer online (its service
+    #: connects within seconds; a first start on a slow PC compiles its Python first).
+    online_within: ClassVar[float] = 60
+
+    def online(self, http: httpx.Client, machine: MachineConfig, key: str) -> bool:
+        """Whether the server sees `machine` online within `online_within`, read with the account
+        key this login holds."""
+        headers = {"Authorization": f"Bearer {key}"}
+        deadline = time.monotonic() + self.online_within
         while time.monotonic() < deadline:
             try:
-                machines = TypeAdapter(tuple[MachineSummary, ...]).validate_json(http.get(f"/v1/workspaces/{issued.workspace.id}/machines", headers=headers).content)
-                if any(item.id == issued.machine.id and item.state == "online" for item in machines):
+                machines = TypeAdapter(tuple[MachineSummary, ...]).validate_json(http.get(f"/v1/workspaces/{machine.workspace_id}/machines", headers=headers).content)
+                if any(item.id == machine.machine_id and item.state == "online" for item in machines):
                     return True
             except (httpx.HTTPError, ValueError):
                 pass
             time.sleep(2)
+        return False
+
+    def brought_online(self, http: httpx.Client, machine: MachineConfig, key: str | None) -> bool:
+        """This computer's background service (re)started on this build and seen online, else why
+        not: said here and sent to its page on the web (`MachineProblem`), so whoever looks there
+        reads the reason too. Without an account `key` (its CLI signed out) only started."""
+        try:
+            MACHINE_SERVICE.install()
+        except ServiceUnavailable as refused:
+            print(f"Could not start it in the background ({refused}). Keep it connected with:  galaius machine connect", file=sys.stderr)
+            MachineRunner.report_problem(machine, "service_unavailable", str(refused))
+            return False
+        print("Starting its background connection…", flush=True)
+        if key is None:
+            print("Started; whether it is online was not checked (this computer's sign-in key could not be read). Check:  galaius machine service status", file=sys.stderr)
+            return False
+        if self.online(http, machine, key):
+            return True
+        running = MACHINE_SERVICE.running()
+        said = MACHINE_SERVICE.last_words()
+        MachineRunner.report_problem(machine, "channel_unreachable" if running else "service_stopped", said)
+        state = "runs but has not reached the server" if running else "is not running"
+        print(f"Not online after {self.online_within:g} s: its background service {state}." + (f" Its last words:\n{said}" if said else "")
+              + f"\nThe reason shows on its page too. Log: {MACHINE_SERVICE.logs}. Try again with:  galaius machine service restart", file=sys.stderr)
         return False
 
     def connected_name(self, machine: MachineConfig) -> str:
@@ -456,13 +486,17 @@ def _reconfigured(account: AccountLogin, existing: MachineConfig, *, yes: bool, 
     if machine.remote_settings:
         print(f"Its agent settings can also be changed on its page: {account.server}/#data?computer={machine.machine_id}")
     try:
-        MACHINE_SERVICE.install()
         MACHINE_SERVICE.stop()
-        MACHINE_SERVICE.start()
-    except ServiceUnavailable as refused:
-        print(f"Could not restart the background service ({refused}). Keep it connected with:  galaius machine connect", file=sys.stderr)
-    else:
-        print("Background service restarted on this galaius build.")
+    except ServiceUnavailable:
+        pass  # not set up here yet: `brought_online` sets it up
+    connection = CatalogConnection.load()
+    try:
+        key = PRIVATE_FILES.read_secret(connection.token_file) if connection is not None and connection.token_file is not None else None
+    except ValueError:
+        key = None
+    with account.client() as http:
+        if account.brought_online(http, machine, key):
+            print("Online: its background service restarted on this galaius build.")
 
 
 def _login(account: AccountLogin, *, allow_runs: bool, yes: bool, open_browser: bool, agents: AgentChoice | None) -> None:
@@ -477,29 +511,22 @@ def _login(account: AccountLogin, *, allow_runs: bool, yes: bool, open_browser: 
         print("Waiting for approval…", flush=True)
         issued = account.wait(http, started)
         workspace, approver = _shown(issued.workspace.name), _shown(issued.approved_by)
+        # The approval on the web is the consent: the computer goes online now, its page showing it
+        # (or why not) while any agent question below is still open here.
         print(f"\nApproved by {approver} for the workspace “{workspace}”.")
-        if not yes and not _confirmed(f"Connect this computer to “{workspace}”?"):
-            account.revoke(http, issued.api_key.secret.get_secret_value())
-            raise LoginError("not connected; the approval was withdrawn" if sys.stdin.isatty() else "confirm in a terminal, or pass --yes (the approval was withdrawn)")
         account.save(issued)
         account.remember()
         runner = MachineRunner()
-        if agents is None:
-            agents = AgentChoice.asked(runner.load()) if sys.stdin.isatty() and not yes else AgentChoice()
-        machine = agents.applied(runner)
-        synced = account.synced(CatalogConnection.load())
-        try:
-            MACHINE_SERVICE.install()
-        except ServiceUnavailable as refused:
-            print(f"Could not start it in the background ({refused}). Keep it connected with:  galaius machine connect", file=sys.stderr)
-        else:
-            if not account.online(http, issued):
-                print(f"Started, but the server does not see it online yet. Check:  galaius machine service status  (its log: {MACHINE_SERVICE.logs})", file=sys.stderr)
-            else:
-                print(f"Connected: {issued.machine.name} is now a machine in {workspace}")
-                print(synced)
-                if not MACHINE_SERVICE.after_logout():
-                    print("It runs while you are signed in to this computer.")
+        asking = agents is None and sys.stdin.isatty() and not yes
+        machine = runner.load() if asking else (agents or AgentChoice()).applied(runner)
+        if account.brought_online(http, machine, issued.api_key.secret.get_secret_value()):
+            print(f"Connected: {issued.machine.name} is now a machine in {workspace}")
+            if not MACHINE_SERVICE.after_logout():
+                print("It runs while you are signed in to this computer; it starts again at your next sign-in.")
+        print(account.synced(CatalogConnection.load()))
+        if asking:
+            # Read by the running connection from its machine file with its next beat: no restart.
+            machine = AgentChoice.asked(machine).applied(runner)
         print("Every folder here is hidden from workflows, Data and agents. To open one:  galaius machine places <folder under your home> <level>  (e.g. interact-files sandbox)")
         print(AgentChoice.described(machine))
 

@@ -51,7 +51,7 @@ def joining(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     issued = SimpleNamespace(workspace=SimpleNamespace(id=uuid4(), name="My workspace"), approved_by="owner", machine=SimpleNamespace(id=uuid4(), name="pc2"),
                              machine_token=SecretStr(uuid4().hex * 2), **{"api_key": SimpleNamespace(**{"secret": SecretStr(uuid4().hex * 2)})})
     for name, value in {"skew": lambda self, http: None, "start": lambda self, http, runs: SimpleNamespace(verification_uri_complete="https://x/link", user_code="ABCD-EFGH", expires_in=600),
-                        "wait": lambda self, http, started: issued, "online": lambda self, http, issued: True, "revoke": lambda self, http, key: {}}.items():
+                        "wait": lambda self, http, started: issued, "online": lambda self, http, machine, key: True, "revoke": lambda self, http, key: {}}.items():
         monkeypatch.setattr(account_login.AccountLogin, name, value)
     monkeypatch.setattr(account_login.AccountLogin, "synced", staticmethod(lambda connection: "Synced: nothing"))
     monkeypatch.setattr(type(MACHINE_SERVICE), "install", lambda self: None)
@@ -61,14 +61,14 @@ def joining(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 @pytest.mark.parametrize("tty, answers, flags, saved, said", [
     # (run_agents, agent_roots, continue_conversations, answer_approvals)
-    (True, ["y", "y", "dev, ~/work/", "y", "n"], {}, (True, ["dev", "work"], True, False), "start them in dev, work"),  # asked; ~ path made relative
-    (True, ["y", ""], {}, (False, [], False, False), "Agents: off here"),                              # Enter keeps the default No; nothing more asked
-    (True, ["y", "y", "", "", ""], {}, (True, [], False, False), "no folder to start them in"),         # yes, Enter = no folder, opt-ins default No
-    (True, ["y", "y", "dev,.secret,../x", "dev,nope/../work", "", "y"], {}, (True, ["dev", "work"], False, True), "Refused: .secret, ../x"),  # re-asked once
-    (True, ["y", "y", ".secret", ".secret", "n", "n"], {}, (True, [], False, False), "Left out: .secret"),  # refused twice: left out
-    (True, ["y"], {"agent_folders": ("work",)}, (True, ["work"], False, False), "start them in work"),  # a flag answers ahead, never asked
-    (True, ["y"], {"agent_opt_ins": {"answer_approvals": True, "continue_conversations": None}}, (True, [], False, True), "approvals answered from the web: on"),
-    (True, ["y"], {"agents": False}, (False, [], False, False), "Agents: off here"),
+    (True, ["y", "dev, ~/work/", "y", "n"], {}, (True, ["dev", "work"], True, False), "start them in dev, work"),  # asked; ~ path made relative
+    (True, [""], {}, (False, [], False, False), "Agents: off here"),                              # Enter keeps the default No; nothing more asked
+    (True, ["y", "", "", ""], {}, (True, [], False, False), "no folder to start them in"),         # yes, Enter = no folder, opt-ins default No
+    (True, ["y", "dev,.secret,../x", "dev,nope/../work", "", "y"], {}, (True, ["dev", "work"], False, True), "Refused: .secret, ../x"),  # re-asked once
+    (True, ["y", ".secret", ".secret", "n", "n"], {}, (True, [], False, False), "Left out: .secret"),  # refused twice: left out
+    (True, [], {"agent_folders": ("work",)}, (True, ["work"], False, False), "start them in work"),  # a flag answers ahead, never asked
+    (True, [], {"agent_opt_ins": {"answer_approvals": True, "continue_conversations": None}}, (True, [], False, True), "approvals answered from the web: on"),
+    (True, [], {"agents": False}, (False, [], False, False), "Agents: off here"),
     (False, [], {"yes": True}, (False, [], False, False), "Agents: off here"),                         # no terminal: defaults, never blocks
     (False, [], {"yes": True, "agents": True, "agent_opt_ins": {"continue_conversations": True}}, (True, [], True, False), "continued from the web: on"),
 ])
@@ -82,6 +82,40 @@ def test_agents_asked_once_at_login(joining: Path, monkeypatch: pytest.MonkeyPat
     assert (machine.run_agents, list(machine.agent_roots), machine.continue_conversations, machine.answer_approvals) == saved
     assert next(replies, None) is None  # every scripted answer was asked for, no more
     assert said in capsys.readouterr().out
+
+
+def test_online_before_the_agent_questions(joining: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The web approval is the consent: no question stands between it and the service starting;
+    the agent questions come once the computer is online (its page shows it meanwhile)."""
+    events: list[str] = []
+    monkeypatch.setattr(type(MACHINE_SERVICE), "install", lambda self: events.append("service"))
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda question: events.append(question) or "")
+    account_login.login("https://galaius.example.org", allow_runs=False, open_browser=False, yes=False)
+    assert events[0] == "service" and events[1].startswith("Let agents run on this computer")
+
+
+@pytest.mark.parametrize("refused, running, code", [
+    ("Windows refused to register the logon task (Access is denied.)", None, "service_unavailable"),
+    (None, False, "service_stopped"),       # set up, but its program is not running
+    (None, True, "channel_unreachable"),    # running, never reached the server
+])
+def test_not_online_says_why_here_and_on_its_page(joining: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+                                                   refused: str | None, running: bool | None, code: str) -> None:
+    def install(self) -> None:
+        if refused:
+            raise account_login.ServiceUnavailable(refused)
+    reported: list[tuple[str, str]] = []
+    monkeypatch.setattr(type(MACHINE_SERVICE), "install", install)
+    monkeypatch.setattr(type(MACHINE_SERVICE), "running", lambda self: bool(running))
+    monkeypatch.setattr(type(MACHINE_SERVICE), "last_words", lambda self: "Task Scheduler: last result 0x1\nTraceback: boom")
+    monkeypatch.setattr(account_login.AccountLogin, "online", lambda self, http, machine, key: False)
+    monkeypatch.setattr(MachineRunner, "report_problem", classmethod(lambda cls, machine, said, detail="": reported.append((said, detail)) or True))
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    account_login.login("https://galaius.example.org", allow_runs=False, open_browser=False, yes=True)
+    said = capsys.readouterr()
+    assert [value for value, _ in reported] == [code] and "Connected:" not in said.out
+    assert (refused or "Traceback: boom") in said.err and (refused or "0x1") in reported[0][1]
 
 
 @pytest.mark.parametrize("flags, error", [
@@ -154,9 +188,9 @@ def test_connected_login_asks_nothing_web_control_covers_and_restarts_the_servic
     account_login.login(None, allow_runs=False, open_browser=False, **{"yes": False, **flags})
     machine = MachineRunner().load()
     assert (machine.run_agents, list(machine.agent_roots), machine.continue_conversations, machine.answer_approvals) == saved
-    assert next(replies, None) is None and calls == ["install", "stop", "start"]
+    assert next(replies, None) is None and calls == ["stop", "install"]
     out = capsys.readouterr().out
-    assert f"already connected to {PUBLIC} as pc2." in out and "Background service restarted" in out and "Agents: " in out
+    assert f"already connected to {PUBLIC} as pc2." in out and "Online: its background service restarted" in out and "Agents: " in out
 
 
 @pytest.mark.parametrize("verdict, refusal", [("accepted", None), ("refused", "does not know it"), ("unreachable", "does not answer")])
@@ -181,4 +215,4 @@ def test_connected_elsewhere_moves_only_to_a_server_that_holds_this_computer(con
     machine = MachineRunner().load()
     assert asked == [(moved_to, token)] and machine.server_url == moved_to and machine.token.get_secret_value() == token
     assert CatalogConnection.load().endpoint == moved_to and AccountLogin.remembered_path().read_text().strip() == moved_to
-    assert calls == ["install", "stop", "start"] and f"now connects to {moved_to} (was {PUBLIC})" in capsys.readouterr().out
+    assert calls == ["stop", "install"] and f"now connects to {moved_to} (was {PUBLIC})" in capsys.readouterr().out

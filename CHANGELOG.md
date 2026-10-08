@@ -4,6 +4,15 @@ Notable changes to **galaius** (named interact before 2026-10-07). Follows [Sema
 [Keep a Changelog](https://keepachangelog.com). Releases are cut from `main` (and `release/X.Y`
 maintenance branches) — see [RELEASING.md](RELEASING.md).
 
+## Unreleased
+
+- `galaius login` puts the computer online right after the web approval (no terminal question in
+  between) and waits up to a minute for the server to see it; the agent questions come after.
+- A computer that does not come online says why, in the terminal and on its page: its background
+  service could not start, stopped (with its last log lines or Windows Task Scheduler result),
+  cannot reach the server, or crashed (`POST /v1/machine/problem`, galaius-core `MachineProblem`).
+- macOS: a launchd agent keeps the computer connected from login (not yet run on a real Mac).
+
 ## 0.44.2 — 2026-10-07
 
 - `galaius migrate` no longer stops on `uv` or `login-server` held by both folders: the installer

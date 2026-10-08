@@ -243,7 +243,7 @@ in `~/.galaius/config.env` and are also exposed by the VS Code extension.
 | | Linux | macOS | Windows |
 | --- | :-: | :-: | :-: |
 | Browser, MCP server, CLI, TUI | ✅ | ✅ | ✅ |
-| Install one-liner, `galaius login`, background machine | ✅ (systemd user service) | ✅ install; the machine runs in a terminal (no background service yet) | ✅ (task at logon) |
+| Install one-liner, `galaius login`, background machine | ✅ (systemd user service) | ✅ install; launchd agent at login (not yet run on a real Mac) | ✅ (task at logon) |
 | Script steps | Python, shell, PowerShell if `pwsh` is installed | Python, shell, PowerShell if `pwsh` is installed | Python, PowerShell, cmd |
 | Desktop control (real windows) | ✅ (X11; uinput input also on Wayland) | ⏳ | ⏳ |
 

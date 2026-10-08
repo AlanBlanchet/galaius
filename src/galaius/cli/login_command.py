@@ -20,10 +20,11 @@ def login(
     answer_approvals: bool | None = None,
 ) -> None:
     """Connect this computer to your Galaius account: approve it in the browser, then it runs as
-    one of your machines (kept connected by a background service: Linux systemd, Windows logon task), with your agents and prompts synced. --server defaults to
-    the server you installed from or last signed in to, else it is asked once;
-    --allow-runs lets this CLI start workflow runs (default: read only); --yes skips the final
-    question; --no-browser only prints the page to open. Right after the approval it asks once
+    one of your machines (kept connected by a background service: Linux systemd, macOS launchd,
+    Windows logon task), online within a minute or told why, here and on its page; agents and
+    prompts synced. --server defaults to the server you installed from or last signed in to, else
+    it is asked once; --allow-runs lets this CLI start workflow runs (default: read only); --yes
+    asks nothing; --no-browser only prints the page to open. Once it is online it asks
     whether agents may run here and in which folders (under your home) the web may start them;
     with agents on, whether the web may continue your editor conversations here (as a copy) and
     answer the approvals a session asks for. --agents / --no-agents, --agent-folder NAME

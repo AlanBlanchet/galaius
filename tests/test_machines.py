@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
+import httpx
 import pytest
 import websockets
 from pydantic import SecretStr
@@ -324,6 +325,50 @@ def test_a_server_mid_deploy_is_retried_and_a_refused_token_stops(tmp_path: Path
     else:
         asyncio.run(runner.connect(_config(tmp_path, "read_only")))
     assert len(attempts) == (2 if retried else 1)
+
+
+def test_a_channel_that_keeps_failing_tells_its_page_why_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """After `report_after_failures` tries in a row the runner sends the last error over HTTPS
+    (`POST /v1/machine/problem`, its own token masked), once per streak; it keeps retrying."""
+    import galaius.machines as machines
+
+    tries: list[int] = []
+    sent: list[httpx.Request] = []
+    config = _config(tmp_path, "read_only")
+    token = config.token.get_secret_value()
+
+    def connect(*_args, **_kwargs):
+        tries.append(1)
+        if len(tries) > 5:
+            raise PermissionError("stop here")
+        raise OSError(f"[SSL: CERTIFICATE_VERIFY_FAILED] while sending {token}")
+
+    monkeypatch.setattr(machines.websockets, "connect", connect)
+    monkeypatch.setattr(machines.httpx, "post", lambda url, timeout, **options: sent.append(httpx.Request("POST", url, **options)) or httpx.Response(204))
+    runner = MachineRunner(tmp_path / "machine.json")
+    runner.reconnect_seconds = (0,)
+    with pytest.raises(PermissionError):
+        asyncio.run(runner.connect(config))
+    assert len(sent) == 1 and sent[0].url.path == "/v1/machine/problem" and sent[0].headers["Authorization"] == f"Bearer {config.token.get_secret_value()}"
+    body = json.loads(sent[0].content)
+    assert body["code"] == "channel_unreachable" and "CERTIFICATE_VERIFY_FAILED" in body["detail"] and token not in body["detail"]
+
+
+def test_a_crash_is_told_to_its_page_once_per_cause_in_one_process(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`MachineRunner.connect` is where every service ends up (Linux and macOS start `machine
+    connect`, the Windows task loops on it): a crash is reported there, once per distinct cause,
+    and still raised for the service manager to restart it; a deliberate stop is no crash."""
+    reported: list[tuple[str, str]] = []
+    monkeypatch.setattr(MachineRunner, "report_problem", classmethod(lambda cls, config, code, detail="": reported.append((code, detail)) or True))
+    runner = MachineRunner(tmp_path / "machine.json")
+    config = _config(tmp_path, "read_only")
+    for crash in (RuntimeError("socket gone"), RuntimeError("socket gone"), KeyError("hello"), PermissionError("revoked")):
+        async def _connect(_config, crash=crash):
+            raise crash
+        monkeypatch.setattr(runner, "_connect", _connect)
+        with pytest.raises(type(crash)):
+            asyncio.run(runner.connect(config))
+    assert reported == [("crashed", "RuntimeError: socket gone"), ("crashed", "KeyError: 'hello'")]
 
 
 def _user_model_command(machine_id, origin: UserModelOrigin, task: str = "object-detection") -> MachineCommand:

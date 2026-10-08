@@ -30,7 +30,7 @@ import httpx
 import websockets
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, ValidationError, field_validator, model_validator
 
-from galaius_core import MACHINE_AGENT_REQUESTS, MACHINE_MODELS, MachineAgentSettings, MachineAgentSettingsState, MachineAgentSettingsUpdate, PlacePath, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, MachineAgentAnswer, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachinePlaceChange, MachineRuntime, PlaceLevel, ScriptFile, ScriptLanguage, UserModelOrigin
+from galaius_core import MACHINE_AGENT_REQUESTS, MACHINE_MODELS, MachineProblem, MachineProblemCode, MachineAgentSettings, MachineAgentSettingsState, MachineAgentSettingsUpdate, PlacePath, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, MachineAgentAnswer, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachinePlaceChange, MachineRuntime, PlaceLevel, ScriptFile, ScriptLanguage, UserModelOrigin
 from galaius import USER_AGENT
 from galaius import prompt_mirror
 from galaius.agents.catalog import AgentCatalog
@@ -52,7 +52,7 @@ from galaius.vision_env import Report, VisionWorker, ensure_vision_env
 from galaius import gpu_scrub, user_models
 from galaius.sandbox import run_pooled
 from galaius.paths import UserPaths
-from galaius.upgrade.quiet import QuietPoint
+from galaius.upgrade.quiet import QuietPoint, UpgradeReady
 from galaius.upgrade.store import RuntimeStore
 from galaius.pinned_directory import PinnedDirectory
 from galaius.fence import EGRESS, FenceSpec, available
@@ -230,6 +230,21 @@ class MachineConfig(MachineAgentSettings):
         paths relative to the working directory."""
         return list(self.place_map().in_force("read"))
 
+
+    @staticmethod
+    def endpoint_on(server_url: str, path: str, *, socket: bool = False) -> str:
+        """`path` on the server at `server_url`: its routes live at the root, whatever path the address names."""
+        parsed = urlsplit(server_url)
+        scheme = ("wss" if parsed.scheme == "https" else "ws") if socket else parsed.scheme
+        return urlunsplit((scheme, parsed.netloc, path, "", ""))
+
+    def endpoint(self, path: str, *, socket: bool = False) -> str:
+        return self.endpoint_on(self.server_url, path, socket=socket)
+
+    @property
+    def authorization(self) -> dict[str, str]:
+        """What every HTTP request of this machine carries: its own token, and which galaius it is."""
+        return {"Authorization": f"Bearer {self.token.get_secret_value()}", "User-Agent": USER_AGENT}
     @field_validator("server_url")
     @classmethod
     def secure_server(cls, value: str) -> str:
@@ -471,8 +486,7 @@ class CommandFiles(MachineFiles):
     MAX_READ_BYTES: ClassVar[int] = 1024 * 1024 * 1024
 
     def _request(self, path: str, **options) -> urllib.request.Request:
-        headers = {"Authorization": f"Bearer {self.config.token.get_secret_value()}", "User-Agent": USER_AGENT, **options.pop("headers", {})}
-        return urllib.request.Request(f"{self.config.server_url}{path}", headers=headers, **options)
+        return urllib.request.Request(self.config.endpoint(path), headers={**self.config.authorization, **options.pop("headers", {})}, **options)
 
     @property
     def inbox(self) -> Path:
@@ -801,9 +815,14 @@ class MachineRunner:
     #: How often this PC's run records are settled against their processes (`registry.settle_gone`).
     settle_seconds = 60
     reconnect_seconds = (1, 2, 5, 10, 20)
+    #: Failed tries in a row (about 10 s with `reconnect_seconds`) before its page is told why.
+    report_after_failures = 3
 
     def __init__(self, config_path: Path | None = None) -> None:
         self.config_path = config_path or self.default_config_path()
+        #: What the last failed channel try met, and the last crash its page was told of (each said once).
+        self._last_failure = ""
+        self._reported_crash = ""
         #: Next event sequence per command in flight: every event of one command, from any path, is ordered.
         self._sequences: dict[UUID, int] = {}
         #: The vision model runtime kept loaded between steps (`MachineConfig.model_keep_warm_seconds`).
@@ -891,6 +910,15 @@ class MachineRunner:
         settler = asyncio.create_task(self._settle_runs())
         try:
             await self._connect(config)
+        except (PermissionError, UpgradeReady):
+            raise  # stopped on purpose, or leaving for a newer build: not a crash
+        except Exception as error:
+            # Whatever restarts it (systemd, launchd, the Windows task's loop), its page says why, once per cause.
+            said = f"{type(error).__name__}: {error}"
+            if said != self._reported_crash:
+                self._reported_crash = said
+                await asyncio.to_thread(self.report_problem, config, "crashed", said)
+            raise
         finally:
             settler.cancel()
             await asyncio.gather(settler, return_exceptions=True)
@@ -909,6 +937,9 @@ class MachineRunner:
     async def _connect(self, config: MachineConfig) -> None:
         delay_index = 0
         while True:
+            if delay_index == self.report_after_failures:
+                # Still not in after these tries: its page says why (the server forgets it once it is in).
+                await asyncio.to_thread(self.report_problem, config, "channel_unreachable", self._last_failure)
             endpoint = self._channel_url(config.server_url)
             try:
                 async with websockets.connect(
@@ -921,6 +952,7 @@ class MachineRunner:
                     max_size=1024 * 1024,
                 ) as socket:
                     delay_index = 0
+                    self._reported_crash = ""  # in again: a later crash, even the same one, is news to its page
                     logger.info("connected to %s", endpoint, extra={"machine_id": config.machine_id, "workspace_id": config.workspace_id})
                     if self._server_restarted:
                         self._server_restarted = False
@@ -939,6 +971,7 @@ class MachineRunner:
                     logger.error("machine token was revoked or rejected; connection stopped", extra={"machine_id": config.machine_id})
                     print("Machine token was revoked or rejected; connection stopped.", file=sys.stderr)
                     return
+                self._last_failure = f"the connection closed (code {error.code})"
                 logger.warning("connection closed (code %s)", error.code, extra={"machine_id": config.machine_id})
                 # The server restarted: a deploy may have brought a release, checked once it answers again.
                 self._server_restarted = self._server_restarted or error.code == 1012
@@ -949,9 +982,11 @@ class MachineRunner:
                     logger.error("machine token was refused (HTTP %s); connection stopped", error.response.status_code, extra={"machine_id": config.machine_id})
                     print("Machine token was revoked or rejected; connection stopped.", file=sys.stderr)
                     return
+                self._last_failure = f"the server refused the connection: HTTP {error.response.status_code}"
                 logger.warning("server refused the connection: HTTP %s", error.response.status_code, extra={"machine_id": config.machine_id})
             except (OSError, TimeoutError, websockets.InvalidHandshake) as error:
                 # A server mid-deploy answers the upgrade with no or a non-101 response: retry, never exit.
+                self._last_failure = f"{endpoint} unreachable: {error or type(error).__name__}"
                 logger.warning("server unreachable: %s", error or type(error).__name__, extra={"machine_id": config.machine_id})
             delay = self.reconnect_seconds[min(delay_index, len(self.reconnect_seconds) - 1)]
             logger.info("reconnecting in %s s", delay, extra={"machine_id": config.machine_id})
@@ -1773,9 +1808,19 @@ class MachineRunner:
 
     @staticmethod
     def _channel_url(server_url: str) -> str:
-        parsed = urlsplit(server_url)
-        scheme = "wss" if parsed.scheme == "https" else "ws"
-        return urlunsplit((scheme, parsed.netloc, "/v1/machine-channel", "", ""))
+        return MachineConfig.endpoint_on(server_url, "/v1/machine-channel", socket=True)
+
+    @classmethod
+    def report_problem(cls, config: MachineConfig, code: MachineProblemCode, detail: str = "") -> bool:
+        """Tells its server why this computer is not connected (`MachineProblem`, shown on its page):
+        over HTTPS with its machine token, which still answers when the channel does not. Best
+        effort, credentials masked: False when the server did not take it."""
+        problem = MachineProblem(code=code, detail=redact(detail, (config.token.get_secret_value(),)).strip()[-500:])
+        try:
+            response = httpx.post(config.endpoint("/v1/machine/problem"), json=problem.model_dump(mode="json", exclude_none=True), headers=config.authorization, timeout=10)
+        except httpx.HTTPError:
+            return False
+        return response.status_code == 204
 
 
 def shell_path(current: str, shell: str | None = None, timeout: float = 10) -> str:
