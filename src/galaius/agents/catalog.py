@@ -235,7 +235,7 @@ class AgentCatalog(BaseModel):
             if linked is None or linked.endpoint != connection.endpoint.rstrip("/"):
                 raise
             return cls.refresh(linked, allow_stale=allow_stale, cache_path=cache_path, transport=transport)
-        except (httpx.NetworkError, httpx.TimeoutException) as error:
+        except httpx.TransportError as error:  # unreachable, timed out, or dropped mid-answer (a restarting server)
             if not allow_stale:
                 raise CatalogConnectionError("agent catalog service is unreachable; sync was not applied") from error
             with connection.access_guard(generation):
@@ -292,7 +292,7 @@ class AgentCatalog(BaseModel):
             raise
         except CatalogConnectionError:
             raise
-        except (httpx.NetworkError, httpx.TimeoutException) as error:
+        except httpx.TransportError as error:  # unreachable, timed out, or dropped mid-answer (a restarting server)
             raise CatalogConnectionError("pinned agent revision is unavailable during network failure; latest revision is not a fallback") from error
         except ValueError as error:
             raise CatalogConnectionError("invalid exact agent or prompt revision received from server") from error

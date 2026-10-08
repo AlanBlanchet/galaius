@@ -182,6 +182,21 @@ def test_deleted_cache_resync_and_network_fallback_auth_revocation(catalog_home,
         AgentCatalog.refresh(connection, allow_stale=True, transport=httpx.MockTransport(offline))
 
 
+@pytest.mark.parametrize("failure", [httpx.ConnectError, httpx.ReadTimeout, httpx.RemoteProtocolError])
+def test_a_server_that_drops_the_connection_leaves_the_snapshot_in_use(catalog_home, failure):
+    """A restarting server (a deploy, the tunnel) drops connections mid-answer: launches keep using
+    the snapshot instead of failing, and a process reuses it instead of asking again at every read."""
+    connection = CatalogConnection(endpoint="http://127.0.0.1:8767", auth_mode="preview", workspace_id=uuid4())
+    value = snapshot()
+    AgentCatalog.refresh(connection, transport=catalog_transport(value))
+
+    def dropped(request):
+        raise failure("fixture: server disconnected without sending a response")
+
+    stale = AgentCatalog.refresh(connection, allow_stale=True, transport=httpx.MockTransport(dropped))
+    assert stale.stale and stale.snapshot.cursor == value.cursor
+
+
 @pytest.mark.parametrize("damage", ["cursor", "content", "role", "missing-prompt"])
 def test_invalid_server_snapshot_never_replaces_last_valid_cache(catalog_home, damage):
     connection = CatalogConnection(endpoint="http://127.0.0.1:8767", auth_mode="preview", workspace_id=uuid4())
