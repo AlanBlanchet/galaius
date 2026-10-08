@@ -113,4 +113,8 @@ function Install-FromArchives {
     }
 }
 
-Install-Galaius
+# uv and galaius write UTF-8; Windows PowerShell reads programs in the console's older code page,
+# which garbles a user folder name with an accent and then finds no galaius there.
+$consoleEncoding = [Console]::OutputEncoding
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+try { Install-Galaius } finally { [Console]::OutputEncoding = $consoleEncoding }
