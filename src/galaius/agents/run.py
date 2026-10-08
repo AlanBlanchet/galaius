@@ -24,6 +24,7 @@ from typing import BinaryIO, Mapping, Sequence
 from galaius_core import AgentRevisionRef
 from pydantic import BaseModel, ConfigDict
 
+from galaius.agents import agent_queue
 from galaius.agents import registry as reg
 from galaius.agents import quota
 from galaius.agents.ceiling import contained
@@ -840,6 +841,7 @@ def launch_continuation(
         if run.mesh_enabled and not already_meshed(provider.name, cwd=run.cwd) else None,
         coarse_accepted=coarse_accepted,
         base_url=routed.get("OPENAI_BASE_URL"),
+        **({"inbox_hook": agent_queue.inbox_hook(run.run_id)} if provider.reads_mid_turn else {}),
     )
     env = {**os.environ, **routed, "GALAIUS_RUN_ID": run.run_id, "GALAIUS_PARENT_RUN_ID": run.run_id}
     if provider.name == "claude":
@@ -1245,6 +1247,8 @@ async def run_agent(
             allowed_tools=allowed_tools, reasoning=candidate_effort, coarse_accepted=candidate_coarse_accepted,
             environment=env,
         )
+        if candidate_provider.reads_mid_turn:
+            command_kwargs["inbox_hook"] = agent_queue.inbox_hook(run_id)
         if candidate_routed.get("OPENAI_BASE_URL"):
             command_kwargs["base_url"] = candidate_routed["OPENAI_BASE_URL"]
         if policy.catalog is not None:

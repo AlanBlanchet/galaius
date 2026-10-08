@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -255,6 +256,36 @@ def ensure_dispatcher(run_id: str, *, cwd: str = ".") -> int:
         return ensure_dispatcher_locked(run_id, cwd=cwd)
 
 
+def inbox_hook(run_id: str) -> str:
+    """The command a turn of `run_id` runs after each of its tool calls (`galaius.inbox_hook`): it
+    hands the turn every message sent to it meanwhile (`inject`)."""
+    argv = [active_interpreter(), "-I", "-m", "galaius.inbox_hook", run_id, str(path(run_id))]
+    return subprocess.list2cmdline(argv) if sys.platform == "win32" else shlex.join(argv)
+
+
+def inject(run_id: str) -> list[str]:
+    """Every message still pending for `run_id`, handed to the turn running now: each claimed as an
+    attempt of that turn, anchored here, so the turn's own reply settles it (`dispatch` classifies
+    it once the turn ends, as it does an attempt whose dispatcher died). What it says is never sent
+    a second time; a message whose transcript entry is missing fails as `dispatch` fails it."""
+    texts = []
+    with reg.record_lock(run_id):
+        run = reg.get_run(run_id)
+        if run is None or not _active(run):
+            return []
+        anchor = reg.raw_line_count(run_id)
+        for item in _items(_state(run_id)):
+            if item.state != "pending":
+                continue
+            message = reg.message_for(run_id, item.message_id)
+            if message is None:
+                _replace_item_locked(run_id, item.id, state="failed", finished_at=time.time(), error="message transcript entry is missing")
+                continue
+            _replace_item_locked(run_id, item.id, state="running", started_at=time.time(), raw_index=anchor, attempt_token=uuid.uuid4().hex, error="")
+            texts.append(message.text)
+    return texts
+
+
 def _active(run: reg.AgentRun) -> bool:
     return run.status in ("running", "waiting") and run.process_running()
 
@@ -472,7 +503,13 @@ def main() -> None:
         RuntimeStore.default().register(Runtime.own(), os.getpid())  # a run can outlive an upgrade: its runtime stays until it ends
         dispatch(sys.argv[2], sys.argv[3] if len(sys.argv) == 4 else None)
         return
-    raise SystemExit("usage: python -m galaius.agents.agent_queue --dispatch RUN_ID")
+    if len(sys.argv) == 3 and sys.argv[1] == "--inject":
+        if texts := inject(sys.argv[2]):
+            said = "\n\n---\n\n".join(texts)
+            print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": (
+                f"New message, sent to you while you were working (answer it in this turn):\n\n{said}")}}))
+        return
+    raise SystemExit("usage: python -m galaius.agents.agent_queue --dispatch RUN_ID | --inject RUN_ID")
 
 
 if __name__ == "__main__":

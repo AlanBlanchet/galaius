@@ -368,3 +368,28 @@ def test_a_dispatcher_is_trusted_only_while_the_recorded_process_lives():
         child.kill()
         child.wait(timeout=10)
     assert not agent_queue._dispatcher_matches(recorded)
+
+
+def test_a_message_to_a_working_run_is_read_after_its_next_own_tool_call_and_settled_by_that_turn(monkeypatch):
+    """As in the editor: typed while the agent works, read after its next tool call (never a
+    sub-agent's), never replayed as a turn of its own; the turn's reply settles it."""
+    provider = _setup(monkeypatch)
+    run = reg.register(run_id="r2", pid=os.getpid(), provider=provider.name, name="worker", task="t", agent="tester", provider_session_id="vendor")
+    messaging.deliver_message("r2", "also check the footer", sender="operator")
+    hook = [sys.executable, "-m", "galaius.inbox_hook", "r2", str(agent_queue.path("r2"))]
+
+    def tool_call(**event):
+        return subprocess.run(hook, input=json.dumps({"hook_event_name": "PostToolUse", **event}), capture_output=True, text=True, check=True).stdout
+
+    assert tool_call(agent_id="sub-agent") == "" and [item.state for item in agent_queue.items("r2")] == ["pending"]
+    said = json.loads(tool_call())["hookSpecificOutput"]
+    assert said["hookEventName"] == "PostToolUse" and said["additionalContext"].endswith("also check the footer")
+    assert tool_call() == "" and [item.state for item in agent_queue.items("r2")] == ["running"]
+
+    with reg.open_raw_events("r2", append=True) as stream:
+        stream.write(json.dumps({"type": "assistant", "session_id": "vendor", "message": {"content": [{"type": "text", "text": "footer checked"}]}}).encode() + b"\n")
+        stream.write(json.dumps({"type": "result", "is_error": False, "session_id": "vendor"}).encode() + b"\n")
+    reg.finish("r2", exit_code=0, expected_pid=run.pid, expected_lifecycle_token=run.lifecycle_token)
+    agent_queue.dispatch("r2")
+
+    assert [item.state for item in agent_queue.items("r2")] == ["replied"] and provider.messages == []

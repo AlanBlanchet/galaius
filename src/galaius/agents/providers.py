@@ -182,6 +182,9 @@ class AgentProvider(ABC):
     #: How this CLI is told to load none of the folder's own settings (`PROJECT_SETTINGS_OFF`);
     #: None: it cannot be, so it never starts or resumes where they must not load.
     folder_settings_off: ClassVar[tuple[str, ...] | None] = None
+    #: Whether a turn of this CLI reads a message sent while it works after its current tool call
+    #: (`command` / `resume_command` take `inbox_hook`); otherwise the message waits for the turn's end.
+    reads_mid_turn: ClassVar[bool] = False
 
     def _setting_sources(self, environment: Mapping[str, str] | None = None) -> list[str]:
         """`folder_settings_off` when the folder's own settings must not load (`PROJECT_SETTINGS_OFF`
@@ -521,6 +524,7 @@ class ClaudeCodeProvider(AgentProvider):
 
     name = "claude"
     folder_settings_off = ("--setting-sources", "user")
+    reads_mid_turn = True
     native_providers = frozenset({"anthropic"})
     media_model_field = "claude_media_criteria"
     auth_home_env = ("CLAUDE_CONFIG_DIR",)
@@ -763,7 +767,8 @@ class ClaudeCodeProvider(AgentProvider):
                 reasoning: str | None = None,
                 agent_prompt: str | None = None, denied_tools: tuple[str, ...] = (),
                 image_paths: tuple[Path, ...] = (), coarse_accepted: bool = False,
-                base_url: str | None = None, environment: Mapping[str, str] | None = None) -> list[str]:
+                base_url: str | None = None, environment: Mapping[str, str] | None = None,
+                inbox_hook: str | None = None) -> list[str]:
         # `base_url` is unused here: Claude Code only ever speaks the Anthropic wire protocol
         # (ANTHROPIC_BASE_URL, read from its own process env, set by resolve_model's overlay) —
         # never OpenAI's, so a routed hf/vllm endpoint is never handed to this binary at all
@@ -783,7 +788,7 @@ class ClaudeCodeProvider(AgentProvider):
         argv += self.role_arguments(agent, agent_prompt, allowed_tools, denied_tools)
         if mcp_config:
             argv += ["--mcp-config", mcp_config]
-        argv += self._permission_flag(permission_mode) + self._setting_sources(environment)
+        argv += self._permission_flag(permission_mode) + self._setting_sources(environment) + self.inbox_arguments(inbox_hook)
         if reasoning is not None:
             argv += ["--effort", self.provider_thinking_level(reasoning)]
         # The prompt goes LAST, after "--": one starting with "-" (a markdown bullet) is the
@@ -814,6 +819,7 @@ class ClaudeCodeProvider(AgentProvider):
         agent_prompt: str | None = None, allowed_tools: list[str] | None = None,
         denied_tools: tuple[str, ...] = (), mcp_config: str | None = None,
         coarse_accepted: bool = False, base_url: str | None = None, fork_to: str | None = None,
+        inbox_hook: str | None = None,
     ) -> list[str]:
         """Continue an existing session using its provider session id (`fork_to`: as a copy)."""
         # base_url unused — see command()'s docstring note.
@@ -823,7 +829,16 @@ class ClaudeCodeProvider(AgentProvider):
             *(["--fork-session", "--session-id", fork_to] if fork_to else []),
             "--output-format", "stream-json",
             "--verbose",
-        ] + (["--model", model] if model else []) + self._permission_flag(permission_mode) + self._setting_sources() + self.role_arguments(agent, agent_prompt, allowed_tools, denied_tools) + (["--mcp-config", mcp_config] if mcp_config else []) + ["--", message]
+        ] + (["--model", model] if model else []) + self._permission_flag(permission_mode) + self._setting_sources() + self.inbox_arguments(inbox_hook) + self.role_arguments(agent, agent_prompt, allowed_tools, denied_tools) + (["--mcp-config", mcp_config] if mcp_config else []) + ["--", message]
+
+    @staticmethod
+    def inbox_arguments(hook: str | None) -> list[str]:
+        """`hook` run after each of the turn's own tool calls (`PostToolUse`; what it prints as
+        `additionalContext` the model reads before its next step). Settings given on the command
+        line load whatever `--setting-sources` says, so a cloned workspace keeps it too."""
+        if hook is None:
+            return []
+        return ["--settings", json.dumps({"hooks": {"PostToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": hook}]}]}})]
 
     #: Claude's two usage dialects: ``message.usage`` / ``result.usage`` (snake) and
     #: ``result.modelUsage[model]`` (camel). Each reports the UNCACHED prompt remainder, cache
