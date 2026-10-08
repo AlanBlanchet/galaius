@@ -59,40 +59,39 @@ def joining(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return home
 
 
-@pytest.mark.parametrize("tty, answers, flags, saved, said", [
+@pytest.mark.parametrize("tty, flags, saved, said", [
     # (run_agents, agent_roots, continue_conversations, answer_approvals)
-    (True, ["y", "dev, ~/work/", "y", "n"], {}, (True, ["dev", "work"], True, False), "start them in dev, work"),  # asked; ~ path made relative
-    (True, [""], {}, (False, [], False, False), "Agents: off here"),                              # Enter keeps the default No; nothing more asked
-    (True, ["y", "", "", ""], {}, (True, [], False, False), "no folder to start them in"),         # yes, Enter = no folder, opt-ins default No
-    (True, ["y", "dev,.secret,../x", "dev,nope/../work", "", "y"], {}, (True, ["dev", "work"], False, True), "Refused: .secret, ../x"),  # re-asked once
-    (True, ["y", ".secret", ".secret", "n", "n"], {}, (True, [], False, False), "Left out: .secret"),  # refused twice: left out
-    (True, [], {"agent_folders": ("work",)}, (True, ["work"], False, False), "start them in work"),  # a flag answers ahead, never asked
-    (True, [], {"agent_opt_ins": {"answer_approvals": True, "continue_conversations": None}}, (True, [], False, True), "approvals answered from the web: on"),
-    (True, [], {"agents": False}, (False, [], False, False), "Agents: off here"),
-    (False, [], {"yes": True}, (False, [], False, False), "Agents: off here"),                         # no terminal: defaults, never blocks
-    (False, [], {"yes": True, "agents": True, "agent_opt_ins": {"continue_conversations": True}}, (True, [], True, False), "continued from the web: on"),
+    (True, {}, (False, [], False, False), "Agents: off here. Turn them on from its page"),   # a terminal: still nothing asked
+    (False, {"yes": True}, (False, [], False, False), "Agents: off here"),
+    (True, {"agent_folders": ("work", "~/dev/")}, (True, ["work", "dev"], False, False), "start them in work, dev"),  # flags set them ahead
+    (True, {"agent_opt_ins": {"answer_approvals": True, "continue_conversations": None}}, (True, [], False, True), "approvals answered from the web: on"),
+    (True, {"agents": False}, (False, [], False, False), "Agents: off here"),
+    (False, {"yes": True, "agents": True, "agent_opt_ins": {"continue_conversations": True}}, (True, [], True, False), "continued from the web: on"),
 ])
-def test_agents_asked_once_at_login(joining: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
-                                    tty: bool, answers: list[str], flags: dict, saved: tuple, said: str) -> None:
-    replies = iter(answers)
+def test_a_joining_computer_is_asked_nothing_after_the_approval(joining: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+                                                                 tty: bool, flags: dict, saved: tuple, said: str) -> None:
+    """« It's just to install … everything should be done from the web »: once approved, the
+    service starts and nothing is asked here; flags given ahead still set the agent settings."""
+    events: list[str] = []
+    monkeypatch.setattr(type(MACHINE_SERVICE), "install", lambda self: events.append("service"))
     monkeypatch.setattr("sys.stdin.isatty", lambda: tty)
-    monkeypatch.setattr("builtins.input", lambda question: next(replies))
+    monkeypatch.setattr("builtins.input", lambda question: pytest.fail(f"asked: {question}"))
     account_login.login("https://galaius.example.org", allow_runs=False, open_browser=False, **{"yes": False, **flags})
     machine = MachineRunner().load()
     assert (machine.run_agents, list(machine.agent_roots), machine.continue_conversations, machine.answer_approvals) == saved
-    assert next(replies, None) is None  # every scripted answer was asked for, no more
-    assert said in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert events == ["service"] and said in out and f"#data?computer={machine.machine_id.hex}" in out
 
 
-def test_online_before_the_agent_questions(joining: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The web approval is the consent: no question stands between it and the service starting;
-    the agent questions come once the computer is online (its page shows it meanwhile)."""
-    events: list[str] = []
-    monkeypatch.setattr(type(MACHINE_SERVICE), "install", lambda self: events.append("service"))
-    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-    monkeypatch.setattr("builtins.input", lambda question: events.append(question) or "")
-    account_login.login("https://galaius.example.org", allow_runs=False, open_browser=False, yes=False)
-    assert events[0] == "service" and events[1].startswith("Let agents run on this computer")
+@pytest.mark.parametrize("flags, error", [
+    ({"agent_folders": (".secret",)}, "cannot let agents start in .secret"),
+    ({"agents": False, "agent_folders": ("dev",)}, "contradict"),
+    ({"agents": False, "agent_opt_ins": {"continue_conversations": True}}, "contradict"),
+])
+def test_bad_agent_flags_refused_before_sign_in(joining: Path, flags: dict, error: str) -> None:
+    with pytest.raises(LoginError, match=error):
+        account_login.login("https://galaius.example.org", allow_runs=False, yes=True, open_browser=False, **flags)
+    assert not MachineRunner.default_config_path().exists()
 
 
 @pytest.mark.parametrize("refused, running, code", [
@@ -116,17 +115,6 @@ def test_not_online_says_why_here_and_on_its_page(joining: Path, monkeypatch: py
     said = capsys.readouterr()
     assert [value for value, _ in reported] == [code] and "Connected:" not in said.out
     assert (refused or "Traceback: boom") in said.err and (refused or "0x1") in reported[0][1]
-
-
-@pytest.mark.parametrize("flags, error", [
-    ({"agent_folders": (".secret",)}, "cannot let agents start in .secret"),
-    ({"agents": False, "agent_folders": ("dev",)}, "contradict"),
-    ({"agents": False, "agent_opt_ins": {"continue_conversations": True}}, "contradict"),
-])
-def test_bad_agent_flags_refused_before_sign_in(joining: Path, flags: dict, error: str) -> None:
-    with pytest.raises(LoginError, match=error):
-        account_login.login("https://galaius.example.org", allow_runs=False, yes=True, open_browser=False, **flags)
-    assert not MachineRunner.default_config_path().exists()
 
 
 def test_login_flags_parse(monkeypatch: pytest.MonkeyPatch) -> None:

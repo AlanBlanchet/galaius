@@ -6,8 +6,9 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ## Unreleased
 
-- `galaius login` puts the computer online right after the web approval (no terminal question in
-  between) and waits up to a minute for the server to see it; the agent questions come after.
+- `galaius login` asks nothing after the web approval: the computer goes online at once (waiting
+  up to a minute for the server to see it) and its agent settings are set on its page on the web
+  (agents stay off until then; `--agents`, `--agent-folder`… still set them ahead).
 - A computer that does not come online says why, in the terminal and on its page: its background
   service could not start, stopped (with its last log lines or Windows Task Scheduler result),
   cannot reach the server, or crashed (`POST /v1/machine/problem`, galaius-core `MachineProblem`).

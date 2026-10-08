@@ -24,14 +24,12 @@ def login(
     Windows logon task), online within a minute or told why, here and on its page; agents and
     prompts synced. --server defaults to the server you installed from or last signed in to, else
     it is asked once; --allow-runs lets this CLI start workflow runs (default: read only); --yes
-    asks nothing; --no-browser only prints the page to open. Once it is online it asks
-    whether agents may run here and in which folders (under your home) the web may start them;
-    with agents on, whether the web may continue your editor conversations here (as a copy) and
-    answer the approvals a session asks for. --agents / --no-agents, --agent-folder NAME
-    (repeatable), --continue-conversations and --answer-approvals (each with --no-…; a folder or a
-    yes implies --agents) answer them ahead; without them and without a terminal (or with --yes)
-    agents stay off. On a computer already connected to this server it signs nothing in again and
-    asks the same questions (or applies the same flags), the current settings as defaults."""
+    asks nothing; --no-browser only prints the page to open. Nothing else is asked: agents stay off
+    until you turn them on from the computer's page on the web. --agents / --no-agents,
+    --agent-folder NAME (repeatable), --continue-conversations and --answer-approvals (each with
+    --no-…; a folder or a yes implies --agents) set them ahead. On a computer already connected to
+    this server it signs nothing in again, applies the flags, and asks the agent questions only
+    where web control was switched off on it (the current settings as defaults)."""
     try:
         sign_in(server, allow_runs=allow_runs, yes=yes, open_browser=browser, agents=agents, agent_folders=agent_folder,
                 agent_opt_ins={"continue_conversations": continue_conversations, "answer_approvals": answer_approvals})

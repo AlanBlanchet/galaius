@@ -372,7 +372,7 @@ class AgentChoice(BaseModel):
     def described(config: MachineConfig) -> str:
         """The result line, and how to change it later."""
         if not config.run_agents:
-            return "Agents: off here. To allow them, run  galaius login  again (it asks only the agent questions)."
+            return "Agents: off here. Turn them on from its page on the web (or here:  galaius machine agents on)."
         folders = list(config.agent_roots_by_name())
         extras = (f"\nEditor conversations continued from the web: {'on' if config.continue_conversations else 'off'}; approvals answered from the web: "
                   f"{'on' if config.answer_approvals else 'off'}. To change:  galaius machine agents on --continue on|off --approvals on|off")
@@ -417,11 +417,11 @@ def _answered(question: str) -> str:
 
 def login(server: str | None, *, allow_runs: bool, yes: bool, open_browser: bool, agents: bool | None = None, agent_folders: tuple[str, ...] = (),
           agent_opt_ins: Mapping[str, bool | None] = MappingProxyType({})) -> None:
-    """`agents` / `agent_folders` / `agent_opt_ins` (by `AgentChoice.opt_ins` field) answer the
-    agents questions ahead (scripts, the install line); unsaid and in a terminal without `yes`, they
-    are asked; else they stay as they are (off on a joining computer). Already connected to this
-    server (the one remembered when `server` is None): nothing is signed in again, only the agent
-    settings are asked or applied; connected to another server: moved there when that server holds
+    """`agents` / `agent_folders` / `agent_opt_ins` (by `AgentChoice.opt_ins` field) set the agent
+    settings ahead (scripts); a joining computer is asked nothing (agents off, set later on its page
+    on the web). Already connected to this server (the one remembered when `server` is None):
+    nothing is signed in again, the flags apply, and the agent questions are asked only where its
+    owner switched web control off; connected to another server: moved there when that server holds
     this computer's enrollment (`_moved`), else refused."""
     existing = _existing_machine()
     try:
@@ -511,22 +511,19 @@ def _login(account: AccountLogin, *, allow_runs: bool, yes: bool, open_browser: 
         print("Waiting for approval…", flush=True)
         issued = account.wait(http, started)
         workspace, approver = _shown(issued.workspace.name), _shown(issued.approved_by)
-        # The approval on the web is the consent: the computer goes online now, its page showing it
-        # (or why not) while any agent question below is still open here.
+        # The approval on the web is the consent, and every choice after it is made on the web (the
+        # PC's page; `remote_settings` is on for a new PC): nothing more is asked here. Flags given
+        # ahead still apply; otherwise agents stay off until its owner turns them on there.
         print(f"\nApproved by {approver} for the workspace “{workspace}”.")
         account.save(issued)
         account.remember()
-        runner = MachineRunner()
-        asking = agents is None and sys.stdin.isatty() and not yes
-        machine = runner.load() if asking else (agents or AgentChoice()).applied(runner)
+        machine = (agents or AgentChoice()).applied(MachineRunner())
         if account.brought_online(http, machine, issued.api_key.secret.get_secret_value()):
             print(f"Connected: {issued.machine.name} is now a machine in {workspace}")
             if not MACHINE_SERVICE.after_logout():
                 print("It runs while you are signed in to this computer; it starts again at your next sign-in.")
+            print(f"Its settings (agents, folders) are on its page: {account.server}/#data?computer={machine.machine_id.hex}")
         print(account.synced(CatalogConnection.load()))
-        if asking:
-            # Read by the running connection from its machine file with its next beat: no restart.
-            machine = AgentChoice.asked(machine).applied(runner)
         print("Every folder here is hidden from workflows, Data and agents. To open one:  galaius machine places <folder under your home> <level>  (e.g. interact-files sandbox)")
         print(AgentChoice.described(machine))
 
