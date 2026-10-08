@@ -50,20 +50,18 @@ class MachineEndpoint(Protocol):
 
 
 class ErrorReportDraft(BaseModel):
-    """One report prepared here and not sent: its question, whether the server took that question, and
-    what its upload will carry (already a valid `MachineErrorUpload`)."""
+    """One report prepared here and not sent: its question, whether the server took it, and what its
+    upload will carry — both already valid wire bodies, so a draft kept here can always be sent."""
 
     model_config = ConfigDict(frozen=True)
-    id: UUID
-    kind: MachineErrorKind
-    message: str
+    question: MachineErrorAsk
     upload: MachineErrorUpload
     created_at: datetime
     asked: bool = False
 
     @property
-    def question(self) -> MachineErrorAsk:
-        return MachineErrorAsk(id=self.id, kind=self.kind, message=self.message)
+    def id(self) -> UUID:
+        return self.question.id
 
 
 class MachineErrorReports(BaseModel):
@@ -77,18 +75,20 @@ class MachineErrorReports(BaseModel):
     MAX_MESSAGE: ClassVar[int] = 600
     #: Lines of a service's log read for a report (`MachineService.last_words`).
     LOG_LINES: ClassVar[int] = 400
-    keep: timedelta = timedelta(days=7)
+    keep: timedelta = timedelta(days=2)
+    """A draft older than this is dropped: its owner declined it, or let it pass (an accepted one is
+    uploaded within a day); the same problem then asks again."""
 
     def prepare(self, config: MachineEndpoint, kind: MachineErrorKind, message: str, lines: Iterable[str], secrets: tuple[str, ...] = ()) -> ErrorReportDraft | None:
         """Keeps the report and asks its owner (best effort, never raises): the draft, None when it could
         not be kept. The same problem already waiting is one draft, its question asked until taken."""
         hidden = (config.token.get_secret_value(), *secrets)
-        said = (self._masked(message, hidden).strip().splitlines() or [kind])[0][: self.MAX_MESSAGE]
-        waiting = next((draft for draft in self.drafts() if draft.message == said), None)
+        said = " ".join(self._masked(message, hidden).split())[: self.MAX_MESSAGE] or kind  # one line: tabs, newlines folded
+        waiting = next((draft for draft in self.drafts() if draft.question.message == said), None)
         if waiting is None:
             detail = self._masked("\n".join(lines), hidden)[-self.MAX_DETAIL:].lstrip("\n") or said
             try:
-                waiting = ErrorReportDraft(id=uuid4(), kind=kind, message=said, upload=MachineErrorUpload(detail=detail), created_at=datetime.now(UTC))
+                waiting = ErrorReportDraft(question=MachineErrorAsk(id=uuid4(), kind=kind, message=said), upload=MachineErrorUpload(detail=detail), created_at=datetime.now(UTC))
                 self._keep(waiting)
             except (OSError, ValidationError):
                 logger.exception("error report not kept")
@@ -154,7 +154,11 @@ class MachineErrorReports(BaseModel):
             logger.warning("error report question not taken now (%s); asked again in a minute", type(error).__name__)
             return draft
         if not answer.is_success:
-            logger.warning("error report question refused (%s)", answer.status_code)
+            if 400 <= answer.status_code < 500 and answer.status_code not in (408, 429):  # refused for good: never asked again
+                logger.warning("error report %s question refused (%s): dropped", draft.id, answer.status_code)
+                (self.folder / f"{draft.id}.json").unlink(missing_ok=True)
+            else:
+                logger.warning("error report question not taken now (%s); asked again in a minute", answer.status_code)
             return draft
         taken = draft.model_copy(update={"asked": True})
         try:

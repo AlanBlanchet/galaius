@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import traceback
 import logging
 import os
 import shutil
@@ -362,7 +363,7 @@ def test_a_channel_that_keeps_failing_tells_its_page_why_once(tmp_path: Path, mo
     assert "CERTIFICATE_VERIFY_FAILED" in question["message"] and token not in question["message"] and set(question) == {"id", "kind", "message"}
     reports = MachineRunner.error_reports()
     (draft,) = reports.drafts()
-    assert draft.asked and reports.prepare(config, "channel_unreachable", draft.message, ()).id == draft.id and len(sent) == 2, "the same problem is asked once"
+    assert draft.asked and reports.prepare(config, "channel_unreachable", draft.question.message, ()).id == draft.id and len(sent) == 2, "the same problem is asked once"
 
     # Its owner said yes on the PC's page: the next look uploads that draft, once, then forgets it.
     uploaded: list[httpx.Request] = []
@@ -395,6 +396,9 @@ def test_a_report_is_masked_and_its_question_asked_until_the_server_takes_it(tmp
     draft = reports.prepare(config, "crashed", "RuntimeError: gone", (line,))
     assert not draft.asked and "~/projets/out.md" in draft.upload.detail and token not in draft.upload.detail and "\x1b" not in draft.upload.detail
     assert reports.deliver(config) == 0 and len(posts) == 2 and reports.drafts()[0].asked, "asked again by the next look"
+    # A problem told with a tab (an OSError's words) is still one valid line: kept, asked, never blocking the others.
+    tabbed = reports.prepare(config, "crashed", "OSError:\tdenied\nsecond line", ())
+    assert tabbed is not None and tabbed.question.message == "OSError: denied second line" and reports.deliver(config) == 0
 
 
 def test_a_crash_is_told_to_its_page_once_per_cause_in_one_process(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1043,7 +1047,10 @@ def test_agents_stay_off_until_the_owner_turns_them_on_there(tmp_path: Path) -> 
 def test_a_report_from_the_service_log_keeps_only_what_galaius_wrote() -> None:
     """A program the PC ran writes into the same service log; only galaius's own lines and its
     tracebacks go into a report (its data is its owner's)."""
-    own = str(Path(galaius.__file__).resolve().parent)
+    try:
+        MachineErrorReports.own_lines(None)  # raises inside galaius's own code: a real traceback of it
+    except AttributeError as error:
+        raised = "".join(traceback.format_exception(error)).rstrip("\n").splitlines()
     log = "\n".join([
         '{"ts":"2026-10-08T17:44:05+00:00","level":"error","source":"machine","name":"galaius.machines","message":"connection crashed","exception":"RuntimeError: gone"}',
         "my-script: customer list exported to /srv/clients.csv",
@@ -1053,11 +1060,9 @@ def test_a_report_from_the_service_log_keeps_only_what_galaius_wrote() -> None:
         '  File "/srv/scripts/export.py", line 3, in <module>',
         "    rows = customers()",
         "ValueError: customer 4411 has no email",
-        "Traceback (most recent call last):",
-        f'  File "{own}/machines.py", line 930, in connect',
-        "    await self._connect(config)",
-        "websockets.InvalidStatus: 502",
+        *raised,
     ])
     kept = MachineErrorReports.own_lines(log)
     assert kept[0] == "2026-10-08T17:44:05+00:00 error galaius.machines: connection crashed (RuntimeError: gone)"
-    assert kept[1:] == ("Traceback (most recent call last):", f'  File "{own}/machines.py", line 930, in connect', "    await self._connect(config)", "websockets.InvalidStatus: 502")
+    assert kept[1:] == tuple(raised), "galaius's own traceback, whole: head, frames, the raised error"
+    assert "customer 4411" not in "\n".join(kept) and "/srv/clients.csv" not in "\n".join(kept)

@@ -31,6 +31,7 @@ from xml.sax.saxutils import escape
 
 from pydantic import BaseModel, ConfigDict
 
+from galaius.error_reports import MachineErrorReports
 from galaius.machines import JsonLines, MachineRunner
 from galaius.private_files import WindowsPrivateFiles
 from galaius.upgrade.quiet import UpgradeReady
@@ -100,6 +101,10 @@ class MachineService(BaseModel):
         """The end of what it last wrote (its log), to say why it is not running or not connected
         (`lines` of it: 3 said in a terminal, more for an error report)."""
         return self._tail(self.log_path(), lines)
+
+    def own_last_words(self) -> tuple[str, ...]:
+        """What galaius itself last wrote in its log (`MachineErrorReports.own_lines`): an error report's lines."""
+        return MachineErrorReports.own_lines(self.last_words(MachineErrorReports.LOG_LINES))
 
     @staticmethod
     def log_path() -> Path:
