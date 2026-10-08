@@ -213,6 +213,20 @@ jobs:
           $machine = (irm "$env:SERVER/test/state").machines[0]
           if (-not $machine.revoked -or $machine.online) { throw 'server did not see the logout' }
 
+      - name: The install line's sign-in asks nothing and finishes in the background (--detach, stdin closed)
+        run: |
+          cmd /c "galaius login --server %SERVER% --detach --no-browser < NUL > detach.out 2>&1"
+          if ($LASTEXITCODE) { Get-Content detach.out; throw "--detach failed (exit $LASTEXITCODE)" }
+          $said = Get-Content -Encoding utf8 detach.out
+          $said
+          if ($said[0] -ne 'Installé : continuez dans votre navigateur') { throw 'not the one closing line' }
+          $code = ([regex]'[B-Z]{4}-[B-Z]{4}').Match($said -join ' ').Value
+          irm -Method Post "$env:SERVER/test/approve" -ContentType application/json -Body (@{ user_code = $code } | ConvertTo-Json) | Out-Null
+          foreach ($i in 1..90) { $m = (irm "$env:SERVER/test/state").machines | Where-Object { -not $_.revoked } | Select-Object -Last 1; if ($m.online) { break }; Start-Sleep 1 }
+          Get-Content -Encoding utf8 "$HOME\.config\galaius\login.log"
+          if (-not $m.online) { throw 'the detached sign-in did not bring the PC online' }
+          galaius logout
+
       - name: Windows unit tests (private files, lock, scripts in PowerShell and cmd, login, safe folders)
         run: >-
           uv run --frozen python -m pytest -q -rs tests/test_private_files.py tests/test_account_login.py tests/test_machines.py

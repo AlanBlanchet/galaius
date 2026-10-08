@@ -12,6 +12,7 @@ from pydantic import SecretStr
 
 from galaius import account_login
 from galaius.account_login import AccountLogin, LoginError
+from galaius_core import DeviceLoginStarted
 from galaius.agents.catalog_connection import CatalogConnection
 from galaius.machine_service import MACHINE_SERVICE
 from galaius.machines import MachineRunner
@@ -53,7 +54,7 @@ def joining(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     issued = SimpleNamespace(workspace=SimpleNamespace(id=uuid4(), name="My workspace"), approved_by="owner", machine=SimpleNamespace(id=uuid4(), name="pc2"),
                              machine_token=SecretStr(uuid4().hex * 2), **{"api_key": SimpleNamespace(**{"secret": SecretStr(uuid4().hex * 2)})})
     for name, value in {"skew": lambda self, http: None, "start": lambda self, http, runs: SimpleNamespace(verification_uri_complete="https://x/link", user_code="ABCD-EFGH", expires_in=600),
-                        "wait": lambda self, http, started: issued, "online": lambda self, http, machine, key: True, "revoke": lambda self, http, key: {}}.items():
+                        "wait": lambda self, http, started, current=None: issued, "online": lambda self, http, machine, key: True, "revoke": lambda self, http, key: {}}.items():
         monkeypatch.setattr(account_login.AccountLogin, name, value)
     monkeypatch.setattr(account_login.AccountLogin, "synced", staticmethod(lambda connection: "Synced: nothing"))
     monkeypatch.setattr(account_login.AccountLogin, "page", lambda self, http, machine: f"{self.server}/plateform/#data?computer={machine.machine_id.hex}")
@@ -232,32 +233,58 @@ def test_detach_opens_the_approval_hands_the_wait_over_and_says_one_line(joining
     """The install line: the code is started and its page opened here, the waiting handed to a
     detached `galaius login --resume` (its sign-in on stdin, never on its command line), and the
     installer ends on « Installé : continuez dans votre navigateur » (plus the link where no browser opened)."""
-    started = SimpleNamespace(verification_uri_complete="https://x/plateform/link?code=ABCD-EFGH", revealed=lambda: {"device_code": "d" * 40, "user_code": "ABCD-EFGH"})
-    monkeypatch.setattr(account_login.AccountLogin, "begun", lambda self, http, runs, browser, quiet=False: (started, opened))
-    handed: list[tuple[list[str], bytes]] = []
-    monkeypatch.setattr(account_login, "_detached", lambda arguments, payload: handed.append((arguments, payload)))
+    started = DeviceLoginStarted(device_code="d" * 40, user_code="BCDF-GHJK", verification_uri="https://x/plateform/link",
+                                 verification_uri_complete="https://x/plateform/link?code=BCDF-GHJK", expires_in=600, interval=5)
+    monkeypatch.setattr(account_login.AccountLogin, "begun", lambda self, http, runs, browser: (started, opened))
+    handed: list[bytes] = []
+    monkeypatch.setattr(account_login, "_detached", lambda account, payload: handed.append(payload))
     monkeypatch.setattr("builtins.input", lambda question: pytest.fail(f"asked: {question}"))
-    account_login.login("https://galaius.example.org", allow_runs=False, open_browser=True, detach=True)
-    [(arguments, payload)] = handed
-    assert arguments[:4] == ["login", "--resume", "--server", "https://galaius.example.org"] and "d" * 40 not in " ".join(arguments)
-    assert json.loads(payload)["device_code"] == "d" * 40
+    account_login.login("https://galaius.example.org", allow_runs=False, open_browser=True, detach=True, agent_folders=("dev",))
+    [payload] = handed
+    handoff = account_login.HandedOff.model_validate_json(payload)
+    assert handoff.started.device_code.get_secret_value() == "d" * 40 and handoff.agents.folders == ("dev",) and handoff.current()
     out = capsys.readouterr().out.splitlines()
     assert out[0] == "Installé : continuez dans votre navigateur" and (len(out) == 1) == opened
     assert not MachineRunner.default_config_path().exists()  # saved only by the detached process, once approved
 
 
-def test_resume_finishes_what_detach_handed_over(joining: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    started = {"device_code": "d" * 40, "user_code": "BCDF-GHJK", "verification_uri": "https://x/link", "verification_uri_complete": "https://x/link?code=BCDF-GHJK", "expires_in": 600, "interval": 5}
-    monkeypatch.setattr("sys.stdin", SimpleNamespace(buffer=io.BytesIO(json.dumps(started).encode()), isatty=lambda: False))
-    waited: list[str] = []
+def test_resume_finishes_what_detach_handed_over_and_a_newer_install_takes_over(joining: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    started = DeviceLoginStarted(device_code="d" * 40, user_code="BCDF-GHJK", verification_uri="https://x/link",
+                                 verification_uri_complete="https://x/link?code=BCDF-GHJK", expires_in=600, interval=5)
+    account_login.HandedOff.mark_path().parent.mkdir(parents=True, exist_ok=True)
+    account_login.HandedOff.mark_path().write_text("mine\n")
+    handoff = account_login.HandedOff(started=started, mark="mine")
+    monkeypatch.setattr("sys.stdin", SimpleNamespace(buffer=io.BytesIO(handoff.payload()), isatty=lambda: False))
+    seen: list[bool] = []
     issued = account_login.AccountLogin.wait
-    monkeypatch.setattr(account_login.AccountLogin, "wait", lambda self, http, value: waited.append(value.device_code.get_secret_value()) or issued(self, http, value))
+    monkeypatch.setattr(account_login.AccountLogin, "wait", lambda self, http, value, current: seen.append(current()) or issued(self, http, value))
     account_login.login("https://galaius.example.org", allow_runs=False, open_browser=False, resume=True)
-    assert waited == ["d" * 40] and MachineRunner().load().run_agents is False
+    assert seen == [True] and MachineRunner().load().run_agents is False
+    account_login.HandedOff.mark_path().write_text("a later install\n")
+    assert not handoff.current()
 
 
-def test_detach_is_a_real_detached_process(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Its own session (outlives the installer and its terminal), its output in login.log, the payload on stdin."""
+def test_a_superseded_waiter_stops(monkeypatch: pytest.MonkeyPatch) -> None:
+    started = DeviceLoginStarted(device_code="d" * 40, user_code="BCDF-GHJK", verification_uri="https://x/link",
+                                 verification_uri_complete="https://x/link?code=BCDF-GHJK", expires_in=600, interval=1)
+    monkeypatch.setattr(account_login.time, "sleep", lambda seconds: None)
+    with httpx.Client(transport=httpx.MockTransport(lambda request: pytest.fail("polled after being superseded"))) as http, pytest.raises(LoginError, match="newer install"):
+        AccountLogin.at("https://galaius.example.org").wait(http, started, lambda: False)
+
+
+def test_detach_on_a_connected_computer_opens_its_page_and_restarts_it_detached(connected: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    handed: list[bytes] = []
+    pages: list[str] = []
+    monkeypatch.setattr(account_login, "_detached", lambda account, payload: handed.append(payload))
+    monkeypatch.setattr(AccountLogin, "opened", staticmethod(lambda url: pages.append(url) or True))
+    capsys.readouterr()
+    account_login.login(None, allow_runs=False, open_browser=True, detach=True)
+    assert handed == [b""] and pages and "#data?computer=" in pages[0]
+    assert capsys.readouterr().out.splitlines() == ["Installé : continuez dans votre navigateur"]
+
+
+def test_detach_is_a_real_detached_process_with_a_private_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Its own session (outlives the installer and its terminal), its output in login.log (0600), the payload on stdin."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     seen: dict = {}
 
@@ -268,6 +295,6 @@ def test_detach_is_a_real_detached_process(tmp_path: Path, monkeypatch: pytest.M
             self.stdin.close = lambda: seen.setdefault("payload", self.stdin.getvalue())
 
     monkeypatch.setattr(account_login.subprocess, "Popen", Child)
-    account_login._detached(["login", "--resume"], b"secret")
-    assert seen["argv"][1:] == ["-m", "galaius", "login", "--resume"] and seen["payload"] == b"secret"
-    assert seen["start_new_session"] is True and Path(seen["stdout"].name) == tmp_path / "galaius" / "login.log"
+    account_login._detached(AccountLogin.at("https://galaius.example.org"), b"secret")
+    assert seen["argv"][1:] == ["-m", "galaius", "login", "--resume", "--server", "https://galaius.example.org"] and seen["payload"] == b"secret"
+    assert seen["start_new_session"] is True and (tmp_path / "galaius" / "login.log").stat().st_mode & 0o777 == 0o600

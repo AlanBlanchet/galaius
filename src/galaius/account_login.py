@@ -14,13 +14,14 @@ import asyncio
 import json
 import os
 import platform
+import secrets
 import socket
 import subprocess
 import sys
 import time
 import webbrowser
 from importlib.metadata import version
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from types import MappingProxyType
 from typing import ClassVar, Literal
@@ -164,27 +165,30 @@ class AccountLogin(BaseModel):
             raise LoginError(f"the server refused to start a sign-in (HTTP {answer.status_code})")
         return DeviceLoginStarted.model_validate_json(answer.content)
 
-    def begun(self, http: httpx.Client, runs: bool, open_browser: bool, *, quiet: bool = False) -> tuple[DeviceLoginStarted, bool]:
-        """A sign-in code started, and whether its approval page opened in this computer's browser
-        (`quiet`: the link is not printed, the installer says one line instead)."""
-        if (skew := self.skew(http)) is not None and not quiet:
+    def begun(self, http: httpx.Client, runs: bool, open_browser: bool) -> tuple[DeviceLoginStarted, bool]:
+        """A sign-in code started, and whether its approval page opened in this computer's browser."""
+        if (skew := self.skew(http)) is not None:
             print(f"Note: {skew}.", file=sys.stderr)
         started = self.start(http, runs)
-        if not quiet:
-            print(f"To connect this computer, open this page and allow it:\n\n    {started.verification_uri_complete}\n")
-            print(f"Check the page shows the code  {started.user_code}  (expires in {started.expires_in // 60} min).")
-        opened = False
-        if open_browser and (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY") or sys.platform in {"darwin", "win32"}):
-            try:
-                opened = webbrowser.open(started.verification_uri_complete)
-            except webbrowser.Error:
-                opened = False
-        return started, opened
+        return started, open_browser and self.opened(started.verification_uri_complete)
 
-    def wait(self, http: httpx.Client, started: DeviceLoginStarted) -> DeviceLoginIssued:
+    @staticmethod
+    def opened(url: str) -> bool:
+        """`url` opened in this computer's browser, when it has one to open it."""
+        if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY") or sys.platform in {"darwin", "win32"}):
+            return False
+        try:
+            return webbrowser.open(url)
+        except webbrowser.Error:
+            return False
+
+    def wait(self, http: httpx.Client, started: DeviceLoginStarted, current: Callable[[], bool] = lambda: True) -> DeviceLoginIssued:
+        """The approval collected; `current` false = a newer sign-in took over this one (it stops)."""
         interval, deadline = started.interval, time.monotonic() + min(self.patience, started.expires_in + 30)
         while time.monotonic() < deadline:
             time.sleep(interval)
+            if not current():
+                raise LoginError("a newer install of this computer took over this sign-in")
             try:
                 answer = http.post("/v1/device/token", json={"device_code": started.device_code.get_secret_value()})
             except httpx.TransportError:
@@ -314,11 +318,6 @@ class AgentChoice(BaseModel):
     rules: ClassVar[str] = ("a folder must be strictly below {base}, not hidden (.name), not a symlink, not Galaius's own folder, "
                             "and not inside or around a folder shared with workflows")
 
-    def flags(self) -> list[str]:
-        """These settings as the `galaius login` flags that give them (a detached sign-in takes them so)."""
-        return [("--agents" if self.run_agents else "--no-agents"), *(item for folder in self.folders for item in ("--agent-folder", folder)),
-                *((f"--{field}" if getattr(self, field) else f"--no-{field}").replace("_", "-") for field in self.opt_ins)]
-
     @staticmethod
     def joining() -> MachineConfig:
         """The machine `AccountLogin.save` writes, as far as the folder rules and `of` read it (no server yet)."""
@@ -412,9 +411,13 @@ def login(server: str | None, *, allow_runs: bool, open_browser: bool, agents: b
         account = AccountLogin.parsed(existing.server_url) if existing is not None and server is None else AccountLogin.at(server)
         if detach:
             _handed_off(account, existing, allow_runs=allow_runs, open_browser=open_browser, agents=AgentChoice.given(agents, agent_folders, agent_opt_ins, existing or AgentChoice.joining()))
+        elif resume:
+            _resumed(account)
         elif existing is None:
             with account.client() as http:
-                started = _resumed() if resume else account.begun(http, allow_runs, open_browser)[0]
+                started, _ = account.begun(http, allow_runs, open_browser)
+                print(f"To connect this computer, open this page and allow it:\n\n    {started.verification_uri_complete}\n")
+                print(f"Check the page shows the code  {started.user_code}  (expires in {started.expires_in // 60} min).")
                 _joined(account, http, started, agents=AgentChoice.given(agents, agent_folders, agent_opt_ins, AgentChoice.joining()))
         elif AccountLogin.parsed(existing.server_url) != account:
             _moved(account, existing, agents=AgentChoice.given(agents, agent_folders, agent_opt_ins, existing))
@@ -428,55 +431,106 @@ def login(server: str | None, *, allow_runs: bool, open_browser: bool, agents: b
 INSTALLED = "Installé : continuez dans votre navigateur"
 
 
+class HandedOff(BaseModel):
+    """What `galaius login --detach` hands its detached waiter on stdin (never on its command line):
+    the sign-in it started, the settings given ahead, and the mark that it is still the current one
+    (`current`: a later install writes a new one, and the earlier waiter stops)."""
+
+    model_config = ConfigDict(frozen=True)
+    started: DeviceLoginStarted
+    agents: AgentChoice | None = None
+    allow_runs: bool = False
+    mark: str
+
+    def payload(self) -> bytes:
+        return json.dumps({**self.model_dump(mode="json"), "started": self.started.revealed()}).encode()
+
+    @staticmethod
+    def mark_path() -> Path:
+        return UserPaths.config() / "login.wait"
+
+    def current(self) -> bool:
+        try:
+            return self.mark_path().read_text(encoding="utf-8").strip() == self.mark
+        except OSError:
+            return False
+
+
 def _handed_off(account: AccountLogin, existing: MachineConfig | None, *, allow_runs: bool, open_browser: bool, agents: AgentChoice | None) -> None:
-    """The installers' sign-in, nothing asked and nothing waited for here: a new computer's code is
-    started and its approval page opened in the browser now, then a detached `galaius login
-    --resume` (its output in `login.log`) waits for the approval, saves the credentials and starts
-    the background service; a connected computer's restart is detached the same way. Flags are
-    applied here, before the hand-off."""
-    if agents is not None and existing is not None:
-        agents.applied(MachineRunner())
-    arguments = ["login", "--resume", "--server", account.server, *(["--allow-runs"] if allow_runs else [])]
-    if existing is not None:
-        _detached(arguments, b"")
-        print(INSTALLED)
-        return
-    with account.client() as http:
-        started, opened = account.begun(http, allow_runs, open_browser, quiet=True)
-    if agents is not None:
-        arguments += agents.flags()
-    _detached(arguments, json.dumps(started.revealed()).encode())
+    """The installers' sign-in, nothing asked and nothing waited for here. A new computer: its code
+    is started and its approval page opened in the browser now, and a detached `galaius login
+    --resume` (`HandedOff` on its stdin, its output in `login.log`) waits for the approval, saves
+    the credentials and starts the background service. A connected one: a server it cannot move
+    to is refused here; its page opens in the browser and its restart is detached the same way."""
+    if existing is None:
+        with account.client() as http:
+            started, opened = account.begun(http, allow_runs, open_browser)
+        mark = secrets.token_hex(16)
+        HandedOff.mark_path().parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        HandedOff.mark_path().write_text(mark + "\n", encoding="utf-8")
+        _detached(account, HandedOff(started=started, agents=agents, allow_runs=allow_runs, mark=mark).payload())
+        link = started.verification_uri_complete
+    else:
+        if AccountLogin.parsed(existing.server_url) != account and _channel_accepts(account.server, existing.token.get_secret_value()) != "accepted":
+            raise LoginError(f"this computer is connected to {existing.server_url} and {account.server} does not know it; run `galaius logout` first")
+        if agents is not None:
+            agents.applied(MachineRunner())
+        _detached(account, b"")
+        with account.client() as http:
+            link = account.page(http, existing)
+        opened = open_browser and account.opened(link)
     print(INSTALLED)
     if not opened:
-        print(f"Ouvrez cette page pour autoriser ce PC : {started.verification_uri_complete}")
+        print(f"Ouvrez cette page : {link}")
 
 
-def _detached(arguments: list[str], payload: bytes) -> None:
-    """`galaius <arguments>` in its own session, outliving this process and its terminal, its
-    output appended to `login.log`, `payload` on its stdin."""
+def _detached(account: AccountLogin, payload: bytes) -> None:
+    """`galaius login --resume` in its own session, outliving this process and its terminal, its
+    output appended to `login.log` (private to this user), `payload` on its stdin."""
     log = UserPaths.config() / "login.log"
     log.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    with open(log, "ab") as output:
-        options: dict = {"stdin": subprocess.PIPE, "stdout": output, "stderr": output, "close_fds": True}
-        if sys.platform == "win32":
-            # No console, its own group, out of the window's job when Windows lets it (else it stays in it).
-            flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
-            try:
-                child = subprocess.Popen([sys.executable, "-m", "galaius", *arguments], creationflags=flags | subprocess.CREATE_BREAKAWAY_FROM_JOB, **options)
-            except OSError:
-                child = subprocess.Popen([sys.executable, "-m", "galaius", *arguments], creationflags=flags, **options)
-        else:
-            child = subprocess.Popen([sys.executable, "-m", "galaius", *arguments], start_new_session=True, **options)
-    child.stdin.write(payload)
-    child.stdin.close()
-
-
-def _resumed() -> DeviceLoginStarted:
-    """The sign-in `_handed_off` started, as it handed it over on stdin."""
+    command = [sys.executable, "-m", "galaius", "login", "--resume", "--server", account.server]
+    # Windows: no console, its own group, out of the window's job (else closing the window could end it).
+    detach = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW | subprocess.CREATE_BREAKAWAY_FROM_JOB} \
+        if sys.platform == "win32" else {"start_new_session": True}
+    with os.fdopen(os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "ab") as output:
+        if sys.platform != "win32":
+            os.fchmod(output.fileno(), 0o600)
+        try:
+            child = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=output, stderr=output, close_fds=True, **detach)
+        except OSError:
+            if sys.platform != "win32":
+                raise
+            output.write(b"The window's job forbids leaving it: the sign-in waits inside it (closing the window may end it).\n")
+            output.flush()
+            child = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=output, stderr=output, close_fds=True,
+                                     creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW)
     try:
-        return DeviceLoginStarted.model_validate_json(sys.stdin.buffer.read())
+        child.stdin.write(payload)
+        child.stdin.close()
+    except OSError:
+        raise LoginError(f"the background sign-in did not start; see {log}") from None
+
+
+def _resumed(account: AccountLogin) -> None:
+    """The detached waiter: what `_handed_off` handed over on stdin, finished. Nothing handed over:
+    the connected computer's restart."""
+    raw = sys.stdin.buffer.read()
+    existing = _existing_machine()
+    if not raw.strip():
+        if existing is None:
+            raise LoginError("--resume restarts a connected computer, and this one is not connected")
+        if AccountLogin.parsed(existing.server_url) != account:
+            _moved(account, existing, agents=None)
+        else:
+            _reconfigured(account, existing, agents=None)
+        return
+    try:
+        handed = HandedOff.model_validate_json(raw)
     except ValueError as error:
         raise LoginError(f"--resume takes the sign-in `galaius login --detach` hands over ({error})") from None
+    with account.client() as http:
+        _joined(account, http, handed.started, agents=handed.agents, current=handed.current)
 
 
 def _moved(account: AccountLogin, existing: MachineConfig, *, agents: AgentChoice | None) -> None:
@@ -540,12 +594,12 @@ def _reconfigured(account: AccountLogin, existing: MachineConfig, *, agents: Age
             print("Online: its background service restarted on this galaius build.")
 
 
-def _joined(account: AccountLogin, http: httpx.Client, started: DeviceLoginStarted, *, agents: AgentChoice | None) -> None:
+def _joined(account: AccountLogin, http: httpx.Client, started: DeviceLoginStarted, *, agents: AgentChoice | None, current: Callable[[], bool] = lambda: True) -> None:
     """The approval awaited, then this computer saved, online (or told why) and synced. The
     approval on the web is the consent, and every choice after it is made on the PC's page
     (`remote_settings` is on for a new PC); flags given ahead still apply, else agents stay off."""
     print(f"Waiting for approval at {started.verification_uri_complete} …", flush=True)
-    issued = account.wait(http, started)
+    issued = account.wait(http, started, current)
     workspace, approver = _shown(issued.workspace.name), _shown(issued.approved_by)
     print(f"\nApproved by {approver} for the workspace “{workspace}”.")
     account.save(issued)
