@@ -34,6 +34,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from galaius.paths import UserPaths
+
 #: A vendor CLI's own refusal for QUOTA or RATE LIMIT — provider-neutral by construction, keyed
 #: on (provider, model) by the caller, so one shared pattern never needs to tell providers apart.
 #: Claude Code: "You've reached your <model> limit. Switch to another model." Codex (source:
@@ -377,7 +379,7 @@ class Block(BaseModel):
 
 
 def _path() -> Path:
-    return Path.home() / ".galaius" / "out" / "agents" / "quota-cooldowns.json"
+    return UserPaths.agents() / "quota-cooldowns.json"
 
 
 def _cooldown() -> float:

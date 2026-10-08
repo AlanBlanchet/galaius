@@ -38,6 +38,7 @@ from galaius.agents.catalog_connection import CatalogConnection
 from galaius.agents.ceiling import end_run_scope
 from galaius.agents.providers import PROVIDERS, DeniedTool
 from galaius.fence import FenceSpec
+from galaius.paths import UserPaths
 from galaius.file_lock import exclusive
 from galaius.models import TokenMix
 from galaius.pinned_directory import DescriptorDirectory, PinnedDirectory
@@ -429,10 +430,7 @@ def project_for(cwd: str) -> str:
 
 def agents_dir() -> Path:
     """Shared registry path; harnesses set the override before launching every participant."""
-    override = os.environ.get("GALAIUS_AGENTS_DIR")
-    if override:
-        return Path(override).expanduser()
-    return Path.home() / ".galaius" / "out" / "agents"
+    return UserPaths.agents()
 
 
 def _ensure_registry_directory() -> Path:

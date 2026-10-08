@@ -24,6 +24,13 @@ class UserPaths:
         return Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share") / "galaius"
 
     @staticmethod
+    def agents() -> Path:
+        """The agent registry (runs, their streams, queues, quota cooldowns): `GALAIUS_AGENTS_DIR` when
+        set (a probe or test keeps its runs out of the owner's), else `~/.galaius/out/agents`."""
+        override = os.environ.get("GALAIUS_AGENTS_DIR")
+        return Path(override).expanduser() if override else Path.home() / ".galaius" / "out" / "agents"
+
+    @staticmethod
     def launcher() -> Path | None:
         """Where new launches start (`~/.local/bin/galaius`); None on Windows (uv's own entry)."""
         return None if sys.platform == "win32" else Path(os.environ.get("XDG_BIN_HOME") or Path.home() / ".local" / "bin") / "galaius"

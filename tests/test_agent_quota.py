@@ -254,3 +254,15 @@ def test_a_spoken_reset_in_a_named_zone_is_read_as_its_instant(said, now, reopen
 def test_a_spoken_reset_only_ever_shortens_the_block(said, now, blocked_for):
     moment = datetime.fromisoformat(now).timestamp()
     assert quota.record_refusal("claude", "m", said=said, now=moment) == pytest.approx(moment + blocked_for)
+
+
+def test_a_probe_refused_for_quota_never_blocks_the_owners_own_runs(tmp_path, monkeypatch):
+    """A measurement run in its own registry (`GALAIUS_AGENTS_DIR`) keeps its cooldown there."""
+    owner, probe = tmp_path / "owner-agents", tmp_path / "probe-agents"
+    monkeypatch.setenv("GALAIUS_AGENTS_DIR", str(probe))
+    quota.record_refusal("claude", "claude-opus-5-5", said="You've reached your limit")
+    assert quota.blocked_until("claude", "claude-opus-5-5") is not None
+
+    monkeypatch.setenv("GALAIUS_AGENTS_DIR", str(owner))
+    assert quota.blocked_until("claude", "claude-opus-5-5") is None
+    assert (probe / "quota-cooldowns.json").exists() and not (owner / "quota-cooldowns.json").exists()
