@@ -18,6 +18,8 @@ from galaius_core import AgentCatalogSnapshot, AgentRevision, AgentRevisionRef, 
 
 from galaius.agents.catalog import AgentCatalog, CatalogSnapshot
 from galaius.agents.catalog_connection import CatalogAuthenticationError, CatalogConnection
+from galaius.agents.providers import PROVIDERS
+from galaius.agents.run import _role_prompt
 from galaius.pinned_directory import PathDirectory
 from galaius.agents.tool_gateway import AgentToolList, GatewayTool
 from galaius.prompt_projection import (
@@ -476,14 +478,14 @@ CatalogConnection.path = classmethod(lambda cls: root / 'connection.json')
 connection = CatalogConnection(endpoint=f'http://127.0.0.1:{8817 + ordinal}',
     auth_mode='preview', workspace_id=UUID(int=ordinal + 1))
 projection.compile_server_prompt_projection = lambda *args: source
-read_state = projection._installed_document
-def observed_read(path):
+read_state = projection.InstalledState.load
+def observed_read(cls, path):
     result = read_state(path)
     print('READ', flush=True)
     if ordinal == 0:
         sys.stdin.readline()
     return result
-projection._installed_document = observed_read
+projection.InstalledState.load = classmethod(observed_read)
 print('START', flush=True)
 projection.install_server_prompt_projection(connection, root / 'home', root / 'vscode',
     root / 'state/installed.json')
@@ -559,3 +561,39 @@ def test_projection_gives_a_role_the_external_tools_the_server_connects_it_to(tm
                                    GatewayTool(name='ext__Notion__search', server_id=str(uuid4()), tool='search')))
     outputs = _server_outputs(catalog_fixture(worker_tools=worker_tools), tmp_path / 'home', tmp_path / 'projection', gateway)
     assert _worker_header(outputs)['tools'] == expected
+
+
+@pytest.mark.parametrize("provider", ["claude", "codex"])
+@pytest.mark.parametrize("case,role,sent_by", [
+    ("installed", "main", ()), ("other_role", "worker", ("claude", "codex")),
+    ("stale_projection", "main", ("claude", "codex")), ("edited_file", "main", ("claude", "codex")),
+    ("no_install", "main", ("claude", "codex")),
+    # Codex reads AGENTS.override.md INSTEAD of AGENTS.md; Claude ignores it.
+    ("codex_override", "main", ("codex",)),
+])
+def test_coordinator_body_is_sent_once(tmp_path, monkeypatch, provider, case, role, sent_by):
+    """The coordinator's body reaches the model once: from the CLI's installed user instructions
+    file when it holds this exact snapshot's composition, else in the role prompt as before."""
+    monkeypatch.setenv('XDG_STATE_HOME', str(tmp_path / 'xdg'))
+    catalog = catalog_fixture()
+    home, projection = tmp_path / 'home', tmp_path / 'projection'
+    stage(_server_outputs(catalog, home, projection), projection)
+    manifest = json.loads((projection / MANIFEST_NAME).read_text())
+    manifest['catalog_cursor'] = 'older-snapshot' if case == 'stale_projection' else catalog.snapshot.cursor
+    (projection / MANIFEST_NAME).write_text(json.dumps(manifest))
+    if case != 'no_install':
+        install_prompt_projection(projection, home, home / 'vscode', tmp_path / 'xdg/galaius/prompts/installed.json')
+    cli = PROVIDERS[provider]
+    environment = {'HOME': str(home)}
+    instructions = home / {'claude': '.claude/CLAUDE.md', 'codex': '.codex/AGENTS.md'}[provider]
+    if case == 'edited_file':
+        instructions.write_text(instructions.read_text() + '\nlocal edit')
+    if case == 'codex_override':
+        (home / '.codex/AGENTS.override.md').write_text('operator override')
+    sent = provider in sent_by
+    prompt = _role_prompt(catalog, role, cli, environment)
+    body = {'main': 'Main charter.', 'worker': 'Worker charter.'}[role]
+    assert prompt.startswith(f'AGENT_ROLE: {role}\n')
+    assert (body in prompt) is sent
+    if not sent:
+        assert body in instructions.read_text() and str(instructions) in prompt

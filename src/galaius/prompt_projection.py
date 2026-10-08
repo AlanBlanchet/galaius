@@ -10,7 +10,7 @@ import stat
 import subprocess
 import sys
 from uuid import UUID, uuid4
-from typing import Literal
+from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -372,6 +372,62 @@ def stage_projection_install(
         raise
 
 
+class InstalledState(BaseModel):
+    """What the last install switched: each consumer file's sha256 and the projection it came from."""
+
+    model_config = ConfigDict(frozen=True)
+    version: Literal[1] = 1
+    managed: dict[Path, str] = {}
+    source_commit: str | None = None
+    source_kind: Literal["git", "server-catalog"] = "git"
+    catalog_cursor: str | None = None
+    hook_groups: dict[str, list[object]] = {}
+
+    @classmethod
+    def load(cls, path: Path) -> Self:
+        if not path.exists():
+            return cls()
+        if path.is_symlink() or not path.is_file():
+            raise ValueError("prompt install state is not a regular file")
+        return cls.model_validate_json(path.read_text(encoding="utf-8"))
+
+    def holds(self, path: Path) -> bool:
+        """`path` still has the bytes this install wrote there."""
+        try:
+            content = path.read_bytes()
+        except OSError:
+            return False
+        return self.managed.get(path) == hashlib.sha256(content).hexdigest()
+
+
+def installed_state_path() -> Path:
+    """The record of which projection wrote each consumer file (`managed`: path -> sha256)."""
+    root = os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state"
+    return Path(root) / "galaius" / "prompts" / "installed.json"
+
+
+def coordinator_instructions(catalog: AgentCatalog, role: str, instructions: Path | None,
+                             state_path: Path | None = None) -> Path | None:
+    """`instructions` when a CLI reading it at start already holds `role`'s body, else None.
+
+    True only when `role` is the coordinator (`root_agent`) a projection of this exact catalog
+    snapshot composed that file from, and the file still holds the bytes that install wrote.
+    Another snapshot, a pinned older revision, a local edit or no install: None, the body is sent."""
+    root = catalog.snapshot.root_agent
+    if instructions is None or root is None:
+        return None
+    agent = catalog.role(role)
+    if (agent.id, agent.revision) != (root.id, root.revision):
+        return None
+    try:
+        state = InstalledState.load(state_path or installed_state_path())
+    except (OSError, ValueError):
+        return None
+    if state.source_kind != "server-catalog" or state.catalog_cursor != catalog.snapshot.cursor:
+        return None
+    return instructions if state.holds(instructions) else None
+
+
 def install_prompt_projection(
     projection_root: Path, home: Path, vscode_root: Path, state_path: Path,
     adoption_path: Path | None = None,
@@ -397,16 +453,16 @@ def _install_prompt_projection(
     outputs = _validated_manifest_outputs(projection_root)
     manifest = json.loads((projection_root / MANIFEST_NAME).read_text(encoding="utf-8"))
     server_owned = manifest.get("source_kind") == "server-catalog"
-    state = _installed_document(state_path)
+    state = InstalledState.load(state_path)
     adoption = _adoption_manifest(adoption_path)
     settings = (home / ".claude" / "settings.json", home / ".codex" / "hooks.json",
                 home / ".cursor" / "hooks.json")
     settings_before = {path: _entry_identity(path, symlink_target=adoption.get(path, (None, None))[0])
                        for path in settings} if not server_owned else {}
     targets, mergeable, hook_groups = _consumer_payloads(
-        outputs, home, vscode_root, state.get("hook_groups", {}), prompt_only=server_owned,
+        outputs, home, vscode_root, state.hook_groups, prompt_only=server_owned,
     )
-    previous = {Path(target): digest for target, digest in state.get("managed", {}).items()}
+    previous = dict(state.managed)
     # Hooks are installed runtime code. A prompt-only snapshot cannot remove or rewrite them.
     retained = {}
     if server_owned:
@@ -499,17 +555,14 @@ def _install_prompt_projection(
                for path, backup in backups.items()):
             raise ValueError("managed prompt backup changed during install")
         state_staged = transaction / "state"
-        _write_prompt(state_staged, (json.dumps({
-            "managed": {**{str(path): digest for path, digest in retained.items()}, **{
-                str(path): hashlib.sha256(targets[path][0]).hexdigest()
-                for path in sorted(targets, key=str)
-            }},
-            "source_commit": manifest["source_commit"],
-            "source_kind": manifest.get("source_kind", "git"),
-            "catalog_cursor": manifest.get("catalog_cursor"),
-            "hook_groups": hook_groups,
-            "version": 1,
-        }, indent=2, sort_keys=True) + "\n").encode(), 0o600)
+        _write_prompt(state_staged, (json.dumps(InstalledState(
+            managed={**retained, **{path: hashlib.sha256(targets[path][0]).hexdigest()
+                                    for path in sorted(targets, key=str)}},
+            source_commit=manifest["source_commit"],
+            source_kind=manifest.get("source_kind", "git"),
+            catalog_cursor=manifest.get("catalog_cursor"),
+            hook_groups=hook_groups,
+        ).model_dump(mode="json"), indent=2, sort_keys=True) + "\n").encode(), 0o600)
         _move_prompt_backup(state_staged, state_path)
     except BaseException as error:
         # A failure in recovery itself must never enable cleanup of the backups.
@@ -778,14 +831,6 @@ def _merged_hook_settings(
     if "statusLine" in fragment:
         current["statusLine"] = fragment["statusLine"]
     return (json.dumps(current, indent=2, sort_keys=True) + "\n").encode(), fragment["hooks"]
-
-
-def _installed_document(path: Path) -> dict:
-    if not path.exists():
-        return {}
-    if path.is_symlink() or not path.is_file():
-        raise ValueError("prompt install state is not a regular file")
-    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _adoption_manifest(path: Path | None) -> dict[Path, tuple[str, str]]:

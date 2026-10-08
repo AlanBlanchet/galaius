@@ -28,6 +28,7 @@ from pydantic import BaseModel, ConfigDict
 from galaius.agents import agent_queue
 from galaius.agents import registry as reg
 from galaius.agents import quota
+from galaius.agents.catalog import AgentCatalog
 from galaius.agents.ceiling import contained
 from galaius.fence import FenceSpec, fenced
 from galaius.processes import process_group_options, spawnable
@@ -38,6 +39,7 @@ from galaius.agents.vocabulary import TouchScope
 from galaius.agents.warm import WarmStart
 from galaius.criteria import Criteria, CriteriaError, Dropped, Variables
 from galaius.models import Model, ModelCapability
+from galaius.prompt_projection import coordinator_instructions
 from galaius.windowless import console_python
 
 
@@ -788,6 +790,12 @@ class ChildLaunch(BaseModel):
         process.stdin.close()
 
 
+def _role_prompt(catalog: AgentCatalog, role: str, provider: AgentProvider, environment: Mapping[str, str]) -> str:
+    """`role`'s prompt for `provider`, without the body its user instructions file already loads."""
+    return catalog.role_prompt(role, loaded_from=coordinator_instructions(
+        catalog, role, provider.user_instructions(environment)))
+
+
 @dataclass
 class RunHandle:
     """A live run: its id, its process, and the task draining its output."""
@@ -921,18 +929,18 @@ def launch_continuation(
         reasoning = policy.reasoning_for(run.agent, f"{provider.name}/{model}" if model else None)
     coarse_accepted = policy.accepts_coarse_tool_policy(run.agent, provider.name) if run.agent else False
     provider.validate_tool_policy(policy.tools_for(run.agent), run.denied_tools, coarse_accepted=coarse_accepted)
+    env = {**os.environ, **routed, "GALAIUS_RUN_ID": run.run_id, "GALAIUS_PARENT_RUN_ID": run.run_id}
     argv = provider.resume_command(
         session_id, message, model=model, permission_mode=run.permission_mode,
         reasoning=reasoning, agent=run.agent,
         allowed_tools=policy.tools_for(run.agent), denied_tools=run.denied_tools,
-        agent_prompt=catalog.role_prompt(run.agent) if catalog is not None else None,
+        agent_prompt=_role_prompt(catalog, run.agent, provider, env) if catalog is not None else None,
         mcp_config=mesh_config(run_id=run.run_id)
         if run.mesh_enabled and not already_meshed(provider.name, cwd=run.cwd) else None,
         coarse_accepted=coarse_accepted,
         base_url=routed.get("OPENAI_BASE_URL"),
         **({"inbox_hook": agent_queue.inbox_hook(run.run_id)} if provider.reads_mid_turn else {}),
     )
-    env = {**os.environ, **routed, "GALAIUS_RUN_ID": run.run_id, "GALAIUS_PARENT_RUN_ID": run.run_id}
     if provider.name == "claude":
         env["CLAUDE_CODE_EFFORT_LEVEL"] = reasoning
     return _spawn_turn(argv, run, env=env, raw_index=raw_index, model=model, criterion=criterion, reasoning=reasoning, record_locked=record_locked)
@@ -1338,7 +1346,7 @@ async def run_agent(
         if candidate_routed.get("OPENAI_BASE_URL"):
             command_kwargs["base_url"] = candidate_routed["OPENAI_BASE_URL"]
         if policy.catalog is not None:
-            command_kwargs["agent_prompt"] = policy.catalog.role_prompt(agent)
+            command_kwargs["agent_prompt"] = _role_prompt(policy.catalog, agent, candidate_provider, env)
         if denied_tools:
             command_kwargs["denied_tools"] = denied_tools
         if validated_images:

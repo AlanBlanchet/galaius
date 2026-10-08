@@ -297,18 +297,24 @@ class AgentCatalog(BaseModel):
         except ValueError as error:
             raise CatalogConnectionError("invalid exact agent or prompt revision received from server") from error
 
-    def role_prompt(self, role: str) -> str:
-        """Complete pinned role instructions, independent of a delegated task."""
+    def role_prompt(self, role: str, *, loaded_from: Path | None = None) -> str:
+        """Complete pinned role instructions, independent of a delegated task.
+
+        `loaded_from`: the user instructions file the CLI reads at start when it already holds
+        this role's body (see `prompt_projection.coordinator_instructions`); only the header is
+        sent then, the body once instead of twice."""
         agent = self.role(role)
         # Only what names the content: this text heads the system prompt, so a byte that changes
         # between starts (when it was fetched, whether the server answered) makes the vendor
         # write the whole prompt to its cache again instead of reading it.
-        return (
+        header = (
             f"AGENT_ROLE: {role}\n\n"
             f"Server agent identity: {agent.id}; revision: {agent.revision}\n\n"
             f"Head catalog: cursor={self.snapshot.cursor}\n\n"
-            f"{self.instructions(role)}"
         )
+        if loaded_from is not None:
+            return f"{header}Role instructions: {loaded_from}, loaded at start."
+        return header + self.instructions(role)
 
     def definition(self, role: str, task: str) -> str:
         return f"{self.role_prompt(role)}\n\nDelegated task:\n{task}"

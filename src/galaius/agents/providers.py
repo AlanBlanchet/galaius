@@ -208,6 +208,10 @@ class AgentProvider(ABC):
         while none of them changed since."""
         return ()
 
+    def user_instructions(self, environment: Mapping[str, str]) -> Path | None:
+        """The user-level instructions file this CLI loads at every start in `environment`."""
+        return None
+
     def _setting_sources(self, environment: Mapping[str, str] | None = None) -> list[str]:
         """`folder_settings_off` when the folder's own settings must not load (`PROJECT_SETTINGS_OFF`
         in `environment`, the one the CLI runs in; this process's own when None), else nothing."""
@@ -845,14 +849,22 @@ class ClaudeCodeProvider(AgentProvider):
     _INSTRUCTIONS: ClassVar[tuple[str, ...]] = ("CLAUDE.md", "CLAUDE.local.md", "AGENTS.md")
     _IMPORT: ClassVar[re.Pattern[str]] = re.compile(r"(?<![\w`])@((?:~/|\.{0,2}/)?[\w.-]+(?:/[\w.-]+)*)")
 
+    @staticmethod
+    def _config_home(environment: Mapping[str, str]) -> Path:
+        return Path(environment.get("CLAUDE_CONFIG_DIR") or Path(environment.get("HOME") or Path.home()) / ".claude")
+
+    def user_instructions(self, environment: Mapping[str, str]) -> Path:
+        # `--setting-sources user` (folder settings off) still loads it.
+        return self._config_home(environment) / "CLAUDE.md"
+
     def startup_files(self, cwd: Path, environment: Mapping[str, str]) -> tuple[Path, ...]:
         """The user's and every enclosing folder's instructions (with the files they import),
         settings, MCP servers, agents, skills, commands and rules; the folder's memory index; the
         installed plugins. The user's `~/.claude.json` is left out: Claude rewrites it at every start."""
-        home = Path(environment.get("CLAUDE_CONFIG_DIR") or Path(environment.get("HOME") or Path.home()) / ".claude")
+        home = self._config_home(environment)
         folders = (cwd, *cwd.parents)
         scopes = (home, *(folder / ".claude" for folder in folders))
-        instructions = [home / "CLAUDE.md", *(folder / name for folder in folders for name in self._INSTRUCTIONS)]
+        instructions = [self.user_instructions(environment), *(folder / name for folder in folders for name in self._INSTRUCTIONS)]
         return (
             home / "plugins" / "installed_plugins.json",
             home / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(cwd)) / "memory" / "MEMORY.md",
@@ -1575,6 +1587,11 @@ class CodexProvider(AgentProvider):
         if reasoning is not None:
             argv += ["-c", f'model_reasoning_effort="{self.provider_thinking_level(reasoning)}"']
         return [*argv, "--", session_id, message]
+
+    def user_instructions(self, environment: Mapping[str, str]) -> Path | None:
+        home = Path(environment.get("CODEX_HOME") or Path(environment.get("HOME") or Path.home()) / ".codex")
+        # Codex reads AGENTS.override.md INSTEAD of AGENTS.md when both exist.
+        return None if (home / "AGENTS.override.md").exists() else home / "AGENTS.md"
 
     def _inject_definition(self, agent: str | None, task: str, agent_prompt: str | None = None) -> str:
         if not agent:

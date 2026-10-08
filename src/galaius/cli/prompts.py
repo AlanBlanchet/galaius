@@ -68,7 +68,7 @@ class PromptMode:
         vscode_root = Path(os.environ.get(
             "GALAIUS_PROMPT_VSCODE_ROOT", Path.home() / ".config" / "Code" / "User" / "prompts"
         ))
-        state = _state_home() / "galaius" / "prompts" / "installed.json"
+        state = prompt_projection.installed_state_path()
         return prompt_projection.install_server_prompt_projection(
             server.connection, _consumer_home(), vscode_root, state, state.parent / "bootstrap-adoption.json",
         )
@@ -97,11 +97,6 @@ def _cache_home() -> Path:
     return Path(configured) if configured else Path.home() / ".cache"
 
 
-def _state_home() -> Path:
-    configured = os.environ.get("XDG_STATE_HOME")
-    return Path(configured) if configured else Path.home() / ".local" / "state"
-
-
 def _consumer_home() -> Path:
     configured = os.environ.get("GALAIUS_PROMPT_CONSUMER_ROOT")
     return Path(configured) if configured else Path.home()
@@ -125,7 +120,7 @@ def _install(repository: Path) -> Path:
     vscode_root = Path(os.environ.get(
         "GALAIUS_PROMPT_VSCODE_ROOT", Path.home() / ".config" / "Code" / "User" / "prompts"
     ))
-    state = _state_home() / "galaius" / "prompts" / "installed.json"
+    state = prompt_projection.installed_state_path()
     adoption = state.parent / "bootstrap-adoption.json"
     install_prompt_projection(projection, _consumer_home(), vscode_root, state, adoption)
     return projection
