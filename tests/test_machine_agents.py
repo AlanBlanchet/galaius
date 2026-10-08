@@ -18,13 +18,14 @@ import logging
 import time
 
 from galaius_core import MACHINE_AGENT_REQUESTS, MachineAgentModel, MachineAgentRequest, MachineAgentSettings, MachineAgentSettingsUpdate, MachineWorkspaceJob
+from galaius.agents import agent_queue, messaging
 from galaius.agents import registry as reg
 from galaius.agents.host import ConversationRefused
 from galaius.machine_agents import LogRing, MachineAgents, MachineSessions, WebRun, WebRuns, interaction_digest, redact
 from galaius.fence import FenceSpec
 from galaius.machines import MachineConfig, MachineRunner
 from galaius.machine_workspaces import CloneFailure, Git, MachineWorkspaces, WorkspaceJobs
-from galaius.agents.providers import PROJECT_SETTINGS_OFF
+from galaius.agents.providers import PROJECT_SETTINGS_OFF, ClaudeCodeProvider
 from galaius.place_reviews import PlaceReviews
 from galaius.project_secrets import MARKER, ProjectEnv
 from galaius_core.sealing import SecretsSeal
@@ -201,7 +202,6 @@ def test_a_run_image_is_served_only_when_its_own_step_names_a_plain_image(base: 
 def test_a_message_is_answered_once_durably_queued_and_its_dispatcher_gets_the_machine_environment(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """No CLI child and no wait for the resumed turn: the answer leaves as soon as the message is in
     the run's durable queue, and the dispatcher resuming it runs in the scrubbed machine environment."""
-    from galaius.agents import agent_queue, messaging
     agents = _agents(base, tmp_path)
     run_id = str(uuid4())
     reg.save_run(reg.AgentRun(run_id=run_id, provider="claude", agent="tester", name="r", cwd=str(base / "project"), started_at=1.0, exit_code=0))
@@ -543,7 +543,6 @@ def test_a_start_asks_less_never_more_and_a_cloned_workspace_loads_no_project_se
 def test_a_cloned_workspace_start_tells_the_agent_cli_to_load_no_folder_settings() -> None:
     """The switch travels in the run's own environment, not this process's: a runner launching
     in-process for an untrusted clone still starts its CLI with the folder's settings off."""
-    from galaius.agents.providers import ClaudeCodeProvider
     assert PROJECT_SETTINGS_OFF not in os.environ
     options = dict(cwd=".", model="m", mcp_config=None, run_id=str(uuid4()))
     trusted = ClaudeCodeProvider().command("go", **options, environment={})
