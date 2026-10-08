@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal
 
@@ -216,8 +217,9 @@ def _dispatcher_matches(state: dict) -> bool:
     )
 
 
-def ensure_dispatcher_locked(run_id: str, *, cwd: str = ".") -> int:
-    """Start exactly one detached dispatcher while the caller owns the run lock."""
+def ensure_dispatcher_locked(run_id: str, *, cwd: str = ".", environment: Mapping[str, str] | None = None) -> int:
+    """Start exactly one detached dispatcher while the caller owns the run lock, in `environment`
+    (this process's own when None)."""
     state = _state(run_id)
     if _dispatcher_matches(state):
         return state["dispatcher_pid"]
@@ -234,6 +236,7 @@ def ensure_dispatcher_locked(run_id: str, *, cwd: str = ".") -> int:
             cwd=cwd if cwd and Path(cwd).is_dir() else ".",
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL, start_new_session=True,
+            env=None if environment is None else dict(environment),
             # Windows: outlives the console that asked for it (its own group, a hidden console
             # its provider children share instead of each opening a window). 0 on POSIX.
             creationflags=_DETACHED,

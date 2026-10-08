@@ -39,6 +39,7 @@ from galaius_core import (
 )
 from galaius.agents import registry as reg
 from galaius.agents.host import ConversationHost, ConversationRefused
+from galaius.agents.messaging import deliver_message
 from galaius.agents.providers import PROJECT_SETTINGS_OFF, PROVIDERS
 from galaius.agents.run import LAUNCH_STAMP, launch_editor_turn, load_policy, rank_candidates
 from galaius.fence import EGRESS, FenceSpec, available
@@ -692,10 +693,12 @@ class MachineAgents(BaseModel):
         run = self._require_run(request.run_id)
         if self._kind(request.run_id) == "continued":
             return self._continue_turn(run, request.text, request_id=request.id)
-        done = self._run_cli("agents", "send", "--", str(request.run_id), request.text, timeout=60, environment=self.environment_in(Path(run.cwd)))
-        if done.returncode != 0:
-            raise RuntimeError(self._said(done.stdout + "\n" + done.stderr) or f"not delivered (exit {done.returncode})")
-        return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=self._first_line(done.stdout))
+        # Answered once the message is durably queued: its run's dispatcher resumes the agent, and
+        # a resume refused after this point is that run's failure, in its events.
+        delivery = deliver_message(str(request.run_id), request.text, sender="operator", environment=self.environment_in(Path(run.cwd)))
+        if delivery.state == "error":
+            raise RuntimeError(delivery.text.removeprefix("ERROR: ") or "not delivered")
+        return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=delivery.text)
 
     def _stop(self, request: AgentStopRequest) -> MachineAgentAnswer:
         run = self._require_run(request.run_id)

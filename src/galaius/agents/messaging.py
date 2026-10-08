@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import secrets
 import time
+from collections.abc import Mapping
 from contextlib import ExitStack
 from typing import Literal
 
@@ -83,8 +84,10 @@ def check_deliverable(run_id: str, *, sender: str | None = None):
     return run, None
 
 
-def _policy_for_continuation(run, provider: AgentProvider):
-    """Resolve current policy; dispatcher calls this again immediately before each resume."""
+def _policy_for_continuation(run, provider: AgentProvider, environment: Mapping[str, str] | None = None):
+    """Resolve current policy; dispatcher calls this again immediately before each resume.
+    `environment`: the one the resumed turn runs in (credentials decide what can run), this
+    process's own when None."""
     try:
         policy = load_policy()
         policy, _ = policy.for_launch(run.agent, reference=run.agent_ref)
@@ -102,7 +105,7 @@ def _policy_for_continuation(run, provider: AgentProvider):
                 f"Recorded permission intent {run.permission_mode!r} is not accepted by "
                 f"{provider.name!r}; refusing continuation"
             ) from error
-        model = resolve_continuable_model(criterion, dict(os.environ), provider=provider, weights=policy.weights_for(run.agent), role=run.agent)[1]
+        model = resolve_continuable_model(criterion, dict(os.environ if environment is None else environment), provider=provider, weights=policy.weights_for(run.agent), role=run.agent)[1]
         return policy, criterion, model, policy.reasoning_for(run.agent)
     except (ModelUnavailable, PolicyError, ValueError) as error:
         raise ModelUnavailable(str(error)) from error
@@ -111,13 +114,20 @@ def _policy_for_continuation(run, provider: AgentProvider):
 def _session_id(run) -> str | None:
     return run.provider_session_id or (run.run_id if run.provider == "claude" else None)
 
-def deliver_message(run_id: str, message: str, *, sender: str | None = None) -> Delivery:
-    """Record and enqueue one message; a detached per-run dispatcher performs the resume."""
+def deliver_message(
+    run_id: str, message: str, *, sender: str | None = None, environment: Mapping[str, str] | None = None,
+) -> Delivery:
+    """Record and enqueue one message; a detached per-run dispatcher performs the resume.
+
+    `environment` is the one the dispatcher and its resumed turn run in, and names the sender
+    when `sender` does not (`GALAIUS_RUN_ID`); this process's own when None. A long-lived caller
+    (the machine runner) passes the scrubbed environment it would have given a CLI child."""
     from galaius.agents import agent_queue
 
+    environment = dict(os.environ if environment is None else environment)
     if error := _validate_message(message):
         return Delivery(state="error", text=error, run_id=run_id)
-    speaker = sender or sender_id()
+    speaker = sender or sender_id(environment)
     run, error = check_deliverable(run_id, sender=speaker)
     if error:
         return Delivery(state="error", text=error, run_id=run_id)
@@ -130,7 +140,7 @@ def deliver_message(run_id: str, message: str, *, sender: str | None = None) -> 
         if run is None:
             return Delivery(state="error", text=f"ERROR: no agent run {run_id!r}.", run_id=run_id)
         try:
-            _, criterion, model, reasoning = _policy_for_continuation(run, provider)
+            _, criterion, model, reasoning = _policy_for_continuation(run, provider, environment)
         except ModelUnavailable as policy_error:
             return Delivery(state="error", text=f"ERROR: {policy_error}", run_id=run.run_id)
         if _session_id(run) is None:
@@ -175,7 +185,7 @@ def deliver_message(run_id: str, message: str, *, sender: str | None = None) -> 
                     "pending_reasoning": reasoning,
                 })
         try:
-            agent_queue.ensure_dispatcher_locked(run.run_id, cwd=run.cwd or ".")
+            agent_queue.ensure_dispatcher_locked(run.run_id, cwd=run.cwd or ".", environment=environment)
         except (OSError, RuntimeError, ValueError) as dispatcher_error:
             return Delivery(
                 state="error",
@@ -269,5 +279,5 @@ async def wait_for_reply(delivery: Delivery) -> str:
     return f"{delivery.text}\n{header}{replies[-1]}"
 
 
-def sender_id() -> str:
-    return os.environ.get("GALAIUS_RUN_ID") or "operator"
+def sender_id(environment: Mapping[str, str] | None = None) -> str:
+    return (os.environ if environment is None else environment).get("GALAIUS_RUN_ID") or "operator"

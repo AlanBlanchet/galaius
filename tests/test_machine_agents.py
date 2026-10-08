@@ -194,10 +194,30 @@ def test_a_brief_or_message_starting_with_a_dash_stays_text(base: Path, tmp_path
     _answer(agents, _request("start", root="project", role="app-engineer", text=brief))
     argv = json.loads(seen.read_text())
     assert argv[-2:] == ["--", brief] and argv[:2] == ["agents", "spawn"]
-    run_id = str(agents.runs.read()[-1].run_id)
-    reg.save_run(reg.AgentRun(run_id=run_id, provider="claude", name="r", cwd=str(base / "project"), started_at=1.0))
-    _answer(agents, _request("send", run_id=run_id, text=brief))
-    assert json.loads(seen.read_text()) == ["agents", "send", "--", run_id, brief]
+
+
+def test_a_message_is_answered_once_durably_queued_and_its_dispatcher_gets_the_machine_environment(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No CLI child and no wait for the resumed turn: the answer leaves as soon as the message is in
+    the run's durable queue, and the dispatcher resuming it runs in the scrubbed machine environment."""
+    from galaius.agents import agent_queue, messaging
+    agents = _agents(base, tmp_path)
+    run_id = str(uuid4())
+    reg.save_run(reg.AgentRun(run_id=run_id, provider="claude", agent="tester", name="r", cwd=str(base / "project"), started_at=1.0, exit_code=0))
+    agents.runs.add(WebRun(run_id=run_id, root="project"))
+    monkeypatch.setattr(messaging, "_policy_for_continuation", lambda run, provider, environment: (None, "criterion", "model", "high"))
+    started: dict = {}
+
+    class Dispatcher:
+        def __init__(self, argv, **options) -> None:
+            started.update(options, argv=argv)
+            self.pid = os.getpid()
+
+    monkeypatch.setattr(agent_queue.subprocess, "Popen", Dispatcher)
+    answer = _answer(agents, _request("send", run_id=run_id, text="- and one more thing"))
+    assert answer.detail.startswith("Queued for r") and started["env"] == agents.environment
+    assert started["argv"][-3:-1] == ["--dispatch", run_id] and started["start_new_session"]
+    assert [item.state for item in agent_queue.items(run_id)] == ["pending"]
+    assert reg.message_for(run_id, agent_queue.items(run_id)[0].message_id).text == "- and one more thing"
 
 
 def test_an_action_is_accepted_once(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
