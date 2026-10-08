@@ -264,8 +264,11 @@ def test_a_second_install_line_reopens_the_same_page_while_its_waiter_lives(join
     monkeypatch.setattr(AccountLogin, "opened", staticmethod(lambda url: pages.append(url) or True))
     handed: list[account_login.HandedOff] = []
     monkeypatch.setattr(account_login, "_detached", lambda account, value: handed.append(value))
-    for _ in range(2):
-        account_login.login("https://galaius.example.org", allow_runs=False, open_browser=True, detach=True)
+    account_login.login("https://galaius.example.org", allow_runs=False, open_browser=True, detach=True)
+    first = account_login.Pending.read  # its waiter has not refreshed it yet: not to be reused
+    assert first() is None
+    account_login.Pending.model_validate_json(account_login.Pending.path().read_text()).current()  # the waiter's first poll
+    account_login.login("https://galaius.example.org", allow_runs=False, open_browser=True, detach=True)
     assert len(handed) == 1 and pages == ["https://x/plateform/link?code=BCDF-GHJK"] * 2
     stale = (datetime.now() - timedelta(minutes=2)).timestamp()
     os.utime(account_login.Pending.path(), (stale, stale))  # its waiter stopped refreshing it

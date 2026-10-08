@@ -187,9 +187,9 @@ class AccountLogin(BaseModel):
         """The approval collected; `current` false = a newer sign-in took over this one (it stops)."""
         interval, deadline = started.interval, time.monotonic() + min(self.patience, started.expires_in + 30)
         while time.monotonic() < deadline:
-            time.sleep(interval)
             if not current():
                 raise LoginError("a newer install of this computer took over this sign-in")
+            time.sleep(interval)
             try:
                 answer = http.post("/v1/device/token", json={"device_code": started.device_code.get_secret_value()})
             except httpx.TransportError:
@@ -475,7 +475,10 @@ class Pending(BaseModel):
         return pending if pending.expires_at > now + timedelta(minutes=1) and now - touched < cls.alive_within else None
 
     def write(self) -> None:
+        """Written stale: only its waiter's own refresh (`current`) makes it live, so a waiter that
+        never started (or died starting, e.g. a second install replacing its files) is never reused."""
         PRIVATE_FILES.write_text(self.path(), self.model_dump_json())
+        os.utime(self.path(), (0, 0))
 
     def current(self) -> bool:
         """Still this computer's pending sign-in (its file refreshed: the waiter is alive)."""
