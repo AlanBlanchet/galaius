@@ -23,6 +23,7 @@ from galaius.agents.policy import TOOL_PREFIX
 from galaius.agents.tool_gateway import AgentToolList, ToolGateway
 from galaius.file_lock import exclusive
 from galaius.pinned_directory import PinnedDirectory
+from galaius.windowless import console_python
 
 
 MANIFEST_NAME = "projection-manifest.json"
@@ -317,7 +318,7 @@ def compile_prompt_projection(
         for root in work_roots:
             _materialize(repository, entries, root)
             result = subprocess.run(
-                [sys.executable, generator.as_posix()], cwd=root, capture_output=True,
+                [console_python(), generator.as_posix()], cwd=root, capture_output=True,
                 env={"PATH": os.environ["PATH"], "_GENERATE_YAML_BOOTSTRAP": "1"},
                 timeout=30,
             )

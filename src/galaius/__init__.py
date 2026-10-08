@@ -7,7 +7,11 @@ downstream (version banner, update check, feedback footer) hardcodes it.
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _version
 
+from galaius.windowless import hide_child_consoles
+
 DIST_NAME = "galaius"
+
+hide_child_consoles()  # before this process starts anything (`galaius.windowless`)
 
 
 def installed_version() -> str:

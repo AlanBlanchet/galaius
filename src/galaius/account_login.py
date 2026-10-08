@@ -42,6 +42,7 @@ from galaius.machine_service import MACHINE_SERVICE, ServiceUnavailable
 from galaius.machines import MachineConfig, MachineRunner
 from galaius.paths import UserPaths
 from galaius.private_files import PRIVATE_FILES
+from galaius.windowless import console_python
 
 
 class LoginError(Exception):
@@ -525,7 +526,7 @@ def _detached(account: AccountLogin, handed: HandedOff) -> None:
     output appended to `login.log` (private to this user), `handed` on its stdin."""
     log = UserPaths.config() / "login.log"
     log.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    command = [sys.executable, "-m", "galaius", "login", "--resume", "--server", account.server]
+    command = [console_python(), "-m", "galaius", "login", "--resume", "--server", account.server]
     # Windows: no console, its own group, out of the window's job when Windows lets it (else inside it:
     # closing the window may end it, said in the log). Elsewhere: its own session.
     base = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0

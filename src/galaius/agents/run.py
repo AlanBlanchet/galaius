@@ -38,6 +38,7 @@ from galaius.agents.vocabulary import TouchScope
 from galaius.agents.warm import WarmStart
 from galaius.criteria import Criteria, CriteriaError, Dropped, Variables
 from galaius.models import Model, ModelCapability
+from galaius.windowless import console_python
 
 
 @dataclass(frozen=True)
@@ -641,7 +642,7 @@ def _galaius_command() -> tuple[str, list[str]]:
     exe = shutil.which("galaius")
     if exe:
         return exe, ["mcp"]
-    return sys.executable, ["-m", "galaius", "mcp"]
+    return console_python(), ["-m", "galaius", "mcp"]
 
 
 def already_meshed(provider: str, *, cwd: str | None = None) -> bool:

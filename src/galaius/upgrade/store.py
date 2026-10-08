@@ -58,10 +58,10 @@ class Runtime(BaseModel):
 
     @property
     def python(self) -> Path:
-        """Its interpreter; on Windows the windowless `pythonw` when this process has no console."""
+        """Its interpreter; on Windows the console `python.exe` even under pythonw: a child's console
+        is hidden (`galaius.windowless`) and shared by what it starts, which a windowless child's is not."""
         if sys.platform == "win32":
-            name = "pythonw.exe" if Path(sys.executable).name.lower() == "pythonw.exe" else "python.exe"
-            return self.path / "Scripts" / name
+            return self.path / "Scripts" / "python.exe"
         return self.path / "bin" / "python"
 
     def command(self, arguments: tuple[str, ...]) -> list[str]:

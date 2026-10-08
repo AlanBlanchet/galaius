@@ -11,7 +11,6 @@ from galaius.upgrade.handoff import Handoff
 from galaius.upgrade.release import BuildIdentity
 from galaius.upgrade.store import EXIT_UPGRADE, RuntimeStore
 from galaius.upgrade.supervisor import Supervisor
-from galaius.processes import hide_child_consoles
 from galaius.versioning import force_utf8_io
 
 app = App(
@@ -119,7 +118,6 @@ def main() -> None:
     `machine connect`, the TUI) then starts as its supervisor, which runs it again as a worker; a
     worker at its quiet point exits `EXIT_UPGRADE` for the supervisor to start the new runtime."""
     force_utf8_io()
-    hide_child_consoles()  # before any spawn: the supervisor's own workers are children too
     command = Supervisor.command(tuple(sys.argv[1:]), sys.stdout is not None and sys.stdout.isatty())  # pythonw: no stdout
     if Supervisor.eligible():
         handoff = Handoff(store=RuntimeStore.default())

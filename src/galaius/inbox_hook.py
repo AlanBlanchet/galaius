@@ -15,6 +15,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from galaius.windowless import console_python  # standard library only, like this module
+
 
 def main() -> None:
     run_id, queue = sys.argv[1], Path(sys.argv[2])
@@ -29,7 +31,7 @@ def main() -> None:
     except OSError:
         return
     if waiting:
-        raise SystemExit(subprocess.call([sys.executable, "-P", "-m", "galaius.agents.agent_queue", "--inject", run_id], stdin=subprocess.DEVNULL))
+        raise SystemExit(subprocess.call([console_python(), "-P", "-m", "galaius.agents.agent_queue", "--inject", run_id], stdin=subprocess.DEVNULL))
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 
 from galaius.config import LOG_MAXLEN, Config
 from galaius.state import InteractiveElement
+from galaius.windowless import console_python
 
 
 def chromium_launch_kwargs(browser_type: str, headless: bool, slow_mo: int) -> dict:
@@ -558,7 +559,7 @@ class BrowserManager:
         # installed tool env (uv tool / pipx), which crashed every launch with a cryptic
         # "[Errno 2] No such file or directory: 'playwright'".
         subprocess.run(
-            [sys.executable, "-m", "playwright", "install", self._config.browser_type],
+            [console_python(), "-m", "playwright", "install", self._config.browser_type],
             check=True,
             capture_output=True,
         )

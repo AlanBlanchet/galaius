@@ -1,7 +1,6 @@
 """Bounded subprocess execution with cross-platform process-tree cancellation."""
 
 import asyncio
-import ctypes
 import os
 import re
 import shutil
@@ -78,26 +77,6 @@ def spawnable(argv: Sequence[str], env: Mapping[str, str] | None = None) -> list
     if any(_BATCH_UNSAFE.search(argument) for argument in arguments):
         raise OSError(f"{resolved} is a batch script cmd.exe would rewrite this command for; install its .exe")
     return [resolved, *arguments]
-
-
-def hide_child_consoles() -> None:
-    """Windows: in a program with no console window of its own (the PC program under pythonw, the
-    detached sign-in), every program it starts gets none either (`CREATE_NO_WINDOW`), unless the
-    caller asks for a console or a detached process. Without it each console child — a worker of
-    the supervisor, the release check, a script step, `taskkill`, `schtasks`, git, an agent CLI —
-    flashes or keeps a black window on the person's desktop. Done once, at the one place every
-    spawn goes through: `subprocess.Popen` (asyncio's and the libraries' spawns included); a
-    program run from a terminal is left alone (its children share that terminal)."""
-    if sys.platform != "win32" or getattr(subprocess.Popen.__init__, "hides_consoles", False) or ctypes.windll.kernel32.GetConsoleWindow():
-        return
-    spawn = subprocess.Popen.__init__
-    keeps_own = subprocess.CREATE_NEW_CONSOLE | subprocess.DETACHED_PROCESS
-
-    def windowless(self, *args, creationflags: int = 0, **options) -> None:
-        spawn(self, *args, creationflags=creationflags if creationflags & keeps_own else creationflags | subprocess.CREATE_NO_WINDOW, **options)
-
-    windowless.hides_consoles = True
-    subprocess.Popen.__init__ = windowless
 
 
 def process_group_options() -> dict:

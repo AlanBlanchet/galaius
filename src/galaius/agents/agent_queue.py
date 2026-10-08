@@ -241,8 +241,8 @@ def ensure_dispatcher_locked(run_id: str, *, cwd: str = ".", environment: Mappin
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL, start_new_session=True,
             env=None if environment is None else dict(environment),
-            # Windows: outlives the console that asked for it (its own group, a hidden console
-            # its provider children share instead of each opening a window). 0 on POSIX.
+            # Windows: outlives the console that asked for it (its own group; no console window,
+            # and the dispatcher hides its own children's: `galaius.windowless`). 0 on POSIX.
             creationflags=_DETACHED,
         )
     except BaseException:

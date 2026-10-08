@@ -59,6 +59,7 @@ from galaius.pinned_directory import PinnedDirectory
 from galaius.fence import EGRESS, FenceSpec, available
 from galaius.places import BrowseBudget, IN_PLACE_WRITES, INSTRUCTION_NAMES, LEVEL_RANK, PlaceMap, split
 from galaius.place_reviews import PlaceReviews, write_plain
+from galaius.windowless import console_python
 
 if sys.platform == "win32":
     import win32api
@@ -1536,7 +1537,7 @@ class MachineRunner:
                 raise RuntimeError(f"{interpreter} is not a program this machine can run (not found on its PATH)")
             return [found]
         if execution.program == "runner_python":
-            return [sys.executable]
+            return [console_python()]
         if execution.program == "uv":
             found = ScriptRuntime.which("uv", path)
             if found is None:
