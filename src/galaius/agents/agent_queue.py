@@ -233,7 +233,8 @@ def ensure_dispatcher_locked(run_id: str, *, cwd: str = ".", environment: Mappin
             # The ACTIVE runtime's interpreter, never this process's: a dispatcher deliberately keeps
             # its runtime until its run ends (see `main`), so one started by a process that still runs
             # an older build would keep that build alive for hours after an upgrade.
-            [active_interpreter(), "-m", "galaius.agents.agent_queue", "--dispatch", run_id, token],
+            # -P: it runs in the run's folder, whose modules must never shadow galaius's own.
+            [active_interpreter(), "-P", "-m", "galaius.agents.agent_queue", "--dispatch", run_id, token],
             cwd=cwd if cwd and Path(cwd).is_dir() else ".",
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL, start_new_session=True,
@@ -259,7 +260,9 @@ def ensure_dispatcher(run_id: str, *, cwd: str = ".") -> int:
 def inbox_hook(run_id: str) -> str:
     """The command a turn of `run_id` runs after each of its tool calls (`galaius.inbox_hook`): it
     hands the turn every message sent to it meanwhile (`inject`)."""
-    argv = [active_interpreter(), "-m", "galaius.inbox_hook", run_id, str(path(run_id))]
+    # -P: the hook runs in the agent's folder, whose modules (a cloned repository's json.py) must
+    # never shadow the interpreter's own.
+    argv = [active_interpreter(), "-P", "-m", "galaius.inbox_hook", run_id, str(path(run_id))]
     return subprocess.list2cmdline(argv) if sys.platform == "win32" else shlex.join(argv)
 
 

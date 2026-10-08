@@ -27,7 +27,7 @@ def main() -> None:
     except OSError:
         return
     if waiting:
-        raise SystemExit(subprocess.call([sys.executable, "-m", "galaius.agents.agent_queue", "--inject", run_id], stdin=subprocess.DEVNULL))
+        raise SystemExit(subprocess.call([sys.executable, "-P", "-m", "galaius.agents.agent_queue", "--inject", run_id], stdin=subprocess.DEVNULL))
 
 
 if __name__ == "__main__":

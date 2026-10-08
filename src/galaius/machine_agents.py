@@ -672,6 +672,8 @@ class MachineAgents(BaseModel):
 
         try:
             run_id = await asyncio.wait_for(asyncio.shield(AgentSpawns.run(launch)), START_SECONDS)
+        except TimeoutError:
+            raise RuntimeError(f"the agent is still starting after {START_SECONDS:.0f} s; it appears in the list once it runs") from None
         except (ValueError, RuntimeError) as error:
             raise RuntimeError(self._said(str(error)) or "the agent did not start") from error
         return MachineAgentAnswer(request_id=request.id, run_id=run_id, fenced=fence is not None, detail=f"{written} project secrets written to .env" if written else "")

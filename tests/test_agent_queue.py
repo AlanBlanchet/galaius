@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import shlex
 import subprocess
 import sys
 
@@ -370,16 +371,19 @@ def test_a_dispatcher_is_trusted_only_while_the_recorded_process_lives():
     assert not agent_queue._dispatcher_matches(recorded)
 
 
-def test_a_message_to_a_working_run_is_read_after_its_next_own_tool_call_and_settled_by_that_turn(monkeypatch):
+def test_a_message_to_a_working_run_is_read_after_its_next_own_tool_call_and_settled_by_that_turn(monkeypatch, tmp_path):
     """As in the editor: typed while the agent works, read after its next tool call (never a
     sub-agent's), never replayed as a turn of its own; the turn's reply settles it."""
     provider = _setup(monkeypatch)
+    monkeypatch.setattr(agent_queue, "active_interpreter", lambda: sys.executable)
     run = reg.register(run_id="r2", pid=os.getpid(), provider=provider.name, name="worker", task="t", agent="tester", provider_session_id="vendor")
     messaging.deliver_message("r2", "also check the footer", sender="operator")
-    hook = [sys.executable, "-m", "galaius.inbox_hook", "r2", str(agent_queue.path("r2"))]
+    # The hook runs in the agent's folder: a cloned repository's own json.py must never run.
+    (tmp_path / "json.py").write_text(f"open({str(tmp_path / 'shadowed')!r}, 'w')\n")
+    hook = shlex.split(agent_queue.inbox_hook("r2"))
 
     def tool_call(**event):
-        return subprocess.run(hook, input=json.dumps({"hook_event_name": "PostToolUse", **event}), capture_output=True, text=True, check=True).stdout
+        return subprocess.run(hook, input=json.dumps({"hook_event_name": "PostToolUse", **event}), capture_output=True, text=True, check=True, cwd=tmp_path).stdout
 
     assert tool_call(agent_id="sub-agent") == "" and [item.state for item in agent_queue.items("r2")] == ["pending"]
     said = json.loads(tool_call())["hookSpecificOutput"]
@@ -393,3 +397,4 @@ def test_a_message_to_a_working_run_is_read_after_its_next_own_tool_call_and_set
     agent_queue.dispatch("r2")
 
     assert [item.state for item in agent_queue.items("r2")] == ["replied"] and provider.messages == []
+    assert not (tmp_path / "shadowed").exists()
