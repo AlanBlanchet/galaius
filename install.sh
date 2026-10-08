@@ -83,7 +83,7 @@ install_from_archives() {
   [ -n "$core" ] || { echo "galaius: cannot read the pinned galaius-core version" >&2; exit 1; }
   printf 'galaius-core @ https://github.com/AlanBlanchet/galaius-core/archive/%s.tar.gz\n' "$core" > "$work/overrides.txt"
   echo "Installing galaius (this takes a minute the first time)…"
-  uv tool install --force --quiet --overrides "$work/overrides.txt" "$source_dir"
+  uv tool install --force --overrides "$work/overrides.txt" "$source_dir"
 }
 
 fetch_tool() {

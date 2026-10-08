@@ -107,7 +107,7 @@ function Install-FromArchives {
         Write-Host 'Installing galaius (this takes a minute the first time)...'
         # From its own folder: uv refuses an --overrides path holding a space (a user name often does).
         Push-Location $work
-        try { Invoke-Tool 'installing galaius' { uv tool install --force --quiet --overrides overrides.txt $source } } finally { Pop-Location }
+        try { Invoke-Tool 'installing galaius' { uv tool install --force --overrides overrides.txt $source } } finally { Pop-Location }
     } finally {
         Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
     }
