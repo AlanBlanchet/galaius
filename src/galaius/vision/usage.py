@@ -4,12 +4,13 @@ import logging
 from datetime import UTC, datetime
 from typing import Literal
 
-import litellm
-
 from galaius import runtime
 from galaius.config import Config
+from galaius.lazy import deferred
 from galaius.vision.types import VLMResult
 from galaius.vision.usage_records import UsageEntry
+
+litellm = deferred("litellm")
 
 _log = logging.getLogger(__name__)
 

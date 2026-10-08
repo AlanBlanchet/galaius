@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import functools
 import json
 import logging
 import os
@@ -8,13 +9,12 @@ import time
 from contextlib import contextmanager
 from typing import Any, TypeAlias
 
-import litellm
-import openai
 from pydantic import BaseModel
 
 from galaius.agents.providers import MEDIA_PROVIDERS
 from galaius.config import Config
 from galaius.criteria import Criteria
+from galaius.lazy import deferred
 from galaius.models import ModelRole, supports_native_video_inline
 from galaius.processes import run_isolated_process
 from galaius.runtime import breaker
@@ -28,6 +28,9 @@ from galaius.vision.types import (  # noqa: F401 — public re-export
 )
 from galaius.vision.usage import log_api_attempt
 from galaius.vision.workspace import _MediaWorkspace
+
+litellm = deferred("litellm")
+openai = deferred("openai")
 
 _log = logging.getLogger(__name__)
 _MAX_API_FALLBACKS = 3
@@ -272,14 +275,17 @@ class VisionError(Exception):
 # ``litellm.RateLimitError`` is a SIBLING of ``litellm.exceptions.APIError`` under
 # ``openai.APIError``, never its child — a catch-all keyed on litellm's class misses every
 # 429/5xx/timeout. So an unlisted provider error still gets the ERROR: shape and the way out.
-_PROVIDER_FAULTS: dict[type[Exception], str] = {
-    litellm.exceptions.RateLimitError: "is rate-limited or out of credits",
-    litellm.exceptions.AuthenticationError: "rejected the API key",
-    litellm.exceptions.NotFoundError: "does not know this model id",
-    litellm.exceptions.Timeout: "did not answer",
-    litellm.exceptions.APIConnectionError: "did not answer",
-    openai.APIError: "failed the request",
-}
+@functools.cache
+def _provider_faults_table() -> dict[type[Exception], str]:
+    """Built on the first provider call, so reading this module never loads litellm (`galaius.lazy`)."""
+    return {
+        litellm.exceptions.RateLimitError: "is rate-limited or out of credits",
+        litellm.exceptions.AuthenticationError: "rejected the API key",
+        litellm.exceptions.NotFoundError: "does not know this model id",
+        litellm.exceptions.Timeout: "did not answer",
+        litellm.exceptions.APIConnectionError: "did not answer",
+        openai.APIError: "failed the request",
+    }
 
 
 def _provider_said(err: Exception) -> str:
@@ -299,8 +305,8 @@ def _provider_faults(model: str):
     not a litellm provider error (a bug of ours) passes through untouched."""
     try:
         yield
-    except tuple(_PROVIDER_FAULTS) as err:
-        cause = next(text for cls, text in _PROVIDER_FAULTS.items() if isinstance(err, cls))
+    except tuple(_provider_faults_table()) as err:
+        cause = next(text for cls, text in _provider_faults_table().items() if isinstance(err, cls))
         provider = getattr(err, "llm_provider", None) or "the provider"
         raise VisionError(model, provider=provider, cause=cause, said=_provider_said(err)) from err
 

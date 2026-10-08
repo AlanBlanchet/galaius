@@ -6,7 +6,6 @@ import json
 import logging
 import time
 
-import litellm as _litellm
 from PIL import Image as PILImage
 from pydantic import BaseModel
 
@@ -23,7 +22,7 @@ from galaius.desktop import (
 from galaius.formats import CoordFormat
 from galaius.runtime import breaker, config
 from galaius.state import annotate_screenshot
-from galaius.vision.core import MediaItem, analyze_media
+from galaius.vision.core import MediaItem, analyze_media, litellm as _litellm
 
 _log = logging.getLogger("galaius")
 

@@ -5,10 +5,11 @@ import asyncio
 import json
 import os
 
-import litellm as _litellm
-
 from galaius.agents.providers import PROVIDERS, AgentProvider
+from galaius.lazy import deferred
 from galaius.server.core import mcp
+
+_litellm = deferred("litellm")
 
 
 async def _subscription_provider_state(provider: AgentProvider) -> dict:
