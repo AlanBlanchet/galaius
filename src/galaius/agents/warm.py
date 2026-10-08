@@ -33,21 +33,27 @@ class WarmChild(BaseModel):
     run_id: str
     process: asyncio.subprocess.Process
     born: float
+    #: Whether its files are its own (a run it would have started) rather than an existing run's.
+    owns_files: bool = True
 
     @property
     def alive(self) -> bool:
         return self.process.returncode is None
 
     def end(self) -> None:
-        """Stop it and drop the files it wrote: it never became a run. Its stdin closing ends it
-        (no task will come); POSIX also signals its tree, at once (Windows' `taskkill` would block
-        the runner's loop)."""
-        if self.process.stdin is not None:
-            self.process.stdin.close()
-        if self.alive and os.name == "posix":
-            end_process_tree(self.process.pid)
-        for path in (reg.raw_events_path(self.run_id), reg.stderr_path(self.run_id)):
+        """Stop it (`end_waiting`) and drop the files it wrote when they are its own: it never became a run."""
+        end_waiting(self.process)
+        for path in (reg.raw_events_path(self.run_id), reg.stderr_path(self.run_id)) if self.owns_files else ():
             path.unlink(missing_ok=True)
+
+
+def end_waiting(process: asyncio.subprocess.Process) -> None:
+    """Stop a child waiting for its task. Its stdin closing ends it (no task will come); POSIX also
+    signals its tree, at once (Windows' `taskkill` would block the runner's loop)."""
+    if process.stdin is not None:
+        process.stdin.close()
+    if process.returncode is None and os.name == "posix":
+        end_process_tree(process.pid)
 
 
 class WarmStart(BaseModel):
@@ -70,6 +76,8 @@ class WarmStart(BaseModel):
     shortest_life: float = 60.0
     #: How often a held child is checked for its age and for having ended on its own.
     check_every: float = 5.0
+    #: Seconds after `prepare` a launch stops keeping a child; None: until a start claims it.
+    hold: float | None = None
 
     #: Per launch (`slot`), least recently prepared first: the task keeping its child, the child waiting.
     _keepers: dict[str, asyncio.Task] = PrivateAttr(default_factory=dict)
@@ -90,43 +98,51 @@ class WarmStart(BaseModel):
         child.end()
         return None
 
-    def prepare(self, slot: str, key: Callable[[], str], start: Callable[[str], Awaitable[asyncio.subprocess.Process]]) -> None:
+    def prepare(self, slot: str, key: Callable[[], str], start: Callable[[str], Awaitable[asyncio.subprocess.Process]], *,
+                run_id: str | None = None, still: Callable[[], bool] | None = None) -> None:
         """After `delay`, keep a child `start(run_id)` starts for launch `slot` (fresh while `key()`
         holds, read just before each child starts: what it reads then is what the key says),
-        replaced at `max_age`, until a start claims it. Beyond `capacity` launches, the least
-        recently prepared one loses its child."""
+        replaced at `max_age`, until a start claims it, `hold` passes or `still()` (cheap, asked at
+        each check) says no. Beyond `capacity` launches, the least recently prepared one loses its
+        child. `run_id`: the existing run every child serves (its next turn); a new run id per child
+        when None."""
         if (keeper := self._keepers.pop(slot, None)) is not None:
             keeper.cancel()
-        self._keepers[slot] = asyncio.create_task(self._keep(slot, key, start))
+        self._keepers[slot] = asyncio.create_task(self._keep(slot, key, start, run_id, still or (lambda: True)))
         while len(self._keepers) > self.capacity:
-            self._drop(next(iter(self._keepers)))
+            self.forget(next(iter(self._keepers)))
+
+    def forget(self, slot: str) -> None:
+        """Keep no child for launch `slot` any more; the one waiting is ended."""
+        if (keeper := self._keepers.pop(slot, None)) is not None:
+            keeper.cancel()
+        if (child := self._held.pop(slot, None)) is not None:
+            child.end()
 
     def close(self) -> None:
         for slot in list(self._keepers):
-            self._drop(slot)
+            self.forget(slot)
         for child in self._held.values():
             child.end()
         self._held.clear()
 
-    def _drop(self, slot: str) -> None:
-        self._keepers.pop(slot).cancel()
-        if (child := self._held.pop(slot, None)) is not None:
-            child.end()
-
-    async def _keep(self, slot: str, key: Callable[[], str], start: Callable[[str], Awaitable[asyncio.subprocess.Process]]) -> None:
+    async def _keep(self, slot: str, key: Callable[[], str], start: Callable[[str], Awaitable[asyncio.subprocess.Process]], serves: str | None,
+                    still: Callable[[], bool]) -> None:
+        until = None if self.hold is None else time.monotonic() + self.hold
         await asyncio.sleep(self.delay)
-        while True:
+        while (until is None or time.monotonic() < until) and still():
             if (former := self._held.pop(slot, None)) is not None:
                 former.end()
-            run_id = str(uuid.uuid4())
+            run_id = serves or str(uuid.uuid4())
             try:
                 fresh = key()
-                child = WarmChild(key=fresh, run_id=run_id, process=await start(run_id), born=time.monotonic())
+                child = WarmChild(key=fresh, run_id=run_id, process=await start(run_id), born=time.monotonic(), owns_files=serves is None)
             except (OSError, ValueError, RuntimeError) as error:
                 log.warning("no agent started ahead: %s", error)
                 return
             self._held[slot] = child
-            while self._held.get(slot) is child and child.alive and time.monotonic() - child.born < self.max_age:
+            while (self._held.get(slot) is child and child.alive and time.monotonic() - child.born < self.max_age
+                   and (until is None or time.monotonic() < until) and still()):
                 await asyncio.sleep(self.check_every)
             if self._held.get(slot) is not child:
                 return  # claimed, or dropped
@@ -136,3 +152,7 @@ class WarmStart(BaseModel):
                     child.end()
                 del self._held[slot]
                 return
+        if (last := self._held.pop(slot, None)) is not None:
+            last.end()
+        if self._keepers.get(slot) is asyncio.current_task():
+            del self._keepers[slot]

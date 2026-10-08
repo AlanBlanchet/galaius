@@ -3,7 +3,8 @@
 The vendor ``queue`` command is not a delivery boundary: it can acknowledge a message and then
 lose it when the short-lived CLI process exits. This queue stores only delivery metadata; message
 text remains in the recipient transcript. A detached dispatcher owns the provider process until
-each queued turn finishes.
+each queued turn finishes, or the long-lived launcher holding the run's next child does
+(`galaius.agents.followup`).
 """
 
 from __future__ import annotations
@@ -164,6 +165,21 @@ def claim_next_locked(run_id: str) -> QueueItem | None:
     )
 
 
+def claim_locked(run_id: str, item_id: str) -> QueueItem | None:
+    """Claim `item_id` while the caller owns the run lock, when it is the only item waiting or
+    running (one ahead of it is delivered first, by the run's dispatcher)."""
+    active = [item for item in _items(_state(run_id)) if item.state in {"pending", "running"}]
+    if [item.id for item in active] != [item_id] or active[0].state != "pending":
+        return None
+    return _replace_item_locked(run_id, item_id, state="running", started_at=time.time(),
+                                raw_index=reg.raw_line_count(run_id), attempt_token=uuid.uuid4().hex, error="")
+
+
+def release_locked(run_id: str, item_id: str) -> QueueItem | None:
+    """Put a claimed item whose child never received it back in the queue, for the dispatcher."""
+    return _replace_item_locked(run_id, item_id, state="pending", started_at=None, raw_index=None, attempt_token=None, error="")
+
+
 def mark_locked(
     run_id: str, item_id: str, state: QueueState, *, error: str = "",
 ) -> QueueItem | None:
@@ -196,7 +212,12 @@ def cancel_pending_locked(run_id: str) -> None:
 
 def items(run_id: str) -> list[QueueItem]:
     with reg.record_lock(run_id):
-        return _items(_state(run_id))
+        return items_locked(run_id)
+
+
+def items_locked(run_id: str) -> list[QueueItem]:
+    """The run's queue items while the caller owns the run lock."""
+    return _items(_state(run_id))
 
 
 def _set_dispatcher_locked(
@@ -207,6 +228,11 @@ def _set_dispatcher_locked(
     state["dispatcher_token"] = token
     state["dispatcher_started"] = started
     _write_state(run_id, state)
+
+
+def dispatcher_running_locked(run_id: str) -> bool:
+    """Whether run `run_id`'s recorded dispatcher still runs, while the caller owns the run lock."""
+    return _dispatcher_matches(_state(run_id))
 
 
 def _dispatcher_matches(state: dict) -> bool:
@@ -302,10 +328,10 @@ def _active(run: reg.AgentRun) -> bool:
 def _fresh_policy(run: reg.AgentRun):
     # Circular layers: messaging imports this module (enqueue), and run imports it too (the inbox
     # hook); imported only in the detached child.
-    from galaius.agents.messaging import _policy_for_continuation, provider_for
+    from galaius.agents.messaging import policy_for_continuation, provider_for
 
     provider = provider_for(run.provider)
-    _, criterion, model, reasoning = _policy_for_continuation(run, provider)
+    _, criterion, model, reasoning = policy_for_continuation(run, provider)
     return provider, criterion, model, reasoning
 
 
@@ -332,6 +358,38 @@ def _classify_attempt(run_id: str, raw_index: int | None) -> tuple[AttemptState,
     if terminal is not None:
         return "failed", "resumed turn completed without a reply; resend explicitly"
     return "uncertain", "resumed turn acceptance was not confirmed; resend explicitly"
+
+
+def settle(run_id: str, item: QueueItem, code: int) -> None:
+    """Record how the attempt `item` ended once its provider child exited with `code`: replied,
+    failed or uncertain (never sent again); a child that died saying nothing fails the run's turn."""
+    if code:
+        detail = reg.read_stderr(run_id, 500)
+        error = f"resumed provider exited {code}"
+        if detail:
+            error += f": {_safe_process_detail(detail)}"
+        # Read before the lock: `read_events` locks the record itself. The provider's own
+        # last word (a quota refusal, a vendor error) outranks the exit code; a child that
+        # died saying nothing gets the exit code and its stderr as the run's last line.
+        said = reg.last_event(run_id)
+        stopped = code in (-signal.SIGTERM, 128 + signal.SIGTERM)
+        with reg.record_lock(run_id):
+            current = next((i for i in _items(_state(run_id)) if i.id == item.id), None)
+            if current is not None and current.state == "running":
+                _replace_item_locked(
+                    run_id, item.id, state="failed", finished_at=time.time(), error=error,
+                )
+            if not stopped and (said is None or said.kind != "error" or not said.text.strip()):
+                reg.fail_turn_locked(run_id, error, exit_code=code)
+    else:
+        attempt_state, attempt_error = _classify_attempt(run_id, item.raw_index)
+        with reg.record_lock(run_id):
+            current = next((i for i in _items(_state(run_id)) if i.id == item.id), None)
+            if current is not None and current.state == "running":
+                _replace_item_locked(
+                    run_id, item.id, state=attempt_state, finished_at=time.time(),
+                    error=attempt_error,
+                )
 
 
 def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
@@ -412,34 +470,7 @@ def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
                 time.sleep(_POLL_SECONDS)
                 continue
 
-            code = lifecycle.wait()
-            if code:
-                detail = reg.read_stderr(run_id, 500)
-                error = f"resumed provider exited {code}"
-                if detail:
-                    error += f": {_safe_process_detail(detail)}"
-                # Read before the lock: `read_events` locks the record itself. The provider's own
-                # last word (a quota refusal, a vendor error) outranks the exit code; a child that
-                # died saying nothing gets the exit code and its stderr as the run's last line.
-                said = reg.last_event(run_id)
-                stopped = code in (-signal.SIGTERM, 128 + signal.SIGTERM)
-                with reg.record_lock(run_id):
-                    current = next((i for i in _items(_state(run_id)) if i.id == item.id), None)
-                    if current is not None and current.state == "running":
-                        _replace_item_locked(
-                            run_id, item.id, state="failed", finished_at=time.time(), error=error,
-                        )
-                    if not stopped and (said is None or said.kind != "error" or not said.text.strip()):
-                        reg.fail_turn_locked(run_id, error, exit_code=code)
-            else:
-                attempt_state, attempt_error = _classify_attempt(run_id, item.raw_index)
-                with reg.record_lock(run_id):
-                    current = next((i for i in _items(_state(run_id)) if i.id == item.id), None)
-                    if current is not None and current.state == "running":
-                        _replace_item_locked(
-                            run_id, item.id, state=attempt_state, finished_at=time.time(),
-                            error=attempt_error,
-                        )
+            settle(run_id, item, lifecycle.wait())
     finally:
         with reg.record_lock(run_id):
             state = _state(run_id)

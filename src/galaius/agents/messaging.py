@@ -11,6 +11,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from galaius.agents import agent_queue
 from galaius.agents import registry as reg
 from galaius.agents.policy import PolicyError
 from galaius.agents.providers import AgentProvider, _CLIP, provider_for
@@ -84,7 +85,7 @@ def check_deliverable(run_id: str, *, sender: str | None = None):
     return run, None
 
 
-def _policy_for_continuation(run, provider: AgentProvider, environment: Mapping[str, str] | None = None):
+def policy_for_continuation(run, provider: AgentProvider, environment: Mapping[str, str] | None = None):
     """Resolve current policy; dispatcher calls this again immediately before each resume.
     `environment`: the one the resumed turn runs in (credentials decide what can run), this
     process's own when None."""
@@ -117,13 +118,36 @@ def _session_id(run) -> str | None:
 def deliver_message(
     run_id: str, message: str, *, sender: str | None = None, environment: Mapping[str, str] | None = None,
 ) -> Delivery:
-    """Record and enqueue one message; a detached per-run dispatcher performs the resume.
+    """Record and enqueue one message (`queue_message`); a detached per-run dispatcher performs the resume.
 
     `environment` is the one the dispatcher and its resumed turn run in, and names the sender
-    when `sender` does not (`GALAIUS_RUN_ID`); this process's own when None. A long-lived caller
-    (the machine runner) passes the scrubbed environment it would have given a CLI child."""
-    from galaius.agents import agent_queue
+    when `sender` does not (`GALAIUS_RUN_ID`); this process's own when None."""
+    delivery = queue_message(run_id, message, sender=sender, environment=environment)
+    if delivery.state != "queued":
+        return delivery
+    refused = start_dispatcher(delivery.run_id, os.environ if environment is None else environment)
+    return delivery if refused is None else Delivery(state="error", text=f"ERROR: {refused}", run_id=delivery.run_id)
 
+
+def start_dispatcher(run_id: str, environment: Mapping[str, str]) -> str | None:
+    """Make sure run `run_id`'s dispatcher runs (in `environment`; one already running is kept):
+    it delivers what is queued for the run. Why it could not start, None when it runs."""
+    run = None
+    try:
+        with reg.record_lock(run_id):
+            run = reg.get_run(run_id)
+            agent_queue.ensure_dispatcher_locked(run_id, cwd=(run.cwd if run is not None else None) or ".", environment=dict(environment))
+    except (OSError, RuntimeError, ValueError) as error:
+        return f"could not start {run.name if run is not None else run_id}'s dispatcher — {error}"
+    return None
+
+
+def queue_message(
+    run_id: str, message: str, *, sender: str | None = None, environment: Mapping[str, str] | None = None,
+) -> Delivery:
+    """Record one message and enqueue its delivery (`queued`, with its queue id), or say why not;
+    whoever called delivers it: the run's dispatcher (`deliver_message`), or a long-lived launcher
+    holding the run's next child (`galaius.agents.followup`). `environment` as `deliver_message`'s."""
     environment = dict(os.environ if environment is None else environment)
     if error := _validate_message(message):
         return Delivery(state="error", text=error, run_id=run_id)
@@ -140,7 +164,7 @@ def deliver_message(
         if run is None:
             return Delivery(state="error", text=f"ERROR: no agent run {run_id!r}.", run_id=run_id)
         try:
-            _, criterion, model, reasoning = _policy_for_continuation(run, provider, environment)
+            _, criterion, model, reasoning = policy_for_continuation(run, provider, environment)
         except ModelUnavailable as policy_error:
             return Delivery(state="error", text=f"ERROR: {policy_error}", run_id=run.run_id)
         if _session_id(run) is None:
@@ -184,14 +208,6 @@ def deliver_message(
                     "pending_criterion": criterion,
                     "pending_reasoning": reasoning,
                 })
-        try:
-            agent_queue.ensure_dispatcher_locked(run.run_id, cwd=run.cwd or ".", environment=environment)
-        except (OSError, RuntimeError, ValueError) as dispatcher_error:
-            return Delivery(
-                state="error",
-                text=f"ERROR: could not start {run.name}'s dispatcher — {dispatcher_error}",
-                run_id=run.run_id,
-            )
         return Delivery.queued(
             f"Queued for {run.name} ({run.run_id[:8]}), delivery {item.id[:8]}.",
             run.run_id, queue_id=item.id,
@@ -210,8 +226,6 @@ def wait_for_start(delivery: Delivery, *, timeout: float = 10.0, interval: float
     started only once it has lived `grace` seconds: one that dies on arrival (a CLI refusing, a
     missing session) is caught here, not reported as queued.
     """
-    from galaius.agents import agent_queue
-
     if delivery.state != "queued" or delivery.queue_id is None:
         return None
     deadline = time.monotonic() + timeout
@@ -241,7 +255,6 @@ async def wait_for_reply(delivery: Delivery) -> str:
     if delivery.queue_id is None:
         delivery.state = "error"
         return "ERROR: queued delivery has no persisted queue id."
-    from galaius.agents import agent_queue
     try:
         item = await agent_queue.wait_for_item(delivery.run_id, delivery.queue_id)
     except agent_queue.CorruptQueueStateError as error:

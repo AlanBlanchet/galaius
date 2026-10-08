@@ -829,7 +829,7 @@ def finish(
     Also where a LATE quota/rate-limit refusal is caught — the one the post-spawn probe
     (`run.py::_quota_probe`) cannot see because the run had already been working for minutes.
     Such a refusal arrives only in the run's own event stream; the live mirror polls it through
-    `read_events`'s REPARSE path (`_mirror_while_alive`), which never calls `append_event` (that
+    `read_events`'s REPARSE path (`mirror_while_alive`), which never calls `append_event` (that
     function's own quota catch fires only for the interactive local_session protocol, unreachable
     from an ordinary `-p`/`exec` process run) — so nothing ever recorded a cooldown for it, and the
     next dispatch picked the same cooled model and died again (#reopened). `finish` is the one

@@ -207,7 +207,7 @@ def test_a_message_is_answered_once_durably_queued_and_its_dispatcher_gets_the_m
     run_id = str(uuid4())
     reg.save_run(reg.AgentRun(run_id=run_id, provider="claude", agent="tester", name="r", cwd=str(base / "project"), started_at=1.0, exit_code=0))
     agents.runs.add(WebRun(run_id=run_id, root="project"))
-    monkeypatch.setattr(messaging, "_policy_for_continuation", lambda run, provider, environment: (None, "criterion", "model", "high"))
+    monkeypatch.setattr(messaging, "policy_for_continuation", lambda run, provider, environment: (None, "criterion", "model", "high"))
     started: dict = {}
 
     class Dispatcher:

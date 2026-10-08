@@ -42,11 +42,12 @@ from galaius.file_lock import exclusive
 from galaius.private_files import PRIVATE_FILES
 from galaius.error_reports import MachineErrorReports
 from galaius.machine_places import PlaceDesk
-from galaius.machine_agents import LogRing, MachineAgents, MachineSessions, WebRuns, redact, secret_values
+from galaius.machine_agents import AgentSpawns, LogRing, MachineAgents, MachineSessions, WebRuns, redact, secret_values
 from galaius.machine_workspaces import MachineWorkspaces, WorkspaceJobs
 from galaius_core.sealing import SecretsSeal
 from galaius.agents.events import AgentEvent
 from galaius.agents.run import load_policy, run_agent
+from galaius.agents.followup import FollowUps
 from galaius.agents.warm import WarmStart
 from galaius.agents import registry as reg
 from galaius.agents.profiles import ALLOWED_ENV
@@ -856,8 +857,10 @@ class MachineRunner:
         #: Staged writes waiting for the owner's review, and the web's whole-PC browse budget.
         self.reviews = PlaceReviews.default()
         self.browse_budget = BrowseBudget()
-        #: The agent child started ahead of the next web start (`WarmStart`).
+        #: The agent child started ahead of the next web start (`WarmStart`), and of the next turn of
+        #: the runs whose turn ended last (`FollowUps`).
         self.warm = WarmStart()
+        self.followups = FollowUps()
 
     def _vision_worker(self, config: MachineConfig) -> VisionWorker:
         if self._vision is None or self._vision.keep_warm != config.model_keep_warm_seconds:
@@ -920,6 +923,7 @@ class MachineRunner:
         # Local and independent of the server: a run killed while the PC is offline is settled too.
         settler = asyncio.create_task(self._settle_runs())
         reports = asyncio.create_task(self._deliver_reports(config))
+        followed = asyncio.create_task(self._follow_up(config))
         try:
             await self._connect(config)
         except (PermissionError, UpgradeReady):
@@ -935,8 +939,20 @@ class MachineRunner:
         finally:
             settler.cancel()
             reports.cancel()
-            await asyncio.gather(settler, reports, return_exceptions=True)
-            self.warm.close()  # a child started ahead never outlives its runner
+            followed.cancel()
+            await asyncio.gather(settler, reports, followed, return_exceptions=True)
+            for ahead in (self.warm, self.followups):  # a child started ahead never outlives its runner; ended on the loop it lives on
+                AgentSpawns.loop().call_soon_threadsafe(ahead.close)
+
+    async def _follow_up(self, config: MachineConfig) -> None:
+        """At start: the messages to web runs a former runner left queued go to their dispatchers,
+        and the runs whose turn ended last get their next turn started ahead (`FollowUps`)."""
+        try:
+            agents = await asyncio.to_thread(self._agents, self._current_config(config))
+            if agents.run_agents:
+                await agents.follow_up()
+        except Exception:  # its own failure never stops the runner: a follow-up then starts as before
+            logger.exception("queued follow-ups not recovered")
 
     async def _settle_runs(self) -> None:
         """Every `settle_seconds`, mark ended the runs whose process is gone (`registry.settle_gone`)."""
@@ -1221,17 +1237,8 @@ class MachineRunner:
                 answer = await asyncio.to_thread(PlaceDesk(self).answer, request)
                 await socket.send(json.dumps({"type": "agent_answer", "result": answer.model_dump(mode="json")}))
                 return
-            self._sessions = self._sessions or MachineSessions(current.working_directory)
             self._log_ring.secrets = (current.token.get_secret_value(), *secret_values(self._safe_environment()))
-            agents = MachineAgents(roots=current.agent_roots_by_name(), permission=current.agent_permission, run_agents=current.run_agents,
-                                   continue_conversations=current.continue_conversations, answer_approvals=current.answer_approvals, session=f"web-{current.machine_id}",
-                                   runs=WebRuns(path=self.config_path.with_name("machine-agent-runs.json")), environment=self._safe_environment(),
-                                   sessions=self._sessions, logs=self._log_ring, seal=SecretsSeal.for_token(current.token.get_secret_value()),
-                                   workspaces=MachineWorkspaces(roots=current.agent_roots_by_name(), origins=current.clone_origins, jobs=self._workspace_jobs,
-                                                                working_directory=current.working_directory, register_root=self._register_agent_root,
-                                                                environment={**self._safe_environment(), **{key: os.environ[key] for key in ("SSH_AUTH_SOCK",) if key in os.environ}}),
-                                   places=current.place_map(), fence_agents=current.fence_agents, reviews=self.reviews,
-                                   levels_file=self.config_path, egress=(urlsplit(current.server_url).hostname or "",), warm=self.warm)
+            agents = self._agents(current)
             answer = await agents.answer(request)
             # Reading (the page polls every few seconds) stays out of the owner's log; actions go in.
             run_id = answer.run_id or getattr(request, "run_id", None)
@@ -1251,6 +1258,19 @@ class MachineRunner:
             asked = request.model_dump(mode="json", exclude={"type", "id", "machine", "workspace_id", "expires_at", "signature"})
             self.audit("agents.log", {**asked, **({"started_run_id": str(answer.run_id)} if answer.run_id and "run_id" not in asked else {}), "error": answer.error})
         await socket.send(json.dumps({"type": "agent_answer", "result": answer.model_dump(mode="json")}))
+
+    def _agents(self, current: MachineConfig) -> MachineAgents:
+        """What answers the web's agent requests, from the owner's current settings `current`."""
+        self._sessions = self._sessions or MachineSessions(current.working_directory)
+        return MachineAgents(roots=current.agent_roots_by_name(), permission=current.agent_permission, run_agents=current.run_agents,
+                             continue_conversations=current.continue_conversations, answer_approvals=current.answer_approvals, session=f"web-{current.machine_id}",
+                             runs=WebRuns(path=self.config_path.with_name("machine-agent-runs.json")), environment=self._safe_environment(),
+                             sessions=self._sessions, logs=self._log_ring, seal=SecretsSeal.for_token(current.token.get_secret_value()),
+                             workspaces=MachineWorkspaces(roots=current.agent_roots_by_name(), origins=current.clone_origins, jobs=self._workspace_jobs,
+                                                          working_directory=current.working_directory, register_root=self._register_agent_root,
+                                                          environment={**self._safe_environment(), **{key: os.environ[key] for key in ("SSH_AUTH_SOCK",) if key in os.environ}}),
+                             places=current.place_map(), fence_agents=current.fence_agents, reviews=self.reviews,
+                             levels_file=self.config_path, egress=(urlsplit(current.server_url).hostname or "",), warm=self.warm, followups=self.followups)
 
     def _register_agent_root(self, name: str) -> bool:
         """Adds `name` (relative to the working directory) to the agent roots - an existing checkout

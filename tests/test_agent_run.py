@@ -352,7 +352,7 @@ async def test_events_survive_the_spawning_loop_ending(tmp_path):
 @pytest.mark.asyncio
 async def test_the_normalised_stream_is_kept_current_while_a_run_is_alive(tmp_path, monkeypatch):
     from galaius.agents import registry as reg
-    from galaius.agents.run import _mirror_while_alive
+    from galaius.agents.run import mirror_while_alive
 
     reg.register(run_id="r1", name="a", provider="claude", task="t", pid=None)
     raw = reg.raw_events_path("r1")
@@ -363,7 +363,7 @@ async def test_the_normalised_stream_is_kept_current_while_a_run_is_alive(tmp_pa
     }) + "\n")
 
     alive = {"value": True}
-    task = asyncio.create_task(_mirror_while_alive("r1", lambda: alive["value"], interval=0.02))
+    task = asyncio.create_task(mirror_while_alive("r1", lambda: alive["value"], interval=0.02))
     await asyncio.sleep(0.1)
     assert "first" in reg.events_path("r1").read_text(), "the panel reads this file"
 
@@ -382,10 +382,10 @@ async def test_the_normalised_stream_is_kept_current_while_a_run_is_alive(tmp_pa
 @pytest.mark.asyncio
 async def test_the_pump_stops_when_the_run_does(tmp_path, monkeypatch):
     from galaius.agents import registry as reg
-    from galaius.agents.run import _mirror_while_alive
+    from galaius.agents.run import mirror_while_alive
 
     reg.register(run_id="r1", name="a", provider="claude", task="t", pid=None)
-    task = asyncio.create_task(_mirror_while_alive("r1", lambda: False, interval=0.01))
+    task = asyncio.create_task(mirror_while_alive("r1", lambda: False, interval=0.01))
     await asyncio.wait_for(task, timeout=2)  # must not spin forever on a finished run
 
 
@@ -393,7 +393,7 @@ async def test_the_pump_stops_when_the_run_does(tmp_path, monkeypatch):
 async def test_a_broken_read_never_kills_the_pump(tmp_path, monkeypatch):
     """It runs beside a live agent; a transient read failure must not take the stream down."""
     from galaius.agents import registry as reg
-    from galaius.agents.run import _mirror_while_alive
+    from galaius.agents.run import mirror_while_alive
 
     calls = {"n": 0}
 
@@ -403,7 +403,7 @@ async def test_a_broken_read_never_kills_the_pump(tmp_path, monkeypatch):
 
     monkeypatch.setattr(reg, "read_events", _boom)
     alive = {"value": True}
-    task = asyncio.create_task(_mirror_while_alive("r1", lambda: alive["value"], interval=0.01))
+    task = asyncio.create_task(mirror_while_alive("r1", lambda: alive["value"], interval=0.01))
     await asyncio.sleep(0.08)
     alive["value"] = False
     await asyncio.wait_for(task, timeout=2)

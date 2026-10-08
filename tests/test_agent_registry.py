@@ -1362,7 +1362,7 @@ def test_backfill_does_not_touch_a_plain_run(definition_link_home, monkeypatch, 
 # ── A LATE quota refusal (after the post-spawn probe window) must still cool the model down ──
 # `run_agent`'s `_quota_probe` only watches the first few seconds after spawn — a refusal minutes
 # into a working run arrives only in the child's own event stream, read through `read_events`'s
-# REPARSE path (`_mirror_while_alive` polls it repeatedly). `append_event`'s built-in quota catch
+# REPARSE path (`mirror_while_alive` polls it repeatedly). `append_event`'s built-in quota catch
 # never fires there — nothing calls `append_event` for an ordinary process-kind run, live or
 # resumed; it is reachable only from the interactive local_session `_ConversationProjector`. Three
 # real runs died on the same refusal in one machine-restart-adjacent morning and `quota-cooldowns.json`

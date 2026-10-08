@@ -40,6 +40,7 @@ from galaius_core import (
 )
 from galaius.agents import registry as reg
 from galaius.agents.host import ConversationHost, ConversationRefused
+from galaius.agents.followup import FollowUps
 from galaius.agents.messaging import deliver_message
 from galaius.agents.providers import PROJECT_SETTINGS_OFF, PROVIDERS, provider_for
 from galaius.agents.run import LAUNCH_STAMP, launch_editor_turn, load_policy, rank_candidates, run_agent
@@ -320,6 +321,8 @@ class MachineAgents(BaseModel):
     egress: tuple[str, ...] = ()
     #: The runner's agent child started ahead of the next start (`galaius.agents.warm`).
     warm: WarmStart | None = None
+    #: The runner's delivery of messages to its runs between their turns (`galaius.agents.followup`).
+    followups: FollowUps | None = None
 
     @staticmethod
     def own_cli() -> tuple[str, ...]:
@@ -359,7 +362,7 @@ class MachineAgents(BaseModel):
             case AgentSendRequest() | AgentStopRequest() | AgentAnswerRequest() if self._kind(request.run_id) == "session":
                 return await self._session_action(request)
             case AgentSendRequest():
-                return await asyncio.to_thread(self._send, request)
+                return await self._send(request)
             case AgentStopRequest():
                 return await asyncio.to_thread(self._stop, request)
             case AgentAnswerRequest():
@@ -668,6 +671,8 @@ class MachineAgents(BaseModel):
                     self.reviews.discard(review)
                 raise
             run_id = UUID(handle.run_id)
+            if self.followups is not None:
+                self.followups.follow(handle.run_id, handle.process, environment=environment)
             if review is not None:
                 self.reviews.attach(review, run_id)
             self.runs.add(WebRun(run_id=run_id, root=request.root, path=request.path, fenced=fence is not None))
@@ -744,16 +749,39 @@ class MachineAgents(BaseModel):
                 self.reviews.discard(review)
             raise
 
-    def _send(self, request: AgentSendRequest) -> MachineAgentAnswer:
-        run = self._require_run(request.run_id)
+    async def _send(self, request: AgentSendRequest) -> MachineAgentAnswer:
+        run = await asyncio.to_thread(self._require_run, request.run_id)
         if self._kind(request.run_id) == "continued":
-            return self._continue_turn(run, request.text, request_id=request.id)
-        # Answered once the message is durably queued: its run's dispatcher resumes the agent, and
-        # a resume refused after this point is that run's failure, in its events.
-        delivery = deliver_message(str(request.run_id), request.text, sender="operator", environment=self.launcher_environment_in(Path(run.cwd)))
+            return await asyncio.to_thread(self._continue_turn, run, request.text, request_id=request.id)
+        # Answered once the message is durably queued: this runner starts the turn when the run is
+        # between turns (`FollowUps`), else its dispatcher resumes the agent; a resume refused after
+        # this point is that run's failure, in its events.
+        environment = await asyncio.to_thread(self.launcher_environment_in, Path(run.cwd))
+        if self.followups is not None:
+            followups = self.followups
+            delivery = await AgentSpawns.run(lambda: followups.send(str(request.run_id), request.text, environment=environment))
+        else:
+            delivery = await asyncio.to_thread(deliver_message, str(request.run_id), request.text, sender="operator", environment=environment)
         if delivery.state == "error":
             raise RuntimeError(delivery.text.removeprefix("ERROR: ") or "not delivered")
         return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=delivery.text)
+
+    async def follow_up(self) -> None:
+        """At the runner's start (`FollowUps`): messages its web runs still had queued go to their
+        dispatchers; the runs whose turn ended last get their next turn started ahead."""
+        if self.followups is None:
+            return
+        followups, ids = self.followups, {str(item.run_id) for item in self.runs.read() if item.kind == "agent"}
+        runs = [run for run in await asyncio.to_thread(self.runs.runs) if run.run_id in ids]
+        environments = {run.run_id: await asyncio.to_thread(self.launcher_environment_in, Path(run.cwd)) for run in runs}
+        for run in runs:  # one run's failure never keeps another's message waiting
+            try:
+                if recovered := await asyncio.to_thread(followups.recover, [run], environment=environments[run.run_id]):
+                    logger.info("queued follow-up to %s handed to its dispatcher", recovered[0][:8])
+            except (OSError, RuntimeError, ValueError) as error:
+                logger.warning("queued follow-up to %s not recovered: %s", run.run_id[:8], error)
+        for run_id in followups.recent(runs):
+            await AgentSpawns.run(lambda run_id=run_id: followups.ready(run_id, environment=environments[run_id]))
 
     def _stop(self, request: AgentStopRequest) -> MachineAgentAnswer:
         run = self._require_run(request.run_id)

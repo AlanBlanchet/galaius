@@ -518,6 +518,19 @@ class AgentProvider(ABC):
         a COPY of it under that new id (the original is never written)."""
         raise NotImplementedError(f"{type(self).__name__} cannot resume a session")
 
+    def resume_ahead_command(self, session_id: str, **arguments) -> list[str]:
+        """`resume_command`'s child with no message: it starts now and reads the message
+        `task_message` writes (`starts_ahead`)."""
+        raise UnsupportedToolPolicy(f"{self.name} cannot resume before its message")
+
+    def took_message(self, line: str) -> bool:
+        """Whether `line`, written by a turn's child after its message was handed to it (on its
+        command line or its stdin), says it took it: anything but its start's bookkeeping."""
+        try:
+            return self.parse(line) is not None
+        except ValueError:
+            return False
+
     def queue_command(self, session_id: str, message: str) -> list[str]:
         """The argv that queues ``message`` for a session already served by this CLI."""
         raise NotImplementedError(f"{type(self).__name__} cannot queue a message")
@@ -913,14 +926,37 @@ class ClaudeCodeProvider(AgentProvider):
         inbox_hook: str | None = None,
     ) -> list[str]:
         """Continue an existing session using its provider session id (`fork_to`: as a copy)."""
-        # base_url unused — see command()'s docstring note.
+        return [*self._resume_options(session_id, model=model, permission_mode=permission_mode, agent=agent, agent_prompt=agent_prompt, allowed_tools=allowed_tools,
+                                      denied_tools=denied_tools, mcp_config=mcp_config, fork_to=fork_to, inbox_hook=inbox_hook), "--", message]
+
+    def resume_ahead_command(self, session_id: str, **arguments) -> list[str]:
+        """`resume_command`'s options, the message read as stream-json input: the CLI loads the
+        session and does its startup at once, then waits (before its message it writes only its
+        start hooks' bookkeeping lines). It echoes the message once it has read it (`isReplay`):
+        the mark that it took it, which a launcher stopped mid-hand-over reads (`galaius.agents.followup`)."""
+        return [*self._resume_options(session_id, **arguments), "--input-format", "stream-json", "--replay-user-messages"]
+
+    def took_message(self, line: str) -> bool:
+        """Also its echo of a message read on stdin (`resume_ahead_command`), which the parser drops."""
+        try:
+            raw = json.loads(line)
+        except ValueError:
+            return False
+        return (isinstance(raw, dict) and raw.get("type") == "user" and raw.get("isReplay") is True) or super().took_message(line)
+
+    def _resume_options(
+        self, session_id: str, *, model: str | None = None, permission_mode: str | None = None, reasoning: str | None = None,
+        agent: str | None = None, agent_prompt: str | None = None, allowed_tools: list[str] | None = None, denied_tools: tuple[str, ...] = (),
+        mcp_config: str | None = None, coarse_accepted: bool = False, base_url: str | None = None, fork_to: str | None = None, inbox_hook: str | None = None,
+    ) -> list[str]:
+        # base_url unused — see command()'s docstring note; reasoning travels as CLAUDE_CODE_EFFORT_LEVEL.
         return [
             self.binary, "-p",
             "--resume", session_id,
             *(["--fork-session", "--session-id", fork_to] if fork_to else []),
             "--output-format", "stream-json",
             "--verbose",
-        ] + (["--model", model] if model else []) + self._permission_flag(permission_mode) + self._setting_sources() + self.inbox_arguments(inbox_hook) + self.role_arguments(agent, agent_prompt, allowed_tools, denied_tools) + (["--mcp-config", mcp_config] if mcp_config else []) + ["--", message]
+        ] + (["--model", model] if model else []) + self._permission_flag(permission_mode) + self._setting_sources() + self.inbox_arguments(inbox_hook) + self.role_arguments(agent, agent_prompt, allowed_tools, denied_tools) + (["--mcp-config", mcp_config] if mcp_config else [])
 
     @staticmethod
     def inbox_arguments(hook: str | None) -> list[str]:
@@ -1041,6 +1077,8 @@ class ClaudeCodeProvider(AgentProvider):
                               **live)
 
         if kind == "user":
+            if raw.get("isReplay"):
+                return None  # the echo of a message handed on stdin; its sender recorded the message itself
             # Tool results come back as a USER turn — that is the other half of a transcript.
             msg = raw.get("message") or {}
             for block in msg.get("content") or []:

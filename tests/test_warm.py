@@ -12,7 +12,7 @@ from galaius.processes import process_group_options
 
 async def _waiting(run_id: str) -> asyncio.subprocess.Process:
     return await asyncio.create_subprocess_exec(sys.executable, "-c", "import sys; sys.stdin.read()", stdin=asyncio.subprocess.PIPE,
-                                                **process_group_options())  # its own tree, as `ChildLaunch.start` gives it
+                                                **process_group_options())  # its own tree, as `AheadLaunch.start` gives it
 
 
 async def _held(warm: WarmStart, count: int) -> None:

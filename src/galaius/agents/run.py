@@ -704,22 +704,71 @@ def mesh_config(*, run_id: str) -> str:
     })
 
 
-class ChildLaunch(BaseModel):
-    """How one ranked candidate's child starts, whichever run id it starts as: its provider's
-    command and environment, its folder, its fence. A run's own child and a child started ahead of
-    the next start (`WarmStart`) are the same launch."""
+class AheadLaunch(BaseModel):
+    """How a child of one provider starts in one folder and fence, possibly before what it is to do
+    is known (`start(..., ahead=True)`, then `hand`): a run's first turn (`ChildLaunch`) or its next
+    one (`ResumeLaunch`). A child started ahead is used only while `digest` still holds."""
 
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     provider: AgentProvider
     cwd: str
+    fence: FenceSpec | None = None
+
+    def digest(self, environment: Mapping[str, str], *parts: str) -> str:
+        """`parts`, today's date (the one a prompt states) and the content of each file the CLI reads
+        at its start here (a rewrite with unchanged content keeps the same digest)."""
+        digest = hashlib.sha256("\0".join((*parts, date.today().isoformat())).encode())
+        for path in self.provider.startup_files(Path(self.cwd), environment):
+            try:
+                content = path.read_bytes()
+            except OSError:
+                content = b"\0absent"
+            digest.update(f"\0{path}\0{len(content)}\0".encode())
+            digest.update(content)
+        return digest.hexdigest()
+
+    async def start(self, run_id: str, argv: list[str], *, env: dict[str, str], ahead: bool = False, stderr: BinaryIO | None = None) -> asyncio.subprocess.Process:
+        """`argv` started as run `run_id`'s child, its OWN stream written straight to disk (after the
+        run's earlier turns when `stderr` is given, the caller's: a later turn's): piping it through
+        a coroutine tied events to the caller's event loop, and a caller that spawned and returned
+        lost every event. At OS level the stream survives the caller, or galaius, dying. `ahead`: it
+        reads what it is to do from its stdin, written later (`hand`)."""
+        later = stderr is not None
+        sink = reg.open_raw_events(run_id, append=later)
+        stderr = stderr if later else reg.open_stderr(run_id, append=False)
+        try:
+            return await asyncio.create_subprocess_exec(
+                *contained(fenced(spawnable(argv, env), self.fence), run_id=run_id), cwd=self.cwd, env=env,
+                # Never the launcher's own stdin: Claude Code waits 3 s for input on one that is no
+                # terminal, and an MCP server's stdin carries its protocol.
+                stdin=asyncio.subprocess.PIPE if ahead else asyncio.subprocess.DEVNULL,
+                stdout=sink, stderr=stderr,
+                **process_group_options(),  # own process tree, so stop() can end the whole of it
+            )
+        finally:
+            sink.close()  # the child holds its own dup of the fd
+            if not later:
+                stderr.close()
+
+    async def hand(self, process: asyncio.subprocess.Process, text: str) -> None:
+        """Give a child started ahead what it is to do: its first and only stdin message."""
+        process.stdin.write(self.provider.task_message(text))
+        await process.stdin.drain()
+        process.stdin.close()
+
+
+class ChildLaunch(AheadLaunch):
+    """How one ranked candidate's child starts, whichever run id it starts as: its provider's
+    command and environment, its folder, its fence. A run's own child and a child started ahead of
+    the next start (`WarmStart`) are the same launch."""
+
     #: The child's environment before its run id joins it.
     environment: dict[str, str]
     #: `provider.command`'s arguments that do not name the run.
     arguments: dict[str, object]
     #: Whether the child gets galaius's MCP server from `mesh_config` (its CLI registers none itself).
     meshed: bool
-    fence: FenceSpec | None = None
 
     #: The run id launches are compared under (`key`).
     _ANY_RUN: ClassVar[str] = str(uuid.UUID(int=0))
@@ -747,47 +796,79 @@ class ChildLaunch(BaseModel):
 
     def key(self) -> str:
         """Whether a child started ahead for this launch is still fresh: each file its CLI reads at
-        start holds the same content (a rewrite with unchanged content keeps it fresh), and the date
-        its prompt states is still today's."""
-        digest = hashlib.sha256(f"{self.slot()}\0{date.today().isoformat()}".encode())
-        for path in self.provider.startup_files(Path(self.cwd), self.environment):
-            try:
-                content = path.read_bytes()
-            except OSError:
-                content = b"\0absent"
-            digest.update(f"\0{path}\0{len(content)}\0".encode())
-            digest.update(content)
-        return digest.hexdigest()
-
-    async def start(self, run_id: str, argv: list[str], *, ahead: bool = False) -> asyncio.subprocess.Process:
-        """`argv` started as run `run_id`'s child, its OWN stream written straight to disk: piping it
-        through a coroutine tied events to the caller's event loop, and a caller that spawned and
-        returned lost every event. At OS level the stream survives the caller, or galaius, dying."""
-        env = self.env(run_id)
-        sink = reg.open_raw_events(run_id, append=False)
-        stderr = reg.open_stderr(run_id, append=False)
-        try:
-            return await asyncio.create_subprocess_exec(
-                *contained(fenced(spawnable(argv, env), self.fence), run_id=run_id), cwd=self.cwd, env=env,
-                # Never the launcher's own stdin: Claude Code waits 3 s for input on one that is no
-                # terminal, and an MCP server's stdin carries its protocol.
-                stdin=asyncio.subprocess.PIPE if ahead else asyncio.subprocess.DEVNULL,
-                stdout=sink, stderr=stderr,
-                **process_group_options(),  # own process tree, so stop() can end the whole of it
-            )
-        finally:
-            sink.close()  # the child holds its own dup of the fd
-            stderr.close()
+        start holds the same content, and the date its prompt states is still today's."""
+        return self.digest(self.environment, self.slot())
 
     async def start_ahead(self, run_id: str) -> asyncio.subprocess.Process:
         """A child started as run `run_id` before its task, reading it from its stdin."""
-        return await self.start(run_id, self.provider.ahead_command(**self.command_arguments(run_id, run_id)), ahead=True)
+        return await self.start(run_id, self.provider.ahead_command(**self.command_arguments(run_id, run_id)), env=self.env(run_id), ahead=True)
 
-    async def hand(self, process: asyncio.subprocess.Process, task: str) -> None:
-        """Give a child started ahead its task: its first and only stdin message."""
-        process.stdin.write(self.provider.task_message(task))
-        await process.stdin.drain()
-        process.stdin.close()
+
+class ResumeLaunch(AheadLaunch):
+    """How the next turn of run `run_id` starts: its provider's resume command (the message aside),
+    environment, folder and fence, and the model, criterion and reasoning the current policy gives
+    it. `launch_continuation` passes the message on the command line; a long-lived launcher starts
+    the child before the message exists (`start_ahead`) and hands it later (`hand`)."""
+
+    run_id: str
+    session_id: str
+    env: dict[str, str]
+    #: `provider.resume_command`'s arguments besides the session and the message.
+    arguments: dict[str, object]
+    model: str | None
+    criterion: str | None
+    reasoning: str | None
+
+    @classmethod
+    def of(cls, provider: AgentProvider, run: reg.AgentRun, session_id: str, *, model: str | None, criterion: str | None, reasoning: str | None,
+           environment: Mapping[str, str] | None = None) -> "ResumeLaunch":
+        """The current policy's next turn of `run`, run in `environment` (this process's own when None)."""
+        environment = dict(os.environ if environment is None else environment)
+        policy = load_policy()
+        policy, _ = policy.for_launch(run.agent, reference=run.agent_ref)
+        catalog = policy.catalog
+        routed: dict[str, str] = {}
+        if catalog is not None:
+            if not run.agent:
+                raise ModelUnavailable("Server catalog continuation requires a named role")
+            criterion = policy.criterion_for(run.agent)
+            if not criterion:
+                raise ModelUnavailable(f"No model criterion for {run.agent!r}")
+            routed, model = resolve_continuable_model(criterion, environment, provider=provider, weights=policy.weights_for(run.agent), role=run.agent)
+            reasoning = policy.reasoning_for(run.agent, f"{provider.name}/{model}" if model else None)
+        coarse_accepted = policy.accepts_coarse_tool_policy(run.agent, provider.name) if run.agent else False
+        provider.validate_tool_policy(policy.tools_for(run.agent), run.denied_tools, coarse_accepted=coarse_accepted)
+        env = {**environment, **routed, "GALAIUS_RUN_ID": run.run_id, "GALAIUS_PARENT_RUN_ID": run.run_id}
+        arguments = dict(
+            model=model, permission_mode=run.permission_mode, reasoning=reasoning, agent=run.agent,
+            allowed_tools=policy.tools_for(run.agent), denied_tools=run.denied_tools,
+            agent_prompt=_role_prompt(catalog, run.agent, provider, env) if catalog is not None else None,
+            mcp_config=mesh_config(run_id=run.run_id) if run.mesh_enabled and not already_meshed(provider.name, cwd=run.cwd) else None,
+            coarse_accepted=coarse_accepted, base_url=routed.get("OPENAI_BASE_URL"),
+            **({"inbox_hook": agent_queue.inbox_hook(run.run_id)} if provider.reads_mid_turn else {}),
+        )
+        if provider.name == "claude" and reasoning is not None:
+            env["CLAUDE_CODE_EFFORT_LEVEL"] = reasoning
+        return cls(provider=provider, run_id=run.run_id, session_id=session_id, cwd=run.cwd or ".", env=env, arguments=arguments,
+                   model=model, criterion=criterion, reasoning=reasoning, fence=run.fence)
+
+    def command(self, message: str) -> list[str]:
+        return self.provider.resume_command(self.session_id, message, **self.arguments)
+
+    def key(self, run: reg.AgentRun) -> str:
+        """Whether a child started ahead for this turn still holds: the same command, environment and
+        folder, the files its CLI reads at start unchanged, the same date, and no turn of `run`
+        begun since (`lifecycle_token`: a turn another sender started wrote the session on)."""
+        argv = self.provider.resume_ahead_command(self.session_id, **self.arguments)
+        slot = json.dumps([argv, self.env, self.cwd, self.fence.model_dump(mode="json") if self.fence is not None else None], sort_keys=True)
+        return self.digest(self.env, slot, run.lifecycle_token or "")
+
+    async def start_ahead(self, stderr: BinaryIO) -> asyncio.subprocess.Process:
+        """The turn's child, started now, reading its message from its stdin; its stream follows the
+        run's earlier turns (before its message it writes only bookkeeping lines readers skip), its
+        error output goes to `stderr` (kept only redacted, when the turn fails: `record_turn_stderr`)."""
+        argv = self.provider.resume_ahead_command(self.session_id, **self.arguments)
+        return await self.start(self.run_id, argv, env=self.env, ahead=True, stderr=stderr)
 
 
 def _role_prompt(catalog: AgentCatalog, role: str, provider: AgentProvider, environment: Mapping[str, str]) -> str:
@@ -852,7 +933,16 @@ def continuation_lock(run_id: str) -> threading.Lock:
         return _CONTINUATION_LOCKS.setdefault(run_id, threading.Lock())
 
 
-def _record_continuation_stderr(run_id: str, payload: bytes) -> None:
+def record_turn_stderr(run_id: str, stderr_file: BinaryIO) -> None:
+    """A failed turn's error output (`stderr_file`'s last 8 KiB), bounded and redacted, as run
+    `run_id`'s; a successful turn's is never kept."""
+    try:
+        stderr_file.seek(0, os.SEEK_END)
+        size = min(stderr_file.tell(), 8192)
+        stderr_file.seek(-size, os.SEEK_END) if size else None
+        payload = stderr_file.read(size) if size else b""
+    except (OSError, ValueError):
+        payload = b""
     if not payload:
         return
     # Keep only a bounded, redacted diagnostic. It is never included in a normal successful reply.
@@ -873,15 +963,8 @@ def _reap_continuation(lifecycle: ContinuationHandle) -> None:
     code: int | None = None
     try:
         code = process.wait()
-        try:
-            stderr_file.seek(0, os.SEEK_END)
-            size = min(stderr_file.tell(), 8192)
-            stderr_file.seek(-size, os.SEEK_END) if size else None
-            payload = stderr_file.read(size) if size else b""
-        except (OSError, ValueError):
-            payload = b""
         if code:
-            _record_continuation_stderr(run_id, payload)
+            record_turn_stderr(run_id, stderr_file)
         with suppress(Exception):
             reg.read_events(run_id)
         with suppress(Exception):
@@ -915,35 +998,9 @@ def launch_continuation(
     record_locked: bool = False,
 ) -> ContinuationHandle:
     """Spawn one resumed turn and start its reaper before returning to a caller."""
-    policy = load_policy()
-    policy, _ = policy.for_launch(run.agent, reference=run.agent_ref)
-    catalog = policy.catalog
-    routed: dict[str, str] = {}
-    if catalog is not None:
-        if not run.agent:
-            raise ModelUnavailable("Server catalog continuation requires a named role")
-        criterion = policy.criterion_for(run.agent)
-        if not criterion:
-            raise ModelUnavailable(f"No model criterion for {run.agent!r}")
-        routed, model = resolve_continuable_model(criterion, dict(os.environ), provider=provider, weights=policy.weights_for(run.agent), role=run.agent)
-        reasoning = policy.reasoning_for(run.agent, f"{provider.name}/{model}" if model else None)
-    coarse_accepted = policy.accepts_coarse_tool_policy(run.agent, provider.name) if run.agent else False
-    provider.validate_tool_policy(policy.tools_for(run.agent), run.denied_tools, coarse_accepted=coarse_accepted)
-    env = {**os.environ, **routed, "GALAIUS_RUN_ID": run.run_id, "GALAIUS_PARENT_RUN_ID": run.run_id}
-    argv = provider.resume_command(
-        session_id, message, model=model, permission_mode=run.permission_mode,
-        reasoning=reasoning, agent=run.agent,
-        allowed_tools=policy.tools_for(run.agent), denied_tools=run.denied_tools,
-        agent_prompt=_role_prompt(catalog, run.agent, provider, env) if catalog is not None else None,
-        mcp_config=mesh_config(run_id=run.run_id)
-        if run.mesh_enabled and not already_meshed(provider.name, cwd=run.cwd) else None,
-        coarse_accepted=coarse_accepted,
-        base_url=routed.get("OPENAI_BASE_URL"),
-        **({"inbox_hook": agent_queue.inbox_hook(run.run_id)} if provider.reads_mid_turn else {}),
-    )
-    if provider.name == "claude":
-        env["CLAUDE_CODE_EFFORT_LEVEL"] = reasoning
-    return _spawn_turn(argv, run, env=env, raw_index=raw_index, model=model, criterion=criterion, reasoning=reasoning, record_locked=record_locked)
+    launch = ResumeLaunch.of(provider, run, session_id, model=model, criterion=criterion, reasoning=reasoning)
+    return _spawn_turn(launch.command(message), run, env=launch.env, raw_index=raw_index, model=launch.model, criterion=launch.criterion,
+                       reasoning=launch.reasoning, record_locked=record_locked)
 
 
 def launch_editor_turn(
@@ -969,7 +1026,7 @@ def _spawn_turn(
     try:
         process = subprocess.Popen(
             contained(fenced(spawnable(argv, env), run.fence), run_id=run.run_id), cwd=run.cwd or ".", env=env,
-            stdin=subprocess.DEVNULL, stdout=sink, stderr=stderr_file,  # never the launcher's stdin (`ChildLaunch.start`)
+            stdin=subprocess.DEVNULL, stdout=sink, stderr=stderr_file,  # never the launcher's stdin (`AheadLaunch.start`)
             **process_group_options(),
         )
     except BaseException:
@@ -1001,7 +1058,7 @@ def _spawn_turn(
     return lifecycle
 
 
-async def _mirror_while_alive(run_id: str, alive, *, interval: float = 1.0) -> None:
+async def mirror_while_alive(run_id: str, alive, *, interval: float = 1.0) -> None:
     """Keep the NORMALISED stream current while a run works.
 
     The child writes only the vendor's RAW stream; the provider-agnostic copy the VS Code panel
@@ -1372,7 +1429,7 @@ async def run_agent(
                 run_id = vendor_session = held.run_id
                 candidate_process = held.process
         if candidate_process is None:
-            candidate_process = await launch.start(run_id, launch.command(brief, run_id, vendor_session))
+            candidate_process = await launch.start(run_id, launch.command(brief, run_id, vendor_session), env=launch.env(run_id))
         # The child resolves its owning conversation from this run's record, so the record must
         # exist before it can ask — the probe otherwise sits between spawn and register and the
         # child reads a stale owner. Registering here also means a candidate skipped for quota
@@ -1445,7 +1502,7 @@ async def run_agent(
     # Keep the panel's copy of the stream current WHILE it works: a running agent can be watched,
     # not only read afterwards.
     asyncio.create_task(
-        _mirror_while_alive(run_id, lambda: process.returncode is None)
+        mirror_while_alive(run_id, lambda: process.returncode is None)
     )
     if warm is not None and chosen_ahead is not None:
         # The next start of this same launch finds its child already started.
