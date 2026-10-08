@@ -1852,7 +1852,7 @@ class MachineRunner:
         prepares an error report from `lines` (what led to it) and asks its owner on that page
         whether to send it (`error_reports`): nothing of the lines leaves before his yes."""
         problem = MachineProblem(code=code, detail=redact(detail, (config.token.get_secret_value(),)).strip()[-500:])
-        cls.error_reports().prepare(config, code, detail or code, (*lines, detail), secrets)
+        cls.error_reports().prepare(config, code, detail or code, (*lines, detail), secrets)  # never raises
         try:
             response = httpx.post(config.endpoint("/v1/machine/problem"), json=problem.model_dump(mode="json", exclude_none=True), headers=config.authorization, timeout=10)
         except httpx.HTTPError:

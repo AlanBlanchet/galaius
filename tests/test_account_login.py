@@ -118,6 +118,7 @@ def test_not_online_says_why_here_and_on_its_page(joining: Path, monkeypatch: py
     monkeypatch.setattr(account_login.AccountLogin, "online", lambda self, http, machine, key: False)
     monkeypatch.setattr(MachineRunner, "report_problem", classmethod(lambda cls, machine, said, detail="", *rest: reported.append((said, detail)) or True))
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    monkeypatch.setattr(account_login.MachineErrorReports, "asked", lambda self: True)  # its question reached the server (test_machines)
     account_login.login("https://galaius.example.org", allow_runs=False, open_browser=False)
     said = capsys.readouterr()
     assert [value for value, _ in reported] == [code] and "Connected:" not in said.out
