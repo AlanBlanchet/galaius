@@ -9,10 +9,11 @@ part of the protocol under test.
 import json
 import os
 from pathlib import Path
-import stat
 import subprocess
 import sys
 import time
+
+from galaius.private_files import PRIVATE_FILES
 
 
 def _identity() -> tuple[str, str]:
@@ -27,10 +28,19 @@ def _hang(args: list[str]) -> None:
     time.sleep(30)
 
 
+def _private(path: Path) -> bool:
+    """What the vendor CLI is handed is private to this user, as galaius defines it per system."""
+    try:
+        PRIVATE_FILES.check(path)
+    except PermissionError:
+        return False
+    return True
+
+
 def _payload(args: list[str], prompt_stdin: str) -> str:
     cwd = Path.cwd()
     files = [
-        {"name": path.name, "mode": stat.S_IMODE(path.stat().st_mode)}
+        {"name": path.name, "private": _private(path)}
         for path in sorted(cwd.iterdir())
         if path.is_file()
     ]
@@ -39,7 +49,7 @@ def _payload(args: list[str], prompt_stdin: str) -> str:
             "argv": args,
             "stdin": prompt_stdin,
             "cwd": str(cwd),
-            "cwd_mode": stat.S_IMODE(cwd.stat().st_mode),
+            "cwd_private": _private(cwd),
             "files": files,
             "auth_home": {
                 key: os.environ[key]

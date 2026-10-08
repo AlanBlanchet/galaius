@@ -1,8 +1,7 @@
 """The one cross-process writer lock: an exclusive lock held on a lock file its caller opened (how
 it is opened safely — private folder, no link followed — stays the caller's). POSIX `flock`;
-Windows locks the file's first byte (`msvcrt.locking`), waiting as long as another process holds it."""
+Windows `LockFileEx` on the file's first byte, waiting as long as another holder keeps it."""
 
-import errno
 import os
 import sys
 from collections.abc import Iterator
@@ -12,6 +11,11 @@ from pydantic import BaseModel, ConfigDict
 
 if sys.platform == "win32":
     import msvcrt
+
+    import pywintypes
+    import win32file
+
+    LOCKFILE_EXCLUSIVE_LOCK = 0x2  # <minwinbase.h>
 else:
     import fcntl
 
@@ -39,21 +43,15 @@ class PosixFileLock(FileLock):
 
 
 class WindowsFileLock(FileLock):
-    """Windows: the first byte, locked from offset 0 (the lock is by position)."""
+    """Windows: the first byte, from offset 0. `LockFileEx` blocks until the holder lets go and
+    wakes at once (`msvcrt.locking` retried once a second, so a waiter could lose whole seconds to
+    every other taker in turn)."""
 
     def acquire(self, descriptor: int) -> None:
-        while True:
-            os.lseek(descriptor, 0, os.SEEK_SET)
-            try:
-                msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)
-                return
-            except OSError as error:
-                if error.errno != errno.EDEADLOCK:  # LK_LOCK gives up after ~10 s with EDEADLOCK: wait again; anything else is real
-                    raise
+        win32file.LockFileEx(msvcrt.get_osfhandle(descriptor), LOCKFILE_EXCLUSIVE_LOCK, 0, 1, pywintypes.OVERLAPPED())
 
     def release(self, descriptor: int) -> None:
-        os.lseek(descriptor, 0, os.SEEK_SET)
-        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+        win32file.UnlockFileEx(msvcrt.get_osfhandle(descriptor), 0, 1, pywintypes.OVERLAPPED())
 
 
 FILE_LOCK: FileLock = WindowsFileLock() if sys.platform == "win32" else PosixFileLock()

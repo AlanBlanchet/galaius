@@ -88,6 +88,9 @@ galaius-fetch-upstream = "galaius.benchmarks.upstream:_main"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# The repository root is importable: tests share helpers as `tests.support`, whether pytest runs as
+# `pytest` (CI) or `python -m pytest`.
+pythonpath = ["."]
 norecursedirs = ["tests/fixtures", "tests/e2e"]
 # Per-test timeout so a test that hangs (e.g. on Windows) FAILS with a traceback instead of
 # blocking the whole job forever. "thread" method works on Windows (signal/SIGALRM is Unix-only).

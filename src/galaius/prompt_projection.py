@@ -643,7 +643,7 @@ def _entry_identity(path: Path, *, symlink_parent: Path | None = None, symlink_t
     except FileNotFoundError:
         return None
     if stat.S_ISLNK(info.st_mode):
-        link = os.readlink(path)
+        link = _link_target(path)
         if link != symlink_target:
             raise ValueError("legacy symlink does not match adoption manifest")
         referent = (symlink_parent or path.parent) / link
@@ -656,6 +656,14 @@ def _entry_identity(path: Path, *, symlink_parent: Path | None = None, symlink_t
             info = os.fstat(stream.fileno())
             content = stream.read()
     return (info.st_dev, info.st_ino, info.st_mode, hashlib.sha256(content).hexdigest())
+
+
+def _link_target(path: Path) -> str:
+    r"""Where link `path` points, as it was written: Windows reads an absolute target back in its
+    native form (`\\?\C:\...`), the same path behind a prefix."""
+    target = os.readlink(path)
+    native = "\\\\?\\"
+    return target[len(native):] if target.startswith(native) and target[len(native) + 1:len(native) + 2] == ":" else target
 
 
 def _safe_directory(path: Path, *, create: bool = False) -> list[Path]:
@@ -860,7 +868,7 @@ def _adopted_directories(
             if not parent.is_symlink():
                 continue
             declared = adoption.get(parent)
-            if (declared is None or os.readlink(parent) != declared[0]
+            if (declared is None or _link_target(parent) != declared[0]
                     or _directory_digest(parent) != declared[1]):
                 raise ValueError("legacy directory symlink does not match adoption manifest")
             adopted.add(parent)

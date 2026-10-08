@@ -293,11 +293,11 @@ def test_resolve_model_override_wins_over_everything():
 
 
 @pytest.mark.parametrize("role", ["image", "component", "video"])
-def test_resolve_model_auto_is_never_empty(role):
-    """No configured criterion, no override → resolution still falls through to a concrete id
-    via the role's bare-capability default. This is the exact scenario that returned '[Vision
-    not configured]': the old model_for() was '' and that empty string flowed all the way to
-    analyze_media."""
+def test_resolve_model_auto_is_never_empty(role, provider_key):
+    """A provider key, no configured criterion, no override → resolution still falls through to
+    a concrete id via the role's bare-capability default. This is the exact scenario that
+    returned '[Vision not configured]': the old model_for() was '' and that empty string flowed
+    all the way to analyze_media."""
     cfg = Config()
     resolved = cfg.resolve_model(role)
     assert resolved  # non-empty

@@ -1158,10 +1158,6 @@ body.vscode-high-contrast-light .wp {
   box-shadow: 2px 2px 0 var(--wp-ink);
   opacity: 0;
   pointer-events: none;
-  /* Opacity only. Transitioning the transform also transitions the scale(--inv) the camera
-     writes, so every zoom step left the bubbles a fifth of a second behind the floor they belong
-     to — a label that lags the world it labels. */
-  transition: opacity 220ms ease;
   z-index: 5;
 }
 .wp-say b { font-weight: 400; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1178,6 +1174,14 @@ body.vscode-high-contrast-light .wp {
 .wp-actor.is-saying .wp-say {
   opacity: 1;
   transform: translate(-50%, 0) scale(var(--inv, 1));
+  /* Fades IN, cuts OUT. A line loses its place because something else now stands there — another
+     line, a sign, the frame edge — so a fade-out is a fifth of a second of two words drawn over
+     each other, or of a sentence hanging off the panel. The transition lives on the granted state
+     only, so it runs on the way in and not on the way out.
+     Opacity only. Transitioning the transform also transitions the scale(--inv) the camera
+     writes, so every zoom step left the bubbles a fifth of a second behind the floor they belong
+     to — a label that lags the world it labels. */
+  transition: opacity 220ms ease;
 }
 .wp-actor:hover, .wp-actor:focus-visible { z-index: 900 !important; }
 

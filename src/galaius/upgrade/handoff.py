@@ -7,14 +7,17 @@ sees nothing), Windows runs it as a child and waits, passing its exit code on, a
 when a supervisor in it asks to become a newer runtime's (`EXIT_HANDOVER`). `galaius upgrade` never
 hands off: it is how a person repairs a broken active runtime."""
 
+import json
 import os
 import signal
 import subprocess
 import sys
+from pathlib import Path
 from typing import ClassVar, NoReturn
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, TypeAdapter
 
+from galaius.private_files import PRIVATE_FILES
 from galaius.upgrade.store import EXIT_HANDOVER, Runtime, RuntimeStore
 
 if sys.platform == "win32":
@@ -54,10 +57,14 @@ class Children:
 class Handoff(BaseModel):
     model_config = ConfigDict(frozen=True)
     store: RuntimeStore
-    #: Set in the child a Windows parent runs: it already is the active runtime's.
+    #: Set in the child a Windows parent runs, to that parent's pid: it already is the active
+    #: runtime's, and knows which process waits for it (a venv's python.exe is a launcher that runs
+    #: the interpreter as ITS child, so the interpreter's own parent pid is the launcher's).
     child: ClassVar[str] = "GALAIUS_HANDED_OFF"
     #: Commands that always run the code they were started with.
     own_code: ClassVar[frozenset[str]] = frozenset({"upgrade"})
+    #: The variables a Windows child hands its successor (`replace`), as written.
+    carried: ClassVar[TypeAdapter[dict[str, str]]] = TypeAdapter(dict[str, str])
 
     def target(self, command: tuple[str, ...], long_lived: bool) -> Runtime | None:
         """Where this command line continues, or None to run it here. A supervisor handover that
@@ -78,23 +85,38 @@ class Handoff(BaseModel):
             if stream is not None:
                 stream.flush()
 
+    def carried_path(self, parent: int) -> Path:
+        """Where a Windows child leaves the variables its successor starts with, for `parent`."""
+        return self.store.root / f"handover-environment-{parent}.json"
+
     def continue_in(self, runtime: Runtime, command: tuple[str, ...]) -> NoReturn:
         self.flushed()
         if sys.platform != "win32":
             os.execv(runtime.python, runtime.command(command))
-        environment, children = {**os.environ, self.child: "1"}, Children()
+        base, children = {**os.environ, self.child: str(os.getpid())}, Children()
+        environment, carried = base, self.carried_path(os.getpid())
         while True:
             process = subprocess.Popen(runtime.command(command), env=environment)
             children.hold(process)  # stopping this process (a logon task stop) stops the child too
             if (code := process.wait()) != EXIT_HANDOVER:
                 raise SystemExit(code)
+            try:
+                environment = {**base, **self.carried.validate_json(PRIVATE_FILES.read_text(carried))}
+            except (OSError, ValueError) as error:
+                print(f"galaius: the newer runtime starts without what the older one handed over ({error})", file=sys.stderr)
+                environment = base
+            carried.unlink(missing_ok=True)
             runtime = self.store.active()
 
-    def replace(self, runtime: Runtime, command: tuple[str, ...]) -> NoReturn:
-        """A running supervisor becomes `runtime`'s: in place on POSIX, through its waiting parent
-        on Windows. Remembered until the new one starts (`RuntimeStore.failed_handover`)."""
+    def replace(self, runtime: Runtime, command: tuple[str, ...], carried: dict[str, str] | None = None) -> NoReturn:
+        """A running supervisor becomes `runtime`'s, started with `carried` added to its environment:
+        in place on POSIX, through its waiting parent on Windows. Remembered until the new one starts
+        (`RuntimeStore.failed_handover`). Like `execv`, it leaves without an interpreter shutdown: a
+        thread reading stdin holds its buffer lock and would abort one with another exit code."""
         self.store.hand_over(runtime)
         self.flushed()
         if sys.platform != "win32":
+            os.environ.update(carried or {})
             os.execv(runtime.python, runtime.command(command))
-        raise SystemExit(EXIT_HANDOVER)
+        PRIVATE_FILES.write_text(self.carried_path(int(os.environ[self.child])), json.dumps(carried or {}))
+        os._exit(EXIT_HANDOVER)

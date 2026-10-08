@@ -21,6 +21,8 @@ import threading
 from collections.abc import Callable
 from pathlib import Path
 
+from galaius.processes import spawnable
+
 logger = logging.getLogger(__name__)
 
 #: Reports a phase of the step (`galaius_core.MACHINE_PHASES`) with its plain detail.
@@ -71,6 +73,8 @@ class VisionWorker:
         self._process: subprocess.Popen | None = None
         self._lines: queue.Queue[str | None] = queue.Queue()
         self._stderr: collections.deque[str] = collections.deque(maxlen=200)
+        #: Set once the worker's stderr is read to its end: its last words are all in `_stderr`.
+        self._stderr_read = threading.Event()
         self._idle: threading.Timer | None = None
         #: Bumped by every request: an idle timer from before one never stops the worker after it.
         self._generation = 0
@@ -111,10 +115,18 @@ class VisionWorker:
     def _started(self, python: Path) -> subprocess.Popen:
         if self._process is not None and self._process.poll() is None:
             return self._process
-        self._lines, self._stderr = queue.Queue(), collections.deque(maxlen=200)
+        self._lines, self._stderr, self._stderr_read = queue.Queue(), collections.deque(maxlen=200), threading.Event()
         script = Path(__file__).with_name("vision_infer.py")
-        self._process = subprocess.Popen([str(python), str(script)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
-        for stream, sink in ((self._process.stdout, self._lines.put), (self._process.stderr, self._stderr.append)):
+        self._process = subprocess.Popen(spawnable([str(python), str(script)]), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
+        stderr, stderr_read = self._stderr, self._stderr_read
+
+        def keep_stderr(line: str | None) -> None:
+            if line is None:
+                stderr_read.set()
+            else:
+                stderr.append(line)
+
+        for stream, sink in ((self._process.stdout, self._lines.put), (self._process.stderr, keep_stderr)):
             threading.Thread(target=self._pump, args=(stream, sink), daemon=True).start()
         return self._process
 
@@ -135,7 +147,10 @@ class VisionWorker:
                 except queue.Empty:
                     continue
                 if line is None:
-                    raise RuntimeError(("".join(line for line in self._stderr if line) or "vision inference stopped").strip()[-2000:])
+                    # Its stdout ended first: what it said on stderr before dying is the reason (a
+                    # descendant still holding stderr open bounds the wait).
+                    self._stderr_read.wait(2)
+                    raise RuntimeError(("".join(self._stderr) or "vision inference stopped").strip()[-2000:])
                 message = json.loads(line)
                 if "phase" in message:
                     report(str(message["phase"]), str(message.get("detail") or ""))

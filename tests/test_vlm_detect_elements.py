@@ -36,7 +36,7 @@ _VLM_JSON = '[{"role":"button","name":"Save","x":100,"y":200,"w":150,"h":30}]'
 
 
 @pytest.fixture
-def srv():
+def srv(provider_key):
     import galaius.server as _srv
     from galaius.server import breaker
 

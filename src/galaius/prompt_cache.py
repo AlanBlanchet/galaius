@@ -16,6 +16,7 @@ from galaius_core import (
 )
 
 from galaius.pinned_directory import PinnedDirectory
+from galaius.private_files import PRIVATE_FILES
 
 
 class _PromptCache:
@@ -33,7 +34,7 @@ class _PromptCache:
                     owner is not None and metadata.st_uid != owner()
                 ):
                     raise OSError("prompt cache must be an owned regular file")
-                folder.chmod(descriptor, 0o600)
+                PRIVATE_FILES.restrict_open(descriptor, folder.path / path.name)
                 database = sqlite3.connect(path)
                 current = folder.stat(path.name)
                 if (current.st_dev, current.st_ino) != (metadata.st_dev, metadata.st_ino):

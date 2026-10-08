@@ -1,6 +1,7 @@
 """Staged-content secret scan: every finding class, the redaction, and the commit hook."""
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -10,7 +11,9 @@ from uuid import uuid4
 
 import pytest
 
-from tests.support import commit_all, git_out, init_repo
+from galaius.private_files import PRIVATE_FILES
+from tests.support import child_environment, commit_all, git_out, init_repo
+from tests.support.private_files import loosen
 
 REPO_ROOT = Path(__file__).parents[1]
 GATE = REPO_ROOT / "scripts" / "repository_gate.py"
@@ -24,7 +27,13 @@ def git_repo():
     (root / "seed.txt").write_text("seed\n")
     commit_all(root, "seed")
     yield root
-    shutil.rmtree(root)
+    shutil.rmtree(root, onexc=_remove_read_only)
+
+
+def _remove_read_only(remove, path: str, _error: BaseException) -> None:
+    """Git writes its objects read-only, which Windows refuses to delete: writable, then again."""
+    os.chmod(path, stat.S_IWRITE)
+    remove(path)
 
 
 def run_gate(root: Path, *args: str):
@@ -33,7 +42,7 @@ def run_gate(root: Path, *args: str):
         cwd=root,
         text=True,
         capture_output=True,
-        env={"PATH": os.environ["PATH"]},
+        env=child_environment(),
         check=False,
     )
 
@@ -130,7 +139,7 @@ def test_configured_confidential_term_in_filename_is_redacted(git_repo: Path):
     confidential = "private-project-name"
     terms = git_repo / ".git" / "confidential-terms"
     terms.write_text(confidential + "\n")
-    terms.chmod(0o600)
+    PRIVATE_FILES.restrict(terms)
     git_out(git_repo, "config", "--local", "galaius.confidentialTermsFile", "confidential-terms")
     stage(git_repo, confidential + ".txt", b"-----BEGIN PRI" + b"VATE KEY-----\n")
 
@@ -222,7 +231,7 @@ def test_repeated_line_diff_completes_within_linear_time_bound(git_repo: Path):
         cwd=git_repo,
         text=True,
         capture_output=True,
-        env={"PATH": os.environ["PATH"]},
+        env=child_environment(),
         timeout=2,
         check=False,
     )
@@ -288,7 +297,10 @@ def test_scanner_suppresses_only_its_detector_declarations(git_repo: Path):
 def test_scanner_preserves_non_utf8_filename_bytes(git_repo: Path):
     root = os.fsencode(git_repo)
     filename = b"non-utf8-\xff.txt"
-    descriptor = os.open(root + b"/" + filename, os.O_WRONLY | os.O_CREAT, 0o600)
+    try:
+        descriptor = os.open(root + b"/" + filename, os.O_WRONLY | os.O_CREAT, 0o600)
+    except (UnicodeDecodeError, OSError):
+        pytest.skip("this file system names files in Unicode: a non-UTF-8 byte name cannot exist")
     os.write(descriptor, b"ordinary documentation\n")
     os.close(descriptor)
     subprocess.run([b"git", b"add", b"--", filename], cwd=root, check=True)
@@ -298,13 +310,15 @@ def test_scanner_preserves_non_utf8_filename_bytes(git_repo: Path):
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.parametrize("mode", [0o600, 0o644])
-def test_confidential_term_file_is_private_and_redacted(git_repo: Path, mode: int):
+@pytest.mark.parametrize("shared", [False, True], ids=["private", "readable-by-others"])
+def test_confidential_term_file_is_private_and_redacted(git_repo: Path, shared: bool):
     git_dir = git_repo / ".git"
     terms = git_dir / "confidential-terms"
     confidential = b"project-codename"
     terms.write_bytes(confidential + b"\n")
-    terms.chmod(mode)
+    PRIVATE_FILES.restrict(terms)
+    if shared:
+        loosen(terms)
     git_out(git_repo, "config", "--local", "galaius.confidentialTermsFile", "confidential-terms")
     stage(git_repo, "candidate.txt", b"reference: " + confidential + b"\n")
 
@@ -312,14 +326,14 @@ def test_confidential_term_file_is_private_and_redacted(git_repo: Path, mode: in
 
     assert result.returncode == 1
     assert confidential.decode() not in result.stdout + result.stderr
-    expected = "confidential-term" if mode == 0o600 else "mode 0600"
+    expected = "private to this user" if shared else "confidential-term"
     assert expected in result.stderr
 
 
 def test_confidential_term_file_rejects_same_inode_mutation(git_repo: Path):
     terms = git_repo / ".git" / "confidential-terms"
     terms.write_bytes(b"unmatched-confidential-term\n" * 200000)
-    terms.chmod(0o600)
+    PRIVATE_FILES.restrict(terms)
     git_out(git_repo, "config", "--local", "galaius.confidentialTermsFile", "confidential-terms")
     stage(git_repo, "candidate.txt", b"ordinary content\n")
     running = threading.Event()
@@ -347,7 +361,7 @@ def test_scanner_fails_closed_when_git_is_unavailable(git_repo: Path):
         cwd=git_repo,
         text=True,
         capture_output=True,
-        env={"PATH": ""},
+        env=child_environment(PATH=""),
         check=False,
     )
 
@@ -379,12 +393,13 @@ def test_hook_blocks_staged_secret_with_the_indexed_scanner(git_repo: Path):
     scanner.write_text("raise SystemExit(0)\n")
     stage(git_repo, "candidate.txt", b"token = 'ghp_" + b"abcdefghijklmnopqrstuvwxyz123456'\n")
 
+    # Through `git commit`, which runs the hook with its own shell on every system.
     result = subprocess.run(
-        ["bash", str(PRE_COMMIT)],
+        ["git", "-c", f"core.hooksPath={PRE_COMMIT.parent.as_posix()}", "commit", "-qm", "candidate"],
         cwd=git_repo,
         text=True,
         capture_output=True,
-        env={"PATH": os.environ["PATH"]},
+        env={name: value for name, value in os.environ.items() if not name.startswith("GIT_")},
         check=False,
     )
 

@@ -3,7 +3,6 @@ import io
 import json
 import os
 import sqlite3
-import stat
 import subprocess
 import sys
 import time
@@ -18,7 +17,9 @@ from pydantic import ValidationError
 
 from galaius.prompt_cache import _PromptCache
 from galaius.prompt_client import _PromptClient
+from galaius.private_files import PRIVATE_FILES
 from galaius_core import PromptCatalogPage, PromptChannelEntry, PromptKey, PromptRevision
+from tests.support.private_files import loosen
 
 
 def test_file_manifest_content_matches_its_declared_digest() -> None:
@@ -133,12 +134,12 @@ def test_cache_database_is_private(tmp_path: Path, preexisting: bool) -> None:
     path = tmp_path / "prompts.sqlite3"
     if preexisting:
         sqlite3.connect(path).close()
-        path.chmod(0o666)
+        loosen(path)
 
     cache = _PromptCache(path)
     cache.close()
 
-    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    PRIVATE_FILES.check(path)
 
 
 def test_cache_rejects_path_substitution_before_sqlite_uses_the_file(
@@ -149,7 +150,10 @@ def test_cache_rejects_path_substitution_before_sqlite_uses_the_file(
     real_connect = sqlite3.connect
 
     def substitute(database: Path):
-        path.rename(tmp_path / "owned.sqlite3")
+        try:
+            path.rename(tmp_path / "owned.sqlite3")
+        except PermissionError:
+            pytest.skip("this system refuses to rename an open file: the substitution cannot happen")
         foreign.touch()
         os.link(foreign, path)
         return real_connect(database)
@@ -281,9 +285,8 @@ def test_complete_prompt_snapshot_is_atomic_and_removes_absent_channels(
     cache = _PromptCache(tmp_path / "prompts.sqlite3")
     try:
         cache.apply("tenant", old_page, old_revisions)
-        for _ in range(100):
-            if port_file.exists():
-                break
+        deadline = time.monotonic() + 30  # a cold interpreter start on a CI runner takes seconds
+        while not port_file.exists() and time.monotonic() < deadline:
             assert server.poll() is None
             time.sleep(0.02)
         assert port_file.exists()

@@ -12,6 +12,7 @@ from types import TracebackType
 from typing import Self
 
 from galaius.config import Config
+from galaius.private_files import PRIVATE_FILES
 from galaius.vision.types import MediaItem
 
 _STALE_SECONDS = 24 * 60 * 60
@@ -33,7 +34,7 @@ def _private_directory(parent: Path, name: str) -> Path:
         raise RuntimeError(f"private media directory {name!r} is owned by another user")
     if directory.resolve(strict=True).parent != parent.resolve(strict=True):
         raise RuntimeError(f"private media directory {name!r} escapes its workspace root")
-    directory.chmod(0o700)
+    PRIVATE_FILES.restrict(directory)
     return directory
 
 
@@ -49,9 +50,7 @@ def _workspace_root(config: Config) -> Path:
         existing = existing.parent
     if hasattr(os, "geteuid") and existing.stat().st_uid != os.geteuid():
         raise RuntimeError("media workspace parent is owned by another user")
-    root.mkdir(parents=True, mode=0o700, exist_ok=True)
-    root.chmod(0o700)
-    return root
+    return PRIVATE_FILES.directory(root)
 
 
 def _prune(root: Path) -> None:
@@ -88,6 +87,7 @@ class _MediaWorkspace:
         _prune(jobs)
         path = jobs / f"job-{uuid.uuid4().hex}"
         path.mkdir(mode=0o700)
+        PRIVATE_FILES.restrict(path)
         return cls(path)
 
     def __enter__(self) -> Self:

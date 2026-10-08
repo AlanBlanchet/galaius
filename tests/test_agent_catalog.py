@@ -299,7 +299,7 @@ def test_preview_bootstrap_keeps_session_separate_from_connection(endpoint, tmp_
         assert request.headers["Cookie"] == "session=fixture-cookie"
         return httpx.Response(200, json={
             "account": {"account_id": str(uuid4()), "email": "fixture@example.com", "locale": "en", "verified": True},
-            "workspaces": [{"workspace_id": str(workspace), "name": "Fixture", "role": "owner"}],
+            "workspaces": [{"workspace_id": str(workspace), "name": "Fixture", "role": "owner", "kind": "personal"}],
             "current_workspace_id": str(workspace), "csrf_token": "fixture-csrf",
             "session_expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
         })
@@ -352,24 +352,30 @@ def test_token_mode_reuses_protected_file_reader_without_bootstrap(tmp_path):
 @pytest.mark.parametrize("saved", ["preview", "machine"])
 def test_a_linked_pc_reads_the_catalog_with_its_own_link_and_follows_a_relink(linked_pc, saved):
     """The loopback preview sign-in is gone from every server: a PC whose saved connection still
-    names it, or names its link, reads with its machine token; a re-link (new token, new company)
-    is followed with no step; an unlinked PC is told to link again, in words."""
+    names it reads with its link's company; one naming its link keeps the company chosen with
+    `prompts use`. Either reads with the machine token, and a re-link (new token, new company) is
+    followed with no step; an unlinked PC is told to link again, in words."""
     from galaius.machines import MachineRunner
 
-    CatalogConnection(endpoint="http://127.0.0.1:8767", workspace_id=uuid4(), auth_mode=saved).save()
+    chosen = uuid4()
+    CatalogConnection(endpoint="http://127.0.0.1:8767", workspace_id=chosen, auth_mode=saved).save()
     connection = CatalogConnection.load()
-    assert (connection.auth_mode, connection.workspace_id) == ("machine", linked_pc.workspace_id)
+    assert (connection.auth_mode, connection.workspace_id) == ("machine", chosen if saved == "machine" else linked_pc.workspace_id)
     catalog = AgentCatalog.refresh(connection, transport=machine_transport(snapshot(1), linked_pc.token.get_secret_value()))
     assert catalog.snapshot.agents
     relinked = linked_pc.model_copy(update={"workspace_id": uuid4(), "token": SecretStr("iwm_" + "b" * 48)})
     MachineRunner().save(relinked)
     connection = CatalogConnection.load()
-    assert connection.workspace_id == relinked.workspace_id
+    assert connection.workspace_id == (chosen if saved == "machine" else relinked.workspace_id)
     AgentCatalog.refresh(connection, transport=machine_transport(snapshot(2), "iwm_" + "b" * 48))
     with pytest.raises(CatalogAuthenticationError, match="galaius login"):
         AgentCatalog.refresh(connection, transport=machine_transport(snapshot(2), "iwm_" + "b" * 48, status=401))
     MachineRunner().config_path.unlink()
-    assert CatalogConnection.load() is None if saved == "machine" else CatalogConnection.load().auth_mode == "preview"
+    if saved == "machine":
+        with pytest.raises(CatalogAuthenticationError, match="galaius login"):
+            CatalogConnection.load()
+    else:
+        assert CatalogConnection.load().auth_mode == "preview"
     with pytest.raises(CatalogAuthenticationError, match="galaius login"):
         AgentCatalog.refresh(connection)  # a machine connection held in hand: the link is gone
 
@@ -1099,7 +1105,7 @@ def test_workspace_denial_fences_inflight_bootstrap_cookie_alias(catalog_home, s
     unselected = selected.model_copy(update={"workspace_id": None})
     bootstrap = {
         "account": {"account_id": str(uuid4()), "email": "fixture@example.test", "locale": "en", "verified": True},
-        "workspaces": [{"workspace_id": str(selected.workspace_id), "name": "Fixture", "role": "owner"}],
+        "workspaces": [{"workspace_id": str(selected.workspace_id), "name": "Fixture", "role": "owner", "kind": "personal"}],
         "current_workspace_id": str(selected.workspace_id), "csrf_token": "fixture-csrf",
         "session_expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
     }

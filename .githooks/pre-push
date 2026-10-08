@@ -9,8 +9,19 @@ terms="$(private_terms)"
 
 zero=0000000000000000000000000000000000000000
 status=0
+# This public repository takes main, release/* and tags only: every push runs its CI and a failed
+# run mails the owner. Experiments never run here.
+public=0
+case "${2:-}" in *github.com[:/]AlanBlanchet/galaius|*github.com[:/]AlanBlanchet/galaius.git) public=1 ;; esac
 while read -r _local_ref local_sha _remote_ref remote_sha; do
   [ "$local_sha" = "$zero" ] && continue                      # deleting a remote branch
+  if [ "$public" = 1 ]; then
+    case "$_remote_ref" in
+      refs/heads/main|refs/heads/release/*|refs/tags/*) ;;
+      *) echo "pre-push: $_remote_ref: the public repository takes main, release/* and tags only; experiments never run here" >&2
+         status=1; continue ;;
+    esac
+  fi
   # A new branch, or a remote tip this clone never saw (a force-push over rewritten history): scan
   # everything no known remote already has, never an empty range.
   if [ "$remote_sha" = "$zero" ] || ! git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then

@@ -122,7 +122,6 @@ def _registry(reset_model_registry):
 class TestDashboardView:
     def test_sections_reflect_state_and_serialize(self, monkeypatch):
         monkeypatch.setenv("GEMINI_API_KEY", "k")
-        monkeypatch.setenv("GALAIUS_IMAGE_MODEL", "gemini/g1")
         Model.load_registry(_SAMPLE)
 
         view = View.dashboard(Config())
@@ -134,7 +133,8 @@ class TestDashboardView:
         ]
         assert "gemini" in view.sections[0].metrics[0].value
         image_row = next(r for r in view.sections[1].table.rows if r["role"] == "image")
-        assert image_row["model"] == "gemini/g1"
+        # A role names its criterion and what it resolves to now: the only key-holding VLM.
+        assert (image_row["criteria"], image_row["resolved"]) == ("cap.vlm", "gemini/g1")
         assert any(r["model"] == "gemini/g1" for r in view.sections[2].table.rows)
 
         # Round-trips as JSON — the contract an HTTP endpoint serves to the web renderer.

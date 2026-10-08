@@ -26,7 +26,7 @@ import pytest
 
 from galaius.cli import prompts as prompt_commands
 from galaius.config import UserConfig
-from tests.support import commit_all, init_repo, run_git
+from tests.support import child_environment, commit_all, init_repo, run_git
 
 
 # ── Editor CAS + advisory lock (`galaius prompts catalog|read|write`) ─────────────────────
@@ -242,16 +242,17 @@ COMMANDS = (
 
 
 def _git_environment(data_home: Path) -> dict[str, str]:
-    return {
-        "GIT_AUTHOR_EMAIL": "prompts@example.invalid",
-        "GIT_AUTHOR_NAME": "Prompt Author",
-        "GIT_COMMITTER_EMAIL": "prompts@example.invalid",
-        "GIT_COMMITTER_NAME": "Prompt Author",
-        "LANG": "C.UTF-8",
-        "PATH": os.environ["PATH"],
-        "XDG_DATA_HOME": str(data_home),
-        "HOME": str(data_home / "isolated-home"),
-    }
+    home = str(data_home / "isolated-home")
+    return child_environment(
+        GIT_AUTHOR_EMAIL="prompts@example.invalid",
+        GIT_AUTHOR_NAME="Prompt Author",
+        GIT_COMMITTER_EMAIL="prompts@example.invalid",
+        GIT_COMMITTER_NAME="Prompt Author",
+        LANG="C.UTF-8",
+        XDG_DATA_HOME=str(data_home),
+        HOME=home,
+        USERPROFILE=home,  # Windows' home
+    )
 
 
 def _galaius(data_home: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
@@ -300,8 +301,8 @@ def test_real_git_clients_converge_and_preserve_renames_deletes_and_history(tmp_
     assert _galaius(homes[0], "clone", str(remote)).returncode == 0
     worktree_a = homes[0] / "galaius" / "prompts"
     (worktree_a / "agents").mkdir()
-    (worktree_a / "agents" / "librarian.md").write_text("first\n")
-    (worktree_a / "agents" / "obsolete.md").write_text("remove me\n")
+    (worktree_a / "agents" / "librarian.md").write_bytes(b"first\n")
+    (worktree_a / "agents" / "obsolete.md").write_bytes(b"remove me\n")
     committed = _galaius(homes[0], "commit", "-m", "initial prompt")
     assert committed.returncode == 0, committed.stderr
     pushed = _galaius(homes[0], "push")
@@ -309,12 +310,12 @@ def test_real_git_clients_converge_and_preserve_renames_deletes_and_history(tmp_
 
     assert _galaius(homes[1], "clone", str(remote)).returncode == 0
     worktree_b = homes[1] / "galaius" / "prompts"
-    (worktree_a / "agents" / "author.md").write_text("from a\n")
+    (worktree_a / "agents" / "author.md").write_bytes(b"from a\n")
     assert _galaius(homes[0], "commit", "-m", "independent a").returncode == 0
     assert _galaius(homes[0], "push").returncode == 0
     (worktree_b / "agents" / "librarian.md").rename(worktree_b / "agents" / "prompt-librarian.md")
     (worktree_b / "agents" / "obsolete.md").unlink()
-    (worktree_b / "agents" / "tester.md").write_text("test\n")
+    (worktree_b / "agents" / "tester.md").write_bytes(b"test\n")
     assert _galaius(homes[1], "commit", "-m", "rename and add").returncode == 0
     assert _galaius(homes[1], "pull").returncode == 0
     assert _galaius(homes[1], "push").returncode == 0

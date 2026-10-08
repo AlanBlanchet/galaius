@@ -32,6 +32,8 @@ export const SIM = String.raw`
 /* ── the clock ─────────────────────────────────────────────────────────────────────────────── */
 var BEAT = 2400;
 var TICK = { t: 0, dt: 0, on: false };
+/* The longest single frame the world will catch up in one step, in ms; past it is a stall. */
+var STALL = 1000;
 
 /* Tiles per second. Slow enough to watch somebody cross a room, fast enough that a trip across
    the building is not a commute. */
@@ -205,7 +207,7 @@ function bodyFor(el) {
   if (!b) {
     b = BODIES[id] = {
       id: id, x: sx, y: sy, seatX: sx, seatY: sy,
-      face: 1, wx: 1, wy: 0, path: null, step: 0, walked: 0, speed: 0, sx: 0, tx: 0, tagW: 0,
+      face: 1, wx: 1, wy: 0, path: null, step: 0, walked: 0, speed: 0, sx: 0, tx: 0, tagW: 0, span: 0,
       mode: "settled", nextAt: 0, home: "", talkUntil: 0, errand: null,
       saidAt: 0, phase: phaseOf(id)
     };
@@ -222,7 +224,7 @@ function bodyFor(el) {
      correctly shifted before the swap comes back unshifted after it and hangs off the panel.
      Anything cached about the DOM is dropped when the DOM changes under it. */
   if (b.el !== el) {
-    b.sx = 0; b.tx = 0; b.tagW = 0;
+    b.sx = 0; b.tx = 0; b.tagW = 0; b.span = 0;
     b.paintTransform = null; b.paintDepth = null; b.edgeKey = null;
     b.paintLeft = null; b.paintLean = null;
   }
@@ -251,6 +253,74 @@ function settleFace(b) {
   if (want === 1 || want === -1) b.face = want;
 }
 
+/** How much of a tile a body is drawn across, measured off its sprite once per element: the
+ *  bodies are drawn wider than the tile they stand on (42 to 53 pixels on a 32-pixel tile), so a
+ *  spacing in whole tiles would still draw two of them inside each other. */
+function spanOf(b) {
+  if (!b.span) {
+    var body = b.el && (b.el.querySelector(".wp-body") || b.el);
+    var px = body ? Math.max(body.offsetWidth, body.offsetHeight) : 0;
+    b.span = px ? px / W.tile : 1;
+  }
+  return b.span;
+}
+
+/** Where a walker is headed this leg, as a unit vector, or null when it is standing. */
+function headingOf(b) {
+  if (!b.path) return null;
+  var target = b.path[b.step];
+  var dx = target.x - b.x, dy = target.y - b.y;
+  var d = Math.sqrt(dx * dx + dy * dy);
+  return d > 0.001 ? { x: dx / d, y: dy / d } : null;
+}
+
+/** A WALKER KEEPS ITS DISTANCE FROM THE ONE AHEAD OF IT ON ITS ROAD.
+ *
+ *  Nothing kept two people on the same road apart, and the roster sends people in groups: a
+ *  department moves and everybody in it sets off down the same corridor in the same instant, at
+ *  the same pace — so two of them walked the whole journey inside each other, one sprite hidden
+ *  for twenty seconds, which reads as one person rather than as a crossing.
+ *
+ *  Ahead means in this body's path, closer than the two sprites are wide, and not coming the
+ *  other way: two people meeting head-on walk through each other for a moment, which is a
+ *  crossing, instead of both stopping forever. A leader that has just turned a corner is still
+ *  ahead, which is why the test is the leader's position and not a matching heading. Two that
+ *  are each in the other's way give way by id, so a pair can never wait on each other. */
+var HEAD_ON = -0.5;
+/* How long a walker waits on the one ahead before it walks on through, in ms: the guarantee
+   against a ring of three, each waiting on the next, that the pairwise rule cannot see. */
+var HOLD_MAX = 2500;
+
+/** How far, in tiles, body o lets body b move before closing the gap — or null when o is not in b's
+ *  way. */
+function inWay(b, h, o) {
+  if (o === b || !o.path || !o.el || !o.el.isConnected) return null;
+  var oh = headingOf(o);
+  if (!oh || oh.x * h.x + oh.y * h.y <= HEAD_ON) return null;
+  var rx = o.x - b.x, ry = o.y - b.y;
+  var ahead = rx * h.x + ry * h.y;
+  /* Two set off from the very same spot: neither is ahead, so the id decides who leads. */
+  if (ahead < -1e-6 || (ahead <= 1e-6 && !(o.id < b.id))) return null;
+  var gap = (spanOf(b) + spanOf(o)) / 2;
+  if (Math.abs(rx * h.y - ry * h.x) >= gap) return null;
+  return ahead - gap;
+}
+
+function laneRoom(b) {
+  var h = headingOf(b);
+  if (!h || (b.held || 0) > HOLD_MAX) return Infinity;
+  var room = Infinity;
+  for (var id in BODIES) {
+    var o = BODIES[id];
+    var r = inWay(b, h, o);
+    if (r === null) continue;
+    var oh = headingOf(o);
+    if (b.id < o.id && inWay(o, oh, b) !== null) continue;
+    room = Math.min(room, r);
+  }
+  return room;
+}
+
 /** Put a body on the road. Everything that moves anybody goes through here, so there is exactly
  *  one place where a journey can start and exactly one shape a journey has. */
 function sendTo(b, x, y, mode) {
@@ -259,6 +329,7 @@ function sendTo(b, x, y, mode) {
   var pts = route(from.x, from.y, x, y);
   if (!pts || !pts.length) return false;
   b.path = pts;
+  b.held = 0;
   b.step = 0;
   b.walked = 0;
   b.speed = 0;
@@ -289,7 +360,8 @@ function stepWalk(b, dt) {
      through the doors is twenty-odd legs, and consuming only up to the next corner threw away a
      fraction of a frame at every one of them — a body that hesitates at every corner is being
      dragged along a path rather than walking. */
-  var move = (b.speed * dt) / 1000;
+  var move = Math.min((b.speed * dt) / 1000, laneRoom(b));
+  if (move <= 0) { b.speed = 0; b.held = (b.held || 0) + dt; return; }
   var guard = 0;
   while (move > 0 && b.path && guard++ < 64) {
     var target = b.path[b.step];
@@ -310,6 +382,7 @@ function stepWalk(b, dt) {
     b.walked += dist;
     move -= dist;
     b.step++;
+    b.held = 0;
     if (b.step >= b.path.length) {
       b.path = null;
       if (b.el) b.el.classList.remove("is-walking");
@@ -485,7 +558,10 @@ function place(b, t) {
   // The nameplate row is assigned by declutter() once per frame across the WHOLE cast —
   // a per-body formula cannot see its neighbours. (Tile parity was tried: every modulus has
   // blind spots at some offset, and a calm floor never strolls out of the collision.)
-  var edgeKey = [py, VIEW.x, VIEW.y, VIEW.zoom, CAM.vw, CAM.vh].join(":");
+  /* Every input screenAt() reads, and px is one of them: a key without it never re-ran the clamp
+     for a body walking a horizontal corridor under a still camera, so its bubble kept the shift
+     from where the walk started and rode it out of the panel until the next 420ms layout pass. */
+  var edgeKey = [px, py, VIEW.x, VIEW.y, VIEW.zoom, CAM.vw, CAM.vh].join(":");
   if (b.edgeKey !== edgeKey) {
     sayEdge(b, py);
     b.edgeKey = edgeKey;
@@ -524,8 +600,12 @@ function place(b, t) {
  *  the line goes — they disagreed by an eighteen-pixel pad, so the layout kept re-granting a
  *  bubble to a body the per-frame check had just taken it from, and the two of them handed it back
  *  and forth while the sentence hung eighty pixels outside the panel. */
+function painted() {
+  return VIEW.ready ? VIEW : CAM;
+}
+
 function screenAt(b, py) {
-  var seen = VIEW.ready ? VIEW : CAM;
+  var seen = painted();
   return { x: (b.px - seen.x) * seen.zoom, y: ((py === undefined ? b.py : py) - seen.y) * seen.zoom };
 }
 
@@ -576,16 +656,23 @@ function tagEdge(b, at, zoom) {
   tag.style.left = shift + "px";
 }
 
+/** The clamp a body's line wears, in SCREEN pixels: zero for a body off the frame, whose line is
+ *  taken away rather than dragged to the edge. ONE number, read by the thing that writes it and by
+ *  the thing that reserves room for it — a reserve at the body's centre while the line is drawn
+ *  sixty pixels in from the edge is a promise about an empty patch of floor. */
+function sayShift(at) {
+  return onScreenAt(at) ? Math.round(edgeShift(at.x, SAY_HALF)) : 0;
+}
+
 function sayEdge(b, py) {
   var el = b.el;
   var seenAt = screenAt(b, py);
-  tagEdge(b, seenAt, VIEW.ready ? VIEW.zoom : CAM.zoom);
+  tagEdge(b, seenAt, painted().zoom);
   if (!el.classList.contains("is-saying")) {
     if (b.sx) { b.sx = 0; var off = el.querySelector(".wp-say"); if (off) off.style.removeProperty("--sx"); }
     return;
   }
   var at = seenAt;
-  var sx = at.x;
   /* WHO GETS A BUBBLE IS SETTLED HERE, EVERY FRAME — the layout pass only decides WHERE it goes.
      The layout runs every 420ms, and in 420ms a body walks a tile and a half and the camera can
      cross a room; a character that was on screen when the pass ran is off it long before the next
@@ -597,7 +684,7 @@ function sayEdge(b, py) {
     el.classList.remove("is-saying");
     return;
   }
-  var shift = Math.round(edgeShift(sx, SAY_HALF));
+  var shift = sayShift(at);
   if (shift === b.sx) return;
   b.sx = shift;
   var say = el.querySelector(".wp-say");
@@ -1061,8 +1148,11 @@ function sayBox(b, level) {
   /* The bubble holds a constant SCREEN size, so in world pixels it shrinks as the camera moves
      in. Reserving the unscaled box would refuse most of the lines at zoom two for a collision
      that is not there. */
-  var hw = 70 / CAM.zoom, hh = 22 / CAM.zoom;
-  return [b.px - hw, b.py - base - hh, b.px + hw, b.py - base + 2];
+  var zoom = painted().zoom;
+  var hw = 70 / zoom, hh = 22 / zoom;
+  /* Where the line is DRAWN, which is shifted in from the frame edge by the clamp. */
+  var x = b.px + sayShift(screenAt(b)) / zoom;
+  return [x - hw, b.py - base - hh, x + hw, b.py - base + 2];
 }
 
 function hits(a, b) {
@@ -1089,17 +1179,7 @@ function speechLayout(t) {
      — so what showed was the last few letters of somebody else's sentence jammed against the edge
      with no owner attached. That is the "...face graph ..." a critic found in a side bar. */
   var live = [];
-  var taken = SIGNS.slice();
-  for (var id in BODIES) {
-    var b = BODIES[id];
-    if (!b.el || !b.el.isConnected || b.px === undefined) continue;
-    if (!onScreen(b)) continue;
-    /* Everything a character already wears is an obstacle, whether or not it gets a bubble. */
-    taken.push(boxesOf(b, "tag"));
-    taken.push(boxesOf(b, "can"));
-    if (b.el.querySelector(".wp-mark")) taken.push(boxesOf(b, "mark"));
-    if (b.el.getAttribute("data-say")) live.push(b);
-  }
+  var taken = sayObstacles(live);
   live.sort(function (p, q) { return sayRank(q, t) - sayRank(p, t); });
   var next = [];
   for (var i = 0; i < live.length && next.length < SAY_MAX; i++) {
@@ -1109,6 +1189,7 @@ function speechLayout(t) {
       for (var j = 0; j < taken.length; j++) if (hits(box, taken[j])) { clash = true; break; }
       if (clash) continue;
       taken.push(box);
+      live[i].sayLv = lv;
       live[i].el.style.bottom = "";
       live[i].el.querySelector(".wp-say").style.bottom =
         ((live[i].el.getAttribute("data-label") === "up" ? 74 : 44) + lv * 26 -
@@ -1131,7 +1212,51 @@ function speechLayout(t) {
      was the whole of the last forty-seven pixels of overflow. A correction owed on the frame the
      thing appears is applied on that frame. */
   for (var q = 0; q < live.length; q++) if (next.indexOf(live[q].el) >= 0) sayEdge(live[q], live[q].py);
-  SAID = next;
+  SAID = [];
+  for (var r = 0; r < live.length; r++) if (next.indexOf(live[r].el) >= 0) SAID.push(live[r]);
+}
+
+/** Everything on screen a line may not be drawn over, as world rectangles: the room signs, and
+ *  what every visible character already wears whether or not it gets a bubble. The visible bodies that have something to
+ *  say are appended to the list passed in, when one is. */
+function sayObstacles(live) {
+  var taken = SIGNS.slice();
+  for (var id in BODIES) {
+    var b = BODIES[id];
+    if (!b.el || !b.el.isConnected || b.px === undefined) continue;
+    if (!onScreen(b)) continue;
+    taken.push(boxesOf(b, "tag"));
+    taken.push(boxesOf(b, "can"));
+    if (b.el.querySelector(".wp-mark")) taken.push(boxesOf(b, "mark"));
+    if (live && b.el.getAttribute("data-say")) live.push(b);
+  }
+  return taken;
+}
+
+/** A PLACE IN THE LAYOUT IS HELD EVERY FRAME, not only on the frame it was granted.
+ *
+ *  The layout runs every 420ms and promises no line is drawn over another word — at that instant.
+ *  Then the bodies move on: somebody on an errand carries a granted line a tile and a half before
+ *  the next pass, straight into a neighbour's line or a room sign. Measured: two lines overlapping
+ *  for twenty-odd consecutive frames on every run, which a reader sees and a probe sampling at the
+ *  wrong moment reports. So each frame the granted lines are re-checked, in grant order, against
+ *  where everything now IS; a line that has walked into another word loses its place on this
+ *  frame, exactly as the layout would have refused it, and the next pass may place it again. */
+function speechHold() {
+  if (!SAID.length) return;
+  var taken = sayObstacles(null);
+  var kept = [];
+  for (var i = 0; i < SAID.length; i++) {
+    var b = SAID[i];
+    if (!b.el || !b.el.classList.contains("is-saying")) continue;
+    var box = sayBox(b, b.sayLv || 0);
+    var clash = false;
+    for (var j = 0; j < taken.length; j++) if (hits(box, taken[j])) { clash = true; break; }
+    if (clash) { b.el.classList.remove("is-saying"); continue; }
+    taken.push(box);
+    kept.push(b);
+  }
+  SAID = kept;
 }
 
 /* ── the hand at the glass ───────────────────────────────────────────────────────────────────
@@ -1415,7 +1540,14 @@ function frame(ts) {
   /* Cheap when nobody is looking, and cheap when somebody has paused it — but the chain itself
      never stops, so TICK.on is a switch rather than a one-way door. */
   if (!TICK.on || document.hidden) { TICK.t = ts; return; }
-  var dt = Math.min(64, ts - TICK.t || 16);
+  /* THE WORLD RUNS ON THE WALL CLOCK, at any frame rate. Every timer here — dwell, talk, the
+     speech pass — is wall time, so the walk must be too: a step capped at 64ms made a body on a
+     host managing five frames a second walk at a third of its pace while everything around it
+     kept time, and two people passing in a corridor stood inside each other for seconds. The cap
+     is a STALL guard only (a debugger pause is not a second of walking), and a clock that went
+     BACKWARDS — a harness stepping the engine ahead, then handing it back — is no time at all,
+     never a negative step that throws the camera and the walkers' speed the wrong way. */
+  var dt = ts === TICK.t ? 16 : Math.max(0, Math.min(STALL, ts - TICK.t));
   TICK.t = ts;
   TICK.dt = dt;
   /* THE CAMERA MOVES FIRST, and everything is then placed against where it now IS.
@@ -1456,6 +1588,7 @@ function frame(ts) {
     lighting();
     doors();
   }
+  speechHold();
   speechLayout(ts);
   minimap(ts);
   window.__wp.walking = busy;

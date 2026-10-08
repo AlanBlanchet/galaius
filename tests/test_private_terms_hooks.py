@@ -46,7 +46,10 @@ def test_commit_refuses_a_staged_diff_naming_a_private_term(work: Path) -> None:
 
 
 def test_commit_refuses_a_message_naming_a_private_term(work: Path) -> None:
-    result = subprocess.run([HOOKS / "commit-msg", "/dev/stdin"], cwd=work, input=f"fix: drop {TERM}\n", text=True, capture_output=True, check=False)
+    message = work / ".git" / "COMMIT_EDITMSG"
+    message.write_text(f"fix: drop {TERM}\n")
+    # `git hook run`: the hook alone, through the shell git runs it with on every system.
+    result = git(work, "hook", "run", "commit-msg", "--", str(message))
     assert result.returncode != 0 and "commit message" in result.stderr
 
 

@@ -200,7 +200,7 @@ def sync_report(source: Path, *, into: str | None, ext: str, mode: str, dry: boo
             json.dumps(
                 {"source": str(source), "into": into, "ext": ext, "mode": mode,
                  "skipped_duplicate": duplicates,
-                 "files": [str(p.relative_to(root)) for p in kept]},
+                 "files": [p.relative_to(root).as_posix() for p in kept]},
                 indent=2,
             )
             + "\n"

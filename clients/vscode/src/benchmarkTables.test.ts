@@ -99,8 +99,8 @@ test("Models settings expose editable media thresholds and normalized weights", 
   const settingsData = JSON.parse(fs.readFileSync(new URL("./settings.json", import.meta.url), "utf8"));
   const settings = (settingsData as { settings: { key: string; description: string }[] }).settings;
   const policy = new Map(settings.map((setting) => [setting.key, setting.description]));
-  assert.match(policy.get("media.criteria") ?? "", /threshold/i);
-  assert.match(policy.get("media.criteriaWeights") ?? "", /normalized|unit/i);
+  assert.match(policy.get("image.criteria") ?? "", /> *\d+%/);
+  assert.match(policy.get("criteria.weights") ?? "", /normalized|unit/i);
 });
 
 test("VS Code registers both media selection settings", () => {
@@ -109,8 +109,8 @@ test("VS Code registers both media selection settings", () => {
   );
   const properties = manifest.contributes.configuration.properties;
   for (const [key, description] of [
-    ["galaius.media.criteria", /threshold/i],
-    ["galaius.media.criteriaWeights", /normalized|unit/i],
+    ["galaius.image.criteria", /> *\d+%/],
+    ["galaius.criteria.weights", /normalized|unit/i],
   ] as const) {
     assert.equal(properties[key]?.type, "string");
     assert.equal(properties[key]?.default, "");

@@ -696,9 +696,9 @@ class _Relay:
                                  from_runtime=str(self.swapping_from.path if self.swapping_from else Runtime.own().path))
         if self.checker is not None:
             self.checker.wait(30)
-        os.environ[RelayHandover.variable] = str(handover.left(self.owner.store))
+        carried = {RelayHandover.variable: str(handover.left(self.owner.store))}
         self.owner.say(f"switching to {target.label()}")
-        Handoff(store=self.owner.store).replace(target, self.owner.arguments)
+        Handoff(store=self.owner.store).replace(target, self.owner.arguments, carried)
     def tick(self) -> int | None:
         self.checker = self.owner.check_releases(self.checker)
         worker = self.worker

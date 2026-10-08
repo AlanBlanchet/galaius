@@ -31,6 +31,7 @@ from galaius.agents.providers import (
 )
 from galaius.config import Config
 from galaius.models import Model
+from galaius.private_files import PRIVATE_FILES
 from galaius.processes import run_isolated_process
 from galaius.vision.types import (
     MediaItem,
@@ -167,7 +168,7 @@ async def _sample_video(
     if len(frames) > len(selected_indices):
         raise RuntimeError("video frame sampling exceeded its frame cap")
     for path in frames:
-        path.chmod(0o600)
+        PRIVATE_FILES.restrict(path)
     return [
         (path, selected_indices[index] / fps)
         for index, path in enumerate(frames)

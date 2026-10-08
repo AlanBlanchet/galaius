@@ -11,6 +11,7 @@ from .agents import ScriptedProvider, install_provider, register_run, use_policy
 from .browser import browser_config, browser_manager, interactive_element, ready_or_skip
 from .capture import async_capture
 from .desktop import RecordingBackend, bare_nested_backend, desktop_window
+from .environment import child_environment
 from .git import commit_all, git_out, init_repo, run_git
 from .media import solid_png, varied_png
 from .models import catalog_dict, catalog_json, catalog_of, model
@@ -27,6 +28,7 @@ __all__ = [
     "solid_png",
     "varied_png",
     "async_capture",
+    "child_environment",
     "run_git",
     "git_out",
     "init_repo",

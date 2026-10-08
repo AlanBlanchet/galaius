@@ -562,6 +562,7 @@ class BrowserManager:
             [console_python(), "-m", "playwright", "install", self._config.browser_type],
             check=True,
             capture_output=True,
+            timeout=600,  # a download that stalls fails the launch instead of holding it forever
         )
 
     async def _ensure_browser(self):

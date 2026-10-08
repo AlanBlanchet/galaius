@@ -5,6 +5,15 @@ import { test } from "node:test";
 
 const require_ = createRequire(import.meta.url);
 
+/** Resolves once `ready()` holds: `refresh()` asks for its cells only after awaiting the server's
+ *  tool settings, so a deferred cell exists a few turns after the call, never during it. */
+async function until(ready: () => unknown): Promise<void> {
+  for (let turn = 0; !ready(); turn++) {
+    if (turn > 1000) throw new Error("the refresh never asked for its deferred cell");
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
+
 test("disconnected dashboard save retains server draft without local writes or refresh", async () => {
   const updates: unknown[] = [], errors: string[] = [];
   const DashboardPanel = freshDashboard({
@@ -169,6 +178,7 @@ test("an older deferred refresh cannot post settings after the newest refresh", 
   const older = panel.refresh();
   values.set("browser.viewportWidth", 1024);
   const newer = panel.refresh();
+  await until(() => releases.length === 2);
   releases[1]({ id: "models", content: [] });
   await newer;
   releases[0]({ id: "models", content: [] });
@@ -196,6 +206,7 @@ test("disposal during a deferred refresh posts no cells", async () => {
   panel.modelsCell = () => new Promise((resolve) => { release = resolve; });
   panel.consumptionCell = async () => ({ id: "consumption", content: [] });
   const refresh = panel.refresh();
+  await until(() => release);
   panel.disposed = true;
   release({ id: "models", content: [] });
   await refresh;
@@ -227,6 +238,7 @@ test("a deferred initial catalog cannot overwrite a newer explicit prompt select
     panel.promptState = { files: ["new.md"], selected: "new.md", content: "CURRENT", digest: "new" };
   };
   const initial = panel.refresh();
+  await until(() => releaseCatalog);
   const explicit = panel.handleMessage({ type: "promptSelect", path: "new.md" });
   await explicit;
   releaseCatalog();

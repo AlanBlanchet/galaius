@@ -12,7 +12,6 @@ import math
 import os
 import re
 import shutil
-import stat
 import subprocess
 import tempfile
 import time
@@ -33,6 +32,8 @@ import galaius.vision.session as vision_session
 import galaius.vision.workspace as vision_workspace
 from galaius.agents.events import AgentEvent
 from tests.support import solid_png
+from tests.support.agents import install_fake_cli
+from tests.support.private_files import private
 from galaius.agents.providers import (
     ClaudeCodeProvider,
     CodexProvider,
@@ -96,10 +97,7 @@ def _fake_cli(
 ) -> Path:
     """A provider CLI that reports auth and echoes its isolated media invocation as JSONL."""
     source = Path(__file__).parent / "fixtures" / "agents" / "fake_media_cli.py"
-    target = path.with_name(f"{path.name}--provider-{provider}--mode-{mode}")
-    shutil.copyfile(source, target)
-    target.chmod(0o700)
-    return target
+    return install_fake_cli(path.parent, f"{path.name}--provider-{provider}--mode-{mode}", source)
 
 
 @pytest.mark.asyncio
@@ -107,7 +105,7 @@ async def test_failed_claude_process_retains_typed_events_and_process_facts(tmp_
     binary = _fake_cli(tmp_path / "fake claude", "claude", mode="parsed_then_exit")
     with pytest.raises(_MediaProcessFailure) as caught:
         await ClaudeCodeProvider().run_media_process(
-            [str(binary)], cwd=tmp_path, env={"PATH": os.environ["PATH"]}, timeout=5,
+            [str(binary)], cwd=tmp_path, env=ClaudeCodeProvider().subscription_env(), timeout=5,
         )
     failure = caught.value
     assert failure.events[0].session_id == "session-parsed"
@@ -146,7 +144,7 @@ async def test_post_parse_failures_retain_only_typed_facts(tmp_path: Path, mode:
     binary = _fake_cli(tmp_path / "fake claude", "claude", mode=mode)
     with pytest.raises(_MediaProcessFailure) as caught:
         await ClaudeCodeProvider().run_media_process(
-            [str(binary)], cwd=tmp_path, env={"PATH": os.environ["PATH"]}, timeout=5,
+            [str(binary)], cwd=tmp_path, env=ClaudeCodeProvider().subscription_env(), timeout=5,
         )
     facts = caught.value.events
     assert facts and facts[0].session_id == "session-failed"
@@ -221,8 +219,8 @@ async def test_subscription_media_runs_an_isolated_real_cli_process(
     assert echoed["secret_env"] == []
     assert echoed["auth_home"] == {"CLAUDE_CONFIG_DIR": str(tmp_path / "claude auth home")}
     assert "debug root with spaces" in echoed["cwd"]
-    assert echoed["cwd_mode"] == 0o700
-    assert all(f["mode"] == 0o600 for f in echoed["files"])
+    assert echoed["cwd_private"] and echoed["files"]
+    assert all(f["private"] for f in echoed["files"])
     assert not list(root.rglob("job-*")), "sensitive staging is removed after the result"
     assert argv[argv.index("--model") + 1] == cli_model
     usage = json.loads(cfg.usage_log.read_text())
@@ -247,7 +245,7 @@ async def test_media_prompt_stdin_is_bounded_before_process_spawn(tmp_path: Path
         await ClaudeCodeProvider().run_media_process(
             [str(binary), "-p"],
             cwd=tmp_path,
-            env={"PATH": os.environ["PATH"]},
+            env=ClaudeCodeProvider().subscription_env(),
             timeout=5,
             stdin=b"x" * (1024 * 1024 + 1),
         )
@@ -722,7 +720,7 @@ async def test_provider_failures_fall_through_and_leave_only_redacted_status_dia
             role="image",
         )
     diagnostics = list(cfg.session_log_dir().glob("media-failures/*.json"))
-    assert len(diagnostics) == 1 and stat.S_IMODE(diagnostics[0].stat().st_mode) == 0o600
+    assert len(diagnostics) == 1 and private(diagnostics[0])
     diagnostic = diagnostics[0].read_text()
     failure = json.loads(diagnostic)["failures"][0]
     expected_status = {
@@ -986,7 +984,7 @@ async def test_media_stop_kills_provider_descendants(
         provider_type().run_media_process(
             [str(binary), "hang", str(marker)],
             cwd=tmp_path,
-            env={"PATH": os.environ["PATH"]},
+            env=ClaudeCodeProvider().subscription_env(),
             timeout=0.5 if stop_kind == "timeout" else 30,
         )
     )
@@ -1226,8 +1224,7 @@ async def test_transcription_uses_configured_private_media_workspace(
     async def transcription(*, model, file):
         staged = Path(file.name)
         seen["path"] = staged
-        seen["dir_mode"] = stat.S_IMODE(staged.parent.stat().st_mode)
-        seen["file_mode"] = stat.S_IMODE(staged.stat().st_mode)
+        seen["private"] = private(staged.parent) and private(staged)
         return {"text": "heard"}
 
     def forbidden_tempfile(*args, **kwargs):
@@ -1245,7 +1242,7 @@ async def test_transcription_uses_configured_private_media_workspace(
 
     assert result.text == "heard"
     assert root in Path(seen["path"]).parents
-    assert seen["dir_mode"] == 0o700 and seen["file_mode"] == 0o600
+    assert seen["private"]
     assert not list(root.rglob("job-*"))
 
 
@@ -1467,8 +1464,9 @@ async def test_audio_media_uses_the_retained_api_transport_even_with_visual_sess
 
 
 @pytest.mark.asyncio
-async def test_session_stage_rejects_a_global_temporary_root(monkeypatch) -> None:
-    monkeypatch.setattr(Config, "session_log_dir", lambda config: Path("/tmp"))
+async def test_session_stage_rejects_a_global_temporary_root(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(ClaudeCodeProvider, "binary", str(_fake_cli(tmp_path / "fake claude", "claude")))
+    monkeypatch.setattr(Config, "session_log_dir", lambda config: Path(tempfile.gettempdir()))
     cfg = Config(
         media_backend="session",
         media_billing="session_only",
@@ -1647,12 +1645,8 @@ async def test_video_sampling_stop_kills_ffmpeg_descendants_and_cleans_stage(
     fake_bin = media_output_root / "fake-bin"
     fake_bin.mkdir(parents=True, exist_ok=True)
     fixture = Path(__file__).parent / "fixtures" / "agents" / "fake_ffmpeg.py"
-    ffmpeg = fake_bin / ("ffmpeg.exe" if os.name == "nt" else "ffmpeg")
-    shutil.copyfile(fixture, ffmpeg)
-    ffmpeg.chmod(0o700)
-    ffprobe = fake_bin / ("ffprobe.exe" if os.name == "nt" else "ffprobe")
-    shutil.copyfile(fixture, ffprobe)
-    ffprobe.chmod(0o700)
+    for program in ("ffmpeg", "ffprobe"):
+        install_fake_cli(fake_bin, program, fixture)
     monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
     marker = fake_bin / "ffmpeg-pids.json"
     cfg = Config(
@@ -1885,7 +1879,7 @@ async def test_process_pipe_drain_is_bounded_and_lingering_readers_are_cancelled
     with pytest.raises(TimeoutError, match="process timed out"):
         await asyncio.wait_for(
             isolated_processes.run_isolated_process(
-                [str(binary)], cwd=tmp_path, env={"PATH": os.environ["PATH"]}, timeout=0.01
+                [str(binary)], cwd=tmp_path, env=ClaudeCodeProvider().subscription_env(), timeout=0.01
             ),
             timeout=3,
         )

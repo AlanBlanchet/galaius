@@ -2,6 +2,7 @@
 
 import json
 import os
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -28,6 +29,7 @@ from galaius.machines import MachineConfig, MachineRunner
 from galaius.machine_workspaces import CloneFailure, Git, MachineWorkspaces, WorkspaceJobs
 from galaius.agents.providers import PROJECT_SETTINGS_OFF, ClaudeCodeProvider
 from galaius.place_reviews import PlaceReviews
+from galaius.private_files import PRIVATE_FILES
 from galaius.project_secrets import MARKER, ProjectEnv
 from galaius_core.sealing import SecretsSeal
 
@@ -169,8 +171,12 @@ PNG = b"\x89PNG\r\n\x1a\n" + b"\0" * 32
 
 
 @pytest.mark.parametrize(("case", "served"), [
-    ("named png", "image/png"), ("named under ~", "image/png"), ("never named", None), ("named link", None), ("named text as .png", None),
-    ("named but too large", None), ("named by another run", None), ("named fifo", None),
+    pytest.param("named png", "image/png", marks=pytest.mark.xfail(
+        sys.platform == "win32", strict=True, raises=PermissionError,
+        reason="galaius_core.MEDIA_PATH names only `/` and `~/` image paths: a Windows step's `C:\\…` path is never named")),
+    ("named under ~", "image/png"), ("never named", None), ("named link", None), ("named text as .png", None),
+    ("named but too large", None), ("named by another run", None),
+    pytest.param("named fifo", None, marks=pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="a FIFO is a POSIX file type; no Windows path names one")),
 ])
 def test_a_run_image_is_served_only_when_its_own_step_names_a_plain_image(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str, served: str | None) -> None:
     """Deny by default: the web asks by key, never by path; the PC serves only an image file a tool step
@@ -186,8 +192,10 @@ def test_a_run_image_is_served_only_when_its_own_step_names_a_plain_image(base: 
     agents.runs.add(WebRun(run_id=mine, root="project"))
     image = tmp_path / "shot.png"
     image.write_bytes(PNG + (b"\0" * 64 if case == "named but too large" else b"") if case != "named text as .png" else b"not an image")
-    (tmp_path / "link.png").symlink_to(image)
-    os.mkfifo(tmp_path / "pipe.png")  # a FIFO would block a plain open for ever
+    if case == "named link":
+        (tmp_path / "link.png").symlink_to(image)
+    if case == "named fifo":
+        os.mkfifo(tmp_path / "pipe.png")  # a FIFO would block a plain open for ever
     written = {"named under ~": "~/shot.png", "named link": str(tmp_path / "link.png"), "named fifo": str(tmp_path / "pipe.png")}.get(case, str(image))
     step = json.dumps({"kind": "tool", "tool": "Read", "tool_input": json.dumps({"file_path": written})}) + "\n"
     reg.events_path(foreign if case == "named by another run" else mine).write_text(step if case != "never named" else "")
@@ -634,7 +642,8 @@ def test_a_start_with_project_secrets_writes_them_as_the_checkouts_dotenv_only(b
     answer = _answer(agents, start.model_copy(update={"id": request_id}))
     lines = (checkout / ".env").read_text().splitlines()
     assert lines[0].startswith(MARKER) and lines[1] == "DATABASE_URL='not-a-real-secret-value-for-aino'" and answer.detail.startswith("1 project secrets")
-    assert oct((checkout / ".env").stat().st_mode & 0o777) == "0o600" and ".env" in (checkout / ".git" / "info" / "exclude").read_text().splitlines()
+    PRIVATE_FILES.check(checkout / ".env")
+    assert ".env" in (checkout / ".git" / "info" / "exclude").read_text().splitlines()
     assert "DATABASE_URL" not in seen[-1]["environment"] and "not-a-real-secret-value-for-aino" in agents.logs.secrets
 
 

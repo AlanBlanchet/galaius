@@ -4,10 +4,12 @@ name: windows
 # one-liner (install.ps1, Windows PowerShell 5.1), `galaius login` approved like the owner does on
 # /link (against tests/support/account_server.py, a server double speaking the real wire models),
 # the background logon task running and stopped / started from the CLI, credentials sealed and
-# private, `galaius logout` undoing it all; then the Windows-specific unit tests.
+# private, `galaius logout` undoing it all; then the Windows-specific unit tests. The whole test
+# suite on Windows runs in ci.yml (windows-suite).
 
 on:
   push:
+    branches: [main]
     paths: [install.ps1, pyproject.toml, uv.lock, "src/**", "tests/**", .github/workflows/windows.yml]
   pull_request:
   workflow_dispatch:
@@ -20,60 +22,6 @@ env:
   SERVER: http://127.0.0.1:8765
 
 jobs:
-  # The whole suite on Windows (integration and live-desktop tests auto-skip): every agent, console
-  # and provider path a Windows PC runs, not only the install one. -rf names each failure.
-  suite:
-    name: windows (suite ${{ matrix.shard }}/8)
-    runs-on: windows-latest
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7]
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install uv
-        uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Extension toolchain (the webview fixtures build with its own esbuild)
-        working-directory: clients/vscode
-        run: npm ci
-      - name: This runner's share of the test files
-        run: |
-          # Every test file, sorted, dealt round-robin to 8 runners (pytest reads them from @shard.txt).
-          $files = @(Get-ChildItem tests -Filter 'test_*.py' | Sort-Object Name)
-          $mine = @(for ($i = 0; $i -lt $files.Count; $i++) { if ($i % 8 -eq ${{ matrix.shard }}) { "tests/$($files[$i].Name)" } })
-          $mine | Set-Content -Encoding ascii shard.txt
-          uv sync --frozen --quiet
-      # pytest under a watchdog of our own, well inside the step's limit: on a hang it prints the test
-      # in progress and every process (who started what), then ends the tree - the log survives.
-      - name: Tests
-        timeout-minutes: 25
-        run: |
-          New-Item -ItemType File -Force empty.txt | Out-Null
-          $pytest = Start-Process -FilePath .venv\Scripts\python.exe -PassThru -NoNewWindow -RedirectStandardInput empty.txt `
-            -RedirectStandardOutput suite.log -RedirectStandardError suite.err `
-            -ArgumentList '-m', 'pytest', '-m', '"not integration"', '-v', '-rfEs', '-p', 'no:cacheprovider', '@shard.txt'
-          if (-not $pytest.WaitForExit(18 * 60 * 1000)) {
-            "== HUNG: last lines"; Get-Content suite.log -Tail 40; Get-Content suite.err -Tail 40
-            "== processes"; Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, Name, CommandLine | Format-Table -AutoSize -Wrap | Out-String -Width 300
-            taskkill /T /F /PID $pytest.Id
-            exit 1
-          }
-          Get-Content suite.log; Get-Content suite.err
-          exit $pytest.ExitCode
-      - name: Upload the test log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-suite-log-${{ matrix.shard }}
-          path: suite.log
-          if-no-files-found: warn
-
   windows:
     name: windows (install.ps1 + login + service)
     runs-on: windows-latest
@@ -240,7 +188,6 @@ jobs:
           tests/test_prompt_contracts.py::test_cache_is_never_opened_through_a_link
           tests/test_prompt_contracts.py::test_cache_owner_check_is_portable_when_getuid_is_unavailable
           tests/test_prompt_projection.py::test_installer_switches_only_declared_consumers_and_rejects_unmanaged_collision
-          --deselect tests/test_server_prompt_projection.py::test_independent_connection_processes_lock_before_reading_shared_install_state
 
       - name: Logs
         if: always()

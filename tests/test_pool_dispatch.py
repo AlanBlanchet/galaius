@@ -99,6 +99,7 @@ class _FakeSocket:
 
 async def _execute_and_collect(command: MachineCommand, config: MachineConfig):
     runner = MachineRunner()
+    runner.save(config)  # an accepted command's nonce is recorded in this PC's own machine file
     socket = _FakeSocket()
     await runner._execute(socket, config, command)
     result = next(frame["result"] for frame in socket.sent if frame.get("type") == "result")
@@ -129,8 +130,10 @@ async def test_execute_still_refuses_an_owner_command_whose_workspace_id_does_no
     config = _owner_config()
     command = _pooled_command("print('should never run')").model_copy(update={"tenancy": "owner", "machine": MachineRef(id=config.machine_id)})
     signed = _sign(command, config)
+    runner = MachineRunner()
+    runner.save(config)
     with pytest.raises(PermissionError, match="another workspace"):
-        await MachineRunner()._execute(_FakeSocket(), config, signed)
+        await runner._execute(_FakeSocket(), config, signed)
 
 
 def _sign(command: MachineCommand, config: MachineConfig) -> MachineCommand:

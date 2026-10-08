@@ -1,5 +1,6 @@
 """Native controls use authenticated server records and preserve conflicts as drafts."""
 
+import asyncio
 import hashlib
 import json
 from datetime import UTC, datetime, timedelta
@@ -340,6 +341,30 @@ def test_success_status_with_wrong_edit_is_not_accepted(workspace_server):
         server.edit_agent(graph, graph.agents[1].id, AgentEdit(reasoning="low"))
 
 
+async def _press_save(pilot, pane, server) -> None:
+    """Enter on the save button, then wait for that save to finish. A button ignores Enter while its
+    previous press still shows (`-active`, 0.2 s); the save runs off-thread (the server can hold the
+    edit before the pane resumes); a press arriving while a save is busy is dropped."""
+    button = pane.query_one("#workspace-save", Button)
+
+    def puts() -> int:
+        return sum(request.method == "PUT" for request in server["requests"])
+
+    async def until(done, what: str) -> None:
+        for _ in range(200):
+            await pilot.pause()
+            if done():
+                return
+            await asyncio.sleep(0.05)
+        raise AssertionError(what)
+
+    await until(lambda: not button.has_class("-active") and not pane.busy, "the save button never became pressable")
+    button.focus()
+    before = puts()
+    await pilot.press("enter")
+    await until(lambda: puts() > before and not pane.busy, "the workspace save never finished")
+
+
 async def test_tui_keyboard_saves_server_and_retains_conflict_draft(workspace_server, monkeypatch):
     monkeypatch.setattr(GalaiusTUI, "_load_registry_info", lambda self: None)
     app = GalaiusTUI()
@@ -355,17 +380,12 @@ async def test_tui_keyboard_saves_server_and_retains_conflict_draft(workspace_se
         assert pane.selected is not None
         pane.query_one("#workspace-criteria", Input).value = "price.in >= 2"
         pane.query_one("#workspace-reasoning", Select).value = "low"
-        button = pane.query_one("#workspace-save", Button)
-        button.focus()
-        await pilot.press("enter")
-        await pilot.pause()
+        await _press_save(pilot, pane, workspace_server)
         selected = next(agent for agent in workspace_server["graph"].agents if agent.id == pane.selected)
         assert selected.criteria == "price.in >= 2" and selected.reasoning == "low"
         workspace_server["failure"] = 409
         pane.query_one("#workspace-criteria", Input).value = "price.in >= 3"
-        button.focus()
-        await pilot.press("enter")
-        await pilot.pause()
+        await _press_save(pilot, pane, workspace_server)
         assert pane.query_one("#workspace-criteria", Input).value == "price.in >= 3"
         assert "Draft retained" in str(pane.query_one("#workspace-status", Static).render())
         assert next(agent for agent in workspace_server["graph"].agents if agent.id == pane.selected).criteria == "price.in >= 2"

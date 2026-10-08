@@ -76,6 +76,8 @@ def test_root_wheel_contains_only_the_local_public_import_and_cli(tmp_path: Path
 # pinned-git-vs-editable-sibling split the wheel build above resolves, deterministically.
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="generate-types.sh is a bash step of the extension build, which only "
+                    "the Linux compile job runs; Windows has no equivalent script (its `bash` is the WSL launcher)")
 @pytest.mark.parametrize("sibling", [False, True], ids=["released-core", "editable-core"])
 def test_type_generation_disables_external_catalog_discovery(tmp_path, sibling) -> None:
     """Codegen imports catalog modules; its launcher must make that import deterministic."""

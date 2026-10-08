@@ -156,6 +156,32 @@ _ANIMATING_JS = """
 # directly — `:hover` stayed false here even though elementFromPoint at the same coordinates finds
 # the new element). So the deterministic signal is elementFromPoint plus the reveal's own shown/
 # hidden state, not `:hover` matching.
+# A click can start a View Transition, whose DOM swap runs frames later (later still on a slow
+# machine) than any settle that only watches scrolling and running animations. Before the click the
+# page's `startViewTransition` records each transition it starts; after it, the probe waits until
+# their DOM swaps have run (`updateCallbackDone`, at most 2 s) and reads what the pointer rests on
+# then, before the browser's own later hover update can hide the defect.
+_TRACK_TRANSITIONS_JS = r"""
+() => {
+  if (!document.startViewTransition || window.__galaiusTransitions) return;
+  window.__galaiusTransitions = new Set();
+  const start = document.startViewTransition.bind(document);
+  document.startViewTransition = (...args) => {
+    const transition = start(...args);
+    window.__galaiusTransitions.add(transition.updateCallbackDone);
+    transition.updateCallbackDone.finally(() => window.__galaiusTransitions.delete(transition.updateCallbackDone));
+    return transition;
+  };
+}
+"""
+
+_TRANSITIONS_DONE_JS = r"""
+() => window.__galaiusTransitions && window.__galaiusTransitions.size
+  ? Promise.race([Promise.allSettled([...window.__galaiusTransitions]), new Promise((done) => setTimeout(done, 2000))])
+      .then(() => null)
+  : null
+"""
+
 _HOVER_STUCK_JS = r"""
 ({ x, y }) => {
   const el = document.elementFromPoint(x, y);
@@ -433,9 +459,11 @@ async def audit_element(page: Page, ref: str, *, click: bool = True) -> list[Fin
         try:
             before_url = page.url
             before_surfaces = await page.evaluate(_SURFACES_JS)
+            await page.evaluate(_TRACK_TRANSITIONS_JS)
             await page.mouse.move(cx, cy)
             await page.mouse.down()
             await page.mouse.up()
+            await page.evaluate(_TRANSITIONS_DONE_JS)
             await settle_page(page)
             navigated = page.url != before_url
             # The pointer never moved (cx, cy is where it still is): whatever is now under it should

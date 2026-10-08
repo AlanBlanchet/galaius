@@ -4,8 +4,10 @@
 import argparse
 import json
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
+
+from loopback_server import serve
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -56,6 +58,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
     _Handler.log_path = args.log_file
     _Handler.delay = args.delay
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
-    args.port_file.write_text(str(server.server_port))
-    server.serve_forever()
+    serve(_Handler, args.port_file)

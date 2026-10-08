@@ -5,6 +5,7 @@ from uuid import UUID
 
 import pytest
 
+from galaius.pinned_directory import PinnedDirectory
 from galaius.prompt_publisher import publish_projection
 from galaius.prompt_projection import MANIFEST_NAME
 from galaius_core import (
@@ -13,6 +14,26 @@ from galaius_core import (
     PromptKey,
     PromptPublicationRequest,
 )
+
+
+def _projection(root: Path, contents: dict[str, bytes], commit: str) -> list[dict]:
+    """A compiled projection on disk: its files and the manifest declaring them, each in the mode
+    a file on this system stands for (`PinnedDirectory.permissions`). Returns the outputs."""
+    root.mkdir()
+    outputs = []
+    for path, content in contents.items():
+        target = root / path
+        target.write_bytes(content)
+        target.chmod(0o644)
+        outputs.append({
+            "path": path, "sha256": hashlib.sha256(content).hexdigest(), "size": len(content),
+            "mode": f"{PinnedDirectory.permissions(target.stat()):04o}", "consumers": ["test"],
+        })
+    (root / MANIFEST_NAME).write_text(json.dumps({
+        "version": 1, "source_commit": commit * 40,
+        "source_timestamp": "2026-09-05T12:00:00+00:00", "outputs": outputs,
+    }))
+    return outputs
 
 
 def test_publication_request_requires_one_commit_and_unique_keys() -> None:
@@ -24,21 +45,7 @@ def test_publisher_sends_complete_snapshot_and_only_changed_revisions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     projection = tmp_path / "projection"
-    projection.mkdir()
-    contents = {"AGENTS.md": "same bytes\n", "instructions.md": "changed\n"}
-    outputs = []
-    for path, content in contents.items():
-        target = projection / path
-        target.write_text(content)
-        target.chmod(0o644)
-        outputs.append({
-            "path": path, "sha256": hashlib.sha256(content.encode()).hexdigest(),
-            "size": len(content.encode()), "mode": "0644", "consumers": ["test"],
-        })
-    (projection / MANIFEST_NAME).write_text(json.dumps({
-        "version": 1, "source_commit": "b" * 40,
-        "source_timestamp": "2026-09-05T12:00:00+00:00", "outputs": outputs,
-    }))
+    outputs = _projection(projection, {"AGENTS.md": b"same bytes\n", "instructions.md": b"changed\n"}, "b")
     same_key = PromptKey(
         namespace="galaius-projection",
         slug="output-" + hashlib.sha256(b"AGENTS.md").hexdigest()[:24],
@@ -94,21 +101,7 @@ def test_identical_content_at_distinct_paths_keeps_distinct_prompt_keys(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     projection = tmp_path / "projection"
-    projection.mkdir()
-    content = "identical\n"
-    digest = hashlib.sha256(content.encode()).hexdigest()
-    outputs = []
-    for path in ("AGENTS.md", "instructions.md"):
-        (projection / path).write_text(content)
-        (projection / path).chmod(0o644)
-        outputs.append({
-            "path": path, "sha256": digest, "size": len(content.encode()),
-            "mode": "0644", "consumers": ["test"],
-        })
-    (projection / MANIFEST_NAME).write_text(json.dumps({
-        "version": 1, "source_commit": "c" * 40,
-        "source_timestamp": "2026-09-05T12:00:00+00:00", "outputs": outputs,
-    }))
+    _projection(projection, {"AGENTS.md": b"identical\n", "instructions.md": b"identical\n"}, "c")
     empty = PromptCatalogPage(
         entries=(), cursor=None, server_timestamp="2026-09-05T12:00:00Z",
     )

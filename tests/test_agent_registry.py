@@ -29,6 +29,7 @@ import pytest
 
 from galaius.agents import registry as reg
 from galaius.agents.events import TOKEN_FIELDS, AgentEvent
+from galaius.pinned_directory import DescriptorDirectory
 from galaius.private_files import PRIVATE_FILES
 from galaius.processes import process_exited
 from tests.support import register_run
@@ -1579,10 +1580,11 @@ def test_a_listing_rereads_a_transcript_only_when_it_changed(monkeypatch, ended,
                              "stream_grew": "done", "message_arrived": "running"}[change]
 
 
-def test_a_listing_checks_the_registry_folder_once_not_per_record(monkeypatch):
+def test_a_listing_checks_the_registry_folder_once_not_per_record(monkeypatch, directory_backend):
     """Re-checking the private folder chain before every record read was ~3 s of a warm listing
-    at three thousand records; the folder is checked once per listing, each leaf still opened
-    without following a link."""
+    at three thousand records; a folder pinned by descriptor is checked once per listing, each leaf
+    still opened without following a link. A folder reached by path (Windows) is re-checked per
+    file: holding one check would leave a folder swapped mid-listing unseen."""
     monkeypatch.setattr(reg, "_alive", lambda pid: False)
     checks: list[int] = []
     real = reg._ensure_registry_directory
@@ -1601,4 +1603,5 @@ def test_a_listing_checks_the_registry_folder_once_not_per_record(monkeypatch):
         monkeypatch.setattr(reg, "_ensure_registry_directory", real)
         return len(checks)
 
-    assert warm_listing_checks(3) == warm_listing_checks(9)
+    few, many = warm_listing_checks(3), warm_listing_checks(9)
+    assert few == many if directory_backend is DescriptorDirectory else few < many

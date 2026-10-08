@@ -228,7 +228,7 @@ def mirror(root: Path, connection: CatalogConnection, workspace: PromptWorkspace
 
 def _document(folder: PinnedDirectory) -> dict:
     try:
-        descriptor = folder.file(MANIFEST, os.O_RDONLY | os.O_NOFOLLOW)
+        descriptor = folder.file(MANIFEST, os.O_RDONLY)
     except FileNotFoundError:
         return {}
     with os.fdopen(descriptor, "rb") as stream:
@@ -251,13 +251,13 @@ def _manifest(folder: PinnedDirectory) -> dict[str, str]:
 def _write(directory: PinnedDirectory, name: str, content: bytes, mode: int) -> None:
     """Replace `name` atomically with a private file (`mode`; prompt copies read-only), never through a link."""
     partial = f".{name}.{os.getpid()}.partial"
-    descriptor = directory.file(partial, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    descriptor = directory.file(partial, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
         with os.fdopen(descriptor, "wb") as stream:
             stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
-            os.fchmod(stream.fileno(), mode)
+            directory.chmod(stream.fileno(), mode)
         directory.replace(partial, directory, name)
     except BaseException:
         try:

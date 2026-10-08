@@ -19,6 +19,7 @@ from galaius_core.sealing import SecretsSeal
 from pydantic import BaseModel, ConfigDict
 
 from galaius.machine_workspaces import MachineWorkspaces
+from galaius.private_files import PRIVATE_FILES
 
 #: The first line of every `.env` galaius writes: the only kind it ever rewrites.
 MARKER = "# Written by galaius from the project's vault"
@@ -67,8 +68,10 @@ class ProjectEnv(BaseModel):
         return None
 
     def write(self, values: dict[str, str], *, project: UUID) -> Path:
-        """Writes the whole file (temporary file in the same folder, then renamed over), 0600; its
-        first line names the vault state it holds (sha256 of the values, kept on this PC only)."""
+        """Writes the whole file (temporary file in the same folder, then renamed over), private to
+        this user (`PRIVATE_FILES`: 0600, or the user's own access list on Windows, where a mode
+        grants nothing); its first line names the vault state it holds (sha256 of the values,
+        kept on this PC only)."""
         if (refused := self._refusal()) is not None:
             raise PermissionError(refused)
         revision = sha256(SecretsSeal.plain(values)).hexdigest()
@@ -78,6 +81,7 @@ class ProjectEnv(BaseModel):
         descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
+                PRIVATE_FILES.restrict(temporary)
                 stream.write("\n".join(lines) + "\n")
             os.replace(temporary, self.path)
         except BaseException:

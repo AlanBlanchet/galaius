@@ -4,9 +4,10 @@ import errno
 import hashlib
 import json
 import os
-import select
+import queue
 import subprocess
 import sys
+import threading
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -274,16 +275,21 @@ def test_intervening_operator_write_is_never_overwritten(tmp_path, monkeypatch, 
     replace = os.replace
     injected = False
 
+    def names(entry, folder: int | None, path: Path) -> bool:
+        """Whether `entry` (inside descriptor `folder`, when given) is `path`: by name and folder identity."""
+        if folder is None:
+            return Path(entry) == path
+        parent, opened = path.parent.stat(), os.fstat(folder)
+        return entry == path.name and (opened.st_dev, opened.st_ino) == (parent.st_dev, parent.st_ino)
+
     def intervene(source, destination, **kwargs):
         nonlocal injected
-        actual_source = (Path(os.readlink(f"/proc/self/fd/{kwargs['src_dir_fd']}")) / source
-                         if "src_dir_fd" in kwargs else Path(source))
-        actual_destination = (Path(os.readlink(f"/proc/self/fd/{kwargs['dst_dir_fd']}")) / destination
-                              if "dst_dir_fd" in kwargs else Path(destination))
-        if actual_source == target and when == "rollback_move" and injected:
+        moves_target = names(source, kwargs.get("src_dir_fd"), target)
+        publishes_state = names(destination, kwargs.get("dst_dir_fd"), state)
+        if moves_target and when == "rollback_move" and injected:
             target.write_text("operator edit")
             return replace(source, destination, **kwargs)
-        if actual_source == target and not injected and when in {"before_move", "after_move"}:
+        if moves_target and not injected and when in {"before_move", "after_move"}:
             injected = True
             if when == "before_move":
                 target.write_text("operator edit")
@@ -291,7 +297,7 @@ def test_intervening_operator_write_is_never_overwritten(tmp_path, monkeypatch, 
             if when == "after_move":
                 target.write_text("operator edit")
             return result
-        if actual_destination == state and when in {"rollback", "rollback_move"}:
+        if publishes_state and when in {"rollback", "rollback_move"}:
             injected = True
             if when == "rollback":
                 target.write_text("operator edit")
@@ -491,25 +497,32 @@ projection.install_server_prompt_projection(connection, root / 'home', root / 'v
     root / 'state/installed.json')
 print('DONE', flush=True)
 """
-    processes = []
+    processes, readers = [], []
     try:
         for index, projection in enumerate(projections):
             process = subprocess.Popen([sys.executable, "-c", script, str(tmp_path), str(projection), str(index)],
                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                        text=True)
             processes.append(process)
-            assert select.select([process.stdout], [], [], 15)[0], "installer did not start"
-            assert process.stdout.readline().strip() == "START"
+            # A reader thread, not select(): Windows cannot poll a pipe.
+            lines: queue.Queue[str] = queue.Queue()
+            reader = threading.Thread(target=lambda stream=process.stdout, into=lines: [
+                into.put(line.strip()) for line in stream], daemon=True)
+            reader.start()
+            readers.append((reader, lines))
+            assert lines.get(timeout=15) == "START", "installer did not start"
             if index == 0:
-                assert process.stdout.readline().strip() == "READ"
+                assert lines.get(timeout=15) == "READ"
             else:
-                assert not select.select([process.stdout], [], [], 0.3)[0], "second installer read stale state"
+                with pytest.raises(queue.Empty):
+                    lines.get(timeout=0.3)  # still waiting for the lock: it has not read the state
         processes[0].stdin.write("continue\n")
         processes[0].stdin.flush()
-        for process in processes:
-            stdout, stderr = process.communicate(timeout=15)
-            assert process.returncode == 0, stderr
-            assert "DONE" in stdout
+        for process, (reader, lines) in zip(processes, readers):
+            process.wait(timeout=15)
+            assert process.returncode == 0, process.stderr.read()
+            reader.join(timeout=15)
+            assert "DONE" in list(lines.queue)
     finally:
         for process in processes:
             if process.poll() is None:

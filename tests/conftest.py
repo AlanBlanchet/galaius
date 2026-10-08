@@ -37,6 +37,21 @@ from galaius.agents.providers import AgentProvider, ClaudeCodeProvider
 from galaius.models import Model
 from galaius.pinned_directory import PinnedDirectory
 
+# Playwright's own browser cache, read before any test moves HOME: a unit test's HOME is a fresh
+# folder, and a browser looked up there is downloaded again for every browser test (minutes each,
+# and on CI one such download eventually never ends).
+PLAYWRIGHT_BROWSERS = os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or str(
+    Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "ms-playwright" if sys.platform == "win32"
+    else Path.home() / "Library" / "Caches" / "ms-playwright" if sys.platform == "darwin"
+    else Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "ms-playwright"
+)
+
+# Importing `galaius.cli` applies `UserConfig.PATH` to `os.environ` at import, i.e. while test
+# modules are collected, before any fixture runs. Left at the developer's own config file, its
+# provider keys reached every unit test for the rest of the run, so a test needing a configured
+# model passed on a developer computer and failed on every CI runner. Collection reads no one's file.
+UserConfig.PATH = Path(__file__).resolve().parents[1] / "out" / "tests" / "no-user-config" / "config.env"
+
 
 @pytest.fixture
 def media_output_root() -> Path:
@@ -60,6 +75,14 @@ def desktop_gate_open(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr("galaius.desktop.backend.desktop_supported", lambda: True)
     monkeypatch.setattr(srv.targets, "_desktop_unsupported", lambda *a, **k: None)
+
+
+@pytest.fixture
+def provider_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One configured provider key (OpenAI's, a fake value): a role resolves against the bundled
+    catalog. With no key at all a role refuses to resolve (`Config.resolve_model`), as on a fresh
+    computer and on every CI runner."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
 
 
 @pytest.fixture(params=PinnedDirectory.backends(), ids=lambda backend: backend.__name__)
@@ -87,6 +110,7 @@ def _isolate_unit_configuration(
         return
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", PLAYWRIGHT_BROWSERS)
     for key, directory in (
         ("XDG_DATA_HOME", ".local/share"),
         ("XDG_CONFIG_HOME", ".config"),

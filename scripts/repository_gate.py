@@ -19,6 +19,8 @@ from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from galaius.private_files import PRIVATE_FILES
+
 FindingClass = Literal[
     "private-key",
     "credential-prefix",
@@ -222,15 +224,21 @@ class RepositoryGate(BaseModel):
             metadata = path.lstat()
         except (ValueError, OSError) as error:
             raise _GateError("confidential-term file must be beneath the Git directory") from error
-        if resolved != path.absolute() or stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) != 0o600:
-            raise _GateError("confidential-term file must be a regular non-symlink with mode 0600")
+        # Its path is never printed: it may itself name what the file keeps confidential.
+        refusal = _GateError("confidential-term file must be a regular non-symlink private to this user (POSIX: mode 0600)")
+        if resolved != path.absolute() or stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise refusal
+        try:
+            PRIVATE_FILES.check(path)
+        except PermissionError as error:
+            raise refusal from error
         content = self._read_stable_file(path, metadata, "confidential-term")
         terms = [line for line in content.splitlines() if len(line) >= 4]
         return terms
 
     def _read_stable_file(self, path: Path, metadata: os.stat_result, label: str):
         try:
-            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0))
             with os.fdopen(descriptor, "rb") as stream:
                 before = os.fstat(stream.fileno())
                 if before.st_dev != metadata.st_dev or before.st_ino != metadata.st_ino:

@@ -51,6 +51,10 @@ class PrivateFiles(BaseModel):
     def restrict(self, path: Path) -> None:
         raise NotImplementedError
 
+    def restrict_open(self, descriptor: int, path: Path) -> None:
+        """`path`, already open as `descriptor`, made private (whoever could read it before no longer can)."""
+        raise NotImplementedError
+
     def check(self, path: Path) -> None:
         """PermissionError unless `path` is a regular file (or folder) only this user can read."""
         self._verify(path, path.lstat())
@@ -120,6 +124,10 @@ class PosixPrivateFiles(PrivateFiles):
     def restrict(self, path: Path) -> None:
         path.chmod(0o700 if path.is_dir() else 0o600)
 
+    def restrict_open(self, descriptor: int, path: Path) -> None:
+        """Through the descriptor: the name is never looked up again."""
+        os.fchmod(descriptor, 0o600)
+
     def _verify(self, path: Path, info: os.stat_result) -> None:
         if not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)) or info.st_mode & 0o077 or info.st_uid != os.getuid():
             raise PermissionError(f"{path} must be private to this user (mode 0600, a folder 0700, owned by you)")
@@ -170,6 +178,10 @@ class WindowsPrivateFiles(PrivateFiles):
             str(path), win32security.SE_FILE_OBJECT,
             win32security.OWNER_SECURITY_INFORMATION | win32security.DACL_SECURITY_INFORMATION | win32security.PROTECTED_DACL_SECURITY_INFORMATION,
             user, None, dacl, None)
+
+    def restrict_open(self, descriptor: int, path: Path) -> None:
+        """By name: a handle opened to read and write cannot change its file's access list."""
+        self.restrict(path)
 
     def _verify(self, path: Path, info: os.stat_result) -> None:
         # Windows opens through a link: the path's own entry says whether it is one.

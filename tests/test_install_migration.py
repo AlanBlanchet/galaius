@@ -6,6 +6,7 @@ import shutil
 import pytest
 
 from galaius.install_migration import InstallMigration
+from galaius.paths import UserPaths
 
 
 @pytest.fixture
@@ -13,6 +14,7 @@ def home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / ".local" / "share"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "AppData" / "Local"))
     monkeypatch.setattr(shutil, "which", lambda name: None)  # never touches this PC's uv, systemctl, claude, code
     (tmp_path / ".interact").mkdir()
     (tmp_path / ".interact" / "config.env").write_text("INTERACT_IMAGE_MODEL=x\nexport INTERACT_HEADLESS=1\nOTHER=interact\n")
@@ -47,7 +49,7 @@ def test_a_folder_the_installer_started_takes_the_former_entries(home):
 
 
 def test_the_installers_own_uv_and_login_server_win_over_the_former_copies(home):
-    data = home / ".local" / "share"
+    data = UserPaths.data().parent  # XDG data home, or %LOCALAPPDATA% on Windows
     for product in ("interact", "galaius"):
         (data / product / "uv" / "bin").mkdir(parents=True)
         (data / product / "uv" / "bin" / "uv").write_text(product)

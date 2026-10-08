@@ -250,7 +250,7 @@ async def test_an_explicit_default_still_shares_one_browser(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_desktop_target_still_refuses_a_session_the_caller_named(monkeypatch):
+async def test_a_desktop_target_still_refuses_a_session_the_caller_named(monkeypatch, desktop_gate_open):
     """The minted name is not a session the caller CHOSE, so it must not trip the guard that
     keeps a desktop window and a browser session from being driven by one call."""
     from galaius.server import targets

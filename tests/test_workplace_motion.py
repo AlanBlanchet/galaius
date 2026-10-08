@@ -21,6 +21,17 @@ import pytest
 
 EXT = Path(__file__).resolve().parent.parent / "clients" / "vscode"
 PREVIEW = EXT / "webview" / "workplace" / "dev" / "preview.ts"
+# Resolved: on Windows npx is npx.cmd, which a process start finds only by its full path.
+NPX = shutil.which("npx") or "npx"
+
+
+def _esbuild(entry, outfile) -> subprocess.CompletedProcess:
+    """`entry` bundled from source to `outfile` (node, CommonJS), as the extension's build does."""
+    return subprocess.run(
+        [NPX, "esbuild", str(entry), "--bundle", f"--outfile={outfile}",
+         "--format=cjs", "--platform=node", "--target=es2022"],
+        cwd=EXT, capture_output=True, text=True,
+    )
 
 #: NOT a list. The colours that make a sprite a person are read off the standing worker itself, so
 #: this cannot drift from what the stylesheet declares. A hand-kept copy here disagreed with the
@@ -45,11 +56,7 @@ def scene(tmp_path_factory):
         _unavailable("the extension's webview toolchain is not available here")
     out = tmp_path_factory.mktemp("workplace")
     bundle = out / "preview.js"
-    build = subprocess.run(
-        ["npx", "esbuild", str(PREVIEW), "--bundle", f"--outfile={bundle}",
-         "--format=cjs", "--platform=node", "--target=es2022"],
-        cwd=EXT, capture_output=True, text=True,
-    )
+    build = _esbuild(str(PREVIEW), bundle)
     if build.returncode != 0:
         pytest.fail(f"the webview would not build:\n{build.stderr}")
     subprocess.run(["node", str(bundle), str(out)], check=True, capture_output=True)
@@ -296,8 +303,11 @@ def test_people_are_primary_and_lineage_survives_without_names_or_colour(page):
         )
 
 
-def test_forty_eight_actors_hold_frame_budget_and_input_reaches_the_next_paint(scene, browser):
+def test_forty_eight_actors_hold_frame_budget_and_input_reaches_the_next_paint(scene, browser, tmp_path):
     """Renderer work stays cheap even when the host cannot deliver every frame on time."""
+    bundle = tmp_path / "workplace.js"
+    if (build := _esbuild(EXT / "webview" / "workplace" / "index.ts", bundle)).returncode != 0:
+        pytest.fail(f"the workplace would not build:\n{build.stderr}")
     workers = [
         {
             "run_id": f"volume-{index}",
@@ -324,7 +334,7 @@ def test_forty_eight_actors_hold_frame_budget_and_input_reaches_the_next_paint(s
                 "const workplace=require(process.argv[1]);"
                 "process.stdout.write(workplace.renderActors(JSON.parse(process.argv[2])))"
             ),
-            str(EXT / "out" / "workplace.js"),
+            str(bundle),
             json.dumps({"workers": workers, "links": [], "at": 0}),
         ],
         cwd=EXT,
@@ -753,14 +763,9 @@ def panel_pages(tmp_path_factory):
     present" and skipped — silently, which reads as a deliberate skip rather than a guard that has
     gone. A fixture outside the repo is a test that stops guarding without telling anyone.
     """
-    ext = Path(__file__).resolve().parent.parent / "clients" / "vscode"
     out = tmp_path_factory.mktemp("panels")
     bundle = out / "panels.js"
-    build = subprocess.run(
-        ["npx", "esbuild", "webview/dev/panels.ts", "--bundle", f"--outfile={bundle}",
-         "--format=cjs", "--platform=node", "--target=es2022"],
-        cwd=ext, capture_output=True, text=True,
-    )
+    build = _esbuild("webview/dev/panels.ts", bundle)
     if build.returncode != 0:
         _unavailable(f"could not build the panel fixture: {build.stderr[-300:]}")
     run = subprocess.run(["node", str(bundle), str(out)], capture_output=True, text=True)
@@ -1120,11 +1125,7 @@ def test_every_standing_place_has_the_thing_it_belongs_to_behind_it(tmp_path_fac
     if not probe.exists() or shutil.which("npx") is None:
         _unavailable("the extension's webview toolchain is not available here")
     out = tmp_path_factory.mktemp("placement") / "placement.js"
-    build = subprocess.run(
-        ["npx", "esbuild", str(probe), "--bundle", f"--outfile={out}",
-         "--format=cjs", "--platform=node", "--target=es2022"],
-        cwd=EXT, capture_output=True, text=True,
-    )
+    build = _esbuild(str(probe), out)
     if build.returncode != 0:
         pytest.fail(f"the placement probe would not build:\n{build.stderr}")
     run = subprocess.run(["node", str(out)], capture_output=True, text=True)
@@ -1145,11 +1146,7 @@ def test_the_art_holds_its_contract(tmp_path_factory):
     if not probe.exists() or shutil.which("npx") is None:
         _unavailable("the extension's webview toolchain is not available here")
     out = tmp_path_factory.mktemp("shadows") / "shadows.js"
-    build = subprocess.run(
-        ["npx", "esbuild", str(probe), "--bundle", f"--outfile={out}",
-         "--format=cjs", "--platform=node", "--target=es2022"],
-        cwd=EXT, capture_output=True, text=True,
-    )
+    build = _esbuild(str(probe), out)
     if build.returncode != 0:
         pytest.fail(f"the shadow probe would not build:\n{build.stderr}")
     run = subprocess.run(["node", str(out)], capture_output=True, text=True)

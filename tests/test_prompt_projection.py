@@ -2,20 +2,21 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import shutil
 import stat
 import subprocess
 import sys
 
 import pytest
 
+from galaius import prompt_projection
+from galaius.private_files import PRIVATE_FILES
 from galaius.prompt_projection import (
     MANIFEST_NAME,
     compile_prompt_projection,
     install_prompt_projection,
     stage_projection_install,
 )
-from tests.support import commit_all, init_repo, run_git
+from tests.support import child_environment, commit_all, init_repo, run_git
 
 pytestmark = pytest.mark.usefixtures("directory_backend")
 
@@ -66,7 +67,7 @@ def test_exact_commit_compiler_matches_the_complete_legacy_generator(tmp_path: P
     _extract(LEGACY, LEGACY_COMMIT, old)
     generated = subprocess.run(
         [sys.executable, "generate.py"], cwd=old, capture_output=True,
-        env={"PATH": os.environ["PATH"], "_GENERATE_YAML_BOOTSTRAP": "1"}, text=True,
+        env=child_environment(_GENERATE_YAML_BOOTSTRAP="1"), text=True,
     )
     assert generated.returncode == 0, generated.stderr
 
@@ -111,19 +112,17 @@ def test_compiler_rejects_unsafe_committed_sources(tmp_path: Path, unsafe: str) 
     if unsafe == "symlink":
         (repository / "linked").symlink_to("generate.py")
         _git(repository, "add", "linked")
-    elif unsafe == "case-collision":
-        (repository / "GENERATE.py").write_text("collision\n")
-        _git(repository, "add", "GENERATE.py")
-    if unsafe == "submodule":
-        # `commit_all`'s own `git add -A` would re-scan the working tree, find no `nested`
-        # directory to back this gitlink, and stage its removal right back out — commit only
-        # what `update-index` already staged, don't restage.
-        commit = _git(repository, "rev-parse", "HEAD")
-        _git(repository, "update-index", "--add", "--cacheinfo", "160000," + commit + ",nested")
+        commit_all(repository, unsafe)
+    else:
+        # Staged straight into the index: a case-insensitive file system cannot hold both names,
+        # and no folder backs a gitlink. `commit_all`'s own `git add -A` would re-scan the working
+        # tree and stage either right back out — commit only what `update-index` staged.
+        entry = ("160000," + _git(repository, "rev-parse", "HEAD") + ",nested"
+                 if unsafe == "submodule" else
+                 "100644," + _git(repository, "hash-object", "-w", "generate.py") + ",GENERATE.py")
+        _git(repository, "update-index", "--add", "--cacheinfo", entry)
         _git(repository, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
              "commit", "-qm", unsafe)
-    else:
-        commit_all(repository, unsafe)
     with pytest.raises(ValueError, match="unsafe committed source"):
         compile_prompt_projection(repository, "HEAD", tmp_path / "projection", tmp_path / "installed")
 
@@ -152,6 +151,10 @@ def test_compiler_rejects_unsafe_committed_sources(tmp_path: Path, unsafe: str) 
 def test_compiler_rejects_unsafe_outputs(
     tmp_path: Path, generator: str, message: str
 ) -> None:
+    if message == "collision":
+        (tmp_path / "case-probe").touch()
+        if (tmp_path / "CASE-PROBE").exists():
+            pytest.skip("a case-insensitive file system holds one file for both names: no collision exists")
     repository = _fixture_repository(tmp_path, generator)
     with pytest.raises(ValueError, match=message):
         compile_prompt_projection(repository, "HEAD", tmp_path / "projection", tmp_path / "installed")
@@ -187,7 +190,7 @@ def test_installer_stages_verified_files_without_touching_destination(tmp_path: 
     for path in staged.rglob("*"):
         if path.is_file():
             assert hashlib.sha256(path.read_bytes()).hexdigest()
-            assert stat.S_IMODE(path.stat().st_mode) == 0o600
+            PRIVATE_FILES.check(path)
 
 
 def test_compiler_creates_a_fresh_cache_parent(tmp_path: Path) -> None:
@@ -258,7 +261,7 @@ def test_installer_adopts_only_an_exact_declared_legacy_symlink(
     legacy = tmp_path / "legacy-agents"
     legacy.mkdir()
     source = legacy / "a.md"
-    source.write_text("agents/a.md\n")
+    source.write_bytes(b"agents/a.md\n")
     target = home / ".claude" / "agents" / "a.md"
     target.parent.mkdir(parents=True)
     target.symlink_to(source)
@@ -283,7 +286,7 @@ def test_installer_replaces_an_exact_adopted_skill_directory_symlink(tmp_path: P
     home, vscode = tmp_path / "home", tmp_path / "vscode"
     legacy = tmp_path / "legacy-skill"
     legacy.mkdir()
-    (legacy / "SKILL.md").write_text("skills/s/SKILL.md\n")
+    (legacy / "SKILL.md").write_bytes(b"skills/s/SKILL.md\n")
     target = home / ".claude" / "skills" / "s"
     target.parent.mkdir(parents=True)
     target.symlink_to(legacy, target_is_directory=True)
@@ -299,86 +302,44 @@ def test_installer_replaces_an_exact_adopted_skill_directory_symlink(tmp_path: P
     assert (target / "SKILL.md").read_text() == "skills/s/SKILL.md\n"
 
 
-def test_full_recorded_consumer_topology_switches_atomically(
+def test_a_failed_state_switch_rolls_every_consumer_back_and_a_retry_installs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    evidence_root = Path(__file__).resolve().parents[1] / "out" / "tests" / (
-        "20260905-prompt-local-first-sync-rp"
-    )
-    baseline = json.loads((evidence_root / "prompt-migration-baseline.json").read_text())
-    hook_baseline = json.loads(
-        (evidence_root / "prompt-migration-hooks-baseline.json").read_text()
-    )
-    assert len(baseline["consumer_entries"]) == 139
-    repository = Path(baseline["source_repository"])
+    repository = _fixture_repository(tmp_path)
     projection = tmp_path / "projection"
-    compile_prompt_projection(repository, baseline["source_commit"], projection, tmp_path / "unused")
-    home = tmp_path / "home"
-    vscode = home / ".config" / "Code" / "User" / "prompts"
-    adoption_targets = {}
-    source_hashes = {}
-    entries = [*baseline["consumer_entries"], *hook_baseline["entries"]]
-    recorded_home = Path(hook_baseline["settings"]["path"]).parent.parent
-    for index, entry in enumerate(entries):
-        original = Path(entry["path"])
-        relative = original.relative_to(recorded_home)
-        target = home / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if entry["kind"] == "directory":
-            target.mkdir(exist_ok=True)
-        elif entry["kind"] == "file":
-            target.write_bytes(original.read_bytes())
-        else:
-            source = Path(entry["target"])
-            source_hashes[source] = _path_digest(source)
-            copied = tmp_path / "legacy" / str(index)
-            copied.parent.mkdir(parents=True, exist_ok=True)
-            if source.is_dir():
-                shutil.copytree(source, copied)
-                digest = _path_digest(copied)
-            else:
-                copied.write_bytes(source.read_bytes())
-                digest = hashlib.sha256(copied.read_bytes()).hexdigest()
-            target.symlink_to(copied, target_is_directory=copied.is_dir())
-            adoption_targets[str(target)] = {
-                "symlink_target": str(copied), "sha256": digest,
-            }
+    compile_prompt_projection(repository, "HEAD", projection, tmp_path / "installed")
+    home, vscode, state = tmp_path / "home", tmp_path / "vscode", tmp_path / "state.json"
+    legacy = tmp_path / "legacy" / "a.md"
+    legacy.parent.mkdir()
+    legacy.write_bytes(b"legacy agent\n")
+    adopted = home / ".claude" / "agents" / "a.md"
+    adopted.parent.mkdir(parents=True)
+    adopted.symlink_to(legacy)
     settings = home / ".claude" / "settings.json"
-    settings.write_bytes(Path(hook_baseline["settings"]["path"]).read_bytes())
+    settings.write_bytes(b'{"unrelated": true}\n')
     adoption = tmp_path / "adoption.json"
-    adoption.write_text(json.dumps({"version": 1, "targets": adoption_targets}))
-    state = tmp_path / "state.json"
-    original_replace = os.replace
-    failed = False
+    adoption.write_text(json.dumps({"version": 1, "targets": {str(adopted): {
+        "symlink_target": str(legacy), "sha256": hashlib.sha256(legacy.read_bytes()).hexdigest(),
+    }}}))
+    move = prompt_projection._move_prompt_backup
 
-    def fail_state_once(source, destination, **kwargs):
-        nonlocal failed
-        actual_destination = (Path(os.readlink(f"/proc/self/fd/{kwargs['dst_dir_fd']}")) / destination
-                              if "dst_dir_fd" in kwargs else Path(destination))
-        if actual_destination == state and not failed:
-            failed = True
+    def fail_the_state_switch(source: Path, backup: Path) -> None:
+        if backup == state:
             raise OSError("injected state switch failure")
-        return original_replace(source, destination, **kwargs)
+        move(source, backup)
 
-    monkeypatch.setattr("galaius.prompt_projection.os.replace", fail_state_once)
+    monkeypatch.setattr(prompt_projection, "_move_prompt_backup", fail_the_state_switch)
     with pytest.raises(OSError, match="injected"):
         install_prompt_projection(projection, home, vscode, state, adoption)
-    monkeypatch.setattr("galaius.prompt_projection.os.replace", original_replace)
+
+    assert not state.exists() and not (home / "AGENTS.md").exists() and not vscode.exists()
+    assert adopted.is_symlink() and adopted.read_bytes() == b"legacy agent\n"
+    assert settings.read_bytes() == b'{"unrelated": true}\n'
+
+    monkeypatch.setattr(prompt_projection, "_move_prompt_backup", move)
     install_prompt_projection(projection, home, vscode, state, adoption)
 
-    managed = json.loads(state.read_text())["managed"]
-    assert len(managed) > 100
-    assert (home / ".galaius" / "agents.json").read_bytes() == Path(
-        next(entry["path"] for entry in entries if entry["path"].endswith("/.galaius/agents.json"))
-    ).read_bytes()
-    assert all(_path_digest(path) == digest for path, digest in source_hashes.items())
-
-
-def _path_digest(path: Path) -> str:
-    if path.is_file():
-        return hashlib.sha256(path.read_bytes()).hexdigest()
-    digest = hashlib.sha256()
-    for child in sorted(path.rglob("*")):
-        if child.is_file():
-            digest.update(child.relative_to(path).as_posix().encode() + b"\0" + child.read_bytes())
-    return digest.hexdigest()
+    assert len(json.loads(state.read_text())["managed"]) > 5
+    assert adopted.is_file() and not adopted.is_symlink()
+    assert legacy.read_bytes() == b"legacy agent\n"
+    assert json.loads(settings.read_text())["unrelated"] is True

@@ -5,8 +5,10 @@ import argparse
 import hashlib
 import json
 from datetime import UTC, datetime
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
+
+from loopback_server import serve
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -115,6 +117,4 @@ if __name__ == "__main__":
     _Handler.corrupt_second = args.corrupt_second
     _Handler.token = args.token
     _Handler.log_file = args.log_file
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
-    args.port_file.write_text(str(server.server_port))
-    server.serve_forever()
+    serve(_Handler, args.port_file)

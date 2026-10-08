@@ -275,7 +275,9 @@ class PathDirectory(PinnedDirectory):
         exclusive byte copy, whose own facts are returned (still fails when `target_name` is
         taken, never follows a link)."""
         try:
-            os.link(self.path / self._name(name), target.path / target._name(target_name))
+            # A link names itself, never what it points to: plain link() follows it on macOS.
+            os.link(self.path / self._name(name), target.path / target._name(target_name),
+                    **({"follow_symlinks": False} if os.link in os.supports_follow_symlinks else {}))
             return None
         except OSError as error:
             if getattr(error, "winerror", None) not in self.UNLINKABLE_WINERRORS and error.errno not in self.UNLINKABLE_ERRNOS:

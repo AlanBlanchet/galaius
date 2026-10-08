@@ -58,15 +58,16 @@ NPM_SHIM = Path(__file__).parent.parent / "fixtures" / "agents" / "npm" / "codex
 def install_fake_cli(directory: Path, name: str, script: Path) -> Path:
     """Put the Python program `script` in `directory` as the command `name`, installed the way that
     system installs a vendor CLI: POSIX an executable file run by its shebang; Windows beside it the
-    `.cmd` launcher npm writes (here for a `python` bin), which is what `codex` / `claude` are there.
-    `directory` must lead PATH, and on Windows so must this interpreter's folder."""
+    `.cmd` launcher npm writes (here for this interpreter as the bin's `node`), which is what `codex` /
+    `claude` are there. Returns the program to start by path; by bare name `directory` must lead PATH."""
     program = directory / name
     shutil.copy2(script, program)
     if sys.platform == "win32":
-        shim = NPM_SHIM.read_bytes().replace(rb"node_modules\@openai\codex\bin\codex.js", name.encode())
-        (directory / f"{name}.cmd").write_bytes(shim.replace(b"node", b"python"))
-    else:
-        program.chmod(0o755)
+        shim = NPM_SHIM.read_bytes().replace(rb"node_modules\@openai\codex\bin\codex.js", name.encode()).replace(b"node", b"python")
+        launcher = directory / f"{name}.cmd"
+        launcher.write_bytes(shim.replace(b'SET "_prog=python"', f'SET "_prog={sys.executable}"'.encode()))
+        return launcher
+    program.chmod(0o755)
     return program
 
 

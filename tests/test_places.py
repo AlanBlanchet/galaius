@@ -2,6 +2,7 @@
 for the folder and everything beneath it until a deeper one, credential stores and links are never
 opened whatever an ancestor says, and browsing yields names only, page by page."""
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -118,10 +119,14 @@ def test_the_browse_budget_refuses_past_its_window() -> None:
 
 
 def test_browsing_the_home_folder_leaves_out_this_systems_credential_stores(home: Path) -> None:
-    """`snap` (browser and password-manager profiles on Linux) is not listed at the top of home."""
-    (home / "snap").mkdir()
-    names = {entry.name for entry in PlaceMap(working_directory=home).browse("", 0)[0]}
-    assert "snap" not in names and "Documents" in names
+    """This system's store of browser and password-manager profiles (`snap` on Linux, `AppData` on
+    Windows, `Library/Keychains` on macOS) is not listed below home."""
+    store = next(paths for key, paths in NEVER_GRANTABLE.home.items() if sys.platform.startswith(key))[0]
+    parent, _, name = store.rpartition("/")
+    (home / store).mkdir(parents=True)
+    places = PlaceMap(working_directory=home)
+    assert name not in {entry.name.casefold() for entry in places.browse(parent, 0)[0]}
+    assert "Documents" in {entry.name for entry in places.browse("", 0)[0]}
 
 
 @pytest.mark.parametrize("name", ["server.key", "release.jks", "app.keystore", "terraform.tfstate", "kubeconfig", "service-account-prod.json"])

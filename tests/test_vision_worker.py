@@ -9,12 +9,14 @@ from pathlib import Path
 import pytest
 
 from galaius.vision_env import VisionWorker
+from tests.support.agents import install_fake_cli
 
-#: Answers like `vision_infer.serve`: the request file says what to do. Each start appends to `starts`.
+#: Answers like `vision_infer.serve`: the request file says what to do. Each start appends to `starts`
+#: beside it.
 STUB = r'''
 import json, sys, time
 from pathlib import Path
-Path(sys.argv[-2]).open("a").write("start\n")
+Path(__file__).with_name("starts").open("a").write("start\n")
 loaded = False
 for line in sys.stdin:
     request = json.loads(Path(json.loads(line)["request"]).read_text())
@@ -31,10 +33,8 @@ for line in sys.stdin:
 @pytest.fixture
 def machine(tmp_path: Path):
     """(a stand-in `python` for the worker, a request writer, the start counter)."""
-    (tmp_path / "stub.py").write_text(STUB)
-    python = tmp_path / "python"
-    python.write_text(f"#!/bin/sh\nexec {sys.executable} {tmp_path / 'stub.py'} {tmp_path / 'starts'} \"$@\"\n")
-    python.chmod(0o755)
+    (tmp_path / "stub.py").write_text(f"#!{sys.executable}\n{STUB}")
+    python = install_fake_cli(tmp_path, "python", tmp_path / "stub.py")
 
     def request(do: str) -> Path:
         path = tmp_path / f"{do}.json"

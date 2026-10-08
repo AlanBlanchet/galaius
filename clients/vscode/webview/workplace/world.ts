@@ -718,9 +718,10 @@ function loosen(room: Room, uniques: Uniques, seed: number): void {
     });
   }
   // And somewhere to simply stand, for the overflow and for anybody the company filed under no
-  // department at all.
+  // department at all — never within the pitch of a couch's seat laid above.
   for (let y = b.y + 3; y < b.y + b.h - 2; y += PITCH + 1) {
     for (let x = b.x + 4; x < b.x + b.w - 2; x += PITCH + 1) {
+      if (room.seats.some((s) => Math.abs(s.x - x) < PITCH && Math.abs(s.y - y) < PITCH)) continue;
       room.seats.push({ x, y, post: "rest", face: x < mid ? 1 : -1, perch: false });
     }
   }

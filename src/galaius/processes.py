@@ -1,6 +1,9 @@
 """Bounded subprocess execution with cross-platform process-tree cancellation."""
 
 import asyncio
+import ctypes
+import ctypes.util
+import functools
 import os
 import re
 import shutil
@@ -12,6 +15,9 @@ from pathlib import Path
 from typing import ClassVar, Self
 
 from pydantic import BaseModel, ConfigDict
+
+if sys.platform == "win32":
+    from ctypes import wintypes
 
 _OUTPUT_LIMIT = 2 * 1024 * 1024
 _STDIN_LIMIT = 1024 * 1024
@@ -243,10 +249,12 @@ async def run_isolated_process(
 def process_started(pid: int) -> int | None:
     """When process `pid` started, as an opaque number only compared for equality: with the pid it
     names one process for good (a reused pid starts later). Linux: clock ticks since boot
-    (`/proc/<pid>/stat`); Windows: its creation FILETIME. None when it is gone or the system has
-    no such record here (macOS)."""
+    (`/proc/<pid>/stat`); Windows: its creation FILETIME; macOS: its start in microseconds (libproc's
+    BSD info). None when it is gone or the system has no such record."""
     if sys.platform == "win32":
         return _started_windows(pid)
+    if sys.platform == "darwin":
+        return _started_darwin(pid)
     fields = _stat_fields(pid)
     return int(fields[19]) if fields is not None and len(fields) > 19 else None  # field 22, `starttime`
 
@@ -283,10 +291,38 @@ def _stat_fields(pid: int) -> list[str] | None:
     return stat_line.rpartition(")")[2].split()
 
 
-def _started_windows(pid: int) -> int | None:
-    import ctypes
-    from ctypes import wintypes
+class _ProcBsdInfo(ctypes.Structure):
+    """`struct proc_bsdinfo` (<sys/proc_info.h>), up to the start time."""
 
+    _fields_ = [
+        ("ids", ctypes.c_uint32 * 12),  # flags, status, xstatus, pid, ppid, uid, gid, ruid, rgid, svuid, svgid, rfu
+        ("comm", ctypes.c_char * 16),
+        ("name", ctypes.c_char * 32),
+        ("counts", ctypes.c_uint32 * 6),  # nfiles, pgid, pjobc, tdev, tpgid, nice
+        ("start_sec", ctypes.c_uint64),
+        ("start_usec", ctypes.c_uint64),
+    ]
+
+
+@functools.cache
+def _libproc() -> ctypes.CDLL:
+    libproc = ctypes.CDLL(ctypes.util.find_library("proc") or "/usr/lib/libproc.dylib", use_errno=True)
+    libproc.proc_pidinfo.argtypes = (ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int)
+    libproc.proc_pidinfo.restype = ctypes.c_int
+    return libproc
+
+
+def _started_darwin(pid: int) -> int | None:
+    """`pbi_start_tvsec` / `pbi_start_tvusec` of `proc_pidinfo(pid, PROC_PIDTBSDINFO)`; None when
+    libproc fills less than the whole struct (the process is gone)."""
+    info = _ProcBsdInfo()
+    filled = _libproc().proc_pidinfo(pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info))  # PROC_PIDTBSDINFO
+    if filled != ctypes.sizeof(info):
+        return None
+    return info.start_sec * 1_000_000 + info.start_usec
+
+
+def _started_windows(pid: int) -> int | None:
     kernel32 = ctypes.windll.kernel32
     kernel32.OpenProcess.restype = wintypes.HANDLE
     kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)

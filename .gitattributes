@@ -1,3 +1,5 @@
-# Byte-exact files: the upstream Codex schema capture (its SHA-256 is of these bytes) and npm's own CRLF shims.
+# Byte-exact files: the upstream Codex schema capture (its SHA-256 is of these bytes), npm's own CRLF shims,
+# and the default prompts (prompts/manifest.json declares their SHA-256).
 src/galaius/agents/codex_app_server_schema/** -text
 tests/fixtures/agents/npm/*.cmd -text
+prompts/** -text

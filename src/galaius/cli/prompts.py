@@ -321,7 +321,8 @@ def clone(remote: str) -> None:
         print(f"ERROR: prompt worktree already exists: {repository}", file=sys.stderr)
         raise SystemExit(2)
     repository.parent.mkdir(parents=True, exist_ok=True)
-    _run("clone", "--", remote, str(repository))
+    # Prompt digests are of exact bytes: no line-ending rewrite at checkout (Git for Windows' default).
+    _run("clone", "--config", "core.autocrlf=false", "--", remote, str(repository))
 
 
 @prompts_app.command

@@ -237,8 +237,8 @@ def dispatcher_running_locked(run_id: str) -> bool:
 
 def _dispatcher_matches(state: dict) -> bool:
     """Whether the dispatcher `state` records is still that very process: alive, and started when
-    it was recorded to (a bare pid may since name an unrelated process). Where the system keeps no
-    start time (`process_started` is None, macOS) no dispatcher is ever trusted: one is started."""
+    it was recorded to (a bare pid may since name an unrelated process). Where the system gives no
+    start time (`process_started` is None) no dispatcher is ever trusted: one is started."""
     pid, token, started = (state.get(key) for key in ("dispatcher_pid", "dispatcher_token", "dispatcher_started"))
     return (
         isinstance(pid, int) and bool(token) and started is not None

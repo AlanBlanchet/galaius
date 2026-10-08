@@ -9,6 +9,7 @@ on:
   push:
     branches: [main, "release/**"]  # release/X.Y branches cut maintenance patches for older lines
   pull_request:
+  workflow_dispatch:  # the owner's release: Actions → ci → Run workflow on main
 
 permissions:
   contents: read
@@ -22,7 +23,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest]  # Windows: windows-suite below, in 8 shards
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20  # backstop: bound any real hang (pytest-timeout catches most first, at 90s)
     steps:
@@ -43,19 +44,78 @@ jobs:
       - name: Version files in sync (single source of truth)
         run: uv run python -m galaius.versioning check
 
+      # The page tests (chat composer, workplace) drive Playwright's own Chromium.
+      - name: Playwright's Chromium
+        run: uv run playwright install ${{ runner.os == 'Linux' && '--with-deps' || '' }} chromium
+
       # -rs lists every SKIP with its reason. Without it a test that quietly stops running —
       # a browser that will not launch, a missing display — is indistinguishable from one that
       # passed, and the suite keeps reporting green over a shrinking amount of actual coverage.
       - name: Run tests (integration + desktop auto-skip here)
         run: uv run pytest -m "not integration" -q -rs
 
-      # The macOS/Windows runners are real GUI sessions, so drive the PortableBackend (mss + pynput)
-      # on them and SHOW the per-test result (-rs prints skip reasons): this is the visible mac/win
-      # desktop-automation check (#24). Non-fatal — a host that denies Screen-Recording/Accessibility
-      # skips with a diagnostic rather than failing.
-      - name: Desktop automation (macOS/Windows real GUI)
-        if: runner.os != 'Linux'
+      # The macOS runner is a real GUI session, so drive the PortableBackend (mss + pynput) on it
+      # and SHOW the per-test result (-rs prints skip reasons): the visible mac desktop-automation
+      # check (#24; Windows runs it inside windows-suite). Non-fatal — a host that denies
+      # Screen-Recording/Accessibility skips with a diagnostic rather than failing.
+      - name: Desktop automation (macOS real GUI)
+        if: runner.os == 'macOS'
         run: uv run pytest tests/test_portable_backend.py -v -rs
+
+  # The whole suite on Windows (integration and live-desktop tests auto-skip): every agent, console
+  # and provider path a Windows PC runs, not only the install one. -rf names each failure.
+  windows-suite:
+    name: windows (suite ${{ matrix.shard }}/8)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Extension toolchain (the webview fixtures build with its own esbuild)
+        working-directory: clients/vscode
+        run: npm ci
+      - name: This runner's share of the test files
+        run: |
+          # Every test file, sorted, dealt round-robin to 8 runners (pytest reads them from @shard.txt).
+          $files = @(Get-ChildItem tests -Filter 'test_*.py' | Sort-Object Name)
+          $mine = @(for ($i = 0; $i -lt $files.Count; $i++) { if ($i % 8 -eq ${{ matrix.shard }}) { "tests/$($files[$i].Name)" } })
+          $mine | Set-Content -Encoding ascii shard.txt
+          uv sync --frozen --quiet
+          .venv\Scripts\python.exe -m playwright install chromium  # the page tests drive it
+      # pytest under a watchdog of our own, well inside the step's limit: on a hang it prints the test
+      # in progress and every process (who started what), then ends the tree - the log survives.
+      - name: Tests
+        timeout-minutes: 25
+        run: |
+          New-Item -ItemType File -Force empty.txt | Out-Null
+          $pytest = Start-Process -FilePath .venv\Scripts\python.exe -PassThru -NoNewWindow -RedirectStandardInput empty.txt `
+            -RedirectStandardOutput suite.log -RedirectStandardError suite.err `
+            -ArgumentList '-m', 'pytest', '-m', '"not integration"', '-v', '-rfEs', '-p', 'no:cacheprovider', '@shard.txt'
+          if (-not $pytest.WaitForExit(18 * 60 * 1000)) {
+            "== HUNG: last lines"; Get-Content suite.log -Tail 40; Get-Content suite.err -Tail 40
+            "== processes"; Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, Name, CommandLine | Format-Table -AutoSize -Wrap | Out-String -Width 300
+            taskkill /T /F /PID $pytest.Id
+            exit 1
+          }
+          Get-Content suite.log; Get-Content suite.err
+          exit $pytest.ExitCode
+      - name: Upload the test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-suite-log-${{ matrix.shard }}
+          path: suite.log
+          if-no-files-found: warn
 
   # The extension is TypeScript that nothing else compiles: until now `tsc` ran only inside
   # publish-extension, i.e. on release tags only, so the extension source could sit broken on
@@ -132,12 +192,13 @@ jobs:
           path: out/ci-desktop.mp4
           if-no-files-found: warn
 
-  # Tag + GitHub release — ONLY after the matrix + desktop jobs pass, and only on push to
-  # main. Never tags a broken build. Single source of truth = pyproject.toml version (must
-  # match package.json); no-ops if the tag already exists, so re-pushes are safe.
+  # Tag + GitHub release — ONLY after the matrix + desktop jobs pass, and only when the owner
+  # runs this workflow by hand on main or a release branch: a tag and a release are publications,
+  # never a side effect of a push. Never tags a broken build. Single source of truth =
+  # pyproject.toml version (must match package.json); no-ops if the tag already exists.
   release:
-    needs: [test, desktop, extension]
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/'))
+    needs: [test, windows-suite, desktop, extension]
+    if: github.event_name == 'workflow_dispatch' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/'))
     runs-on: ubuntu-latest
     permissions:
       contents: write

@@ -20,7 +20,7 @@ from galaius.vision.core import VisionError
 
 
 @pytest.fixture
-def srv():
+def srv(provider_key):
     import galaius.server as _srv
     from galaius.server import breaker
 
