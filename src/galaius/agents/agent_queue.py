@@ -39,6 +39,8 @@ class CorruptQueueStateError(RuntimeError):
 
 
 QueueState = Literal["pending", "running", "replied", "failed", "cancelled", "uncertain"]
+#: What a queue file holds only while one of its items is still pending (its state, as written).
+PENDING_MARK = '"pending"'
 AttemptState = Literal["replied", "failed", "uncertain"]
 
 
@@ -259,11 +261,15 @@ def ensure_dispatcher(run_id: str, *, cwd: str = ".") -> int:
 
 def inbox_hook(run_id: str) -> str:
     """The command a turn of `run_id` runs after each of its tool calls (`galaius.inbox_hook`): it
-    hands the turn every message sent to it meanwhile (`inject`)."""
+    hands the turn every message sent to it meanwhile (`inject`). It runs after EVERY tool call, so
+    where a POSIX shell runs it, the shell itself looks for a pending item in the queue file and
+    starts Python only when there is one: nothing waiting costs a `grep`, never an interpreter."""
     # -P: the hook runs in the agent's folder, whose modules (a cloned repository's json.py) must
     # never shadow the interpreter's own.
     argv = [active_interpreter(), "-P", "-m", "galaius.inbox_hook", run_id, str(path(run_id))]
-    return subprocess.list2cmdline(argv) if sys.platform == "win32" else shlex.join(argv)
+    if sys.platform == "win32":
+        return subprocess.list2cmdline(argv)
+    return f"if grep -qs {shlex.quote(PENDING_MARK)} {shlex.quote(str(path(run_id)))}; then exec {shlex.join(argv)}; fi"
 
 
 def inject(run_id: str) -> list[str]:

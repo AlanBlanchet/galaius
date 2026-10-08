@@ -3,8 +3,10 @@ messages sent to its run meanwhile (`galaius.agents.agent_queue.inject`), as the
 message typed while it works.
 
 Called as `python -m galaius.inbox_hook RUN_ID QUEUE_FILE`, with the hook's event on stdin. It
-runs after EVERY tool call, so the common answer (nothing waiting) costs one small file read and
-imports nothing of the launcher; only a waiting message starts the process that claims it. A tool
+runs after EVERY tool call: on POSIX the shell starts it only when the queue file holds a pending
+item (`agent_queue.inbox_hook`); where no shell checks first (Windows), this module's own check
+costs one small file read and imports nothing of the launcher. Only a waiting message starts the
+process that claims it. A tool
 call of a sub-agent (its event names an `agent_id`) is skipped: the message is for the run's own
 agent, which reads it after its next call."""
 
@@ -23,7 +25,7 @@ def main() -> None:
     if not isinstance(event, dict) or event.get("agent_id"):
         return
     try:
-        waiting = b'"pending"' in queue.read_bytes()
+        waiting = b'"pending"' in queue.read_bytes()  # agent_queue.PENDING_MARK, not imported: see above
     except OSError:
         return
     if waiting:

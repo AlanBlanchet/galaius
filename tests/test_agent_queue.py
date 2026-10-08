@@ -3,7 +3,6 @@
 import asyncio
 import json
 import os
-import shlex
 import subprocess
 import sys
 
@@ -377,13 +376,15 @@ def test_a_message_to_a_working_run_is_read_after_its_next_own_tool_call_and_set
     provider = _setup(monkeypatch)
     monkeypatch.setattr(agent_queue, "active_interpreter", lambda: sys.executable)
     run = reg.register(run_id="r2", pid=os.getpid(), provider=provider.name, name="worker", task="t", agent="tester", provider_session_id="vendor")
-    messaging.deliver_message("r2", "also check the footer", sender="operator")
     # The hook runs in the agent's folder: a cloned repository's own json.py must never run.
     (tmp_path / "json.py").write_text(f"open({str(tmp_path / 'shadowed')!r}, 'w')\n")
-    hook = shlex.split(agent_queue.inbox_hook("r2"))
+    hook = agent_queue.inbox_hook("r2")
+    idle = subprocess.run(hook, shell=True, input="{}", capture_output=True, text=True, check=True)
+    assert idle.stdout == "" and not agent_queue.path("r2").exists()  # no queue yet: the shell answers alone
+    messaging.deliver_message("r2", "also check the footer", sender="operator")
 
     def tool_call(**event):
-        return subprocess.run(hook, input=json.dumps({"hook_event_name": "PostToolUse", **event}), capture_output=True, text=True, check=True, cwd=tmp_path).stdout
+        return subprocess.run(hook, shell=True, input=json.dumps({"hook_event_name": "PostToolUse", **event}), capture_output=True, text=True, check=True, cwd=tmp_path).stdout
 
     assert tool_call(agent_id="sub-agent") == "" and [item.state for item in agent_queue.items("r2")] == ["pending"]
     said = json.loads(tool_call())["hookSpecificOutput"]
