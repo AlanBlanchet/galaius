@@ -1,19 +1,21 @@
 """`galaius login` / `galaius logout`: this computer joins (or leaves) a Galaius account.
 
 The CLI asks the server for a short code, the signed-in owner allows this computer on the server's
-/link page, and the CLI collects what the approval issued (`galaius_core.DeviceLoginIssued`): the
-machine token — saved where `galaius machine connect` reads it, then kept connected by this
-computer's background service (`MACHINE_SERVICE`) — and a read-only workspace key the CLI's `agents` / `workflows` commands use. Nothing
-on this computer is reachable by a workflow until its owner sets a level on a folder (`galaius machine
-places`). Whether agents may run here, and the folders the web may start them in, is asked
-once right after the approval (`AgentChoice`; off and none unless said). On a computer already
-connected to the same server, `galaius login` signs nothing in again: it asks the same agent
-questions, the current settings as defaults."""
+/link page (opened in the browser), and the CLI collects what the approval issued
+(`galaius_core.DeviceLoginIssued`): the machine token — saved where `galaius machine connect` reads
+it, then kept connected by this computer's background service (`MACHINE_SERVICE`) — and a
+read-only workspace key the CLI's `agents` / `workflows` commands use. Nothing is ever asked in the
+terminal: every choice (agents, their folders, folder levels, the name) is made on the computer's
+page on the web, the safe defaults holding until then (agents off, every folder hidden). The
+installers run `galaius login --detach`: the browser opens on the approval, a detached process
+finishes the sign-in and starts the service, and the installer is done."""
 
 import asyncio
+import json
 import os
 import platform
 import socket
+import subprocess
 import sys
 import time
 import webbrowser
@@ -36,6 +38,7 @@ from galaius.cli.prompts import PromptMode
 from galaius.server_prompts import ServerPrompts
 from galaius.machine_service import MACHINE_SERVICE, ServiceUnavailable
 from galaius.machines import MachineConfig, MachineRunner
+from galaius.paths import UserPaths
 from galaius.private_files import PRIVATE_FILES
 
 
@@ -59,25 +62,18 @@ class AccountLogin(BaseModel):
 
     @classmethod
     def at(cls, server: str | None) -> "AccountLogin":
-        """`server`, else the one remembered (by the server's installer or an earlier login), else
-        asked once in the terminal; a bare host means https."""
+        """`server`, else the one remembered (by the server's installer or an earlier login); a
+        bare host means https."""
         if server is None:
             try:
                 remembered = cls.parsed(cls.remembered_path().read_text(encoding="utf-8"))
             except (FileNotFoundError, LoginError):
                 remembered = None
             account = None if remembered is None else remembered.public()
-            return account if account is not None else cls.parsed(cls.asked())
+            if account is None:
+                raise LoginError("which Galaius server? Pass --server https://… (the install line from your Galaius page sets it)")
+            return account
         return cls.parsed(server)
-
-    @staticmethod
-    def asked() -> str:
-        if not sys.stdin.isatty():
-            raise LoginError("which Galaius server? Pass --server https://…")
-        try:
-            return input("Galaius server address (e.g. https://galaius.example.com): ")
-        except (EOFError, KeyboardInterrupt):
-            raise LoginError("no server given") from None
 
     def public(self) -> "AccountLogin | None":
         """A remembered server as another computer reaches it: an address on this computer only (an
@@ -167,6 +163,23 @@ class AccountLogin(BaseModel):
         if answer.status_code != 201:
             raise LoginError(f"the server refused to start a sign-in (HTTP {answer.status_code})")
         return DeviceLoginStarted.model_validate_json(answer.content)
+
+    def begun(self, http: httpx.Client, runs: bool, open_browser: bool, *, quiet: bool = False) -> tuple[DeviceLoginStarted, bool]:
+        """A sign-in code started, and whether its approval page opened in this computer's browser
+        (`quiet`: the link is not printed, the installer says one line instead)."""
+        if (skew := self.skew(http)) is not None and not quiet:
+            print(f"Note: {skew}.", file=sys.stderr)
+        started = self.start(http, runs)
+        if not quiet:
+            print(f"To connect this computer, open this page and allow it:\n\n    {started.verification_uri_complete}\n")
+            print(f"Check the page shows the code  {started.user_code}  (expires in {started.expires_in // 60} min).")
+        opened = False
+        if open_browser and (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY") or sys.platform in {"darwin", "win32"}):
+            try:
+                opened = webbrowser.open(started.verification_uri_complete)
+            except webbrowser.Error:
+                opened = False
+        return started, opened
 
     def wait(self, http: httpx.Client, started: DeviceLoginStarted) -> DeviceLoginIssued:
         interval, deadline = started.interval, time.monotonic() + min(self.patience, started.expires_in + 30)
@@ -284,23 +297,27 @@ class AccountLogin(BaseModel):
 
 class AgentChoice(BaseModel):
     """Whether agents may run on this computer, and the folders the web may start them in (names
-    under the machine's working directory, checked by `MachineConfig.usable_agent_roots`): asked
-    by `galaius login`, or given as flags, over the machine's current settings (`of`: off and none
-    on a joining computer). With agents on, each `opt_ins` question follows; the fields share
-    `MachineConfig`'s names."""
+    under the machine's working directory, checked by `MachineConfig.usable_agent_roots`): given as
+    `galaius login` flags over the machine's current settings (`of`: off and none on a joining
+    computer); otherwise set on its page on the web. The fields share `MachineConfig`'s names."""
 
     model_config = ConfigDict(frozen=True)
     run_agents: bool = False
     folders: tuple[str, ...] = ()
     continue_conversations: bool = False
     answer_approvals: bool = False
-    #: The yes / no questions asked after the folders, by field (a flag answers each ahead).
+    #: The yes / no settings beside the folders, by field, each its own `--<field>` / `--no-<field>` flag.
     opt_ins: ClassVar[dict[str, str]] = {
-        "continue_conversations": "Let the web continue your editor (Claude Code) conversations here? A copy continues; the editor's own is never written to.",
-        "answer_approvals": "Let the web answer the approvals a session asks for (run this command? apply this change?).",
+        "continue_conversations": "the web continues your editor (Claude Code) conversations here, as a copy",
+        "answer_approvals": "the web answers the approvals a session asks for",
     }
     rules: ClassVar[str] = ("a folder must be strictly below {base}, not hidden (.name), not a symlink, not Galaius's own folder, "
                             "and not inside or around a folder shared with workflows")
+
+    def flags(self) -> list[str]:
+        """These settings as the `galaius login` flags that give them (a detached sign-in takes them so)."""
+        return [("--agents" if self.run_agents else "--no-agents"), *(item for folder in self.folders for item in ("--agent-folder", folder)),
+                *((f"--{field}" if getattr(self, field) else f"--no-{field}").replace("_", "-") for field in self.opt_ins)]
 
     @staticmethod
     def joining() -> MachineConfig:
@@ -330,28 +347,6 @@ class AgentChoice(BaseModel):
             if refused:
                 raise LoginError(f"cannot let agents start in {', '.join(refused)}: {cls.rules.format(base=machine.working_directory)}")
         return choice
-
-    @classmethod
-    def asked(cls, machine: MachineConfig) -> "AgentChoice":
-        """Asked in the terminal, each answer defaulting to `machine`'s current one (Enter keeps it):
-        agents on?, then the folders (refused ones said with the rules and asked once more, then
-        left out; `-` = none), then each `opt_ins` question."""
-        current = cls.of(machine)
-        if not _confirmed("Let agents run on this computer from the web?", current.run_agents):
-            return current.model_copy(update={"run_agents": False})
-        base = machine.working_directory
-        print(f"Working directory: {base}")
-        kept = f"Enter = keep {', '.join(current.folders)}; - = none" if current.folders else "Enter = none"
-        for attempt in range(2):
-            answer = _answered(f"Which folders may they start in? (names under {base}, comma-separated; {kept}) ").strip()
-            typed = current.folders if not answer else () if answer == "-" else answer.split(",")
-            choice, refused = current.model_copy(update={"run_agents": True, "folders": cls.named(typed, base)}).checked(machine)
-            if not refused:
-                break
-            print(f"Refused: {', '.join(refused)} ({cls.rules.format(base=base)}).")
-        else:
-            print(f"Left out: {', '.join(refused)}.")
-        return choice.model_copy(update={field: _confirmed(question, getattr(current, field)) for field, question in cls.opt_ins.items()})
 
     @staticmethod
     def named(folders: Iterable[str], base: Path) -> tuple[str, ...]:
@@ -403,49 +398,88 @@ def _shown(value: str) -> str:
     return "".join(character if character.isprintable() else "?" for character in value)
 
 
-def _confirmed(question: str, default: bool = False) -> bool:
-    """y / n as typed; Enter, no terminal, Ctrl-D or Ctrl-C answer `default`."""
-    if not sys.stdin.isatty():
-        return default
-    try:
-        answer = input(f"{question} {'[Y/n]' if default else '[y/N]'} ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        print()
-        return default
-    return default if not answer else answer in {"y", "yes"}
-
-
-def _answered(question: str) -> str:
-    """The typed line; Ctrl-D or Ctrl-C answer nothing."""
-    try:
-        return input(question)
-    except (EOFError, KeyboardInterrupt):
-        print()
-        return ""
-
-
-def login(server: str | None, *, allow_runs: bool, yes: bool, open_browser: bool, agents: bool | None = None, agent_folders: tuple[str, ...] = (),
-          agent_opt_ins: Mapping[str, bool | None] = MappingProxyType({})) -> None:
-    """`agents` / `agent_folders` / `agent_opt_ins` (by `AgentChoice.opt_ins` field) set the agent
-    settings ahead (scripts); a joining computer is asked nothing (agents off, set later on its page
-    on the web). Already connected to this server (the one remembered when `server` is None):
-    nothing is signed in again, the flags apply, and the agent questions are asked only where its
-    owner switched web control off; connected to another server: moved there when that server holds
-    this computer's enrollment (`_moved`), else refused."""
+def login(server: str | None, *, allow_runs: bool, open_browser: bool, agents: bool | None = None, agent_folders: tuple[str, ...] = (),
+          agent_opt_ins: Mapping[str, bool | None] = MappingProxyType({}), detach: bool = False, resume: bool = False) -> None:
+    """Asks nothing. `agents` / `agent_folders` / `agent_opt_ins` (by `AgentChoice.opt_ins` field)
+    set the agent settings ahead (scripts); unsaid, a joining computer keeps agents off (set later
+    on its page on the web) and a connected one keeps its own. Already connected to this server
+    (the one remembered when `server` is None): nothing is signed in again, the service restarts on
+    this build; connected to another server: moved there when that server holds this computer's
+    enrollment (`_moved`), else refused. `detach` (the installers): the sign-in is handed to a
+    background process (`_handed_off`) and this returns at once; `resume` is that process."""
     existing = _existing_machine()
     try:
         account = AccountLogin.parsed(existing.server_url) if existing is not None and server is None else AccountLogin.at(server)
-        if existing is None:
-            _login(account, allow_runs=allow_runs, yes=yes, open_browser=open_browser, agents=AgentChoice.given(agents, agent_folders, agent_opt_ins, AgentChoice.joining()))
+        if detach:
+            _handed_off(account, existing, allow_runs=allow_runs, open_browser=open_browser, agents=AgentChoice.given(agents, agent_folders, agent_opt_ins, existing or AgentChoice.joining()))
+        elif existing is None:
+            with account.client() as http:
+                started = _resumed() if resume else account.begun(http, allow_runs, open_browser)[0]
+                _joined(account, http, started, agents=AgentChoice.given(agents, agent_folders, agent_opt_ins, AgentChoice.joining()))
         elif AccountLogin.parsed(existing.server_url) != account:
-            _moved(account, existing, yes=yes, agents=AgentChoice.given(agents, agent_folders, agent_opt_ins, existing))
+            _moved(account, existing, agents=AgentChoice.given(agents, agent_folders, agent_opt_ins, existing))
         else:
-            _reconfigured(account, existing, yes=yes, agents=AgentChoice.given(agents, agent_folders, agent_opt_ins, existing))
+            _reconfigured(account, existing, agents=AgentChoice.given(agents, agent_folders, agent_opt_ins, existing))
     except httpx.HTTPError as error:
         raise LoginError(f"cannot reach the server ({type(error).__name__}); check the address and your network, then run it again") from None
 
 
-def _moved(account: AccountLogin, existing: MachineConfig, *, yes: bool, agents: AgentChoice | None) -> None:
+#: The one line an installer ends with: everything after it happens in the browser.
+INSTALLED = "Installé : continuez dans votre navigateur"
+
+
+def _handed_off(account: AccountLogin, existing: MachineConfig | None, *, allow_runs: bool, open_browser: bool, agents: AgentChoice | None) -> None:
+    """The installers' sign-in, nothing asked and nothing waited for here: a new computer's code is
+    started and its approval page opened in the browser now, then a detached `galaius login
+    --resume` (its output in `login.log`) waits for the approval, saves the credentials and starts
+    the background service; a connected computer's restart is detached the same way. Flags are
+    applied here, before the hand-off."""
+    if agents is not None and existing is not None:
+        agents.applied(MachineRunner())
+    arguments = ["login", "--resume", "--server", account.server, *(["--allow-runs"] if allow_runs else [])]
+    if existing is not None:
+        _detached(arguments, b"")
+        print(INSTALLED)
+        return
+    with account.client() as http:
+        started, opened = account.begun(http, allow_runs, open_browser, quiet=True)
+    if agents is not None:
+        arguments += agents.flags()
+    _detached(arguments, json.dumps(started.revealed()).encode())
+    print(INSTALLED)
+    if not opened:
+        print(f"Ouvrez cette page pour autoriser ce PC : {started.verification_uri_complete}")
+
+
+def _detached(arguments: list[str], payload: bytes) -> None:
+    """`galaius <arguments>` in its own session, outliving this process and its terminal, its
+    output appended to `login.log`, `payload` on its stdin."""
+    log = UserPaths.config() / "login.log"
+    log.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with open(log, "ab") as output:
+        options: dict = {"stdin": subprocess.PIPE, "stdout": output, "stderr": output, "close_fds": True}
+        if sys.platform == "win32":
+            # No console, its own group, out of the window's job when Windows lets it (else it stays in it).
+            flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+            try:
+                child = subprocess.Popen([sys.executable, "-m", "galaius", *arguments], creationflags=flags | subprocess.CREATE_BREAKAWAY_FROM_JOB, **options)
+            except OSError:
+                child = subprocess.Popen([sys.executable, "-m", "galaius", *arguments], creationflags=flags, **options)
+        else:
+            child = subprocess.Popen([sys.executable, "-m", "galaius", *arguments], start_new_session=True, **options)
+    child.stdin.write(payload)
+    child.stdin.close()
+
+
+def _resumed() -> DeviceLoginStarted:
+    """The sign-in `_handed_off` started, as it handed it over on stdin."""
+    try:
+        return DeviceLoginStarted.model_validate_json(sys.stdin.buffer.read())
+    except ValueError as error:
+        raise LoginError(f"--resume takes the sign-in `galaius login --detach` hands over ({error})") from None
+
+
+def _moved(account: AccountLogin, existing: MachineConfig, *, agents: AgentChoice | None) -> None:
     """The server moved (its data with it): this computer stays the SAME machine and only follows the
     address. Proof the new address holds this enrollment: its machine channel opens with this
     computer's own token, which every other server refuses before accepting. Then the address is
@@ -463,7 +497,7 @@ def _moved(account: AccountLogin, existing: MachineConfig, *, yes: bool, agents:
         connection.model_copy(update={"endpoint": account.server}).save()
     account.remember()
     print(f"Moved: this computer now connects to {account.server} (was {existing.server_url}).")
-    _reconfigured(account, machine, yes=yes, agents=agents)
+    _reconfigured(account, machine, agents=agents)
 
 
 def _channel_accepts(server: str, token: str, timeout: float = 15) -> Literal["accepted", "refused", "unreachable"]:
@@ -482,14 +516,11 @@ def _channel_accepts(server: str, token: str, timeout: float = 15) -> Literal["a
     return asyncio.run(probe())
 
 
-def _reconfigured(account: AccountLogin, existing: MachineConfig, *, yes: bool, agents: AgentChoice | None) -> None:
-    """This computer stays connected as it is: agent settings the flags name change (asked only
-    when its owner switched web control off here: otherwise they live on its page on the web), and
-    its background service restarts on THIS build, so re-running the installer is all an older
-    computer ever needs to take every later update by itself."""
+def _reconfigured(account: AccountLogin, existing: MachineConfig, *, agents: AgentChoice | None) -> None:
+    """This computer stays connected as it is: agent settings the flags name change (the rest live
+    on its page on the web), and its background service restarts on THIS build, so re-running the
+    installer is all an older computer ever needs to take every later update by itself."""
     print(f"This computer is already connected to {account.server} as {_shown(account.connected_name(existing))}.")
-    if agents is None and sys.stdin.isatty() and not yes and not existing.remote_settings:
-        agents = AgentChoice.asked(existing)
     machine = existing if agents is None else agents.applied(MachineRunner())
     print(AgentChoice.described(machine))
     if machine.remote_settings:
@@ -509,33 +540,25 @@ def _reconfigured(account: AccountLogin, existing: MachineConfig, *, yes: bool, 
             print("Online: its background service restarted on this galaius build.")
 
 
-def _login(account: AccountLogin, *, allow_runs: bool, yes: bool, open_browser: bool, agents: AgentChoice | None) -> None:
-    with account.client() as http:
-        if (skew := account.skew(http)) is not None:
-            print(f"Note: {skew}.", file=sys.stderr)
-        started = account.start(http, allow_runs)
-        print(f"To connect this computer, open this page and allow it:\n\n    {started.verification_uri_complete}\n")
-        print(f"Check the page shows the code  {started.user_code}  (expires in {started.expires_in // 60} min).")
-        if open_browser and (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY") or sys.platform in {"darwin", "win32"}):
-            webbrowser.open(started.verification_uri_complete)
-        print("Waiting for approval…", flush=True)
-        issued = account.wait(http, started)
-        workspace, approver = _shown(issued.workspace.name), _shown(issued.approved_by)
-        # The approval on the web is the consent, and every choice after it is made on the web (the
-        # PC's page; `remote_settings` is on for a new PC): nothing more is asked here. Flags given
-        # ahead still apply; otherwise agents stay off until its owner turns them on there.
-        print(f"\nApproved by {approver} for the workspace “{workspace}”.")
-        account.save(issued)
-        account.remember()
-        machine = (agents or AgentChoice()).applied(MachineRunner())
-        if account.brought_online(http, machine, issued.api_key.secret.get_secret_value()):
-            print(f"Connected: {issued.machine.name} is now a machine in {workspace}")
-            if not MACHINE_SERVICE.after_logout():
-                print("It runs while you are signed in to this computer; it starts again at your next sign-in.")
-            print(f"Its settings (agents, folders) are on its page: {account.page(http, machine)}")
-        print(account.synced(CatalogConnection.load()))
-        print("Every folder here is hidden from workflows, Data and agents. To open one:  galaius machine places <folder under your home> <level>  (e.g. interact-files sandbox)")
-        print(AgentChoice.described(machine))
+def _joined(account: AccountLogin, http: httpx.Client, started: DeviceLoginStarted, *, agents: AgentChoice | None) -> None:
+    """The approval awaited, then this computer saved, online (or told why) and synced. The
+    approval on the web is the consent, and every choice after it is made on the PC's page
+    (`remote_settings` is on for a new PC); flags given ahead still apply, else agents stay off."""
+    print(f"Waiting for approval at {started.verification_uri_complete} …", flush=True)
+    issued = account.wait(http, started)
+    workspace, approver = _shown(issued.workspace.name), _shown(issued.approved_by)
+    print(f"\nApproved by {approver} for the workspace “{workspace}”.")
+    account.save(issued)
+    account.remember()
+    machine = (agents or AgentChoice()).applied(MachineRunner())
+    if account.brought_online(http, machine, issued.api_key.secret.get_secret_value()):
+        print(f"Connected: {issued.machine.name} is now a machine in {workspace}")
+        if not MACHINE_SERVICE.after_logout():
+            print("It runs while you are signed in to this computer; it starts again at your next sign-in.")
+        print(f"Its settings (agents, folders) are on its page: {account.page(http, machine)}")
+    print(account.synced(CatalogConnection.load()))
+    print("Every folder here is hidden from workflows, Data and agents. To open one:  galaius machine places <folder under your home> <level>  (e.g. interact-files sandbox)")
+    print(AgentChoice.described(machine))
 
 
 def logout() -> None:

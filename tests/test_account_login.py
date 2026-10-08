@@ -1,5 +1,7 @@
-"""`galaius login`: which server it signs in at, and the agents question it asks once."""
+"""`galaius login`: which server it signs in at, asking nothing; the installers' detached sign-in."""
 
+import io
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -21,7 +23,7 @@ TUNNEL = "http://127.0.0.1:8817"
 @pytest.mark.parametrize("remembered, answering, expected", [
     (TUNNEL, {TUNNEL, PUBLIC}, PUBLIC),  # tunnel up: the public address it names is used
     (TUNNEL, {TUNNEL}, TUNNEL),          # public unreachable from here: the tunnel still works
-    (TUNNEL, set(), None),               # tunnel down: never the target, asked instead
+    (TUNNEL, set(), None),               # tunnel down: never the target
     (PUBLIC, set(), PUBLIC),             # a public address is kept as remembered
 ])
 def test_remembered_server(monkeypatch: pytest.MonkeyPatch, remembered: str, answering: set[str], expected: str | None) -> None:
@@ -37,7 +39,7 @@ def test_remembered_server(monkeypatch: pytest.MonkeyPatch, remembered: str, ans
     assert (chosen.server if chosen else None) == expected
 
 
-# ---- the agents question, right after the approval ------------------------------------------
+# ---- a joining computer: nothing asked, flags still apply ------------------------------------
 
 @pytest.fixture
 def joining(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -63,11 +65,10 @@ def joining(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 @pytest.mark.parametrize("tty, flags, saved, said", [
     # (run_agents, agent_roots, continue_conversations, answer_approvals)
     (True, {}, (False, [], False, False), "Agents: off here. Turn them on from its page"),   # a terminal: still nothing asked
-    (False, {"yes": True}, (False, [], False, False), "Agents: off here"),
     (True, {"agent_folders": ("work", "~/dev/")}, (True, ["work", "dev"], False, False), "start them in work, dev"),  # flags set them ahead
     (True, {"agent_opt_ins": {"answer_approvals": True, "continue_conversations": None}}, (True, [], False, True), "approvals answered from the web: on"),
     (True, {"agents": False}, (False, [], False, False), "Agents: off here"),
-    (False, {"yes": True, "agents": True, "agent_opt_ins": {"continue_conversations": True}}, (True, [], True, False), "continued from the web: on"),
+    (False, {"agents": True, "agent_opt_ins": {"continue_conversations": True}}, (True, [], True, False), "continued from the web: on"),
 ])
 def test_a_joining_computer_is_asked_nothing_after_the_approval(joining: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
                                                                  tty: bool, flags: dict, saved: tuple, said: str) -> None:
@@ -77,7 +78,7 @@ def test_a_joining_computer_is_asked_nothing_after_the_approval(joining: Path, m
     monkeypatch.setattr(type(MACHINE_SERVICE), "install", lambda self: events.append("service"))
     monkeypatch.setattr("sys.stdin.isatty", lambda: tty)
     monkeypatch.setattr("builtins.input", lambda question: pytest.fail(f"asked: {question}"))
-    account_login.login("https://galaius.example.org", allow_runs=False, open_browser=False, **{"yes": False, **flags})
+    account_login.login("https://galaius.example.org", allow_runs=False, open_browser=False, **flags)
     machine = MachineRunner().load()
     assert (machine.run_agents, list(machine.agent_roots), machine.continue_conversations, machine.answer_approvals) == saved
     out = capsys.readouterr().out
@@ -91,7 +92,7 @@ def test_a_joining_computer_is_asked_nothing_after_the_approval(joining: Path, m
 ])
 def test_bad_agent_flags_refused_before_sign_in(joining: Path, flags: dict, error: str) -> None:
     with pytest.raises(LoginError, match=error):
-        account_login.login("https://galaius.example.org", allow_runs=False, yes=True, open_browser=False, **flags)
+        account_login.login("https://galaius.example.org", allow_runs=False, open_browser=False, **flags)
     assert not MachineRunner.default_config_path().exists()
 
 
@@ -112,7 +113,7 @@ def test_not_online_says_why_here_and_on_its_page(joining: Path, monkeypatch: py
     monkeypatch.setattr(account_login.AccountLogin, "online", lambda self, http, machine, key: False)
     monkeypatch.setattr(MachineRunner, "report_problem", classmethod(lambda cls, machine, said, detail="": reported.append((said, detail)) or True))
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
-    account_login.login("https://galaius.example.org", allow_runs=False, open_browser=False, yes=True)
+    account_login.login("https://galaius.example.org", allow_runs=False, open_browser=False)
     said = capsys.readouterr()
     assert [value for value, _ in reported] == [code] and "Connected:" not in said.out
     assert (refused or "Traceback: boom") in said.err and (refused or "0x1") in reported[0][1]
@@ -135,7 +136,7 @@ def connected(joining: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """`joining`, signed in once with agents on in dev and conversations continued; a second sign-in
     would fail loudly, and the server lists this computer as pc2."""
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
-    account_login.login(PUBLIC, allow_runs=False, yes=True, open_browser=False, agent_folders=("dev",), agent_opt_ins={"continue_conversations": True})
+    account_login.login(PUBLIC, allow_runs=False, open_browser=False, agent_folders=("dev",), agent_opt_ins={"continue_conversations": True})
     machine = MachineRunner().load()
 
     def refused(*_: object) -> None:
@@ -151,33 +152,28 @@ def connected(joining: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return joining
 
 
-@pytest.mark.parametrize("remote, tty, answers, flags, saved", [
+@pytest.mark.parametrize("remote, tty, flags, saved", [
     # (run_agents, agent_roots, continue_conversations, answer_approvals); remote: the PC takes its web page's settings
-    (False, True, ["", "", "", ""], {}, (True, ["dev"], True, False)),                    # Enter keeps every current answer
-    (False, True, ["", "work", "n", "y"], {}, (True, ["work"], False, True)),             # changed: folder replaced, opt-ins flipped
-    (False, True, ["", "-", "", ""], {}, (True, [], True, False)),                       # - clears the folders
-    (False, True, ["n"], {}, (False, ["dev"], True, False)),                             # agents off, the rest kept for later
-    (True, True, [], {}, (True, ["dev"], True, False)),                                  # web control on: nothing asked, unchanged
-    (True, False, [], {"agent_opt_ins": {"answer_approvals": True}}, (True, ["dev"], True, True)),  # a flag changes only what it names
-    (True, False, [], {"agents": False}, (False, ["dev"], True, False)),
-    (True, False, [], {}, (True, ["dev"], True, False)),                                # no terminal, no flag: unchanged
+    (False, True, {}, (True, ["dev"], True, False)),                                   # web control off, a terminal: still nothing asked
+    (True, True, {}, (True, ["dev"], True, False)),
+    (True, False, {"agent_opt_ins": {"answer_approvals": True}}, (True, ["dev"], True, True)),  # a flag changes only what it names
+    (True, False, {"agents": False}, (False, ["dev"], True, False)),
 ])
-def test_connected_login_asks_nothing_web_control_covers_and_restarts_the_service(connected: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
-                                                                                    remote: bool, tty: bool, answers: list[str], flags: dict, saved: tuple) -> None:
+def test_connected_login_asks_nothing_and_restarts_the_service(connected: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+                                                               remote: bool, tty: bool, flags: dict, saved: tuple) -> None:
     """Re-running the installer on a connected PC is all an older one needs: its service restarts
-    on the new build, and settings its web page holds are not asked again."""
+    on the new build, and nothing is asked whatever the terminal or its settings."""
     MachineRunner().update(lambda current: current.model_copy(update={"remote_settings": remote}))
     capsys.readouterr()
-    replies = iter(answers)
     calls: list[str] = []
     for action in ("install", "stop", "start"):
         monkeypatch.setattr(type(account_login.MACHINE_SERVICE), action, lambda self, action=action: calls.append(action))
     monkeypatch.setattr("sys.stdin.isatty", lambda: tty)
-    monkeypatch.setattr("builtins.input", lambda question: next(replies))
-    account_login.login(None, allow_runs=False, open_browser=False, **{"yes": False, **flags})
+    monkeypatch.setattr("builtins.input", lambda question: pytest.fail(f"asked: {question}"))
+    account_login.login(None, allow_runs=False, open_browser=False, **flags)
     machine = MachineRunner().load()
     assert (machine.run_agents, list(machine.agent_roots), machine.continue_conversations, machine.answer_approvals) == saved
-    assert next(replies, None) is None and calls == ["stop", "install"]
+    assert calls == ["stop", "install"]
     out = capsys.readouterr().out
     assert f"already connected to {PUBLIC} as pc2." in out and "Online: its background service restarted" in out and "Agents: " in out
 
@@ -197,10 +193,10 @@ def test_connected_elsewhere_moves_only_to_a_server_that_holds_this_computer(con
         monkeypatch.setattr(type(account_login.MACHINE_SERVICE), action, lambda self, action=action: calls.append(action))
     if refusal is not None:
         with pytest.raises(LoginError, match=refusal):
-            account_login.login(moved_to, allow_runs=False, yes=True, open_browser=False)
+            account_login.login(moved_to, allow_runs=False, open_browser=False)
         assert MachineRunner.default_config_path().read_bytes() == before and calls == []
         return
-    account_login.login(moved_to, allow_runs=False, yes=True, open_browser=False)
+    account_login.login(moved_to, allow_runs=False, open_browser=False)
     machine = MachineRunner().load()
     assert asked == [(moved_to, token)] and machine.server_url == moved_to and machine.token.get_secret_value() == token
     assert CatalogConnection.load().endpoint == moved_to and AccountLogin.remembered_path().read_text().strip() == moved_to
@@ -229,3 +225,49 @@ def test_the_page_named_is_where_the_server_serves_the_app(answer: httpx.Respons
     machine = SimpleNamespace(machine_id=uuid4())
     with httpx.Client(base_url=account.server, transport=httpx.MockTransport(lambda request: answer)) as http:
         assert account.page(http, machine) == expected + machine.machine_id.hex
+
+
+@pytest.mark.parametrize("opened", [True, False])
+def test_detach_opens_the_approval_hands_the_wait_over_and_says_one_line(joining: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], opened: bool) -> None:
+    """The install line: the code is started and its page opened here, the waiting handed to a
+    detached `galaius login --resume` (its sign-in on stdin, never on its command line), and the
+    installer ends on « Installé : continuez dans votre navigateur » (plus the link where no browser opened)."""
+    started = SimpleNamespace(verification_uri_complete="https://x/plateform/link?code=ABCD-EFGH", revealed=lambda: {"device_code": "d" * 40, "user_code": "ABCD-EFGH"})
+    monkeypatch.setattr(account_login.AccountLogin, "begun", lambda self, http, runs, browser, quiet=False: (started, opened))
+    handed: list[tuple[list[str], bytes]] = []
+    monkeypatch.setattr(account_login, "_detached", lambda arguments, payload: handed.append((arguments, payload)))
+    monkeypatch.setattr("builtins.input", lambda question: pytest.fail(f"asked: {question}"))
+    account_login.login("https://galaius.example.org", allow_runs=False, open_browser=True, detach=True)
+    [(arguments, payload)] = handed
+    assert arguments[:4] == ["login", "--resume", "--server", "https://galaius.example.org"] and "d" * 40 not in " ".join(arguments)
+    assert json.loads(payload)["device_code"] == "d" * 40
+    out = capsys.readouterr().out.splitlines()
+    assert out[0] == "Installé : continuez dans votre navigateur" and (len(out) == 1) == opened
+    assert not MachineRunner.default_config_path().exists()  # saved only by the detached process, once approved
+
+
+def test_resume_finishes_what_detach_handed_over(joining: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    started = {"device_code": "d" * 40, "user_code": "BCDF-GHJK", "verification_uri": "https://x/link", "verification_uri_complete": "https://x/link?code=BCDF-GHJK", "expires_in": 600, "interval": 5}
+    monkeypatch.setattr("sys.stdin", SimpleNamespace(buffer=io.BytesIO(json.dumps(started).encode()), isatty=lambda: False))
+    waited: list[str] = []
+    issued = account_login.AccountLogin.wait
+    monkeypatch.setattr(account_login.AccountLogin, "wait", lambda self, http, value: waited.append(value.device_code.get_secret_value()) or issued(self, http, value))
+    account_login.login("https://galaius.example.org", allow_runs=False, open_browser=False, resume=True)
+    assert waited == ["d" * 40] and MachineRunner().load().run_agents is False
+
+
+def test_detach_is_a_real_detached_process(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Its own session (outlives the installer and its terminal), its output in login.log, the payload on stdin."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    seen: dict = {}
+
+    class Child:
+        def __init__(self, argv, **options):
+            seen.update(options, argv=argv)
+            self.stdin = io.BytesIO()
+            self.stdin.close = lambda: seen.setdefault("payload", self.stdin.getvalue())
+
+    monkeypatch.setattr(account_login.subprocess, "Popen", Child)
+    account_login._detached(["login", "--resume"], b"secret")
+    assert seen["argv"][1:] == ["-m", "galaius", "login", "--resume"] and seen["payload"] == b"secret"
+    assert seen["start_new_session"] is True and Path(seen["stdout"].name) == tmp_path / "galaius" / "login.log"

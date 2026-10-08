@@ -3,8 +3,8 @@
 #   curl -LsSf https://raw.githubusercontent.com/AlanBlanchet/galaius/main/install.sh | sh
 #
 # Needs only curl (or wget): installs uv (the Python tool manager) and a Python if missing, then
-# `galaius` from GitHub's source archives (no git needed). Run from a terminal, it goes straight on
-# to `galaius login`. Override the source with GALAIUS_REPO=<path-or-git-url>, or another source
+# `galaius` from GitHub's source archives (no git needed); it asks nothing. With GALAIUS_ADDRESS it
+# goes on to `galaius login --detach` (approval in the browser). Override the source with GALAIUS_REPO=<path-or-git-url>, or another source
 # archive of this repository (a branch or tag .tar.gz) with GALAIUS_ARCHIVE=<url>. GALAIUS_ADDRESS=<url>
 # names the server; a computer already connected elsewhere moves there when that server holds it
 # (the server moved): curl -LsSf …/install.sh | GALAIUS_ADDRESS=https://example.org sh
@@ -50,17 +50,13 @@ main() {
     else echo "galaius: part of the former install was not moved (above); fix it, then run  galaius migrate" >&2
     fi
   fi
-  # stdin is this script: ask the terminal, and only when there is one.
+  # Nothing is asked: the sign-in goes on in the browser and in the background.
   if [ -n "$migrated" ]; then
     echo "Your interact install is now galaius; this computer stays connected."
-  elif [ -t 1 ] && (exec </dev/tty) 2>/dev/null; then
-    echo "Connecting this computer to your Galaius account…"
-    "$bin/galaius" login "$@" </dev/tty || echo "Not connected. Run it again any time:  galaius login"
   elif [ $# -gt 0 ]; then
-    echo "Connecting this computer to ${GALAIUS_ADDRESS}…"
-    "$bin/galaius" login "$@" --yes </dev/null || echo "Not connected. Run it again any time:  galaius login"
+    "$bin/galaius" login "$@" --detach </dev/null || echo "Not connected. Run it again any time:  galaius login --detach"
   else
-    echo "Next, connect this computer to your Galaius account:  galaius login"
+    echo "Next, connect this computer to your Galaius account:  galaius login --server https://<your server>"
   fi
   echo "(In a new terminal \`galaius\` is on your PATH; here: $bin/galaius)"
   echo ""

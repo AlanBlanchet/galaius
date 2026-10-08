@@ -120,7 +120,7 @@ jobs:
 
       - name: galaius login, approved on the double like the owner on /link
         run: |
-          $login = Start-Process -FilePath galaius -ArgumentList 'login', '--server', $env:SERVER, '--yes', '--no-browser', '--no-agents' `
+          $login = Start-Process -FilePath galaius -ArgumentList 'login', '--server', $env:SERVER, '--no-browser', '--no-agents' `
             -RedirectStandardOutput login.out -RedirectStandardError login.err -PassThru -WindowStyle Hidden
           $code = $null
           foreach ($i in 1..120) { $code = (Select-String -Path login.out -Pattern '[B-Z]{4}-[B-Z]{4}' -ErrorAction SilentlyContinue | Select-Object -First 1).Matches.Value; if ($code) { break }; Start-Sleep -Milliseconds 500 }

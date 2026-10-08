@@ -12,26 +12,28 @@ def login(
     server: Annotated[str | None, Parameter(name="--server")] = None,
     *,
     allow_runs: bool = False,
-    yes: bool = False,
     browser: bool = True,
+    detach: bool = False,
+    resume: Annotated[bool, Parameter(show=False)] = False,
     agents: bool | None = None,
     agent_folder: Annotated[tuple[str, ...], Parameter(name="--agent-folder")] = (),
     continue_conversations: bool | None = None,
     answer_approvals: bool | None = None,
 ) -> None:
-    """Connect this computer to your Galaius account: approve it in the browser, then it runs as
-    one of your machines (kept connected by a background service: Linux systemd, macOS launchd,
-    Windows logon task), online within a minute or told why, here and on its page; agents and
-    prompts synced. --server defaults to the server you installed from or last signed in to, else
-    it is asked once; --allow-runs lets this CLI start workflow runs (default: read only); --yes
-    asks nothing; --no-browser only prints the page to open. Nothing else is asked: agents stay off
-    until you turn them on from the computer's page on the web. --agents / --no-agents,
-    --agent-folder NAME (repeatable), --continue-conversations and --answer-approvals (each with
-    --no-…; a folder or a yes implies --agents) set them ahead. On a computer already connected to
-    this server it signs nothing in again, applies the flags, and asks the agent questions only
-    where web control was switched off on it (the current settings as defaults)."""
+    """Connect this computer to your Galaius account, asking nothing: approve it in the browser
+    (opened on its page), then it runs as one of your machines, kept connected by a background
+    service (Linux systemd, macOS launchd, Windows logon task), online within a minute or told why,
+    here and on its page. Every choice (agents, their folders, folder levels, its name) is made on
+    that page; until then agents stay off and every folder is hidden. --server defaults to the
+    server you installed from or last signed in to; --allow-runs lets this CLI start workflow runs
+    (default: read only); --no-browser only prints the page to open; --detach (the install line)
+    hands the waiting to a background process and returns at once with one line. --agents /
+    --no-agents, --agent-folder NAME (repeatable), --continue-conversations and --answer-approvals
+    (each with --no-…; a folder or a yes implies --agents) set them ahead for scripts. On a computer
+    already connected to this server it signs nothing in again: the flags apply and its service
+    restarts on this build."""
     try:
-        sign_in(server, allow_runs=allow_runs, yes=yes, open_browser=browser, agents=agents, agent_folders=agent_folder,
+        sign_in(server, allow_runs=allow_runs, open_browser=browser, detach=detach, resume=resume, agents=agents, agent_folders=agent_folder,
                 agent_opt_ins={"continue_conversations": continue_conversations, "answer_approvals": answer_approvals})
     except LoginError as error:
         print(f"galaius login: {error}", file=sys.stderr)

@@ -6,6 +6,10 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ## Unreleased
 
+- `galaius login` never asks anything in the terminal (no server address, no agent question, no
+  `--yes` any more). `galaius login --detach`, what the install lines run, opens the approval page
+  in the browser, hands the waiting to a background process (its output in `login.log`) and ends on
+  « Installé : continuez dans votre navigateur ».
 - `galaius login` asks nothing after the web approval: the computer goes online at once (waiting
   up to a minute for the server to see it) and its agent settings are set on its page on the web
   (agents stay off until then; `--agents`, `--agent-folder`… still set them ahead).

@@ -2,8 +2,8 @@
 #   powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/AlanBlanchet/galaius/main/install.ps1 | iex"
 #
 # Twin of install.sh: installs uv (the Python tool manager) and a Python if missing, then `galaius`
-# from GitHub's source archives (no git needed). Run in a PowerShell window, it goes straight on to
-# `galaius login`. Override the source with $env:GALAIUS_REPO = <path-or-git-url>, or another
+# from GitHub's source archives (no git needed); it asks nothing. With $env:GALAIUS_ADDRESS it goes on
+# to `galaius login --detach` (approval in the browser). Override the source with $env:GALAIUS_REPO = <path-or-git-url>, or another
 # source archive of this repository (a branch or tag .zip) with $env:GALAIUS_ARCHIVE = <url>.
 # Windows PowerShell 5.1 and PowerShell 7 alike; your own user, no administrator needed.
 
@@ -66,19 +66,14 @@ function Install-Galaius {
         if ($LASTEXITCODE -eq 0) { $migrated = $true }
         else { Write-Host 'galaius: part of the former install was not moved (above); fix it, then run  galaius migrate' }
     }
-    # `irm | iex` keeps this window's keyboard: ask there, and only when a person is at it.
+    # Nothing is asked: the sign-in goes on in the browser and in the background.
     if ($migrated) {
         Write-Host 'Your interact install is now galaius; this computer stays connected.'
-    } elseif (-not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected) {
-        Write-Host 'Connecting this computer to your Galaius account...'
-        & $galaius login @server
-        if ($LASTEXITCODE -ne 0) { Write-Host 'Not connected. Run it again any time:  galaius login' }
     } elseif ($server.Count -gt 0) {
-        Write-Host "Connecting this computer to $($env:GALAIUS_ADDRESS)..."
-        & $galaius login @server --yes
-        if ($LASTEXITCODE -ne 0) { Write-Host 'Not connected. Run it again any time:  galaius login' }
+        & $galaius login @server --detach
+        if ($LASTEXITCODE -ne 0) { Write-Host 'Not connected. Run it again any time:  galaius login --detach' }
     } else {
-        Write-Host 'Next, connect this computer to your Galaius account:  galaius login'
+        Write-Host 'Next, connect this computer to your Galaius account:  galaius login --server https://<your server>'
     }
     Write-Host "(In a new window ``galaius`` is on your PATH; here: $galaius)"
     Write-Host ''
