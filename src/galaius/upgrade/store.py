@@ -29,6 +29,7 @@ from galaius.paths import UserPaths
 from galaius.private_files import PRIVATE_FILES
 from galaius.server_registry import _alive
 from galaius.upgrade.release import BuildIdentity, ReleaseOrder
+from galaius.windowless import console_python
 
 #: A worker exits with this at its quiet point when the pointer names another runtime: "start the
 #: active one in my place" (EX_TEMPFAIL, unused by anything else galaius exits with).
@@ -101,9 +102,9 @@ def active_interpreter() -> str:
     """
     try:
         active = RuntimeStore.default().active()
-        return str(active.python) if active.usable() else sys.executable
+        return str(active.python) if active.usable() else console_python()
     except (OSError, ValueError):
-        return sys.executable
+        return console_python()
 
 
 class RuntimeReceipt(BaseModel):

@@ -18,11 +18,17 @@ import sys
 from pathlib import Path
 
 
+def windowless_process() -> bool:
+    """Windows: this process shows no console window (pythonw, or a child started with its console
+    hidden), so nothing it writes to its console is ever seen: its output belongs in a log file."""
+    return sys.platform == "win32" and not ctypes.windll.kernel32.GetConsoleWindow()
+
+
 def hide_child_consoles() -> None:
     """In a process with no console window, every `subprocess.Popen` gets `CREATE_NO_WINDOW`
     unless its caller asks for a console of its own or a detached process. A program run from a
     terminal is left alone: its children share that terminal."""
-    if sys.platform != "win32" or getattr(subprocess.Popen.__init__, "hides_consoles", False) or ctypes.windll.kernel32.GetConsoleWindow():
+    if not windowless_process() or getattr(subprocess.Popen.__init__, "hides_consoles", False):
         return
     spawn = subprocess.Popen.__init__
     keeps_own = subprocess.CREATE_NEW_CONSOLE | subprocess.DETACHED_PROCESS

@@ -34,6 +34,7 @@ from pydantic import BaseModel, ConfigDict
 from galaius.machines import JsonLines, MachineRunner
 from galaius.private_files import WindowsPrivateFiles
 from galaius.upgrade.quiet import UpgradeReady
+from galaius.windowless import windowless_process
 
 if sys.platform == "win32":
     import pythoncom
@@ -316,10 +317,10 @@ class WindowsMachineService(MachineService):
         return "\n".join(filter(None, (result, super().last_words())))
 
     def run(self) -> None:
-        """What the task starts: its output in `log_path` first (pythonw has no console: an early
+        """What the task starts: its output in `log_path` first (no console window: an early
         failure must still be readable), its programs held in a job that closes with it, then the
         restarting connection."""
-        if sys.stdout is None or sys.stderr is None:
+        if windowless_process():  # pythonw, or a worker in a hidden console: its output is seen only in the log
             path = self.log_path()
             if path.exists() and path.stat().st_size > 5 << 20:
                 path.replace(path.with_suffix(".log.1"))
