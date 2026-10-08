@@ -2,6 +2,8 @@
 
 import io
 import json
+import os
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -228,63 +230,81 @@ def test_the_page_named_is_where_the_server_serves_the_app(answer: httpx.Respons
         assert account.page(http, machine) == expected + machine.machine_id.hex
 
 
+def _started(code: str = "BCDF-GHJK") -> DeviceLoginStarted:
+    return DeviceLoginStarted(device_code="d" * 40, user_code=code, verification_uri="https://x/plateform/link",
+                              verification_uri_complete=f"https://x/plateform/link?code={code}", expires_in=600, interval=5)
+
+
 @pytest.mark.parametrize("opened", [True, False])
 def test_detach_opens_the_approval_hands_the_wait_over_and_says_one_line(joining: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], opened: bool) -> None:
-    """The install line: the code is started and its page opened here, the waiting handed to a
-    detached `galaius login --resume` (its sign-in on stdin, never on its command line), and the
-    installer ends on « Installé : continuez dans votre navigateur » (plus the link where no browser opened)."""
-    started = DeviceLoginStarted(device_code="d" * 40, user_code="BCDF-GHJK", verification_uri="https://x/plateform/link",
-                                 verification_uri_complete="https://x/plateform/link?code=BCDF-GHJK", expires_in=600, interval=5)
-    monkeypatch.setattr(account_login.AccountLogin, "begun", lambda self, http, runs, browser: (started, opened))
-    handed: list[bytes] = []
-    monkeypatch.setattr(account_login, "_detached", lambda account, payload: handed.append(payload))
+    """The install line: the code is started, the waiting handed to a detached `galaius login
+    --resume` (its sign-in on stdin, never on its command line), the page opened, and the installer
+    ends on « Installé : continuez dans votre navigateur » (plus the link where no browser opened)."""
+    monkeypatch.setattr(AccountLogin, "begun", lambda self, http, runs, open_browser: (_started(), False))
+    monkeypatch.setattr(AccountLogin, "opened", staticmethod(lambda url: opened))
+    handed: list[account_login.HandedOff] = []
+    monkeypatch.setattr(account_login, "_detached", lambda account, value: handed.append(value))
     monkeypatch.setattr("builtins.input", lambda question: pytest.fail(f"asked: {question}"))
     account_login.login("https://galaius.example.org", allow_runs=False, open_browser=True, detach=True, agent_folders=("dev",))
-    [payload] = handed
-    handoff = account_login.HandedOff.model_validate_json(payload)
-    assert handoff.started.device_code.get_secret_value() == "d" * 40 and handoff.agents.folders == ("dev",) and handoff.current()
+    [handoff] = handed
+    received = account_login.HandedOff.model_validate_json(handoff.payload())
+    assert received.started.device_code.get_secret_value() == "d" * 40 and received.agents.folders == ("dev",)
     out = capsys.readouterr().out.splitlines()
     assert out[0] == "Installé : continuez dans votre navigateur" and (len(out) == 1) == opened
     assert not MachineRunner.default_config_path().exists()  # saved only by the detached process, once approved
+    assert account_login.Pending.path().stat().st_mode & 0o077 == 0  # the pending page (with its code) is private
 
 
-def test_resume_finishes_what_detach_handed_over_and_a_newer_install_takes_over(joining: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    started = DeviceLoginStarted(device_code="d" * 40, user_code="BCDF-GHJK", verification_uri="https://x/link",
-                                 verification_uri_complete="https://x/link?code=BCDF-GHJK", expires_in=600, interval=5)
-    account_login.HandedOff.mark_path().parent.mkdir(parents=True, exist_ok=True)
-    account_login.HandedOff.mark_path().write_text("mine\n")
-    handoff = account_login.HandedOff(started=started, mark="mine")
-    monkeypatch.setattr("sys.stdin", SimpleNamespace(buffer=io.BytesIO(handoff.payload()), isatty=lambda: False))
+def test_a_second_install_line_reopens_the_same_page_while_its_waiter_lives(joining: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A newbie who sees nothing happen runs the line again: same page, no second code, so
+    whichever tab is approved, the one waiter collects it; once that waiter is gone, a new sign-in."""
+    codes = iter(["BCDF-GHJK", "LMNP-QRST"])
+    monkeypatch.setattr(AccountLogin, "begun", lambda self, http, runs, open_browser: (_started(next(codes)), False))
+    pages: list[str] = []
+    monkeypatch.setattr(AccountLogin, "opened", staticmethod(lambda url: pages.append(url) or True))
+    handed: list[account_login.HandedOff] = []
+    monkeypatch.setattr(account_login, "_detached", lambda account, value: handed.append(value))
+    for _ in range(2):
+        account_login.login("https://galaius.example.org", allow_runs=False, open_browser=True, detach=True)
+    assert len(handed) == 1 and pages == ["https://x/plateform/link?code=BCDF-GHJK"] * 2
+    stale = (datetime.now() - timedelta(minutes=2)).timestamp()
+    os.utime(account_login.Pending.path(), (stale, stale))  # its waiter stopped refreshing it
+    account_login.login("https://galaius.example.org", allow_runs=False, open_browser=True, detach=True)
+    assert len(handed) == 2 and pages[-1].endswith("LMNP-QRST")
+
+
+def test_resume_finishes_what_detach_handed_over_and_a_newer_sign_in_takes_over(joining: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pending = account_login.Pending(mark="mine", link="https://x/link?code=BCDF-GHJK", expires_at=datetime.now(UTC) + timedelta(minutes=9))
+    pending.write()
+    monkeypatch.setattr("sys.stdin", SimpleNamespace(buffer=io.BytesIO(account_login.HandedOff(started=_started(), mark="mine").payload()), isatty=lambda: False))
     seen: list[bool] = []
-    issued = account_login.AccountLogin.wait
-    monkeypatch.setattr(account_login.AccountLogin, "wait", lambda self, http, value, current: seen.append(current()) or issued(self, http, value))
+    issued = AccountLogin.wait
+    monkeypatch.setattr(AccountLogin, "wait", lambda self, http, value, current: seen.append(current()) or issued(self, http, value))
     account_login.login("https://galaius.example.org", allow_runs=False, open_browser=False, resume=True)
-    assert seen == [True] and MachineRunner().load().run_agents is False
-    account_login.HandedOff.mark_path().write_text("a later install\n")
-    assert not handoff.current()
+    assert seen == [True] and MachineRunner().load().run_agents is False and not account_login.Pending.path().exists()
+    account_login.Pending(mark="a later one", link="x", expires_at=datetime.now(UTC)).write()
+    assert not pending.current()
 
 
 def test_a_superseded_waiter_stops(monkeypatch: pytest.MonkeyPatch) -> None:
-    started = DeviceLoginStarted(device_code="d" * 40, user_code="BCDF-GHJK", verification_uri="https://x/link",
-                                 verification_uri_complete="https://x/link?code=BCDF-GHJK", expires_in=600, interval=1)
     monkeypatch.setattr(account_login.time, "sleep", lambda seconds: None)
     with httpx.Client(transport=httpx.MockTransport(lambda request: pytest.fail("polled after being superseded"))) as http, pytest.raises(LoginError, match="newer install"):
-        AccountLogin.at("https://galaius.example.org").wait(http, started, lambda: False)
+        AccountLogin.at("https://galaius.example.org").wait(http, _started(), lambda: False)
 
 
 def test_detach_on_a_connected_computer_opens_its_page_and_restarts_it_detached(connected: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    handed: list[bytes] = []
+    handed: list[account_login.HandedOff] = []
     pages: list[str] = []
-    monkeypatch.setattr(account_login, "_detached", lambda account, payload: handed.append(payload))
+    monkeypatch.setattr(account_login, "_detached", lambda account, value: handed.append(value))
     monkeypatch.setattr(AccountLogin, "opened", staticmethod(lambda url: pages.append(url) or True))
     capsys.readouterr()
     account_login.login(None, allow_runs=False, open_browser=True, detach=True)
-    assert handed == [b""] and pages and "#data?computer=" in pages[0]
+    assert [value.started for value in handed] == [None] and pages and "#data?computer=" in pages[0]
     assert capsys.readouterr().out.splitlines() == ["Installé : continuez dans votre navigateur"]
 
 
 def test_detach_is_a_real_detached_process_with_a_private_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Its own session (outlives the installer and its terminal), its output in login.log (0600), the payload on stdin."""
+    """Its own session (outlives the installer and its terminal), its output in login.log (0600), the hand-off on stdin."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     seen: dict = {}
 
@@ -295,6 +315,7 @@ def test_detach_is_a_real_detached_process_with_a_private_log(tmp_path: Path, mo
             self.stdin.close = lambda: seen.setdefault("payload", self.stdin.getvalue())
 
     monkeypatch.setattr(account_login.subprocess, "Popen", Child)
-    account_login._detached(AccountLogin.at("https://galaius.example.org"), b"secret")
-    assert seen["argv"][1:] == ["-m", "galaius", "login", "--resume", "--server", "https://galaius.example.org"] and seen["payload"] == b"secret"
+    account_login._detached(AccountLogin.at("https://galaius.example.org"), account_login.HandedOff(started=_started(), mark="m"))
+    assert seen["argv"][1:] == ["-m", "galaius", "login", "--resume", "--server", "https://galaius.example.org"]
+    assert b"d" * 40 in seen["payload"] and b"d" * 40 not in " ".join(seen["argv"]).encode()
     assert seen["start_new_session"] is True and (tmp_path / "galaius" / "login.log").stat().st_mode & 0o777 == 0o600

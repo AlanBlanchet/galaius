@@ -20,6 +20,7 @@ import subprocess
 import sys
 import time
 import webbrowser
+from datetime import UTC, datetime, timedelta
 from importlib.metadata import version
 from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
@@ -331,7 +332,7 @@ class AgentChoice(BaseModel):
     @classmethod
     def given(cls, agents: bool | None, folders: Iterable[str], opt_ins: Mapping[str, bool | None], machine: MachineConfig) -> "AgentChoice | None":
         """From `--agents/--no-agents`, `--agent-folder` and the `opt_ins` flags over `machine`'s
-        current settings, checked before anything is saved; None when none was given (then asked).
+        current settings, checked before anything is saved; None when none was given.
         Each flag changes only what it names; a folder or a yes alone means agents on."""
         folders, opt_ins = tuple(folders), {field: answer for field, answer in opt_ins.items() if answer is not None}
         if agents is None and not folders and not opt_ins:
@@ -433,91 +434,127 @@ INSTALLED = "Installé : continuez dans votre navigateur"
 
 class HandedOff(BaseModel):
     """What `galaius login --detach` hands its detached waiter on stdin (never on its command line):
-    the sign-in it started, the settings given ahead, and the mark that it is still the current one
-    (`current`: a later install writes a new one, and the earlier waiter stops)."""
+    the sign-in it started (None: a connected computer, only restarted) and the settings given
+    ahead, with the mark naming it the computer's one pending sign-in (`Pending`)."""
 
     model_config = ConfigDict(frozen=True)
-    started: DeviceLoginStarted
+    started: DeviceLoginStarted | None = None
     agents: AgentChoice | None = None
-    allow_runs: bool = False
-    mark: str
+    mark: str = ""
 
     def payload(self) -> bytes:
-        return json.dumps({**self.model_dump(mode="json"), "started": self.started.revealed()}).encode()
+        return json.dumps({**self.model_dump(mode="json"), "started": self.started.revealed() if self.started is not None else None}).encode()
+
+
+class Pending(BaseModel):
+    """This computer's one sign-in waiting for its approval (`login.wait`, private): a second
+    install line run meanwhile reopens the same page instead of starting another code, so whichever
+    tab is approved, its waiter collects it. The waiter refreshes the file at each poll; one that
+    stopped (the computer restarted, the code expired) leaves it stale and a new sign-in starts."""
+
+    model_config = ConfigDict(frozen=True)
+    mark: str
+    link: str
+    expires_at: datetime
+    #: A waiter polls every few seconds: a file older than this has none behind it any more.
+    alive_within: ClassVar[timedelta] = timedelta(seconds=30)
 
     @staticmethod
-    def mark_path() -> Path:
+    def path() -> Path:
         return UserPaths.config() / "login.wait"
 
-    def current(self) -> bool:
+    @classmethod
+    def read(cls) -> "Pending | None":
+        """The pending sign-in a waiter still serves, else None."""
         try:
-            return self.mark_path().read_text(encoding="utf-8").strip() == self.mark
-        except OSError:
+            pending = cls.model_validate_json(PRIVATE_FILES.read_text(cls.path()))
+            touched = datetime.fromtimestamp(cls.path().stat().st_mtime, UTC)
+        except (OSError, ValueError):
+            return None
+        now = datetime.now(UTC)
+        return pending if pending.expires_at > now + timedelta(minutes=1) and now - touched < cls.alive_within else None
+
+    def write(self) -> None:
+        PRIVATE_FILES.write_text(self.path(), self.model_dump_json())
+
+    def current(self) -> bool:
+        """Still this computer's pending sign-in (its file refreshed: the waiter is alive)."""
+        try:
+            if Pending.model_validate_json(PRIVATE_FILES.read_text(self.path())).mark != self.mark:
+                return False
+            os.utime(self.path())
+            return True
+        except (OSError, ValueError):
             return False
 
 
 def _handed_off(account: AccountLogin, existing: MachineConfig | None, *, allow_runs: bool, open_browser: bool, agents: AgentChoice | None) -> None:
-    """The installers' sign-in, nothing asked and nothing waited for here. A new computer: its code
-    is started and its approval page opened in the browser now, and a detached `galaius login
-    --resume` (`HandedOff` on its stdin, its output in `login.log`) waits for the approval, saves
-    the credentials and starts the background service. A connected one: a server it cannot move
-    to is refused here; its page opens in the browser and its restart is detached the same way."""
-    if existing is None:
-        with account.client() as http:
-            started, opened = account.begun(http, allow_runs, open_browser)
-        mark = secrets.token_hex(16)
-        HandedOff.mark_path().parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        HandedOff.mark_path().write_text(mark + "\n", encoding="utf-8")
-        _detached(account, HandedOff(started=started, agents=agents, allow_runs=allow_runs, mark=mark).payload())
-        link = started.verification_uri_complete
-    else:
+    """The installers' sign-in, nothing asked and nothing waited for here. A new computer: its
+    pending sign-in's page reopens if a waiter still serves one; else a code is started, its page
+    opened in the browser, and a detached `galaius login --resume` (`HandedOff` on its stdin, its
+    output in `login.log`) waits for the approval, saves the credentials and starts the background
+    service. A connected one: a server it cannot move to is refused here; its page opens in the
+    browser and its restart is detached the same way."""
+    if existing is not None:
         if AccountLogin.parsed(existing.server_url) != account and _channel_accepts(account.server, existing.token.get_secret_value()) != "accepted":
             raise LoginError(f"this computer is connected to {existing.server_url} and {account.server} does not know it; run `galaius logout` first")
         if agents is not None:
             agents.applied(MachineRunner())
-        _detached(account, b"")
+        _detached(account, HandedOff())
         with account.client() as http:
             link = account.page(http, existing)
-        opened = open_browser and account.opened(link)
+    elif (pending := Pending.read()) is not None:
+        link = pending.link
+    else:
+        with account.client() as http:
+            started, _ = account.begun(http, allow_runs, open_browser=False)
+        pending = Pending(mark=secrets.token_hex(16), link=started.verification_uri_complete, expires_at=datetime.now(UTC) + timedelta(seconds=started.expires_in))
+        pending.write()
+        _detached(account, HandedOff(started=started, agents=agents, mark=pending.mark))
+        link = pending.link
     print(INSTALLED)
-    if not opened:
+    if not (open_browser and account.opened(link)):
         print(f"Ouvrez cette page : {link}")
 
 
-def _detached(account: AccountLogin, payload: bytes) -> None:
+def _detached(account: AccountLogin, handed: HandedOff) -> None:
     """`galaius login --resume` in its own session, outliving this process and its terminal, its
-    output appended to `login.log` (private to this user), `payload` on its stdin."""
+    output appended to `login.log` (private to this user), `handed` on its stdin."""
     log = UserPaths.config() / "login.log"
     log.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     command = [sys.executable, "-m", "galaius", "login", "--resume", "--server", account.server]
-    # Windows: no console, its own group, out of the window's job (else closing the window could end it).
-    detach = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW | subprocess.CREATE_BREAKAWAY_FROM_JOB} \
-        if sys.platform == "win32" else {"start_new_session": True}
+    # Windows: no console, its own group, out of the window's job when Windows lets it (else inside it:
+    # closing the window may end it, said in the log). Elsewhere: its own session.
+    base = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+    attempts = [base | subprocess.CREATE_BREAKAWAY_FROM_JOB, base] if sys.platform == "win32" else [0]
     with os.fdopen(os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "ab") as output:
         if sys.platform != "win32":
             os.fchmod(output.fileno(), 0o600)
-        try:
-            child = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=output, stderr=output, close_fds=True, **detach)
-        except OSError:
-            if sys.platform != "win32":
-                raise
-            output.write(b"The window's job forbids leaving it: the sign-in waits inside it (closing the window may end it).\n")
-            output.flush()
-            child = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=output, stderr=output, close_fds=True,
-                                     creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW)
+        for attempt, flags in enumerate(attempts, 1):
+            try:
+                child = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=output, stderr=output, close_fds=True,
+                                         creationflags=flags, start_new_session=sys.platform != "win32")
+                break
+            except OSError as error:
+                if attempt == len(attempts):
+                    raise LoginError(f"the background sign-in did not start ({error}); see {log}") from None
+                output.write(b"The window's job forbids leaving it: the sign-in waits inside it (closing the window may end it).\n")
+                output.flush()
     try:
-        child.stdin.write(payload)
+        child.stdin.write(handed.payload())
         child.stdin.close()
     except OSError:
         raise LoginError(f"the background sign-in did not start; see {log}") from None
 
 
 def _resumed(account: AccountLogin) -> None:
-    """The detached waiter: what `_handed_off` handed over on stdin, finished. Nothing handed over:
-    the connected computer's restart."""
-    raw = sys.stdin.buffer.read()
+    """The detached waiter: what `_handed_off` handed over on stdin, finished."""
+    try:
+        handed = HandedOff.model_validate_json(sys.stdin.buffer.read())
+    except ValueError as error:
+        raise LoginError(f"--resume takes what `galaius login --detach` hands over ({error})") from None
     existing = _existing_machine()
-    if not raw.strip():
+    if handed.started is None:
         if existing is None:
             raise LoginError("--resume restarts a connected computer, and this one is not connected")
         if AccountLogin.parsed(existing.server_url) != account:
@@ -525,12 +562,10 @@ def _resumed(account: AccountLogin) -> None:
         else:
             _reconfigured(account, existing, agents=None)
         return
-    try:
-        handed = HandedOff.model_validate_json(raw)
-    except ValueError as error:
-        raise LoginError(f"--resume takes the sign-in `galaius login --detach` hands over ({error})") from None
+    pending = Pending(mark=handed.mark, link=handed.started.verification_uri_complete, expires_at=datetime.now(UTC))
     with account.client() as http:
-        _joined(account, http, handed.started, agents=handed.agents, current=handed.current)
+        _joined(account, http, handed.started, agents=handed.agents, current=pending.current)
+    Pending.path().unlink(missing_ok=True)
 
 
 def _moved(account: AccountLogin, existing: MachineConfig, *, agents: AgentChoice | None) -> None:
