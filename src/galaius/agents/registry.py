@@ -10,6 +10,9 @@ Status is DERIVED from the pid on every read. A record cannot assert it is still
 killed agent reports as crashed instead of spinning forever in the UI.
 """
 
+import functools
+import hashlib
+import inspect
 import json
 import os
 import re
@@ -187,6 +190,42 @@ class Interruption(BaseModel):
         return f"killed: out of memory at {at}" if self.cause == "out_of_memory" else f"process gone at {at}"
 
 
+class StreamDigest(BaseModel):
+    """What a run's own streams said, kept on its record with the stream state it was read from.
+
+    The streams only grow, so an equal ``source`` (each stream's size and mtime, and the code that
+    reads them) means a re-parse would say exactly this again: listing a settled run reads its
+    record, never its transcript. Re-parsing every transcript cost a minute of CPU per listing at
+    a few thousand runs."""
+
+    source: str
+    events: bool = False
+    #: The stream's last event when it is an ending; None while the stream is mid-work.
+    ending: Literal["done", "error"] | None = None
+    ending_text: str = ""
+    cost_usd: float | None = None
+    tokens: dict[str, int] = Field(default_factory=dict)
+    #: Newest non-empty event summary; None when no event summarises to anything.
+    last: str | None = None
+
+    @classmethod
+    def of(cls, source: str, events: list[AgentEvent], viewer: str) -> Self:
+        ending = events[-1] if events and events[-1].kind in ("done", "error") else None
+        costs = [e.cost_usd for e in events if e.cost_usd is not None]
+        tokens = {}
+        for field in TOKEN_FIELDS:
+            used = [getattr(e, field) for e in events if getattr(e, field) is not None]
+            if used:
+                tokens[field] = sum(used)
+        return cls(
+            source=source, events=bool(events),
+            ending=ending.kind if ending is not None else None,
+            ending_text=(ending.text or "") if ending is not None else "",
+            cost_usd=sum(costs) if costs else None, tokens=tokens,
+            last=next((said for e in reversed(events) if (said := e.summary(viewer=viewer))), None),
+        )
+
+
 class AgentRun(BaseModel):
     """One supervised run.
 
@@ -283,6 +322,7 @@ class AgentRun(BaseModel):
     cached_input_tokens: int | None = None
     cache_write_input_tokens: int | None = None
     last: str = ""
+    stream_digest: StreamDigest | None = None
 
     def process_running(self) -> bool:
         """Its recorded process still runs and is still that process, not a later one given its pid."""
@@ -1328,6 +1368,34 @@ def stream_signature(run_id: str) -> tuple:
     return _stat(raw_events_path(run_id)), _stat(messages_path(run_id))
 
 
+@functools.cache
+def _reader_code() -> str:
+    """Fingerprint of the code turning a run's streams into events and a digest: a release that
+    reads streams differently re-derives every run once (and rewrites the panel's mirror)."""
+    from galaius.agents import events, providers
+
+    code = hashlib.sha256()
+    for module in (events, providers):
+        code.update(Path(module.__file__).read_bytes())
+    for reader in (read_events, _interleave, _carry_observed_at, _mirror_normalised, StreamDigest.of):
+        code.update(inspect.getsource(reader).encode())
+    return code.hexdigest()[:16]
+
+
+def _stream_source(run_id: str) -> str:
+    """What a run's derived events are built from right now: the reader code, the raw stream and
+    the messages, or the directly appended events when there is no raw stream."""
+    raw, messages = stream_signature(run_id)
+    appended = None
+    if raw is None:
+        try:
+            stat = events_path(run_id).stat()
+            appended = stat.st_mtime_ns, stat.st_size
+        except OSError:
+            pass
+    return f"{_reader_code()}|{raw}|{messages}|{appended}"
+
+
 def _read_messages(run_id: str) -> list[AgentEvent]:
     try:
         payload = _read_private(messages_path(run_id))
@@ -1509,22 +1577,22 @@ def _derive(run: AgentRun) -> AgentRun:
     whose supervising process died still reports what it actually did, instead of looking healthy
     and empty."""
     run.status = _status_for(run)
-    events = read_events(run.run_id)
-    # The child's OWN stream is the authority on how it ended. If it reported a terminal event,
-    # the run finished — even if nothing was watching to record an exit code. Without this, a run
+    # Stat before reading: a line appended meanwhile leaves the digest older than the stream,
+    # so the next listing re-reads it rather than trusting a digest that never saw that line.
+    source = _stream_source(run.run_id)
+    digest = run.stream_digest
+    if digest is None or digest.source != source:
+        digest = StreamDigest.of(source, read_events(run.run_id), viewer=run.run_id)
+    # The child's OWN stream is the authority on how it ended. If its LAST event is an ending, the
+    # run finished — even if nothing was watching to record an exit code. Without this, a run
     # whose supervisor died reports "crashed" while its transcript plainly says it completed.
-    terminal = None
-    if run.exit_code is None and events:
-        terminal = next((e for e in reversed(events) if e.kind in ("done", "error")), None)
-        latest_activity = events[-1]
-        if latest_activity.kind not in ("done", "error"):
-            terminal = None
-        if terminal is not None:
-            run.status = (
-                "waiting" if run.kind == "conversation" and terminal.kind == "done"
-                else "done" if terminal.kind == "done"
-                else "failed"
-            )
+    ending = digest.ending if run.exit_code is None else None
+    if ending is not None:
+        run.status = (
+            "waiting" if run.kind == "conversation" and ending == "done"
+            else "done" if ending == "done"
+            else "failed"
+        )
     # A process that dies never calls finish(), so an ended run routinely has no end TIME — and a
     # timeline cannot draw an interval without one. The last byte the child wrote is an OBSERVED
     # end: not when it died, but the last moment we know it was alive, which is honest and
@@ -1544,22 +1612,18 @@ def _derive(run: AgentRun) -> AgentRun:
             run.finished_at = _private_mtime(raw_events_path(run.run_id))
         except OSError:
             pass
-    if events:
-        costs = [e.cost_usd for e in events if e.cost_usd is not None]
-        cost = sum(costs) if costs else None
-        # Tokens the same way: cost alone hides how much CONTEXT a run consumed, and two models at
+    if digest.events:
+        # Tokens beside cost: cost alone hides how much CONTEXT a run consumed, and two models at
         # the same price consume very differently.
-        for field in TOKEN_FIELDS:
-            used = [getattr(e, field) for e in events if getattr(e, field) is not None]
-            if used:
-                setattr(run, field, sum(used))
-        last = next((e.summary(viewer=run.run_id) for e in reversed(events)
-                     if e.summary(viewer=run.run_id)), run.last)
-        run.cost_usd, run.last = cost, last
+        for field, used in digest.tokens.items():
+            setattr(run, field, used)
+        run.cost_usd, run.last = digest.cost_usd, digest.last if digest.last is not None else run.last
+    run.stream_digest = digest
     # Persist whatever we healed — status included. The panel reads these files directly and does
     # its own (downgrade-only) liveness check, so a status left stale on disk reappears there as
     # "crashed" no matter what Python worked out in memory.
-    owned = {"project", "status", "finished_at", "cost_usd", *TOKEN_FIELDS, "last", "unit", "interruption"}
+    owned = {"project", "status", "finished_at", "cost_usd", *TOKEN_FIELDS, "last", "unit", "interruption",
+             "stream_digest"}
     healed = run.model_dump(mode="json", include=owned)
     updates = {field: value for field, value in healed.items() if value != original.get(field)}
     if updates:
@@ -1578,10 +1642,10 @@ def _derive(run: AgentRun) -> AgentRun:
             # EVER noticed. Guarded by `_update_fields`'s compare-and-swap succeeding on a genuine
             # first transition into "failed" (`original` is the PRE-heal snapshot), so a later,
             # repeated `list_runs()` read of an already-healed run never re-extends the cooldown.
-            if (terminal is not None and terminal.kind == "error" and terminal.text
+            if (ending == "error" and digest.ending_text
                     and original.get("status") != "failed" and run.status == "failed"
-                    and quota.REFUSAL.search(terminal.text)):
-                quota.record_refusal(run.provider, run.model, said=terminal.text)
+                    and quota.REFUSAL.search(digest.ending_text)):
+                quota.record_refusal(run.provider, run.model, said=digest.ending_text)
     return run
 
 

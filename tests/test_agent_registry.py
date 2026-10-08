@@ -1525,3 +1525,55 @@ def test_a_pid_given_to_another_process_is_neither_the_run_nor_stopped_with_it()
         for process in (stranger, own):
             process.kill()
             process.wait(timeout=10)
+
+
+# ── a listing reads a run's transcript only when it changed ────────────────────────────────────
+
+
+def _said(text: str) -> str:
+    return json.dumps({"type": "assistant", "session_id": "s",
+                       "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}}) + "\n"
+
+
+_ENDED = ('{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.25,'
+          '"usage":{"input_tokens":40,"output_tokens":7},"session_id":"s"}\n')
+
+
+@pytest.mark.parametrize(("ended", "change", "rereads"), [
+    (True, "nothing", False),
+    (False, "process_died", False),
+    (False, "stream_grew", True),
+    (True, "message_arrived", True),
+])
+def test_a_listing_rereads_a_transcript_only_when_it_changed(monkeypatch, ended, change, rereads):
+    """Re-parsing every transcript on each `agents list` cost ~1 min of CPU at a few thousand runs.
+    A listing reads a record's stream digest instead, and must answer exactly what a re-parse of
+    the whole stream answers."""
+    alive = {"value": True}
+    monkeypatch.setattr(reg, "_alive", lambda pid: alive["value"])
+    register_run(pid=999999)
+    register_run("r0", pid=None)
+    reg.raw_events_path("r1").write_text(_said("working") + (_ENDED if ended else ""))
+    reg.list_runs()
+
+    if change == "process_died":
+        alive["value"] = False
+    elif change == "stream_grew":
+        with reg.raw_events_path("r1").open("a") as stream:
+            stream.write(_said("still working") + _ENDED)
+    elif change == "message_arrived":
+        assert reg.record_message(from_run="r0", to_run="r1", text="one more thing")
+    reads: list[str] = []
+    real = reg.read_events
+    monkeypatch.setattr(reg, "read_events", lambda run_id: reads.append(run_id) or real(run_id))
+    listed = next(run for run in reg.list_runs() if run.run_id == "r1")
+    assert ("r1" in reads) is rereads
+
+    record = json.loads(reg._record_path("r1").read_text())
+    record.pop("stream_digest")
+    reg._record_path("r1").write_text(json.dumps(record))
+    fresh = next(run for run in reg.list_runs() if run.run_id == "r1")
+    assert listed.model_dump(exclude={"stream_digest"}) == fresh.model_dump(exclude={"stream_digest"})
+    # A message after the ending means the run is addressed again: its stream no longer ends there.
+    assert listed.status == {"nothing": "done", "process_died": "crashed",
+                             "stream_grew": "done", "message_arrived": "running"}[change]
