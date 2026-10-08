@@ -78,6 +78,10 @@ jobs:
     name: windows (install.ps1 + login + service)
     runs-on: windows-latest
     timeout-minutes: 30
+    env:
+      # A Windows user folder with an accent (é): uv names its tool folder in UTF-8, which
+      # Windows PowerShell must read as such to find galaius there.
+      UV_TOOL_BIN_DIR: C:\Users\runneradmin\accentué\bin
     defaults:
       run:
         shell: pwsh
@@ -89,7 +93,7 @@ jobs:
           Start-Process -FilePath python -ArgumentList '-m', 'http.server', '8799', '--bind', '127.0.0.1' -WindowStyle Hidden
           foreach ($i in 1..40) { try { Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8799/install.ps1 | Out-Null; break } catch { Start-Sleep -Milliseconds 500 } }
 
-      - name: Install with the one-liner (Windows PowerShell 5.1, this commit's GitHub archive, a temp folder with a space)
+      - name: Install with the one-liner (Windows PowerShell 5.1, this commit's GitHub archive, a temp folder with a space, a French console)
         shell: powershell
         run: |
           $uv = Get-Command uv -ErrorAction SilentlyContinue
@@ -97,9 +101,15 @@ jobs:
           # The default route (source archive + pinned galaius-core, no git), at this commit.
           $env:GALAIUS_ARCHIVE = "https://github.com/$env:GITHUB_REPOSITORY/archive/$env:GITHUB_SHA.zip"
           $env:TEMP = $env:TMP = New-Item -ItemType Directory -Force (Join-Path $env:RUNNER_TEMP 'user name')
-          powershell -ExecutionPolicy ByPass -c "irm http://127.0.0.1:8799/install.ps1 | iex"
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          $bin = Join-Path $HOME '.local\bin'
+          $bin = $env:UV_TOOL_BIN_DIR
+          # A French Windows console reads programs in code page 850 (the runner's reads UTF-8); the
+          # installer must still name galaius where uv put it, which this window reads back in UTF-8.
+          [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+          $out = powershell -ExecutionPolicy ByPass -c "[Console]::OutputEncoding = [Text.Encoding]::GetEncoding(850); irm http://127.0.0.1:8799/install.ps1 | iex" | Out-String
+          $code = $LASTEXITCODE
+          Write-Host $out
+          if ($code) { exit $code }
+          if ($out -notlike "*here: $bin\galaius.exe*") { throw "the installer did not name $bin\galaius.exe" }
           & "$bin\galaius.exe" version
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $bin | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
