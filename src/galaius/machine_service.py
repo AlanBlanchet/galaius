@@ -322,6 +322,7 @@ class WindowsMachineService(MachineService):
         restarting connection."""
         if windowless_process():  # pythonw, or a worker in a hidden console: its output is seen only in the log
             path = self.log_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
             if path.exists() and path.stat().st_size > 5 << 20:
                 path.replace(path.with_suffix(".log.1"))
             sys.stdout = sys.stderr = open(path, "a", encoding="utf-8", buffering=1)  # noqa: SIM115 - lives as long as the process

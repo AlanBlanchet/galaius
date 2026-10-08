@@ -93,3 +93,9 @@ def test_the_service_logs_from_a_hidden_console(tmp_path: Path, monkeypatch: pyt
             sys.stdout.close()
         sys.stdout, sys.stderr = stdout, stderr
     assert "connecting" in WindowsMachineService.log_path().read_text(encoding="utf-8")
+
+
+def test_a_child_left_its_parents_streams_still_writes_to_them(seen: list[int], capfd: pytest.CaptureFixture[str]) -> None:
+    """Its hidden console would swallow what it prints: it writes to this process's stdout."""
+    subprocess.run([sys.executable, "-c", "print('heard')"], check=True)
+    assert "heard" in capfd.readouterr().out and seen == [subprocess.CREATE_NO_WINDOW]

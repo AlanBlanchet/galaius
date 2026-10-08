@@ -34,11 +34,25 @@ def hide_child_consoles() -> None:
     keeps_own = subprocess.CREATE_NEW_CONSOLE | subprocess.DETACHED_PROCESS
 
     @functools.wraps(spawn)
-    def windowless(self, *args, creationflags: int = 0, **options) -> None:
-        spawn(self, *args, creationflags=creationflags if creationflags & keeps_own else creationflags | subprocess.CREATE_NO_WINDOW, **options)
+    def windowless(self, *args, creationflags: int = 0, stdin=None, stdout=None, stderr=None, **options) -> None:
+        if not creationflags & keeps_own:
+            creationflags |= subprocess.CREATE_NO_WINDOW
+            if stdin is None and stdout is None and stderr is None:
+                # Its hidden console would take the child's standard streams: it gets this process's
+                # own (a redirected stdout, a log) wherever this process has them.
+                stdin, stdout, stderr = (_descriptor(stream) for stream in (sys.__stdin__, sys.__stdout__, sys.__stderr__))
+        spawn(self, *args, creationflags=creationflags, stdin=stdin, stdout=stdout, stderr=stderr, **options)
 
     windowless.hides_consoles = True
     subprocess.Popen.__init__ = windowless
+
+
+def _descriptor(stream) -> int | None:
+    """`stream`'s file descriptor when it has a usable one (pythonw's are None)."""
+    try:
+        return stream.fileno() if stream is not None else None
+    except (AttributeError, OSError, ValueError):
+        return None
 
 
 def console_python() -> str:

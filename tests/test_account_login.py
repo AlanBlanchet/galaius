@@ -3,6 +3,8 @@
 import io
 import json
 import os
+import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -252,7 +254,7 @@ def test_detach_opens_the_approval_hands_the_wait_over_and_says_one_line(joining
     out = capsys.readouterr().out.splitlines()
     assert out[0] == "Installé : continuez dans votre navigateur" and (len(out) == 1) == opened
     assert not MachineRunner.default_config_path().exists()  # saved only by the detached process, once approved
-    assert account_login.Pending.path().stat().st_mode & 0o077 == 0  # the pending page (with its code) is private
+    assert account_login.PRIVATE_FILES.read_text(account_login.Pending.path())  # the pending page (with its code) is private: readable only as such
 
 
 def test_a_second_install_line_reopens_the_same_page_while_its_waiter_lives(joining: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -321,4 +323,7 @@ def test_detach_is_a_real_detached_process_with_a_private_log(tmp_path: Path, mo
     account_login._detached(AccountLogin.at("https://galaius.example.org"), account_login.HandedOff(started=_started(), mark="m"))
     assert seen["argv"][1:] == ["-m", "galaius", "login", "--resume", "--server", "https://galaius.example.org"]
     assert b"d" * 40 in seen["payload"] and b"d" * 40 not in " ".join(seen["argv"]).encode()
-    assert seen["start_new_session"] is True and (tmp_path / "galaius" / "login.log").stat().st_mode & 0o777 == 0o600
+    if sys.platform == "win32":
+        assert seen["creationflags"] & subprocess.CREATE_NO_WINDOW and seen["creationflags"] & subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        assert seen["start_new_session"] is True and (tmp_path / "galaius" / "login.log").stat().st_mode & 0o777 == 0o600
