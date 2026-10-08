@@ -1577,3 +1577,28 @@ def test_a_listing_rereads_a_transcript_only_when_it_changed(monkeypatch, ended,
     # A message after the ending means the run is addressed again: its stream no longer ends there.
     assert listed.status == {"nothing": "done", "process_died": "crashed",
                              "stream_grew": "done", "message_arrived": "running"}[change]
+
+
+def test_a_listing_checks_the_registry_folder_once_not_per_record(monkeypatch):
+    """Re-checking the private folder chain before every record read was ~3 s of a warm listing
+    at three thousand records; the folder is checked once per listing, each leaf still opened
+    without following a link."""
+    monkeypatch.setattr(reg, "_alive", lambda pid: False)
+    checks: list[int] = []
+    real = reg._ensure_registry_directory
+
+    def counted() -> Path:
+        checks.append(1)
+        return real()
+
+    def warm_listing_checks(count: int) -> int:
+        for index in range(count):
+            register_run(f"r{index}", pid=None)
+        reg.list_runs()  # settles and digests every record
+        checks.clear()
+        monkeypatch.setattr(reg, "_ensure_registry_directory", counted)
+        assert len(reg.list_runs()) == count
+        monkeypatch.setattr(reg, "_ensure_registry_directory", real)
+        return len(checks)
+
+    assert warm_listing_checks(3) == warm_listing_checks(9)

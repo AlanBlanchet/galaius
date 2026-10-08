@@ -40,7 +40,7 @@ from galaius.agents.providers import PROVIDERS, DeniedTool
 from galaius.fence import FenceSpec
 from galaius.file_lock import exclusive
 from galaius.models import TokenMix
-from galaius.pinned_directory import PinnedDirectory
+from galaius.pinned_directory import DescriptorDirectory, PinnedDirectory
 from galaius.private_files import PRIVATE_FILES
 from galaius.processes import end_process_tree, process_started, process_unit
 from galaius.server_registry import (
@@ -466,12 +466,43 @@ def _keep_private(directory: Path) -> None:
         PRIVATE_FILES.restrict(directory)
 
 
+#: The registry folder a listing pinned once for all its reads (`_pinned_registry`).
+_PINNED_REGISTRY: ContextVar[tuple[Path, PinnedDirectory] | None] = ContextVar("pinned_registry", default=None)
+
+
+@contextmanager
+def _pinned_registry():
+    """Check, repair and pin the registry folder once for a listing's thousands of reads instead
+    of once per file (~3 s at three thousand records). The reads go through that one open folder
+    descriptor; each leaf is still opened without following a link. A backend pinning by path
+    (Windows) re-checks the chain per file: holding it would leave a swapped folder unseen."""
+    if _PINNED_REGISTRY.get() is not None:
+        yield
+        return
+    with _registry_directory() as folder:
+        if not isinstance(folder, DescriptorDirectory):
+            yield
+            return
+        token = _PINNED_REGISTRY.set((agents_dir(), folder))
+        try:
+            yield
+        finally:
+            _PINNED_REGISTRY.reset(token)
+
+
 def _open_private(path: Path, flags: int, *, create: bool = True) -> int:
+    pinned = _PINNED_REGISTRY.get()
+    if pinned is not None and path.parent == pinned[0]:
+        return _open_leaf(pinned[1], path.name, flags, create=create)
     directory = _ensure_registry_directory()
     if path.parent != directory:
         raise OSError("agent registry file escaped its private directory")
     with _registry_directory() as folder:
-        descriptor = folder.file(path.name, flags | (os.O_CREAT if create else 0), 0o600)
+        return _open_leaf(folder, path.name, flags, create=create)
+
+
+def _open_leaf(folder: PinnedDirectory, name: str, flags: int, *, create: bool) -> int:
+    descriptor = folder.file(name, flags | (os.O_CREAT if create else 0), 0o600)
     try:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
             raise OSError("agent registry path is not a regular file")
@@ -1672,13 +1703,14 @@ def list_runs(*, include_foreign: bool = False, session_id: str | None = None) -
     runs: list[AgentRun] = []
     known: set[str] = set()
     if d.exists():
-        for path in sorted(d.glob("*.json")):
-            run = _read_record(path.stem)
-            if run is None or run.run_id in known or (session_id is not None and run.session_id != session_id):
-                continue  # a corrupt or aliased record must not hide every other run
-            known.add(run.run_id)
-            runs.append(run)
-    runs = [_derive(r) for r in runs]
+        with _pinned_registry():
+            for path in sorted(d.glob("*.json")):
+                run = _read_record(path.stem)
+                if run is None or run.run_id in known or (session_id is not None and run.session_id != session_id):
+                    continue  # a corrupt or aliased record must not hide every other run
+                known.add(run.run_id)
+                runs.append(run)
+            runs = [_derive(r) for r in runs]
 
     if include_foreign and session_id is None:
         known = {r.run_id for r in runs}
