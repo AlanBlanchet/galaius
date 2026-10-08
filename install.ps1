@@ -51,6 +51,7 @@ function Install-Galaius {
     Invoke-Tool 'adding galaius to PATH' { uv tool update-shell 2>&1 | Out-Null }
     $bin = (Invoke-Tool 'finding galaius' { uv tool dir --bin }).Trim()
     $galaius = Join-Path $bin 'galaius.exe'
+    if (-not (Test-Path -LiteralPath $galaius)) { throw "galaius was installed but is not in $bin" }
 
     Write-Host ''
     Write-Host 'galaius installed.'

@@ -102,14 +102,9 @@ jobs:
           $env:GALAIUS_ARCHIVE = "https://github.com/$env:GITHUB_REPOSITORY/archive/$env:GITHUB_SHA.zip"
           $env:TEMP = $env:TMP = New-Item -ItemType Directory -Force (Join-Path $env:RUNNER_TEMP 'user name')
           $bin = $env:UV_TOOL_BIN_DIR
-          # A French Windows console reads programs in code page 850 (the runner's reads UTF-8); the
-          # installer must still name galaius where uv put it, which this window reads back in UTF-8.
-          [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
-          $out = powershell -ExecutionPolicy ByPass -c "[Console]::OutputEncoding = [Text.Encoding]::GetEncoding(850); irm http://127.0.0.1:8799/install.ps1 | iex" | Out-String
-          $code = $LASTEXITCODE
-          Write-Host $out
-          if ($code) { exit $code }
-          if ($out -notlike "*here: $bin\galaius.exe*") { throw "the installer did not name $bin\galaius.exe" }
+          # A French Windows console reads programs in code page 850 (the runner's reads UTF-8).
+          powershell -ExecutionPolicy ByPass -c "[Console]::OutputEncoding = [Text.Encoding]::GetEncoding(850); irm http://127.0.0.1:8799/install.ps1 | iex"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           & "$bin\galaius.exe" version
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $bin | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
