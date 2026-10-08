@@ -521,8 +521,8 @@ async def test_a_model_the_vendor_refuses_for_this_login_is_passed_over_and_reme
 
 async def _held(warm: WarmStart) -> str:
     for _ in range(200):
-        if warm.holding is not None:
-            return warm.holding
+        if warm.holding:
+            return warm.holding[-1]
         await asyncio.sleep(0.05)
     raise AssertionError("no child was started ahead")
 
@@ -560,9 +560,10 @@ async def test_the_next_start_of_the_same_launch_runs_on_the_child_started_ahead
         third = await run_agent(_AheadProvider(), "third task", agent="tester", cwd=str(other), warm=warm)
         await asyncio.wait_for(third.wait(), timeout=30)
         assert third.run_id != held and _said(third.run_id).startswith("cold "), "another folder is another launch"
-        assert not reg.raw_events_path(held).exists() and reg.get_run(held) is None, "the unused child left nothing behind"
+        assert held in warm.holding, "the first folder's child still waits for its next start"
     finally:
         warm.close()
+    assert not reg.raw_events_path(held).exists() and reg.get_run(held) is None, "an unused child leaves nothing behind"
 
 
 def _launch(folder: Path, home: Path, *, arguments: dict | None = None, env: dict | None = None) -> ChildLaunch:
@@ -592,8 +593,9 @@ def test_a_child_started_ahead_serves_only_its_own_launch(tmp_path, change):
     (folder / "CLAUDE.md").write_text("see @docs/imported.md")
     (folder / "docs" / "imported.md").write_text("an imported rule")
     held = _launch(folder, home).key()
+    (folder / "CLAUDE.md").write_text("see @docs/imported.md")  # rewritten, same content: still fresh
     assert _launch(folder, home).key() == held
     if (edited := change.pop("edit", None)) is not None:
         (tmp_path / edited).parent.mkdir(parents=True, exist_ok=True)
-        (tmp_path / edited).write_text("changed rule, longer")
+        (tmp_path / edited).write_text("changed rule")
     assert _launch(folder, home, **change).key() != held

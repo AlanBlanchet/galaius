@@ -737,22 +737,25 @@ class ChildLaunch(BaseModel):
     def command(self, task: str, run_id: str, session: str) -> list[str]:
         return self.provider.command(task, **self.command_arguments(run_id, session))
 
-    def key(self) -> str:
-        """What a child started ahead must have started with to serve this launch: the same command,
-        environment and folder, each file its CLI reads at start unchanged, and today's date (its
-        prompt states it)."""
-        files = []
-        for path in self.provider.startup_files(Path(self.cwd), self.environment):
-            try:
-                facts = path.stat()
-            except OSError:
-                files.append((str(path), None, None))
-            else:
-                files.append((str(path), facts.st_mtime_ns, facts.st_size))
+    def slot(self) -> str:
+        """Which launch this is, whatever run it serves: its command, environment, folder and fence."""
         argv = self.provider.ahead_command(**self.command_arguments(self._ANY_RUN, self._ANY_RUN))
         fence = self.fence.model_dump(mode="json") if self.fence is not None else None
-        payload = json.dumps([argv, self.env(self._ANY_RUN), self.cwd, fence, files, date.today().isoformat()], sort_keys=True)
-        return hashlib.sha256(payload.encode()).hexdigest()
+        return hashlib.sha256(json.dumps([argv, self.env(self._ANY_RUN), self.cwd, fence], sort_keys=True).encode()).hexdigest()
+
+    def key(self) -> str:
+        """Whether a child started ahead for this launch is still fresh: each file its CLI reads at
+        start holds the same content (a rewrite with unchanged content keeps it fresh), and the date
+        its prompt states is still today's."""
+        digest = hashlib.sha256(f"{self.slot()}\0{date.today().isoformat()}".encode())
+        for path in self.provider.startup_files(Path(self.cwd), self.environment):
+            try:
+                content = path.read_bytes()
+            except OSError:
+                content = b"\0absent"
+            digest.update(f"\0{path}\0{len(content)}\0".encode())
+            digest.update(content)
+        return digest.hexdigest()
 
     async def start(self, run_id: str, argv: list[str], *, ahead: bool = False) -> asyncio.subprocess.Process:
         """`argv` started as run `run_id`'s child, its OWN stream written straight to disk: piping it
@@ -1350,7 +1353,7 @@ async def run_agent(
         # vendor session id, so it serves only the first child handed to that vendor.
         ahead = (warm is not None and candidate_provider.starts_ahead and not validated_images
                  and fence is None and vendor_session == run_id)
-        held = warm.claim(launch.key()) if warm is not None and ahead else None
+        held = warm.claim(launch.slot(), launch.key()) if warm is not None and ahead else None
         candidate_process = None
         if held is not None:
             try:
@@ -1438,6 +1441,6 @@ async def run_agent(
     )
     if warm is not None and chosen_ahead is not None:
         # The next start of this same launch finds its child already started.
-        warm.prepare(chosen_ahead.key, chosen_ahead.start_ahead)
+        warm.prepare(chosen_ahead.slot(), chosen_ahead.key, chosen_ahead.start_ahead)
     return RunHandle(run_id=run_id, process=process, pump=pump,
                      model=model, criterion=required_model, reasoning=effort)

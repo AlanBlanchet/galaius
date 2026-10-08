@@ -1,10 +1,11 @@
-"""One agent child started before its task, so the next start skips the CLI's own startup.
+"""Agent children started before their task, so the next start skips the CLI's own startup.
 
 Claude Code spends ~2.6 s starting (settings, hooks, agent definitions, MCP servers) before the model
 reads a word; a child started ahead does that while nobody waits and answers ~2.7 s after its task
-arrives instead of ~5.5 s (measured on a 12-core PC, 2026-10-08). The slot holds at most one child,
-for the launch the last start made: the next start with the SAME launch (`ChildLaunch.key`: command,
-environment, folder, the files the CLI read at its start, the date) claims it; any other start ends it.
+arrives instead of ~5.5 s (measured on a 12-core PC, 2026-10-08). One child waits per launch for the
+`capacity` launches started most recently (a launch: `ChildLaunch.slot`, the command, environment and
+folder). A start claims its launch's child only while that child is fresh (`ChildLaunch.key`: the
+files the CLI read at its start unchanged, the same date); a stale child is ended, never handed a task.
 """
 
 import asyncio
@@ -24,7 +25,7 @@ log = logging.getLogger(__name__)
 
 
 class WarmChild(BaseModel):
-    """A started child waiting for its task: the run id it was started as, under launch `key`."""
+    """A started child waiting for its task: the run id it was started as, fresh while `key` holds."""
 
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
@@ -50,77 +51,88 @@ class WarmChild(BaseModel):
 
 
 class WarmStart(BaseModel):
-    """At most one child started ahead, owned by one long-lived launcher (the PC's runner)."""
+    """The children started ahead by one long-lived launcher (the PC's runner), one per launch."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
+    #: How many launches keep a child, the most recently started ones: one person alternating
+    #: between two permissions (or folders) finds both warm. An idle child holds ~0.5 GB.
+    capacity: int = 2
     #: Seconds a child waits for its task before it is replaced: what it took at its start that no
     #: file tells (its start hooks' output, the account's connectors, the vendor's own state) is at
     #: most this old.
     max_age: float = 300.0
-    #: Seconds between a start and its successor's start, so the two CLIs never share the CPU while
+    #: Seconds between a start and its successor's start, so the two CLIs do not share the CPU while
     #: the first one is starting up.
-    delay: float = 15.0
+    delay: float = 5.0
     #: A child ending on its own sooner than this after its start is not started again (a CLI that
     #: cannot start here would otherwise be restarted forever).
     shortest_life: float = 60.0
     #: How often a held child is checked for its age and for having ended on its own.
     check_every: float = 5.0
 
-    _held: WarmChild | None = PrivateAttr(default=None)
-    _keeping: asyncio.Task | None = PrivateAttr(default=None)
+    #: Per launch (`slot`), least recently prepared first: the task keeping its child, the child waiting.
+    _keepers: dict[str, asyncio.Task] = PrivateAttr(default_factory=dict)
+    _held: dict[str, WarmChild] = PrivateAttr(default_factory=dict)
 
     @property
-    def holding(self) -> str | None:
-        """The run id of the child waiting now, if any."""
-        return self._held.run_id if self._held is not None else None
+    def holding(self) -> tuple[str, ...]:
+        """The run ids of the children waiting now."""
+        return tuple(child.run_id for child in self._held.values())
 
-    def claim(self, key: str) -> WarmChild | None:
-        """The held child when it was started for `key` and still waits; any other child is ended."""
-        held, self._held = self._held, None
-        if held is None:
+    def claim(self, slot: str, key: str) -> WarmChild | None:
+        """Launch `slot`'s child when it still waits and is fresh (`key`); a stale one is ended."""
+        child = self._held.pop(slot, None)
+        if child is None:
             return None
-        if held.key == key and held.alive and time.monotonic() - held.born < self.max_age:
-            return held
-        held.end()
+        if child.key == key and child.alive and time.monotonic() - child.born < self.max_age:
+            return child
+        child.end()
         return None
 
-    def prepare(self, key: Callable[[], str], start: Callable[[str], Awaitable[asyncio.subprocess.Process]]) -> None:
-        """After `delay`, hold a child `start(run_id)` starts for the next start with the launch
-        `key()` names (read just before each child starts: what it reads then is what the key says),
-        and keep one held (replaced at `max_age`) until a start claims it or a later `prepare` runs."""
-        if self._keeping is not None:
-            self._keeping.cancel()
-        self._keeping = asyncio.create_task(self._keep(key, start))
+    def prepare(self, slot: str, key: Callable[[], str], start: Callable[[str], Awaitable[asyncio.subprocess.Process]]) -> None:
+        """After `delay`, keep a child `start(run_id)` starts for launch `slot` (fresh while `key()`
+        holds, read just before each child starts: what it reads then is what the key says),
+        replaced at `max_age`, until a start claims it. Beyond `capacity` launches, the least
+        recently prepared one loses its child."""
+        if (keeper := self._keepers.pop(slot, None)) is not None:
+            keeper.cancel()
+        self._keepers[slot] = asyncio.create_task(self._keep(slot, key, start))
+        while len(self._keepers) > self.capacity:
+            self._drop(next(iter(self._keepers)))
 
     def close(self) -> None:
-        if self._keeping is not None:
-            self._keeping.cancel()
-        if self._held is not None:
-            self._held.end()
-            self._held = None
+        for slot in list(self._keepers):
+            self._drop(slot)
+        for child in self._held.values():
+            child.end()
+        self._held.clear()
 
-    async def _keep(self, key: Callable[[], str], start: Callable[[str], Awaitable[asyncio.subprocess.Process]]) -> None:
+    def _drop(self, slot: str) -> None:
+        self._keepers.pop(slot).cancel()
+        if (child := self._held.pop(slot, None)) is not None:
+            child.end()
+
+    async def _keep(self, slot: str, key: Callable[[], str], start: Callable[[str], Awaitable[asyncio.subprocess.Process]]) -> None:
         await asyncio.sleep(self.delay)
         while True:
-            if self._held is not None:
-                self._held.end()
+            if (former := self._held.pop(slot, None)) is not None:
+                former.end()
             run_id = str(uuid.uuid4())
             try:
-                launch = key()
-                child = WarmChild(key=launch, run_id=run_id, process=await start(run_id), born=time.monotonic())
+                fresh = key()
+                child = WarmChild(key=fresh, run_id=run_id, process=await start(run_id), born=time.monotonic())
             except (OSError, ValueError, RuntimeError) as error:
                 log.warning("no agent started ahead: %s", error)
-                self._held = None
                 return
-            self._held = child
-            while self._held is child and child.alive and time.monotonic() - child.born < self.max_age:
+            self._held[slot] = child
+            while self._held.get(slot) is child and child.alive and time.monotonic() - child.born < self.max_age:
                 await asyncio.sleep(self.check_every)
-            if self._held is not child:
-                return  # claimed, or replaced by a later `prepare`
+            if self._held.get(slot) is not child:
+                return  # claimed, or dropped
             if not child.alive and time.monotonic() - child.born < self.shortest_life:
                 log.warning("the agent started ahead ended on its own after %.0f s; none is kept", time.monotonic() - child.born)
                 with suppress(OSError):
                     child.end()
-                self._held = None
+                del self._held[slot]
                 return
