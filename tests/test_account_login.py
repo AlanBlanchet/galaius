@@ -54,6 +54,7 @@ def joining(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
                         "wait": lambda self, http, started: issued, "online": lambda self, http, machine, key: True, "revoke": lambda self, http, key: {}}.items():
         monkeypatch.setattr(account_login.AccountLogin, name, value)
     monkeypatch.setattr(account_login.AccountLogin, "synced", staticmethod(lambda connection: "Synced: nothing"))
+    monkeypatch.setattr(account_login.AccountLogin, "page", lambda self, http, machine: f"{self.server}/plateform/#data?computer={machine.machine_id.hex}")
     monkeypatch.setattr(type(MACHINE_SERVICE), "install", lambda self: None)
     monkeypatch.setattr(type(MACHINE_SERVICE), "after_logout", lambda self: True)
     return home
@@ -217,3 +218,14 @@ def test_logout_finishes_where_the_service_cannot_be_removed(connected: Path, mo
     said = capsys.readouterr()
     assert not MachineRunner.default_config_path().exists() and CatalogConnection.load() is None
     assert "Failed to connect to bus" in said.err and "Signed out" in said.out
+
+
+@pytest.mark.parametrize("answer, expected", [
+    (httpx.Response(200, json={"origin": "https://galaius.example.org/plateform", "server": "https://galaius.example.org"}), "https://galaius.example.org/plateform/#data?computer="),
+    (httpx.Response(404), "https://galaius.example.org/#data?computer="),   # an older server: its root
+])
+def test_the_page_named_is_where_the_server_serves_the_app(answer: httpx.Response, expected: str) -> None:
+    account = AccountLogin.at("https://galaius.example.org")
+    machine = SimpleNamespace(machine_id=uuid4())
+    with httpx.Client(base_url=account.server, transport=httpx.MockTransport(lambda request: answer)) as http:
+        assert account.page(http, machine) == expected + machine.machine_id.hex

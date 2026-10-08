@@ -204,6 +204,15 @@ class AccountLogin(BaseModel):
             permission_ceiling="read_only", working_directory=Path.home(), script_roots=(), run_agents=False,
         ))
 
+    def page(self, http: httpx.Client, machine: MachineConfig) -> str:
+        """This computer's page in the web app, where its settings live: the app is where the
+        server serves it (`/v1/install` origin, e.g. under /plateform), else at the server's root."""
+        try:
+            app = str(http.get("/v1/install").json()["origin"]).rstrip("/")
+        except (httpx.HTTPError, ValueError, KeyError, TypeError):
+            app = self.server
+        return f"{app}/#data?computer={machine.machine_id.hex}"
+
     #: How long `galaius login` waits for the server to see this computer online (its service
     #: connects within seconds; a first start on a slow PC compiles its Python first).
     online_within: ClassVar[float] = 60
@@ -484,7 +493,8 @@ def _reconfigured(account: AccountLogin, existing: MachineConfig, *, yes: bool, 
     machine = existing if agents is None else agents.applied(MachineRunner())
     print(AgentChoice.described(machine))
     if machine.remote_settings:
-        print(f"Its agent settings can also be changed on its page: {account.server}/#data?computer={machine.machine_id}")
+        with account.client() as http:
+            print(f"Its agent settings can also be changed on its page: {account.page(http, machine)}")
     try:
         MACHINE_SERVICE.stop()
     except ServiceUnavailable:
@@ -522,7 +532,7 @@ def _login(account: AccountLogin, *, allow_runs: bool, yes: bool, open_browser: 
             print(f"Connected: {issued.machine.name} is now a machine in {workspace}")
             if not MACHINE_SERVICE.after_logout():
                 print("It runs while you are signed in to this computer; it starts again at your next sign-in.")
-            print(f"Its settings (agents, folders) are on its page: {account.server}/#data?computer={machine.machine_id.hex}")
+            print(f"Its settings (agents, folders) are on its page: {account.page(http, machine)}")
         print(account.synced(CatalogConnection.load()))
         print("Every folder here is hidden from workflows, Data and agents. To open one:  galaius machine places <folder under your home> <level>  (e.g. interact-files sandbox)")
         print(AgentChoice.described(machine))
