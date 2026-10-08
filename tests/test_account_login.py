@@ -216,3 +216,16 @@ def test_connected_elsewhere_moves_only_to_a_server_that_holds_this_computer(con
     assert asked == [(moved_to, token)] and machine.server_url == moved_to and machine.token.get_secret_value() == token
     assert CatalogConnection.load().endpoint == moved_to and AccountLogin.remembered_path().read_text().strip() == moved_to
     assert calls == ["stop", "install"] and f"now connects to {moved_to} (was {PUBLIC})" in capsys.readouterr().out
+
+
+def test_logout_finishes_where_the_service_cannot_be_removed(connected: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    """A computer whose service manager does not answer (no systemd bus) still signs out and
+    drops its credentials: the server already revoked it, so nothing can connect any more."""
+    def refused(self) -> None:
+        raise account_login.ServiceUnavailable("Failed to connect to bus: No such file or directory")
+    monkeypatch.setattr(type(MACHINE_SERVICE), "remove", refused)
+    monkeypatch.setattr(AccountLogin, "revoke", lambda self, http, key: {"machine": True})
+    account_login.logout()
+    said = capsys.readouterr()
+    assert not MachineRunner.default_config_path().exists() and CatalogConnection.load() is None
+    assert "Failed to connect to bus" in said.err and "Signed out" in said.out

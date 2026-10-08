@@ -546,7 +546,11 @@ def logout() -> None:
             revoked = account.revoke(http, key) if key is not None else {}
     except httpx.HTTPError as error:
         raise LoginError(f"cannot reach {account.server} ({type(error).__name__}); nothing was removed here, run it again") from None
-    MACHINE_SERVICE.remove()
+    try:
+        MACHINE_SERVICE.remove()
+    except ServiceUnavailable as refused:
+        # Already signed out on the server: the rest is removed here all the same.
+        print(f"The background service could not be removed ({refused}); it can no longer connect.", file=sys.stderr)
     if machine is not None and machine.server_url == account.server:
         MachineRunner.default_config_path().unlink(missing_ok=True)
     connection.token_file.unlink(missing_ok=True)
