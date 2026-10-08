@@ -39,6 +39,7 @@ from galaius.agents.catalog_connection import CatalogConnection
 from galaius.cli.prompts import PromptMode
 from galaius.server_prompts import ServerPrompts
 from galaius.machine_service import MACHINE_SERVICE, ServiceUnavailable
+from galaius.error_reports import MachineErrorReports
 from galaius.machines import MachineConfig, MachineRunner
 from galaius.paths import UserPaths
 from galaius.private_files import PRIVATE_FILES
@@ -259,7 +260,8 @@ class AccountLogin(BaseModel):
             MACHINE_SERVICE.install()
         except ServiceUnavailable as refused:
             print(f"Could not start it in the background ({refused}). Keep it connected with:  galaius machine connect", file=sys.stderr)
-            MachineRunner.report_problem(machine, "service_unavailable", str(refused))
+            MachineRunner.report_problem(machine, "service_unavailable", str(refused), MachineErrorReports.own_lines(MACHINE_SERVICE.last_words(400)))
+            print(self.report_ready(http, machine), file=sys.stderr)
             return False
         print("Starting its background connection…", flush=True)
         if key is None:
@@ -269,11 +271,18 @@ class AccountLogin(BaseModel):
             return True
         running = MACHINE_SERVICE.running()
         said = MACHINE_SERVICE.last_words()
-        MachineRunner.report_problem(machine, "channel_unreachable" if running else "service_stopped", said)
+        MachineRunner.report_problem(machine, "channel_unreachable" if running else "service_stopped", said, MachineErrorReports.own_lines(MACHINE_SERVICE.last_words(400)))
         state = "runs but has not reached the server" if running else "is not running"
         print(f"Not online after {self.online_within:g} s: its background service {state}." + (f" Its last words:\n{said}" if said else "")
               + f"\nThe reason shows on its page too. Log: {MACHINE_SERVICE.logs}. Try again with:  galaius machine service restart", file=sys.stderr)
+        print(self.report_ready(http, machine), file=sys.stderr)
         return False
+
+    def report_ready(self, http: httpx.Client, machine: MachineConfig) -> str:
+        """The one line a failed install says about its error report: it waits, unsent, for an answer on
+        the PC's page (nothing is asked here: owner 2026-10-08 « After install, everything should be
+        done from the web »)."""
+        return f"An error report is ready, not sent: answer « Envoyer le rapport ? » on this computer's page: {self.page(http, machine)}"
 
     def connected_name(self, machine: MachineConfig) -> str:
         """This computer's name among the server's machines (asked as the CLI is signed in), its id

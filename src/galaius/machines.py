@@ -19,6 +19,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import traceback
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -39,6 +40,7 @@ from galaius.cli.prompts import PromptMode
 from galaius.agents import providers as agent_providers
 from galaius.file_lock import exclusive
 from galaius.private_files import PRIVATE_FILES
+from galaius.error_reports import MachineErrorReports
 from galaius.machine_places import PlaceDesk
 from galaius.machine_agents import LogRing, MachineAgents, MachineSessions, WebRuns, redact, secret_values
 from galaius.machine_workspaces import MachineWorkspaces, WorkspaceJobs
@@ -819,6 +821,8 @@ class MachineRunner:
     policy_renew_seconds = 15
     #: How often this PC's run records are settled against their processes (`registry.settle_gone`).
     settle_seconds = 60
+    #: How often this PC looks whether its owner accepted an error report it prepared (only while one waits).
+    deliver_seconds = 60
     reconnect_seconds = (1, 2, 5, 10, 20)
     #: Failed tries in a row (about 10 s with `reconnect_seconds`) before its page is told why.
     report_after_failures = 3
@@ -915,6 +919,7 @@ class MachineRunner:
         self._workspace_jobs.settle_interrupted()
         # Local and independent of the server: a run killed while the PC is offline is settled too.
         settler = asyncio.create_task(self._settle_runs())
+        reports = asyncio.create_task(self._deliver_reports(config))
         try:
             await self._connect(config)
         except (PermissionError, UpgradeReady):
@@ -924,11 +929,13 @@ class MachineRunner:
             said = f"{type(error).__name__}: {error}"
             if said != self._reported_crash:
                 self._reported_crash = said
-                await asyncio.to_thread(self.report_problem, config, "crashed", said)
+                lines = (*self._log_ring.lines, *traceback.format_exception(error))
+                await asyncio.to_thread(self.report_problem, config, "crashed", said, lines, self._log_ring.secrets)
             raise
         finally:
             settler.cancel()
-            await asyncio.gather(settler, return_exceptions=True)
+            reports.cancel()
+            await asyncio.gather(settler, reports, return_exceptions=True)
             self.warm.close()  # a child started ahead never outlives its runner
 
     async def _settle_runs(self) -> None:
@@ -947,7 +954,7 @@ class MachineRunner:
         while True:
             if delay_index == self.report_after_failures:
                 # Still not in after these tries: its page says why (the server forgets it once it is in).
-                await asyncio.to_thread(self.report_problem, config, "channel_unreachable", self._last_failure)
+                await asyncio.to_thread(self.report_problem, config, "channel_unreachable", self._last_failure, tuple(self._log_ring.lines), self._log_ring.secrets)
             endpoint = self._channel_url(config.server_url)
             try:
                 async with websockets.connect(
@@ -1838,16 +1845,34 @@ class MachineRunner:
         return MachineConfig.endpoint_on(server_url, "/v1/machine-channel", socket=True)
 
     @classmethod
-    def report_problem(cls, config: MachineConfig, code: MachineProblemCode, detail: str = "") -> bool:
+    def report_problem(cls, config: MachineConfig, code: MachineProblemCode, detail: str = "", lines: tuple[str, ...] = (), secrets: tuple[str, ...] = ()) -> bool:
         """Tells its server why this computer is not connected (`MachineProblem`, shown on its page):
         over HTTPS with its machine token, which still answers when the channel does not. Best
-        effort, credentials masked: False when the server did not take it."""
+        effort, credentials masked: False when the server did not take it. The same problem also
+        prepares an error report from `lines` (what led to it) and asks its owner on that page
+        whether to send it (`error_reports`): nothing of the lines leaves before his yes."""
         problem = MachineProblem(code=code, detail=redact(detail, (config.token.get_secret_value(),)).strip()[-500:])
+        cls.error_reports().prepare(config, code, detail or code, (*lines, detail), secrets)
         try:
             response = httpx.post(config.endpoint("/v1/machine/problem"), json=problem.model_dump(mode="json", exclude_none=True), headers=config.authorization, timeout=10)
         except httpx.HTTPError:
             return False
         return response.status_code == 204
+
+    @classmethod
+    def error_reports(cls) -> MachineErrorReports:
+        """This computer's error report drafts, beside its machine file."""
+        return MachineErrorReports(folder=cls.default_config_path().parent / "error-reports")
+
+    async def _deliver_reports(self, config: MachineConfig) -> None:
+        """Every `deliver_seconds`, the report its owner accepted on the PC's page goes up (`deliver`)."""
+        while True:
+            try:
+                if await asyncio.to_thread(self.error_reports().deliver, config):
+                    logger.info("error report sent: its owner accepted it on this computer's page")
+            except Exception:  # one failed look never stops the next
+                logger.exception("delivering an error report failed")
+            await asyncio.sleep(self.deliver_seconds)
 
 
 def shell_path(current: str, shell: str | None = None, timeout: float = 10) -> str:

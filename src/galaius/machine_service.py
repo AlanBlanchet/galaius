@@ -96,9 +96,10 @@ class MachineService(BaseModel):
         """Whether it keeps running once this person signs out of the desktop."""
         return False
 
-    def last_words(self) -> str:
-        """The end of what it last wrote (its log), to say why it is not running or not connected."""
-        return self._tail(self.log_path())
+    def last_words(self, lines: int = 3) -> str:
+        """The end of what it last wrote (its log), to say why it is not running or not connected
+        (`lines` of it: 3 said in a terminal, more for an error report)."""
+        return self._tail(self.log_path(), lines)
 
     @staticmethod
     def log_path() -> Path:
@@ -201,8 +202,8 @@ class SystemdMachineService(MachineService):
     def installed(self) -> bool:
         return self.path.exists()
 
-    def last_words(self) -> str:
-        done = subprocess.run(["journalctl", "--user", "-u", self.name, "-n", "3", "-o", "cat", "--no-pager"], capture_output=True, text=True, timeout=15) if shutil.which("journalctl") else None
+    def last_words(self, lines: int = 3) -> str:
+        done = subprocess.run(["journalctl", "--user", "-u", self.name, "-n", str(lines), "-o", "cat", "--no-pager"], capture_output=True, text=True, timeout=15) if shutil.which("journalctl") else None
         return done.stdout.strip() if done is not None and done.returncode == 0 else ""
 
     def after_logout(self) -> bool:
@@ -311,10 +312,10 @@ class WindowsMachineService(MachineService):
     def installed(self) -> bool:
         return self._task() is not None
 
-    def last_words(self) -> str:
+    def last_words(self, lines: int = 3) -> str:
         task = self._task()
         result = f"Task Scheduler: last result 0x{task.LastTaskResult & 0xFFFFFFFF:x}" if task is not None else "Task Scheduler: no task"
-        return "\n".join(filter(None, (result, super().last_words())))
+        return "\n".join(filter(None, (result, super().last_words(lines))))
 
     def run(self) -> None:
         """What the task starts: its output in `log_path` first (no console window: an early

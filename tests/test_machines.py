@@ -49,6 +49,7 @@ def test_machine_config_round_trips_token_with_owner_only_permissions(tmp_path: 
 
 
 from galaius.machines import shell_path
+from galaius.error_reports import MachineErrorReports
 
 
 @pytest.mark.parametrize(("script", "expected"), [
@@ -349,9 +350,27 @@ def test_a_channel_that_keeps_failing_tells_its_page_why_once(tmp_path: Path, mo
     runner.reconnect_seconds = (0,)
     with pytest.raises(PermissionError):
         asyncio.run(runner.connect(config))
-    assert len(sent) == 1 and sent[0].url.path == "/v1/machine/problem" and sent[0].headers["Authorization"] == f"Bearer {config.token.get_secret_value()}"
-    body = json.loads(sent[0].content)
+    asked, told = sent
+    assert told.url.path == "/v1/machine/problem" and told.headers["Authorization"] == f"Bearer {config.token.get_secret_value()}"
+    body = json.loads(told.content)
     assert body["code"] == "channel_unreachable" and "CERTIFICATE_VERIFY_FAILED" in body["detail"] and token not in body["detail"]
+
+    # The same problem prepared an error report: only its QUESTION left (one line, no log), the draft waits here.
+    question = json.loads(asked.content)
+    assert asked.url.path == "/v1/machine/error-report" and question["kind"] == "channel_unreachable"
+    assert "CERTIFICATE_VERIFY_FAILED" in question["message"] and token not in question["message"] and set(question) == {"id", "kind", "message"}
+    reports = MachineRunner.error_reports()
+    (draft,) = reports.drafts()
+    assert token not in draft.detail and str(Path.home()) not in draft.detail
+    assert reports.prepare(config, "channel_unreachable", draft.message, ()) == draft.id and len(sent) == 2, "the same problem is asked once"
+
+    # Its owner said yes on the PC's page: the next look uploads that draft, once, then forgets it.
+    uploaded: list[httpx.Request] = []
+    monkeypatch.setattr(machines.httpx, "get", lambda url, timeout, **options: httpx.Response(200, json={"id": str(draft.id)}))
+    monkeypatch.setattr(machines.httpx, "put", lambda url, timeout, **options: uploaded.append(httpx.Request("PUT", url, **options)) or httpx.Response(201))
+    assert reports.deliver(config) == 1 and reports.drafts() == []
+    assert uploaded[0].url.path == f"/v1/machine/error-report/{draft.id}" and token not in uploaded[0].content.decode()
+    assert reports.deliver(config) == 0, "nothing left to send"
 
 
 def test_a_crash_is_told_to_its_page_once_per_cause_in_one_process(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -359,7 +378,7 @@ def test_a_crash_is_told_to_its_page_once_per_cause_in_one_process(tmp_path: Pat
     connect`, the Windows task loops on it): a crash is reported there, once per distinct cause,
     and still raised for the service manager to restart it; a deliberate stop is no crash."""
     reported: list[tuple[str, str]] = []
-    monkeypatch.setattr(MachineRunner, "report_problem", classmethod(lambda cls, config, code, detail="": reported.append((code, detail)) or True))
+    monkeypatch.setattr(MachineRunner, "report_problem", classmethod(lambda cls, config, code, detail="", *rest: reported.append((code, detail)) or True))
     runner = MachineRunner(tmp_path / "machine.json")
     config = _config(tmp_path, "read_only")
     for crash in (RuntimeError("socket gone"), RuntimeError("socket gone"), KeyError("hello"), PermissionError("revoked")):
@@ -995,3 +1014,21 @@ def test_approve_script_pending_asks_once_per_waiting_version_on_this_machine(tm
 def test_agents_stay_off_until_the_owner_turns_them_on_there(tmp_path: Path) -> None:
     """An agent CLI can read what its user can: no path that saves a machine turns them on for him."""
     assert _config(tmp_path, "read_only").run_agents is False
+
+
+def test_a_report_from_the_service_log_keeps_only_what_galaius_wrote() -> None:
+    """A program the PC ran writes into the same service log; only galaius's own lines and its
+    tracebacks go into a report (its data is its owner's)."""
+    log = "\n".join([
+        '{"ts":"2026-10-08T17:44:05+00:00","level":"error","source":"machine","name":"galaius.machines","message":"connection crashed","exception":"RuntimeError: gone"}',
+        "my-script: customer list exported to /srv/clients.csv",
+        "    indented output of the same script",
+        '{"ts":"x","level":"info","name":"httpx","message":"GET /secret"}',
+        "Traceback (most recent call last):",
+        '  File "galaius/machines.py", line 930, in connect',
+        "    await self._connect(config)",
+        "RuntimeError: gone",
+    ])
+    kept = MachineErrorReports.own_lines(log)
+    assert kept[0] == "2026-10-08T17:44:05+00:00 error galaius.machines: connection crashed (RuntimeError: gone)"
+    assert kept[1:] == ("Traceback (most recent call last):", '  File "galaius/machines.py", line 930, in connect', "    await self._connect(config)", "RuntimeError: gone")

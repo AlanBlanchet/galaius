@@ -114,14 +114,16 @@ def test_not_online_says_why_here_and_on_its_page(joining: Path, monkeypatch: py
     reported: list[tuple[str, str]] = []
     monkeypatch.setattr(type(MACHINE_SERVICE), "install", install)
     monkeypatch.setattr(type(MACHINE_SERVICE), "running", lambda self: bool(running))
-    monkeypatch.setattr(type(MACHINE_SERVICE), "last_words", lambda self: "Task Scheduler: last result 0x1\nTraceback: boom")
+    monkeypatch.setattr(type(MACHINE_SERVICE), "last_words", lambda self, lines=3: "Task Scheduler: last result 0x1\nTraceback: boom")
     monkeypatch.setattr(account_login.AccountLogin, "online", lambda self, http, machine, key: False)
-    monkeypatch.setattr(MachineRunner, "report_problem", classmethod(lambda cls, machine, said, detail="": reported.append((said, detail)) or True))
+    monkeypatch.setattr(MachineRunner, "report_problem", classmethod(lambda cls, machine, said, detail="", *rest: reported.append((said, detail)) or True))
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
     account_login.login("https://galaius.example.org", allow_runs=False, open_browser=False)
     said = capsys.readouterr()
     assert [value for value, _ in reported] == [code] and "Connected:" not in said.out
     assert (refused or "Traceback: boom") in said.err and (refused or "0x1") in reported[0][1]
+    # The installer asks nothing: one line says the report waits for an answer on the PC's page.
+    assert "An error report is ready, not sent" in said.err and "#data?computer=" in said.err
 
 
 def test_login_flags_parse(monkeypatch: pytest.MonkeyPatch) -> None:
