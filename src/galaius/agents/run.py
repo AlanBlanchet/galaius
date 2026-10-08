@@ -1003,6 +1003,7 @@ async def run_agent(
     provider_modes: dict[str, str] | None = None,
     quota_window: float | None = None,
     fence: FenceSpec | None = None,
+    environment: Mapping[str, str] | None = None,
 ) -> RunHandle:
     """Spawn an agent run and register it, returning as soon as it is alive.
 
@@ -1020,6 +1021,10 @@ async def run_agent(
     stays frontier. Resolves through :mod:`galaius.agents.profiles` to a fixed, allow-listed
     overlay; a caller cannot hand over an environment, because a model that can set
     ``LD_PRELOAD`` or ``PATH`` on the process it spawns has escaped every other guard here.
+
+    ``environment`` is the one the run's CLI starts in and its candidates are judged against
+    (credentials, the folder-settings switch, a parent run's tag); this process's own when None.
+    A long-lived caller serving others (the machine runner) passes the scrubbed one it owns.
 
     ``fence`` starts every turn of the run inside the OS fence that spec builds (:mod:`galaius.fence`),
     recorded on the run and built again at each turn from the machine's levels as they are then.
@@ -1044,6 +1049,7 @@ async def run_agent(
     candidate is still ranked under it, and every skip (quota included) is recorded on the run
     that finally started, naming which candidate ran and why each earlier one was passed over.
     """
+    environment = dict(os.environ if environment is None else environment)
     validated_images = validate_image_paths(image_paths)
     validate_denied_tools(denied_tools)
     for provider_name, mode in (provider_modes or {}).items():
@@ -1071,7 +1077,7 @@ async def run_agent(
             raise RuntimeError(
                 f"the {provider.name!r} provider does not support image attachments"
             )
-    parent = parent_run_id or os.environ.get("GALAIUS_PARENT_RUN_ID") or None
+    parent = parent_run_id or environment.get("GALAIUS_PARENT_RUN_ID") or None
     parent_run = reg.get_run(parent) if parent is not None else None
     if policy.catalog is not None and parent is not None and (parent_run is None or parent_run.agent_ref is None):
         raise ModelUnavailable("Parent run has no recorded server revision; start the parent again")
@@ -1094,7 +1100,7 @@ async def run_agent(
     # the reason it exists.
     required_model = policy.criterion_for(agent)
     if profile:
-        known = profiles_from(dict(os.environ))
+        known = profiles_from(environment)
         if profile not in known:
             raise RuntimeError(
                 f"no such profile {profile!r}. Define it in ~/.galaius/config.env as "
@@ -1113,7 +1119,7 @@ async def run_agent(
     # Explicit provider only narrows the pool; every candidate uses the same preflight.
     pool = [provider] if provider is not None else list(PROVIDERS.values())
     by_name = {p.name: p for p in pool}
-    candidates = rank_candidates(model, dict(os.environ), providers=pool, weights=weights, role=agent)
+    candidates = rank_candidates(model, environment, providers=pool, weights=weights, role=agent)
     skipped: list[reg.SkippedCandidate] = []
     #: How many children this run has already handed to the vendor that owns session ids.
     #: The first gets the run id itself, so `claude --resume <run_id>` works; a later one
@@ -1127,7 +1133,7 @@ async def run_agent(
     effort = policy.reasoning_for(agent)
     auth_cache: dict[tuple[str, str], bool | None] = {}
     allowed_tools = policy.tools_for(agent)
-    base_env = dict(os.environ)
+    base_env = environment
     # A model that refused for quota a moment ago refuses again: passing it over BEFORE the spawn
     # is what stops every launch paying the same dead-child tax. When the memory would empty the
     # list entirely it is ignored — a stale note must never be why nothing can run.
@@ -1190,10 +1196,10 @@ async def run_agent(
         label = name or agent or candidate_provider.name
         # Child inherits our environment MINUS any parent tag, set explicitly below — else a
         # grandchild would inherit its grandparent's id and the tree would be wrong.
-        env = {**os.environ, "GALAIUS_RUN_ID": run_id, "GALAIUS_PARENT_RUN_ID": run_id}
+        env = {**environment, "GALAIUS_RUN_ID": run_id, "GALAIUS_PARENT_RUN_ID": run_id}
         # The agent's policy is authoritative; caller profiles were rejected above. Its model id
         # can still carry a provider prefix resolved through the operator's allowed routing.
-        candidate_routed, candidate_model = resolve_model(candidate.model, dict(os.environ), provider=candidate_provider, weights=weights)
+        candidate_routed, candidate_model = resolve_model(candidate.model, environment, provider=candidate_provider, weights=weights)
         env.update(candidate_routed)
         if validated_images:
             _require_vlm_model(candidate_model)
@@ -1237,6 +1243,7 @@ async def run_agent(
             mcp_config=mesh_config(run_id=run_id) if mesh and not already_meshed(candidate_provider.name, cwd=cwd) else None,
             run_id=vendor_session, agent=agent, permission_mode=candidate_permission_mode,
             allowed_tools=allowed_tools, reasoning=candidate_effort, coarse_accepted=candidate_coarse_accepted,
+            environment=env,
         )
         if candidate_routed.get("OPENAI_BASE_URL"):
             command_kwargs["base_url"] = candidate_routed["OPENAI_BASE_URL"]

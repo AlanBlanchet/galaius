@@ -4,6 +4,7 @@ import json
 import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
@@ -61,6 +62,18 @@ def _request(op: str, config: MachineConfig | None = None, **fields) -> MachineA
     machine, workspace = (config.machine_id, config.workspace_id) if config else (uuid4(), uuid4())
     return MACHINE_AGENT_REQUESTS.validate_python({"id": str(uuid4()), "machine": {"id": str(machine)}, "workspace_id": str(workspace), "op": op, "initiator_account": str(uuid4()),
                                                    "expires_at": (datetime.now(UTC) + timedelta(seconds=30)).isoformat(), "signature": "0" * 64, **fields})
+
+
+def _launches(monkeypatch: pytest.MonkeyPatch, run_id: UUID | None = None) -> list[dict]:
+    """Every agent the web starts, as handed to the launcher (no agent CLI runs)."""
+    seen: list[dict] = []
+
+    async def launch(provider, task, **options):
+        seen.append({"provider": provider, "task": task, **options})
+        return SimpleNamespace(run_id=str(run_id or uuid4()))
+
+    monkeypatch.setattr("galaius.machine_agents.run_agent", launch)
+    return seen
 
 
 @pytest.mark.parametrize(("roots", "usable", "refused"), [
@@ -185,17 +198,6 @@ def test_a_run_image_is_served_only_when_its_own_step_names_a_plain_image(base: 
     assert media.content_type == served and base64.b64decode(media.data) == PNG
 
 
-@pytest.mark.parametrize("brief", ["- fix the header", "--help", "-x"])
-def test_a_brief_or_message_starting_with_a_dash_stays_text(base: Path, tmp_path: Path, brief: str) -> None:
-    """Everything after "--" is an argument, never an option: the CLI receives the brief intact."""
-    seen = tmp_path / "argv.json"
-    recorder = ("python3", "-c", f"import json,sys; json.dump(sys.argv[1:], open({str(seen)!r}, 'w')); print({str(uuid4())!r})")
-    agents = _agents(base, tmp_path, cli=recorder)
-    _answer(agents, _request("start", root="project", role="app-engineer", text=brief))
-    argv = json.loads(seen.read_text())
-    assert argv[-2:] == ["--", brief] and argv[:2] == ["agents", "spawn"]
-
-
 def test_a_message_is_answered_once_durably_queued_and_its_dispatcher_gets_the_machine_environment(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """No CLI child and no wait for the resumed turn: the answer leaves as soon as the message is in
     the run's durable queue, and the dispatcher resuming it runs in the scrubbed machine environment."""
@@ -241,16 +243,6 @@ def test_an_action_is_accepted_once(base: Path, tmp_path: Path, monkeypatch: pyt
     assert "not started from the web" in socket.sent[0]["error"] and socket.sent[1]["error"] == "agent request was already used"
     asyncio.run(runner._answer_agent_request(socket, config, {**signed, "signature": "0" * 64}))
     assert socket.sent[2]["error"] == "agent request signature is invalid"
-
-
-def test_start_answers_while_the_agent_it_launched_still_runs(base: Path, tmp_path: Path) -> None:
-    """The launcher's child keeps the CLI's descriptors: the start still answers at once."""
-    run_id = str(uuid4())
-    lingering = ("python3", "-c", f"import subprocess,sys; subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']); print({run_id!r})")
-    agents = _agents(base, tmp_path, cli=lingering)
-    started = time.monotonic()
-    assert str(_answer(agents, _request("start", root="project", role="app-engineer", text="go")).run_id) == run_id
-    assert time.monotonic() - started < 10
 
 
 def test_a_run_that_finished_unwatched_reads_done_not_lost(base: Path, tmp_path: Path) -> None:
@@ -536,15 +528,27 @@ def test_web_settings_apply_once_from_the_revision_the_page_read(base: Path, tmp
     assert (held.run_agents, held.agent_roots, held.agent_permission, held.settings_revision, held.web_settings_version) == (False, ("project",), "workspace_write", 4, 2)
 
 
-def test_a_start_asks_less_never_more_and_a_cloned_workspace_loads_no_project_settings(base: Path, tmp_path: Path) -> None:
-    seen = tmp_path / "argv.json"
-    recorder = ("python3", "-c", f"import json,os,sys; json.dump([sys.argv[1:], os.environ.get({PROJECT_SETTINGS_OFF!r})], open({str(seen)!r}, 'w')); print({str(uuid4())!r})")
-    agents = _agents(base, tmp_path, cli=recorder, agent_permission="workspace_write")
+def test_a_start_asks_less_never_more_and_a_cloned_workspace_loads_no_project_settings(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Launched in this process, in the scrubbed machine environment, never this process's own."""
+    seen = _launches(monkeypatch)
+    agents = _agents(base, tmp_path, agent_permission="workspace_write")
     agents.workspaces.jobs.put(MachineWorkspaceJob(id=uuid4(), root="project", name="src", origin="github.com/o/r", state="ready", started_at=datetime.now(UTC)))
     for asked, path, scope, untrusted in ((None, "", "workspace_write", None), ("read_only", "src/deep", "read_only", "1"), ("full_access", "", "workspace_write", None)):
-        _answer(agents, _request("start", root="project", path=path, role="tester", text="go", **({"permission": asked} if asked else {})))
-        argv, flag = json.loads(seen.read_text())
-        assert argv[argv.index("--permission-mode") + 1] == scope and flag == untrusted
+        _answer(agents, _request("start", root="project", path=path, role="tester", text="- go", **({"permission": asked} if asked else {})))
+        launched = seen[-1]
+        assert (launched["permission_mode"], launched["environment"].get(PROJECT_SETTINGS_OFF), launched["task"]) == (scope, untrusted, "- go")
+        assert launched["environment"].keys() <= {"PATH", PROJECT_SETTINGS_OFF} and launched["quota_window"] == 4.0
+
+
+def test_a_cloned_workspace_start_tells_the_agent_cli_to_load_no_folder_settings() -> None:
+    """The switch travels in the run's own environment, not this process's: a runner launching
+    in-process for an untrusted clone still starts its CLI with the folder's settings off."""
+    from galaius.agents.providers import ClaudeCodeProvider
+    assert PROJECT_SETTINGS_OFF not in os.environ
+    options = dict(cwd=".", model="m", mcp_config=None, run_id=str(uuid4()))
+    trusted = ClaudeCodeProvider().command("go", **options, environment={})
+    untrusted = ClaudeCodeProvider().command("go", **options, environment={PROJECT_SETTINGS_OFF: "1"})
+    assert [flag for flag in untrusted if flag not in trusted] == list(ClaudeCodeProvider.folder_settings_off)
 
 
 @pytest.mark.parametrize(("url", "name", "said"), [
@@ -609,14 +613,13 @@ def _checkout(folder: Path, origin: str = "git@github.com:owner/aino.git") -> Pa
     return folder
 
 
-def test_a_start_with_project_secrets_writes_them_as_the_checkouts_dotenv_only(base: Path, tmp_path: Path) -> None:
+def test_a_start_with_project_secrets_writes_them_as_the_checkouts_dotenv_only(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Opened with this PC's key, written as the .env of the project's own checkout (marker, quoted,
     0600, locally git-excluded), never as the run's environment; values redacted from the PC's logs."""
     checkout = _checkout(base / "project" / "aino")
-    seen = tmp_path / "env.json"
-    recorder = ("python3", "-c", f"import json,os,sys; json.dump(dict(os.environ), open({str(seen)!r}, 'w')); print({str(uuid4())!r})")
+    seen = _launches(monkeypatch)
     config = _config(base)
-    agents = _agents(base, tmp_path, cli=recorder).model_copy(update={"seal": SecretsSeal.for_token(config.token.get_secret_value()), "logs": LogRing()})
+    agents = _agents(base, tmp_path).model_copy(update={"seal": SecretsSeal.for_token(config.token.get_secret_value()), "logs": LogRing()})
     project, request_id = uuid4(), uuid4()
     sealed = SecretsSeal.for_token(config.token.get_secret_value()).seal({"DATABASE_URL": "not-a-real-secret-value-for-aino"}, request=request_id, project=project, origin="github.com/owner/aino")
     start = _request("start", root="project", path="aino", role="tester", text="go", project=str(project), with_secrets=True, secrets=sealed.model_dump(mode="json"))
@@ -624,7 +627,7 @@ def test_a_start_with_project_secrets_writes_them_as_the_checkouts_dotenv_only(b
     lines = (checkout / ".env").read_text().splitlines()
     assert lines[0].startswith(MARKER) and lines[1] == "DATABASE_URL='not-a-real-secret-value-for-aino'" and answer.detail.startswith("1 project secrets")
     assert oct((checkout / ".env").stat().st_mode & 0o777) == "0o600" and ".env" in (checkout / ".git" / "info" / "exclude").read_text().splitlines()
-    assert "DATABASE_URL" not in json.loads(seen.read_text()) and "not-a-real-secret-value-for-aino" in agents.logs.secrets
+    assert "DATABASE_URL" not in seen[-1]["environment"] and "not-a-real-secret-value-for-aino" in agents.logs.secrets
 
 
 @pytest.mark.parametrize("trap", ["owner", "link", "tracked", "other origin"])
@@ -665,11 +668,10 @@ def _fenced_agents(base: Path, tmp_path: Path, cli: tuple[str, ...], **levels) -
 
 def test_with_the_fence_on_a_web_start_carries_the_spec_its_turns_are_fenced_by(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("galaius.machine_agents.available", lambda: (True, ""))
-    held = tmp_path / "fence.json"
-    recorder = ("python3", "-c", f"import shutil,sys; shutil.copy(sys.argv[sys.argv.index('--fence') + 1], {str(held)!r}); print({str(uuid4())!r})")
-    agents = _fenced_agents(base, tmp_path, recorder, project="write", other="read")
+    seen = _launches(monkeypatch)
+    agents = _fenced_agents(base, tmp_path, ("false",), project="write", other="read")
     answer = _answer(agents, _request("start", root="project", role="app-engineer", text="tidy"))
-    spec = FenceSpec.model_validate_json(held.read_text())
+    spec = seen[-1]["fence"]
     assert spec.start == base.resolve() / "project" and spec.levels == {"project": "write", "other": "read"} and spec.state.is_relative_to(tmp_path)
     binds = {(bind.target.relative_to(base.resolve()).as_posix(), bind.writable) for bind in spec.build().binds if bind.target.is_relative_to(base.resolve())}
     assert ("other", False) in binds and not any(target.startswith("interact-files") for target, _ in binds)
@@ -696,12 +698,11 @@ def test_with_the_fence_on_an_agent_never_starts_unfenced(base: Path, tmp_path: 
 
 def test_in_a_write_after_review_folder_the_agent_works_in_a_staging_copy(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("galaius.machine_agents.available", lambda: (True, ""))
-    held = tmp_path / "fence.json"
     run_id = uuid4()
-    recorder = ("python3", "-c", f"import shutil,sys; shutil.copy(sys.argv[sys.argv.index('--fence') + 1], {str(held)!r}); print({str(run_id)!r})")
-    agents = _fenced_agents(base, tmp_path, recorder, project="write_on_review")
+    seen = _launches(monkeypatch, run_id)
+    agents = _fenced_agents(base, tmp_path, ("false",), project="write_on_review")
     _answer(agents, _request("start", root="project", role="app-engineer", text="tidy"))
-    [bind] = [bind for bind in FenceSpec.model_validate_json(held.read_text()).build().binds if bind.target == base.resolve() / "project"]
+    [bind] = [bind for bind in seen[-1]["fence"].build().binds if bind.target == base.resolve() / "project"]
     assert bind.writable and bind.source.is_relative_to(tmp_path / "reviews")
     (bind.source / "src" / "new.txt").write_text("from the agent")
     [review] = agents.reviews.list()

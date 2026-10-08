@@ -7,9 +7,9 @@ Everything a request may touch is checked HERE, on the machine, against its CURR
 folders (`MachineConfig.agent_roots`), the permission agents start with (`agent_permission`; a
 start may ask for less, never more; bypass only when set on the PC itself), and the runs a request
 may read or act on (only runs started this way and what they launched: `WebRuns`). The owner sets
-those settings on the PC or on its web page (`MachineAgentSettings`, while `remote_settings` is on). Starting and messaging go through
-the launcher's own CLI (`galaius agents spawn / send`) in a child process given the scrubbed
-environment explicitly, so no request ever changes this process's environment."""
+those settings on the PC or on its web page (`MachineAgentSettings`, while `remote_settings` is on). Starting and messaging run in
+this process (`AgentSpawns`, `deliver_message`), each given the scrubbed environment explicitly, so
+no request ever changes this process's environment and no request waits for a cold CLI."""
 
 import asyncio
 import base64
@@ -26,8 +26,9 @@ import tempfile
 import threading
 import time
 from collections import deque
+from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, TypeVar
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -40,8 +41,8 @@ from galaius_core import (
 from galaius.agents import registry as reg
 from galaius.agents.host import ConversationHost, ConversationRefused
 from galaius.agents.messaging import deliver_message
-from galaius.agents.providers import PROJECT_SETTINGS_OFF, PROVIDERS
-from galaius.agents.run import LAUNCH_STAMP, launch_editor_turn, load_policy, rank_candidates
+from galaius.agents.providers import PROJECT_SETTINGS_OFF, PROVIDERS, provider_for
+from galaius.agents.run import LAUNCH_STAMP, launch_editor_turn, load_policy, rank_candidates, run_agent
 from galaius.fence import EGRESS, FenceSpec, available
 from galaius.file_lock import exclusive
 from galaius.machine_workspaces import MachineWorkspaces
@@ -52,6 +53,8 @@ from cryptography.exceptions import InvalidTag
 from galaius_core.sealing import SecretsSeal
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
 
 #: Web-started runs working at once on one computer; one more start is refused until one ends.
 LIVE_WEB_RUNS = 4
@@ -173,6 +176,30 @@ class WebRuns(BaseModel):
                 failed += 1
                 logger.warning("could not stop run %s: %s", run.run_id[:8], error)
         return stopped, failed
+
+
+class AgentSpawns:
+    """The event loop web-started agents are launched on: its own thread, for this process's
+    lifetime. A launch reads policy and ranks models before its child exists (blocking work that
+    must not stall the runner's connection loop), and what watches the child after (its exit, its
+    mirrored stream) must outlive the request that started it. The child itself leads its own
+    process group and outlives this process, as a CLI-launched one does."""
+
+    _loop: ClassVar[asyncio.AbstractEventLoop | None] = None
+    _lock: ClassVar[threading.Lock] = threading.Lock()
+
+    @classmethod
+    def loop(cls) -> asyncio.AbstractEventLoop:
+        with cls._lock:
+            if cls._loop is None:
+                cls._loop = asyncio.new_event_loop()
+                threading.Thread(target=cls._loop.run_forever, name="galaius-agent-spawns", daemon=True).start()
+            return cls._loop
+
+    @classmethod
+    async def run(cls, launch: Callable[[], Awaitable[T]]) -> T:
+        """`launch()` run on the spawn loop; its result (or its exception) here."""
+        return await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(launch(), cls.loop()))
 
 
 class MachineSessions:
@@ -320,7 +347,7 @@ class MachineAgents(BaseModel):
             case AgentStartRequest(kind="session"):
                 return await self._start_session(request)
             case AgentStartRequest():
-                return await asyncio.to_thread(self._start, request)
+                return await self._start(request)
             case AgentSendRequest() | AgentStopRequest() | AgentAnswerRequest() if self._kind(request.run_id) == "session":
                 return await self._session_action(request)
             case AgentSendRequest():
@@ -606,41 +633,48 @@ class MachineAgents(BaseModel):
         reasons = dict.fromkeys(line.split(": ", 1)[-1] for line in lines[1:])
         return " ".join([*lines[:1], *reasons]).removeprefix("ERROR: ")[:400]
 
-    def _start(self, request: AgentStartRequest) -> MachineAgentAnswer:
+    async def _start(self, request: AgentStartRequest) -> MachineAgentAnswer:
+        folder, written, fence, review = await asyncio.to_thread(self._prepare_start, request)
+        environment = self.environment_in(folder)
+
+        async def launch():
+            with reg.session_context(self.session):
+                # The launcher's supervisor window (not the terminal's 20 s): the run shows at once;
+                # a quota refusal after it is that run's failure, in the list.
+                return await run_agent(
+                    provider_for(request.provider) if request.provider is not None else None, request.text,
+                    cwd=str(folder), agent=str(request.role), permission_mode=self.scope(request.permission),
+                    quota_window=4.0, fence=fence, environment=environment,
+                )
+
+        try:
+            run_id = UUID((await AgentSpawns.run(launch)).run_id)
+        except BaseException as error:
+            if review is not None:
+                self.reviews.discard(review)
+            if isinstance(error, (ValueError, RuntimeError)):
+                raise RuntimeError(self._said(str(error)) or "the agent did not start") from error
+            raise
+        if review is not None:
+            self.reviews.attach(review, run_id)
+        self.runs.add(WebRun(run_id=run_id, root=request.root, path=request.path, fenced=fence is not None))
+        return MachineAgentAnswer(request_id=request.id, run_id=run_id, fenced=fence is not None, detail=f"{written} project secrets written to .env" if written else "")
+
+    def _prepare_start(self, request: AgentStartRequest) -> tuple[Path, int, FenceSpec | None, UUID | None]:
+        """What a start is checked and prepared with before anything runs: its folder, how many
+        project secrets were written there, and its fence and staging review when the fence is on."""
         _, runs = self._allowed()
         working = sum(1 for run in runs if run.status in {"running", "waiting"})
         if working >= LIVE_WEB_RUNS:
             raise PermissionError(f"{working} agents started from the web are already working on this computer; stop one first")
         folder = self.folder(request.root, request.path)
-        # The launcher's supervisor window (not the terminal's 20 s): the run shows at once; a
-        # quota refusal after it is that run's failure, in the list.
         if request.model is not None:
             # The launcher runs a role on what its own rule picks (a per-run model is never
             # honoured): refused, never silently replaced.
             raise PermissionError("an agent runs on the model its rule picks; change the rule on its Agents page, or start a session to choose the model")
         written = self._project_env(request, folder)
-        options = ["--agent", str(request.role), "--cwd", str(folder), "--permission-mode", self.scope(request.permission), "--session-id", self.session, "--quota-window", "4",
-                   *(["--provider", request.provider] if request.provider is not None else []), *([f"--model={request.model}"] if request.model else [])]
         fence, review = self._fence(request.root, folder) if self.fence_agents else (None, None)
-        with tempfile.TemporaryDirectory(prefix="galaius-fence-") as held:
-            if fence is not None:
-                (Path(held) / "fence.json").write_text(fence.model_dump_json())
-                options += ["--fence", str(Path(held) / "fence.json")]
-            # "--" ends the options: a brief starting with "-" (a markdown bullet, "--help") is the brief.
-            done = self._run_cli("agents", "spawn", *options, "--", request.text, timeout=120, environment=self.environment_in(folder))
-        output = done.stdout.strip().splitlines()
-        try:
-            run_id = UUID(output[-1].strip()) if done.returncode == 0 and output else None
-        except ValueError:
-            run_id = None
-        if run_id is None:
-            if review is not None:
-                self.reviews.discard(review)
-            raise RuntimeError(self._said(done.stderr) or f"the agent did not start (exit {done.returncode})")
-        if review is not None:
-            self.reviews.attach(review, run_id)
-        self.runs.add(WebRun(run_id=run_id, root=request.root, path=request.path, fenced=fence is not None))
-        return MachineAgentAnswer(request_id=request.id, run_id=run_id, fenced=fence is not None, detail=f"{written} project secrets written to .env" if written else "")
+        return folder, written, fence, review
 
     def _project_env(self, request: AgentStartRequest, folder: Path) -> int:
         """The project's secrets, when the start brings them: opened with this machine's key, written

@@ -471,7 +471,7 @@ class _ClaudeNamed(_Cli):
 
     def command(self, task, *, cwd, model, mcp_config, run_id, agent=None,
                 permission_mode=None, allowed_tools=None, reasoning=None, image_paths=(),
-                coarse_accepted=False):
+                coarse_accepted=False, **_ignored):
         type(self).sessions.append(run_id)
         if len(type(self).sessions) == 1:  # the first candidate, out of quota
             return [sys.executable, "-c",

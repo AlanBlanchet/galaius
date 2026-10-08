@@ -26,6 +26,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Annotated, ClassVar, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter
@@ -182,9 +183,10 @@ class AgentProvider(ABC):
     #: None: it cannot be, so it never starts or resumes where they must not load.
     folder_settings_off: ClassVar[tuple[str, ...] | None] = None
 
-    def _setting_sources(self) -> list[str]:
-        """`folder_settings_off` when the folder's own settings must not load, else nothing."""
-        if not os.environ.get(PROJECT_SETTINGS_OFF):
+    def _setting_sources(self, environment: Mapping[str, str] | None = None) -> list[str]:
+        """`folder_settings_off` when the folder's own settings must not load (`PROJECT_SETTINGS_OFF`
+        in `environment`, the one the CLI runs in; this process's own when None), else nothing."""
+        if not (os.environ if environment is None else environment).get(PROJECT_SETTINGS_OFF):
             return []
         if self.folder_settings_off is None:
             raise UnsupportedToolPolicy(f"{self.name} cannot run in a workspace cloned from the web: its folder's own settings cannot be switched off")
@@ -326,7 +328,7 @@ class AgentProvider(ABC):
                 reasoning: str | None = None,
                 agent_prompt: str | None = None, denied_tools: tuple[str, ...] = (),
                 image_paths: tuple[Path, ...] = (), coarse_accepted: bool = False,
-                base_url: str | None = None) -> list[str]:
+                base_url: str | None = None, environment: Mapping[str, str] | None = None) -> list[str]:
         """The argv to spawn for this task. ``agent`` names a definition the CLI resolves itself
         (Claude Code reads ~/.claude/agents/<name>.md), so a run can BE 'visual-critic'.
         ``coarse_accepted`` is the operator's recorded acceptance of sandbox-only enforcement for
@@ -761,7 +763,7 @@ class ClaudeCodeProvider(AgentProvider):
                 reasoning: str | None = None,
                 agent_prompt: str | None = None, denied_tools: tuple[str, ...] = (),
                 image_paths: tuple[Path, ...] = (), coarse_accepted: bool = False,
-                base_url: str | None = None) -> list[str]:
+                base_url: str | None = None, environment: Mapping[str, str] | None = None) -> list[str]:
         # `base_url` is unused here: Claude Code only ever speaks the Anthropic wire protocol
         # (ANTHROPIC_BASE_URL, read from its own process env, set by resolve_model's overlay) —
         # never OpenAI's, so a routed hf/vllm endpoint is never handed to this binary at all
@@ -781,7 +783,7 @@ class ClaudeCodeProvider(AgentProvider):
         argv += self.role_arguments(agent, agent_prompt, allowed_tools, denied_tools)
         if mcp_config:
             argv += ["--mcp-config", mcp_config]
-        argv += self._permission_flag(permission_mode) + self._setting_sources()
+        argv += self._permission_flag(permission_mode) + self._setting_sources(environment)
         if reasoning is not None:
             argv += ["--effort", self.provider_thinking_level(reasoning)]
         # The prompt goes LAST, after "--": one starting with "-" (a markdown bullet) is the
@@ -1387,10 +1389,10 @@ class CodexProvider(AgentProvider):
                 reasoning: str | None = None,
                 agent_prompt: str | None = None, denied_tools: tuple[str, ...] = (),
                 image_paths: tuple[Path, ...] = (), coarse_accepted: bool = False,
-                base_url: str | None = None) -> list[str]:
+                base_url: str | None = None, environment: Mapping[str, str] | None = None) -> list[str]:
         self.validate_tool_policy(allowed_tools or [], denied_tools, coarse_accepted=coarse_accepted)
         task = self._inject_definition(agent, task, agent_prompt)
-        argv = [self.binary, "exec", "--json", *self.native_delegation_flags, *self.platform_flags(), *self._setting_sources()]
+        argv = [self.binary, "exec", "--json", *self.native_delegation_flags, *self.platform_flags(), *self._setting_sources(environment)]
         argv += self.mesh_arguments(mcp_config)
         argv += self._mcp_tool_scope_arguments(allowed_tools or [], denied_tools)
         argv += self._native_sandbox_arguments(allowed_tools or [], denied_tools,
