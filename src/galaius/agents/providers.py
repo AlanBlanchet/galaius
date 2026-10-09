@@ -28,8 +28,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from collections.abc import Mapping
 from typing import Annotated, ClassVar, Literal, Protocol
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, model_validator
 
 from galaius.agents.catalog import AgentCatalog
 from galaius.agents.events import TOKEN_FIELDS, AgentEvent, TokenUsage, UsageLedger
@@ -168,6 +169,39 @@ def validate_denied_tools(tools: tuple[str, ...]) -> None:
         raise ValueError("Denied tool must be an exact built-in or qualified MCP tool name") from exc
 
 
+class ProgramInstaller(BaseModel):
+    """A vendor's own install script for one kind of system (`AgentProvider.installers`), run for
+    this computer's user only, never as an administrator: fetched over https from `url`, through the
+    hosts in `hosts` alone, handed to `shell` with `environment` added; the program then lands in one
+    of `bin_dirs` (`~` and `%VARIABLE%` expanded), which the installer does not always put on PATH."""
+
+    model_config = ConfigDict(frozen=True)
+
+    url: str
+    hosts: frozenset[str]
+    shell: tuple[str, ...]
+    bin_dirs: tuple[str, ...]
+    environment: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def from_its_vendor(self) -> "ProgramInstaller":
+        parts = urlsplit(self.url)
+        if parts.scheme != "https" or parts.hostname not in self.hosts:
+            raise ValueError(f"an installer is an https address on its vendor's hosts, not {self.url}")
+        return self
+
+    def found_dirs(self) -> tuple[str, ...]:
+        expanded = (os.path.expandvars(os.path.expanduser(entry)) for entry in self.bin_dirs)
+        return tuple(entry for entry in expanded if "%" not in entry and "$" not in entry)
+
+
+#: How PowerShell runs a downloaded script once, whatever the user's script policy (no profile, no prompt).
+POWERSHELL_FILE = ("powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File")
+#: Where each vendor serves its installers (each redirects to its download host).
+ANTHROPIC_INSTALL_HOSTS = frozenset({"claude.ai", "downloads.claude.ai"})
+OPENAI_INSTALL_HOSTS = frozenset({"chatgpt.com", "releases.openai.com"})
+
+
 class AgentProvider(ABC):
     """How to launch one vendor's agent CLI and read what it emits."""
 
@@ -229,16 +263,37 @@ class AgentProvider(ABC):
     #: The concrete provider still verifies the installed binary before using it.
     can_attach_images: ClassVar[bool] = False
 
+    #: Its vendor's install script, per kind of system (`windows`, `posix`); none: galaius does not install it.
+    installers: ClassVar[dict[Literal["windows", "posix"], ProgramInstaller]] = {}
+    #: Its own sign-in command, run with no terminal (`AgentPrograms`).
+    login_arguments: ClassVar[tuple[str, ...]] = ()
+
+    @classmethod
+    def installer(cls) -> ProgramInstaller | None:
+        """Its install script for this system, None where its vendor publishes none."""
+        return cls.installers.get("windows" if sys.platform == "win32" else "posix")
+
+    @staticmethod
+    def search_path(path: str | None = None) -> str:
+        """`path` (this process's PATH by default) followed by every program's own user folder here."""
+        current = (os.environ.get("PATH", os.defpath) if path is None else path).split(os.pathsep)
+        installed = (entry for provider in PROVIDERS.values() if (installer := provider.installer()) is not None for entry in installer.found_dirs())
+        return os.pathsep.join(dict.fromkeys([*current, *installed]))
+
     def available(self) -> bool:
         """Is the CLI installed? (Being logged in is the CLI's business, never ours.)"""
-        return shutil.which(self.binary) is not None
+        return shutil.which(self.binary, path=self.search_path()) is not None
 
     def executable(self) -> str:
         """Resolve the installed executable for a CLI status probe."""
-        found = shutil.which(self.binary)
+        found = shutil.which(self.binary, path=self.search_path())
         if found is None:
             raise FileNotFoundError(f"{self.name} CLI is not installed")
         return str(Path(found).resolve())
+
+    def signed_in_as(self, stdout: str, stderr: str) -> str:
+        """Who its status command says it is signed in as (an e-mail, an organisation); "" when it does not say."""
+        return ""
 
     def subscription_env(
         self, base: dict[str, str] | None = None, *, temp_dir: Path | None = None
@@ -306,6 +361,14 @@ class AgentProvider(ABC):
         status = await self._auth_status(env, timeout=timeout)
         return status is not None and status[0] == 0 and self.accepts_subscription_auth(*status[1:])
 
+    async def login_status(self, env: dict[str, str], *, timeout: float = 10) -> tuple[bool | None, str]:
+        """Signed in (None: its status check could not complete), and as whom (`signed_in_as`), asked now."""
+        status = await self._auth_status(env, timeout=timeout)
+        if status is None:
+            return None, ""
+        signed_in = status[0] == 0 and self.accepts_any_auth(*status[1:])
+        return signed_in, self.signed_in_as(*status[1:]) if signed_in else ""
+
     async def authenticated(self, env: dict[str, str], *, timeout: float = 10) -> bool | None:
         """CLI login state; None means its status check could not complete. A login confirmed less
         than `LOGIN_REUSE_SECONDS` ago in this process, for the same environment, is not checked
@@ -313,8 +376,7 @@ class AgentProvider(ABC):
         key = (self.name, hashlib.sha256(json.dumps(env, sort_keys=True).encode()).hexdigest())
         if time.monotonic() - self._logged_in.get(key, -self.LOGIN_REUSE_SECONDS) < self.LOGIN_REUSE_SECONDS:
             return True
-        status = await self._auth_status(env, timeout=timeout)
-        logged_in = None if status is None else status[0] == 0 and self.accepts_any_auth(*status[1:])
+        logged_in, _account = await self.login_status(env, timeout=timeout)
         if logged_in:
             self._logged_in[key] = time.monotonic()
         else:
@@ -602,6 +664,12 @@ class ClaudeCodeProvider(AgentProvider):
     binary = "claude"
     session_media_kinds = frozenset({"image", "video"})
     can_resume = True
+    installers = {
+        "posix": ProgramInstaller(url="https://claude.ai/install.sh", hosts=ANTHROPIC_INSTALL_HOSTS, shell=("bash",), bin_dirs=("~/.local/bin",)),
+        "windows": ProgramInstaller(url="https://claude.ai/install.ps1", hosts=ANTHROPIC_INSTALL_HOSTS, shell=POWERSHELL_FILE, bin_dirs=("~/.local/bin",)),
+    }
+    #: Opens this computer's browser on the sign-in page, which comes back to it (a localhost callback).
+    login_arguments = ("auth", "login")
 
     def model_id_for(self, model: Model) -> str:
         """Derive Claude Code's hyphenated version spelling for every future catalog row."""
@@ -637,6 +705,14 @@ class ClaudeCodeProvider(AgentProvider):
         except ValueError:
             return False
         return isinstance(status, dict) and status.get("loggedIn") is True
+
+    def signed_in_as(self, stdout: str, stderr: str) -> str:
+        try:
+            status = json.loads(stdout)
+        except ValueError:
+            return ""
+        said = [str(status[key]) for key in ("email", "orgName") if isinstance(status, dict) and status.get(key)]
+        return " · ".join(said)[:200]
 
     def supports_session_media(self, media_kind: str) -> bool:
         return media_kind in self.session_media_kinds
@@ -1328,6 +1404,14 @@ class CodexProvider(AgentProvider):
     name = "codex"
     native_providers = frozenset({"openai", "chatgpt"})
     binary = "codex"
+    installers = {
+        "posix": ProgramInstaller(url="https://chatgpt.com/codex/install.sh", hosts=OPENAI_INSTALL_HOSTS, shell=("sh",), bin_dirs=("~/.local/bin",),
+                                  environment={"CODEX_NON_INTERACTIVE": "1"}),
+        "windows": ProgramInstaller(url="https://chatgpt.com/codex/install.ps1", hosts=OPENAI_INSTALL_HOSTS, shell=POWERSHELL_FILE,
+                                    bin_dirs=("%LOCALAPPDATA%/Programs/OpenAI/Codex/bin",)),
+    }
+    #: Prints its vendor's page and a one-time code the person types there, on any browser.
+    login_arguments = ("login", "--device-auth")
     can_resume = True
     can_queue = True
     verified = True

@@ -43,6 +43,7 @@ from galaius.private_files import PRIVATE_FILES
 from galaius.error_reports import MachineErrorReports
 from galaius.machine_places import PlaceDesk
 from galaius.machine_agents import AgentSpawns, LogRing, MachineAgents, MachineSessions, WebRuns, redact, secret_values
+from galaius.machine_programs import AgentPrograms
 from galaius.machine_workspaces import MachineWorkspaces, WorkspaceJobs
 from galaius_core.sealing import SecretsSeal
 from galaius.agents.events import AgentEvent
@@ -869,6 +870,9 @@ class MachineRunner:
         #: the runs whose turn ended last (`FollowUps`).
         self.warm = WarmStart()
         self.followups = FollowUps()
+        #: The agent programs the owner installs from the web, and their sign-in (`AgentPrograms`).
+        self.programs = AgentPrograms(environment=self._system_environment(), log_path=self.config_path.with_name("agent-programs.log"),
+                                      active=lambda name: load_policy().provider_active(name))
 
     def _vision_worker(self, config: MachineConfig) -> VisionWorker:
         if self._vision is None or self._vision.keep_warm != config.model_keep_warm_seconds:
@@ -1154,7 +1158,7 @@ class MachineRunner:
     #: `places_direct`: a level from the web applies at once; folder names in the home folder are
     #: listed without the PC's own browse switch (`galaius_core.PlaceLevel`).
     FEATURES: ClassVar[tuple[str, ...]] = ("file_query", "script_file", "file_read", "agent_control", "agent_settings", "web_settings", "workspaces", "start_permission", "project_secrets", "places", "agent_media", "tool_gateway", "token_swap",
-                                           "workspace_copy", "places_direct")
+                                           "workspace_copy", "places_direct", "agent_programs")
 
     @classmethod
     def features(cls) -> list[str]:
@@ -1344,7 +1348,8 @@ class MachineRunner:
                                                           transfers=WorkspaceTransfers(endpoint=current.endpoint, headers=current.authorization),
                                                           environment={**self._safe_environment(), **{key: os.environ[key] for key in ("SSH_AUTH_SOCK",) if key in os.environ}}),
                              places=current.place_map(), fence_agents=current.fence_agents, reviews=self.reviews,
-                             levels_file=self.config_path, egress=(urlsplit(current.server_url).hostname or "",), warm=self.warm, followups=self.followups)
+                             levels_file=self.config_path, egress=(urlsplit(current.server_url).hostname or "",), warm=self.warm, followups=self.followups,
+                             programs=self.programs)
 
     def _register_agent_root(self, name: str) -> bool:
         """Adds `name` (relative to the working directory) to the agent roots - an existing checkout
@@ -1816,11 +1821,20 @@ class MachineRunner:
 
     @staticmethod
     def _safe_environment() -> dict[str, str]:
+        return {**{key: value for key, value in os.environ.items() if key in ALLOWED_ENV}, **MachineRunner._system_environment()}
+
+    @staticmethod
+    def _system_environment() -> dict[str, str]:
+        """What any program needs to start here and nothing else (no secret among them), PATH reaching
+        every agent program's own folder; the programs installed from the web run with only this."""
         fixed = {"HOME", "PATH", "USER", "LOGNAME", "SHELL", "LANG", "TERM", "SSL_CERT_FILE", "SSL_CERT_DIR", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS",
+                 # Where a program opens the person's browser (a sign-in) on a Linux desktop.
+                 "DISPLAY", "WAYLAND_DISPLAY", "BROWSER",
                  # Windows: what any program needs to start there (Python needs SYSTEMROOT, cmd COMSPEC), no secret among them.
                  "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP", "USERPROFILE", "USERNAME", "USERDOMAIN", "APPDATA", "LOCALAPPDATA",
                  "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)", "COMMONPROGRAMFILES", "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS", "OS", "PSMODULEPATH"}
-        return {key: value for key, value in os.environ.items() if key in fixed or key in ALLOWED_ENV or key.startswith("LC_")}
+        system = {key: value for key, value in os.environ.items() if key in fixed or key.startswith("LC_")}
+        return {**system, "PATH": agent_providers.AgentProvider.search_path(system.get("PATH", ""))}
 
     @staticmethod
     def _runtimes(config: MachineConfig) -> list[dict[str, str]]:

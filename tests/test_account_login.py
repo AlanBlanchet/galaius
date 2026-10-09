@@ -58,7 +58,7 @@ def joining(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(CatalogConnection, "path", classmethod(lambda cls: home / ".config" / "galaius" / "catalog.json"))
     issued = SimpleNamespace(workspace=SimpleNamespace(id=uuid4(), name="My workspace"), approved_by="owner", machine=SimpleNamespace(id=uuid4(), name="pc2"),
                              machine_token=SecretStr(uuid4().hex * 2), **{"api_key": SimpleNamespace(**{"secret": SecretStr(uuid4().hex * 2)})})
-    for name, value in {"skew": lambda self, http: None, "start": lambda self, http, runs: SimpleNamespace(verification_uri_complete="https://x/link", user_code="ABCD-EFGH", expires_in=600),
+    for name, value in {"skew": lambda self, http: None, "start": lambda self, http, runs: SimpleNamespace(verification_uri_complete="https://x/link", user_code="ABCD-EFGH", expires_in=600, match="47"),
                         "wait": lambda self, http, started, current=None: issued, "online": lambda self, http, machine, key: True, "revoke": lambda self, http, key: {}}.items():
         monkeypatch.setattr(account_login.AccountLogin, name, value)
     monkeypatch.setattr(account_login.AccountLogin, "synced", staticmethod(lambda connection: "Synced: nothing"))
@@ -237,7 +237,7 @@ def test_the_page_named_is_where_the_server_serves_the_app(answer: httpx.Respons
 
 
 def _started(code: str = "BCDF-GHJK") -> DeviceLoginStarted:
-    return DeviceLoginStarted(device_code="d" * 40, user_code=code, verification_uri="https://x/plateform/link",
+    return DeviceLoginStarted(device_code="d" * 40, user_code=code, match="47", verification_uri="https://x/plateform/link",
                               verification_uri_complete=f"https://x/plateform/link?code={code}", expires_in=600, interval=5)
 
 
@@ -256,7 +256,7 @@ def test_detach_opens_the_approval_hands_the_wait_over_and_says_one_line(joining
     received = account_login.HandedOff.model_validate_json(handoff.payload())
     assert received.started.device_code.get_secret_value() == "d" * 40 and received.agents.folders == ("dev",)
     out = capsys.readouterr().out.splitlines()
-    assert out[0] == "Installé : continuez dans votre navigateur" and (len(out) == 1) == opened
+    assert out[0] == "Installé : continuez dans votre navigateur" and out[-1] == "Si la page demande un numéro, choisissez : 47" and (len(out) == 2) == opened
     assert not MachineRunner.default_config_path().exists()  # saved only by the detached process, once approved
     assert account_login.PRIVATE_FILES.read_text(account_login.Pending.path())  # the pending page (with its code) is private: readable only as such
 
@@ -283,7 +283,7 @@ def test_a_second_install_line_reopens_the_same_page_while_its_waiter_lives(join
 
 
 def test_resume_finishes_what_detach_handed_over_and_a_newer_sign_in_takes_over(joining: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    pending = account_login.Pending(mark="mine", link="https://x/link?code=BCDF-GHJK", expires_at=datetime.now(UTC) + timedelta(minutes=9))
+    pending = account_login.Pending(mark="mine", link="https://x/link?code=BCDF-GHJK", match="47", expires_at=datetime.now(UTC) + timedelta(minutes=9))
     pending.write()
     monkeypatch.setattr("sys.stdin", SimpleNamespace(buffer=io.BytesIO(account_login.HandedOff(started=_started(), mark="mine").payload()), isatty=lambda: False))
     seen: list[bool] = []
@@ -291,7 +291,7 @@ def test_resume_finishes_what_detach_handed_over_and_a_newer_sign_in_takes_over(
     monkeypatch.setattr(AccountLogin, "wait", lambda self, http, value, current: seen.append(current()) or issued(self, http, value))
     account_login.login("https://galaius.example.org", allow_runs=False, open_browser=False, resume=True)
     assert seen == [True] and MachineRunner().load().run_agents is False and not account_login.Pending.path().exists()
-    account_login.Pending(mark="a later one", link="x", expires_at=datetime.now(UTC)).write()
+    account_login.Pending(mark="a later one", link="x", match="47", expires_at=datetime.now(UTC)).write()
     assert not pending.current()
 
 

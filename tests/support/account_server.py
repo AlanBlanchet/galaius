@@ -83,7 +83,7 @@ class AccountServer(BaseModel):
         self.pending[item.device_code] = item
         link = f"{request.base_url}link"
         started = DeviceLoginStarted(device_code=item.device_code, user_code=item.user_code, verification_uri=link,
-                                     verification_uri_complete=f"{link}?code={item.user_code}", expires_in=600, interval=1)
+                                     verification_uri_complete=f"{link}?code={item.user_code}", expires_in=600, interval=1, match="47")
         return JSONResponse(started.revealed(), status_code=201)
 
     async def token(self, request: Request) -> Response:

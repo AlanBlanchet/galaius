@@ -18,13 +18,11 @@ Each says its own last words (`last_words`): what `galaius login` shows, and sen
 computer's page, when the service does not bring the computer online."""
 
 import asyncio
-from contextlib import suppress
 import getpass
 import logging
 import os
 import plistlib
 import shutil
-import signal
 import subprocess
 import sys
 import time
@@ -37,6 +35,7 @@ from pydantic import BaseModel, ConfigDict
 
 from galaius.error_reports import MachineErrorReports
 from galaius.machines import JsonLines, MachineRunner
+from galaius.processes import end_process_tree, process_exited, process_group_options, process_started
 from galaius.private_files import WindowsPrivateFiles
 from galaius.upgrade.quiet import UpgradeReady
 from galaius.windowless import windowless_process
@@ -468,21 +467,14 @@ class DetachedMachineService(MachineService):
     #: How long `stop` waits for the process group to end before forgetting it.
     stop_seconds: ClassVar[float] = 10
 
-    @staticmethod
-    def identity(pid: int) -> tuple[str, str]:
-        """Process `pid`'s state and start time (`/proc/<pid>/stat` fields 3 and 22): with its id, who it
-        is (an id is reused), and whether it still runs (`Z` / `X`: exited, not yet collected)."""
-        fields = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").rpartition(")")[2].split()
-        return fields[0], fields[19]
-
     def _pid(self) -> int | None:
-        """The recorded process, while it is still the one started (not a later one given its id) and running."""
+        """The recorded process, while it is still the one started (`process_started`: an id is
+        reused) and has not exited (`process_exited`: a zombie no PID 1 collects)."""
         try:
-            pid, started = self.pid_path().read_text(encoding="utf-8").split()
-            state, now = self.identity(int(pid))
-        except (OSError, ValueError, IndexError):
+            pid, started = (int(part) for part in self.pid_path().read_text(encoding="utf-8").split())
+        except (OSError, ValueError):
             return None
-        return int(pid) if now == started and state not in {"Z", "X"} else None
+        return pid if process_started(pid) == started and not process_exited(pid) else None
 
     def install(self) -> None:
         self.start()
@@ -494,15 +486,14 @@ class DetachedMachineService(MachineService):
         log.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         with os.fdopen(os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "ab") as output:
             child = subprocess.Popen([str(self.executable()), *self.command], stdin=subprocess.DEVNULL, stdout=output, stderr=output,
-                                     close_fds=True, start_new_session=True)
-        self.pid_path().write_text(f"{child.pid} {self.identity(child.pid)[1]}", encoding="utf-8")
+                                     close_fds=True, **process_group_options())
+        self.pid_path().write_text(f"{child.pid} {process_started(child.pid)}", encoding="utf-8")
 
     def stop(self) -> None:
         """Ends it with every program its connection started (its own session's process group), as
         systemd and the Windows job do, then forgets it once gone: a restart never runs two."""
         if (pid := self._pid()) is not None:
-            with suppress(ProcessLookupError):
-                os.killpg(pid, signal.SIGTERM)
+            end_process_tree(pid)
             deadline = time.monotonic() + self.stop_seconds
             while self._pid() is not None and time.monotonic() < deadline:
                 time.sleep(0.1)

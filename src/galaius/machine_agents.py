@@ -35,7 +35,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from galaius_core import (
     AGENT_TOUCH_SCOPES, MACHINE_AGENT_MEDIA, MACHINE_AGENT_TAIL, AgentAnswerRequest, AgentMedia, AgentMediaRequest, image_type, AgentContinueRequest, AgentFoldersRequest, AgentInteraction, AgentLogsRequest, AgentOptionsRequest,
-    AgentProviderState, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
+    AgentProgramInstallRequest, AgentProgramsRequest, AgentProviderState, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
     MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, PassedOverCandidate, media_key, media_paths, MachineAgentSession, MachineFileEntry, WorkspaceCreateRequest, WorkspacePack, WorkspacePackRequest, WorkspacePrepareRequest, WorkspaceRefresh, WorkspacesRequest,
 )
 from galaius.agents import registry as reg
@@ -48,6 +48,7 @@ from galaius.agents.warm import WarmStart
 from galaius.config import UserConfig
 from galaius.fence import EGRESS, FenceSpec, available
 from galaius.file_lock import exclusive
+from galaius.machine_programs import AgentPrograms
 from galaius.machine_workspaces import MachineWorkspaces
 from galaius.pinned_directory import PinnedDirectory
 from galaius.workspace_copy import WorkspaceRefused
@@ -329,6 +330,8 @@ class MachineAgents(BaseModel):
     warm: WarmStart | None = None
     #: The runner's delivery of messages to its runs between their turns (`galaius.agents.followup`).
     followups: FollowUps | None = None
+    #: The agent programs installed from the web (`programs` / `program_install`).
+    programs: AgentPrograms | None = None
 
     @staticmethod
     def own_cli() -> tuple[str, ...]:
@@ -342,7 +345,9 @@ class MachineAgents(BaseModel):
         """Session work runs on the runner's loop (its host is async); everything else on a worker
         thread (files, the launcher's CLI)."""
         # With agents off (or no folder) what the web started here can still be read and stopped.
-        if not isinstance(request, AgentRunsRequest | AgentTailRequest | AgentMediaRequest | AgentStopRequest | AgentLogsRequest | WorkspacesRequest):
+        # Programs are not agents: installed and signed in whatever the agent settings say.
+        if not isinstance(request, AgentRunsRequest | AgentTailRequest | AgentMediaRequest | AgentStopRequest | AgentLogsRequest | WorkspacesRequest
+                          | AgentProgramsRequest | AgentProgramInstallRequest):
             if not self.run_agents:
                 raise PermissionError("agents are off on this computer; its owner turns them on on its page on the web, or there with `galaius machine agents on`")
             if not self.roots:
@@ -398,6 +403,16 @@ class MachineAgents(BaseModel):
                 return MachineAgentAnswer(request_id=request.id, pack=pack, detail="sending" if request.transfer else "measured")
             case WorkspacesRequest():
                 return MachineAgentAnswer(request_id=request.id, workspaces=self._workspaces().jobs.read()[:50])
+            case AgentProgramsRequest():
+                return MachineAgentAnswer(request_id=request.id, providers=await asyncio.to_thread(self._programs().states))
+            case AgentProgramInstallRequest():
+                state = await asyncio.to_thread(self._programs().install, request.provider)
+                return MachineAgentAnswer(request_id=request.id, providers=(state,), detail=f"{request.provider}: {state.step}")
+
+    def _programs(self) -> AgentPrograms:
+        if self.programs is None:
+            raise PermissionError("this computer does not install agent programs")
+        return self.programs
 
     def _workspaces(self) -> MachineWorkspaces:
         if self.workspaces is None:

@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from galaius.machine_service import DetachedMachineService, LaunchdMachineService, ServiceUnavailable
+from galaius.processes import process_exited
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="the macOS agent's POSIX paths (Windows' home ignores HOME)")
 
@@ -74,6 +75,6 @@ def test_without_systemd_the_connection_runs_as_its_own_process_until_stopped(tm
     grandchild = int((tmp_path / "grandchild").read_text())
     service.stop()
     assert not service.running() and not service.installed()
-    assert DetachedMachineService.identity(grandchild)[0] in {"Z", "X"} if Path(f"/proc/{grandchild}").exists() else True  # its programs end with it
+    assert process_exited(grandchild) or not Path(f"/proc/{grandchild}").exists()  # its programs end with it
     service.pid_path().write_text(f"{os.getpid()} 0")  # a live process given that id later: not ours
     assert not service.running()

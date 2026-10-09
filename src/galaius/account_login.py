@@ -438,7 +438,7 @@ def login(server: str | None, *, allow_runs: bool, open_browser: bool, agents: b
             with account.client() as http:
                 started, _ = account.begun(http, allow_runs, open_browser)
                 print(f"To connect this computer, open this page and allow it:\n\n    {started.verification_uri_complete}\n")
-                print(f"Check the page shows the code  {started.user_code}  (expires in {started.expires_in // 60} min).")
+                print(f"Check the page shows the code  {started.user_code}  (expires in {started.expires_in // 60} min); if it asks for a number, pick  {started.match}.")
                 _joined(account, http, started, agents=AgentChoice.given(agents, agent_folders, agent_opt_ins, AgentChoice.joining()))
         elif AccountLogin.parsed(existing.server_url) != account:
             _moved(account, existing, agents=AgentChoice.given(agents, agent_folders, agent_opt_ins, existing))
@@ -475,6 +475,8 @@ class Pending(BaseModel):
     model_config = ConfigDict(frozen=True)
     mark: str
     link: str
+    #: The number the approval page asks for when the browser is on another network (`DeviceLoginStarted.match`).
+    match: str
     expires_at: datetime
     #: A waiter polls every few seconds: a file older than this has none behind it any more.
     alive_within: ClassVar[timedelta] = timedelta(seconds=30)
@@ -525,19 +527,22 @@ def _handed_off(account: AccountLogin, existing: MachineConfig | None, *, allow_
             agents.applied(MachineRunner())
         _detached(account, HandedOff())
         with account.client() as http:
-            link = account.page(http, existing)
+            link, match = account.page(http, existing), ""
     elif (pending := Pending.read()) is not None:
-        link = pending.link
+        link, match = pending.link, pending.match
     else:
         with account.client() as http:
             started, _ = account.begun(http, allow_runs, open_browser=False)
-        pending = Pending(mark=secrets.token_hex(16), link=started.verification_uri_complete, expires_at=datetime.now(UTC) + timedelta(seconds=started.expires_in))
+        pending = Pending(mark=secrets.token_hex(16), link=started.verification_uri_complete, match=started.match,
+                          expires_at=datetime.now(UTC) + timedelta(seconds=started.expires_in))
         pending.write()
         _detached(account, HandedOff(started=started, agents=agents, mark=pending.mark))
-        link = pending.link
+        link, match = pending.link, pending.match
     print(INSTALLED)
     if not (open_browser and account.opened(link)):
         print(f"Ouvrez cette page : {link}")
+    if match:  # approved from another network (a copied link), the page asks for it
+        print(f"Si la page demande un numéro, choisissez : {match}")
 
 
 def _detached(account: AccountLogin, handed: HandedOff) -> None:
@@ -585,7 +590,7 @@ def _resumed(account: AccountLogin) -> None:
         else:
             _reconfigured(account, existing, agents=None)
         return
-    pending = Pending(mark=handed.mark, link=handed.started.verification_uri_complete, expires_at=datetime.now(UTC))
+    pending = Pending(mark=handed.mark, link=handed.started.verification_uri_complete, match=handed.started.match, expires_at=datetime.now(UTC))
     with account.client() as http:
         _joined(account, http, handed.started, agents=handed.agents, current=pending.current)
     Pending.path().unlink(missing_ok=True)
