@@ -131,10 +131,19 @@ _ROLE_MODEL_JSON = json.dumps({
 })
 
 
+@pytest.fixture
+def bundled_catalog_after():
+    """For a test that replaces the process-wide model registry: the next test gets the bundled
+    catalog back (left empty, a later criterion in the same process selected nothing)."""
+    yield
+    Model.load_registry()
+
+
 @pytest.mark.parametrize(
     "metric_id",
     [b.id for b in Benchmark.registry() if b.namespace == "aa" and b.source_field],
 )
+@pytest.mark.usefixtures("bundled_catalog_after")
 def test_a_stale_board_still_scores_every_source_mapped_aa_metric(monkeypatch, metric_id):
     """`is_live` used to gate hydration itself, so every source-mapped Artificial Analysis
     metric (coding_index, terminalbench_hard, ...) read as unscored whenever the on-disk board
@@ -432,18 +441,16 @@ def test_an_empty_upstream_table_is_not_cached_over_a_real_one(monkeypatch):
     ("published_name", "registered_id"),
     [("Holo1.5", "azure/o1"), ("GPT-5.4", "azure/gpt5")],
 )
+@pytest.mark.usefixtures("bundled_catalog_after")
 def test_published_identity_never_uses_substring_aliases(
     published_name: str, registered_id: str,
 ) -> None:
     Model._reset()
-    try:
-        Model._register(Model(
-            id=registered_id, provider="azure", capabilities={ModelCapability.VLM},
-        ))
-        assert PublishedTable._fuzzy_match_registered(published_name) is None
-        assert Model.match_published(published_name) is None
-    finally:
-        Model._reset()
+    Model._register(Model(
+        id=registered_id, provider="azure", capabilities={ModelCapability.VLM},
+    ))
+    assert PublishedTable._fuzzy_match_registered(published_name) is None
+    assert Model.match_published(published_name) is None
 
 
 def test_live_display_table_is_the_same_score_criteria_executes(monkeypatch) -> None:
