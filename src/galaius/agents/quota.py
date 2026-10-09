@@ -124,6 +124,9 @@ PROBATION_WINDOW = 30.0
 #: Added past an instant the vendor named, so the next launch does not race the boundary it was
 #: just refused at: their clock and this machine's are not the same clock.
 RESET_SLACK = 60.0
+#: How far behind `now` a spoken bare-hour reset (« resets 5:20pm ») still names TODAY's: the vendor keeps
+#: refusing right after the boundary it names (heard at 17:24), and a five-hour window never reopens a day later.
+SPOKEN_PAST = 300.0
 
 #: No period any of these vendors names is longer than seven days: no block is ever longer.
 MAX_COOLDOWN = max(WINDOWS.values())
@@ -318,8 +321,8 @@ class Refusal(BaseModel):
 
     @staticmethod
     def _spoken_instant(found: re.Match[str], *, now: float) -> float | None:
-        """The first instant at or after `now` matching a spoken reset (a bare hour: today or
-        tomorrow; with a date: that date this year or next), in the zone it names."""
+        """The first instant matching a spoken reset no more than `SPOKEN_PAST` before `now` (a bare
+        hour: today or tomorrow; with a date: that date this year or next), in the zone it names."""
         try:
             zone = ZoneInfo(found["zone"])
         except (ZoneInfoNotFoundError, ValueError):
@@ -339,7 +342,7 @@ class Refusal(BaseModel):
                 return (moment.replace(year=today.year + 1) if moment.timestamp() < now - 183 * 86400 else moment).timestamp()
         except ValueError:
             return None
-        return next(moment.timestamp() for moment in candidates if moment.timestamp() > now - RESET_SLACK)
+        return next(moment.timestamp() for moment in candidates if moment.timestamp() > now - SPOKEN_PAST)
 
     @staticmethod
     def _window_in(line: str) -> str:

@@ -243,6 +243,16 @@ def test_a_spoken_reset_in_a_named_zone_is_read_as_its_instant(said, now, reopen
         datetime.fromisoformat(reopens).timestamp() + quota.RESET_SLACK)
 
 
+@pytest.mark.parametrize(("now", "reopens"), [
+    ("2026-10-09T15:24:00+00:00", "2026-10-09T15:20:00+00:00"),  # 4 min past « 5:20pm »: still refused at its boundary, today's
+    ("2026-10-09T15:26:00+00:00", "2026-10-10T15:20:00+00:00"),  # past `SPOKEN_PAST`: tomorrow's
+])
+def test_a_spoken_reset_just_passed_is_todays_not_tomorrows(now, reopens):
+    """A resumed turn refused just after « resets 5:20pm » once read it as a day away and paused the run a day."""
+    said = "You've hit your session limit · resets 5:20pm (Europe/Paris)"
+    assert quota.Refusal.read(said, now=datetime.fromisoformat(now).timestamp()).reopens_at == datetime.fromisoformat(reopens).timestamp()
+
+
 @pytest.mark.parametrize(("said", "now", "blocked_for"), [
     pytest.param("You've hit your limit · resets 3:30pm (UTC)", "2026-10-05T15:10:00+00:00",
                  20 * 60 + quota.RESET_SLACK, id="a spoken reset sooner than an hour wins"),

@@ -1693,3 +1693,63 @@ def test_a_line_separator_inside_an_event_keeps_the_event_whole(separator):
 
     assert texts == [(said[0], 0), (said[1], 1)]
     assert reg.raw_line_count("r1") == 2
+
+
+# A run a provider usage limit stopped resumes by itself at the reset the provider named (owner
+# 2026-10-09: five builder runs stayed « failed » after their « resets 5:20pm » had passed).
+_SESSION_LIMIT = "You've hit your session limit · resets 5:20pm (Europe/Paris)"
+
+
+def _ended_on(run_id: str, said: str, *, pid: int, parent: str | None = None) -> reg.AgentRun:
+    reg.register(run_id=run_id, pid=pid, provider="claude", name="w", agent="app-engineer",
+                 model="claude-opus-5-5", parent_run_id=parent)
+    reg.raw_events_path(run_id).write_text(_claude_error_stream(said))
+    assert reg.finish(run_id, exit_code=1, expected_pid=pid, expected_lifecycle_token=reg.get_run(run_id).lifecycle_token)
+    return reg.get_run(run_id)
+
+
+@pytest.mark.parametrize("said, paused", [
+    (_SESSION_LIMIT, True),
+    ("You've reached your Fable limit. Switch to another model, or manage usage credits.", False),  # names no reset
+    ("Error: the build failed", False),
+])
+def test_only_a_usage_limit_naming_its_reset_pauses_a_run(said, paused):
+    from galaius.agents import quota
+
+    run = _ended_on("lim1", said, pid=401)
+    written = reg.schedule_limit_resumes()
+    if not paused:
+        assert written == [] and reg.get_run("lim1").resume_at is None
+        return
+    reopens = quota.Refusal.read(said, now=run.finished_at).reopens_at
+    assert [r.run_id for r in written] == ["lim1"]
+    assert reg.get_run("lim1").resume_at == reopens + quota.RESET_SLACK
+    assert 0 < reopens - run.finished_at <= 24 * 3600
+
+
+def test_a_paused_run_is_claimed_once_at_its_reset_and_its_sub_run_is_left_to_it():
+    _ended_on("lim-root", _SESSION_LIMIT, pid=402)
+    _ended_on("lim-sub", _SESSION_LIMIT, pid=403, parent="lim-root")
+    assert [r.run_id for r in reg.schedule_limit_resumes()] == ["lim-root"]
+    at = reg.get_run("lim-root").resume_at
+
+    assert reg.claim_limit_resume("lim-root", now=at - 1) is None, "claimed before its reset"
+    assert reg.claim_limit_resume("lim-root", now=at + reg.RESUME_GRACE + 1) is None, "claimed long after the web said it ended"
+    claimed = reg.claim_limit_resume("lim-root", now=at + 5)
+    assert claimed is not None and claimed.resume_at is None and claimed.resumed_at == at + 5
+    assert reg.claim_limit_resume("lim-root", now=at + 6) is None, "a second runner resumed it again"
+    assert reg.get_run("lim-sub").resume_at is None
+
+
+def test_a_resumed_turn_refused_again_right_away_is_left_to_reprendre(monkeypatch):
+    """The resumed turn hears the same « resets 5:20pm » just after 17:20: read then, it names TOMORROW's
+    17:20 (code-reviewer r1) — the window did not reopen, so it is never paused for a day, nor looped."""
+    _ended_on("lim-again", _SESSION_LIMIT, pid=404)
+    at = reg.schedule_limit_resumes()[0].resume_at
+    claimed = reg.claim_limit_resume("lim-again", now=at)
+    resumed = reg.begin_turn("lim-again", pid=405, model="claude-opus-5-5")
+    with reg.raw_events_path("lim-again").open("a") as stream:
+        stream.write(_claude_error_stream(_SESSION_LIMIT))
+    monkeypatch.setattr(reg.time, "time", lambda: claimed.resumed_at + 10)
+    assert reg.finish("lim-again", exit_code=1, expected_pid=405, expected_lifecycle_token=resumed.lifecycle_token)
+    assert reg.schedule_limit_resumes() == [] and reg.get_run("lim-again").resume_at is None

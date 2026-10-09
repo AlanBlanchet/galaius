@@ -369,5 +369,8 @@ def _who(run_id: str | None) -> str:
     # import would create the events<->registry cycle before either side declared its models.
     from galaius.agents import registry as reg
 
+    if run_id == reg.LIMIT_RESUME_SENDER:
+        return "automatic resume after the usage limit"
+
     run = reg._read_record(run_id)
     return run.name if run is not None else run_id[:8]

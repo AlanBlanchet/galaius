@@ -804,6 +804,30 @@ class MachineAgents(BaseModel):
             raise RuntimeError(delivery.text.removeprefix("ERROR: ") or "not delivered")
         return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=delivery.text)
 
+    async def resume_limited(self) -> list[str]:
+        """The runs a provider usage limit paused, on this PC: each says when it resumes
+        (`registry.schedule_limit_resumes`), and each whose moment came is resumed once with
+        `RESUME_BRIEF`, as « Reprendre » does (its dispatcher, the launcher's environment for its
+        folder), from `LIMIT_RESUME_SENDER`. A resume refused before its turn starts becomes the run's
+        failure, with why, so « Reprendre » stays offered. Returns the ids it resumed."""
+        resumed = []
+        for run in await asyncio.to_thread(reg.schedule_limit_resumes):
+            if await asyncio.to_thread(reg.claim_limit_resume, run.run_id) is None:
+                continue
+            try:
+                environment = await asyncio.to_thread(self.launcher_environment_in, Path(run.cwd))
+                delivery = await asyncio.to_thread(deliver_message, run.run_id, reg.RESUME_BRIEF, sender=reg.LIMIT_RESUME_SENDER, environment=environment)
+                refused = delivery.text.removeprefix("ERROR: ") if delivery.state == "error" else ""
+            except Exception as error:  # claimed: whatever stops it must end as the run's failure, never a silent pause
+                refused = str(error) or type(error).__name__
+            if refused:
+                await asyncio.to_thread(reg.fail_turn, run.run_id, f"Automatic resume after the usage limit failed: {refused}")
+                logger.warning("run %s not resumed after its usage limit: %s", run.run_id[:8], refused)
+            else:
+                resumed.append(run.run_id)
+                logger.info("run %s resumed after its usage limit", run.run_id[:8])
+        return resumed
+
     async def follow_up(self) -> None:
         """At the runner's start (`FollowUps`): messages its web runs still had queued go to their
         dispatchers; the runs whose turn ended last get their next turn started ahead."""

@@ -939,6 +939,7 @@ class MachineRunner:
         settler = asyncio.create_task(self._settle_runs())
         reports = asyncio.create_task(self._deliver_reports(config))
         followed = asyncio.create_task(self._follow_up(config))
+        resumed = asyncio.create_task(self._resume_limited(config))
         swapped = False
         try:
             await self._connect(config)
@@ -958,7 +959,8 @@ class MachineRunner:
             settler.cancel()
             reports.cancel()
             followed.cancel()
-            await asyncio.gather(settler, reports, followed, return_exceptions=True)
+            resumed.cancel()
+            await asyncio.gather(settler, reports, followed, resumed, return_exceptions=True)
             for ahead in (self.warm, self.followups):  # a child started ahead never outlives its runner; ended on the loop it lives on
                 AgentSpawns.loop().call_soon_threadsafe(ahead.close)
         if swapped:
@@ -977,6 +979,21 @@ class MachineRunner:
                 await agents.follow_up()
         except Exception:  # its own failure never stops the runner: a follow-up then starts as before
             logger.exception("queued follow-ups not recovered")
+
+    async def _resume_limited(self, config: MachineConfig) -> None:
+        """Every `settle_seconds`, while agents run here: the runs a provider usage limit paused say when
+        they resume, and each one whose reset came is resumed (`MachineAgents.resume_limited`). Local and
+        independent of the server, like `_settle_runs`: web-started and terminal-started runs alike."""
+        while True:
+            try:
+                agents = await asyncio.to_thread(self._agents, self._current_config(config))
+                if agents.run_agents:
+                    await agents.resume_limited()
+            except EnrollmentChanged:
+                pass  # the connection loop reconnects with the new enrollment; the next pass reads it
+            except Exception:  # one failed pass never stops the next
+                logger.exception("resuming runs paused by a usage limit failed")
+            await asyncio.sleep(self.settle_seconds)
 
     async def _settle_runs(self) -> None:
         """Every `settle_seconds`, mark ended the runs whose process is gone (`registry.settle_gone`)."""

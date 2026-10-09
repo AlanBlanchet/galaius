@@ -315,6 +315,14 @@ class AgentRun(BaseModel):
     started_at: float = 0.0
     finished_at: float | None = None
     exit_code: int | None = None
+    #: When this PC's runner resumes the run by itself: its last turn was refused by a provider usage
+    #: limit that named when its window reopens (`limit_resume_at`). Written and cleared by the runner
+    #: only (`schedule_limit_resumes`, `claim_limit_resume`); None otherwise.
+    resume_at: float | None = None
+    #: When the runner last resumed it by itself (`claim_limit_resume`): a refusal naming a reset no
+    #: later than this, or heard within `RESUME_GRACE` of it (the window did not reopen), is left to
+    #: « Reprendre », never resumed again.
+    resumed_at: float | None = None
     #: True for a session galaius did NOT spawn — the user's own editor windows, surfaced so the
     #: supervisor shows the machine's real state rather than only its own children.
     foreign: bool = False
@@ -1950,6 +1958,73 @@ def settle_gone() -> list[AgentRun]:
         if healed.status != run.status:
             settled.append(healed)
     return settled
+
+
+#: How long an automatic resume after a usage limit holds: the runner takes it within this long of its
+#: `resume_at` (a PC off at the reset leaves it to « Reprendre »; the web reads it ended past then too),
+#: and a refusal heard within this long of that resume means the window did not reopen.
+RESUME_GRACE = 300.0
+#: Who an automatic resume is from, on its queue item and message event (`from_run`): never the person.
+LIMIT_RESUME_SENDER = "limit-resume"
+
+
+def limit_resume_at(run: AgentRun) -> float | None:
+    """When `run` can be resumed by itself: one `quota.RESET_SLACK` after the instant its provider
+    said the usage window that refused its last turn reopens (the cooldown that refusal recorded ends
+    then too). None unless it is a launched process run that failed on that refusal within the last
+    `quota.MAX_COOLDOWN`, the refusal named the instant, and no automatic resume answered it already."""
+    digest = run.stream_digest
+    if (run.foreign or run.kind != "process" or run.status != "failed" or run.finished_at is None
+            or digest is None or digest.ending != "error" or not quota.REFUSAL.search(digest.ending_text)):
+        return None
+    refusal = quota.Refusal.read(digest.ending_text, now=run.finished_at)
+    if refusal is None or refusal.reopens_at is None or refusal.reopens_at - run.finished_at > quota.MAX_COOLDOWN:
+        return None
+    moment = refusal.reopens_at + quota.RESET_SLACK
+    if run.resumed_at is not None and (moment <= run.resumed_at or run.finished_at - run.resumed_at <= RESUME_GRACE):
+        return None
+    return moment
+
+
+def schedule_limit_resumes(*, now: float | None = None) -> list[AgentRun]:
+    """Write `resume_at` on every run a usage limit paused (`limit_resume_at`) and clear it where it
+    no longer holds (resumed by hand, stopped, superseded, `RESUME_GRACE` past it). A sub-run whose
+    parent is in this store is its parent's to resume: the same limit stopped that parent too, or the
+    parent is alive and sees it ended. Reads only records that moved; returns the paused runs, each
+    as written."""
+    moment = time.time() if now is None else now
+    records = _stored_records()
+    known = {run.run_id for run in records}
+    paused = []
+    for run in records:
+        at = limit_resume_at(run) if run.parent_run_id not in known else None
+        wanted = at if at is not None and moment <= at + RESUME_GRACE else None
+        if wanted == run.resume_at:
+            if wanted is not None:
+                paused.append(run)
+            continue
+        with record_lock(run.run_id):
+            stored = _read_record(run.run_id)
+            # Re-read under the lock: a turn begun meanwhile is no longer paused.
+            if stored is None or stored.status != run.status or stored.finished_at != run.finished_at:
+                continue
+            written = _merge_record_locked(run.run_id, {"resume_at": wanted})
+        if written is not None and wanted is not None:
+            paused.append(written)
+    return paused
+
+
+def claim_limit_resume(run_id: str, *, now: float | None = None) -> AgentRun | None:
+    """Take run `run_id`'s automatic resume once its `resume_at` came, and at most `RESUME_GRACE`
+    after: clears it and records `resumed_at`, so no second runner (nor a restart) resumes it again.
+    The run as claimed, or None when it is not due, too late, or no longer paused."""
+    moment = time.time() if now is None else now
+    with record_lock(run_id):
+        stored = _read_record(run_id)
+        if (stored is None or stored.status != "failed" or stored.resume_at is None
+                or not stored.resume_at <= moment <= stored.resume_at + RESUME_GRACE):
+            return None
+        return _merge_record_locked(run_id, {"resume_at": None, "resumed_at": moment})
 
 
 def trees(root_run_ids: frozenset[str]) -> list[AgentRun]:
