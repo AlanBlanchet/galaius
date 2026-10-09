@@ -203,7 +203,7 @@ def load_scores(*, refresh: bool = False) -> Board:
     if not refresh and cached is not None and cached.age_seconds <= TTL_SECONDS:
         return cached
     try:
-        fetched = CACHE.refetch(_VENDOR, _fetch)
+        fetched = CACHE.refetch(_VENDOR, _fetch, asked=refresh)
     except RefreshFailed:
         if refresh:
             raise

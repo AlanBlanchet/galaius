@@ -310,6 +310,40 @@ def test_an_unreachable_upstream_serves_the_stale_cache_rather_than_nothing(monk
     assert stale.freshness == "stale"
 
 
+def _leaderboards_unreachable(*a, **k):
+    import httpx
+
+    raise httpx.ConnectError("no route", request=httpx.Request("GET", "https://example.test"))
+
+
+@pytest.mark.parametrize("fail", [_leaderboards_unreachable, lambda *a, **k: {"mmmu": _empty()}],
+                         ids=["unreachable", "every_board_empty"])
+def test_a_failed_download_holds_off_the_ranking_reads_for_ten_minutes(monkeypatch, fail):
+    """A ranking pass reads stale tables thousands of times; with the leaderboards unreachable each
+    read downloaded again (18,606 tries, ~190 s a pass). One try, then the stale tables for 10 min;
+    a person's own refresh still tries at once."""
+    monkeypatch.setattr("galaius.benchmarks.upstream.fetch_all", lambda *a, **k: {"mmmu": _table()})
+    bt.load_tables()
+    raw = bt.CACHE.read()
+    raw["fetched_at"] = time.time() - bt.TTL_SECONDS * 2
+    bt.CACHE.write(raw)
+    calls = []
+    monkeypatch.setattr("galaius.benchmarks.upstream.fetch_all", lambda *a, **k: calls.append(1) or fail())
+
+    assert all(bt.load_tables()["mmmu"].freshness == "stale" for _ in range(200))
+    assert len(calls) == 1
+    with pytest.raises(bt.RefreshFailed):
+        bt.load_tables(refresh=True)
+    assert len(calls) == 2
+    now = time.time()
+    monkeypatch.setattr(time, "time", lambda: now + 9 * 60)
+    bt.load_tables()
+    assert len(calls) == 2
+    monkeypatch.setattr(time, "time", lambda: now + 10 * 60 + 1)
+    bt.load_tables()
+    assert len(calls) == 3
+
+
 def test_no_cache_and_no_network_is_empty_not_an_exception(monkeypatch):
     def _boom(*a, **k):
         raise RuntimeError("offline")

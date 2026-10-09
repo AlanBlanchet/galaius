@@ -37,6 +37,10 @@ T = TypeVar("T")
 TTL_SECONDS = 12 * 60 * 60
 #: How long a 429 that names no ``Retry-After`` holds further calls off.
 RATE_LIMIT_BACKOFF_SECONDS = 15 * 60
+#: How long any other failed fetch (unreachable, an error status, an unusable answer) holds off the
+#: reads that refetch on their own: a ranking pass reads a stale cache thousands of times, and with
+#: the leaderboards unreachable each read tried the download again (18,606 tries, ~190 s per pass).
+FAILURE_BACKOFF_SECONDS = 10 * 60
 
 
 def describe_span(seconds: float) -> str:
@@ -55,11 +59,14 @@ class RefreshFailed(Exception):
     """A refresh that did not happen: WHY, until when the source asked us to wait, and when the
     copy still standing in was fetched (0 = nothing cached)."""
 
-    def __init__(self, reason: str, *, retry_at: float | None = None, cached_at: float = 0.0):
+    def __init__(self, reason: str, *, retry_at: float | None = None, cached_at: float = 0.0, vendor: bool = True):
         super().__init__(reason)
         self.reason = reason
         self.retry_at = retry_at
         self.cached_at = cached_at
+        #: The source itself asked for the wait (``Retry-After``, a 429): it binds an asked-for
+        #: refresh too. False: our own back-off after a failure, which only the automatic reads keep.
+        self.vendor = vendor
 
     @classmethod
     def from_response(cls, vendor: str, response: httpx.Response) -> "RefreshFailed":
@@ -73,7 +80,7 @@ class RefreshFailed(Exception):
     def describe(self, what: str) -> str:
         """``<reason>[, retry in <span>], <what> from <age>`` — one line a CLI prints verbatim."""
         parts = [self.reason]
-        if self.retry_at is not None and self.retry_at > time.time():
+        if self.vendor and self.retry_at is not None and self.retry_at > time.time():
             parts.append(f"retry in {describe_span(self.retry_at - time.time() + 1)}")
         parts.append(f"{what} from {describe_age(age_of(self.cached_at))}" if self.cached_at
                      else f"no {what} cached")
@@ -113,6 +120,8 @@ class TTLCache:
     ttl_seconds: float = TTL_SECONDS
     #: Describes this machine only (a local daemon's answers): another machine's copy would be wrong here.
     machine_local: bool = False
+    #: How long a failure that names no retry time holds off the automatic reads (`refetch`).
+    failure_backoff_seconds: float = FAILURE_BACKOFF_SECONDS
     _built: dict[Callable, _Built] = field(default_factory=dict, init=False, repr=False, compare=False)
 
     @property
@@ -180,28 +189,33 @@ class TTLCache:
     def retry_path(self) -> Path:
         return self.path.with_name(f"{self.path.name}.retry")
 
-    def deferral(self) -> RefreshFailed | None:
-        """The failure a vendor told every caller to wait out, while its window is still open."""
+    def deferral(self, *, asked: bool = False) -> RefreshFailed | None:
+        """The failure every caller waits out while its window is open: a vendor's for everyone, our
+        own back-off only for an automatic read (``asked=False``); an asked-for refresh tries again."""
         try:
             raw = json.loads(self.retry_path.read_text())
-            retry_at, reason = float(raw["retry_at"]), str(raw["reason"])
+            failure = RefreshFailed(str(raw["reason"]), retry_at=float(raw["retry_at"]), vendor=bool(raw.get("vendor", True)))
         except (OSError, ValueError, KeyError, TypeError):
             return None
-        return RefreshFailed(reason, retry_at=retry_at) if retry_at > time.time() else None
+        if failure.retry_at is None or failure.retry_at <= time.time():
+            return None
+        return failure if failure.vendor or not asked else None
 
     def due_at(self) -> float:
         """When a refresher should next fetch: the vendor's retry time, else TTL expiry."""
         deferral = self.deferral()
         return deferral.retry_at if deferral is not None else self.fetched_at + self.ttl_seconds
 
-    def refetch(self, vendor: str, fetch: Callable[[], T]) -> T:
-        """Run ``fetch`` unless the vendor's ``Retry-After`` window is still open.
+    def refetch(self, vendor: str, fetch: Callable[[], T], *, asked: bool = False) -> T:
+        """Run ``fetch`` unless a wait recorded beside the cache is still open (`deferral`).
 
         Every failure comes out as :class:`RefreshFailed`: an HTTP status keeps its code, a
         transport or parse error keeps its type, and a ``retry_at`` is persisted beside the
-        cache so the next process — another editor window, `galaius refresh` — waits too.
+        cache so the next process — another editor window, `galaius refresh` — waits too: the
+        vendor's when it named one, else :attr:`failure_backoff_seconds` for the automatic reads.
+        ``asked``: a person asked for this refresh, so only a vendor's own wait holds it off.
         """
-        failure = self.deferral()
+        failure = self.deferral(asked=asked)
         if failure is None:
             try:
                 result = fetch()
@@ -217,8 +231,9 @@ class TTLCache:
                 with suppress(OSError):
                     self.retry_path.unlink(missing_ok=True)
                 return result
-            if failure.retry_at is not None:
-                self._write_json(self.retry_path, {"retry_at": failure.retry_at, "reason": failure.reason})
+            if failure.retry_at is None:
+                failure.retry_at, failure.vendor = time.time() + self.failure_backoff_seconds, False
+            self._write_json(self.retry_path, {"retry_at": failure.retry_at, "reason": failure.reason, "vendor": failure.vendor})
         failure.cached_at = self.fetched_at
         raise failure
 

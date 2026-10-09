@@ -44,7 +44,7 @@ def load_tables(*, refresh: bool = False) -> dict[str, PublishedTable]:
     if not refresh and current:
         return dict(cached)
     try:
-        usable = CACHE.refetch("the benchmark leaderboards", _fetch)
+        usable = CACHE.refetch("the benchmark leaderboards", _fetch, asked=refresh)
     except RefreshFailed:
         if refresh:
             raise

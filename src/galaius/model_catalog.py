@@ -379,7 +379,7 @@ def load_catalog(*, refresh: bool = False) -> Catalog:
     if not refresh and cached is not None and cached.age_seconds <= TTL_SECONDS:
         return cached
     try:
-        fresh = CACHE.refetch("OpenRouter", _fetch)
+        fresh = CACHE.refetch("OpenRouter", _fetch, asked=refresh)
     except RefreshFailed:
         if refresh:
             raise  # an asked-for refresh that did not happen is said, never passed off as done
