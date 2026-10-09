@@ -33,7 +33,7 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, model_validator
 
 from galaius.agents.catalog import AgentCatalog
-from galaius.agents.events import TOKEN_FIELDS, AgentEvent, TokenUsage, UsageLedger
+from galaius.agents.events import TOKEN_FIELDS, AgentEvent, TokenUsage, UsageLedger, stream_lines
 from galaius.agents.profiles import overlay_for
 from galaius.agents.vocabulary import ApprovalIntent, TouchScope, ThinkingLevel, vocabulary_for
 from galaius.models import Model
@@ -747,7 +747,7 @@ class ClaudeCodeProvider(AgentProvider):
         ledger = UsageLedger()
         events = [
             event
-            for line in stdout_bytes.decode(errors="replace").splitlines()
+            for line in stream_lines(stdout_bytes.decode(errors="replace"))
             if (event := self.parse(line, ledger))
         ]
         facts = _failure_event_facts(events)

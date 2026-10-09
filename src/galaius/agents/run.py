@@ -31,6 +31,7 @@ from galaius.agents import registry as reg
 from galaius.agents import quota
 from galaius.agents.catalog import AgentCatalog
 from galaius.agents.ceiling import contained
+from galaius.agents.events import stream_lines
 from galaius.fence import FenceSpec, fenced
 from galaius.processes import process_group_options, spawnable
 from galaius.agents.policy import Policy, policy_path
@@ -469,7 +470,7 @@ def _raw_tail(run_id: str) -> list[dict]:
     with suppress(Exception):
         raw = reg.raw_events_path(run_id)
         if raw.exists():
-            for line in raw.read_bytes()[-4000:].decode(errors="replace").splitlines():
+            for line in stream_lines(raw.read_bytes()[-4000:].decode(errors="replace")):
                 with suppress(ValueError):
                     if isinstance(parsed := json.loads(line), dict):
                         lines.append(parsed)

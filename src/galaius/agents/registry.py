@@ -33,7 +33,7 @@ from pydantic import BaseModel, Field, PrivateAttr, field_validator
 from galaius.agents import quota
 from galaius_core import AgentRevisionRef, PromptExecutionRef
 
-from galaius.agents.events import TOKEN_FIELDS, AgentEvent, TokenUsage, UsageLedger
+from galaius.agents.events import TOKEN_FIELDS, AgentEvent, TokenUsage, UsageLedger, stream_lines
 from galaius.agents.catalog_connection import CatalogConnection
 from galaius.agents.ceiling import end_run_scope
 from galaius.agents.providers import PROVIDERS, DeniedTool
@@ -1391,7 +1391,7 @@ def raw_line_count(run_id: str) -> int:
     """How many lines the vendor stream holds right now — where a message lands in it."""
     try:
         payload = _read_private(raw_events_path(run_id))
-        return 0 if payload is None else len(payload.splitlines())
+        return 0 if payload is None else len(stream_lines(payload.decode(errors="replace")))
     except OSError:
         return 0
 
@@ -1467,7 +1467,7 @@ def _stream_source(run_id: str) -> str:
 def _read_messages(run_id: str) -> list[AgentEvent]:
     try:
         payload = _read_private(messages_path(run_id))
-        lines = [] if payload is None else payload.decode().splitlines()
+        lines = [] if payload is None else stream_lines(payload.decode())
     except OSError:
         return []
     out = []
@@ -1507,7 +1507,7 @@ def read_events(run_id: str) -> list[AgentEvent]:
     provider = PROVIDERS.get(stored.provider) if stored else None
     try:
         payload = _read_private(raw_events_path(run_id))
-        raw_lines = [] if payload is None else payload.decode(errors="replace").splitlines()
+        raw_lines = [] if payload is None else stream_lines(payload.decode(errors="replace"))
     except OSError:
         raw_lines = []
 
@@ -1552,7 +1552,7 @@ def read_events(run_id: str) -> list[AgentEvent]:
     out: list[AgentEvent] = []
     try:
         payload = _read_private(events_path(run_id))
-        for line in ([] if payload is None else payload.decode().splitlines()):
+        for line in ([] if payload is None else stream_lines(payload.decode())):
             try:
                 out.append(AgentEvent.model_validate_json(line))
             except ValueError:
@@ -1574,7 +1574,7 @@ def _carry_observed_at(path: Path, events: list[AgentEvent]) -> None:
     seen: list[float | None] = []
     try:
         payload = _read_private(path)
-        for line in ([] if payload is None else payload.decode(errors="replace").splitlines()):
+        for line in ([] if payload is None else stream_lines(payload.decode(errors="replace"))):
             if line.strip():
                 seen.append(json.loads(line).get("at"))
     except OSError:
@@ -1647,7 +1647,7 @@ class StreamMirror:
 
     def _parse(self, text: str, first: int, provider, ledger: UsageLedger) -> list[AgentEvent]:
         out = []
-        for index, line in enumerate(text.splitlines(), start=first):
+        for index, line in enumerate(stream_lines(text), start=first):
             try:
                 event = provider.parse(line, ledger)
             except (KeyError, TypeError, ValueError):
@@ -1670,7 +1670,7 @@ class StreamMirror:
         complete, tail = data[:cut].decode(errors="replace"), data[cut:].decode(errors="replace")
         self.parsed += self._parse(complete, self.lines, provider, self.ledger)
         self.offset += cut
-        self.lines += len(complete.splitlines())
+        self.lines += len(stream_lines(complete))
         # A last line still being written counts as `read_events` counts it, parsed on a copy of the ledger.
         parsed = self.parsed + self._parse(tail, self.lines, provider, self.ledger.model_copy(deep=True)) if tail else self.parsed
         if stored is not None:
@@ -1683,7 +1683,7 @@ class StreamMirror:
                 updates["provider_turn_id"] = turn_id
             if updates:
                 _update_fields(self.run_id, updates)
-        merged = _interleave(parsed, _read_messages(self.run_id), self.lines + len(tail.splitlines()))
+        merged = _interleave(parsed, _read_messages(self.run_id), self.lines + len(stream_lines(tail)))
         kept = self.written
         if len(merged) >= len(kept) and all(new is old or new.model_copy(update={"at": old.at}) == old for new, old in zip(merged, kept)) \
                 and self._append(merged[len(kept):]):

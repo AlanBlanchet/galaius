@@ -25,6 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from galaius.agents import agent_queue
 from galaius.agents import registry as reg
+from galaius.agents.events import stream_lines
 from galaius.agents.messaging import Delivery, policy_for_continuation, queue_message, start_dispatcher
 from galaius.agents.providers import provider_for
 from galaius.agents.run import ResumeLaunch, mirror_while_alive, record_turn_stderr
@@ -167,7 +168,7 @@ class FollowUps(BaseModel):
         if item.raw_index is None:
             return True
         try:
-            lines = reg.raw_events_path(run.run_id).read_text(encoding="utf-8", errors="replace").splitlines()[item.raw_index:]
+            lines = stream_lines(reg.raw_events_path(run.run_id).read_text(encoding="utf-8", errors="replace"))[item.raw_index:]
         except OSError:
             return True  # nothing tells: the dispatcher's settling decides, as for any attempt
         provider = provider_for(run.provider)

@@ -34,6 +34,15 @@ EventKind = Literal[
     "cancelled",   # a turn was interrupted and acknowledged
     "other",       # recognised as valid, not specially handled — never silently dropped
 ]
+def stream_lines(text: str) -> list[str]:
+    """The lines of a JSON-lines stream. Only a newline ends one: `str.splitlines` also splits on
+    U+2028, U+2029 and U+0085, which JSON leaves unescaped inside strings, cutting an event in two."""
+    lines = text.split("\n")
+    if lines[-1] == "":
+        lines.pop()
+    return [line.removesuffix("\r") for line in lines]
+
+
 InteractionKind = Literal[
     "command_approval", "file_change_approval", "user_input", "permission_approval"
 ]

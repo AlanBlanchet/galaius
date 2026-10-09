@@ -1677,3 +1677,19 @@ def test_a_listing_checks_the_registry_folder_once_not_per_record(monkeypatch, d
 
     few, many = warm_listing_checks(3), warm_listing_checks(9)
     assert few == many if directory_backend is DescriptorDirectory else few < many
+
+
+@pytest.mark.parametrize("separator", [" ", " ", "\x85"])
+def test_a_line_separator_inside_an_event_keeps_the_event_whole(separator):
+    """JSON leaves these separators unescaped inside strings; only a newline ends a stream line."""
+    register_run(run_id="r1")
+    said = [f"first{separator}half", "second"]
+    reg.raw_events_path("r1").write_text("".join(json.dumps({
+        "type": "assistant", "session_id": "s",
+        "message": {"role": "assistant", "content": [{"type": "text", "text": text}]},
+    }, ensure_ascii=False) + "\n" for text in said), encoding="utf-8")
+
+    texts = [(event.text, event.raw_index) for event in reg.read_events("r1") if event.kind == "text"]
+
+    assert texts == [(said[0], 0), (said[1], 1)]
+    assert reg.raw_line_count("r1") == 2
