@@ -39,7 +39,8 @@ from galaius.agents.ceiling import end_run_scope
 from galaius.agents.providers import PROVIDERS, DeniedTool
 from galaius.fence import FenceSpec
 from galaius.paths import UserPaths
-from galaius.file_lock import exclusive
+from galaius.file_lock import SoleHolder, exclusive
+from galaius.file_stamp import FileStamp
 from galaius.models import TokenMix
 from galaius.pinned_directory import DescriptorDirectory, PinnedDirectory
 from galaius.private_files import PRIVATE_FILES
@@ -515,9 +516,13 @@ def _open_private(path: Path, flags: int, *, create: bool = True) -> int:
 def _open_leaf(folder: PinnedDirectory, name: str, flags: int, *, create: bool) -> int:
     descriptor = folder.file(name, flags | (os.O_CREAT if create else 0), 0o600)
     try:
-        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
             raise OSError("agent registry path is not a regular file")
-        folder.chmod(descriptor, 0o600)
+        if folder.permissions(info) != 0o600:
+            # Only when it differs: a chmod rewrites the inode even to the same mode, so each listing
+            # of ~3k records wrote ~3k inodes and every reader keyed on ctime re-parsed them all.
+            folder.chmod(descriptor, 0o600)
     except OSError:
         os.close(descriptor)
         raise
@@ -533,6 +538,16 @@ def _registry_directory():
     except ValueError as error:
         raise OSError("agent registry directory must be anchored beneath the user home") from error
     return PinnedDirectory.open(home, *relative.parts)
+
+
+def _read_private_stamped(path: Path) -> tuple[bytes, FileStamp] | None:
+    """The file's bytes and the stamp of the very file they were read from."""
+    try:
+        descriptor = _open_private(path, os.O_RDONLY, create=False)
+    except OSError:
+        return None
+    with os.fdopen(descriptor, "rb") as stream:
+        return stream.read(), FileStamp.at(stream.fileno())
 
 
 def _read_private(path: Path) -> bytes | None:
@@ -590,7 +605,8 @@ def _private_leaf_matches(name: str, folder: PinnedDirectory, identity: tuple[in
     return matches
 
 
-def _replace_private(path: Path, payload: bytes) -> None:
+def _replace_private(path: Path, payload: bytes) -> FileStamp:
+    """`payload` at `path`, whole or not at all; the stamp of the file now there."""
     if path.suffix == ".json":
         try:
             raw = json.loads(payload)
@@ -602,10 +618,10 @@ def _replace_private(path: Path, payload: bytes) -> None:
     if path.parent != directory:
         raise OSError("agent registry file escaped its private directory")
     with _registry_directory() as folder:
-        _replace_in(folder, path.name, payload)
+        return _replace_in(folder, path.name, payload)
 
 
-def _replace_in(folder: PinnedDirectory, name: str, payload: bytes) -> None:
+def _replace_in(folder: PinnedDirectory, name: str, payload: bytes) -> FileStamp:
     descriptor = -1
     replacement_name: str | None = None
     owned_identity: tuple[int, int] | None = None
@@ -627,6 +643,7 @@ def _replace_in(folder: PinnedDirectory, name: str, payload: bytes) -> None:
         if not _private_leaf_matches(replacement_name, folder, owned_identity):
             raise OSError("agent registry replacement identity changed before publication")
         folder.replace(replacement_name, folder, name)
+        return FileStamp.of(written)  # a rename keeps the inode, size and mtime
     finally:
         primary_error = sys.exception()
         cleanup_error: OSError | None = None
@@ -685,6 +702,15 @@ def record_lock(run_id: str):
     """Serialize registry writers across CLI, MCP, dispatcher and provider processes."""
     with exclusive(_open_private(lock_path(run_id), os.O_RDWR)):
         yield
+
+
+def sole_holder(job: str) -> SoleHolder:
+    """The registry-wide lock deciding which process on this computer does `job` (`#<job>.lock`: no run
+    id contains `#`, so it never meets a run's own `record_lock`). Each MCP server mirroring every live
+    run on its own cost one parse per server per change: 13 open sessions held ~3.5 cores doing the
+    same work."""
+    path = agents_dir() / f"#{job}.lock"
+    return SoleHolder(lambda: _open_private(path, os.O_RDWR))
 
 
 def stderr_path(run_id: str) -> Path:
@@ -1400,14 +1426,14 @@ def _interleave(parsed: list[AgentEvent], messages: list[AgentEvent],
 def stream_signature(run_id: str) -> tuple:
     """What a run's normalised events are built from: its raw stream and its messages. Equal
     signatures mean an identical rebuild, so a poller can skip the re-parse."""
-    def _stat(path: Path):
-        try:
-            stat = path.stat()
-        except OSError:
-            return None
-        return stat.st_mtime_ns, stat.st_size
+    return FileStamp.at(raw_events_path(run_id)), FileStamp.at(messages_path(run_id))
 
-    return _stat(raw_events_path(run_id)), _stat(messages_path(run_id))
+
+def mirror_is_current(run_id: str) -> bool:
+    """Whether the run's normalised mirror was written after the last change of what it is built from
+    (`stream_signature`): a process taking over the mirroring leaves such a run alone until it moves."""
+    mirror = FileStamp.at(events_path(run_id))
+    return mirror is not None and all(source is None or mirror.mtime_ns >= source.mtime_ns for source in stream_signature(run_id))
 
 
 @functools.cache
@@ -1548,18 +1574,20 @@ def _carry_observed_at(path: Path, events: list[AgentEvent]) -> None:
     seen: list[float | None] = []
     try:
         payload = _read_private(path)
-        for line in ([] if payload is None else payload.decode().splitlines()):
+        for line in ([] if payload is None else payload.decode(errors="replace").splitlines()):
             if line.strip():
                 seen.append(json.loads(line).get("at"))
-    except (OSError, ValueError):
+    except OSError:
         seen = []
+    except ValueError:
+        pass  # a line still being appended (`StreamMirror`): the stamps before it hold
     now = time.time()
     for i, event in enumerate(events):
         prior = seen[i] if i < len(seen) else None
         event.at = prior if isinstance(prior, (int, float)) else now
 
 
-def _mirror_normalised(run_id: str, events: list[AgentEvent]) -> None:
+def _mirror_normalised(run_id: str, events: list[AgentEvent]) -> FileStamp | None:
     """Keep a provider-AGNOSTIC copy of the stream beside the raw one.
 
     The VS Code panel cannot parse a vendor dialect — teaching it every provider's JSON would
@@ -1567,21 +1595,129 @@ def _mirror_normalised(run_id: str, events: list[AgentEvent]) -> None:
     stable shape whatever produced it. Rewritten only when the CONTENT changed, so a settled run
     costs nothing to re-read — comparing the LENGTH alone was not enough, because a change to how
     events are ordered or rendered leaves the count identical, so the panel kept serving the old
-    shape forever and the only symptom was the UI quietly disagreeing with the CLI.
+    shape forever and the only symptom was the UI quietly disagreeing with the CLI. Returns the stamp
+    of the mirror file holding exactly these events (None when it could not be read or written).
     """
     path = events_path(run_id)
     _carry_observed_at(path, events)
     payload = "".join(e.model_dump_json() + "\n" for e in events)
     try:
-        existing = _read_private(path)
-        if existing is not None and existing.decode() == payload:
-            return
+        existing = _read_private_stamped(path)
+        if existing is not None and existing[0].decode(errors="replace") == payload:
+            return existing[1]
     except OSError:
         pass
     try:
-        _replace_private(path, payload.encode())
+        return _replace_private(path, payload.encode())
     except OSError:
-        pass
+        return None
+
+
+class StreamMirror:
+    """One live run's normalised mirror kept current from what its raw stream APPENDED since the last
+    `refresh`: `read_events` in increments — the same line split, parser, usage ledger, interleaving and
+    mirror bytes — for the one process keeping every live run current (`sole_holder("run-mirror")`).
+    `read_events` re-parses and re-dumps the whole transcript on each call: 0.8 s on an 8.7 MB stream,
+    paid on every append of every live run. The mirror is appended to only while it still holds what
+    this object last wrote and the new events extend it; anything else rewrites it as `read_events`."""
+
+    def __init__(self, run_id: str) -> None:
+        self.run_id = run_id
+        self._reset()
+
+    def _reset(self) -> None:
+        self.offset = 0  # bytes of the raw stream read, up to its last newline
+        self.lines = 0  # raw lines in those bytes
+        self.ledger = UsageLedger()
+        self.parsed: list[AgentEvent] = []
+        self.written: list[AgentEvent] = []
+        self.written_stamp: FileStamp | None = None
+
+    def _appended(self) -> bytes | None:
+        """The raw bytes past `offset`; None when the stream is gone or shorter (rewritten: start over)."""
+        try:
+            descriptor = _open_private(raw_events_path(self.run_id), os.O_RDONLY, create=False)
+        except OSError:
+            return None
+        with os.fdopen(descriptor, "rb") as stream:
+            if os.fstat(stream.fileno()).st_size < self.offset:
+                return None
+            stream.seek(self.offset)
+            return stream.read()
+
+    def _parse(self, text: str, first: int, provider, ledger: UsageLedger) -> list[AgentEvent]:
+        out = []
+        for index, line in enumerate(text.splitlines(), start=first):
+            try:
+                event = provider.parse(line, ledger)
+            except (KeyError, TypeError, ValueError):
+                continue
+            if event is not None:
+                out.append(event.model_copy(update={"raw_index": index}))
+        return out
+
+    def refresh(self) -> None:
+        stored = _read_record(self.run_id)
+        provider = PROVIDERS.get(stored.provider) if stored else None
+        data = self._appended() if provider is not None else None
+        if data is None or (self.offset == 0 and not data.strip()):
+            self._reset()
+            read_events(self.run_id)  # no raw stream (or a rewritten one): the whole read decides
+            return
+        # Whole lines only are kept; a newline byte never sits inside a UTF-8 sequence, so decoding up
+        # to it splits exactly as decoding the whole file does.
+        cut = data.rfind(b"\n") + 1
+        complete, tail = data[:cut].decode(errors="replace"), data[cut:].decode(errors="replace")
+        self.parsed += self._parse(complete, self.lines, provider, self.ledger)
+        self.offset += cut
+        self.lines += len(complete.splitlines())
+        # A last line still being written counts as `read_events` counts it, parsed on a copy of the ledger.
+        parsed = self.parsed + self._parse(tail, self.lines, provider, self.ledger.model_copy(deep=True)) if tail else self.parsed
+        if stored is not None:
+            session_id = next((event.session_id for event in parsed if event.session_id), None)
+            turn_id = next((event.turn_id for event in reversed(parsed) if event.turn_id), None)
+            updates = {}
+            if session_id and stored.provider_session_id != session_id:
+                updates["provider_session_id"] = session_id
+            if turn_id and stored.provider_turn_id != turn_id:
+                updates["provider_turn_id"] = turn_id
+            if updates:
+                _update_fields(self.run_id, updates)
+        merged = _interleave(parsed, _read_messages(self.run_id), self.lines + len(tail.splitlines()))
+        kept = self.written
+        if len(merged) >= len(kept) and all(new is old or new.model_copy(update={"at": old.at}) == old for new, old in zip(merged, kept)) \
+                and self._append(merged[len(kept):]):
+            for event, old in zip(merged, kept):
+                event.at = old.at  # a message re-read from its file carries the stamp already written
+        else:
+            self.written_stamp = _mirror_normalised(self.run_id, merged)
+        self.written = merged
+
+    def _append(self, fresh: list[AgentEvent]) -> bool:
+        """Append `fresh` to the mirror when it is still the file this object last wrote — checked and
+        written through ONE descriptor, so a rewrite by another reader in between is never appended to
+        twice. False: the mirror is someone else's now, rebuild it whole."""
+        if self.written_stamp is None:
+            return False
+        try:
+            descriptor = _open_private(events_path(self.run_id), os.O_APPEND | os.O_WRONLY, create=False)
+        except OSError:
+            return False
+        try:
+            if FileStamp.at(descriptor) != self.written_stamp:
+                return False
+            if fresh:
+                now = time.time()
+                for event in fresh:
+                    event.at = now  # as `_carry_observed_at` stamps a line it has not seen
+                payload = "".join(event.model_dump_json() + "\n" for event in fresh).encode()
+                if os.write(descriptor, payload) != len(payload):
+                    raise OSError("short agent-registry append")
+                os.fsync(descriptor)
+            self.written_stamp = FileStamp.at(descriptor)
+            return True
+        finally:
+            os.close(descriptor)
 
 
 def last_event(run_id: str) -> AgentEvent | None:
@@ -1792,11 +1928,7 @@ def running_runs() -> list[AgentRun]:
 
     `list_runs` derives every run from its transcript; a caller polling for live work must not
     pay for the whole history on each tick."""
-    d = agents_dir()
-    if not d.exists():
-        return []
-    runs = (_stat_cached_record(path) for path in sorted(d.glob("*.json")))
-    return [run for run in runs if run is not None and _status_for(run) == "running"]
+    return [run for run in _stored_records() if _status_for(run) == "running"]
 
 
 def settle_gone() -> list[AgentRun]:
@@ -1805,13 +1937,9 @@ def settle_gone() -> list[AgentRun]:
     said so, else `interrupted` with the system's cause (`Interruption`). The machine daemon runs it every
     minute, so a run killed while nothing watched it (out of memory, `kill -9`, a crash) never reads
     « running » for long. Reads only records that moved, like `running_runs`. Returns the runs it changed."""
-    d = agents_dir()
-    if not d.exists():
-        return []
     settled = []
-    for path in sorted(d.glob("*.json")):
-        run = _stat_cached_record(path)
-        if run is None or run.status not in ("starting", "running"):
+    for run in _stored_records():
+        if run.status not in ("starting", "running"):
             continue
         if _status_for(run) == run.status:
             if run.unit is None and run.pid and (unit := process_unit(run.pid)) is not None:
@@ -1828,10 +1956,9 @@ def trees(root_run_ids: frozenset[str]) -> list[AgentRun]:
     """The runs `root_run_ids` name and every run they launched, at any depth (parent links, or a
     provider child's recorded root), newest first, status re-checked from the record and pid alone
     (never the stream): a poller watching a few trees pays one `stat()` per record."""
-    d = agents_dir()
-    if not d.exists() or not root_run_ids:
+    if not root_run_ids:
         return []
-    records = [run for run in (_stat_cached_record(path) for path in d.glob("*.json")) if run is not None]
+    records = _stored_records()
     members, grew = set(root_run_ids), True
     while grew:
         grew = False
@@ -1851,30 +1978,38 @@ def trees(root_run_ids: frozenset[str]) -> list[AgentRun]:
 def session_ids() -> frozenset[str]:
     """Every provider session galaius launched or continued: its runs' ids and the vendor session
     ids they recorded (one `stat()` per record, cached)."""
-    d = agents_dir()
-    if not d.exists():
-        return frozenset()
-    records = [run for run in (_stat_cached_record(path) for path in d.glob("*.json")) if run is not None]
-    return frozenset(value for run in records for value in (run.run_id, run.provider_session_id) if value)
+    return frozenset(value for run in _stored_records() for value in (run.run_id, run.provider_session_id) if value)
 
 
-#: path -> (mtime_ns, size, record). A settled record never changes, so a poller re-reads only
-#: the files written since its last tick.
-_RECORD_CACHE: dict[str, tuple[int, int, AgentRun | None]] = {}
+#: path -> (its stamp, record). A settled record never changes, so a poller re-reads only the files
+#: written since its last tick.
+_RECORD_CACHE: dict[str, tuple[FileStamp, AgentRun | None]] = {}
 
 
-def _stat_cached_record(path: Path) -> AgentRun | None:
-    try:
-        stat = path.stat()
-    except OSError:
-        _RECORD_CACHE.pop(str(path), None)
+def _stat_cached_record(path: Path | os.DirEntry) -> AgentRun | None:
+    key = os.fspath(path)
+    stamp = FileStamp.at(path)
+    if stamp is None:
+        _RECORD_CACHE.pop(key, None)
         return None
-    hit = _RECORD_CACHE.get(str(path))
-    if hit is not None and hit[:2] == (stat.st_mtime_ns, stat.st_size):
-        return hit[2]
-    run = _read_record(path.stem)
-    _RECORD_CACHE[str(path)] = (stat.st_mtime_ns, stat.st_size, run)
+    hit = _RECORD_CACHE.get(key)
+    if hit is not None and hit[0] == stamp:
+        return hit[1]
+    run = _read_record(path.name.removesuffix(".json"))
+    _RECORD_CACHE[key] = (stamp, run)
     return run
+
+
+def _stored_records() -> list[AgentRun]:
+    """Every readable run record, by file name, each re-read only when its file moved. One
+    `scandir` and no `Path` per file: over 3k records, globbing then sorting `Path` objects was
+    most of a poller's 150 ms tick."""
+    try:
+        with os.scandir(agents_dir()) as scan:
+            entries = sorted((entry for entry in scan if entry.name.endswith(".json") and not entry.name.startswith(".")), key=lambda entry: entry.name)
+    except FileNotFoundError:
+        return []
+    return [run for run in map(_stat_cached_record, entries) if run is not None]
 
 
 #: How many of a role's newest run records its token mix is read from: its RECENT workload.

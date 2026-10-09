@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -43,6 +44,9 @@ from galaius.model_catalog import live_scores
 from galaius.models import Model, ModelCapability
 from galaius.prompt_projection import coordinator_instructions
 from galaius.windowless import console_python
+
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -1097,7 +1101,7 @@ async def mirror_while_alive(run_id: str, alive, *, interval: float = 1.0) -> No
         reg.read_events(run_id)  # last pass so the final turn is not left unmirrored
 
 
-async def _mirror_running_runs(alive, *, interval: float = 1.0) -> None:
+async def _mirror_running_runs(alive, *, interval: float = 1.0, standby_scan: float = 15.0) -> None:
     """Keep EVERY live run's normalised stream current, not only the ones this process spawned.
 
     `agents spawn` detaches, so the pump started beside a run dies with its parent. The child
@@ -1106,36 +1110,73 @@ async def _mirror_running_runs(alive, *, interval: float = 1.0) -> None:
     the MCP server, alive whenever the user is working.
 
     Only stored records are considered, so sessions galaius did not start are never read, and
-    settled runs are skipped by pid before any transcript is opened.
+    settled runs are skipped by pid before any transcript is opened. One MCP server per computer
+    does it (`registry.sole_holder`); the others wait their turn, reading the records every
+    `standby_scan` seconds so that taking over costs one tick, not a cold read of every record
+    (16 s at load 51).
     """
     mirrored: dict[str, tuple] = {}
-    while alive():
-        try:
-            runs = reg.running_runs()
-        except OSError:
-            runs = []
-        for run in runs:
-            signature = reg.stream_signature(run.run_id)
-            if mirrored.get(run.run_id) == signature:
-                continue  # nothing written since the last rebuild
+    streams: dict[str, reg.StreamMirror] = {}
+    failing: set[str] = set()
+    scanned = float("-inf")
+    with reg.sole_holder("run-mirror") as sole:
+        while alive():
             try:
-                reg.read_events(run.run_id)
-            except Exception:
-                continue  # one half-written stream must not stop the rest
-            mirrored[run.run_id] = signature
-        live = {run.run_id for run in runs}
-        # A run that LEFT the live set has exited. Nobody else notices: `agents spawn` detaches, so
-        # its reaper died with the spawning CLI and `finish()` is never called — the record stays
-        # "running" for good and every surface reading it shows a dead agent as still working
-        # (2026-09-30, eight of them). Deriving it once here settles it on disk within one tick:
-        # done / failed when its own stream reported an ending, interrupted when nothing did.
-        for run_id in mirrored.keys() - live:
-            with suppress(Exception):
-                record = reg.get_run(run_id)
-                if record is not None:
-                    reg.reconcile(record)
-        mirrored = {run_id: sig for run_id, sig in mirrored.items() if run_id in live}
-        await asyncio.sleep(interval)
+                holds = sole.holds()
+            except OSError as error:
+                if scanned == float("-inf"):
+                    log.warning("agent run mirror cannot take its lock, live runs are not mirrored here: %s", error)
+                holds, scanned = False, time.monotonic()
+            if holds:
+                try:
+                    runs = reg.running_runs()
+                except OSError:
+                    runs = []
+                mirrored = _mirror_pass(runs, mirrored, streams, failing)
+            elif time.monotonic() - scanned >= standby_scan:
+                with suppress(OSError):
+                    reg.running_runs()
+                scanned = time.monotonic()
+            await asyncio.sleep(interval)
+
+
+def _mirror_pass(runs: list[reg.AgentRun], mirrored: dict[str, tuple], streams: dict[str, reg.StreamMirror],
+                 failing: set[str]) -> dict[str, tuple]:
+    """One tick of `_mirror_running_runs`: bring each changed stream's mirror up to date from what it
+    appended, settle each run that left. A run whose mirror fails is logged once (`failing`)."""
+    for run in runs:
+        signature = reg.stream_signature(run.run_id)
+        if mirrored.get(run.run_id) == signature:
+            continue  # nothing written since the last rebuild
+        if run.run_id not in mirrored and run.run_id not in streams and reg.mirror_is_current(run.run_id):
+            mirrored[run.run_id] = signature  # mirrored by the previous holder: parsed once it moves
+            continue
+        try:
+            streams.setdefault(run.run_id, reg.StreamMirror(run.run_id)).refresh()
+        except Exception:
+            streams.pop(run.run_id, None)  # rebuilt whole on its next change
+            if run.run_id not in failing:
+                failing.add(run.run_id)
+                log.warning("agent run %s: its live mirror failed, retried on its next change", run.run_id, exc_info=True)
+            continue  # one half-written stream must not stop the rest
+        mirrored[run.run_id] = signature
+    live = {run.run_id for run in runs}
+    # A run that LEFT the live set has exited. Nobody else notices: `agents spawn` detaches, so
+    # its reaper died with the spawning CLI and `finish()` is never called — the record stays
+    # "running" for good and every surface reading it shows a dead agent as still working
+    # (2026-09-30, eight of them). Deriving it once here settles it on disk within one tick:
+    # done / failed when its own stream reported an ending, interrupted when nothing did. Its last
+    # lines (written as its process ended, after the previous tick) are mirrored first.
+    for run_id in mirrored.keys() - live:
+        with suppress(Exception):
+            (streams.pop(run_id, None) or reg.StreamMirror(run_id)).refresh()
+        with suppress(Exception):
+            record = reg.get_run(run_id)
+            if record is not None:
+                reg.reconcile(record)
+    for run_id in streams.keys() - live:
+        streams.pop(run_id)
+    return {run_id: sig for run_id, sig in mirrored.items() if run_id in live}
 
 
 async def _reap(run_id: str, process, lifecycle_token: str) -> None:

@@ -446,7 +446,7 @@ async def _mirror_once(monkeypatch, read):
     from galaius.agents import registry as reg
     from galaius.agents.run import _mirror_running_runs
 
-    monkeypatch.setattr(reg, "read_events", read)
+    monkeypatch.setattr(reg.StreamMirror, "refresh", lambda self: read(self.run_id))
     alive = {"value": True}
     task = asyncio.create_task(_mirror_running_runs(lambda: alive["value"], interval=0.02))
     await asyncio.sleep(0.08)
@@ -514,6 +514,37 @@ async def test_an_unchanged_stream_is_not_reparsed_on_every_tick(monkeypatch):
     await _mirror_once(monkeypatch, lambda run_id: seen.append(run_id) or [])
 
     assert seen == ["quiet"]
+
+
+@pytest.mark.asyncio
+async def test_one_mcp_server_mirrors_and_another_takes_over_when_it_exits(monkeypatch):
+    """Every open session runs an MCP server; each re-parsing every live stream held 13 of them at
+    ~28% of a core apiece doing the same work."""
+    from galaius.agents.run import _mirror_running_runs
+    from tests.support import register_run
+
+    register_run("live", name="live", provider="claude", task="t", pid=os.getpid())
+    readers: list[str] = []
+
+    def _read(run_id):
+        readers.append(asyncio.current_task().get_name())
+        reg.raw_events_path(run_id).write_text("{}\n" * len(readers))  # the stream moves every tick
+        return []
+
+    monkeypatch.setattr(reg.StreamMirror, "refresh", lambda self: _read(self.run_id))
+    first, second = {"alive": True}, {"alive": True}
+    holder = asyncio.create_task(_mirror_running_runs(lambda: first["alive"], interval=0.02), name="first")
+    await asyncio.sleep(0.05)
+    standby = asyncio.create_task(_mirror_running_runs(lambda: second["alive"], interval=0.02), name="second")
+    await asyncio.sleep(0.15)
+    assert "first" in readers and "second" not in readers, "a second server must not mirror beside the first"
+
+    first["alive"] = False
+    await asyncio.wait_for(holder, timeout=2)
+    await asyncio.sleep(0.15)
+    second["alive"] = False
+    await asyncio.wait_for(standby, timeout=2)
+    assert "second" in readers, "the waiting server takes the job once the holder is gone"
 
 
 @pytest.mark.asyncio
