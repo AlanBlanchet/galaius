@@ -180,6 +180,20 @@ class RegistryMixin:
         return next((x for x in cls._registry if x.id == id), None)
 
     @classmethod
+    def named(cls, catalog_id: str) -> "Self":
+        """The row `<catalog provider>/<id>` names (`catalog_id`): this catalog's, else one built from
+        litellm's price for that id (None prices when it has none), NOT registered. A ranking made
+        elsewhere (this PC's server) can name a model the bundled snapshot never heard of; it carries
+        no score, so it never enters a ranking made here."""
+        known = next((x for x in cls._registry if x.catalog_id == catalog_id), None)
+        if known is not None:
+            return known
+        provider, _, model_id = catalog_id.partition("/")
+        litellm = _litellm()
+        cost = dict(getattr(litellm, "model_cost", None) or {}) if litellm is not None else {}
+        return cls._from_litellm_cost(model_id, provider, cost.get(model_id) or cost.get(catalog_id) or {})
+
+    @classmethod
     def _register(cls, item: Self) -> None:
         for i, ex in enumerate(cls._registry):
             if ex.id == item.id:

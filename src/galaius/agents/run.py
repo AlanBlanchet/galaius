@@ -37,7 +37,9 @@ from galaius.agents.profiles import overlay_for, profiles_from
 from galaius.agents.providers import PROVIDERS, AgentProvider, CodexProvider, UnsupportedToolPolicy, validate_denied_tools, _safe_process_detail
 from galaius.agents.vocabulary import TouchScope
 from galaius.agents.warm import WarmStart
+from galaius.agents.server_ranking import ServerRanking, ServerRankingUnavailable
 from galaius.criteria import Criteria, CriteriaError, Dropped, Variables
+from galaius.model_catalog import live_scores
 from galaius.models import Model, ModelCapability
 from galaius.prompt_projection import coordinator_instructions
 from galaius.windowless import console_python
@@ -224,6 +226,22 @@ def _ranked_candidates(
     pool = lambda m: any(p.can_run(m, env) for p in universe if p.name in allowed)
     # Unpruned here: what is worth running is judged over the pool that can run, further down.
     ranked = criteria.ranked(runnable=lambda m: any(p.can_run(m, env) for p in universe), weights=weights, value=None)
+    if not ranked and any(term.source_only for term in criteria.terms) and not live_scores():
+        # No board here (it is fetched with its reader's own key): the server ranked this rule on its
+        # own and its order is the launch order, its rows named here even when the bundled catalog
+        # lacks them; no score came with it, so no value rule second-guesses it (criteria None).
+        server = ServerRanking.linked()
+        try:
+            named = [Model.named(catalog_id) for catalog_id in (server.ranked(model, weights) if server is not None else ())]
+        except ServerRankingUnavailable as error:
+            raise ModelUnavailable(f"no model the {', '.join(sorted(allowed)) or 'none'} CLIs can run clears {criteria} here: this PC has no "
+                                   f"benchmark board of its own, and {error}") from error
+        served = tuple(
+            reg.LaunchCandidate(provider=p.name, model=p.model_id_for(row), catalog_id=row.catalog_id, rank=rank)
+            for rank, row in enumerate(named) for p in universe if p.name in allowed and p.can_run(row, env)
+        )
+        if served:
+            return _apply_provider_constraint(criteria, served), {row.catalog_id: row for row in named}, None
     candidates = tuple(
         reg.LaunchCandidate(provider=p.name, model=p.model_id_for(row),
                             catalog_id=row.catalog_id, rank=rank)
