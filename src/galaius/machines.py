@@ -31,7 +31,7 @@ import httpx
 import websockets
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, ValidationError, field_validator, model_validator
 
-from galaius_core import MACHINE_AGENT_REQUESTS, MACHINE_MODELS, MachineProblem, MachineProblemCode, MachineAgentSettings, MachineAgentSettingsState, MachineAgentSettingsUpdate, PlacePath, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, MachineAgentAnswer, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachinePlaceChange, MachineRuntime, PlaceLevel, ScriptFile, ScriptLanguage, UserModelOrigin
+from galaius_core import MACHINE_AGENT_REQUESTS, MACHINE_MODELS, MachineProblem, MachineProblemCode, MachineAgentSettings, MachineAgentSettingsState, MachineAgentSettingsUpdate, PlacePath, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, MachineAgentAnswer, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachinePlaceChange, MachineRuntime, MachineTokenSwap, PlaceLevel, ScriptFile, ScriptLanguage, UserModelOrigin
 from galaius import USER_AGENT
 from galaius import prompt_mirror
 from galaius.agents.catalog import AgentCatalog
@@ -697,6 +697,11 @@ class EnrollmentChanged(PermissionError):
     than the connection holds: nothing runs under the old one, the runner reconnects as the new."""
 
 
+class TokenSwapped(Exception):
+    """The server swapped this machine's bootstrap token and the new one is saved: the runner starts
+    again on it, every task with it (none keeps the spent token)."""
+
+
 class ScriptRuntime(BaseModel):
     """How one Script language (`ScriptLanguage`) runs: its name as the owner reads it, the file its
     inline code is written to, the program that runs it on each system (tried in order: a name on
@@ -851,6 +856,8 @@ class MachineRunner:
         self._server_restarted = False
         self._log_ring = LogRing()
         logging.getLogger("galaius").addHandler(self._log_ring)
+        #: Tokens this runner held before a swap (`take_token_swap`): still masked in every kept line.
+        self._spent_tokens: tuple[str, ...] = ()
         #: Why the last web version of the agent settings was not applied, and which one (shown on the PC's page).
         self._settings_detail, self._settings_refused = "", 0
         self._workspace_jobs = WorkspaceJobs(path=self.config_path.with_name("machine-workspaces.json"))
@@ -918,14 +925,17 @@ class MachineRunner:
 
     async def connect(self, config: MachineConfig) -> None:
         # Exact secrets masked in every kept log line from the first one on (`LogRing`).
-        self._log_ring.secrets = (config.token.get_secret_value(), *secret_values(self._safe_environment()))
+        self._log_ring.secrets = self._secrets(config)
         self._workspace_jobs.settle_interrupted()
         # Local and independent of the server: a run killed while the PC is offline is settled too.
         settler = asyncio.create_task(self._settle_runs())
         reports = asyncio.create_task(self._deliver_reports(config))
         followed = asyncio.create_task(self._follow_up(config))
+        swapped = False
         try:
             await self._connect(config)
+        except TokenSwapped:
+            swapped = True
         except (PermissionError, UpgradeReady):
             raise  # stopped on purpose, or leaving for a newer build: not a crash
         except Exception as error:
@@ -943,6 +953,12 @@ class MachineRunner:
             await asyncio.gather(settler, reports, followed, return_exceptions=True)
             for ahead in (self.warm, self.followups):  # a child started ahead never outlives its runner; ended on the loop it lives on
                 AgentSpawns.loop().call_soon_threadsafe(ahead.close)
+        if swapped:
+            await self.connect(self.load())
+
+    def _secrets(self, config: MachineConfig) -> tuple[str, ...]:
+        """Exact values masked in every kept log line: the token, the ones it replaced, the environment's secrets."""
+        return (config.token.get_secret_value(), *self._spent_tokens, *secret_values(self._safe_environment()))
 
     async def _follow_up(self, config: MachineConfig) -> None:
         """At start: the messages to web runs a former runner left queued go to their dispatchers,
@@ -1090,9 +1106,35 @@ class MachineRunner:
                 task = asyncio.create_task(self._answer_agent_request(socket, config, response["request"]))
                 self._queries.add(task)
                 task.add_done_callback(self._query_finished)
+            elif response.get("type") == "token_swap":
+                try:
+                    swap = MachineTokenSwap.model_validate(response)
+                except ValidationError as error:
+                    raise PermissionError("the server's token swap is malformed; the token is unchanged") from error
+                self.take_token_swap(config, swap)
             elif response.get("type") == "revoked":
                 return True
         return False
+
+    def take_token_swap(self, config: MachineConfig, swap: MachineTokenSwap) -> None:
+        """A one-time bootstrap token (a cloud instance's: its user_data holds it) is swapped by the
+        server on its first connection (`MachineTokenSwap`, signed with the current token's key).
+        Saved under the machine file's lock while that file still holds the current token, then
+        `TokenSwapped`. A swap for another machine or not signed so stops the runner
+        (`PermissionError`), its token unchanged."""
+        if swap.machine.id != config.machine_id or not hmac.compare_digest(self.signature(config.token.get_secret_value(), swap), swap.signature):
+            raise PermissionError("the server's token swap is invalid; the token is unchanged")
+        token = swap.token
+
+        def swapped(current: MachineConfig) -> MachineConfig:
+            self._same_enrollment(current, config)
+            return current.model_copy(update={"token": SecretStr(token)})
+
+        self.update(swapped)
+        self._spent_tokens = (*self._spent_tokens, config.token.get_secret_value())
+        self._log_ring.secrets = (*self._log_ring.secrets, token)
+        logger.info("bootstrap token swapped; connecting with the new one", extra={"machine_id": config.machine_id})
+        raise TokenSwapped
 
     def _query_finished(self, task: asyncio.Task) -> None:
         self._queries.discard(task)
@@ -1102,7 +1144,8 @@ class MachineRunner:
     #: What this runner can do beyond the base protocol (the server's `MachineChannel.require_feature`):
     #: file queries browse the owner's script roots; a script file runs from them.
     #: `tool_gateway`: its `galaius mcp` serves the external tools the server connects its agents to.
-    FEATURES: ClassVar[tuple[str, ...]] = ("file_query", "script_file", "file_read", "agent_control", "agent_settings", "web_settings", "workspaces", "start_permission", "project_secrets", "places", "agent_media", "tool_gateway")
+    #: `token_swap`: it takes the server's swap of a one-time bootstrap token (`take_token_swap`).
+    FEATURES: ClassVar[tuple[str, ...]] = ("file_query", "script_file", "file_read", "agent_control", "agent_settings", "web_settings", "workspaces", "start_permission", "project_secrets", "places", "agent_media", "tool_gateway", "token_swap")
 
     @classmethod
     def features(cls) -> list[str]:
@@ -1110,7 +1153,7 @@ class MachineRunner:
         return [*cls.FEATURES, *(f"script:{language}" for language in ScriptRuntime.languages(cls._safe_environment().get("PATH")))]
 
     @staticmethod
-    def signature(token: str, message: MachineCommand | MachineFileQuery | MachineDataRequest | MachineAgentRequest | MachineAgentSettingsUpdate) -> str:
+    def signature(token: str, message: MachineCommand | MachineFileQuery | MachineDataRequest | MachineAgentRequest | MachineAgentSettingsUpdate | MachineTokenSwap) -> str:
         """What the server signs `message` with for the machine holding `token`: HMAC-SHA256 of its
         canonical JSON (sorted keys, no spaces, `signature` left out) keyed by SHA-256(token)."""
         unsigned = message.model_dump(mode="json", exclude={"signature"})
@@ -1237,7 +1280,7 @@ class MachineRunner:
                 answer = await asyncio.to_thread(PlaceDesk(self).answer, request)
                 await socket.send(json.dumps({"type": "agent_answer", "result": answer.model_dump(mode="json")}))
                 return
-            self._log_ring.secrets = (current.token.get_secret_value(), *secret_values(self._safe_environment()))
+            self._log_ring.secrets = self._secrets(current)
             agents = self._agents(current)
             answer = await agents.answer(request)
             # Reading (the page polls every few seconds) stays out of the owner's log; actions go in.
