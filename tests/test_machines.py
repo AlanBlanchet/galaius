@@ -391,7 +391,7 @@ def test_a_report_is_masked_and_its_question_asked_until_the_server_takes_it(tmp
 
     monkeypatch.setattr(machines.httpx, "post", post)
     monkeypatch.setattr(machines.httpx, "get", lambda url, timeout, **options: httpx.Response(204))
-    reports = MachineRunner.error_reports()
+    reports = MachineRunner.error_reports().model_copy(update={"retry": timedelta(0)})  # the next look, not a minute later
     line = f"\x1b[31mopening {Path.home()}/projets/out.md with Bearer {token}\x1b[0m"
     draft = reports.prepare(config, "crashed", "RuntimeError: gone", (line,))
     assert not draft.asked and "~/projets/out.md" in draft.upload.detail and token not in draft.upload.detail and "\x1b" not in draft.upload.detail
@@ -405,6 +405,43 @@ def test_a_report_is_masked_and_its_question_asked_until_the_server_takes_it(tmp
     # A problem told with a tab (an OSError's words) is still one valid line: kept, asked, never blocking the others.
     tabbed = reports.prepare(config, "crashed", "OSError:\tdenied\nsecond line", ())
     assert tabbed is not None and tabbed.question.message == "OSError: denied second line" and reports.deliver(config) == 0
+
+
+def test_a_problem_met_again_is_one_question_and_a_full_window_waits_its_retry_after(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    """A PC whose channel drops every hour meets the same problem with a new clock time in its line: one
+    draft, one question. The server keeps 10 questions a PC a day (429 + Retry-After): the question
+    waits that long, silent, and an older question still waiting is dropped for the newer one (the
+    server keeps one open question a PC) — 18 drafts re-asked every minute logged 160 refusals in 19 min."""
+    import galaius.machines as machines
+
+    config = _config(tmp_path, "read_only")
+    posts: list[httpx.Request] = []
+    monkeypatch.setattr(machines.httpx, "post", lambda url, timeout, **options: posts.append(httpx.Request("POST", url, **options)) or httpx.Response(429, headers={"Retry-After": "3600"}))
+    monkeypatch.setattr(machines.httpx, "get", lambda url, timeout, **options: httpx.Response(204))
+    reports = MachineRunner.error_reports()
+    with caplog.at_level(logging.WARNING, logger="galaius.error_reports"):
+        older = reports.prepare(config, "crashed", "KeyError: 'hello'", ())
+        for clock in ("20:20:08", "20:28:39", "23:45:52"):
+            reports.prepare(config, "channel_unreachable", f"{clock} info machines: reconnecting in 5 s", ())
+        for _ in range(5):
+            reports.deliver(config)
+    (draft,) = reports.drafts()
+    assert draft.id != older.id and draft.question.message.startswith("20:20:08"), "the older problem's question gave way; the same problem is one draft"
+    assert len(posts) == 1 and draft.ask_after is not None and draft.ask_after - datetime.now(UTC) > timedelta(minutes=59), "the newer question keeps the server's wait"
+    assert len([record for record in caplog.records if "not taken now" in record.getMessage()]) == 1, "one line per refusal, none while it waits"
+
+
+@pytest.mark.parametrize(("retry_after", "wait"), [
+    ("3600", timedelta(hours=1)), ("", timedelta(minutes=1)), ("²", timedelta(minutes=1)), ("99999999999999", timedelta(days=2)),
+    ((datetime.now(UTC) + timedelta(hours=2)).strftime("%a, %d %b %Y %H:%M:%S GMT"), timedelta(hours=2)),
+])
+def test_a_refused_question_waits_what_the_server_says_and_never_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, retry_after: str, wait: timedelta) -> None:
+    """Retry-After in seconds or as an HTTP date, at most `keep`; missing or unreadable: the PC's own wait."""
+    import galaius.machines as machines
+
+    monkeypatch.setattr(machines.httpx, "post", lambda url, timeout, **options: httpx.Response(429, headers=[(b"Retry-After", retry_after.encode("latin-1"))]))
+    draft = MachineRunner.error_reports().prepare(_config(tmp_path, "read_only"), "crashed", "KeyError: 'hello'", ())
+    assert draft is not None and draft.ask_after is not None and abs(draft.ask_after - datetime.now(UTC) - wait) < timedelta(minutes=1)
 
 
 def test_a_crash_is_told_to_its_page_once_per_cause_in_one_process(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
