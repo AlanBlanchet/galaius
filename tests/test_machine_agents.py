@@ -725,3 +725,15 @@ def test_in_a_write_after_review_folder_the_agent_works_in_a_staging_copy(base: 
     [review] = agents.reviews.list()
     assert review.run_id == run_id and [(item.path, item.change) for item in review.files] == [("src/new.txt", "added")]
     assert not (base / "project" / "src" / "new.txt").exists()
+
+
+@pytest.mark.parametrize(("child", "working"), [({"pid": os.getpid()}, True), ({"pid": os.getpid(), "status": "starting"}, True), ({"exit_code": 0}, False), ({"pid": os.getpid(), "exit_code": 0}, False)])
+def test_web_runs_are_working_while_a_run_they_launched_still_runs(base: Path, tmp_path: Path, child: dict, working: bool) -> None:
+    """What a machine's beat says as `busy`: a web run, or a run it launched, still working."""
+    runs = WebRuns(path=tmp_path / "web-runs.json")
+    root, launched = str(uuid4()), str(uuid4())
+    reg.save_run(reg.AgentRun(run_id=root, provider="claude", name="r", cwd=str(base / "project"), started_at=1.0, exit_code=0))
+    reg.save_run(reg.AgentRun(run_id=launched, provider="claude", name="c", cwd=str(base / "project"), parent_run_id=root, started_at=1.0, **child))
+    assert not runs.working()
+    runs.add(WebRun(run_id=root, root="project"))
+    assert runs.working() is working

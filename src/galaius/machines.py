@@ -856,6 +856,8 @@ class MachineRunner:
         self._server_restarted = False
         self._log_ring = LogRing()
         logging.getLogger("galaius").addHandler(self._log_ring)
+        #: Why the web runs could not be read at the last beat (`busy`), None when they could.
+        self._runs_unreadable: str | None = None
         #: Tokens this runner held before a swap (`take_token_swap`): still masked in every kept line.
         self._spent_tokens: tuple[str, ...] = ()
         #: Why the last web version of the agent settings was not applied, and which one (shown on the PC's page).
@@ -1004,7 +1006,7 @@ class MachineRunner:
                     if self._server_restarted:
                         self._server_restarted = False
                         RuntimeStore.default().request_check()
-                    await socket.send(json.dumps({"type": "hello", "features": self.features(), **self._beat(config)}))
+                    await socket.send(json.dumps({"type": "hello", "features": self.features(), **await asyncio.to_thread(self._beat, config)}))
                     if await self._serve(socket, config):
                         return
             except EnrollmentChanged:
@@ -1244,7 +1246,7 @@ class MachineRunner:
             was, now = before.agent_settings()[0].model_dump(mode="json"), after.agent_settings()[0].model_dump(mode="json")
             changed = {key: [was[key], now[key]] for key in was if was[key] != now[key]}
             # Agents switched off from the web stop the ones the web started here, as a kill switch must.
-            stopped, failed = await asyncio.to_thread(WebRuns(path=self.config_path.with_name("machine-agent-runs.json")).stop_live) if before.run_agents and not after.run_agents else (0, 0)
+            stopped, failed = await asyncio.to_thread(self.web_runs.stop_live) if before.run_agents and not after.run_agents else (0, 0)
             logger.info("agent settings version %s from the web applied: %s%s", update.version, ", ".join(sorted(changed)) or "no change",
                         f"; running agents stopped: {stopped}" + (f", {failed} could not be" if failed else "") if stopped or failed else "")
             error = None
@@ -1302,12 +1304,33 @@ class MachineRunner:
             self.audit("agents.log", {**asked, **({"started_run_id": str(answer.run_id)} if answer.run_id and "run_id" not in asked else {}), "error": answer.error})
         await socket.send(json.dumps({"type": "agent_answer", "result": answer.model_dump(mode="json")}))
 
+    @property
+    def web_runs(self) -> WebRuns:
+        """The agent runs this computer started for the web (`machine-agent-runs.json` beside the machine file)."""
+        return WebRuns(path=self.config_path.with_name("machine-agent-runs.json"))
+
+    def busy(self) -> bool:
+        """Work of its own is going on here: a step, a web session's turn, a workspace being
+        prepared, or an agent run started for the web still working. Said in every beat (`busy`):
+        a machine the server stops when idle (a cloud machine) is not stopped under it."""
+        if self._executing or (self._sessions is not None and self._sessions.busy) or MachineWorkspaces.busy():
+            return True
+        try:
+            working, unreadable = self.web_runs.working(), None
+        except (OSError, ValueError) as error:
+            working, unreadable = False, str(error)
+        if unreadable != self._runs_unreadable:  # said once per change, never on every beat
+            if unreadable is not None:
+                logger.warning("web runs unreadable; reported not busy: %s", unreadable)
+            self._runs_unreadable = unreadable
+        return working
+
     def _agents(self, current: MachineConfig) -> MachineAgents:
         """What answers the web's agent requests, from the owner's current settings `current`."""
         self._sessions = self._sessions or MachineSessions(current.working_directory)
         return MachineAgents(roots=current.agent_roots_by_name(), permission=current.agent_permission, run_agents=current.run_agents,
                              continue_conversations=current.continue_conversations, answer_approvals=current.answer_approvals, session=f"web-{current.machine_id}",
-                             runs=WebRuns(path=self.config_path.with_name("machine-agent-runs.json")), environment=self._safe_environment(),
+                             runs=self.web_runs, environment=self._safe_environment(),
                              sessions=self._sessions, logs=self._log_ring, seal=SecretsSeal.for_token(current.token.get_secret_value()),
                              workspaces=MachineWorkspaces(roots=current.agent_roots_by_name(), origins=current.clone_origins, jobs=self._workspace_jobs,
                                                           working_directory=current.working_directory, register_root=self._register_agent_root,
@@ -1893,15 +1916,16 @@ class MachineRunner:
     async def _heartbeat(self, socket, config: MachineConfig) -> None:
         while True:
             await asyncio.sleep(self.heartbeat_seconds)
-            await socket.send(json.dumps({"type": "heartbeat", **self._beat(config)}))
+            await socket.send(json.dumps({"type": "heartbeat", **await asyncio.to_thread(self._beat, config)}))
 
     def _beat(self, connected: MachineConfig) -> dict[str, object]:
-        """What every hello and heartbeat says: this PC's runtimes, resources, and its file roots and
+        """What every hello and heartbeat says: this PC's runtimes, resources, its file roots and
         agent settings as its machine file says NOW (a change made here reaches the server with the
-        next beat)."""
+        next beat), and whether work of its own is going on (`busy`)."""
         current = self._current_config(connected)
         return {"runtimes": self._runtimes(current), "accelerators": self._accelerators(), "functions": self._functions(), "resources": self._resources(current.working_directory),
-                "file_roots": current.reported_file_roots(), "agent_settings": current.agent_state(self._settings_detail, self._settings_refused).model_dump(mode="json")}
+                "file_roots": current.reported_file_roots(), "agent_settings": current.agent_state(self._settings_detail, self._settings_refused).model_dump(mode="json"),
+                "busy": self.busy()}
 
     @staticmethod
     def _channel_url(server_url: str) -> str:

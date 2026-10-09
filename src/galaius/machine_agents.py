@@ -163,6 +163,10 @@ class WebRuns(BaseModel):
         """These runs and every run they launched, as the launcher's registry has them now."""
         return reg.trees(frozenset(str(item.run_id) for item in self.read()))
 
+    def working(self) -> bool:
+        """One of these runs, or a run it launched, is starting or running now (waiting for its owner is not working)."""
+        return any(run.status in {"starting", "running"} for run in self.runs())
+
     def stop_live(self) -> tuple[int, int]:
         """Stops every one still working (agents switched off here): (how many stopped, how many
         could not be - each failure logged, never stopping the rest)."""
