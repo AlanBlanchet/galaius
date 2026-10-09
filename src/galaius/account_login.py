@@ -114,7 +114,16 @@ class AccountLogin(BaseModel):
 
     @property
     def key_path(self) -> Path:
+        """The CLI's own read key from the sign-in. It acts for nobody (the server's rule): what this
+        PC's agents read (catalog, tools, prompts) goes through its link, which acts for its owner."""
         return CatalogConnection.path().parent / "credentials" / f"{urlsplit(self.server).netloc.replace(':', '_')}.key"
+
+    def key(self) -> str | None:
+        """That key, None when this computer holds none (never signed in here, or already out)."""
+        try:
+            return PRIVATE_FILES.read_secret(self.key_path)
+        except (OSError, ValueError):
+            return None
 
     def remember(self) -> None:
         """The next `galaius login` on this computer needs no address."""
@@ -217,11 +226,11 @@ class AccountLogin(BaseModel):
         """The key for the CLI and the machine credential (private files, sealed at rest where the
         system can: `PRIVATE_FILES`), and the CLI's connection."""
         PRIVATE_FILES.write_secret(self.key_path, issued.api_key.secret.get_secret_value())
-        CatalogConnection(endpoint=self.server, workspace_id=issued.workspace.id, auth_mode="token", token_file=self.key_path.absolute()).save()
         MachineRunner().save(MachineConfig(
             server_url=self.server, workspace_id=issued.workspace.id, machine_id=issued.machine.id, token=issued.machine_token,
             permission_ceiling="read_only", working_directory=Path.home(), script_roots=(), run_agents=False,
         ))
+        CatalogConnection(endpoint=self.server, workspace_id=issued.workspace.id, auth_mode="machine").save()
 
     def page(self, http: httpx.Client, machine: MachineConfig) -> str:
         """This computer's page in the web app, where its settings live: the app is where the
@@ -288,9 +297,9 @@ class AccountLogin(BaseModel):
     def connected_name(self, machine: MachineConfig) -> str:
         """This computer's name among the server's machines (asked as the CLI is signed in), its id
         when the server cannot be asked; LoginError when the server answers it no longer has it."""
-        connection = CatalogConnection.load()
-        if connection is None or connection.endpoint.rstrip("/") != self.server:
+        if not self.key_path.is_file():
             return f"machine {machine.machine_id}"
+        connection = CatalogConnection(endpoint=self.server, workspace_id=machine.workspace_id, auth_mode="token", token_file=self.key_path.absolute())
         try:
             with connection.connect() as http:
                 payload = connection.authenticate(http).request(http, "GET", f"/v1/workspaces/{machine.workspace_id}/machines")
@@ -633,13 +642,8 @@ def _reconfigured(account: AccountLogin, existing: MachineConfig, *, agents: Age
         MACHINE_SERVICE.stop()
     except ServiceUnavailable:
         pass  # not set up here yet: `brought_online` sets it up
-    connection = CatalogConnection.load()
-    try:
-        key = PRIVATE_FILES.read_secret(connection.token_file) if connection is not None and connection.token_file is not None else None
-    except ValueError:
-        key = None
     with account.client() as http:
-        if account.brought_online(http, machine, key):
+        if account.brought_online(http, machine, account.key()):
             print("Online: its background service restarted on this galaius build.")
 
 
@@ -660,20 +664,17 @@ def _joined(account: AccountLogin, http: httpx.Client, started: DeviceLoginStart
             print("It runs while you are signed in to this computer; it starts again at your next sign-in.")
         print(f"Its settings (agents, folders) are on its page: {account.page(http, machine)}")
     print(account.synced(CatalogConnection.load()))
-    print("Every folder here is hidden from workflows, Data and agents. To open one:  galaius machine places <folder under your home> <level>  (e.g. interact-files sandbox)")
     print(AgentChoice.described(machine))
 
 
 def logout() -> None:
-    connection = CatalogConnection.load()
     machine = _existing_machine()
-    if connection is None or connection.token_file is None:
+    if machine is None:
         raise LoginError("this computer is not signed in")
-    account = AccountLogin.at(connection.endpoint)
-    try:
-        key = PRIVATE_FILES.read_secret(connection.token_file)
-    except ValueError:
-        key = None  # already gone: nothing to revoke from here
+    account = AccountLogin.at(machine.server_url)
+    key = account.key()  # None: already gone, nothing to revoke from here
+    if key is None and account.key_path.exists():
+        print(f"This computer's sign-in key could not be read ({account.key_path}): it is removed here but stays valid on the server until removed there.", file=sys.stderr)
     try:
         with account.client() as http:
             revoked = account.revoke(http, key) if key is not None else {}
@@ -684,8 +685,7 @@ def logout() -> None:
     except ServiceUnavailable as refused:
         # Already signed out on the server: the rest is removed here all the same.
         print(f"The background service could not be removed ({refused}); it can no longer connect.", file=sys.stderr)
-    if machine is not None and machine.server_url == account.server:
-        MachineRunner.default_config_path().unlink(missing_ok=True)
-    connection.token_file.unlink(missing_ok=True)
+    MachineRunner.default_config_path().unlink(missing_ok=True)
+    account.key_path.unlink(missing_ok=True)
     CatalogConnection.path().unlink(missing_ok=True)
     print(f"Signed out: this computer left {account.server}" + (" and was removed from its machines." if revoked.get("machine") else "."))

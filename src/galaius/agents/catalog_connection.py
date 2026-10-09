@@ -155,10 +155,14 @@ class CatalogConnection(BaseModel):
             raise CatalogConnectionError("catalog connection has no selected workspace; sync again")
         # The loopback preview sign-in no longer exists on any server: a linked PC uses its own link,
         # on the workspace it chose (`galaius prompts use`: a company that granted this PC its prompts).
-        if connection.auth_mode in ("machine", "preview") and (linked := cls.linked()) is not None:
-            if connection.auth_mode == "machine" and connection.endpoint.rstrip("/") == linked.endpoint:
+        # A key for the link's own server and workspace reads through the link too: the one its
+        # sign-in left acts for nobody, so it sees none of the owner's agents, tools or prompts.
+        if (linked := cls.linked()) is not None:
+            same_server = connection.endpoint.rstrip("/") == linked.endpoint
+            if connection.auth_mode == "machine" and same_server:
                 return linked.model_copy(update={"workspace_id": connection.workspace_id})
-            return linked
+            if connection.auth_mode in ("machine", "preview") or (same_server and connection.workspace_id == linked.workspace_id):
+                return linked
         if connection.auth_mode == "machine":
             raise CatalogAuthenticationError(_UNLINKED)
         return connection

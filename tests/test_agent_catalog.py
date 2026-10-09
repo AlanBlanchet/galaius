@@ -398,6 +398,19 @@ def test_a_linked_pc_whose_key_is_revoked_reads_the_catalog_through_its_link(lin
         AgentCatalog.refresh(elsewhere, transport=httpx.MockTransport(server))
 
 
+@pytest.mark.parametrize(("own_company", "read_as"), [(True, "machine"), (False, "token")])
+def test_the_sign_in_key_of_a_linked_pc_never_reads_its_own_company(linked_pc, catalog_home, own_company, read_as):
+    """`galaius login` leaves a key that acts for nobody: through it the PC's own company shows no
+    agent. A key saved for that company reads through the link (its owner's agents); a key for
+    another company stays that key."""
+    key = catalog_home / "key"
+    PRIVATE_FILES.write_secret(key, "iwk_" + "k" * 40)
+    company = linked_pc.workspace_id if own_company else uuid4()
+    CatalogConnection.replace_text(CatalogConnection.path(), CatalogConnection(
+        endpoint="http://127.0.0.1:8767", workspace_id=company, auth_mode="token", token_file=key).model_dump_json())
+    assert (CatalogConnection.load().auth_mode, CatalogConnection.load().workspace_id) == (read_as, company)
+
+
 def test_a_linked_pc_keeps_no_catalog_file_so_nothing_rewrites_what_running_processes_read(linked_pc, capsys):
     """The PC link is the only record of a machine connection: syncing removes a stale file instead of
     writing a mode older running galaius processes cannot read; with no file the link is used."""

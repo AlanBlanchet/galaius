@@ -9,6 +9,8 @@ operating system (`MACHINE_SERVICE`), started, stopped and read by `galaius mach
   in a job that closes with it: stopping the task stops the scripts and agents it started.
 - macOS: a launchd agent of this user (`~/Library/LaunchAgents/ai.galaius.machine.plist`), loaded
   at their login, restarted by launchd after a crash.
+- Linux where systemd does not run (a container, WSL without systemd): a process of its own, out
+  of the terminal's session, until the computer restarts (`DetachedMachineService`).
 - Anywhere else: no background service, said as such; `galaius machine connect` in a terminal
   keeps it connected.
 
@@ -16,11 +18,13 @@ Each says its own last words (`last_words`): what `galaius login` shows, and sen
 computer's page, when the service does not bring the computer online."""
 
 import asyncio
+from contextlib import suppress
 import getpass
 import logging
 import os
 import plistlib
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -445,6 +449,79 @@ class TerminalMachineService(MachineService):
         return False
 
 
+class DetachedMachineService(MachineService):
+    """Linux where systemd does not run: `machine service run` (which restarts the connection after
+    a crash) as a process of its own session, its output in `log_path`, its id in `pid_path`. Nothing
+    starts it again after the computer restarts: the install line, run again, does."""
+
+    command: ClassVar[tuple[str, ...]] = ("machine", "service", "run")
+
+    @staticmethod
+    def systemd_runs() -> bool:
+        """Whether systemd manages this computer (`sd_booted`: its runtime folder exists)."""
+        return Path("/run/systemd/system").is_dir()
+
+    @classmethod
+    def pid_path(cls) -> Path:
+        return cls.log_path().with_name("machine-service.pid")
+
+    #: How long `stop` waits for the process group to end before forgetting it.
+    stop_seconds: ClassVar[float] = 10
+
+    @staticmethod
+    def identity(pid: int) -> tuple[str, str]:
+        """Process `pid`'s state and start time (`/proc/<pid>/stat` fields 3 and 22): with its id, who it
+        is (an id is reused), and whether it still runs (`Z` / `X`: exited, not yet collected)."""
+        fields = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").rpartition(")")[2].split()
+        return fields[0], fields[19]
+
+    def _pid(self) -> int | None:
+        """The recorded process, while it is still the one started (not a later one given its id) and running."""
+        try:
+            pid, started = self.pid_path().read_text(encoding="utf-8").split()
+            state, now = self.identity(int(pid))
+        except (OSError, ValueError, IndexError):
+            return None
+        return int(pid) if now == started and state not in {"Z", "X"} else None
+
+    def install(self) -> None:
+        self.start()
+
+    def start(self) -> None:
+        if self._pid() is not None:
+            return
+        log = self.log_path()
+        log.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with os.fdopen(os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "ab") as output:
+            child = subprocess.Popen([str(self.executable()), *self.command], stdin=subprocess.DEVNULL, stdout=output, stderr=output,
+                                     close_fds=True, start_new_session=True)
+        self.pid_path().write_text(f"{child.pid} {self.identity(child.pid)[1]}", encoding="utf-8")
+
+    def stop(self) -> None:
+        """Ends it with every program its connection started (its own session's process group), as
+        systemd and the Windows job do, then forgets it once gone: a restart never runs two."""
+        if (pid := self._pid()) is not None:
+            with suppress(ProcessLookupError):
+                os.killpg(pid, signal.SIGTERM)
+            deadline = time.monotonic() + self.stop_seconds
+            while self._pid() is not None and time.monotonic() < deadline:
+                time.sleep(0.1)
+        self.pid_path().unlink(missing_ok=True)
+
+    def remove(self) -> None:
+        self.stop()
+
+    def running(self) -> bool:
+        return self._pid() is not None
+
+    def installed(self) -> bool:
+        return self.pid_path().exists()
+
+    def after_logout(self) -> bool:
+        return True  # its own session: signing out leaves it running, a restart stops it
+
+
 MACHINE_SERVICE: MachineService = (
-    WindowsMachineService() if sys.platform == "win32" else SystemdMachineService() if sys.platform.startswith("linux")
+    WindowsMachineService() if sys.platform == "win32"
+    else (SystemdMachineService() if DetachedMachineService.systemd_runs() else DetachedMachineService()) if sys.platform.startswith("linux")
     else LaunchdMachineService() if sys.platform == "darwin" else TerminalMachineService())
