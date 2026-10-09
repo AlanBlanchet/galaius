@@ -213,6 +213,11 @@ class Refusal(BaseModel):
         each carrying a five-hour `resetsAt` an hour away, and grepping the blob for a reset
         instant finds one of those first — cutting a live seven-day block back to an hour, which
         is the bug in a new costume. A line that did not itself refuse is never read for a reset.
+
+        Inside a JSON line the same rule holds per STRING: a reset written in words (« resets 5:20pm
+        (Europe/Paris) », an ISO instant) is read only from a string that itself refuses, so the
+        line's own `timestamp` is never taken for one; and it stands in for a refusing object that
+        names no reset key of its own.
         """
         refusals = [found for line in said.splitlines()
                     if (found := cls._from_line(line, now=now)) is not None]
@@ -226,44 +231,61 @@ class Refusal(BaseModel):
 
         An upper bound, never the block itself: a rolling window reopens as usage falls under the
         cap, measured over the captured runs anywhere from three minutes to six days before it.
+        An instant up to `RESET_SLACK` behind `now` still counts: a vendor refuses right up to the
+        boundary it names, and hearing that refusal seconds after it is no reason for an hour.
         """
-        if self.reopens_at is not None and self.reopens_at > now:
+        if self.reopens_at is not None and self.reopens_at + RESET_SLACK > now:
             return self.reopens_at + RESET_SLACK
         length = self.window_seconds if self.window_seconds is not None else WINDOWS.get(self.window)
         return None if length is None else now + length
 
     @classmethod
     def _from_line(cls, line: str, *, now: float) -> Self | None:
-        if not REFUSAL.search(line):
-            return None
-        refused = cls._refused_object(line)
-        if refused is None:
+        try:
+            parsed = json.loads(line)
+        except ValueError:
+            if not REFUSAL.search(line):
+                return None
             return cls(window=cls._window_in(line), reopens_at=cls._instant_in(line, now=now))
-        window = refused.get("rateLimitType") or refused.get("rate_limit_type") or ""
-        return cls(window=str(window), reopens_at=cls._instant_of(refused, now=now),
+        words = "\n".join(node for node in cls._nodes(parsed)
+                          if isinstance(node, str) and REFUSAL.search(node))
+        refused = cls._refused_object(parsed)
+        if refused is None:
+            if not words and not REFUSAL.search(line):
+                return None
+            said = words or line
+            return cls(window=cls._window_in(said), reopens_at=cls._instant_in(said, now=now))
+        window = refused.get("rateLimitType") or refused.get("rate_limit_type") or cls._window_in(words)
+        reopens_at = cls._instant_of(refused, now=now)
+        return cls(window=str(window),
+                   reopens_at=reopens_at if reopens_at is not None else cls._instant_in(words, now=now),
                    window_seconds=cls._length_of(refused))
 
     @staticmethod
-    def _refused_object(line: str) -> dict[str, Any] | None:
-        """The object that itself says it was refused, anywhere in a JSON line.
+    def _nodes(parsed: Any) -> list[Any]:
+        """Every value anywhere in a parsed JSON line, the line itself first. Strings come back
+        decoded: an escaped `\\u00b7` is the refusal's `·` again."""
+        found: list[Any] = []
+        pending: list[Any] = [parsed]
+        while pending:
+            node = pending.pop()
+            found.append(node)
+            if isinstance(node, dict):
+                pending.extend(node.values())
+            elif isinstance(node, list):
+                pending.extend(node)
+        return found
+
+    @classmethod
+    def _refused_object(cls, parsed: Any) -> dict[str, Any] | None:
+        """The object that itself says it was refused, anywhere in a parsed JSON line.
 
         Its OWN `resetsAt` is the one that matters. The same payload also carries a
         `unifiedWindows` map holding every window's reset, including pools that are nowhere near
         exhausted — borrowing a reset from those blocks a model for days it never refused for.
         """
-        try:
-            pending: list[Any] = [json.loads(line)]
-        except ValueError:
-            return None
-        while pending:
-            node = pending.pop()
-            if isinstance(node, dict):
-                if str(node.get("status", "")).lower() == "rejected":
-                    return node
-                pending.extend(node.values())
-            elif isinstance(node, list):
-                pending.extend(node)
-        return None
+        return next((node for node in cls._nodes(parsed) if isinstance(node, dict)
+                     and str(node.get("status", "")).lower() == "rejected"), None)
 
     @classmethod
     def _instant_of(cls, refused: dict[str, Any], *, now: float) -> float | None:

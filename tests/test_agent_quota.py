@@ -256,6 +256,46 @@ def test_a_spoken_reset_only_ever_shortens_the_block(said, now, blocked_for):
     assert quota.record_refusal("claude", "m", said=said, now=moment) == pytest.approx(moment + blocked_for)
 
 
+# Claude Code's five-hour refusal of 2026-10-09, the three lines its stream ends on (usage trimmed):
+# the pool reopened at 15:20:00Z (« 5:20pm » Paris) and the model answered again right then.
+SESSION_RESET = 1791559200.0
+SESSION_SAID = "You've hit your session limit · resets 5:20pm (Europe/Paris)"
+SESSION_LINES = {
+    "rate-limit line": json.dumps({"type": "rate_limit_event", "rate_limit_info": {
+        "status": "rejected", "resetsAt": 1791559200, "rateLimitType": "five_hour",
+        "overageStatus": "rejected", "isUsingOverage": False,
+        "unifiedWindows": {"five_hour": {"utilization": 1, "resetsAt": 1791559200},
+                           "seven_day": {"utilization": 0.61, "resetsAt": 1791842400}}}}),
+    # The CLI's own notice: the line's `timestamp` is when it was written, not when anything resets.
+    "synthetic assistant line": json.dumps({
+        "type": "assistant", "message": {"model": "<synthetic>", "role": "assistant",
+                                         "content": [{"type": "text", "text": SESSION_SAID}]},
+        "timestamp": "2026-10-09T15:15:34.961Z", "error": "rate_limit", "is_api_error_message": True}),
+    "result line": json.dumps({"type": "result", "subtype": "success", "is_error": True,
+                               "api_error_status": 429, "terminal_reason": "api_error",
+                               "result": SESSION_SAID}),
+    "galaius event text": SESSION_SAID,
+    # A refusing object that names no reset of its own: the words beside it still do.
+    "refusal object without a reset key": json.dumps({
+        "type": "rate_limit_event", "rate_limit_info": {"status": "rejected", "rateLimitType": "five_hour"},
+        "message": SESSION_SAID}),
+    "ISO reset beside a keyless refusal object": json.dumps({
+        "rate_limit_info": {"status": "rejected"}, "text": "five_hour limit: rejected; resets 2026-10-09T15:20:00+00:00"}),
+}
+
+
+@pytest.mark.parametrize("heard", [
+    pytest.param("2026-10-09T15:15:35+00:00", id="heard when refused"),
+    # The block that benched the model until 18:20 Paris: heard 25 s after the instant it names.
+    pytest.param("2026-10-09T15:20:25+00:00", id="heard at the reset it names"),
+])
+@pytest.mark.parametrize("said", SESSION_LINES.values(), ids=SESSION_LINES.keys())
+def test_a_refusal_naming_its_reset_blocks_until_then_never_the_flat_hour(said, heard):
+    moment = datetime.fromisoformat(heard).timestamp()
+    assert quota.record_refusal("claude", "m", said=said, now=moment) == pytest.approx(
+        SESSION_RESET + quota.RESET_SLACK)
+
+
 def test_a_probe_refused_for_quota_never_blocks_the_owners_own_runs(tmp_path, monkeypatch):
     """A measurement run in its own registry (`GALAIUS_AGENTS_DIR`) keeps its cooldown there."""
     owner, probe = tmp_path / "owner-agents", tmp_path / "probe-agents"
