@@ -9,7 +9,7 @@ from uuid import UUID
 
 from cyclopts import App, Parameter
 
-from galaius_core import PLACE_LEVELS, AgentTouchScope, MachinePlaceChange, PlaceLevel, WorkflowNode
+from galaius_core import PLACE_LEVELS, AgentTouchScope, PlaceLevel, WorkflowNode
 
 from galaius.functions import PermissionLevel
 from galaius.machine_service import MACHINE_SERVICE, ServiceUnavailable
@@ -60,9 +60,9 @@ def machine_places(path: str | None = None, level: PlaceLevel | None = None) -> 
     open to workflows, the Data screen and agents — hidden (every folder not named), see (names,
     sizes, dates), read, write_on_review (writes wait for your review: `galaius machine
     reviews`), sandbox (read + write, apart from agent and script folders), write. A level holds
-    for everything beneath until a deeper one. Set here, it applies at once. No argument prints
-    the levels, the widenings the web asked for (confirm them with `galaius machine approve`),
-    and whether agents are fenced."""
+    for everything beneath until a deeper one. Set here or from the web, it applies at once (the
+    web never opens the home folder itself, anything outside it, hidden names or credential
+    stores). No argument prints the levels and whether agents are fenced."""
     runner = MachineRunner()
     desk = PlaceDesk(runner)
     if path is not None:
@@ -76,30 +76,11 @@ def machine_places(path: str | None = None, level: PlaceLevel | None = None) -> 
     print(desk.view(config).model_dump_json(indent=2))
 
 
-@machine_app.command(name="approve")
-def machine_approve(change: str | None = None, *, yes: bool = False) -> None:
-    """Owner-only, on this machine: confirm the widenings asked from the web (a folder opened
-    further, a new sandbox), each shown first; `change` (an id or its first characters) picks one.
-    Nothing asked from the web opens a folder further until confirmed here. --yes confirms the
-    one named without asking (never all: one queued after you last looked would pass unseen)."""
-    if yes and not change:
-        raise SystemExit("name the widening to confirm with --yes (its id, from `galaius machine places`); without --yes each one is shown and asked")
-    def confirm(waiting: MachinePlaceChange) -> bool:
-        print(f"The web asks: {waiting.path}: {waiting.previous} -> {waiting.level} (asked {waiting.asked_at:%Y-%m-%d %H:%M} UTC, id {str(waiting.id)[:8]}, digest {waiting.digest[:16]})")
-        if yes:
-            return True
-        if not sys.stdin.isatty():
-            raise SystemExit("confirm in a terminal, or pass --yes")
-        return input("Open it? [y/N] ").strip().lower() in {"y", "yes"}
-    applied = PlaceDesk(MachineRunner()).approve(change, confirm)
-    print(json.dumps({"applied": [{"path": item.path, "level": item.level, "digest": item.digest} for item in applied]}))
-
-
 @machine_app.command(name="browse")
 def machine_browse(state: Literal["on", "off"] | None = None) -> None:
-    """Owner-only, on this machine: whether you may browse the names of every folder here from the
-    web to pick levels (names only, never contents; credential stores never listed; off by
-    default). No argument prints it."""
+    """Owner-only, on this machine: whether the web may also list file names, and folders outside
+    the home folder, to pick levels (names only, never contents; credential stores never listed;
+    off by default; folder names inside the home folder are listed either way). No argument prints it."""
     runner = MachineRunner()
     config = runner.update(lambda current: current.model_copy(update={"browse": state == "on"})) if state else runner.load()
     if state:

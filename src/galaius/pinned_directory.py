@@ -14,6 +14,7 @@ Residual (Windows): a process of the SAME user swapping a component between chec
 still redirect one operation; the profile's ACL keeps every other user out.
 """
 
+import contextlib
 import errno
 import os
 import shutil
@@ -80,6 +81,19 @@ class PinnedDirectory(BaseModel):
     def backends(cls) -> tuple[type, ...]:
         """Every backend this computer can run (the portable one always)."""
         return tuple(backend for backend in (DescriptorDirectory, PathDirectory) if backend.supported())
+
+    def move(self, name: str, target: Self, target_name: str) -> None:
+        """Folder `name` renamed to `target_name` in `target`, never over anything there:
+        FileExistsError when that name is taken, even by an empty folder. POSIX renames over an
+        empty folder, so the name is claimed first with a folder of its own (`mkdir` fails when
+        taken), then renamed over that claim; Windows renames never replace (`PathDirectory`)."""
+        target.mkdir(target_name)
+        try:
+            self.replace(name, target, target_name)
+        except OSError as error:
+            with contextlib.suppress(OSError):
+                target.rmdir(target_name)
+            raise FileExistsError(errno.EEXIST, "taken meanwhile", target_name) if error.errno in {errno.ENOTEMPTY, errno.EEXIST} else error
 
     @classmethod
     def _name(cls, name: str) -> str:
@@ -269,6 +283,16 @@ class PathDirectory(PinnedDirectory):
 
     def replace(self, name: str, target: Self, target_name: str) -> None:
         os.replace(self.path / self._name(name), target.path / target._name(target_name))
+
+    def move(self, name: str, target: Self, target_name: str) -> None:
+        if os.name != "nt":
+            return super().move(name, target, target_name)
+        try:
+            os.rename(self.path / self._name(name), target.path / target._name(target_name))
+        except OSError as error:
+            if getattr(error, "winerror", None) in {80, 183}:  # ERROR_FILE_EXISTS, ERROR_ALREADY_EXISTS
+                raise FileExistsError(errno.EEXIST, "taken", target_name) from None
+            raise
 
     def link(self, name: str, target: Self, target_name: str) -> os.stat_result | None:
         """A hard link where the file system has them (None: the same file, second name); else an

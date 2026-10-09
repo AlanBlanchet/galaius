@@ -26,7 +26,9 @@ from galaius.machine_agents import LogRing, MachineAgents, MachineSessions, WebR
 from galaius.fence import FenceSpec
 from galaius.config import UserConfig
 from galaius.machines import MachineConfig, MachineRunner
-from galaius.machine_workspaces import CloneFailure, Git, MachineWorkspaces, WorkspaceJobs
+from galaius.machine_workspaces import KeptJob, MachineWorkspaces, WorkspaceJobs
+from galaius.workspace_git import CloneFailure, Git
+from galaius.workspace_copy import WorkspaceTransfers
 from galaius.agents.providers import PROJECT_SETTINGS_OFF, ClaudeCodeProvider
 from galaius.place_reviews import PlaceReviews
 from galaius.private_files import PRIVATE_FILES
@@ -55,7 +57,8 @@ def _agents(base: Path, tmp_path: Path, cli: tuple[str, ...] = ("false",), **set
                          continue_conversations=config.continue_conversations, answer_approvals=config.answer_approvals,
                          runs=WebRuns(path=tmp_path / "web-runs.json"), environment={"PATH": os.environ["PATH"]}, cli=cli,
                          workspaces=MachineWorkspaces(roots=config.agent_roots_by_name(), origins=config.clone_origins, jobs=WorkspaceJobs(path=tmp_path / "workspaces.json"),
-                                                      environment={"PATH": os.environ["PATH"]}))
+                                                      environment={"PATH": os.environ["PATH"]}, working_directory=base,
+                                                      transfers=WorkspaceTransfers(endpoint=lambda path: f"http://server{path}", headers={})))
 
 
 def _answer(agents: MachineAgents, request: MachineAgentRequest):
@@ -569,7 +572,6 @@ def test_a_cloned_workspace_start_tells_the_agent_cli_to_load_no_folder_settings
 
 @pytest.mark.parametrize(("url", "name", "said"), [
     ("https://github.com/other/repo", None, "not among the repositories"),
-    ("https://github.com/owner/src", None, "already exists"),
     ("https://127.0.0.1/owner/repo", "fresh", "local or private address"),
 ])
 def test_a_clone_is_refused_before_git_runs(base: Path, tmp_path: Path, url: str, name: str | None, said: str) -> None:
@@ -579,16 +581,17 @@ def test_a_clone_is_refused_before_git_runs(base: Path, tmp_path: Path, url: str
     assert agents.workspaces.jobs.read() == ()
 
 
-@pytest.mark.parametrize(("output", "said"), [
-    ("Host key verification failed.\nfatal: Could not read from remote repository.", "never connected to github.com over SSH"),
-    ("git@github.com: Permission denied (publickey).", "refused this PC's SSH key"),
-    ("fatal: could not read Username for 'https://github.com': terminal prompts disabled", "no saved git sign-in for github.com"),
-    ("remote: Repository not found.\nfatal: repository 'https://github.com/o/r/' not found", "does not exist"),
-    ("fatal: transport 'file' not allowed", "transport other than https or ssh"),
-    ("fatal: something new", "git clone failed: fatal: something new"),
+@pytest.mark.parametrize(("output", "code", "said"), [
+    ("Host key verification failed.\nfatal: Could not read from remote repository.", "host_unknown", "never connected to github.com over SSH"),
+    ("git@github.com: Permission denied (publickey).", "clone_auth_refused", "refused this PC's SSH key"),
+    ("fatal: could not read Username for 'https://github.com': terminal prompts disabled", "clone_auth_refused", "no saved git sign-in for github.com"),
+    ("remote: Repository not found.\nfatal: repository 'https://github.com/o/r/' not found", "repository_not_found", "does not exist"),
+    ("fatal: transport 'file' not allowed", "failed", "transport other than https or ssh"),
+    ("fatal: something new", "failed", "git clone failed: fatal: something new"),
 ])
-def test_a_failed_clone_says_why_in_plain_words(output: str, said: str) -> None:
-    assert said in CloneFailure.explain(output, "github.com")
+def test_a_failed_clone_says_why_as_a_code_and_in_plain_words(output: str, code: str, said: str) -> None:
+    failure = CloneFailure.explain(output, "github.com")
+    assert failure.code == code and said in str(failure)
 
 
 def test_the_submodule_walk_never_leaves_the_clone(base: Path, tmp_path: Path) -> None:
@@ -737,3 +740,162 @@ def test_web_runs_are_working_while_a_run_they_launched_still_runs(base: Path, t
     assert not runs.working()
     runs.add(WebRun(run_id=root, root="project"))
     assert runs.working() is working
+
+
+class TransferServer:
+    """The server's transfer routes as the PCs reach them over HTTP (`WorkspaceArchive.part_route`):
+    parts kept by (transfer, index), each PUT's digest header checked, the ending POST kept."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import httpx
+        self.parts: dict[tuple[str, int], bytes] = {}
+        self.ended: dict[str, dict] = {}
+
+        def request(method: str, url: str, headers: dict, timeout: float, content: bytes | None = None, json: dict | None = None) -> httpx.Response:
+            transfer, _, index = url.removeprefix("http://server/v1/machine/transfers/").partition("/")
+            if method == "PUT":
+                assert headers["x-galaius-digest"] == hashlib.sha256(content).hexdigest()
+                self.parts[(transfer, int(index))] = content
+            elif method == "POST":
+                self.ended[transfer] = json
+            elif (transfer, int(index)) not in self.parts:
+                return httpx.Response(404, request=httpx.Request(method, url))
+            return httpx.Response(200, content=self.parts.get((transfer, int(index or 0)), b""), request=httpx.Request(method, url))
+
+        monkeypatch.setattr(httpx, "request", request)
+
+    def outcome(self, transfer: UUID) -> dict:
+        for _ in range(200):
+            if str(transfer) in self.ended:
+                return self.ended[str(transfer)]["outcome"]
+            time.sleep(0.05)
+        raise AssertionError("the upload never ended")
+
+    def serve(self, transfer: UUID, archive: bytes) -> dict:
+        """`archive` as uploaded parts; its `WorkspaceArchive`."""
+        self.parts[(str(transfer), 0)] = archive
+        return {"transfer": str(transfer), "size": len(archive), "digest": hashlib.sha256(archive).hexdigest(), "files": 8}
+
+
+def _settled(workspaces: MachineWorkspaces, job_id: UUID) -> MachineWorkspaceJob:
+    for _ in range(200):
+        job = next(item for item in workspaces.jobs.read() if item.id == job_id)
+        if job.state != "running":
+            return job
+        time.sleep(0.05)
+    raise AssertionError("the job never ended")
+
+
+@pytest.mark.usefixtures("directory_backend")
+def test_a_project_copied_to_another_pc_arrives_whole_under_a_free_name(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """PC-A sends its checkout's tracked files (hidden tracked ones too, never a link, a key or a name
+    Windows refuses, each left-out file listed); PC-B writes them beside an existing folder of the same
+    name, under `aino-2`, as a folder whose own agent settings never load. An empty project folder
+    takes the next free name the same way."""
+    server = TransferServer(monkeypatch)
+    source = _checkout(base / "project" / "aino", origin="https://github.com/owner/aino.git")
+    for name, content in {"README.md": "# aino", "src/app.py": "print(1)", ".gitignore": "*.log", "id_rsa": "key", "aux.c": "int x;", ".env": "TOKEN=x",
+                          ".npmrc": "//r/:_authToken=x", "sub/.env.production": "TOKEN=y"}.items():
+        (source / name).parent.mkdir(parents=True, exist_ok=True)
+        (source / name).write_text(content)
+    (source / "link").symlink_to(tmp_path)
+    (source / "notes.log").write_text("untracked")
+    subprocess.run(["git", "-C", str(source), "add", "-A", "-f", "."], check=True)
+    pc_a = _agents(base, tmp_path)
+    measured = _answer(pc_a, _request("workspace_pack", root="project", path="aino")).pack
+    assert (measured.files, measured.tracked, measured.origin.url) == (4, True, "https://github.com/owner/aino.git")  # README, app.py, .gitignore, notes.log (force-added)
+    assert {skip.reason: set(skip.examples) for skip in measured.skipped} == {"link": {"link"}, "credential_store": {".env", ".npmrc", "id_rsa", "sub/.env.production"}, "name": {"aux.c"}}
+    transfer = uuid4()
+    _answer(pc_a, _request("workspace_pack", root="project", path="aino", transfer=str(transfer)))
+    archive = server.outcome(transfer)
+
+    pc_b_base = tmp_path / "pcb"
+    (pc_b_base / "galaius" / "projets" / "aino").mkdir(parents=True)  # an empty folder already there is never replaced
+    (tmp_path / "b").mkdir()
+    pc_b = _agents(pc_b_base, tmp_path / "b", agent_roots=("galaius/projets",))
+    job = _answer(pc_b, _request("workspace_create", root="galaius/projets", name="aino", copy_of=archive)).workspaces[0]
+    done = _settled(pc_b.workspaces, job.id)
+    landed = pc_b_base / "galaius" / "projets" / "aino-2"
+    assert (done.state, done.name, done.source, done.done) == ("ready", "aino-2", "copy", archive["size"])
+    assert {path.relative_to(landed).as_posix(): path.read_text() for path in landed.rglob("*") if path.is_file()} == {
+        "README.md": "# aino", "src/app.py": "print(1)", ".gitignore": "*.log", "notes.log": "untracked"}
+    assert pc_b.workspaces.prepared(landed) and (landed.parent / "aino").is_dir() and not any(path.name.endswith(".partial") for path in landed.parent.iterdir())
+    empty = [_answer(pc_b, _request("workspace_create", root="galaius/projets", name="notes")).workspaces[0].name for _ in range(2)]
+    assert empty == ["notes", "notes-2"] and (pc_b_base / "galaius" / "projets" / "notes-2").is_dir() and not pc_b.workspaces.prepared(pc_b_base / "galaius" / "projets" / "notes")
+
+
+def _tar(*members: tuple[str, bytes | None, bytes]) -> bytes:
+    """A gzip'd tar of (name, link target or None, content) members."""
+    import io
+    import tarfile
+    stream = io.BytesIO()
+    with tarfile.open(fileobj=stream, mode="w:gz") as packed:
+        for name, target, content in members:
+            member = tarfile.TarInfo(name)
+            if target is not None:
+                member.type, member.linkname = tarfile.SYMTYPE, target.decode()
+                packed.addfile(member)
+            else:
+                member.size = len(content)
+                packed.addfile(member, io.BytesIO(content))
+    return stream.getvalue()
+
+
+@pytest.mark.usefixtures("directory_backend")
+@pytest.mark.parametrize("members", [
+    (("/etc/cron.d/x", None, b"x"),), (("../x", None, b"x"),), (("a/../../x", None, b"x"),), ((".git/hooks/post-checkout", None, b"#!/bin/sh"),),
+    (("CON.txt", None, b"x"),), (("a:b", None, b"x"),), (("dir/trailing.", None, b"x"),), (("C:\\x", None, b"x"),),
+    (("ok.txt", None, b"x"), ("link", b"/home", b"")), (("Read.md", None, b"x"), ("read.MD", None, b"y")), (("GIT~1/config", None, b"x"),),
+    ((".g\u200cit/config", None, b"x"),), (("x" * 70_000, None, b"x"),),
+])
+def test_an_unsafe_copy_writes_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, members: tuple) -> None:
+    server = TransferServer(monkeypatch)
+    pc_b_base = tmp_path / "pcb"
+    (pc_b_base / "galaius" / "projets").mkdir(parents=True)
+    pc_b = _agents(pc_b_base, tmp_path, agent_roots=("galaius/projets",))
+    archive = server.serve(uuid4(), _tar(*members))
+    job = _settled(pc_b.workspaces, _answer(pc_b, _request("workspace_create", root="galaius/projets", name="aino", copy_of=archive)).workspaces[0].id)
+    assert (job.state, job.code) == ("failed", "unsafe_archive")
+    assert list((pc_b_base / "galaius" / "projets").iterdir()) == [] and not (pc_b_base / "galaius" / "x").exists() and not (pc_b_base.parent / "x").exists()
+
+
+def test_a_web_clone_is_fast_forwarded_before_a_launch_only_when_clean(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Its remote moved on: a clean clone follows it; one with uncommitted changes is left as it is;
+    any other folder is never touched."""
+    remote = tmp_path / "remote"
+    subprocess.run(["git", "init", "-q", "-b", "main", str(remote)], check=True)
+    commit = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", str(remote), "commit", "-q", "--allow-empty", "-m"]
+    subprocess.run([*commit, "one"], check=True)
+    clone = base / "project" / "aino"
+    subprocess.run(["git", "clone", "-q", str(remote), str(clone)], check=True)
+    subprocess.run(["git", "-C", str(clone), "remote", "set-url", "origin", "https://github.com/owner/aino.git"], check=True)
+    workspaces = _agents(base, tmp_path, clone_origins=("github.com/owner/*",)).workspaces
+    config = hashlib.sha256((clone / ".git" / "config").read_bytes()).hexdigest()
+    workspaces.jobs.put(KeptJob(id=uuid4(), root="project", name="aino", origin="github.com/owner/aino", state="ready", started_at=datetime.now(UTC), git_config=config))
+    monkeypatch.setattr(MachineWorkspaces, "_public_host", staticmethod(lambda host: None))
+    monkeypatch.setattr(MachineWorkspaces, "GIT_OPTIONS", (*MachineWorkspaces.GIT_OPTIONS, "-c", "protocol.file.allow=always", "-c", f"url.{remote}.insteadOf=https://github.com/owner/aino.git"))
+    monkeypatch.setattr(Git, "PROTOCOLS", "https:ssh:file")  # the test's remote is a local folder
+    subprocess.run([*commit, "two"], check=True)
+    assert workspaces.refresh(clone / "src" if (clone / "src").is_dir() else clone) == "updated"
+    assert workspaces.refresh(clone) == "current"
+    subprocess.run([*commit, "three"], check=True)
+    (clone / "tracked.txt").write_text("x")
+    subprocess.run(["git", "-C", str(clone), "add", "tracked.txt"], check=True)
+    assert workspaces.refresh(clone) == "dirty" and workspaces.refresh(base / "other") is None
+    subprocess.run(["git", "-C", str(clone), "reset", "-q", "--hard"], check=True)
+    subprocess.run(["git", "-C", str(clone), "config", "core.askPass", "/bin/false"], check=True)  # what a fenced agent could plant
+    assert workspaces.refresh(clone) == "dirty"
+    subprocess.run(["git", "-C", str(clone), "config", "--unset", "core.askPass"], check=True)
+    assert workspaces.refresh(clone) == "updated"
+    (clone / ".git" / "commondir").write_text(str(remote / ".git"))  # another repository's config, read in place of this one
+    assert workspaces.refresh(clone) == "dirty"
+
+
+def test_a_copy_of_a_folder_with_no_file_arrives_as_an_empty_folder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    server = TransferServer(monkeypatch)
+    pc_b_base = tmp_path / "pcb"
+    (pc_b_base / "galaius" / "projets").mkdir(parents=True)
+    pc_b = _agents(pc_b_base, tmp_path, agent_roots=("galaius/projets",))
+    archive = {**server.serve(uuid4(), _tar()), "files": 0}
+    job = _settled(pc_b.workspaces, _answer(pc_b, _request("workspace_create", root="galaius/projets", name="aino", copy_of=archive)).workspaces[0].id)
+    assert (job.state, job.name) == ("ready", "aino") and list((pc_b_base / "galaius" / "projets" / "aino").iterdir()) == []

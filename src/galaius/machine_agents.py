@@ -36,7 +36,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from galaius_core import (
     AGENT_TOUCH_SCOPES, MACHINE_AGENT_MEDIA, MACHINE_AGENT_TAIL, AgentAnswerRequest, AgentMedia, AgentMediaRequest, image_type, AgentContinueRequest, AgentFoldersRequest, AgentInteraction, AgentLogsRequest, AgentOptionsRequest,
     AgentProviderState, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
-    MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, PassedOverCandidate, media_key, media_paths, MachineAgentSession, MachineFileEntry, WorkspacePrepareRequest, WorkspacesRequest,
+    MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, PassedOverCandidate, media_key, media_paths, MachineAgentSession, MachineFileEntry, WorkspaceCreateRequest, WorkspacePack, WorkspacePackRequest, WorkspacePrepareRequest, WorkspaceRefresh, WorkspacesRequest,
 )
 from galaius.agents import registry as reg
 from galaius.agents.host import ConversationHost, ConversationRefused
@@ -49,6 +49,8 @@ from galaius.config import UserConfig
 from galaius.fence import EGRESS, FenceSpec, available
 from galaius.file_lock import exclusive
 from galaius.machine_workspaces import MachineWorkspaces
+from galaius.pinned_directory import PinnedDirectory
+from galaius.workspace_copy import WorkspaceRefused
 from galaius.place_reviews import PlaceReviews
 from galaius.places import LEVEL_RANK, PlaceMap, split
 from galaius.project_secrets import ProjectEnv
@@ -388,13 +390,28 @@ class MachineAgents(BaseModel):
             case WorkspacePrepareRequest():
                 job = await asyncio.to_thread(self._workspaces().prepare, request)
                 return MachineAgentAnswer(request_id=request.id, workspaces=(job,), detail=f"preparing {job.root}/{job.name}")
+            case WorkspaceCreateRequest():
+                job = await asyncio.to_thread(self._workspaces().create, request)
+                return MachineAgentAnswer(request_id=request.id, workspaces=(job,), detail=f"{'receiving' if job.state == 'running' else 'created'} {job.root}/{job.name}")
+            case WorkspacePackRequest():
+                pack = await asyncio.to_thread(self._pack, request)
+                return MachineAgentAnswer(request_id=request.id, pack=pack, detail="sending" if request.transfer else "measured")
             case WorkspacesRequest():
-                return MachineAgentAnswer(request_id=request.id, workspaces=self._workspaces().jobs.read())
+                return MachineAgentAnswer(request_id=request.id, workspaces=self._workspaces().jobs.read()[:50])
 
     def _workspaces(self) -> MachineWorkspaces:
         if self.workspaces is None:
             raise PermissionError("this computer does not prepare workspaces")
         return self.workspaces
+
+    def _pack(self, request: WorkspacePackRequest) -> WorkspacePack:
+        if request.root in self.roots and not self.roots[request.root].joinpath(*filter(None, request.path.split("/"))).exists():
+            raise WorkspaceRefused("source_missing", f"{request.root}/{request.path} does not exist on this computer")
+        return self._workspaces().pack(request, self.folder(request.root, request.path))
+
+    def _refresh(self, folder: Path) -> WorkspaceRefresh | None:
+        """A clone made here from the web, fast-forwarded before a launch in `folder` (`MachineWorkspaces.refresh`)."""
+        return self.workspaces.refresh(folder) if self.workspaces is not None else None
 
     def scope(self, asked: AgentTouchScope | None) -> AgentTouchScope:
         """What a run started now may do: `asked`, capped by this PC's permission."""
@@ -439,8 +456,8 @@ class MachineAgents(BaseModel):
                 facts = current.lstat()
             except FileNotFoundError:
                 raise PermissionError(f"{root}/{path} does not exist") from None
-            if not stat.S_ISDIR(facts.st_mode):
-                raise PermissionError(f"{root}/{path} is not a plain folder (links are never followed)")
+            if not stat.S_ISDIR(facts.st_mode) or PinnedDirectory.link_like(facts):
+                raise PermissionError(f"{root}/{path} is not a plain folder (links and junctions are never followed)")
         return current
 
     def _folders(self, request: AgentFoldersRequest) -> MachineAgentAnswer:
@@ -448,6 +465,7 @@ class MachineAgents(BaseModel):
         if not request.root:
             return MachineAgentAnswer(request_id=request.id, roots=roots, permission=permission, roles=self.roles())
         target = self.folder(request.root, request.path)
+        origin = MachineWorkspaces.remote_of(target)
         names = []
         with os.scandir(target) as entries:
             for entry in entries:
@@ -455,7 +473,7 @@ class MachineAgents(BaseModel):
                     names.append(entry.name)
         names.sort(key=str.lower)
         folders = tuple(MachineFileEntry(name=name, kind="folder") for name in names[:500])
-        return MachineAgentAnswer(request_id=request.id, roots=roots, entries=folders, truncated=len(names) > 500, permission=permission)
+        return MachineAgentAnswer(request_id=request.id, roots=roots, entries=folders, truncated=len(names) > 500, permission=permission, origin=origin)
 
     def _allowed(self) -> tuple[dict[str, WebRun], list[reg.AgentRun]]:
         return {str(item.run_id): item for item in self.runs.read()}, self.runs.runs()
@@ -656,6 +674,7 @@ class MachineAgents(BaseModel):
 
     async def _start(self, request: AgentStartRequest) -> MachineAgentAnswer:
         folder, written, fence, review = await asyncio.to_thread(self._prepare_start, request)
+        refresh = await asyncio.to_thread(self._refresh, folder)
         environment = await asyncio.to_thread(self.launcher_environment_in, folder)
 
         async def launch() -> UUID:
@@ -688,7 +707,7 @@ class MachineAgents(BaseModel):
             raise RuntimeError(f"the agent is still starting after {START_SECONDS:.0f} s; it appears in the list once it runs") from None
         except (ValueError, RuntimeError) as error:
             raise RuntimeError(self._said(str(error)) or "the agent did not start") from error
-        return MachineAgentAnswer(request_id=request.id, run_id=run_id, fenced=fence is not None, detail=f"{written} project secrets written to .env" if written else "")
+        return MachineAgentAnswer(request_id=request.id, run_id=run_id, fenced=fence is not None, refresh=refresh, detail=f"{written} project secrets written to .env" if written else "")
 
     def _prepare_start(self, request: AgentStartRequest) -> tuple[Path, int, FenceSpec | None, UUID | None]:
         """What a start is checked and prepared with before anything runs: its folder, how many
@@ -904,12 +923,13 @@ class MachineAgents(BaseModel):
             raise PermissionError(reason)
         if request.model is not None and request.model not in models:
             raise PermissionError(f"{request.model} is not a model sessions can use here")
+        refresh = await asyncio.to_thread(self._refresh, folder)
         try:
             run = await (await self.sessions.host()).start(request.text, folder, route_id=route, model=request.model)
         except ConversationRefused as error:
             raise RuntimeError(str(error)) from error
         await asyncio.to_thread(self.runs.add, WebRun(run_id=UUID(run.run_id), root=request.root, path=request.path, kind="session"))
-        return MachineAgentAnswer(request_id=request.id, run_id=UUID(run.run_id))
+        return MachineAgentAnswer(request_id=request.id, run_id=UUID(run.run_id), refresh=refresh)
 
     async def _session_action(self, request: AgentSendRequest | AgentStopRequest | AgentAnswerRequest) -> MachineAgentAnswer:
         assert self.sessions is not None

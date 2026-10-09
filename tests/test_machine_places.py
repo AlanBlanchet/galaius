@@ -1,7 +1,8 @@
 """Levels from the web, as the PC answers signed requests (`galaius.machine_places.PlaceDesk`):
-narrowing applies at once, widening waits on the PC until its owner confirms it there (no passkey
-here), every change lands in the PC's own log with its digest, browsing needs the PC's
-opt-in, and a review can be read or dropped from the web, never accepted."""
+a change applies at once, a widening never past the home folder's insides, hidden names or
+credential stores; every change lands in the PC's own log with its digest; browsing lists folder
+names inside the home folder, file names only with the PC's opt-in; a review can be read or
+dropped from the web, never accepted."""
 
 import asyncio
 import hashlib
@@ -15,7 +16,6 @@ import pytest
 from pydantic import ValidationError
 
 from galaius_core import MACHINE_AGENT_REQUESTS
-from galaius.machine_places import PlaceDesk
 from galaius.machines import MachineConfig, MachineRunner
 from galaius.place_reviews import PlaceReviews
 
@@ -69,14 +69,25 @@ def _ask(runner: MachineRunner, op: str, **fields) -> dict:
     return socket.sent[-1]
 
 
-def test_a_signed_web_widening_waits_on_the_pc_until_its_owner_approves_it(runner: MachineRunner, logged: list[dict]) -> None:
-    answer = _ask(runner, "place_level", path="notes", level="read")
-    assert answer["error"] is None and answer["change"]["level"] == "read" and answer["change"]["previous"] == "hidden"
-    assert runner.load().places == {"docs": "write"}  # the server's signature alone never widens
-    assert [entry["method"] for entry in logged] == ["web-request"] and logged[0]["digest"] == answer["change"]["digest"]
-    [applied] = PlaceDesk(runner).approve(None, confirm=lambda change: True)
-    assert applied.path == "notes" and runner.load().places == {"docs": "write", "notes": "read"} and runner.load().pending_places == ()
-    assert logged[-1]["method"] == "pc-confirm" and logged[-1]["digest"] == answer["change"]["digest"]
+@pytest.mark.parametrize(("path", "refused"), [("notes", None), ("photos/id_rsa", "credential stores"), ("pictures", "is a link")])
+def test_a_signed_web_widening_applies_at_once_never_on_a_link_or_a_credential_store(runner: MachineRunner, home: Path, logged: list[dict], path: str, refused: str | None) -> None:
+    (home / "pictures").symlink_to(home / "photos")
+    answer = _ask(runner, "place_level", path=path, level="read")
+    if refused is None:
+        assert answer["error"] is None and answer["change"] is None and runner.load().places == {"docs": "write", "notes": "read"}
+        assert logged[-1]["method"] == "web-widen" and logged[-1]["digest"] == answer["digest"]
+    else:
+        place_log = [entry for entry in logged if entry["log"] == "places.log"]
+        assert refused in answer["error"] and runner.load().places == {"docs": "write"} and place_log[-1]["method"] == "web-refused"
+
+
+def test_the_home_folder_itself_never_opens_from_the_web(runner: MachineRunner, home: Path, logged: list[dict]) -> None:
+    """A working directory above the home folder: the home folder and its siblings stay closed to the web."""
+    runner.update(lambda config: config.model_copy(update={"working_directory": home.parent}))
+    for path in (home.name, "elsewhere"):
+        (home.parent / path).mkdir(exist_ok=True)
+        assert "only on this PC" in _ask(runner, "place_level", path=path, level="read")["error"]
+    assert _ask(runner, "place_level", path=f"{home.name}/notes", level="read")["error"] is None
 
 
 def test_a_web_narrowing_applies_at_once(runner: MachineRunner, logged: list[dict]) -> None:
@@ -85,33 +96,10 @@ def test_a_web_narrowing_applies_at_once(runner: MachineRunner, logged: list[dic
     assert logged[-1]["method"] == "web-narrow" and len(logged[-1]["digest"]) == 64
 
 
-def test_a_pending_widening_is_withdrawn_from_the_web(runner: MachineRunner, logged: list[dict]) -> None:
-    change = _ask(runner, "place_level", path="photos", level="write")["change"]
-    answer = _ask(runner, "place_cancel", change_id=change["id"])
-    assert answer["places"]["pending"] == [] and runner.load().places == {"docs": "write"}
-    assert PlaceDesk(runner).approve(None, confirm=lambda change: True) == []
-
-
-def test_approval_rechecks_the_folder_as_it_is_now(runner: MachineRunner, home: Path, logged: list[dict]) -> None:
-    _ask(runner, "place_level", path="photos", level="read")
-    (home / "photos").rmdir()
-    (home / "photos").symlink_to(home / "docs")
-    assert PlaceDesk(runner).approve(None, confirm=lambda change: True) == []
-    assert "photos" not in runner.load().places and runner.load().pending_places == ()
-    assert logged[-1]["method"] == "pc-refused"
-
-
-def test_the_pc_owner_declining_leaves_the_widening_pending(runner: MachineRunner, logged: list[dict]) -> None:
-    _ask(runner, "place_level", path="notes", level="write")
-    assert PlaceDesk(runner).approve(None, confirm=lambda change: False) == []
-    assert len(runner.load().pending_places) == 1 and "notes" not in runner.load().places
-
-
-def test_browsing_needs_the_pcs_own_opt_in(runner: MachineRunner, logged: list[dict]) -> None:
-    assert "galaius machine browse on" in _ask(runner, "place_browse")["error"]
+def test_browsing_lists_folder_names_and_file_names_only_with_the_pcs_opt_in(runner: MachineRunner, logged: list[dict]) -> None:
+    assert {entry["name"]: entry["kind"] for entry in _ask(runner, "place_browse")["browse"]} == {"docs": "folder", "notes": "folder", "photos": "folder"}
     runner.update(lambda config: config.model_copy(update={"browse": True}))
-    names = {entry["name"]: entry["level"] for entry in _ask(runner, "place_browse")["browse"]}
-    assert names == {"docs": "write", "notes": "hidden", "photos": "hidden"}
+    assert {entry["name"] for entry in _ask(runner, "place_browse", path="notes")["browse"]} == {"todo.txt"}
 
 
 def test_a_review_is_read_and_dropped_from_the_web_never_accepted(runner: MachineRunner, home: Path, logged: list[dict]) -> None:
@@ -136,7 +124,7 @@ def test_a_machine_file_from_before_levels_keeps_its_folders_as_sandboxes(runner
 
 def test_a_narrowing_stops_every_fenced_agent_turn_running_now(runner: MachineRunner, home: Path, logged: list[dict], monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Its next turn is built from the narrowed levels; the turn running now is not left with the
-    old ones. A widening waits on the PC and stops nothing."""
+    old ones. A widening stops nothing."""
     from galaius.agents import registry as reg
     from galaius.fence import FenceSpec
     spec = FenceSpec(working_directory=home, levels_file=runner.config_path, start=home / "docs", state=tmp_path / "state")
@@ -148,13 +136,3 @@ def test_a_narrowing_stops_every_fenced_agent_turn_running_now(runner: MachineRu
     assert stopped == []
     _ask(runner, "place_level", path="docs", level="read")
     assert stopped == ["fenced"] and logged[-1]["op"] == "stopped" and logged[-1]["runs"] == ["fenced"]
-
-
-def test_confirming_without_asking_names_the_widening(runner: MachineRunner, logged: list[dict], monkeypatch: pytest.MonkeyPatch) -> None:
-    """`--yes` alone would also confirm widenings queued after the owner last looked."""
-    from galaius.cli.machine_command import machine_approve
-    _ask(runner, "place_level", path="notes", level="read")
-    monkeypatch.setattr(MachineRunner, "default_config_path", staticmethod(lambda: runner.config_path))
-    with pytest.raises(SystemExit, match="name the widening"):
-        machine_approve(None, yes=True)
-    assert "notes" not in runner.load().places

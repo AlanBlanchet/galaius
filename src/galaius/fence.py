@@ -11,7 +11,7 @@ started before it. Linux only, from parts no process inside can loosen:
   hooks, git config and the `STEERING` files already at its top or a repository's top stay
   read-only, and one the agent creates there is moved out into a review by the helper outside
   (checked every half second and when the turn ends). In every opened folder, credential files
-  (`NEVER_GRANTABLE`, `DOT_SECRETS`) read as empty.
+  (`NEVER_GRANTABLE.secret`) read as empty.
 - the CLI's own state is a private copy kept by the runner per run: its sign-in, settings and
   instructions read-only, its sessions in a runner-owned folder, `~/.claude.json` a copy never
   written back; galaius's own state (run records, keys) is absent.
@@ -45,7 +45,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from galaius_core import PlaceLevel
 
-from galaius.places import LEVEL_RANK, NEVER_GRANTABLE, PlaceMap, split
+from galaius.places import DEPENDENCY_FOLDERS, LEVEL_RANK, NEVER_GRANTABLE, PlaceMap, split
 
 #: Per CLI: its state folder under home, what of it the agent reads (sign-in, settings, the
 #: owner's instructions: read-only), the folders it keeps sessions in (a private per-run folder:
@@ -72,11 +72,6 @@ INSTRUCTIONS = frozenset({"claude.md", "claude.local.md", "agents.md", "gemini.m
 #: every other variable that looks like a secret (`SECRET_SUFFIXES`) is unset inside.
 KEYS: dict[str, tuple[str, ...]] = {"claude": ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"), "codex": ("OPENAI_API_KEY", "CODEX_API_KEY")}
 SECRET_SUFFIXES = ("_API_KEY", "_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_PASS", "_CREDENTIALS")
-#: Hidden names that hold credentials: read as empty inside an opened folder.
-DOT_SECRETS = frozenset({".env", ".netrc", ".npmrc", ".pypirc", ".pgpass", ".git-credentials", ".ssh", ".gnupg", ".aws", ".kube", ".docker",
-                         ".password-store", ".vault-token", ".terraform.d"})
-#: Folders not walked when checking an opened folder (build output, caches, dependencies).
-SKIP = frozenset({"node_modules", ".venv", "venv", "__pycache__", ".cache", "target", "dist", "build", ".next", ".tox", ".mypy_cache", ".gradle", ".pytest_cache"})
 SCAN_DEPTH, SCAN_ENTRIES = 8, 200_000
 #: Variables that point at the desktop or the user's session: gone inside (their sockets are too).
 UNSET = ("DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS", "SSH_AUTH_SOCK", "SSH_AGENT_PID", "XDG_RUNTIME_DIR",
@@ -213,15 +208,15 @@ class Scan(BaseModel):
                 name = entry.name.casefold()
                 if entry.is_symlink():
                     continue
-                secret = name in DOT_SECRETS or name.startswith(".env.") or (not name.startswith(".") and NEVER_GRANTABLE.refusal((entry.name,), None) is not None)
+                stored = NEVER_GRANTABLE.secret(entry.name)
                 if entry.is_dir():
                     if name == ".git":
                         found.repositories.append(Path(current))
-                    elif secret:
+                    elif stored:
                         found.secret_folders.append(Path(entry.path))
-                    elif name not in SKIP and depth < SCAN_DEPTH:
+                    elif name not in DEPENDENCY_FOLDERS and depth < SCAN_DEPTH:
                         stack.append((Path(entry.path), depth + 1))
-                elif secret and entry.is_file():
+                elif stored and entry.is_file():
                     found.secret_files.append(Path(entry.path))
                 elif name in INSTRUCTIONS and entry.is_file():
                     found.instructions.append(Path(entry.path))

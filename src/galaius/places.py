@@ -24,7 +24,7 @@ LEVEL_RANK: dict[PlaceLevel, int] = {level: rank for rank, level in enumerate(PL
 #: Levels whose folder a workflow step or an agent writes in place.
 IN_PLACE_WRITES: frozenset[PlaceLevel] = frozenset({"sandbox", "write"})
 #: The folder offered as the first sandbox ("a folder where it can do things").
-SUGGESTED_SANDBOX = "interact-files"
+SUGGESTED_SANDBOX = "galaius/fichiers"
 #: Files an agent or an editor starting in a folder obeys: a workflow never writes them in place
 #:; a review shows them to the owner first.
 INSTRUCTION_NAMES = frozenset({"claude.md", "agents.md", "gemini.md", "copilot-instructions.md"})
@@ -33,25 +33,33 @@ FORBIDDEN = re.compile(r"[:\\]|[. ]$")
 
 
 class NeverGrantable(BaseModel):
-    """Credential and configuration stores no level opens, compared casefolded: `names` and
-    `suffixes` wherever they appear on a path, `home` folders beneath the home folder per platform
-    (`sys.platform` prefix). Every hidden (dot) name is refused too, which covers `.ssh`, `.gnupg`,
-    `.aws`, `.kube`, `.docker`, `.netrc`, `.git-credentials`, `.config` and `.local` on every OS."""
+    """Credential, configuration and startup stores no level opens, compared casefolded: `names`,
+    `suffixes`, `patterns` and the hidden `dot_names` / `dot_prefixes` wherever they appear on a
+    path (`secret`: the fence, a copy to another PC and the levels read the same list), `home`
+    folders beneath the home folder per platform (`sys.platform` prefix). For a level every hidden
+    (dot) name is refused too, which covers `.config` and `.local` on every OS."""
 
     model_config = ConfigDict(frozen=True)
     home: dict[str, tuple[str, ...]]
     names: frozenset[str]
     suffixes: tuple[str, ...]
     patterns: tuple[str, ...] = ()
+    dot_names: frozenset[str] = frozenset()
+    dot_prefixes: tuple[str, ...] = ()
+
+    def secret(self, name: str) -> bool:
+        """Whether one name is a credential store's, hidden or not."""
+        folded = name.casefold()
+        return (folded in self.names or folded in self.dot_names or folded.startswith(self.dot_prefixes) or folded.endswith(self.suffixes)
+                or any(fnmatch.fnmatch(folded, pattern) for pattern in self.patterns))
 
     def refusal(self, parts: tuple[str, ...], below_home: tuple[str, ...] | None, platform: str = sys.platform) -> str | None:
         """Why `parts` (walked from the working directory; `below_home`: the same folder relative to
         the home folder, None when outside it) may never be opened, or None."""
         for part in parts:
-            folded = part.casefold()
-            if folded.startswith("."):
+            if part.startswith("."):
                 return f"{part}: hidden files and folders are never opened"
-            if folded in self.names or folded.endswith(self.suffixes) or any(fnmatch.fnmatch(folded, pattern) for pattern in self.patterns):
+            if self.secret(part):
                 return f"{part}: credential stores are never opened"
         if below_home:
             joined = "/".join(part.casefold() for part in below_home)
@@ -66,18 +74,25 @@ NEVER_GRANTABLE = NeverGrantable(
         "darwin": ("library/keychains", "library/launchagents", "library/cookies", "library/mail", "library/messages", "library/safari",
                    "library/group containers", "library/containers", "library/application support/google/chrome",
                    "library/application support/firefox", "library/application support/1password", "library/application support/bitwarden",
-                   "library/application support/microsoft edge", "library/application support/bravesoftware"),
-        # AppData holds browser profiles, saved credentials and Start Menu\Programs\Startup.
-        "win32": ("appdata", "ntuser.dat"),
-        # Snap applications keep their profiles (browsers, password managers) here.
-        "linux": ("snap",),
+                   "library/application support/microsoft edge", "library/application support/bravesoftware", "bin"),
+        # AppData holds browser profiles, saved credentials and Start Menu\Programs\Startup; the
+        # PowerShell profiles run at every shell start (Documents may sit in OneDrive).
+        "win32": ("appdata", "ntuser.dat", *(f"{documents}/{shell}" for documents in ("documents", "onedrive/documents") for shell in ("windowspowershell", "powershell"))),
+        # Snap applications keep their profiles (browsers, password managers) here; ~/bin is on PATH.
+        "linux": ("snap", "bin"),
     },
     names=frozenset({"id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "id_ecdsa_sk", "id_ed25519_sk", "authorized_keys", "known_hosts",
                      "credentials", "credentials.json", "keychain", "keychains", "keyrings", "password-store", "wallets", "kubeconfig"}),
     suffixes=(".kdbx", ".kdb", ".keychain", ".keychain-db", ".ppk", ".p12", ".pfx", ".pem", ".key", ".jks", ".keystore", ".gpg", ".asc", ".ovpn",
               ".tfstate", ".tfstate.backup"),
     patterns=("service-account*.json", "*-service-account*.json", "client_secret*.json"),
+    dot_names=frozenset({".env", ".netrc", ".npmrc", ".pypirc", ".pgpass", ".git-credentials", ".ssh", ".gnupg", ".aws", ".kube", ".docker",
+                         ".password-store", ".vault-token", ".terraform.d"}),
+    dot_prefixes=(".env.",),
 )
+#: Folders never walked or copied (dependencies, build output, caches): rebuilt where needed, never the project's own.
+DEPENDENCY_FOLDERS = frozenset({"node_modules", ".venv", "venv", "__pycache__", ".cache", "target", "dist", "build", ".next", ".tox", ".mypy_cache", ".gradle",
+                                ".pytest_cache", "site-packages"})
 
 
 def split(path: str) -> tuple[str, ...]:
@@ -154,6 +169,17 @@ class PlaceMap(BaseModel):
             return "this runner's own folders (settings, runtimes, data) are never opened"
         return None
 
+    def web_refusal(self, parts: tuple[str, ...]) -> str | None:
+        """Why the web may not open `parts` further (`refusal`, and more): only a folder strictly
+        inside the home folder; the home folder itself, everything outside it and system folders
+        are opened on this PC only (`galaius machine places`)."""
+        if (said := self.refusal(parts)) is not None:
+            return said
+        home, folder = Path.home().resolve(), self.base.joinpath(*parts).resolve()
+        if folder == home or not folder.is_relative_to(home):
+            return "the home folder itself and folders outside it are opened only on this PC (`galaius machine places`)"
+        return None
+
     def entries(self) -> tuple[MachinePlace, ...]:
         """Every level set here, with why it is not in force (when it is not)."""
         return tuple(MachinePlace(path=path, level=level, refused="" if level == "hidden" else self.refusal(split(path)) or "")
@@ -188,16 +214,19 @@ class PlaceMap(BaseModel):
         """Setting `level` on `path` opens it further than now."""
         return LEVEL_RANK[level] > LEVEL_RANK[self.level(split(path))]
 
-    def browse(self, path: str, cursor: int) -> tuple[tuple[MachinePlaceEntry, ...], int | None]:
-        """One page of names beneath `path` (names only: folders and plain files; links, hidden and
-        never-grantable names left out), each with the level in force; the next cursor or None."""
+    def browse(self, path: str, cursor: int, everywhere: bool = False) -> tuple[tuple[MachinePlaceEntry, ...], int | None]:
+        """One page of folder names beneath `path` inside the home folder (links, hidden and
+        never-grantable names left out), each with the level in force; the next cursor or None.
+        `everywhere` (the PC's own `browse` switch): plain file names too, and outside the home folder."""
         parts = split(path)
         if len(parts) > self.DEPTH:
             raise PermissionError(f"browsing stops {self.DEPTH} folders deep")
         if parts and (said := self.refusal(parts)) is not None:
             raise PermissionError(said)
-        entries = []
         home = Path.home().resolve()
+        if not everywhere and not self.base.joinpath(*parts).resolve().is_relative_to(home):
+            raise PermissionError("only folders inside the home folder are listed from the web; its owner lists the rest with `galaius machine browse on`")
+        entries = []
         with PinnedDirectory.open(self.base, *parts) as folder:
             for name in folder.names():
                 target = self.base.joinpath(*parts, name)
@@ -207,7 +236,7 @@ class PlaceMap(BaseModel):
                     facts = folder.stat(name)
                 except OSError:
                     continue
-                if folder.link_like(facts) or not (stat.S_ISDIR(facts.st_mode) or stat.S_ISREG(facts.st_mode)):
+                if folder.link_like(facts) or not (stat.S_ISDIR(facts.st_mode) or (everywhere and stat.S_ISREG(facts.st_mode))):
                     continue
                 entries.append((name, "folder" if stat.S_ISDIR(facts.st_mode) else "file"))
         entries.sort(key=lambda item: (item[1] != "folder", item[0].casefold()))

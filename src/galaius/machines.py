@@ -31,7 +31,7 @@ import httpx
 import websockets
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, ValidationError, field_validator, model_validator
 
-from galaius_core import MACHINE_AGENT_REQUESTS, MACHINE_MODELS, MachineProblem, MachineProblemCode, MachineAgentSettings, MachineAgentSettingsState, MachineAgentSettingsUpdate, PlacePath, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, MachineAgentAnswer, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachinePlaceChange, MachineRuntime, MachineTokenSwap, PlaceLevel, ScriptFile, ScriptLanguage, UserModelOrigin
+from galaius_core import MACHINE_AGENT_REQUESTS, MACHINE_MODELS, MachineProblem, MachineProblemCode, MachineAgentSettings, MachineAgentSettingsState, MachineAgentSettingsUpdate, PlacePath, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, MachineAgentAnswer, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachineRuntime, MachineTokenSwap, PlaceLevel, ScriptFile, ScriptLanguage, UserModelOrigin
 from galaius import USER_AGENT
 from galaius import prompt_mirror
 from galaius.agents.catalog import AgentCatalog
@@ -62,6 +62,7 @@ from galaius.pinned_directory import PinnedDirectory
 from galaius.fence import EGRESS, FenceSpec, available
 from galaius.places import BrowseBudget, IN_PLACE_WRITES, INSTRUCTION_NAMES, LEVEL_RANK, PlaceMap, split
 from galaius.place_reviews import PlaceReviews, write_plain
+from galaius.workspace_copy import WorkspaceRefused, WorkspaceTransfers
 from galaius.windowless import console_python
 
 if sys.platform == "win32":
@@ -78,12 +79,12 @@ class MachineConfig(MachineAgentSettings):
     working_directory: Path
     #: Levels per folder (relative to `working_directory`; `galaius.places`): what workflows, the
     #: Data screen and agents may do there. Set HERE by the owner (`galaius machine places`), or
-    #: from the web: an earlier level applies at once, a later one waits in `pending_places` until
-    #: the owner confirms it here (`galaius machine approve`). A folder not named is hidden.
+    #: from the web, at once either way: the web never opens the home folder itself, anything
+    #: outside it, a hidden name or a credential store (`PlaceMap.web_refusal`). A folder not named is hidden.
     places: dict[str, PlaceLevel] = Field(default_factory=dict, max_length=256)
-    pending_places: tuple[MachinePlaceChange, ...] = Field(default=(), max_length=64)
-    #: Whether the web may list the names of every folder here to pick levels from (names only),
-    #: set here only (`galaius machine browse on`), off by default.
+    #: Whether the web may list file names, and folders outside the home folder, to pick levels
+    #: from (names only), set here only (`galaius machine browse on`), off by default. Folder names
+    #: inside the home folder are listed either way.
     browse: bool = False
     #: Whether agents started here run inside the OS fence built from the levels (`galaius.fence`),
     #: set here only (`galaius machine fence on`). On: an agent that cannot be fenced never starts.
@@ -136,7 +137,7 @@ class MachineConfig(MachineAgentSettings):
         return self._apart(self._usable_roots(self.agent_roots), (*sandboxes, *self.usable_script_roots()[0]))
 
     def with_place(self, path: str, level: PlaceLevel) -> Self:
-        """This configuration with `level` on `path` (and no widening pending for it any more).
+        """This configuration with `level` on `path`.
         Refused: a folder no level opens; anything writable around a script root; a sandbox
         around an agent root (nothing a workflow writes lands where an agent starts)."""
         levels = self.place_map().with_level(path, level)
@@ -147,7 +148,7 @@ class MachineConfig(MachineAgentSettings):
             raise PermissionError(f"{path} holds or sits in a script folder: nothing may write there (`galaius machine script-roots`)")
         if level == "sandbox" and overlaps(self._usable_roots(self.agent_roots)[0]):
             raise PermissionError(f"{path} holds or sits in an agent folder: a sandbox stays apart from where agents start; use write instead")
-        return self.model_copy(update={"places": levels, "pending_places": tuple(change for change in self.pending_places if change.path != path)})
+        return self.model_copy(update={"places": levels})
 
     def _apart(self, found: tuple[tuple[Path, ...], tuple[str, ...]], taken: tuple[Path, ...]) -> tuple[tuple[Path, ...], tuple[str, ...]]:
         """`found` (usable, refused) minus every usable root inside, around or equal to one of `taken`."""
@@ -177,7 +178,7 @@ class MachineConfig(MachineAgentSettings):
         for name in names:
             declared = base / name
             root = declared.resolve()
-            if declared.is_symlink() or base not in root.parents or root == home or root in home.parents or any(root == folder or root in folder.parents or folder in root.parents for folder in internal) \
+            if declared.is_symlink() or (declared.exists() and PinnedDirectory.link_like(declared.lstat())) or base not in root.parents or root == home or root in home.parents or any(root == folder or root in folder.parents or folder in root.parents for folder in internal) \
                     or any(part.startswith(".") for part in root.relative_to(base).parts):  # hidden names are never reachable (`CommandFiles.inside`)
                 refused.append(name)
             else:
@@ -203,18 +204,16 @@ class MachineConfig(MachineAgentSettings):
 
     def create_agent_roots(self) -> tuple[str, ...]:
         """Creates each agent root that does not exist yet (the web named a new one), walking it part
-        by part below the working directory and never through a link; the names created."""
+        by part below the working directory and never through a link or a junction; the names created."""
         base, created = self.working_directory.resolve(), []
         for name in self.agent_roots:
-            current = base
-            for part in PurePosixPath(name).parts:
-                current = current / part
-                if current.is_symlink() or (current.exists() and not current.is_dir()):
-                    break
-                if not current.exists():
-                    current.mkdir(mode=0o755)
-                    created.append(name)
-        return tuple(dict.fromkeys(created))
+            try:
+                with PinnedDirectory.open(base, *PurePosixPath(name).parts, create=True) as folder:
+                    if folder.created:
+                        created.append(name)
+            except (OSError, ValueError):
+                continue  # a link, a junction or a file on the way: refused where used (`usable_agent_roots`)
+        return tuple(created)
 
     def with_web_settings(self, update: MachineAgentSettingsUpdate) -> Self:
         """This config with a web version applied, or PermissionError naming why not (checked
@@ -923,6 +922,9 @@ class MachineRunner:
         # other root, i.e. a sandbox (kept as it was; the next save drops `file_roots`).
         for name in values.pop("file_roots", ()):
             values.setdefault("places", {}).setdefault(name, "sandbox")
+        # Machine files written while a web widening waited for a confirm here: the web's level
+        # now applies at once, so a widening still waiting is dropped (the web asks it again).
+        values.pop("pending_places", None)
         return MachineConfig.model_validate(values)
 
     async def connect(self, config: MachineConfig) -> None:
@@ -1147,7 +1149,12 @@ class MachineRunner:
     #: file queries browse the owner's script roots; a script file runs from them.
     #: `tool_gateway`: its `galaius mcp` serves the external tools the server connects its agents to.
     #: `token_swap`: it takes the server's swap of a one-time bootstrap token (`take_token_swap`).
-    FEATURES: ClassVar[tuple[str, ...]] = ("file_query", "script_file", "file_read", "agent_control", "agent_settings", "web_settings", "workspaces", "start_permission", "project_secrets", "places", "agent_media", "tool_gateway", "token_swap")
+    #: `workspace_copy`: it sends a folder to another PC and receives one, creates an empty project
+    #: folder, names a folder's repository, and says why a project folder failed as a code.
+    #: `places_direct`: a level from the web applies at once; folder names in the home folder are
+    #: listed without the PC's own browse switch (`galaius_core.PlaceLevel`).
+    FEATURES: ClassVar[tuple[str, ...]] = ("file_query", "script_file", "file_read", "agent_control", "agent_settings", "web_settings", "workspaces", "start_permission", "project_secrets", "places", "agent_media", "tool_gateway", "token_swap",
+                                           "workspace_copy", "places_direct")
 
     @classmethod
     def features(cls) -> list[str]:
@@ -1296,7 +1303,7 @@ class MachineRunner:
             logger.log(logging.INFO if request.action else logging.DEBUG, "agent %s %s", request.op, said)
         except (PermissionError, OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
             reason = str(error) if isinstance(error, (PermissionError, ValueError, RuntimeError)) else f"{type(error).__name__}: {error}"
-            answer = MachineAgentAnswer(request_id=request.id, error=reason[:400] or type(error).__name__)
+            answer = MachineAgentAnswer(request_id=request.id, error=reason[:400] or type(error).__name__, code=error.code if isinstance(error, WorkspaceRefused) else None)
             logger.warning("agent %s refused: %s", request.op, answer.error)
         if request.action:
             # The whole brief / message stays HERE, in the owner's local log; the server keeps a digest.
@@ -1334,6 +1341,7 @@ class MachineRunner:
                              sessions=self._sessions, logs=self._log_ring, seal=SecretsSeal.for_token(current.token.get_secret_value()),
                              workspaces=MachineWorkspaces(roots=current.agent_roots_by_name(), origins=current.clone_origins, jobs=self._workspace_jobs,
                                                           working_directory=current.working_directory, register_root=self._register_agent_root,
+                                                          transfers=WorkspaceTransfers(endpoint=current.endpoint, headers=current.authorization),
                                                           environment={**self._safe_environment(), **{key: os.environ[key] for key in ("SSH_AUTH_SOCK",) if key in os.environ}}),
                              places=current.place_map(), fence_agents=current.fence_agents, reviews=self.reviews,
                              levels_file=self.config_path, egress=(urlsplit(current.server_url).hostname or "",), warm=self.warm, followups=self.followups)

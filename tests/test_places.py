@@ -105,8 +105,8 @@ def test_browsing_pages_through_a_large_folder(home: Path) -> None:
     for index in range(PlaceMap.PAGE + 5):
         (home / "Documents" / f"note-{index:04}.txt").write_text("x")
     places = PlaceMap(working_directory=home)
-    first, cursor = places.browse("Documents", 0)
-    rest, end = places.browse("Documents", cursor)
+    first, cursor = places.browse("Documents", 0, everywhere=True)
+    rest, end = places.browse("Documents", cursor, everywhere=True)
     assert len(first) == PlaceMap.PAGE and len(rest) == 5 and end is None
 
 

@@ -146,8 +146,8 @@ default no); `--agents` / `--no-agents`, `--agent-folder <name>`, `--continue-co
 (already connected, it asks only these questions, Enter keeping each current answer; nothing to
 restart), or `galaius machine agent-roots <folder…>`, `galaius machine agents on|off --continue on|off --approvals on|off`. Every folder starts hidden from
 workflows, Data and agents: `galaius machine places <folder under home> <level>` opens one (see,
-read, write_on_review, sandbox, write); a wider level asked from the web waits until you run
-`galaius machine approve` on that computer. `galaius machine fence on` runs agents inside an OS
+read, write_on_review, sandbox, write); a level set from the web applies at once, but never opens
+your home folder itself, anything outside it, hidden names or credential stores. `galaius machine fence on` runs agents inside an OS
 fence built from those levels (Linux: bubblewrap + Landlock); without it an agent can read every
 file your user can.
 `galaius logout` removes it from your account and stops the service. `galaius machine service
