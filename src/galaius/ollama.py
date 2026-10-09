@@ -77,7 +77,7 @@ _PROBE_WORKERS = 8
 _MAX_NEW_PROBES = 32
 
 #: Capabilities are keyed by digest, which only changes on a re-pull — so a week is not stale.
-_CAPABILITY_CACHE = TTLCache("ollama_capabilities.json", ttl_seconds=7 * 24 * 60 * 60)
+CAPABILITY_CACHE = TTLCache("ollama_capabilities.json", ttl_seconds=7 * 24 * 60 * 60, machine_local=True)
 #: A model whose capabilities we could NOT read (upstream retirement is the real case) must not
 #: cost a wide-area round trip every process — but a transient failure shouldn't be believed for
 #: a week either, so it's remembered only this long before worth asking again.
@@ -139,7 +139,7 @@ class CapabilityCache(BaseModel):
     @classmethod
     def load(cls) -> "CapabilityCache":
         try:
-            return cls.model_validate(_CAPABILITY_CACHE.read() or {})
+            return cls.model_validate(CAPABILITY_CACHE.read() or {})
         except ValidationError:
             _log.debug("ollama capability cache is unreadable; starting fresh", exc_info=True)
             return cls()
@@ -148,7 +148,7 @@ class CapabilityCache(BaseModel):
         """digest -> capabilities, with a still-fresh FAILURE folded in as an empty list —
         :func:`discover` already reads that as "known, and it's nothing". Stops a permanently-
         broken model costing a round trip every process, no extra parameter."""
-        if age_of(self.fetched_at) > _CAPABILITY_CACHE.ttl_seconds:
+        if not CAPABILITY_CACHE.fresh_since(self.fetched_at):
             return {}
         known = dict(self.capabilities)
         for digest, when in self.failures.items():
@@ -431,7 +431,7 @@ def discover_cached() -> list[OllamaModel]:
                 # reaches here (not probed), so it keeps its original time. Keeping the old time on
                 # a real re-probe instead left an expired stamp asked again in every process.
                 failures[model.digest] = now
-        _CAPABILITY_CACHE.write(
+        CAPABILITY_CACHE.write(
             CapabilityCache(
                 fetched_at=now, capabilities=capabilities, failures=failures
             ).model_dump()

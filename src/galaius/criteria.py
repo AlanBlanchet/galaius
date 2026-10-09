@@ -33,12 +33,14 @@ from __future__ import annotations
 import re
 import math
 from dataclasses import dataclass, field
-from typing import Callable, Literal, Sequence
+from pathlib import Path
+from typing import Callable, ClassVar, Literal, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from galaius import benchmark_tables, model_catalog
+from galaius import benchmark_source, benchmark_tables, model_catalog, ollama
 from galaius.models import Benchmark, Model, ModelCapability, PublishedEntry, TokenMix
+from galaius.ttl_cache import TTLCache
 
 
 class CriteriaError(ValueError):
@@ -547,11 +549,28 @@ class ValueRule(BaseModel):
 class Criteria:
     """A model requirement, as a sentence somebody can read and change."""
 
+    #: Every cache file a ranking reads (fixed names under ``~/.galaius/out``; the VS Code extension
+    #: reads them too). ``machine_local`` marks the one describing this machine's own daemon.
+    INPUTS: ClassVar[tuple[TTLCache, ...]] = (
+        benchmark_source.CACHE, benchmark_tables.CACHE, model_catalog.CACHE, model_catalog.RANKED_CACHE,
+        ollama.CAPABILITY_CACHE,
+    )
+
     terms: tuple[Term, ...] = field(default_factory=tuple)
     #: Which CLI may run it — parsed out of the SAME text, never scored against a Model (see
     #: `ProviderConstraint`). Applied downstream, over the ranked (model, CLI) candidate list.
     providers: tuple[ProviderConstraint, ...] = field(default_factory=tuple)
     source: str = ""
+
+    @classmethod
+    def input_files(cls) -> list[tuple[Path, TTLCache]]:
+        """Every file a ranking reads, each with the cache whose TTL ages it: the input caches, and
+        the benchmark board where ``BENCHMARK_SCORES`` points it (:func:`model_catalog.leaderboard_path`)."""
+        files = [(cache.path, cache) for cache in cls.INPUTS]
+        board = model_catalog.leaderboard_path()
+        if board is None or board in {path for path, _ in files}:
+            return files
+        return [*files, (board, benchmark_source.CACHE)]
 
     def provider_require(self) -> str | None:
         return next((c.name for c in self.providers if c.mode == "require"), None)

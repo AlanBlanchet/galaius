@@ -213,7 +213,7 @@ def _leaderboard_key(name: str) -> str:
 #: What litellm charges for models the BOARD ranks. Third file beside prices/scores, same TTL,
 #: same reason — also keeps a ~2.5s litellm import off every CLI command's path
 #: (`galaius.models` loads on all of them).
-_RANKED_CACHE = TTLCache("ranked_models.json")
+RANKED_CACHE = TTLCache("ranked_models.json")
 #: How long an EMPTY answer stands. Short on purpose — empty means a source was missing, not
 #: nothing to find; a day of silence made the old cache version dangerous.
 _EMPTY_RETRY_SECONDS = 15 * 60
@@ -232,10 +232,10 @@ def ranked_extras() -> dict[str, dict]:
     simply absent, never entering a cheapest-first ordering as though free. Never raises — no
     litellm, no board, or a broken cache all read as "nothing extra": the bundled snapshot alone.
     """
-    cached = _RANKED_CACHE.read()
+    cached = RANKED_CACHE.read()
     if cached is not None:
         stored = cached.get("models") or {}
-        fresh = age_of(float(cached.get("fetched_at") or 0)) <= TTL_SECONDS
+        fresh = RANKED_CACHE.is_fresh(cached)
         # An EMPTY answer is never cached for a day. Writing one meant a cold start with no
         # board yet, or a failed litellm import, silently pinned every criterion to the
         # 86-model snapshot until tomorrow — the exact failure this mechanism removes. Empty
@@ -247,7 +247,7 @@ def ranked_extras() -> dict[str, dict]:
     scores = live_scores()
     if not scores:
         _log.warning("no benchmark board on disk: model criteria see only the bundled snapshot")
-        _RANKED_CACHE.write({"fetched_at": time.time(), "models": {}})
+        RANKED_CACHE.write({"fetched_at": time.time(), "models": {}})
         return {}
     try:
         import litellm  # lazy on purpose: see the cache note above
@@ -275,7 +275,7 @@ def ranked_extras() -> dict[str, dict]:
         if keep is None or rank < (keep["id"].count("/") + keep["id"].count("."), len(keep["id"])):
             rows[key] = dict(row) | {"id": model_id}
     priced = {row["id"]: {k: v for k, v in row.items() if k != "id"} for row in rows.values()}
-    _RANKED_CACHE.write({"fetched_at": time.time(), "models": priced})
+    RANKED_CACHE.write({"fetched_at": time.time(), "models": priced})
     return priced
 
 

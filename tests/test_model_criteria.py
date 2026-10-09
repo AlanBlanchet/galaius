@@ -466,7 +466,7 @@ def test_pricing_the_ranked_models_is_cached_so_no_command_pays_for_litellm(monk
         {"name": "New Unpriced 5", "intelligence": 80.0},
     ]}))
     monkeypatch.setattr(mcat, "leaderboard_path", lambda: board)
-    monkeypatch.setattr(type(mcat._RANKED_CACHE), "path",
+    monkeypatch.setattr(type(mcat.RANKED_CACHE), "path",
                         property(lambda _s: tmp_path / "ranked.json"))
 
     class Priced:
@@ -509,7 +509,7 @@ def test_a_percentile_is_read_against_the_variable_s_OWN_source(monkeypatch, tmp
         {"name": "Three", "intelligence": 30.0}, {"name": "Four", "intelligence": 40.0},
     ]}))
     monkeypatch.setattr(mcat, "leaderboard_path", lambda: board)
-    monkeypatch.setattr(type(mcat._RANKED_CACHE), "path", property(lambda _s: tmp_path / "r.json"))
+    monkeypatch.setattr(type(mcat.RANKED_CACHE), "path", property(lambda _s: tmp_path / "r.json"))
     with catalog_of(
         # Two models the board never ranked, both scored high by the snapshot. They must not drag
         # the bar upward: they are not what Artificial Analysis measured.

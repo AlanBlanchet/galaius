@@ -256,10 +256,10 @@ def test_a_failed_capability_read_is_retried_once_it_ages_out(monkeypatch):
     monkeypatch.setenv("OLLAMA_DISCOVERY", "1")
     ollama.discover_cached()
 
-    stored = ollama._CAPABILITY_CACHE.read()
+    stored = ollama.CAPABILITY_CACHE.read()
     assert "aa626c11ae8d" in stored["failures"], "the retired model's failure should be recorded"
     stored["failures"]["aa626c11ae8d"] -= ollama._FAILURE_TTL + 1
-    ollama._CAPABILITY_CACHE.write(stored)
+    ollama.CAPABILITY_CACHE.write(stored)
     ollama._MEMO.clear()
     seen.clear()
 
@@ -483,7 +483,7 @@ def test_a_model_the_budget_skipped_is_not_recorded_as_a_failure(monkeypatch):
     monkeypatch.setenv("OLLAMA_DISCOVERY", "1")
 
     ollama.discover_cached()
-    stored = ollama.CapabilityCache.model_validate(ollama._CAPABILITY_CACHE.read())
+    stored = ollama.CapabilityCache.model_validate(ollama.CAPABILITY_CACHE.read())
 
     probed_digest = TAGS["models"][0]["digest"]
     skipped = {row["digest"] for row in TAGS["models"][1:]}
@@ -494,7 +494,7 @@ def test_a_model_the_budget_skipped_is_not_recorded_as_a_failure(monkeypatch):
 def test_a_corrupt_cache_file_never_disables_discovery(monkeypatch):
     """The cache is only rewritten AFTER a successful read, so a read that raises would disable
     discovery permanently rather than for one run."""
-    ollama._CAPABILITY_CACHE.write({"fetched_at": "not-a-number", "capabilities": "nonsense"})
+    ollama.CAPABILITY_CACHE.write({"fetched_at": "not-a-number", "capabilities": "nonsense"})
     monkeypatch.setattr(ollama, "_open", lambda base: client())
     monkeypatch.setenv("OLLAMA_DISCOVERY", "1")
 

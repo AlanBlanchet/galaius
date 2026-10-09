@@ -50,3 +50,24 @@ def test_age_counts_forward_from_the_fetch():
     import time
 
     assert 0 <= age_of(time.time()) < 5
+
+
+def test_derived_is_built_once_per_file_version_and_again_when_the_file_ages(monkeypatch):
+    """A ranking pass reads one cache thousands of times: one build per version, never a stale one."""
+    import time
+
+    cache = TTLCache("thing.json", ttl_seconds=60)
+    builds = []
+
+    def build(raw):
+        builds.append(raw["n"])
+        return raw["n"]
+
+    cache.write({"fetched_at": time.time(), "n": 1})
+    assert [cache.derived(build) for _ in range(3)] == [(True, 1)] * 3
+    cache.write({"fetched_at": time.time(), "n": 2})  # same size, same clock tick
+    assert cache.derived(build) == (True, 2)
+    now = time.time()
+    monkeypatch.setattr(time, "time", lambda: now + 61)
+    assert cache.derived(build) == (False, 2)
+    assert builds == [1, 2, 2]

@@ -22,12 +22,13 @@ import os
 import time
 from collections.abc import Callable
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import TypeVar
+from typing import Any, TypeVar
 
 import httpx
+from pydantic import BaseModel, ConfigDict
 
 T = TypeVar("T")
 
@@ -93,12 +94,26 @@ def _retry_after(value: str | None) -> float | None:
         return None
 
 
+class _Built(BaseModel):
+    """A value :meth:`TTLCache.derived` built, and the file version and fetch it was built from."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    version: tuple[int, int, int, int, int] | None
+    fetched_at: float
+    fresh: bool
+    value: Any
+
+
 @dataclass(frozen=True)
 class TTLCache:
     """One cache file. Owns where it lives, how it is read, and how it is written."""
 
     filename: str
     ttl_seconds: float = TTL_SECONDS
+    #: Describes this machine only (a local daemon's answers): another machine's copy would be wrong here.
+    machine_local: bool = False
+    _built: dict[Callable, _Built] = field(default_factory=dict, init=False, repr=False, compare=False)
 
     @property
     def path(self) -> Path:
@@ -115,10 +130,51 @@ class TTLCache:
     @property
     def fetched_at(self) -> float:
         """When the cached payload was fetched; 0 when there is none."""
+        return self._fetched_at(self.read())
+
+    @staticmethod
+    def _fetched_at(raw: dict | None) -> float:
         try:
-            return float((self.read() or {}).get("fetched_at") or 0)
+            return float((raw or {}).get("fetched_at") or 0)
         except (TypeError, ValueError):
             return 0.0
+
+    def is_fresh(self, raw: dict | None) -> bool:
+        """Whether a stored payload's fetch is inside this cache's TTL; never fetched: not fresh."""
+        return self.fresh_since(self._fetched_at(raw))
+
+    def fresh_since(self, fetched_at: float) -> bool:
+        """Whether a fetch at ``fetched_at`` is still inside this cache's TTL; 0 (never): not fresh."""
+        return age_of(fetched_at) <= self.ttl_seconds
+
+    def version(self) -> tuple[int, int, int, int, int] | None:
+        """The file as last written: device, inode, mtime ns, ctime ns, size; None when there is no file.
+
+        Any process replacing this file must replace it by rename (as :meth:`write` does), so a
+        rewrite gets a new inode even inside one tick of the file clock."""
+        try:
+            info = self.path.stat()
+        except OSError:
+            return None
+        return info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns, info.st_size
+
+    def derived(self, build: Callable[[dict | None], T]) -> tuple[bool, T]:
+        """Whether the stored copy is fresh, and ``build(self.read())``, built again only when the
+        file changes or ages past the TTL.
+
+        One ranking pass reads a cache once per model and criterion term, thousands of times, and
+        re-reading plus re-validating the file each time was most of the pass. Held per ``build``:
+        pass a module-level function (a fresh lambda per call never hits). The value is shared by
+        every caller until the file's :meth:`version` or freshness moves: never mutate it.
+        """
+        version = self.version()  # before the read: a file replaced in between is built again next call
+        held = self._built.get(build)
+        if held is not None and held.version == version and held.fresh == self.fresh_since(held.fetched_at):
+            return held.fresh, held.value
+        raw = self.read()
+        held = self._built[build] = _Built(version=version, fetched_at=self._fetched_at(raw), fresh=self.is_fresh(raw),
+                                           value=build(raw))
+        return held.fresh, held.value
 
     @property
     def retry_path(self) -> Path:

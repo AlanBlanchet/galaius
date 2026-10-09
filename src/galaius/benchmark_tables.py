@@ -17,7 +17,7 @@ import time
 
 from galaius.benchmarks.published import PublishedTable
 from galaius.models import Model
-from galaius.ttl_cache import TTL_SECONDS, RefreshFailed, TTLCache, age_of
+from galaius.ttl_cache import TTL_SECONDS, RefreshFailed, TTLCache
 
 #: Leaderboards move slowly, but the cost of being wrong here is showing a stale model as best,
 #: so this shares the catalog's TTL rather than inventing a longer one.
@@ -40,15 +40,15 @@ def load_tables(*, refresh: bool = False) -> dict[str, PublishedTable]:
     to the packaged snapshot, which carries its own retrieved date. ``refresh=True`` raises
     :class:`RefreshFailed` instead of passing the old tables off as refreshed.
     """
-    cached = CACHE.read()
-    if not refresh and cached and age_of(float(cached.get("fetched_at", 0))) <= TTL_SECONDS:
-        return _parse(cached)
+    current, cached = CACHE.derived(_parse)
+    if not refresh and current:
+        return dict(cached)
     try:
         usable = CACHE.refetch("the benchmark leaderboards", _fetch)
     except RefreshFailed:
         if refresh:
             raise
-        return _parse(cached) if cached else {}
+        return dict(cached)
     CACHE.write({
         "schema_version": 1,
         "fetched_at": time.time(),
@@ -87,11 +87,7 @@ def _parse(raw: dict | None) -> dict[str, PublishedTable]:
     if not raw or raw.get("schema_version") != 1:
         return {}
     tables = (raw or {}).get("tables") or {}
-    freshness = (
-        "current"
-        if raw and age_of(float(raw.get("fetched_at", 0))) <= TTL_SECONDS
-        else "stale"
-    )
+    freshness = "current" if CACHE.is_fresh(raw) else "stale"
     out = {}
     for bid, payload in tables.items():
         try:
