@@ -46,7 +46,7 @@ def catalog_of(*models: Model):
     # the provider keys / grounding table every later test reads, so they go back too.
     loader_state = {
         name: copy.copy(getattr(Model, name))
-        for name in ("_provider_keys", "_component_recommendations", "_coord_formats", "_served")
+        for name in ("_provider_keys", "_component_recommendations", "_coord_formats", "_served", "_catalog_loaded")
     }
     Model._reset()
     for model in models:

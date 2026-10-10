@@ -886,8 +886,11 @@ def test_a_project_copied_to_another_pc_arrives_whole_under_a_free_name(base: Pa
     takes the next free name the same way."""
     server = TransferServer(monkeypatch)
     source = _checkout(base / "project" / "aino", origin="https://github.com/owner/aino.git")
-    for name, content in {"README.md": "# aino", "src/app.py": "print(1)", ".gitignore": "*.log", "id_rsa": "key", "aux.c": "int x;", ".env": "TOKEN=x",
-                          ".npmrc": "//r/:_authToken=x", "sub/.env.production": "TOKEN=y"}.items():
+    # Git for Windows never tracks a reserved device name: only a POSIX PC can send one.
+    refused_names = {} if sys.platform == "win32" else {"aux.c": "int x;"}
+    skips = {"link": {"link"}, "credential_store": {".env", ".npmrc", "id_rsa", "sub/.env.production"}, **({"name": set(refused_names)} if refused_names else {})}
+    for name, content in {"README.md": "# aino", "src/app.py": "print(1)", ".gitignore": "*.log", "id_rsa": "key", ".env": "TOKEN=x",
+                          ".npmrc": "//r/:_authToken=x", "sub/.env.production": "TOKEN=y", **refused_names}.items():
         (source / name).parent.mkdir(parents=True, exist_ok=True)
         (source / name).write_text(content)
     (source / "link").symlink_to(tmp_path)
@@ -896,7 +899,7 @@ def test_a_project_copied_to_another_pc_arrives_whole_under_a_free_name(base: Pa
     pc_a = _agents(base, tmp_path)
     measured = _answer(pc_a, _request("workspace_pack", root="project", path="aino")).pack
     assert (measured.files, measured.tracked, measured.origin.url) == (4, True, "https://github.com/owner/aino.git")  # README, app.py, .gitignore, notes.log (force-added)
-    assert {skip.reason: set(skip.examples) for skip in measured.skipped} == {"link": {"link"}, "credential_store": {".env", ".npmrc", "id_rsa", "sub/.env.production"}, "name": {"aux.c"}}
+    assert {skip.reason: set(skip.examples) for skip in measured.skipped} == skips
     transfer = uuid4()
     _answer(pc_a, _request("workspace_pack", root="project", path="aino", transfer=str(transfer)))
     archive = server.outcome(transfer)

@@ -35,6 +35,7 @@ os.environ.setdefault("GALAIUS_MEDIA_BILLING", "api_allowed")
 from galaius.config import UserConfig, load_dotenv_for_cli
 from galaius.agents.providers import AgentProvider, ClaudeCodeProvider
 from galaius.models import Model
+from tests.support.models import catalog_of
 from galaius.pinned_directory import PinnedDirectory
 
 # Playwright's own browser cache, read before any test moves HOME: a unit test's HOME is a fresh
@@ -240,15 +241,13 @@ def pytest_collection_modifyitems(config, items):
 
 @pytest.fixture
 def reset_model_registry():
-    """`Model._reset()` before and after — the shared body for a file whose OWN tests want a
-    private, empty `Model` catalog per test. Not autouse here: a file opts in with its own
-    `@pytest.fixture(autouse=True)` wrapper (see `test_probe.py`, `test_cli_reports.py`), so this
-    stays scoped to the files that actually want it rather than resetting the registry around
-    every test in the suite. `test_models.py`'s `_clear_registry` also clears measured
-    Benchmark scores and stays a separate, file-local fixture — a real superset, not this."""
-    Model._reset()
-    yield
-    Model._reset()
+    """A private, empty `Model` catalog per test, and the catalog that was there put back after
+    (`catalog_of`): a test that loads a fixture JSON leaves no registry or loader state behind.
+    Not autouse here: a file opts in with its own `@pytest.fixture(autouse=True)` wrapper (see
+    `test_probe.py`, `test_cli_reports.py`). `test_models.py`'s `_clear_registry` also clears
+    measured Benchmark scores and stays a separate, file-local fixture — a real superset, not this."""
+    with catalog_of():
+        yield
 
 
 @pytest.fixture
