@@ -59,7 +59,7 @@ def joining(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(CatalogConnection, "path", classmethod(lambda cls: home / ".config" / "galaius" / "catalog.json"))
     issued = SimpleNamespace(workspace=SimpleNamespace(id=uuid4(), name="My workspace"), approved_by="owner", machine=SimpleNamespace(id=uuid4(), name="pc2"),
                              machine_token=SecretStr(uuid4().hex * 2), **{"api_key": SimpleNamespace(**{"secret": SecretStr(uuid4().hex * 2)})})
-    for name, value in {"skew": lambda self, http: None, "start": lambda self, http, runs: SimpleNamespace(verification_uri_complete="https://x/link", user_code="ABCD-EFGH", expires_in=600, match="47"),
+    for name, value in {"skew": lambda self, http: None, "start": lambda self, http, runs, replaces=None: SimpleNamespace(verification_uri_complete="https://x/link", user_code="ABCD-EFGH", expires_in=600, match="47"),
                         "wait": lambda self, http, started, current=None: issued, "online": lambda self, http, machine, key: True, "revoke": lambda self, http, key: {},
                         "holds": lambda self, machine: True}.items():
         monkeypatch.setattr(account_login.AccountLogin, name, value)
@@ -248,7 +248,7 @@ def test_detach_opens_the_approval_hands_the_wait_over_and_says_one_line(joining
     """The install line: the code is started, the waiting handed to a detached `galaius login
     --resume` (its sign-in on stdin, never on its command line), the page opened, and the installer
     ends on « Installé : continuez dans votre navigateur » (plus the link where no browser opened)."""
-    monkeypatch.setattr(AccountLogin, "begun", lambda self, http, runs, open_browser: (_started(), False))
+    monkeypatch.setattr(AccountLogin, "begun", lambda self, http, runs, open_browser, replaces=None: (_started(), False))
     monkeypatch.setattr(AccountLogin, "opened", staticmethod(lambda url: opened))
     handed: list[account_login.HandedOff] = []
     monkeypatch.setattr(account_login, "_detached", lambda account, value: handed.append(value))
@@ -267,7 +267,7 @@ def test_a_second_install_line_reopens_the_same_page_while_its_waiter_lives(join
     """A newbie who sees nothing happen runs the line again: same page, no second code, so
     whichever tab is approved, the one waiter collects it; once that waiter is gone, a new sign-in."""
     codes = iter(["BCDF-GHJK", "LMNP-QRST"])
-    monkeypatch.setattr(AccountLogin, "begun", lambda self, http, runs, open_browser: (_started(next(codes)), False))
+    monkeypatch.setattr(AccountLogin, "begun", lambda self, http, runs, open_browser, replaces=None: (_started(next(codes)), False))
     pages: list[str] = []
     monkeypatch.setattr(AccountLogin, "opened", staticmethod(lambda url: pages.append(url) or True))
     handed: list[account_login.HandedOff] = []
@@ -337,19 +337,29 @@ def test_detach_is_a_real_detached_process_with_a_private_log(tmp_path: Path, mo
         assert seen["start_new_session"] is True and (tmp_path / "galaius" / "login.log").stat().st_mode & 0o777 == 0o600
 
 
-@pytest.mark.parametrize("leftover", ["removed", "unreadable"])
+OLD_TOKEN = "iwm_" + "a" * 43
+
+
+@pytest.mark.parametrize("leftover, proof", [
+    ("removed", None),                                                          # refused by its server: nothing to prove
+    ('{"server_url": "' + PUBLIC + '"}', None),                                 # unreadable, no token in it
+    ('{"server_url": "' + PUBLIC + '", "token": "' + OLD_TOKEN + '"}', OLD_TOKEN),  # unreadable, its token still there: sent
+    ('{"server_url": "https://other.example.org", "token": "' + OLD_TOKEN + '"}', None),  # another server's: never sent here
+])
 def test_the_install_line_signs_in_afresh_over_a_connection_the_server_no_longer_holds(connected: Path, monkeypatch: pytest.MonkeyPatch,
-                                                                                      capsys: pytest.CaptureFixture[str], leftover: str) -> None:
+                                                                                      capsys: pytest.CaptureFixture[str], leftover: str, proof: str | None) -> None:
     """A PC removed on the web, or left by an older install, runs the install line again: it starts
     a new sign-in (approval page opened) instead of reopening the page of a PC that never connects,
-    and deletes nothing before that sign-in is approved."""
+    and deletes nothing before that sign-in is approved. An unreadable file still holding this
+    server's token sends it as the proof that replaces the old entry; the installer says all of it in French."""
     path = MachineRunner.default_config_path()
     if leftover == "removed":
         monkeypatch.setattr(AccountLogin, "holds", lambda self, machine: False)
     else:
-        path.write_text('{"server_url": "' + PUBLIC + '"}', encoding="utf-8")
+        path.write_text(leftover, encoding="utf-8")
     before = path.read_bytes()
-    monkeypatch.setattr(AccountLogin, "start", lambda self, http, runs: _started())
+    sent: list[SecretStr | None] = []
+    monkeypatch.setattr(AccountLogin, "start", lambda self, http, runs, replaces=None: sent.append(replaces) or _started())
     calls: list[str] = []
     for action in ("install", "stop", "remove"):
         monkeypatch.setattr(type(MACHINE_SERVICE), action, lambda self, action=action: calls.append(action))
@@ -359,9 +369,11 @@ def test_the_install_line_signs_in_afresh_over_a_connection_the_server_no_longer
     monkeypatch.setattr(AccountLogin, "opened", staticmethod(lambda url: pages.append(url) or True))
     account_login.login(PUBLIC, allow_runs=False, open_browser=True, detach=True)
     assert [value.started.user_code for value in handed] == ["BCDF-GHJK"] and pages == ["https://x/plateform/link?code=BCDF-GHJK"]
+    assert [None if value is None else value.get_secret_value() for value in sent] == [proof]
     kept = path if leftover == "removed" else path.with_name(path.name + ".unreadable")
     assert kept.read_bytes() == before and calls == (["stop"] if leftover == "removed" else [])
-    assert "Installé : continuez dans votre navigateur" in capsys.readouterr().out
+    said = capsys.readouterr()
+    assert "Installé : continuez dans votre navigateur" in said.out and "il se reconnecte" in said.out + said.err and "signs in again" not in said.out + said.err
 
 
 @pytest.mark.parametrize("answer, held", [

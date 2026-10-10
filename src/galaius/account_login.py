@@ -14,6 +14,7 @@ import asyncio
 import json
 import os
 import platform
+import re
 import secrets
 import socket
 import subprocess
@@ -30,8 +31,8 @@ from urllib.parse import urlsplit
 
 import httpx
 import websockets
-from galaius_core import DeviceLoginIssued, DeviceLoginStart, DeviceLoginStarted, DeviceTokenRefusal, MachineSummary, ReleaseInfo
-from pydantic import BaseModel, ConfigDict, TypeAdapter
+from galaius_core import MACHINE_TOKEN_PATTERN, DeviceLoginIssued, DeviceLoginStart, DeviceLoginStarted, DeviceTokenRefusal, MachineSummary, ReleaseInfo
+from pydantic import BaseModel, ConfigDict, SecretStr, TypeAdapter
 
 from galaius import USER_AGENT, __version__
 from galaius.agents.catalog import AgentCatalog
@@ -164,24 +165,26 @@ class AccountLogin(BaseModel):
         mine = version("galaius-core")
         return None if server.core_version == mine else f"this computer runs galaius-core {mine}, the server {server.core_version}: run the install line from your Galaius page again"
 
-    def start(self, http: httpx.Client, runs: bool) -> DeviceLoginStarted:
+    def start(self, http: httpx.Client, runs: bool, replaces: SecretStr | None = None) -> DeviceLoginStarted:
+        """A sign-in code; `replaces` (`UnreadableMachine.token_for`) proves this computer is the PC it enrolled
+        before, so its owner's approval replaces that entry instead of adding a second one."""
         name = socket.gethostname().split(".")[0] or "computer"
         system = self.platforms.get(platform.system())
         if system is None:
             raise LoginError(f"{platform.system()} is not supported yet")
-        request = DeviceLoginStart(client_name=name, platform=system, client_version=__version__, runs=runs)
-        answer = http.post("/v1/device/authorizations", json=request.model_dump(mode="json"))
+        request = DeviceLoginStart(client_name=name, platform=system, client_version=__version__, runs=runs, replaces=replaces)
+        answer = http.post("/v1/device/authorizations", json=request.revealed())
         if answer.status_code == 429:
             raise LoginError("too many sign-in attempts from this network; wait a minute and try again")
         if answer.status_code != 201:
             raise LoginError(f"the server refused to start a sign-in (HTTP {answer.status_code})")
         return DeviceLoginStarted.model_validate_json(answer.content)
 
-    def begun(self, http: httpx.Client, runs: bool, open_browser: bool) -> tuple[DeviceLoginStarted, bool]:
+    def begun(self, http: httpx.Client, runs: bool, open_browser: bool, replaces: SecretStr | None = None) -> tuple[DeviceLoginStarted, bool]:
         """A sign-in code started, and whether its approval page opened in this computer's browser."""
         if (skew := self.skew(http)) is not None:
             print(f"Note: {skew}.", file=sys.stderr)
-        started = self.start(http, runs)
+        started = self.start(http, runs, replaces)
         return started, open_browser and self.opened(started.verification_uri_complete)
 
     @staticmethod
@@ -429,6 +432,25 @@ class UnreadableMachine(LoginError):
     def __init__(self, path: Path, error: Exception) -> None:
         super().__init__(f"this computer's machine file cannot be read ({type(error).__name__})")
         self.path = path
+        self.kind = type(error).__name__
+        self.proof = self._proof(path)
+
+    @staticmethod
+    def _proof(path: Path) -> tuple[AccountLogin, SecretStr] | None:
+        """(its server, its machine token) when the file still holds both readably (read before `set_aside`)."""
+        try:
+            values = json.loads(PRIVATE_FILES.read_text(path))
+            token = PRIVATE_FILES.unseal(values["token"])
+            if not re.fullmatch(MACHINE_TOKEN_PATTERN, token):
+                return None
+            return AccountLogin.parsed(values["server_url"]), SecretStr(token)
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, LoginError):
+            return None
+
+    def token_for(self, account: AccountLogin) -> SecretStr | None:
+        """The proof a fresh sign-in on `account`'s server sends (`DeviceLoginStart.replaces`) so its owner's
+        approval replaces the PC this file enrolled; None for another server (never sent there)."""
+        return self.proof[1] if self.proof is not None and self.proof[0] == account else None
 
     def set_aside(self) -> Path:
         aside = self.path.with_name(self.path.name + ".unreadable")
@@ -454,15 +476,34 @@ def _existing_machine() -> MachineConfig | None:
         raise UnreadableMachine(path, error) from None
 
 
-def _held(account: AccountLogin, existing: MachineConfig | None) -> MachineConfig | None:
+class SaidHere(BaseModel):
+    """What `galaius login` says about this computer's earlier connection before signing it in again, in the
+    language of where it shows: an installer's output is French (it ends on `INSTALLED`), a terminal's English."""
+
+    model_config = ConfigDict(frozen=True)
+    #: `{machine}`, `{server}`: the server refused this computer's token (`_held`).
+    not_held: str
+    #: `{kind}`, `{aside}`: the machine file did not read (`UnreadableMachine`), kept aside.
+    unreadable: str
+
+
+#: By `detach` (the installers).
+SAID_HERE: dict[bool, SaidHere] = {
+    False: SaidHere(not_held="This computer's connection (machine {machine}) is no longer known to {server} (removed on the web, or left by an earlier install): it signs in again.",
+                    unreadable="This computer's machine file cannot be read ({kind}); kept as {aside}, this computer signs in again."),
+    True: SaidHere(not_held="La connexion de cet ordinateur (machine {machine}) n'est plus connue de {server} (retiré sur le web, ou laissé par une installation précédente) : il se reconnecte.",
+                   unreadable="Le fichier de connexion de cet ordinateur est illisible ({kind}) ; gardé sous {aside}, il se reconnecte."),
+}
+
+
+def _held(account: AccountLogin, existing: MachineConfig | None, said: SaidHere) -> MachineConfig | None:
     """`existing`, unless `account` is its server and refuses its token (`AccountLogin.holds`): then
     the computer signs in again as a new one, so the install line never reopens the page of a PC
     that can never connect. Nothing is deleted before that sign-in lands (its approval rewrites the
     files and restarts the service); only the background service, which can no longer connect, stops."""
     if existing is None or AccountLogin.parsed(existing.server_url) != account or account.holds(existing):
         return existing
-    print(f"This computer's connection (machine {existing.machine_id}) is no longer known to {account.server} "
-          "(removed on the web, or left by an earlier install): it signs in again.", flush=True)
+    print(said.not_held.format(machine=existing.machine_id, server=account.server), flush=True)
     try:
         MACHINE_SERVICE.stop()
     except ServiceUnavailable:
@@ -485,22 +526,25 @@ def login(server: str | None, *, allow_runs: bool, open_browser: bool, agents: b
     signs in as a new computer; connected to another server: moved there when that server holds this computer's
     enrollment (`_moved`), else refused. `detach` (the installers): the sign-in is handed to a
     background process (`_handed_off`) and this returns at once; `resume` is that process."""
+    said, unreadable = SAID_HERE[detach], None
     try:
         existing = _existing_machine()
-    except UnreadableMachine as unreadable:
-        print(f"{unreadable}; kept as {unreadable.set_aside()}, this computer signs in again.", file=sys.stderr)
-        existing = None
+    except UnreadableMachine as error:
+        print(said.unreadable.format(kind=error.kind, aside=error.set_aside()), file=sys.stderr)
+        existing, unreadable = None, error
     try:
         account = AccountLogin.parsed(existing.server_url) if existing is not None and server is None else AccountLogin.at(server)
+        replaces = None if unreadable is None else unreadable.token_for(account)
         if not resume:
-            existing = _held(account, existing)
+            existing = _held(account, existing, said)
         if detach:
-            _handed_off(account, existing, allow_runs=allow_runs, open_browser=open_browser, agents=AgentChoice.given(agents, agent_folders, agent_opt_ins, existing or AgentChoice.joining()))
+            _handed_off(account, existing, allow_runs=allow_runs, open_browser=open_browser, replaces=replaces,
+                        agents=AgentChoice.given(agents, agent_folders, agent_opt_ins, existing or AgentChoice.joining()))
         elif resume:
             _resumed(account)
         elif existing is None:
             with account.client() as http:
-                started, _ = account.begun(http, allow_runs, open_browser)
+                started, _ = account.begun(http, allow_runs, open_browser, replaces)
                 print(f"To connect this computer, open this page and allow it:\n\n    {started.verification_uri_complete}\n")
                 print(f"Check the page shows the code  {started.user_code}  (expires in {started.expires_in // 60} min); if it asks for a number, pick  {started.match}.")
                 _joined(account, http, started, agents=AgentChoice.given(agents, agent_folders, agent_opt_ins, AgentChoice.joining()))
@@ -594,7 +638,8 @@ class Pending(BaseModel):
             return False
 
 
-def _handed_off(account: AccountLogin, existing: MachineConfig | None, *, allow_runs: bool, open_browser: bool, agents: AgentChoice | None) -> None:
+def _handed_off(account: AccountLogin, existing: MachineConfig | None, *, allow_runs: bool, open_browser: bool, agents: AgentChoice | None,
+                replaces: SecretStr | None = None) -> None:
     """The installers' sign-in, nothing asked and nothing waited for here. A new computer: its
     pending sign-in's page reopens if a waiter still serves one; else a code is started, its page
     opened in the browser, and a detached `galaius login --resume` (`HandedOff` on its stdin, its
@@ -613,7 +658,7 @@ def _handed_off(account: AccountLogin, existing: MachineConfig | None, *, allow_
         link, match = pending.link, pending.match
     else:
         with account.client() as http:
-            started, _ = account.begun(http, allow_runs, open_browser=False)
+            started, _ = account.begun(http, allow_runs, open_browser=False, replaces=replaces)
         pending = Pending(mark=secrets.token_hex(16), link=started.verification_uri_complete, match=started.match,
                           expires_at=datetime.now(UTC) + timedelta(seconds=started.expires_in))
         pending.write()
