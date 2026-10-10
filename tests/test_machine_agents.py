@@ -231,7 +231,9 @@ def test_a_message_is_answered_once_durably_queued_and_its_dispatcher_gets_the_m
     # The server sends it again when the first answer never came (a frozen PC, a runner restart):
     # the same request id is the same message, queued once.
     answer, again = _answer(agents, request), _answer(agents, request)
-    assert answer.detail.startswith("Queued for r") and again.detail == answer.detail and started["env"] == agents.environment
+    assert answer.detail.startswith("Queued for r") and again.detail == answer.detail
+    # The runner's environment is scrubbed: the dispatcher still reads the runner's own registry.
+    assert started["env"] == {**agents.environment, "GALAIUS_AGENTS_DIR": str(reg.agents_dir())}
     assert started["argv"][-3:-1] == ["--dispatch", run_id] and started["start_new_session"]
     assert [(item.state, item.message_id) for item in agent_queue.items(run_id)] == [("pending", str(request.id))]
     assert [event.text for event in reg.read_messages(run_id)] == ["- and one more thing"]

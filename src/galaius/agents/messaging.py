@@ -51,7 +51,7 @@ class Delivery(BaseModel):
         its CLI reads nothing mid-turn, or the run is fenced (the hook cannot claim the message from
         inside the fence)."""
         waiting = [other.id for other in agent_queue.items_locked(run.run_id) if other.state in {"pending", "running"}]
-        working = item.state == "pending" and ((item.id in waiting and waiting.index(item.id) > 0) or (run.status in ("running", "waiting") and run.process_running()))
+        working = item.state == "pending" and ((item.id in waiting and waiting.index(item.id) > 0) or run.working())
         reads_at: ReadsAt = "now" if not working else "next_step" if run.fence is None and provider_for(run.provider).reads_mid_turn else "turn_end"
         return cls(state="queued", text=f"Queued for {run.name} ({run.run_id[:8]}), delivery {item.id[:8]}.", run_id=run.run_id,
                    queue_id=item.id, reads_at=reads_at, repeated=repeated)
@@ -233,7 +233,7 @@ def queue_message(
                 state="error", text=f"ERROR: could not record the message to {run_id!r}.",
                 run_id=run.run_id,
             )
-        if run.status in ("running", "waiting") and run.process_running():
+        if run.working():
             if run.model != model or run.requested_criterion != criterion or run.reasoning != reasoning:
                 # Informational only. Effective values change when dispatcher starts the turn.
                 reg._merge_record_locked(run.run_id, {

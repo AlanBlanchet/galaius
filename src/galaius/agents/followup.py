@@ -107,10 +107,24 @@ class FollowUps(BaseModel):
         self._keep(asyncio.create_task(ended()))
 
     async def ready(self, run_id: str, *, environment: Mapping[str, str]) -> None:
-        """Keep run `run_id`'s next turn started ahead, when it can be (`_resumable`), while no other
-        turn of it begins (another sender's message, through its dispatcher)."""
+        """Once a turn of run `run_id` ended: a message still waiting (sent while it worked, and not
+        handed to that turn) opens the next turn now, never left waiting for a dispatcher that may
+        not run; else keep its next turn started ahead, when it can be (`_resumable`), while no
+        other turn of it begins (another sender's message, through its dispatcher)."""
         run = await asyncio.to_thread(reg.get_run, run_id)
-        if run is None or not self._resumable(run):
+        if run is None:
+            return
+        if (waiting := await asyncio.to_thread(self._waiting, run_id)) is not None:
+            child = None
+            if self._resumable(run):
+                try:
+                    child = await self._child(run, environment)
+                except (OSError, ValueError, RuntimeError) as error:  # its dispatcher starts the turn instead
+                    log.warning("no child for the follow-up waiting on %s: %s", run_id[:8], error)
+            if (delivery := await self._deliver(waiting, child, environment)).state == "error":
+                log.warning("follow-up waiting on %s not delivered: %s", run_id[:8], delivery.text)
+            return
+        if not self._resumable(run):
             return
         try:
             launch = await asyncio.to_thread(self._launch, run, environment)
@@ -154,6 +168,17 @@ class FollowUps(BaseModel):
 
     def close(self) -> None:
         self.warm.close()
+
+    @staticmethod
+    def _waiting(run_id: str) -> Delivery | None:
+        """The first message queued for `run_id` while it is between turns and no dispatcher of it
+        runs (one that does delivers it itself), as its delivery."""
+        with reg.record_lock(run_id):
+            run = reg.get_run(run_id)
+            if run is None or run.working() or agent_queue.dispatcher_running_locked(run_id):
+                return None
+            item = agent_queue.first_active_locked(run_id)
+            return Delivery.queued(run, item) if item is not None and item.state == "pending" else None
 
     @staticmethod
     def _resumable(run: reg.AgentRun) -> bool:
@@ -258,7 +283,7 @@ class FollowUps(BaseModel):
         run_id = delivery.run_id
         with reg.record_lock(run_id):
             run = reg.get_run(run_id)
-            if run is None or (run.status in {"running", "waiting"} and run.process_running()):
+            if run is None or run.working():
                 return None
             item = agent_queue.claim_locked(run_id, delivery.queue_id or "")
             if item is None:

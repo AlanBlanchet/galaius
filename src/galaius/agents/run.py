@@ -757,7 +757,7 @@ class AheadLaunch(BaseModel):
         a coroutine tied events to the caller's event loop, and a caller that spawned and returned
         lost every event. At OS level the stream survives the caller, or galaius, dying. `ahead`: it
         reads what it is to do from its stdin, written later (`hand`)."""
-        later = stderr is not None
+        later, env = stderr is not None, reg.participant_environment(env)
         sink = reg.open_raw_events(run_id, append=later)
         stderr = stderr if later else reg.open_stderr(run_id, append=False)
         try:
@@ -1044,6 +1044,7 @@ def _spawn_turn(
     model: str | None, criterion: str | None, reasoning: str | None, record_locked: bool = False,
 ) -> ContinuationHandle:
     """Start one resumed turn of `run` from `argv` and its reaper, before returning."""
+    env = reg.participant_environment(env)
     sink = reg.open_raw_events(run.run_id, append=True)
     stderr_file = tempfile.TemporaryFile()
     try:

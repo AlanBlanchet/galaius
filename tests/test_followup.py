@@ -11,6 +11,7 @@ import pytest
 
 from galaius.agents import agent_queue, messaging
 from galaius.agents import registry as reg
+from galaius.agents import followup as followup_module
 from galaius.agents import run as run_module
 from galaius.agents.followup import FollowUps
 from galaius.agents.warm import WarmStart
@@ -103,6 +104,45 @@ async def test_a_follow_up_goes_to_the_child_started_when_the_turn_ended(provide
         await _until(lambda: followups.warm.holding == ("r1",), "no child started for the turn after")
     finally:
         followups.close()
+
+
+@pytest.mark.asyncio
+async def test_a_message_sent_while_the_run_works_is_read_when_its_turn_ends_even_with_no_dispatcher(provider, monkeypatch):
+    """The web sends while the agent works (`next_step`), in the runner's scrubbed environment, and
+    no dispatcher ever runs (one started in the wrong registry exits at once): the end of the turn
+    hands it to the next turn, whose child reads the runner's registry, and it is named read."""
+    spawned: list[str | None] = []
+    spawn = asyncio.create_subprocess_exec
+
+    async def recording(*argv, **options):
+        if "env" in options:  # a turn the launcher starts
+            spawned.append(options["env"].get("GALAIUS_AGENTS_DIR"))
+        return await spawn(*argv, **options)
+
+    monkeypatch.setattr(run_module.asyncio, "create_subprocess_exec", recording)
+    scrubbed = {key: value for key, value in os.environ.items() if key != "GALAIUS_AGENTS_DIR"}
+    provider.reads_mid_turn = True  # as Claude: its inbox hook would hand it over after a tool call
+    followups = FollowUps(warm=WarmStart(capacity=0))
+    working = await asyncio.create_subprocess_exec(sys.executable, "-c", "import time; time.sleep(0.5)")
+    reg.save_run(reg.get_run("r1").model_copy(update={"pid": working.pid, "pid_started": None, "status": "running"}))
+    followups.follow("r1", working, environment=scrubbed)
+
+    delivery = await followups.send("r1", "also create f7.txt", environment=scrubbed, message_id="5b0e3c1a-8f2d-4c4e-9a51-0d6f2a7b9c10")
+
+    assert delivery.reads_at == "next_step" and provider.dispatchers == ["r1"]
+    await _until(lambda: agent_queue.items("r1")[-1].state == "replied", "the message was never read")
+    assert _replies() == ["got also create f7.txt"] and agent_queue.read_ids("r1") == ["5b0e3c1a-8f2d-4c4e-9a51-0d6f2a7b9c10"]
+    assert spawned and set(spawned) == {str(reg.agents_dir())}
+    followups.close()
+
+
+@pytest.mark.asyncio
+async def test_a_message_left_at_turn_end_that_nothing_can_start_says_why(provider, monkeypatch, caplog):
+    provider.starts_ahead = False  # no child ahead (a fenced run, a CLI that cannot): only a dispatcher could
+    monkeypatch.setattr(followup_module, "start_dispatcher", lambda run_id, environment: "could not start worker's dispatcher — no interpreter")
+    messaging.queue_message("r1", "still there?", sender="operator")
+    await FollowUps(warm=WarmStart(capacity=0)).ready("r1", environment=dict(os.environ))
+    assert "no interpreter" in caplog.text and [item.state for item in agent_queue.items("r1")] == ["pending"]
 
 
 @pytest.mark.asyncio

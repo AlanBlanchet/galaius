@@ -175,11 +175,16 @@ def claim_next_locked(run_id: str) -> QueueItem | None:
     )
 
 
+def first_active_locked(run_id: str) -> QueueItem | None:
+    """The run's first item waiting or being delivered, while the caller owns the run lock."""
+    return next((item for item in _items(_state(run_id)) if item.state in {"pending", "running"}), None)
+
+
 def claim_locked(run_id: str, item_id: str) -> QueueItem | None:
-    """Claim `item_id` while the caller owns the run lock, when it is the only item waiting or
-    running (one ahead of it is delivered first, by the run's dispatcher)."""
-    active = [item for item in _items(_state(run_id)) if item.state in {"pending", "running"}]
-    if [item.id for item in active] != [item_id] or active[0].state != "pending":
+    """Claim `item_id` while the caller owns the run lock, when it is the first item waiting or
+    running (one ahead of it is delivered first)."""
+    first = first_active_locked(run_id)
+    if first is None or first.id != item_id or first.state != "pending":
         return None
     return _replace_item_locked(run_id, item_id, state="running", started_at=time.time(),
                                 raw_index=reg.raw_line_count(run_id), attempt_token=uuid.uuid4().hex, error="")
@@ -276,7 +281,7 @@ def ensure_dispatcher_locked(run_id: str, *, cwd: str = ".", environment: Mappin
             cwd=cwd if cwd and Path(cwd).is_dir() else ".",
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL, start_new_session=True,
-            env=None if environment is None else dict(environment),
+            env=reg.participant_environment(os.environ if environment is None else environment),
             # Windows: outlives the console that asked for it (its own group; no console window,
             # and the dispatcher hides its own children's: `galaius.windowless`). 0 on POSIX.
             creationflags=_DETACHED,
@@ -317,7 +322,7 @@ def inject(run_id: str) -> list[str]:
     said = []
     with reg.record_lock(run_id):
         run = reg.get_run(run_id)
-        if run is None or not _active(run):
+        if run is None or not run.working():
             return []
         anchor = reg.raw_line_count(run_id)
         for item in _items(_state(run_id)):
@@ -340,10 +345,6 @@ def read_ids(run_id: str) -> list[str]:
     """The message ids (`QueueItem.message_id`) its agent has read (`READ`), the latest read first."""
     read = [item for item in items(run_id) if item.state in READ]
     return [item.message_id for item in sorted(read, key=lambda item: item.started_at or item.enqueued_at, reverse=True)]
-
-
-def _active(run: reg.AgentRun) -> bool:
-    return run.status in ("running", "waiting") and run.process_running()
 
 
 def _fresh_policy(run: reg.AgentRun):
@@ -433,7 +434,7 @@ def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
                 if run is None:
                     cancel_pending_locked(run_id)
                     return
-                if _active(run):
+                if run.working():
                     item = None
                 elif running is not None:
                     # The previous dispatcher may have died after the provider child finished but

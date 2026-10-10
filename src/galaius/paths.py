@@ -4,6 +4,7 @@ owner of the XDG / Windows / macOS folder rules every other module asks."""
 import os
 import sys
 from pathlib import Path
+from typing import ClassVar
 
 
 class UserPaths:
@@ -23,11 +24,14 @@ class UserPaths:
             return Path.home() / "Library" / "Application Support" / "galaius"
         return Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share") / "galaius"
 
+    #: Where the agent registry lives when set (`agents`).
+    AGENTS_OVERRIDE: ClassVar[str] = "GALAIUS_AGENTS_DIR"
+
     @staticmethod
     def agents() -> Path:
-        """The agent registry (runs, their streams, queues, quota cooldowns): `GALAIUS_AGENTS_DIR` when
+        """The agent registry (runs, their streams, queues, quota cooldowns): `AGENTS_OVERRIDE` when
         set (a probe or test keeps its runs out of the owner's), else `~/.galaius/out/agents`."""
-        override = os.environ.get("GALAIUS_AGENTS_DIR")
+        override = os.environ.get(UserPaths.AGENTS_OVERRIDE)
         return Path(override).expanduser() if override else Path.home() / ".galaius" / "out" / "agents"
 
     @staticmethod

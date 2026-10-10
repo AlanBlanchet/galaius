@@ -1,8 +1,9 @@
 """On-disk record of every agent run: what is running, who started it, what it cost.
 
 Cross-process by design — the CLI spawns, the VS Code extension reads, another shell stops. The
-default is ``~/.galaius/out/agents``; disposable test and harness processes pass
-``GALAIUS_AGENTS_DIR`` to every participant so they share an isolated registry. It is never
+default is ``~/.galaius/out/agents``; disposable test and harness processes set
+``UserPaths.AGENTS_OVERRIDE``, and every participant a process starts gets its registry
+(``participant_environment``), so they share an isolated one. It is never
 ``debug_dir``-relative: two processes disagreeing about where to look is exactly how metering
 broke before (0ef5fa4), and ``server_registry`` pins its own path for the same reason.
 
@@ -347,6 +348,10 @@ class AgentRun(BaseModel):
     last: str = ""
     stream_digest: StreamDigest | None = None
 
+    def working(self) -> bool:
+        """On a turn now: running or waiting on its agents, its recorded process still that process."""
+        return self.status in ("running", "waiting") and self.process_running()
+
     def process_running(self) -> bool:
         """Its recorded process still runs and is still that process, not a later one given its pid."""
         return bool(self.pid) and _alive(self.pid) and (
@@ -406,10 +411,10 @@ def _reject_unisolated_fixture_record(raw: dict) -> None:
 
     Checked at the one write point, so a model a fake provider reports AFTER launch is caught too.
     """
-    if os.environ.get("GALAIUS_AGENTS_DIR"):
+    if os.environ.get(UserPaths.AGENTS_OVERRIDE):
         return
     if str(raw.get("provider") or "").startswith("fixture") or raw.get("model") in _FIXTURE_MODELS:
-        raise ValueError("fixture agent records require an isolated GALAIUS_AGENTS_DIR")
+        raise ValueError(f"fixture agent records require an isolated {UserPaths.AGENTS_OVERRIDE}")
 
 
 #: Markers that make a directory the root of a PROJECT. Grouping on the working directory's own
@@ -453,6 +458,14 @@ def project_for(cwd: str) -> str:
 def agents_dir() -> Path:
     """Shared registry path; harnesses set the override before launching every participant."""
     return UserPaths.agents()
+
+
+def participant_environment(environment: Mapping[str, str]) -> dict[str, str]:
+    """`environment` for a process this one starts to work on its runs (an agent's turn and the inbox
+    hook it runs, a dispatcher): carrying this process's registry override, so a scrubbed environment
+    (a PC runner's) never sends it to read the default registry, where it finds no run and no message."""
+    override = os.environ.get(UserPaths.AGENTS_OVERRIDE)
+    return {**environment, UserPaths.AGENTS_OVERRIDE: str(agents_dir())} if override else dict(environment)
 
 
 def _ensure_registry_directory() -> Path:
