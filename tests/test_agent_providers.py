@@ -130,6 +130,18 @@ def test_claude_loads_no_folder_settings_where_they_must_not_load(monkeypatch: p
             build()
 
 
+@pytest.mark.parametrize("subcommand", [("exec",), ("exec", "resume")])
+def test_codex_runs_in_a_folder_that_is_not_a_git_repository(subcommand: tuple[str, ...]) -> None:
+    """Codex refuses a non-git folder unless told otherwise; galaius already chose the folder."""
+    codex = CodexProvider()
+    argv = (codex.command("t", cwd="/tmp", model=None, mcp_config=None, run_id="r") if subcommand == ("exec",)
+            else codex.resume_command("r", "next"))
+    assert "--skip-git-repo-check" in argv[:argv.index("--")]
+    if installed := shutil.which("codex"):
+        help_text = subprocess.run([installed, *subcommand, "--help"], capture_output=True, text=True, timeout=10).stdout
+        assert "--skip-git-repo-check" in help_text
+
+
 def test_codex_uses_only_documented_approval_flags():
     provider = CodexProvider()
     plan = provider.command("t", cwd="/tmp", model=None, mcp_config=None, run_id="r", permission_mode="plan")

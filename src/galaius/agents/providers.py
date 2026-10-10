@@ -1428,6 +1428,10 @@ class CodexProvider(AgentProvider):
     native_delegation_flags = (
         "-c", "features.multi_agent=false", "-c", "features.multi_agent_v2=false",
     )
+    #: `codex exec` refuses a folder that is neither a Git repository nor marked trusted in
+    #: `~/.codex/config.toml`. Galaius already decided where the agent runs (the folder the
+    #: computer allows, under the sandbox above); a user never edits codex's trust list for it.
+    exec_flags = ("--skip-git-repo-check",)
     #: A fixed, galaius-owned provider id for a routed OpenAI-wire endpoint — never derived from
     #: model text, never the built-in "openai"/"chatgpt" ids (those are tied to the user's own
     #: ChatGPT session or real OpenAI key; reusing them here would risk that credential reaching a
@@ -1636,7 +1640,7 @@ class CodexProvider(AgentProvider):
                 base_url: str | None = None, environment: Mapping[str, str] | None = None) -> list[str]:
         self.validate_tool_policy(allowed_tools or [], denied_tools, coarse_accepted=coarse_accepted)
         task = self._inject_definition(agent, task, agent_prompt)
-        argv = [self.binary, "exec", "--json", *self.native_delegation_flags, *self.platform_flags(), *self._setting_sources(environment)]
+        argv = [self.binary, "exec", "--json", *self.exec_flags, *self.native_delegation_flags, *self.platform_flags(), *self._setting_sources(environment)]
         argv += self.mesh_arguments(mcp_config)
         argv += self._mcp_tool_scope_arguments(allowed_tools or [], denied_tools)
         argv += self._native_sandbox_arguments(allowed_tools or [], denied_tools,
@@ -1696,7 +1700,7 @@ class CodexProvider(AgentProvider):
         self.validate_tool_policy(allowed_tools or [], denied_tools, coarse_accepted=coarse_accepted)
         if agent:
             self.validate_agent_name(agent)
-        argv = [self.binary, "exec", "resume", "--json", *self.native_delegation_flags, *self.platform_flags(), *self._setting_sources()]
+        argv = [self.binary, "exec", "resume", "--json", *self.exec_flags, *self.native_delegation_flags, *self.platform_flags(), *self._setting_sources()]
         argv += self.mesh_arguments(mcp_config)
         argv += self._mcp_tool_scope_arguments(allowed_tools or [], denied_tools)
         argv += self._openai_compat_arguments(base_url)
