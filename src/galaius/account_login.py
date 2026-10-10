@@ -308,8 +308,23 @@ class AccountLogin(BaseModel):
             return f"machine {machine.machine_id}"
         found = next((item for item in machines if item.id == machine.machine_id and item.state != "revoked"), None)
         if found is None:
-            raise LoginError(f"this computer was removed from the machines of {self.server}; run `galaius logout`, then `galaius login`")
+            raise LoginError(f"this computer was removed from the machines of {self.server}; run `galaius login` again: it signs in as a new one")
         return found.name
+
+    def holds(self, machine: MachineConfig) -> bool:
+        """Whether this server still holds `machine`'s enrollment, asked with the machine's own token
+        on a read that changes nothing (the workspaces its prompts come from; the channel is not
+        opened for it, which would show the PC online). Only the server's own refusal of that token
+        says no (401 `authentication_failed`): removed on the web, revoked, or never this server's (an
+        older install's leftover; also a cloud instance's bootstrap token before its first
+        connection, which it then replaces by a new sign-in). Anything else (offline, a server
+        restarting, a proxy's own 401) is no verdict: held."""
+        try:
+            with self.client() as http:
+                answer = http.get("/v1/machine/prompt-workspaces", headers=machine.authorization)
+            return answer.status_code != 401 or answer.json().get("code") != "authentication_failed"
+        except (httpx.HTTPError, ValueError, AttributeError):
+            return True
 
     def revoke(self, http: httpx.Client, secret: str) -> dict[str, object]:
         answer = http.post("/v1/device/logout", headers={"Authorization": f"Bearer {secret}"})
@@ -406,11 +421,52 @@ class AgentChoice(BaseModel):
                 "To change:  galaius machine agent-roots <folder…>  (\"\" clears) or  galaius machine agents off" + extras)
 
 
+class UnreadableMachine(LoginError):
+    """The machine file is there but is not one this galaius can read (an older install's format, a
+    value sealed by another Windows user): `set_aside` keeps it so this computer can sign in again."""
+
+    def __init__(self, path: Path, error: Exception) -> None:
+        super().__init__(f"this computer's machine file cannot be read ({type(error).__name__})")
+        self.path = path
+
+    def set_aside(self) -> Path:
+        aside = self.path.with_name(self.path.name + ".unreadable")
+        try:
+            PRIVATE_FILES.replace(self.path, aside)
+        except OSError:
+            raise LoginError(f"{self} nor moved aside: remove {self.path}, then run it again") from None
+        return aside
+
+
 def _existing_machine() -> MachineConfig | None:
+    """This computer's machine, None when it has none; `UnreadableMachine` when its file is not one;
+    a file not private to this user is refused as it was (its token may have been read)."""
+    path = MachineRunner.default_config_path()
     try:
         return MachineRunner().load()
     except FileNotFoundError:
         return None
+    except PermissionError:
+        raise LoginError(f"this computer's machine file {path} is not private to this user, so its token may have been read: "
+                         "remove that file (and the PC on its page on the web), then run the install line again") from None
+    except (ValueError, KeyError, TypeError, AttributeError) as error:
+        raise UnreadableMachine(path, error) from None
+
+
+def _held(account: AccountLogin, existing: MachineConfig | None) -> MachineConfig | None:
+    """`existing`, unless `account` is its server and refuses its token (`AccountLogin.holds`): then
+    the computer signs in again as a new one, so the install line never reopens the page of a PC
+    that can never connect. Nothing is deleted before that sign-in lands (its approval rewrites the
+    files and restarts the service); only the background service, which can no longer connect, stops."""
+    if existing is None or AccountLogin.parsed(existing.server_url) != account or account.holds(existing):
+        return existing
+    print(f"This computer's connection (machine {existing.machine_id}) is no longer known to {account.server} "
+          "(removed on the web, or left by an earlier install): it signs in again.", flush=True)
+    try:
+        MACHINE_SERVICE.stop()
+    except ServiceUnavailable:
+        pass  # nothing running here to stop
+    return None
 
 
 def _shown(value: str) -> str:
@@ -424,12 +480,19 @@ def login(server: str | None, *, allow_runs: bool, open_browser: bool, agents: b
     set the agent settings ahead (scripts); unsaid, a joining computer keeps agents off (set later
     on its page on the web) and a connected one keeps its own. Already connected to this server
     (the one remembered when `server` is None): nothing is signed in again, the service restarts on
-    this build; connected to another server: moved there when that server holds this computer's
+    this build — unless that server refuses its token (`_held`) or its file is unreadable, then it
+    signs in as a new computer; connected to another server: moved there when that server holds this computer's
     enrollment (`_moved`), else refused. `detach` (the installers): the sign-in is handed to a
     background process (`_handed_off`) and this returns at once; `resume` is that process."""
-    existing = _existing_machine()
+    try:
+        existing = _existing_machine()
+    except UnreadableMachine as unreadable:
+        print(f"{unreadable}; kept as {unreadable.set_aside()}, this computer signs in again.", file=sys.stderr)
+        existing = None
     try:
         account = AccountLogin.parsed(existing.server_url) if existing is not None and server is None else AccountLogin.at(server)
+        if not resume:
+            existing = _held(account, existing)
         if detach:
             _handed_off(account, existing, allow_runs=allow_runs, open_browser=open_browser, agents=AgentChoice.given(agents, agent_folders, agent_opt_ins, existing or AgentChoice.joining()))
         elif resume:
@@ -673,10 +736,15 @@ def _joined(account: AccountLogin, http: httpx.Client, started: DeviceLoginStart
 
 
 def logout() -> None:
-    machine = _existing_machine()
-    if machine is None:
+    unreadable = None
+    try:
+        machine = _existing_machine()
+    except UnreadableMachine as error:
+        machine, unreadable = None, error
+    if machine is None and unreadable is None:
         raise LoginError("this computer is not signed in")
-    account = AccountLogin.at(machine.server_url)
+    # An unreadable file: the server it signed in at, where its CLI key still signs it out.
+    account = AccountLogin.at(None if machine is None else machine.server_url)
     key = account.key()  # None: already gone, nothing to revoke from here
     if key is None and account.key_path.exists():
         print(f"This computer's sign-in key could not be read ({account.key_path}): it is removed here but stays valid on the server until removed there.", file=sys.stderr)
@@ -685,6 +753,8 @@ def logout() -> None:
             revoked = account.revoke(http, key) if key is not None else {}
     except httpx.HTTPError as error:
         raise LoginError(f"cannot reach {account.server} ({type(error).__name__}); nothing was removed here, run it again") from None
+    if unreadable is not None:
+        print(f"{unreadable}; kept as {unreadable.set_aside()}.", file=sys.stderr)
     try:
         MACHINE_SERVICE.remove()
     except ServiceUnavailable as refused:

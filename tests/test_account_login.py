@@ -24,6 +24,7 @@ from galaius.machines import MachineRunner
 
 PUBLIC = "https://galaius.example.org"
 TUNNEL = "http://127.0.0.1:8817"
+HOLDS = AccountLogin.holds
 
 
 @pytest.mark.parametrize("remembered, answering, expected", [
@@ -59,7 +60,8 @@ def joining(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     issued = SimpleNamespace(workspace=SimpleNamespace(id=uuid4(), name="My workspace"), approved_by="owner", machine=SimpleNamespace(id=uuid4(), name="pc2"),
                              machine_token=SecretStr(uuid4().hex * 2), **{"api_key": SimpleNamespace(**{"secret": SecretStr(uuid4().hex * 2)})})
     for name, value in {"skew": lambda self, http: None, "start": lambda self, http, runs: SimpleNamespace(verification_uri_complete="https://x/link", user_code="ABCD-EFGH", expires_in=600, match="47"),
-                        "wait": lambda self, http, started, current=None: issued, "online": lambda self, http, machine, key: True, "revoke": lambda self, http, key: {}}.items():
+                        "wait": lambda self, http, started, current=None: issued, "online": lambda self, http, machine, key: True, "revoke": lambda self, http, key: {},
+                        "holds": lambda self, machine: True}.items():
         monkeypatch.setattr(account_login.AccountLogin, name, value)
     monkeypatch.setattr(account_login.AccountLogin, "synced", staticmethod(lambda connection: "Synced: nothing"))
     monkeypatch.setattr(account_login.AccountLogin, "page", lambda self, http, machine: f"{self.server}/plateform/#data?computer={machine.machine_id.hex}")
@@ -331,3 +333,61 @@ def test_detach_is_a_real_detached_process_with_a_private_log(tmp_path: Path, mo
         assert seen["creationflags"] & subprocess.CREATE_NO_WINDOW and seen["creationflags"] & subprocess.CREATE_NEW_PROCESS_GROUP
     else:
         assert seen["start_new_session"] is True and (tmp_path / "galaius" / "login.log").stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize("leftover", ["removed", "unreadable"])
+def test_the_install_line_signs_in_afresh_over_a_connection_the_server_no_longer_holds(connected: Path, monkeypatch: pytest.MonkeyPatch,
+                                                                                      capsys: pytest.CaptureFixture[str], leftover: str) -> None:
+    """A PC removed on the web, or left by an older install, runs the install line again: it starts
+    a new sign-in (approval page opened) instead of reopening the page of a PC that never connects,
+    and deletes nothing before that sign-in is approved."""
+    path = MachineRunner.default_config_path()
+    if leftover == "removed":
+        monkeypatch.setattr(AccountLogin, "holds", lambda self, machine: False)
+    else:
+        path.write_text('{"server_url": "' + PUBLIC + '"}', encoding="utf-8")
+    before = path.read_bytes()
+    monkeypatch.setattr(AccountLogin, "start", lambda self, http, runs: _started())
+    calls: list[str] = []
+    for action in ("install", "stop", "remove"):
+        monkeypatch.setattr(type(MACHINE_SERVICE), action, lambda self, action=action: calls.append(action))
+    handed: list[account_login.HandedOff] = []
+    pages: list[str] = []
+    monkeypatch.setattr(account_login, "_detached", lambda account, value: handed.append(value))
+    monkeypatch.setattr(AccountLogin, "opened", staticmethod(lambda url: pages.append(url) or True))
+    account_login.login(PUBLIC, allow_runs=False, open_browser=True, detach=True)
+    assert [value.started.user_code for value in handed] == ["BCDF-GHJK"] and pages == ["https://x/plateform/link?code=BCDF-GHJK"]
+    kept = path if leftover == "removed" else path.with_name(path.name + ".unreadable")
+    assert kept.read_bytes() == before and calls == (["stop"] if leftover == "removed" else [])
+    assert "Installé : continuez dans votre navigateur" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("answer, held", [
+    (httpx.Response(401, json={"code": "authentication_failed"}), False),  # the server's own refusal of this token
+    (httpx.Response(401, text="Unauthorized"), True),                       # a proxy's 401: no verdict
+    (httpx.Response(200, json=[]), True), (httpx.Response(502), True), (None, True),
+])
+def test_only_the_servers_own_refusal_of_its_token_says_it_no_longer_holds_this_computer(connected: Path, monkeypatch: pytest.MonkeyPatch,
+                                                                                         answer: httpx.Response | None, held: bool) -> None:
+    machine = MachineRunner().load()
+
+    def reply(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/machine/prompt-workspaces" and request.headers["Authorization"] == f"Bearer {machine.token.get_secret_value()}"
+        if answer is None:
+            raise httpx.ConnectError("offline")
+        return answer
+
+    monkeypatch.setattr(AccountLogin, "client", lambda self: httpx.Client(base_url=self.server, transport=httpx.MockTransport(reply)))
+    assert HOLDS(AccountLogin.at(PUBLIC), machine) is held  # the real check: `joining` stands it in
+
+
+def test_logout_over_an_unreadable_machine_file_still_signs_out_with_the_cli_key(connected: Path, monkeypatch: pytest.MonkeyPatch,
+                                                                                 capsys: pytest.CaptureFixture[str]) -> None:
+    path = MachineRunner.default_config_path()
+    path.write_text("{}", encoding="utf-8")
+    revoked: list[str] = []
+    monkeypatch.setattr(AccountLogin, "revoke", lambda self, http, key: revoked.append(self.server) or {"machine": True})
+    monkeypatch.setattr(type(MACHINE_SERVICE), "remove", lambda self: None)
+    account_login.logout()
+    assert revoked == [PUBLIC] and not path.exists() and path.with_name(path.name + ".unreadable").exists()
+    assert "Signed out" in capsys.readouterr().out

@@ -80,7 +80,7 @@ class PrivateFiles(BaseModel):
                 stream.write(text.encode("utf-8"))
                 stream.flush()
                 os.fsync(stream.fileno())
-            self._replace(temporary, path)
+            self.replace(temporary, path)
             self._settle(path.parent)
         finally:
             temporary.unlink(missing_ok=True)
@@ -114,7 +114,8 @@ class PrivateFiles(BaseModel):
         """The rename itself survives a power cut."""
         raise NotImplementedError
 
-    def _replace(self, temporary: Path, path: Path) -> None:
+    def replace(self, temporary: Path, path: Path) -> None:
+        """`temporary` renamed over `path` in one step."""
         os.replace(temporary, path)
 
 
@@ -152,7 +153,7 @@ class WindowsPrivateFiles(PrivateFiles):
     #: from other programs' DPAPI data, never from a program of this user that reads this file.
     entropy: ClassVar[bytes] = b"interact.private-files.v1"
 
-    def _replace(self, temporary: Path, path: Path) -> None:
+    def replace(self, temporary: Path, path: Path) -> None:
         """A file another process has open (a supervisor reading the upgrade pointer) refuses the
         rename for that instant: try again for up to 2 s before failing."""
         for attempt in range(40):
