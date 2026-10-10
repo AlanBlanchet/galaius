@@ -18,7 +18,7 @@ import hmac
 import logging
 import time
 
-from galaius_core import MACHINE_AGENT_REQUESTS, MachineAgentModel, MachineAgentRequest, MachineAgentSettings, MachineAgentSettingsUpdate, MachineWorkspaceJob, WebLoad
+from galaius_core import MACHINE_AGENT_REQUESTS, MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentSettings, MachineAgentSettingsUpdate, MachineWorkspaceJob, WebLoad
 from galaius.agents import agent_queue, messaging
 from galaius.agents import registry as reg
 from galaius.agents.host import ConversationRefused
@@ -227,32 +227,80 @@ def test_a_message_is_answered_once_durably_queued_and_its_dispatcher_gets_the_m
             self.pid = os.getpid()
 
     monkeypatch.setattr(agent_queue.subprocess, "Popen", Dispatcher)
-    answer = _answer(agents, _request("send", run_id=run_id, text="- and one more thing"))
-    assert answer.detail.startswith("Queued for r") and started["env"] == agents.environment
+    request = _request("send", run_id=run_id, text="- and one more thing")
+    # The server sends it again when the first answer never came (a frozen PC, a runner restart):
+    # the same request id is the same message, queued once.
+    answer, again = _answer(agents, request), _answer(agents, request)
+    assert answer.detail.startswith("Queued for r") and again.detail == answer.detail and started["env"] == agents.environment
     assert started["argv"][-3:-1] == ["--dispatch", run_id] and started["start_new_session"]
-    assert [item.state for item in agent_queue.items(run_id)] == ["pending"]
-    assert reg.message_for(run_id, agent_queue.items(run_id)[0].message_id).text == "- and one more thing"
+    assert [(item.state, item.message_id) for item in agent_queue.items(run_id)] == [("pending", str(request.id))]
+    assert [event.text for event in reg.read_messages(run_id)] == ["- and one more thing"]
+    # One that was never delivered says so when asked again, never "queued".
+    agent_queue.mark(run_id, agent_queue.items(run_id)[0].id, "failed", error="resume refused: no model")
+    with pytest.raises(RuntimeError, match="resume refused: no model"):
+        _answer(agents, request)
 
 
-def test_an_action_is_accepted_once(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def _signed(config: MachineConfig, request: MachineAgentRequest) -> dict:
+    unsigned = request.model_dump(mode="json", exclude={"signature"})
+    key = hashlib.sha256(config.token.get_secret_value().encode()).digest()
+    return {**unsigned, "signature": hmac.new(key, json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode(), hashlib.sha256).hexdigest()}
+
+
+class _Socket:
+    def __init__(self) -> None:
+        self.sent: list[dict] = []
+
+    async def send(self, text: str) -> None:
+        self.sent.append(json.loads(text)["result"])
+
+
+@pytest.mark.parametrize("cut_off", [False, True])
+def test_a_send_asked_again_while_the_first_is_under_way_is_answered_once(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cut_off: bool) -> None:
+    """The server asks again when the first answer never came: a first still working gives its
+    answer to both; a first cut off with the connection leaves the repeat to deliver it."""
     runner = MachineRunner(config_path=tmp_path / "machine.json")
     config = _config(base)
     runner.save(config)
     monkeypatch.setattr(MachineRunner, "audit", staticmethod(lambda log, entry: None))
-    request = _request("stop", config, run_id=str(uuid4()))
-    unsigned = request.model_dump(mode="json", exclude={"signature"})
-    key = hashlib.sha256(config.token.get_secret_value().encode()).digest()
-    signed = {**unsigned, "signature": hmac.new(key, json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode(), hashlib.sha256).hexdigest()}
+    calls: list[int] = []
 
-    class Socket:
-        sent: list[dict] = []
-        async def send(self, text: str) -> None:
-            self.sent.append(json.loads(text)["result"])
+    async def answer(self, request):
+        calls.append(1)
+        if len(calls) == 1:
+            await asyncio.sleep(0.2 if not cut_off else 60)
+        return MachineAgentAnswer(request_id=request.id, detail=f"delivery {len(calls)}", reads_at="next_step")
 
-    socket = Socket()
+    monkeypatch.setattr(MachineAgents, "answer", answer)
+    signed, socket = _signed(config, _request("send", config, run_id=str(uuid4()), text="hi")), _Socket()
+
+    async def scenario() -> None:
+        first = asyncio.create_task(runner._answer_agent_request(socket, config, signed))
+        await asyncio.sleep(0.05)
+        again = asyncio.create_task(runner._answer_agent_request(socket, config, signed))
+        await asyncio.sleep(0.05)
+        if cut_off:
+            first.cancel()
+        await asyncio.gather(first, again, return_exceptions=True)
+    asyncio.run(scenario())
+    assert [answer["detail"] for answer in socket.sent] == (["delivery 2"] if cut_off else ["delivery 1", "delivery 1"])
+    assert len(calls) == (2 if cut_off else 1)
+
+
+@pytest.mark.parametrize(("op", "again"), [
+    ("stop", "agent request was already used"),
+    ("send", "not started from the web"),  # asked again (`idempotent_feature`): the first answer, never a second delivery
+])
+def test_an_action_is_accepted_once(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, op: str, again: str) -> None:
+    runner = MachineRunner(config_path=tmp_path / "machine.json")
+    config = _config(base)
+    runner.save(config)
+    monkeypatch.setattr(MachineRunner, "audit", staticmethod(lambda log, entry: None))
+    signed = _signed(config, _request(op, config, run_id=str(uuid4()), **({"text": "hi"} if op == "send" else {})))
+    socket = _Socket()
     asyncio.run(runner._answer_agent_request(socket, config, signed))
     asyncio.run(runner._answer_agent_request(socket, config, signed))
-    assert "not started from the web" in socket.sent[0]["error"] and socket.sent[1]["error"] == "agent request was already used"
+    assert "not started from the web" in socket.sent[0]["error"] and again in socket.sent[1]["error"]
     asyncio.run(runner._answer_agent_request(socket, config, {**signed, "signature": "0" * 64}))
     assert socket.sent[2]["error"] == "agent request signature is invalid"
 
@@ -364,6 +412,7 @@ def test_a_message_to_a_session_on_its_turn_waits_for_the_turn_to_end(tmp_path: 
         async def send(self, run_id, text):
             if busy and busy.pop(0):
                 raise ConversationRefused("conflict", "Conversation already has an active turn.")
+            await asyncio.sleep(0.05)
             delivered.append(text)
 
     sessions = MachineSessions(tmp_path)
@@ -371,13 +420,24 @@ def test_a_message_to_a_session_on_its_turn_waits_for_the_turn_to_end(tmp_path: 
         return Host()
     monkeypatch.setattr(MachineSessions, "host", host)
 
+    one, two = uuid4(), uuid4()
+
     async def scenario():
-        first = await sessions.send("r", "one")
-        second = await sessions.send("r", "two")
-        task = sessions._deliveries["r"]
-        await asyncio.wait_for(task, 20)
-        return first, second
-    assert asyncio.run(scenario()) == ("queued", "queued") and delivered == ["one", "two"]
+        first = await sessions.send("r", "one", one)
+        second = await sessions.send("r", "two", two)
+        unread = sessions.read("r")
+        await asyncio.wait_for(sessions._deliveries["r"], 20)
+        return first, second, unread
+    assert asyncio.run(scenario()) == ("queued", "queued", ()) and delivered == ["one", "two"]
+    assert sessions.read("r") == (two, one)  # each read once its turn opened on it, the latest first
+
+    async def cut_off():  # the web asks again after the first send was cut off mid-hand-over: one turn
+        first = asyncio.create_task(sessions.send("s", "three", three))
+        await asyncio.sleep(0)
+        first.cancel()
+        return await sessions.send("s", "three", three)
+    three = uuid4()
+    assert asyncio.run(cut_off()) == "sent" and delivered == ["one", "two", "three"] and asyncio.run(sessions.send("r", "two", two)) == "sent"
 
 
 def test_a_continued_copy_stops_taking_turns_once_the_opt_in_is_off(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -76,21 +76,22 @@ class FollowUps(BaseModel):
     #: Each child's error output, kept (redacted) only when its turn fails; gone with the child.
     _stderr: WeakKeyDictionary[asyncio.subprocess.Process, BinaryIO] = PrivateAttr(default_factory=WeakKeyDictionary)
 
-    async def send(self, run_id: str, text: str, *, environment: Mapping[str, str]) -> Delivery:
+    async def send(self, run_id: str, text: str, *, environment: Mapping[str, str], message_id: str | None = None) -> Delivery:
         """`text` from the person to run `run_id`, queued durably, then started here when the run
         is between turns, else by its dispatcher; the delivery says which queue item carries it.
         The turn's child is claimed (or started) while the message is being queued, and once it is
-        queued the hand-over finishes even when the caller stops waiting for it."""
+        queued the hand-over finishes even when the caller stops waiting for it. A message already
+        queued under `message_id` is left to whoever took it then (`queue_message`)."""
         run = await asyncio.to_thread(reg.get_run, run_id)
         readying = asyncio.create_task(self._child(run, environment)) if run is not None and self._resumable(run) and not run.process_running() else None
         try:
-            delivery = await asyncio.to_thread(queue_message, run_id, text, sender="operator", environment=environment)
+            delivery = await asyncio.to_thread(queue_message, run_id, text, sender="operator", environment=environment, message_id=message_id)
         except BaseException:
             if (child := await self._ready(readying)) is not None:
                 end_waiting(child.process)
             raise
         child = await self._ready(readying)
-        if delivery.state != "queued":
+        if delivery.state != "queued" or delivery.repeated:
             if child is not None:
                 end_waiting(child.process)
             return delivery

@@ -34,10 +34,11 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 from galaius_core import (
-    AGENT_TOUCH_SCOPES, MACHINE_AGENT_MEDIA, MACHINE_AGENT_TAIL, AgentAnswerRequest, AgentMedia, AgentMediaRequest, image_type, AgentContinueRequest, AgentFoldersRequest, AgentInteraction, AgentLogsRequest, AgentOptionsRequest,
+    AGENT_TOUCH_SCOPES, MACHINE_AGENT_MEDIA, MACHINE_AGENT_READ, MACHINE_AGENT_TAIL, AgentAnswerRequest, AgentMedia, AgentMediaRequest, image_type, AgentContinueRequest, AgentFoldersRequest, AgentInteraction, AgentLogsRequest, AgentOptionsRequest,
     AgentProgramInstallRequest, AgentProgramsRequest, AgentProviderState, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
-    MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, PassedOverCandidate, WebLoad, media_key, media_paths, MachineAgentSession, MachineFileEntry, WorkspaceCreateRequest, WorkspacePack, WorkspacePackRequest, WorkspacePrepareRequest, WorkspaceRefresh, WorkspacesRequest,
+    MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, PassedOverCandidate, ReadsAt, WebLoad, media_key, media_paths, MachineAgentSession, MachineFileEntry, WorkspaceCreateRequest, WorkspacePack, WorkspacePackRequest, WorkspacePrepareRequest, WorkspaceRefresh, WorkspacesRequest,
 )
+from galaius.agents import agent_queue
 from galaius.agents import registry as reg
 from galaius.agents.host import ConversationHost, ConversationRefused
 from galaius.agents.followup import FollowUps
@@ -73,6 +74,8 @@ START_SECONDS = 120.0
 COLD_TAIL = 48 * 1024
 #: Lines one `tail` answer carries at most (`MachineAgentAnswer.lines`); the cursor stops after the last.
 TAIL_LINES = 4000
+#: A message id as the web gives it (`AgentSendRequest.id`, a UUID in its usual spelling).
+_WEB_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 #: The CLIs agents run on here, and the ranking the model list follows: every benchmarked model,
 #: most capable first (the order a role's own criterion walks).
 AGENT_PROVIDERS = ("claude", "codex")
@@ -241,23 +244,45 @@ class MachineSessions:
         self.working_directory = working_directory
         self._host: ConversationHost | None = None
         self._lock = asyncio.Lock()
-        #: Messages to a session that was mid-turn, delivered in order once each turn ends.
-        self._queued: dict[str, list[str]] = {}
+        #: Messages to a session that was mid-turn (id, text), delivered in order once each turn ends.
+        self._queued: dict[str, list[tuple[UUID, str]]] = {}
         self._deliveries: dict[str, asyncio.Task] = {}
+        #: The messages each session has read (a turn opened on them), the latest last.
+        self._read: dict[str, deque[UUID]] = {}
+        #: Each message being handed over now, by its id.
+        self._sending: dict[UUID, asyncio.Future[str]] = {}
 
-    async def send(self, run_id: str, text: str) -> str:
+    async def send(self, run_id: str, text: str, message_id: UUID) -> str:
         """"sent", or "queued" when the session is still working on a turn: it gets the message
-        as soon as that turn ends (as in the editor, where you can type while it works)."""
+        as soon as that turn ends (as in the editor, where you can type while it works). The same
+        `message_id` again is told where it is, never sent twice; a caller cut off meanwhile never
+        stops the hand-over halfway."""
+        if (sending := self._sending.get(message_id)) is None:
+            sending = self._sending[message_id] = asyncio.ensure_future(self._send(run_id, text, message_id))
+            sending.add_done_callback(lambda _: self._sent(run_id, message_id, sending))
+        return await asyncio.shield(sending)
+
+    def _sent(self, run_id: str, message_id: UUID, sending: asyncio.Future[str]) -> None:
+        """A hand-over ended: its failure is logged here, even when the caller that asked was cut off."""
+        self._sending.pop(message_id, None)
+        if not sending.cancelled() and (error := sending.exception()) is not None:
+            logger.warning("message to session %s not handed over: %s", run_id, error)
+
+    async def _send(self, run_id: str, text: str, message_id: UUID) -> str:
+        if message_id in self._read.get(run_id, ()):
+            return "sent"
+        if any(queued == message_id for queued, _ in self._queued.get(run_id, ())):
+            return "queued"
         if self._queued.get(run_id):
-            self._queued[run_id].append(text)
+            self._queued[run_id].append((message_id, text))
             return "queued"
         try:
-            await (await self.host()).send(run_id, text)
+            await self._hand(run_id, text, message_id)
             return "sent"
         except ConversationRefused as error:
             if error.code != "conflict":
                 raise
-        self._queued.setdefault(run_id, []).append(text)
+        self._queued.setdefault(run_id, []).append((message_id, text))
         if run_id not in self._deliveries:
             self._deliveries[run_id] = asyncio.get_running_loop().create_task(self._deliver(run_id))
         return "queued"
@@ -268,8 +293,9 @@ class MachineSessions:
         try:
             while self._queued.get(run_id):
                 await asyncio.sleep(every)
+                message_id, text = self._queued[run_id][0]
                 try:
-                    await (await self.host()).send(run_id, self._queued[run_id][0])
+                    await self._hand(run_id, text, message_id)
                 except ConversationRefused as error:
                     if error.code == "conflict":
                         continue  # still on its turn
@@ -281,6 +307,15 @@ class MachineSessions:
             self._deliveries.pop(run_id, None)
             if not self._queued.get(run_id):
                 self._queued.pop(run_id, None)
+
+    async def _hand(self, run_id: str, text: str, message_id: UUID) -> None:
+        """A turn of session `run_id` opened on `text`, and `message_id` recorded as read."""
+        await (await self.host()).send(run_id, text)
+        self._read.setdefault(run_id, deque(maxlen=MACHINE_AGENT_READ)).append(message_id)
+
+    def read(self, run_id: str) -> tuple[UUID, ...]:
+        """The messages session `run_id` has read since this runner started, the latest first."""
+        return tuple(reversed(self._read.get(run_id, ())))
 
     @property
     def busy(self) -> bool:
@@ -601,7 +636,21 @@ class MachineAgents(BaseModel):
         lines = tuple(line.decode("utf-8", "replace") for line in data[:whole].split(b"\n") if line)
         if cursor is None and (placed := next((item for item in self.runs.read() if item.run_id == request.run_id and item.source), None)):
             lines = (*self._editor_history(placed.source), *lines)[-TAIL_LINES:]
-        return MachineAgentAnswer(request_id=request.id, lines=lines, cursor=start + whole, truncated=skipped)
+        return MachineAgentAnswer(request_id=request.id, lines=lines, cursor=start + whole, truncated=skipped, read_messages=self._read_messages(request.run_id))
+
+    def _read_messages(self, run_id: UUID) -> tuple[UUID, ...]:
+        """The messages from the web (`AgentSendRequest.id`) run `run_id` has read, the latest first:
+        a session's since this runner started; a continued copy's, each opening its own turn; an
+        agent's, handed to its turn (`agent_queue.READ`)."""
+        match self._kind(run_id):
+            case "session":
+                return self.sessions.read(str(run_id)) if self.sessions is not None else ()
+            case "continued":
+                ids = [event.event_id for event in reversed(reg.read_messages(str(run_id))) if event.from_run == "operator"]
+            case _:
+                ids = agent_queue.read_ids(str(run_id))
+        # Only ids the web gave (a request id, as it writes it): a message sent from this computer has its own.
+        return tuple(UUID(value) for value in ids if _WEB_ID.fullmatch(value))[:MACHINE_AGENT_READ]
 
     def _media(self, request: AgentMediaRequest) -> MachineAgentAnswer:
         """One image a step of this web run names (`media_key` of the path it wrote): only a path
@@ -806,18 +855,19 @@ class MachineAgents(BaseModel):
         run = await asyncio.to_thread(self._require_run, request.run_id)
         if self._kind(request.run_id) == "continued":
             return await asyncio.to_thread(self._continue_turn, run, request.text, request_id=request.id)
-        # Answered once the message is durably queued: this runner starts the turn when the run is
+        # Answered once the message is durably queued, under the request's id (the same request
+        # again finds it there and queues nothing): this runner starts the turn when the run is
         # between turns (`FollowUps`), else its dispatcher resumes the agent; a resume refused after
         # this point is that run's failure, in its events.
         environment = await asyncio.to_thread(self.launcher_environment_in, Path(run.cwd))
         if self.followups is not None:
             followups = self.followups
-            delivery = await AgentSpawns.run(lambda: followups.send(str(request.run_id), request.text, environment=environment))
+            delivery = await AgentSpawns.run(lambda: followups.send(str(request.run_id), request.text, environment=environment, message_id=str(request.id)))
         else:
-            delivery = await asyncio.to_thread(deliver_message, str(request.run_id), request.text, sender="operator", environment=environment)
+            delivery = await asyncio.to_thread(deliver_message, str(request.run_id), request.text, sender="operator", environment=environment, message_id=str(request.id))
         if delivery.state == "error":
             raise RuntimeError(delivery.text.removeprefix("ERROR: ") or "not delivered")
-        return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=delivery.text)
+        return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=delivery.text, reads_at=delivery.reads_at)
 
     async def resume_limited(self) -> list[str]:
         """The runs a provider usage limit paused, on this PC: each says when it resumes
@@ -987,10 +1037,13 @@ class MachineAgents(BaseModel):
         assert self.sessions is not None
         run = await asyncio.to_thread(self._require_run, request.run_id)
         host = await self.sessions.host()
+        reads_at: ReadsAt | None = None
         try:
             match request:
                 case AgentSendRequest():
-                    detail = await self.sessions.send(run.run_id, request.text)
+                    detail = await self.sessions.send(run.run_id, request.text, request.id)
+                    # A session reads nothing mid-turn: a message to one on its turn waits for that turn's end.
+                    reads_at = "now" if detail == "sent" else "turn_end"
                 case AgentStopRequest():
                     await host.cancel(run.run_id)
                     detail = "stopped"
@@ -1010,7 +1063,7 @@ class MachineAgents(BaseModel):
                     detail = str(request.values.get("decision") or "answered")
         except ConversationRefused as error:
             raise RuntimeError(str(error)) from error
-        return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=detail)
+        return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=detail, reads_at=reads_at)
 
     # ---- the owner's own editor conversations ------------------------------------------------
 
@@ -1172,16 +1225,18 @@ class MachineAgents(BaseModel):
         stops the copies too), and one turn at a time (checked and started under the run's lock)."""
         self._require_continue()
         with _TURN_LOCKS.setdefault(run.run_id, threading.Lock()):
+            if reg.message_for(run.run_id, str(request_id)) is not None:  # the same request again: its turn opened already
+                return MachineAgentAnswer(request_id=request_id, run_id=UUID(run.run_id), detail="sent", reads_at="now")
             current = reg.get_run(run.run_id) or run
             if fork_from is None and reg.trees(frozenset({run.run_id}))[0].status in {"running", "waiting"}:
                 raise PermissionError("it is still answering; send this once it has finished")
-            reg.record_message(from_run="operator", to_run=run.run_id, text=text)
+            reg.record_message_event(from_run="operator", to_run=run.run_id, text=text, event_id=str(request_id))
             try:
                 launch_editor_turn(PROVIDERS["claude"], current, text, environment=self.environment_in(Path(current.cwd)), fork_from=fork_from)
             except BaseException:
                 reg.finish(run.run_id, exit_code=1)  # never left "running" by a turn that did not start
                 raise
-        return MachineAgentAnswer(request_id=request_id, run_id=UUID(run.run_id), detail="sent")
+        return MachineAgentAnswer(request_id=request_id, run_id=UUID(run.run_id), detail="sent", reads_at="now")
 
     # ---- logs ------------------------------------------------------------------------------------
 

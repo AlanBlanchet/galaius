@@ -26,6 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from galaius.agents import registry as reg
 from galaius.agents.providers import _safe_process_detail
+from galaius.inbox_hook import HEADING, OPERATOR
 from galaius.processes import process_started
 from galaius.upgrade.store import Runtime, RuntimeStore, active_interpreter
 
@@ -58,6 +59,15 @@ class QueueItem(BaseModel):
     raw_index: int | None = None
     attempt_token: str | None = Field(default=None, min_length=1, max_length=80)
     error: str = ""
+
+    @property
+    def writer(self) -> str:
+        """Who sent it, to the run it was sent to: the person, another run, or the launcher itself
+        (`registry.LIMIT_RESUME_SENDER`)."""
+        if self.sender == "operator":
+            return OPERATOR
+        origin = reg.get_run(self.sender)
+        return f"another agent, {origin.name} (run {self.sender[:8]})" if origin is not None else f"Galaius on this computer ({self.sender})"
 
 
 def path(run_id: str):
@@ -299,11 +309,12 @@ def inbox_hook(run_id: str) -> str:
 
 
 def inject(run_id: str) -> list[str]:
-    """Every message still pending for `run_id`, handed to the turn running now: each claimed as an
-    attempt of that turn, anchored here, so the turn's own reply settles it (`dispatch` classifies
-    it once the turn ends, as it does an attempt whose dispatcher died). What it says is never sent
-    a second time; a message whose transcript entry is missing fails as `dispatch` fails it."""
-    texts = []
+    """Every message still pending for `run_id`, handed to the turn running now, each opening with
+    who wrote it (`galaius.inbox_hook.HEADING`): each claimed as an attempt of that turn, anchored here, so
+    the turn's own reply settles it (`dispatch` classifies it once the turn ends, as it does an
+    attempt whose dispatcher died). What it says is never sent a second time; a message whose
+    transcript entry is missing fails as `dispatch` fails it."""
+    said = []
     with reg.record_lock(run_id):
         run = reg.get_run(run_id)
         if run is None or not _active(run):
@@ -317,8 +328,18 @@ def inject(run_id: str) -> list[str]:
                 _replace_item_locked(run_id, item.id, state="failed", finished_at=time.time(), error="message transcript entry is missing")
                 continue
             _replace_item_locked(run_id, item.id, state="running", started_at=time.time(), raw_index=anchor, attempt_token=uuid.uuid4().hex, error="")
-            texts.append(message.text)
-    return texts
+            said.append((item, message.text))
+    return [f"{HEADING.format(who=item.writer)}\n\n{text}" for item, text in said]
+
+
+#: What a turn has read of the messages sent to it: handed to that turn, or a turn opened on it.
+READ: frozenset[QueueState] = frozenset({"running", "replied", "uncertain"})
+
+
+def read_ids(run_id: str) -> list[str]:
+    """The message ids (`QueueItem.message_id`) its agent has read (`READ`), the latest read first."""
+    read = [item for item in items(run_id) if item.state in READ]
+    return [item.message_id for item in sorted(read, key=lambda item: item.started_at or item.enqueued_at, reverse=True)]
 
 
 def _active(run: reg.AgentRun) -> bool:
@@ -546,10 +567,8 @@ def main() -> None:
         dispatch(sys.argv[2], sys.argv[3] if len(sys.argv) == 4 else None)
         return
     if len(sys.argv) == 3 and sys.argv[1] == "--inject":
-        if texts := inject(sys.argv[2]):
-            said = "\n\n---\n\n".join(texts)
-            print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": (
-                f"New message, sent to you while you were working (answer it in this turn):\n\n{said}")}}))
+        if said := inject(sys.argv[2]):
+            print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": "\n\n---\n\n".join(said)}}))
         return
     raise SystemExit("usage: python -m galaius.agents.agent_queue --dispatch RUN_ID | --inject RUN_ID")
 

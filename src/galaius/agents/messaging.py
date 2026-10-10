@@ -11,6 +11,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from galaius_core import ReadsAt
+
 from galaius.agents import agent_queue
 from galaius.agents import registry as reg
 from galaius.agents.policy import PolicyError
@@ -36,12 +38,35 @@ class Delivery(BaseModel):
     text: str
     run_id: str
     queue_id: str | None = None
+    #: `queued`: when the run's agent reads it (`galaius_core.ReadsAt`); None when not queued.
+    reads_at: ReadsAt | None = None
+    #: `queued`: the message was queued by an earlier call under the same message id, not by this one.
+    repeated: bool = False
 
     @classmethod
-    def queued(cls, text: str, run_id: str, *, queue_id: str) -> "Delivery":
-        return cls(
-            state="queued", text=text, run_id=run_id, queue_id=queue_id,
-        )
+    def queued(cls, run: reg.AgentRun, item: agent_queue.QueueItem, *, repeated: bool = False) -> "Delivery":
+        """`item`, queued for `run` (its lock held), and when its agent reads it: `now` a turn starts on
+        it (or, `repeated`, it has read it already), `next_step` the turn running (or the one starting
+        on a message ahead of it) reads it after its current tool call, `turn_end` once that turn ends:
+        its CLI reads nothing mid-turn, or the run is fenced (the hook cannot claim the message from
+        inside the fence)."""
+        waiting = [other.id for other in agent_queue.items_locked(run.run_id) if other.state in {"pending", "running"}]
+        working = item.state == "pending" and ((item.id in waiting and waiting.index(item.id) > 0) or (run.status in ("running", "waiting") and run.process_running()))
+        reads_at: ReadsAt = "now" if not working else "next_step" if run.fence is None and provider_for(run.provider).reads_mid_turn else "turn_end"
+        return cls(state="queued", text=f"Queued for {run.name} ({run.run_id[:8]}), delivery {item.id[:8]}.", run_id=run.run_id,
+                   queue_id=item.id, reads_at=reads_at, repeated=repeated)
+
+    @classmethod
+    def repeat(cls, run_id: str, message_id: str) -> "Delivery | None":
+        """The message already queued for `run_id` under `message_id` (its lock held), told as when it
+        was queued, or why it was not delivered; None when there is none."""
+        run = reg.get_run(run_id)
+        item = next((item for item in agent_queue.items_locked(run_id) if item.message_id == message_id), None) if run is not None else None
+        if run is None or item is None:
+            return None
+        if item.state in {"failed", "cancelled"}:
+            return cls(state="error", text=f"ERROR: {item.error or f'the message was {item.state}'}", run_id=run_id, queue_id=item.id, repeated=True)
+        return cls.queued(run, item, repeated=True)
 
 
 def check_deliverable(run_id: str, *, sender: str | None = None):
@@ -116,13 +141,13 @@ def _session_id(run) -> str | None:
     return run.provider_session_id or (run.run_id if run.provider == "claude" else None)
 
 def deliver_message(
-    run_id: str, message: str, *, sender: str | None = None, environment: Mapping[str, str] | None = None,
+    run_id: str, message: str, *, sender: str | None = None, environment: Mapping[str, str] | None = None, message_id: str | None = None,
 ) -> Delivery:
     """Record and enqueue one message (`queue_message`); a detached per-run dispatcher performs the resume.
 
     `environment` is the one the dispatcher and its resumed turn run in, and names the sender
     when `sender` does not (`GALAIUS_RUN_ID`); this process's own when None."""
-    delivery = queue_message(run_id, message, sender=sender, environment=environment)
+    delivery = queue_message(run_id, message, sender=sender, environment=environment, message_id=message_id)
     if delivery.state != "queued":
         return delivery
     refused = start_dispatcher(delivery.run_id, os.environ if environment is None else environment)
@@ -143,12 +168,18 @@ def start_dispatcher(run_id: str, environment: Mapping[str, str]) -> str | None:
 
 
 def queue_message(
-    run_id: str, message: str, *, sender: str | None = None, environment: Mapping[str, str] | None = None,
+    run_id: str, message: str, *, sender: str | None = None, environment: Mapping[str, str] | None = None, message_id: str | None = None,
 ) -> Delivery:
     """Record one message and enqueue its delivery (`queued`, with its queue id), or say why not;
     whoever called delivers it: the run's dispatcher (`deliver_message`), or a long-lived launcher
-    holding the run's next child (`galaius.agents.followup`). `environment` as `deliver_message`'s."""
+    holding the run's next child (`galaius.agents.followup`). `environment` as `deliver_message`'s.
+    `message_id`: the id its sender gave it (a request id from the web), kept by its queue item and
+    its transcript entry; a message already queued under it is never queued again (`repeated`)."""
     environment = dict(os.environ if environment is None else environment)
+    if message_id is not None:
+        with reg.record_lock(recipient := reg.resolve_run_id(run_id) or run_id):
+            if (repeat := Delivery.repeat(recipient, message_id)) is not None:
+                return repeat
     if error := _validate_message(message):
         return Delivery(state="error", text=error, run_id=run_id)
     speaker = sender or sender_id(environment)
@@ -172,7 +203,9 @@ def queue_message(
                 state="error", text="ERROR: provider session identity is unavailable; not queued.",
                 run_id=run.run_id,
             )
-        message_id = secrets.token_hex(16)
+        if message_id is not None and (repeat := Delivery.repeat(run.run_id, message_id)) is not None:
+            return repeat  # queued meanwhile, by another process
+        message_id = message_id or secrets.token_hex(16)
         origin = reg.get_run(speaker)
         if origin is not None:
             message = origin.handoff_header() + message
@@ -208,10 +241,7 @@ def queue_message(
                     "pending_criterion": criterion,
                     "pending_reasoning": reasoning,
                 })
-        return Delivery.queued(
-            f"Queued for {run.name} ({run.run_id[:8]}), delivery {item.id[:8]}.",
-            run.run_id, queue_id=item.id,
-        )
+        return Delivery.queued(run, item)
 
 
 def wait_for_start(delivery: Delivery, *, timeout: float = 10.0, interval: float = 0.2, grace: float = 1.5) -> str | None:

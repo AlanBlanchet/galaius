@@ -21,7 +21,7 @@ import sys
 import tempfile
 import traceback
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import ClassVar, Literal, Self
 from urllib.parse import urlencode, urlsplit, urlunsplit
@@ -31,7 +31,7 @@ import httpx
 import websockets
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, ValidationError, field_validator, model_validator
 
-from galaius_core import MACHINE_AGENT_REQUESTS, MACHINE_MODELS, MachineProblem, MachineProblemCode, MachineAgentSettings, MachineAgentSettingsState, MachineAgentSettingsUpdate, PlacePath, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, MachineAgentAnswer, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachineRuntime, MachineTokenSwap, PlaceLevel, ScriptFile, ScriptLanguage, UserModelOrigin
+from galaius_core import MACHINE_AGENT_REQUESTS, AgentSendRequest, MACHINE_MODELS, MachineProblem, MachineProblemCode, MachineAgentSettings, MachineAgentSettingsState, MachineAgentSettingsUpdate, PlacePath, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, MachineAgentAnswer, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachineRuntime, MachineTokenSwap, PlaceLevel, ScriptFile, ScriptLanguage, UserModelOrigin
 from galaius import USER_AGENT
 from galaius import prompt_mirror
 from galaius.agents.catalog import AgentCatalog
@@ -846,6 +846,9 @@ class MachineRunner:
         self._queries: set[asyncio.Task] = set()
         #: Agent actions already accepted (id -> expiry): each is taken once (`_answer_agent_request`).
         self._agent_requests: dict[UUID, datetime] = {}
+        #: The answer of each accepted action the server may ask again (`idempotent_feature`), by its id,
+        #: for its `idempotent_seconds`; past a restart a message's queue item or transcript entry tells instead.
+        self._agent_answers: dict[UUID, asyncio.Future[MachineAgentAnswer]] = {}
         #: The sessions this runner hosts for the web (opened on first use) and its recent log lines.
         self._sessions: MachineSessions | None = None
         #: Commands being executed now (0 or 1: one worker runs them in order).
@@ -1174,8 +1177,9 @@ class MachineRunner:
     #: folder, names a folder's repository, and says why a project folder failed as a code.
     #: `places_direct`: a level from the web applies at once; folder names in the home folder are
     #: listed without the PC's own browse switch (`galaius_core.PlaceLevel`).
+    #: `AgentSendRequest.idempotent_feature`: a message asked again under the same id is never queued twice.
     FEATURES: ClassVar[tuple[str, ...]] = ("file_query", "script_file", "file_read", "agent_control", "agent_settings", "web_settings", "workspaces", "start_permission", "project_secrets", "places", "agent_media", "tool_gateway", "token_swap",
-                                           "workspace_copy", "places_direct", "agent_programs")
+                                           "workspace_copy", "places_direct", "agent_programs", str(AgentSendRequest.idempotent_feature))
 
     @classmethod
     def features(cls) -> list[str]:
@@ -1295,6 +1299,7 @@ class MachineRunner:
         except ValidationError:
             logger.warning("malformed agent request dropped")
             return
+        answered: asyncio.Future[MachineAgentAnswer] | None = None
         try:
             if request.machine.id != config.machine_id or request.workspace_id != config.workspace_id:
                 raise PermissionError("agent request targets another machine")
@@ -1302,9 +1307,27 @@ class MachineRunner:
             if request.action:
                 now = datetime.now(UTC)
                 self._agent_requests = {key: until for key, until in self._agent_requests.items() if until > now}
+                self._agent_answers = {key: answer for key, answer in self._agent_answers.items() if key in self._agent_requests}
+                if (first := self._agent_answers.get(request.id)) is not None:
+                    # Asked again (its answer never reached the server): the first one's answer, once it is known.
+                    try:
+                        answer = await asyncio.wait_for(asyncio.shield(first), request.seconds)
+                    except TimeoutError:
+                        raise RuntimeError("its first delivery is still under way on this computer") from None
+                    except asyncio.CancelledError:
+                        if not first.cancelled() or ((task := asyncio.current_task()) is not None and task.cancelling()):
+                            raise
+                    else:
+                        await socket.send(json.dumps({"type": "agent_answer", "result": answer.model_dump(mode="json")}))
+                        return
+                    # The first stopped unanswered (`_release`): this one delivers it; whatever it had queued is found, never queued again.
                 if request.id in self._agent_requests:
                     raise PermissionError("agent request was already used")
-                self._agent_requests[request.id] = request.expires_at
+                self._agent_requests[request.id] = request.expires_at if request.idempotent_feature is None else max(request.expires_at, now + timedelta(seconds=request.idempotent_seconds))
+                if request.idempotent_feature is not None:
+                    answered = self._agent_answers[request.id] = asyncio.get_running_loop().create_future()
+                    if (task := asyncio.current_task()) is not None:
+                        task.add_done_callback(lambda _, key=request.id, answer=answered: self._release(key, answer))
             current = self._current_config(config)
             if request.feature == "places":
                 answer = await asyncio.to_thread(PlaceDesk(self).answer, request)
@@ -1330,7 +1353,18 @@ class MachineRunner:
             # The whole brief / message stays HERE, in the owner's local log; the server keeps a digest.
             asked = request.model_dump(mode="json", exclude={"type", "id", "machine", "workspace_id", "expires_at", "signature"})
             self.audit("agents.log", {**asked, **({"started_run_id": str(answer.run_id)} if answer.run_id and "run_id" not in asked else {}), "error": answer.error})
+        if answered is not None:
+            answered.set_result(answer)
         await socket.send(json.dumps({"type": "agent_answer", "result": answer.model_dump(mode="json")}))
+
+    def _release(self, request_id: UUID, answer: asyncio.Future[MachineAgentAnswer]) -> None:
+        """A first answer that never came (its task cancelled with the connection): its id is free
+        again, and a repeat waiting on it delivers the request itself."""
+        if not answer.done():
+            answer.cancel()
+            if self._agent_answers.get(request_id) is answer:
+                del self._agent_answers[request_id]
+                self._agent_requests.pop(request_id, None)
 
     @property
     def web_runs(self) -> WebRuns:

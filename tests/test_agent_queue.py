@@ -6,11 +6,16 @@ import os
 import subprocess
 import sys
 
+import uuid
+
 import pytest
 
+from galaius import inbox_hook
 from galaius.agents import agent_queue, messaging
 from galaius.agents import registry as reg
 from galaius.agents.policy import Policy
+from galaius.agents.providers import ClaudeCodeProvider
+from galaius.fence import FenceSpec
 from tests.support.agents import ScriptedProvider, install_provider, use_policy
 
 
@@ -54,6 +59,23 @@ def _setup(monkeypatch, provider=None):
         agent="tester", provider_session_id="vendor",
     )
     return provider
+
+
+@pytest.mark.parametrize(("working", "ahead", "mid_turn", "fenced", "reads_at"), [
+    (False, False, True, False, "now"),         # between turns: a turn starts on it
+    (False, True, True, False, "next_step"),    # a turn starts on the message ahead, which reads it after a tool call
+    (True, False, True, False, "next_step"),    # the turn running reads it after its current tool call
+    (True, False, True, True, "turn_end"),      # fenced: the hook cannot claim it from inside the fence
+    (True, False, False, False, "turn_end"),    # a CLI that reads nothing mid-turn
+])
+def test_a_queued_message_says_when_its_agent_reads_it(monkeypatch, tmp_path, working, ahead, mid_turn, fenced, reads_at):
+    provider = _setup(monkeypatch)
+    provider.reads_mid_turn = mid_turn
+    fence = FenceSpec(working_directory=tmp_path, levels={"work": "write"}, start=tmp_path / "work", state=tmp_path / "state") if fenced else None
+    reg.save_run(reg.get_run("r1").model_copy(update={"pid": os.getpid() if working else 999999, "fence": fence}))
+    if ahead:
+        messaging.queue_message("r1", "first", sender="operator")
+    assert messaging.queue_message("r1", "second", sender="operator").reads_at == reads_at
 
 
 def test_ordered_items_run_once_in_real_subprocesses(monkeypatch):
@@ -381,15 +403,19 @@ def test_a_message_to_a_working_run_is_read_after_its_next_own_tool_call_and_set
     hook = agent_queue.inbox_hook("r2")
     idle = subprocess.run(hook, shell=True, input="{}", capture_output=True, text=True, check=True)
     assert idle.stdout == "" and not agent_queue.path("r2").exists()  # no queue yet: the shell answers alone
-    messaging.deliver_message("r2", "also check the footer", sender="operator")
+    sent = str(uuid.uuid4())
+    messaging.deliver_message("r2", "also check the footer", sender="operator", message_id=sent)
 
     def tool_call(**event):
         return subprocess.run(hook, shell=True, input=json.dumps({"hook_event_name": "PostToolUse", **event}), capture_output=True, text=True, check=True, cwd=tmp_path).stdout
 
     assert tool_call(agent_id="sub-agent") == "" and [item.state for item in agent_queue.items("r2")] == ["pending"]
     said = json.loads(tool_call())["hookSpecificOutput"]
-    assert said["hookEventName"] == "PostToolUse" and said["additionalContext"].endswith("also check the footer")
-    assert tool_call() == "" and [item.state for item in agent_queue.items("r2")] == ["running"]
+    # Opened by who wrote it, in the exact line the agent was told at launch is the person's own.
+    heading = inbox_hook.HEADING.format(who=inbox_hook.OPERATOR)
+    assert said["hookEventName"] == "PostToolUse" and said["additionalContext"] == f"{heading}\n\nalso check the footer"
+    assert f"\n{heading}\n" in ClaudeCodeProvider.inbox_arguments(hook)[-1] == inbox_hook.NOTE
+    assert tool_call() == "" and [item.state for item in agent_queue.items("r2")] == ["running"] and agent_queue.read_ids("r2") == [sent]
 
     with reg.open_raw_events("r2", append=True) as stream:
         stream.write(json.dumps({"type": "assistant", "session_id": "vendor", "message": {"content": [{"type": "text", "text": "footer checked"}]}}).encode() + b"\n")

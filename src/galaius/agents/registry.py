@@ -937,7 +937,7 @@ def fail_turn_locked(
     while the caller owns ``record_lock(run_id)``.
 
     An `error` event carrying `reason` lands in the run's messages file — the one side channel the
-    raw-stream re-parse keeps (`_read_messages`) — anchored at the end of the stream, and the
+    raw-stream re-parse keeps (`read_messages`) — anchored at the end of the stream, and the
     record reads failed (status, exit code, end time, `last`), so every reader (the panel, a PC's
     run list for the web) sees the failure instead of the ended run the message found. A refused
     resume used to fail only its queue item: the run stayed "done" and the web showed the message
@@ -1406,7 +1406,7 @@ def raw_line_count(run_id: str) -> int:
 
 def message_for(run_id: str, message_id: str) -> AgentEvent | None:
     """Find one recipient-side message without copying its text into queue metadata."""
-    return next((event for event in _read_messages(run_id) if event.event_id == message_id), None)
+    return next((event for event in read_messages(run_id) if event.event_id == message_id), None)
 
 
 def _interleave(parsed: list[AgentEvent], messages: list[AgentEvent],
@@ -1472,7 +1472,8 @@ def _stream_source(run_id: str) -> str:
     return f"{_reader_code()}|{raw}|{messages}|{appended}"
 
 
-def _read_messages(run_id: str) -> list[AgentEvent]:
+def read_messages(run_id: str) -> list[AgentEvent]:
+    """The messages recorded on `run_id`'s side (sent to it, or by it), oldest first."""
     try:
         payload = _read_private(messages_path(run_id))
         lines = [] if payload is None else stream_lines(payload.decode())
@@ -1550,7 +1551,7 @@ def read_events(run_id: str) -> list[AgentEvent]:
                 current = _update_fields(run_id, updates)
                 if current is not None:
                     stored = current
-        merged = _interleave(parsed, _read_messages(run_id), len(raw_lines))
+        merged = _interleave(parsed, read_messages(run_id), len(raw_lines))
         # The mirror is what the VS Code panel reads, so it must carry the WHOLE conversation.
         # Written without messages, the chat showed the agent talking to nobody.
         _mirror_normalised(run_id, merged)
@@ -1567,7 +1568,7 @@ def read_events(run_id: str) -> list[AgentEvent]:
                 continue
     except OSError:
         pass
-    return out + _read_messages(run_id)
+    return out + read_messages(run_id)
 
 
 def _carry_observed_at(path: Path, events: list[AgentEvent]) -> None:
@@ -1691,7 +1692,7 @@ class StreamMirror:
                 updates["provider_turn_id"] = turn_id
             if updates:
                 _update_fields(self.run_id, updates)
-        merged = _interleave(parsed, _read_messages(self.run_id), self.lines + len(stream_lines(tail)))
+        merged = _interleave(parsed, read_messages(self.run_id), self.lines + len(stream_lines(tail)))
         kept = self.written
         if len(merged) >= len(kept) and all(new is old or new.model_copy(update={"at": old.at}) == old for new, old in zip(merged, kept)) \
                 and self._append(merged[len(kept):]):

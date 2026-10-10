@@ -36,6 +36,7 @@ from galaius.agents.catalog import AgentCatalog
 from galaius.agents.events import TOKEN_FIELDS, AgentEvent, TokenUsage, UsageLedger, stream_lines
 from galaius.agents.profiles import overlay_for
 from galaius.agents.vocabulary import ApprovalIntent, TouchScope, ThinkingLevel, vocabulary_for
+from galaius.inbox_hook import NOTE as INBOX_NOTE
 from galaius.models import Model
 from galaius.processes import run_isolated_process
 
@@ -1045,11 +1046,13 @@ class ClaudeCodeProvider(AgentProvider):
     @staticmethod
     def inbox_arguments(hook: str | None) -> list[str]:
         """`hook` run after each of the turn's own tool calls (`PostToolUse`; what it prints as
-        `additionalContext` the model reads before its next step). Settings given on the command
+        `additionalContext` the model reads before its next step), and the note telling the agent
+        which of that context is the person's (`galaius.inbox_hook.NOTE`). Settings given on the command
         line load whatever `--setting-sources` says, so a cloned workspace keeps it too."""
         if hook is None:
             return []
-        return ["--settings", json.dumps({"hooks": {"PostToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": hook}]}]}})]
+        return ["--settings", json.dumps({"hooks": {"PostToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": hook}]}]}}),
+                "--append-system-prompt", INBOX_NOTE]
 
     #: Claude's two usage dialects: ``message.usage`` / ``result.usage`` (snake) and
     #: ``result.modelUsage[model]`` (camel). Each reports the UNCACHED prompt remainder, cache
