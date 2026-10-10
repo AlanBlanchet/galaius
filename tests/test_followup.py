@@ -123,17 +123,21 @@ async def test_a_message_sent_while_the_run_works_is_read_when_its_turn_ends_eve
     scrubbed = {key: value for key, value in os.environ.items() if key != "GALAIUS_AGENTS_DIR"}
     provider.reads_mid_turn = True  # as Claude: its inbox hook would hand it over after a tool call
     followups = FollowUps(warm=WarmStart(capacity=0))
-    working = await asyncio.create_subprocess_exec(sys.executable, "-c", "import time; time.sleep(0.5)")
+    # The turn works until the test ends it: a timed sleep ended before the send on a loaded runner.
+    working = await asyncio.create_subprocess_exec(sys.executable, "-c", "import sys; sys.stdin.read()", stdin=asyncio.subprocess.PIPE)
     reg.save_run(reg.get_run("r1").model_copy(update={"pid": working.pid, "pid_started": None, "status": "running"}))
     followups.follow("r1", working, environment=scrubbed)
+    try:
+        delivery = await followups.send("r1", "also create f7.txt", environment=scrubbed, message_id="5b0e3c1a-8f2d-4c4e-9a51-0d6f2a7b9c10")
 
-    delivery = await followups.send("r1", "also create f7.txt", environment=scrubbed, message_id="5b0e3c1a-8f2d-4c4e-9a51-0d6f2a7b9c10")
-
-    assert delivery.reads_at == "next_step" and provider.dispatchers == ["r1"]
-    await _until(lambda: agent_queue.items("r1")[-1].state == "replied", "the message was never read")
-    assert _replies() == ["got also create f7.txt"] and agent_queue.read_ids("r1") == ["5b0e3c1a-8f2d-4c4e-9a51-0d6f2a7b9c10"]
-    assert spawned and set(spawned) == {str(reg.agents_dir())}
-    followups.close()
+        assert delivery.reads_at == "next_step" and provider.dispatchers == ["r1"]
+        working.stdin.close()
+        await _until(lambda: agent_queue.items("r1")[-1].state == "replied", "the message was never read")
+        assert _replies() == ["got also create f7.txt"] and agent_queue.read_ids("r1") == ["5b0e3c1a-8f2d-4c4e-9a51-0d6f2a7b9c10"]
+        assert spawned and set(spawned) == {str(reg.agents_dir())}
+    finally:
+        working.stdin.close()
+        followups.close()
 
 
 @pytest.mark.parametrize("left", ["pending", "running", "replied"])
