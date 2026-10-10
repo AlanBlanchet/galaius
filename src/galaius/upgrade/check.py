@@ -51,13 +51,13 @@ class UpgradeCheck(BaseModel):
         """The Galaius server this computer signed in to: the one `galaius login` remembers,
         else the one its machine connection is enrolled with (a computer set up before logins
         were remembered)."""
-        runner = MachineRunner()
+        path = MachineRunner.default_config_path()
         try:
-            return (runner.config_path.parent / "login-server").read_text(encoding="utf-8").strip() or None
+            return (path.parent / "login-server").read_text(encoding="utf-8").strip() or None
         except FileNotFoundError:
             pass
         try:
-            return runner.load().server_url
+            return MachineRunner.read(path).server_url
         except (OSError, ValueError, KeyError):
             return None
 

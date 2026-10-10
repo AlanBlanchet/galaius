@@ -466,7 +466,7 @@ def _existing_machine() -> MachineConfig | None:
     a file not private to this user is refused as it was (its token may have been read)."""
     path = MachineRunner.default_config_path()
     try:
-        return MachineRunner().load()
+        return MachineRunner.read(path)
     except FileNotFoundError:
         return None
     except PermissionError:

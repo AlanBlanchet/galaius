@@ -923,7 +923,12 @@ class MachineRunner:
         PRIVATE_FILES.write_text(self.config_path, json.dumps(values, separators=(",", ":")) + "\n")
 
     def load(self) -> MachineConfig:
-        values = json.loads(PRIVATE_FILES.read_text(self.config_path))
+        return self.read(self.config_path)
+
+    @staticmethod
+    def read(path: Path) -> MachineConfig:
+        """The machine file at `path`, with no runner built around it."""
+        values = json.loads(PRIVATE_FILES.read_text(path))
         values["token"] = PRIVATE_FILES.unseal(values["token"])
         # Machine files written before levels: each file root was read + write apart from every
         # other root, i.e. a sandbox (kept as it was; the next save drops `file_roots`).

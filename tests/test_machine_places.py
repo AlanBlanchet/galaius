@@ -30,6 +30,8 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (home / "notes" / "todo.txt").write_text("buy milk")
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
+    for key, folder in (("XDG_DATA_HOME", ".local/share"), ("XDG_CONFIG_HOME", ".config")):
+        monkeypatch.setenv(key, str(home / folder))  # the runner's own folders sit in the home folder, as on a real PC
     return home
 
 
@@ -84,9 +86,9 @@ def test_a_signed_web_widening_applies_at_once_never_on_a_link_or_a_credential_s
 def test_the_home_folder_itself_never_opens_from_the_web(runner: MachineRunner, home: Path, logged: list[dict]) -> None:
     """A working directory above the home folder: the home folder and its siblings stay closed to the web."""
     runner.update(lambda config: config.model_copy(update={"working_directory": home.parent}))
-    for path in (home.name, "elsewhere"):
-        (home.parent / path).mkdir(exist_ok=True)
-        assert "only on this PC" in _ask(runner, "place_level", path=path, level="read")["error"]
+    (home.parent / "elsewhere").mkdir(exist_ok=True)
+    assert "own folders" in _ask(runner, "place_level", path=home.name, level="read")["error"]
+    assert "only on this PC" in _ask(runner, "place_level", path="elsewhere", level="read")["error"]
     assert _ask(runner, "place_level", path=f"{home.name}/notes", level="read")["error"] is None
 
 

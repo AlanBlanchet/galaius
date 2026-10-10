@@ -57,7 +57,7 @@ def test_a_job_that_breaks_ends_failed_and_a_late_code_never_reopens_it(tmp_path
     monkeypatch.setattr(AgentPrograms, "_status", lambda self, provider: (False, ""))
     monkeypatch.setattr(AgentPrograms, "installable", staticmethod(lambda: (PROVIDERS["claude"],)))
     monkeypatch.setattr(AgentPrograms, "version", lambda self, provider: (_ for _ in ()).throw(Broken("no version")))
-    monkeypatch.setattr(PROVIDERS["claude"], "available", lambda: False)
+    monkeypatch.setattr(type(PROVIDERS["claude"]), "available", lambda self: False)
     started = threading.Event()
 
     def install(self, provider):

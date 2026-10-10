@@ -121,8 +121,8 @@ class CatalogConnection(BaseModel):
         # Circular layers: machines imports agents.run -> registry -> this module.
         from galaius.machines import MachineRunner
 
-        runner = MachineRunner()
-        return runner.load() if runner.config_path.exists() else None
+        path = MachineRunner.default_config_path()
+        return MachineRunner.read(path) if path.exists() else None
 
     @classmethod
     def linked(cls) -> Self | None:

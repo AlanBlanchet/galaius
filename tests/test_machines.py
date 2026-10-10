@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -432,14 +433,15 @@ def test_a_problem_met_again_is_one_question_and_a_full_window_waits_its_retry_a
 
 
 @pytest.mark.parametrize(("retry_after", "wait"), [
-    ("3600", timedelta(hours=1)), ("", timedelta(minutes=1)), ("²", timedelta(minutes=1)), ("99999999999999", timedelta(days=2)),
-    ((datetime.now(UTC) + timedelta(hours=2)).strftime("%a, %d %b %Y %H:%M:%S GMT"), timedelta(hours=2)),
+    (lambda: "3600", timedelta(hours=1)), (lambda: "", timedelta(minutes=1)), (lambda: "²", timedelta(minutes=1)), (lambda: "99999999999999", timedelta(days=2)),
+    (lambda: (datetime.now(UTC) + timedelta(hours=2)).strftime("%a, %d %b %Y %H:%M:%S GMT"), timedelta(hours=2)),
 ])
-def test_a_refused_question_waits_what_the_server_says_and_never_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, retry_after: str, wait: timedelta) -> None:
+def test_a_refused_question_waits_what_the_server_says_and_never_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, retry_after: Callable[[], str], wait: timedelta) -> None:
     """Retry-After in seconds or as an HTTP date, at most `keep`; missing or unreadable: the PC's own wait."""
     import galaius.machines as machines
 
-    monkeypatch.setattr(machines.httpx, "post", lambda url, timeout, **options: httpx.Response(429, headers=[(b"Retry-After", retry_after.encode("latin-1"))]))
+    header = retry_after().encode("latin-1")
+    monkeypatch.setattr(machines.httpx, "post", lambda url, timeout, **options: httpx.Response(429, headers=[(b"Retry-After", header)]))
     draft = MachineRunner.error_reports().prepare(_config(tmp_path, "read_only"), "crashed", "KeyError: 'hello'", ())
     assert draft is not None and draft.ask_after is not None and abs(draft.ask_after - datetime.now(UTC) - wait) < timedelta(minutes=1)
 
