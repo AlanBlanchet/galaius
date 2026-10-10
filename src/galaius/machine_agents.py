@@ -178,7 +178,7 @@ class WebRuns(BaseModel):
     def refuse_full(self) -> None:
         """Refuses one more start while `LIVE_WEB_CONVERSATIONS` started from the web work here."""
         if (working := self.live()) >= LIVE_WEB_CONVERSATIONS:
-            raise PermissionError(f"{working} conversations started from the web are already working on this computer; stop one first")
+            raise PermissionError(f"{working} conversations started from the web are already working on this computer (at most {LIVE_WEB_CONVERSATIONS}); stop one first")
 
     def working(self) -> bool:
         """One of these runs, or a run it launched, is starting or running now (waiting for its owner is not working)."""
@@ -526,7 +526,7 @@ class MachineAgents(BaseModel):
                 passed_over=tuple(PassedOverCandidate(provider=item.candidate.provider, model=item.candidate.model[:120], reason=item.reason, until=item.until)
                                   for item in run.skipped[:16]),
             ))
-        return MachineAgentAnswer(request_id=request.id, runs=tuple(found))
+        return MachineAgentAnswer(request_id=request.id, runs=tuple(found), web_working=self.runs.live(), web_limit=LIVE_WEB_CONVERSATIONS)
 
     def _place(self, cwd: str) -> tuple[str, str]:
         """(agent root, path beneath it) of a folder a launched child works in; ("", "") elsewhere."""
