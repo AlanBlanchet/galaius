@@ -18,7 +18,7 @@ import hmac
 import logging
 import time
 
-from galaius_core import MACHINE_AGENT_REQUESTS, MachineAgentModel, MachineAgentRequest, MachineAgentSettings, MachineAgentSettingsUpdate, MachineWorkspaceJob
+from galaius_core import MACHINE_AGENT_REQUESTS, MachineAgentModel, MachineAgentRequest, MachineAgentSettings, MachineAgentSettingsUpdate, MachineWorkspaceJob, WebLoad
 from galaius.agents import agent_queue, messaging
 from galaius.agents import registry as reg
 from galaius.agents.host import ConversationRefused
@@ -769,7 +769,7 @@ def test_the_web_cap_counts_conversations_never_the_agents_they_launched(base: P
     with pytest.raises(PermissionError, match=r"^4 conversations started from the web are already working on this computer \(at most 4\)"):
         agents._prepare_start(start)
     listed = _answer(agents, _request("runs"))
-    assert (listed.web_working, listed.web_limit) == (4, 4)  # what the web's Auto reads to pass over a full PC
+    assert listed.web == WebLoad(working=4, limit=4)  # what the web's Auto reads to pass over a full PC
 
 
 class TransferServer:

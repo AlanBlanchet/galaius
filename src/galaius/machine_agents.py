@@ -36,7 +36,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from galaius_core import (
     AGENT_TOUCH_SCOPES, MACHINE_AGENT_MEDIA, MACHINE_AGENT_TAIL, AgentAnswerRequest, AgentMedia, AgentMediaRequest, image_type, AgentContinueRequest, AgentFoldersRequest, AgentInteraction, AgentLogsRequest, AgentOptionsRequest,
     AgentProgramInstallRequest, AgentProgramsRequest, AgentProviderState, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
-    MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, PassedOverCandidate, media_key, media_paths, MachineAgentSession, MachineFileEntry, WorkspaceCreateRequest, WorkspacePack, WorkspacePackRequest, WorkspacePrepareRequest, WorkspaceRefresh, WorkspacesRequest,
+    MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, PassedOverCandidate, WebLoad, media_key, media_paths, MachineAgentSession, MachineFileEntry, WorkspaceCreateRequest, WorkspacePack, WorkspacePackRequest, WorkspacePrepareRequest, WorkspaceRefresh, WorkspacesRequest,
 )
 from galaius.agents import registry as reg
 from galaius.agents.host import ConversationHost, ConversationRefused
@@ -175,10 +175,14 @@ class WebRuns(BaseModel):
         third); one waiting for its owner, with nothing of it working, does not count."""
         return sum(1 for runs in reg.forest(frozenset(str(item.run_id) for item in self.read())).values() if any(run.status in WORKING for run in runs))
 
+    def load(self) -> WebLoad:
+        """The conversations started from the web working here against `LIVE_WEB_CONVERSATIONS` (the web reads it)."""
+        return WebLoad(working=self.live(), limit=LIVE_WEB_CONVERSATIONS)
+
     def refuse_full(self) -> None:
         """Refuses one more start while `LIVE_WEB_CONVERSATIONS` started from the web work here."""
-        if (working := self.live()) >= LIVE_WEB_CONVERSATIONS:
-            raise PermissionError(f"{working} conversations started from the web are already working on this computer (at most {LIVE_WEB_CONVERSATIONS}); stop one first")
+        if (load := self.load()).full:
+            raise PermissionError(f"{load.working} conversations started from the web are already working on this computer (at most {load.limit}); stop one first")
 
     def working(self) -> bool:
         """One of these runs, or a run it launched, is starting or running now (waiting for its owner is not working)."""
@@ -526,7 +530,7 @@ class MachineAgents(BaseModel):
                 passed_over=tuple(PassedOverCandidate(provider=item.candidate.provider, model=item.candidate.model[:120], reason=item.reason, until=item.until)
                                   for item in run.skipped[:16]),
             ))
-        return MachineAgentAnswer(request_id=request.id, runs=tuple(found), web_working=self.runs.live(), web_limit=LIVE_WEB_CONVERSATIONS)
+        return MachineAgentAnswer(request_id=request.id, runs=tuple(found), web=self.runs.load())
 
     def _place(self, cwd: str) -> tuple[str, str]:
         """(agent root, path beneath it) of a folder a launched child works in; ("", "") elsewhere."""
