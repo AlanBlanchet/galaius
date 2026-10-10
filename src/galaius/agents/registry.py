@@ -1780,6 +1780,15 @@ def _status_for(run: AgentRun, *, depth: int = 0) -> RunStatus:
     return "interrupted"
 
 
+def _vendor_said_at(run: AgentRun) -> float | None:
+    """When the run's vendor last wrote: its raw stream's last write, never a copy derived from it
+    later (a reader change rewrites those); its end time when it kept no raw stream."""
+    try:
+        return _private_mtime(raw_events_path(run.run_id))
+    except OSError:
+        return run.finished_at
+
+
 def _derive(run: AgentRun) -> AgentRun:
     original = run.model_dump(mode="json")
     if not run.project and run.cwd:
@@ -1865,10 +1874,19 @@ def _derive(run: AgentRun) -> AgentRun:
             # EVER noticed. Guarded by `_update_fields`'s compare-and-swap succeeding on a genuine
             # first transition into "failed" (`original` is the PRE-heal snapshot), so a later,
             # repeated `list_runs()` read of an already-healed run never re-extends the cooldown.
+            # Heard when the vendor wrote it — the raw stream's last write — not when this read noticed:
+            # a reader change re-derives every record, and a day-old refusal timed now benches a serving
+            # model for an hour (2026-10-10).
             if (ending == "error" and digest.ending_text
                     and original.get("status") != "failed" and run.status == "failed"
                     and quota.REFUSAL.search(digest.ending_text)):
-                quota.record_refusal(run.provider, run.model, said=digest.ending_text)
+                quota.record_refusal(run.provider, run.model, said=digest.ending_text, now=_vendor_said_at(run))
+            # The other way round: a run nobody reaped (`agents spawn` detaches) that ended on its
+            # model's answer proves the model serves — as `finish` says for a reaped one — but only
+            # against what was heard before that answer.
+            elif (ending == "done" and original.get("status") not in ("done", "waiting")
+                    and (run.output_tokens or 0) > 0 and (answered := _vendor_said_at(run)) is not None):
+                quota.served(run.provider, run.model, at=answered)
     return run
 
 

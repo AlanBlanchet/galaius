@@ -6,6 +6,7 @@ tree, else killing just the parent orphans its spawned subprocesses. Same reason
 """
 
 import asyncio
+from collections import deque
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
@@ -75,6 +76,11 @@ def _vendor_words(said: str) -> str:
     start = said.rfind("\n", 0, found.start()) + 1
     line = said[start:said.find("\n", found.end()) if said.find("\n", found.end()) != -1 else len(said)]
     return " ".join(line.split())[:200]
+
+
+def _unsupported_message(candidate: reg.LaunchCandidate, detail: str) -> str:
+    """What the walk tells the run about a model the vendor refuses to this login."""
+    return f"model intent: {candidate.provider}/{candidate.model} is refused for this login by the vendor ({detail})."
 
 
 def _quota_message(provider: str, model: str, said: str, until: float) -> str:
@@ -337,7 +343,7 @@ def resolve_continuable_model(
 async def _unavailable(
     provider: AgentProvider, policy: Policy, *, permission_mode: str | None, images: bool,
     allowed_tools: list[str], denied_tools: tuple[str, ...], env: dict[str, str],
-    auth_cache: dict[tuple[str, str], bool | None], route_key: str,
+    auth_cache: dict[tuple[str, str], tuple[bool | None, str]], route_key: str,
     coarse_accepted: bool = False,
 ) -> _SkipDecision | None:
     """The machine-local fact stopping this candidate BEFORE anything runs, or None.
@@ -383,21 +389,20 @@ async def _unavailable(
         )
     key = (provider.name, route_key)
     if key not in auth_cache:
+        checked = provider.subscription_env(env)
         try:
             # Claude Code's local auth check can take several seconds on a cold CLI start;
             # keep the provider's bounded probe budget instead of dropping a usable candidate.
-            auth_cache[key] = await provider.authenticated(
-                provider.subscription_env(env), timeout=10
-            )
+            auth_cache[key] = (await provider.authenticated(checked, timeout=10), provider.login(checked))
         except NotImplementedError:
-            auth_cache[key] = True
-    if auth_cache[key] is None:
+            auth_cache[key] = (True, "")
+    if auth_cache[key][0] is None:
         return _skip(
             "auth_check_failed",
             f"login intent: {provider.name} could not complete its login check; inspect the "
             "provider CLI, then retry or choose another provider.",
         )
-    if not auth_cache[key]:
+    if not auth_cache[key][0]:
         return _skip(
             "unauthenticated",
             f"login intent: {provider.name} is not authenticated; sign in with its CLI, then retry.",
@@ -1361,24 +1366,29 @@ async def run_agent(
     process: "asyncio.subprocess.Process | None" = None
     model: str | None = None
     effort = policy.reasoning_for(agent)
-    auth_cache: dict[tuple[str, str], bool | None] = {}
+    auth_cache: dict[tuple[str, str], tuple[bool | None, str]] = {}
     allowed_tools = policy.tools_for(agent)
     base_env = environment
     # A model that refused for quota a moment ago refuses again: passing it over BEFORE the spawn
-    # is what stops every launch paying the same dead-child tax. When the memory would empty the
-    # list entirely it is ignored — a stale note must never be why nothing can run.
-    cooled = [c for c in candidates
-              if quota.blocked_until(c.provider, c.model) is None]
-    for candidate in candidates:
-        if cooled and candidate not in cooled:
-            until = quota.blocked_until(candidate.provider, candidate.model)
-            clears = datetime.fromtimestamp(until, UTC).isoformat(timespec="seconds") if until else "the recorded cooldown"
-            skipped.append(_skip_record(candidate, _skip(
-                "quota_exceeded",
-                f"quota intent: {candidate.provider}/{candidate.model} is still exhausted; "
-                f"the recorded window clears after {clears}. Retry then or choose another provider/model.",
-            ), until=until))
-            continue
+    # is what stops every launch paying the same dead-child tax. It goes to the END of the walk, never
+    # out of it: tried once every other candidate refused or could not start — a stale note must never
+    # be why nothing can run (16ed211e: two Codex models refused for the login, then the run failed
+    # with the noted model never asked).
+    noted = {index: until for index, candidate in enumerate(candidates)
+             if (until := quota.blocked_until(candidate.provider, candidate.model)) is not None}
+    chosen_index = -1
+    walk = deque([index for index in range(len(candidates)) if index not in noted] + list(noted))
+    #: Candidates passed over only because this login was refused them before: asked again, once, when
+    #: nothing else started — the same never-a-veto rule as a quota note, at the cost of one refused start.
+    remembered: list[int] = []
+    asking_again = False
+    while walk or (chosen is None and remembered and not asking_again):
+        if not walk:
+            asking_again = True
+            walk.extend(remembered)
+            skipped = [entry for entry in skipped if entry.candidate not in (candidates[index] for index in remembered)]
+        index = walk.popleft()
+        candidate = candidates[index]
         candidate_provider = by_name[candidate.provider]
         # Named once per role, per provider (`accepts_coarse_tool_policy`) — a provider that can
         # only enforce a SANDBOX, not this role's specific tool names, runs it anyway only when
@@ -1386,21 +1396,29 @@ async def run_agent(
         # naming it for a sibling role or a different provider.
         candidate_coarse_accepted = policy.accepts_coarse_tool_policy(agent, candidate.provider)
         routed, resolved_model = resolve_model(candidate.model, base_env, provider=candidate_provider, weights=weights)
+        # The auth cache is keyed on the CONNECTION (base URL, credential), never the model
+        # name riding along on the same overlay — two candidates on the same routed endpoint
+        # share one auth check regardless of which wire protocol's "bare model name" key
+        # (ANTHROPIC_MODEL, OPENAI_MODEL) produced them.
+        route_key = json.dumps(
+            {k: v for k, v in routed.items() if k not in ("ANTHROPIC_MODEL", "OPENAI_MODEL")},
+            sort_keys=True,
+        )
         reason = await _unavailable(
             candidate_provider, policy,
             permission_mode=permission_mode or (provider_modes or {}).get(candidate.provider) or default_permission_mode,
             images=bool(validated_images), allowed_tools=allowed_tools, denied_tools=denied_tools,
-            env={**base_env, **routed}, auth_cache=auth_cache,
-            # The auth cache is keyed on the CONNECTION (base URL, credential), never the model
-            # name riding along on the same overlay — two candidates on the same routed endpoint
-            # share one auth check regardless of which wire protocol's "bare model name" key
-            # (ANTHROPIC_MODEL, OPENAI_MODEL) produced them.
-            route_key=json.dumps(
-                {k: v for k, v in routed.items() if k not in ("ANTHROPIC_MODEL", "OPENAI_MODEL")},
-                sort_keys=True,
-            ),
+            env={**base_env, **routed}, auth_cache=auth_cache, route_key=route_key,
             coarse_accepted=candidate_coarse_accepted,
         )
+        login = auth_cache.get((candidate_provider.name, route_key), (None, ""))[1]
+        if reason is None and not asking_again \
+                and (asked_again := quota.unsupported_until(candidate.provider, candidate.model, login=login)):
+            remembered.append(index)
+            skipped.append(_skip_record(candidate, _skip("model_capability_unsupported", _unsupported_message(
+                candidate, f"remembered; asked again after "
+                           f"{datetime.fromtimestamp(asked_again, UTC).isoformat(timespec='seconds')}")), until=asked_again))
+            continue
         if reason is None and validated_images:
             try:
                 _require_vlm_model(resolved_model)
@@ -1517,7 +1535,7 @@ async def run_agent(
         # A model coming off a block is the re-check: it gets long enough to say "still refused"
         # that the answer falls through to the next candidate instead of killing this run.
         probe_window = max(quota_window or 0.0, quota.PROBATION_WINDOW) \
-            if quota.on_probation(candidate.provider, candidate.model) else quota_window
+            if index in noted or quota.on_probation(candidate.provider, candidate.model) else quota_window
         quota_reason = await _quota_probe(
             run_id, candidate_process,
             **({} if probe_window is None else {"window": probe_window}),
@@ -1531,18 +1549,18 @@ async def run_agent(
             # The child's own stream, not just the fact that it refused: it carries the
             # window the vendor named and the instant that window reopens, which is what decides
             # how long this candidate is passed over. A model the vendor refuses for this login is
-            # remembered longer: nothing about it clears in minutes.
+            # remembered against that login: nothing about it clears in minutes.
             said = _child_output(run_id)
             if quota_reason == "quota_exceeded":
                 until = quota.record_refusal(candidate.provider, candidate.model, said=said)
                 message = _quota_message(candidate.provider, candidate.model, said, until)
             else:
-                until = quota.record_refusal(candidate.provider, candidate.model)
-                message = (f"model intent: {candidate.provider}/{candidate.model} is refused for this login by the vendor "
-                           f"({_vendor_words(said)}); passed over for the next ranked model.")
+                until = quota.record_unsupported(candidate.provider, candidate.model, login=login)
+                message = _unsupported_message(candidate, f"{_vendor_words(said)}; passed over for the next ranked model")
             skipped.append(_skip_record(candidate, _skip(quota_reason, message), until=until))
             continue
         chosen = candidate
+        chosen_index = index
         chosen_provider = candidate_provider
         chosen_ahead = launch if ahead else None
         process = candidate_process
@@ -1550,6 +1568,15 @@ async def run_agent(
         model = candidate_model
         effort = candidate_effort
         break
+    # A noted model ranked above the one that runs was passed over for its note alone; one ranked below,
+    # or one whose turn came, was not (its own attempt is on record).
+    skipped = [_skip_record(candidates[index], _skip(
+        "quota_exceeded",
+        f"quota intent: {candidates[index].provider}/{candidates[index].model} is still exhausted; the recorded "
+        f"window clears after {datetime.fromtimestamp(until, UTC).isoformat(timespec='seconds')}. "
+        "Retry then or choose another provider/model.",
+    ), until=until) for index, until in noted.items()
+        if index < chosen_index and chosen_index not in noted and not asking_again] + skipped
     if chosen is None or process is None or chosen_provider is None or model is None:
         walked = "\n".join(
             f"  {s.candidate.provider}/{s.candidate.model}: {s.reason} — {s.message or 'no details recorded'}"

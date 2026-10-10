@@ -6,8 +6,8 @@ later. Without a memory, every launch pays the same tax — spawn, wait, die at 
 through — and a refusal arriving after the probe's window kills the run outright (#181).
 
 So the refusal is written down, and a model under cooldown is passed over BEFORE anything is
-spawned. When EVERY candidate is under cooldown the walk ignores the memory rather than refusing
-to launch, because a stale note must never be the reason an agent cannot run.
+spawned — to the END of the ranked walk: it is tried only once every other candidate refused or
+could not start, because a stale note must never be the reason an agent cannot run.
 
 How LONG is earned, never read off the vendor alone. The instant a refusal names (`resetsAt`) is
 when the period RESETS, an upper bound: a rolling window reopens as old usage ages out — a
@@ -54,9 +54,9 @@ from galaius.paths import UserPaths
 #: do not deserve an hour cooldown.
 #: The vendor refusing this MODEL for this account's kind of access — a subscription login that cannot
 #: use an API-only model ("The 'gpt-6-astra' model is not supported when using Codex with a ChatGPT
-#: account."), an account without access to a model. Not a quota, but remembered by the same rule:
-#: the next ranked model of the same CLI runs instead of the run dying on arrival (as 699e3e56 did),
-#: and the block grows while the login keeps refusing.
+#: account."), an account without access to a model. Not a quota: a fact about the LOGIN, remembered
+#: against that login (`record_unsupported`) for `UNSUPPORTED_RECHECK`, and never retried as a last
+#: resort the way a model under a quota block is.
 UNSUPPORTED = re.compile(
     r"model is not supported when using"
     r"|not supported when using .{0,60}account"
@@ -130,6 +130,12 @@ SPOKEN_PAST = 300.0
 
 #: No period any of these vendors names is longer than seven days: no block is ever longer.
 MAX_COOLDOWN = max(WINDOWS.values())
+
+#: How long a model the vendor refused for a login stays passed over for that login before one launch
+#: asks again (one refused start, a few seconds). Nothing about it reopens on the hour; it changes when
+#: the vendor opens the model to that plan — which a login that reads the same across plans (Codex says
+#: only « Logged in using ChatGPT ») cannot show — so the question is asked again daily.
+UNSUPPORTED_RECHECK = 86400.0
 
 #: Every key any of these vendors uses to say WHEN the exhausted period reopens, as an absolute
 #: instant. Verified against primary sources 2026-09-22 (`.github/research/
@@ -446,11 +452,15 @@ def _write(entries: dict[str, Block]) -> None:
         tmp.replace(path)
 
 
+def _until(key: str, now: float | None) -> float | None:
+    moment = time.time() if now is None else now
+    block = _read(moment).get(key)
+    return block.until if block is not None and block.until > moment else None
+
+
 def blocked_until(provider: str, model: str | None, *, now: float | None = None) -> float | None:
     """When this model may be tried again, or None when nothing is remembered against it."""
-    moment = time.time() if now is None else now
-    block = _read(moment).get(_key(provider, model))
-    return block.until if block is not None and block.until > moment else None
+    return _until(_key(provider, model), now)
 
 
 def on_probation(provider: str, model: str | None, *, now: float | None = None) -> bool:
@@ -487,16 +497,41 @@ def record_refusal(provider: str, model: str | None, *, said: str = "", now: flo
     if previous is not None and moment < previous.until:
         # A weaker signal never shortens a live block; clearing one early is `served`'s job.
         until = max(until, previous.until)
-    entries[key] = Block(until=until, count=count, at=moment)
+    entries[key] = Block(until=until, count=count, at=max(moment, previous.at) if previous else moment)
     _write(entries)
     return until
 
 
-def served(provider: str, model: str | None) -> None:
-    """This model just answered (a turn it wrote, a run that finished): whatever is
-    remembered against it is over. Writes only when there was something to forget."""
+def _login_key(provider: str, model: str | None, login: str) -> str:
+    """A refusal of the model to one login sits beside the model's quota block, never on it: a reader
+    that knows no login (a resume, a session's model list) sees only the quota."""
+    return f"{_key(provider, model)}@{login}"
+
+
+def record_unsupported(provider: str, model: str | None, *, login: str, now: float | None = None) -> float:
+    """Remember that the vendor refuses this model to `login` (`UNSUPPORTED`; "" for a CLI with no
+    login to tell apart); returns when one launch under that login asks again (`UNSUPPORTED_RECHECK`)."""
+    moment = time.time() if now is None else now
+    entries = _read(moment)
+    until = moment + UNSUPPORTED_RECHECK
+    entries[_login_key(provider, model, login)] = Block(until=until, count=1, at=moment)
+    _write(entries)
+    return until
+
+
+def unsupported_until(provider: str, model: str | None, *, login: str, now: float | None = None) -> float | None:
+    """When a launch under `login` asks this model again, or None when it was never refused to it."""
+    return _until(_login_key(provider, model, login), now)
+
+
+def served(provider: str, model: str | None, *, at: float | None = None) -> None:
+    """This model answered (a turn it wrote, a run that finished) at `at` (default now): whatever
+    was remembered against it BEFORE that is over. Writes only when there was something to forget;
+    a refusal heard after the answer stands."""
     entries = _read(time.time())
-    if entries.pop(_key(provider, model), None) is not None:
+    found = entries.get(_key(provider, model))
+    if found is not None and (at is None or found.at <= at):
+        del entries[_key(provider, model)]
         _write(entries)
 
 

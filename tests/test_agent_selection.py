@@ -556,7 +556,7 @@ async def test_a_model_that_refused_a_moment_ago_is_passed_over_before_any_child
 @pytest.mark.asyncio
 async def test_a_stale_memory_never_stops_every_candidate_from_running(team, tmp_path):
     """The note is a shortcut, never a veto: with every model remembered as refused, the walk
-    ignores the memory rather than telling the owner nothing can run."""
+    tries them in rank order rather than telling the owner nothing can run."""
     alpha, beta = team
     for candidate in rank_candidates(CRITERION, dict(os.environ), providers=[alpha, beta]):
         quota.record_refusal(candidate.provider, candidate.model)

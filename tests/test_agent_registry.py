@@ -27,7 +27,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from galaius.agents import registry as reg
+from galaius.agents import quota, registry as reg
 from galaius.agents.events import TOKEN_FIELDS, AgentEvent
 from galaius.pinned_directory import DescriptorDirectory
 from galaius.private_files import PRIVATE_FILES
@@ -1454,6 +1454,17 @@ def _claude_error_stream(text: str) -> str:
     )
 
 
+def _claude_answer_stream() -> str:
+    """A Claude `-p` run that ended on its model's answer: the tokens it read and wrote, then success."""
+    usage = {"input_tokens": 5, "output_tokens": 7}
+    return (
+        json.dumps({"type": "assistant", "session_id": "SID", "message": {
+            "model": "claude-fable-5-1", "content": [{"type": "text", "text": "done"}], "usage": usage}}) + "\n"
+        + json.dumps({"type": "result", "subtype": "success", "is_error": False, "session_id": "SID",
+                      "result": "done", "usage": usage}) + "\n"
+    )
+
+
 def test_a_late_refusal_ending_a_fresh_run_records_a_cooldown():
     from galaius.agents import quota
 
@@ -1536,6 +1547,33 @@ def test_a_late_refusal_on_an_ORPHANED_run_records_a_cooldown_exactly_once():
     reg.list_runs()
     reg.list_runs()
     assert quota.blocked_until("claude", "claude-fable-5-1") == first_deadline
+
+
+@pytest.mark.parametrize("ended", ["error", "done"])
+def test_a_run_settled_long_after_it_ended_speaks_for_that_moment_not_now(ended):
+    """2026-10-10: re-deriving day-old runs that ended on « You've hit your session limit » timed each
+    refusal at the re-derive, and claude-opus-5-5, serving all along, was benched an hour. A refusal
+    counts from when its run ended; an answer clears only what was heard before it."""
+    day_ago = time.time() - 86400
+    if ended == "done":
+        quota.record_refusal("claude", "claude-fable-5-1")  # heard now: an older answer must not clear it
+    reg.register(run_id="stale1", pid=999999, provider="claude", name="w", agent="tester", model="claude-fable-5-1")
+    reg.raw_events_path("stale1").write_text(
+        _claude_error_stream("You've hit your session limit · resets 5:20pm (Europe/Paris)") if ended == "error"
+        else _claude_answer_stream())
+    os.utime(reg.raw_events_path("stale1"), (day_ago, day_ago))
+    reg._update_fields("stale1", {"status": "interrupted", "finished_at": day_ago})
+
+    assert next(run for run in reg.list_runs() if run.run_id == "stale1").status == ("failed" if ended == "error" else "done")
+    assert (quota.blocked_until("claude", "claude-fable-5-1") is None) is (ended == "error")
+
+
+def test_an_unreaped_run_answering_after_a_refusal_clears_it():
+    quota.record_refusal("claude", "claude-fable-5-1")
+    reg.register(run_id="served1", pid=999999, provider="claude", name="w", agent="tester", model="claude-fable-5-1")
+    reg.raw_events_path("served1").write_text(_claude_answer_stream())
+    reg.list_runs()
+    assert quota.blocked_until("claude", "claude-fable-5-1") is None
 
 
 def test_a_clean_finish_records_no_cooldown():

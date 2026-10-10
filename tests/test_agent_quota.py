@@ -190,6 +190,18 @@ def test_only_the_model_answering_clears_its_block(tmp_path, monkeypatch):
     assert quota.blocked_until("claude", "claude-opus-5-5") is None
 
 
+def test_an_answer_clears_only_the_quota_heard_before_it_never_a_model_refused_to_a_login():
+    heard = time.time()
+    quota.record_refusal("codex", "m", now=heard)
+    quota.record_unsupported("codex", "m", login="chatgpt", now=heard)
+    quota.served("codex", "m", at=heard - 1)
+    assert quota.blocked_until("codex", "m") is not None, "an answer older than the refusal cleared it"
+    quota.served("codex", "m", at=heard + 1)
+    assert quota.blocked_until("codex", "m") is None
+    assert quota.unsupported_until("codex", "m", login="chatgpt") == heard + quota.UNSUPPORTED_RECHECK
+    assert quota.unsupported_until("codex", "m", login="api key") is None
+
+
 def test_the_memory_is_per_model_not_per_vendor():
     """Falling through to another model of the same vendor is the whole point."""
     quota.record_refusal("claude", "claude-fable-5-1")

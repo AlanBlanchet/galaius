@@ -10,6 +10,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import tomllib
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -566,17 +567,37 @@ async def test_one_unreadable_run_never_stops_the_others(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_model_the_vendor_refuses_for_this_login_is_passed_over_and_remembered(tmp_path):
-    """Codex answering "model not supported with a ChatGPT account" a second after start is not this
-    run's outcome: the launch passes the model over (`model_capability_unsupported`, like a quota
-    refusal) and remembers it by the quota rule — one refusal blocks it `DEFAULT_COOLDOWN` (e4692bcb) —
-    so the next ranked model of that CLI runs and no later launch pays the same dead child. With one
-    candidate only, the launch refuses by name."""
+async def test_a_model_under_a_quota_note_runs_last_and_a_model_refused_for_the_login_is_never_asked_again(tmp_path, monkeypatch):
+    """16ed211e: the first-ranked model under a quota note was passed over, the two next ones answered
+    « not supported when using Codex with a ChatGPT account », and the run FAILED with the noted model
+    never asked. The noted model is tried last instead; the refused one is remembered against this
+    login for `UNSUPPORTED_RECHECK` — not a quota hour — so the next launch passes it over unspawned."""
     quota.forget()
-    with pytest.raises(run_module.ModelUnavailable, match="model_capability_unsupported"):
-        await run_agent(_UnsupportedModelProvider(), "do a thing", agent="tester", cwd=str(tmp_path), quota_window=0.5)
-    until = quota.blocked_until("unsupported", "fixture-model")
-    assert until is not None and quota._cooldown() - 60 < until - __import__("time").time() <= quota._cooldown()
+    quota.record_refusal("fake", "fixture-model")
+    monkeypatch.setattr(run_module, "rank_candidates", lambda rule, env, *, providers, weights="", role=None: (
+        reg.LaunchCandidate(provider="fake", model="fixture-model", rank=0),
+        reg.LaunchCandidate(provider="unsupported", model="fixture-model", rank=1),
+    ))
+    walked = []
+    for _ in range(2):
+        handle = await run_agent(None, "do a thing", agent="tester", cwd=str(tmp_path), quota_window=0.5)
+        await asyncio.wait_for(handle.wait(), 10)
+        record = reg.get_run(handle.run_id)
+        walked.append((record.provider, [(entry.candidate.provider, entry.reason, entry.message) for entry in record.skipped]))
+    assert [(ran, [(name, why) for name, why, _ in skips]) for ran, skips in walked] == [
+        ("fake", [("unsupported", "model_capability_unsupported")]),
+    ] * 2
+    assert "passed over for the next ranked model" in walked[0][1][0][2], "the first launch heard the vendor refuse"
+    assert "asked again after" in walked[1][1][0][2], "the second launch never spawned the refused model"
+    assert quota.blocked_until("unsupported", "fixture-model") is None, "a refusal of the model is no quota block"
+    asked_again = quota.unsupported_until("unsupported", "fixture-model", login="")  # a CLI with no status command
+    assert asked_again is not None and quota.UNSUPPORTED_RECHECK - 60 < asked_again - time.time() <= quota.UNSUPPORTED_RECHECK
+    assert quota.unsupported_until("unsupported", "fixture-model", login="another login") is None
+    # The memory is never why nothing runs: with no other candidate, the refused model is asked again.
+    monkeypatch.setattr(run_module, "rank_candidates", lambda rule, env, *, providers, weights="", role=None: (
+        reg.LaunchCandidate(provider="unsupported", model="fixture-model", rank=0),))
+    with pytest.raises(run_module.ModelUnavailable, match="passed over for the next ranked model"):
+        await run_agent(None, "do a thing", agent="tester", cwd=str(tmp_path), quota_window=0.5)
     assert run_module._startup_refusal("The 'gpt-6-astra' model is not supported when using Codex with a ChatGPT account.") == "model_capability_unsupported"
     assert run_module._startup_refusal("You have reached your weekly limit") == "quota_exceeded"
     assert run_module._startup_refusal("Selected model is at capacity") is None

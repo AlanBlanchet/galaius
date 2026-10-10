@@ -229,7 +229,8 @@ class AgentProvider(ABC):
     #: command is a CLI start of its own (`claude auth status`: 0.6 s), paid by every start before.
     #: A login lost within it fails that run at its start instead of passing to the next candidate.
     LOGIN_REUSE_SECONDS: ClassVar[float] = 300.0
-    _logged_in: ClassVar[dict[tuple[str, str], float]] = {}
+    #: Each confirmed login: when, and which (`login`).
+    _logged_in: ClassVar[dict[tuple[str, str], tuple[float, str]]] = {}
     #: Whether a child can start before its task is known and read it as its first message
     #: (`ahead_command`, `task_message`, `startup_files`): its own startup is then paid while
     #: nobody waits (`galaius.agents.warm.WarmStart`).
@@ -364,25 +365,50 @@ class AgentProvider(ABC):
 
     async def login_status(self, env: dict[str, str], *, timeout: float = 10) -> tuple[bool | None, str]:
         """Signed in (None: its status check could not complete), and as whom (`signed_in_as`), asked now."""
+        signed_in, account, _login = await self._login(env, timeout=timeout)
+        return signed_in, account
+
+    async def _login(self, env: dict[str, str], *, timeout: float) -> tuple[bool | None, str, str]:
+        """Signed in, as whom, and which login: a digest of the CLI's whole status answer, kept instead
+        of the answer. It tells apart what the answer names — Claude Code: account, organisation,
+        plan; Codex: a ChatGPT login from an API key, never one ChatGPT account or plan from another."""
         status = await self._auth_status(env, timeout=timeout)
         if status is None:
-            return None, ""
-        signed_in = status[0] == 0 and self.accepts_any_auth(*status[1:])
-        return signed_in, self.signed_in_as(*status[1:]) if signed_in else ""
+            return None, "", ""
+        if not (status[0] == 0 and self.accepts_any_auth(*status[1:])):
+            return False, "", ""
+        login = hashlib.sha256(self.login_identity(*status[1:]).encode()).hexdigest()[:16]
+        return True, self.signed_in_as(*status[1:]), login
+
+    def login_identity(self, stdout: str, stderr: str) -> str:
+        """The part of the status answer that names the login (`_login`): its stdout, never a notice
+        a CLI prints beside it on stderr (an update, a warning), which would make every check read as
+        a new login."""
+        return stdout
+
+    def _login_key(self, env: dict[str, str]) -> tuple[str, str]:
+        return self.name, hashlib.sha256(json.dumps(env, sort_keys=True).encode()).hexdigest()
 
     async def authenticated(self, env: dict[str, str], *, timeout: float = 10) -> bool | None:
         """CLI login state; None means its status check could not complete. A login confirmed less
         than `LOGIN_REUSE_SECONDS` ago in this process, for the same environment, is not checked
         again; a missing or unanswered one always is."""
-        key = (self.name, hashlib.sha256(json.dumps(env, sort_keys=True).encode()).hexdigest())
-        if time.monotonic() - self._logged_in.get(key, -self.LOGIN_REUSE_SECONDS) < self.LOGIN_REUSE_SECONDS:
+        key = self._login_key(env)
+        confirmed = self._logged_in.get(key)
+        if confirmed is not None and time.monotonic() - confirmed[0] < self.LOGIN_REUSE_SECONDS:
             return True
-        logged_in, _account = await self.login_status(env, timeout=timeout)
+        logged_in, _account, login = await self._login(env, timeout=timeout)
         if logged_in:
-            self._logged_in[key] = time.monotonic()
+            self._logged_in[key] = (time.monotonic(), login)
         else:
             self._logged_in.pop(key, None)
         return logged_in
+
+    def login(self, env: dict[str, str]) -> str:
+        """Which login `authenticated` last confirmed for `env` (`_login`); "" when none was (a
+        provider without a status command)."""
+        confirmed = self._logged_in.get(self._login_key(env))
+        return "" if confirmed is None else confirmed[1]
 
     #: Catalog providers whose models this CLI runs through its OWN login — no API key in our env.
     native_providers: frozenset[str] = frozenset()
@@ -1536,8 +1562,12 @@ class CodexProvider(AgentProvider):
         return any("logged in using chatgpt" in line and "api key" not in line for line in lines)
 
     def accepts_any_auth(self, stdout: str, stderr: str) -> bool:
-        return any(line.strip().lower().startswith("logged in using ")
-                   for line in f"{stdout}\n{stderr}".splitlines())
+        return bool(self.login_identity(stdout, stderr))
+
+    def login_identity(self, stdout: str, stderr: str) -> str:
+        """Codex says « Logged in using ChatGPT » (or an API key) on stderr, and nothing else names the login."""
+        return "\n".join(line.strip() for line in f"{stdout}\n{stderr}".splitlines()
+                         if line.strip().lower().startswith("logged in using "))
 
     def has_mcp_server(self, name: str, *, cwd: str) -> bool:
         """Ask Codex to resolve all configuration layers; retain registration names only."""
