@@ -81,7 +81,7 @@ class FollowUps(BaseModel):
         is between turns, else by its dispatcher; the delivery says which queue item carries it.
         The turn's child is claimed (or started) while the message is being queued, and once it is
         queued the hand-over finishes even when the caller stops waiting for it. A message already
-        queued under `message_id` is left to whoever took it then (`queue_message`)."""
+        queued under `message_id` is handed over again only while it still waits (`queue_message`)."""
         run = await asyncio.to_thread(reg.get_run, run_id)
         readying = asyncio.create_task(self._child(run, environment)) if run is not None and self._resumable(run) and not run.process_running() else None
         try:
@@ -91,7 +91,17 @@ class FollowUps(BaseModel):
                 end_waiting(child.process)
             raise
         child = await self._ready(readying)
-        if delivery.state != "queued" or delivery.repeated:
+        if delivery.repeated and delivery.state == "queued":
+            # The same message again: one nothing took is handed over now, one a turn took whose
+            # process is gone is settled or put back (`recover`): its dispatcher may have died.
+            queued = await asyncio.to_thread(agent_queue.item, run_id, delivery.queue_id)
+            if queued is not None and queued.state == "running":
+                await asyncio.to_thread(self._recover_one, run_id, environment)
+            if queued is None or queued.state != "pending":
+                if child is not None:
+                    end_waiting(child.process)
+                return delivery
+        if delivery.state != "queued":
             if child is not None:
                 end_waiting(child.process)
             return delivery

@@ -230,6 +230,16 @@ def items(run_id: str) -> list[QueueItem]:
         return items_locked(run_id)
 
 
+def item(run_id: str, item_id: str | None) -> QueueItem | None:
+    with reg.record_lock(run_id):
+        return item_locked(run_id, item_id)
+
+
+def item_locked(run_id: str, item_id: str | None) -> QueueItem | None:
+    """Item `item_id` of the run's queue while the caller owns the run lock (None: there is none)."""
+    return next((queued for queued in _items(_state(run_id)) if queued.id == item_id), None)
+
+
 def items_locked(run_id: str) -> list[QueueItem]:
     """The run's queue items while the caller owns the run lock."""
     return _items(_state(run_id))
@@ -396,7 +406,7 @@ def settle(run_id: str, item: QueueItem, code: int) -> None:
         said = reg.last_event(run_id)
         stopped = code in (-signal.SIGTERM, 128 + signal.SIGTERM)
         with reg.record_lock(run_id):
-            current = next((i for i in _items(_state(run_id)) if i.id == item.id), None)
+            current = item_locked(run_id, item.id)
             if current is not None and current.state == "running":
                 _replace_item_locked(
                     run_id, item.id, state="failed", finished_at=time.time(), error=error,
@@ -406,7 +416,7 @@ def settle(run_id: str, item: QueueItem, code: int) -> None:
     else:
         attempt_state, attempt_error = _classify_attempt(run_id, item.raw_index)
         with reg.record_lock(run_id):
-            current = next((i for i in _items(_state(run_id)) if i.id == item.id), None)
+            current = item_locked(run_id, item.id)
             if current is not None and current.state == "running":
                 _replace_item_locked(
                     run_id, item.id, state=attempt_state, finished_at=time.time(),
@@ -480,8 +490,7 @@ def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
                     run_id, recovered_item.raw_index,
                 )
                 with reg.record_lock(run_id):
-                    current = next((i for i in _items(_state(run_id))
-                                    if i.id == recovered_item.id), None)
+                    current = item_locked(run_id, recovered_item.id)
                     if current is not None and current.state == "running":
                         _replace_item_locked(
                             run_id, current.id, state=attempt_state,
@@ -505,7 +514,7 @@ async def wait_for_item(run_id: str, item_id: str) -> QueueItem | None:
     dispatcher_lost_at: float | None = None
     recovery_attempted = False
     while True:
-        current = next((item for item in items(run_id) if item.id == item_id), None)
+        current = item(run_id, item_id)
         if current is None or current.state in {"replied", "failed", "cancelled", "uncertain"}:
             return current
         try:

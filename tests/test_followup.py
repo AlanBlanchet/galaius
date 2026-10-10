@@ -136,6 +136,32 @@ async def test_a_message_sent_while_the_run_works_is_read_when_its_turn_ends_eve
     followups.close()
 
 
+@pytest.mark.parametrize("left", ["pending", "running", "replied"])
+@pytest.mark.asyncio
+async def test_a_send_asked_again_delivers_what_nothing_took_and_never_redoes_what_was_read(provider, left):
+    """The server asks again when its first answer never came: a message nothing took (its
+    dispatcher died) is handed over now; one a turn took whose process is gone is settled or sent
+    again by its dispatcher; one already answered is left alone."""
+    message_id = "0c2f4e6a-1b3d-4f5e-8a7b-9c0d1e2f3a4b"
+    first = messaging.queue_message("r1", "still there?", sender="operator", message_id=message_id)  # queued, then nothing ran
+    if left != "pending":
+        with reg.record_lock("r1"):
+            agent_queue.claim_next_locked("r1")  # a turn took it, then its process went away
+        if left == "replied":
+            agent_queue.mark("r1", first.queue_id, "replied")
+    followups = FollowUps(warm=WarmStart(capacity=0))
+
+    again = await followups.send("r1", "still there?", environment=dict(os.environ), message_id=message_id)
+
+    assert again.repeated and again.queue_id == first.queue_id and len(agent_queue.items("r1")) == 1
+    if left == "pending":
+        await _until(lambda: agent_queue.items("r1")[-1].state == "replied", "the waiting message was never handed over")
+        assert _replies() == ["got still there?"]
+    else:  # its dispatcher (recorded, not run here) settles or re-sends a taken one; an answered one is left alone
+        assert provider.dispatchers == (["r1"] if left == "running" else []) and _replies() == []
+    followups.close()
+
+
 @pytest.mark.asyncio
 async def test_a_message_left_at_turn_end_that_nothing_can_start_says_why(provider, monkeypatch, caplog):
     provider.starts_ahead = False  # no child ahead (a fenced run, a CLI that cannot): only a dispatcher could
