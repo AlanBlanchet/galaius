@@ -81,12 +81,12 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_error(404)
             return
         body = json.dumps(payload).encode()
+        self._record(200)  # before answering: the client's next request may be logged by another thread
         self.send_response(200)
         self.send_header("content-type", "application/json")
         self.send_header("content-length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
-        self._record(200)
 
     def log_message(self, format: str, *args: object) -> None:
         return
