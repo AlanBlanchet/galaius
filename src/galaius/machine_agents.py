@@ -62,8 +62,11 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-#: Web-started runs working at once on one computer; one more start is refused until one ends.
-LIVE_WEB_RUNS = 4
+#: Conversations started from the web working at once on one computer, each with whatever agents it
+#: launched; one more start is refused until one ends (`WebRuns.refuse_full`).
+LIVE_WEB_CONVERSATIONS = 4
+#: A run's statuses while it works (`waiting` for its owner is not working).
+WORKING = frozenset({"starting", "running"})
 #: Seconds a start request waits for its agent to be running; the start itself goes on past it.
 START_SECONDS = 120.0
 #: What a cold `tail` (no cursor) reads back from the end of a run's stream.
@@ -166,9 +169,20 @@ class WebRuns(BaseModel):
         """These runs and every run they launched, as the launcher's registry has them now."""
         return reg.trees(frozenset(str(item.run_id) for item in self.read()))
 
+    def live(self) -> int:
+        """The conversations started from the web that work now (one of their runs starting or running): one counts
+        ONCE, whatever agents it launched (owner 2026-10-10: two conversations and their five sub-agents refused his
+        third); one waiting for its owner, with nothing of it working, does not count."""
+        return sum(1 for runs in reg.forest(frozenset(str(item.run_id) for item in self.read())).values() if any(run.status in WORKING for run in runs))
+
+    def refuse_full(self) -> None:
+        """Refuses one more start while `LIVE_WEB_CONVERSATIONS` started from the web work here."""
+        if (working := self.live()) >= LIVE_WEB_CONVERSATIONS:
+            raise PermissionError(f"{working} conversations started from the web are already working on this computer; stop one first")
+
     def working(self) -> bool:
         """One of these runs, or a run it launched, is starting or running now (waiting for its owner is not working)."""
-        return any(run.status in {"starting", "running"} for run in self.runs())
+        return any(run.status in WORKING for run in self.runs())
 
     def stop_live(self) -> tuple[int, int]:
         """Stops every one still working (agents switched off here): (how many stopped, how many
@@ -727,10 +741,7 @@ class MachineAgents(BaseModel):
     def _prepare_start(self, request: AgentStartRequest) -> tuple[Path, int, FenceSpec | None, UUID | None]:
         """What a start is checked and prepared with before anything runs: its folder, how many
         project secrets were written there, and its fence and staging review when the fence is on."""
-        _, runs = self._allowed()
-        working = sum(1 for run in runs if run.status in {"running", "waiting"})
-        if working >= LIVE_WEB_RUNS:
-            raise PermissionError(f"{working} agents started from the web are already working on this computer; stop one first")
+        self.runs.refuse_full()
         folder = self.folder(request.root, request.path)
         if request.model is not None:
             # The launcher runs a role on what its own rule picks (a per-run model is never
@@ -954,9 +965,7 @@ class MachineAgents(BaseModel):
         if not self.answer_approvals or self.sessions is None:
             raise PermissionError("answering a session's approvals from the web is off on this computer; its owner turns it on there with `galaius machine agents --approvals on`")
         folder = await asyncio.to_thread(self.folder, request.root, request.path)
-        _, runs = await asyncio.to_thread(self._allowed)
-        if sum(1 for run in runs if run.status in {"running", "waiting"}) >= LIVE_WEB_RUNS:
-            raise PermissionError(f"{LIVE_WEB_RUNS} agents started from the web are already working on this computer; stop one first")
+        await asyncio.to_thread(self.runs.refuse_full)
         route, models, reason = await self.sessions.route()
         if route is None:
             raise PermissionError(reason)
@@ -1046,9 +1055,7 @@ class MachineAgents(BaseModel):
             raise PermissionError("this conversation is not one this computer offers to continue (a Codex copy needs the approvals setting on too)")
         assert self.sessions is not None
         folder = await asyncio.to_thread(self.folder, found.root, found.path)
-        _, runs = await asyncio.to_thread(self._allowed)
-        if sum(1 for run in runs if run.status in {"running", "waiting"}) >= LIVE_WEB_RUNS:
-            raise PermissionError(f"{LIVE_WEB_RUNS} agents started from the web are already working on this computer; stop one first")
+        await asyncio.to_thread(self.runs.refuse_full)
         route, _, reason = await self.sessions.route()
         if route is None:
             raise PermissionError(reason)
@@ -1143,9 +1150,7 @@ class MachineAgents(BaseModel):
         fork: the editor's conversation is never written), in the conversation's own folder — read
         HERE from its file, and only when it lies inside an agent root."""
         self._require_continue()
-        _, runs = self._allowed()
-        if sum(1 for run in runs if run.status in {"running", "waiting"}) >= LIVE_WEB_RUNS:
-            raise PermissionError(f"{LIVE_WEB_RUNS} agents started from the web are already working on this computer; stop one first")
+        self.runs.refuse_full()
         cwd, first, _, _ = self._read_editor(self._editor_file(request.session_id))
         root, where = self._place(cwd)
         if not root:

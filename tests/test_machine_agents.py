@@ -742,6 +742,34 @@ def test_web_runs_are_working_while_a_run_they_launched_still_runs(base: Path, t
     assert runs.working() is working
 
 
+def test_the_web_cap_counts_conversations_never_the_agents_they_launched(base: Path, tmp_path: Path) -> None:
+    """Owner 2026-10-10 (« this PC had refused the message »): two conversations from the web and the agents they
+    launched refused his third; each conversation counts once, one waiting for him not at all."""
+    agents = _agents(base, tmp_path)
+
+    def run(**fields) -> str:
+        run_id = str(uuid4())
+        reg.save_run(reg.AgentRun(run_id=run_id, provider="claude", name="r", cwd=str(base / "project"), started_at=1.0, pid=os.getpid(), **fields))
+        return run_id
+
+    def started(**fields) -> str:
+        agents.runs.add(WebRun(run_id=(conversation := run(**fields)), root="project"))
+        return conversation
+
+    first, second = started(), started()
+    started(kind="conversation", status="waiting")
+    for parent in (first, first, first, second, second):
+        run(parent_run_id=run(parent_run_id=parent))  # an agent it launched, and the one that agent launched
+    run(parent_run_id=str(uuid4()), root_run_id=second)  # its parent's record gone: still the second conversation's
+    start = _request("start", root="project", role="main", text="go")
+    agents._prepare_start(start)
+    assert agents.runs.live() == 2
+    run(parent_run_id=started(kind="conversation", status="waiting"))  # idle itself, one of its agents working: it counts
+    started()
+    with pytest.raises(PermissionError, match="^4 conversations started from the web are already working on this computer"):
+        agents._prepare_start(start)
+
+
 class TransferServer:
     """The server's transfer routes as the PCs reach them over HTTP (`WorkspaceArchive.part_route`):
     parts kept by (transfer, index), each PUT's digest header checked, the ending POST kept."""

@@ -2027,19 +2027,19 @@ def claim_limit_resume(run_id: str, *, now: float | None = None) -> AgentRun | N
         return _merge_record_locked(run_id, {"resume_at": None, "resumed_at": moment})
 
 
-def trees(root_run_ids: frozenset[str]) -> list[AgentRun]:
-    """The runs `root_run_ids` name and every run they launched, at any depth (parent links, or a
-    provider child's recorded root), newest first, status re-checked from the record and pid alone
-    (never the stream): a poller watching a few trees pays one `stat()` per record."""
+def forest(root_run_ids: frozenset[str]) -> dict[str, list[AgentRun]]:
+    """Each of `root_run_ids` with every run it launched, at any depth (parent links, or a provider child's
+    recorded root), newest first, status re-checked from the record and pid alone (never the stream): a
+    poller watching a few trees pays one `stat()` per record."""
     if not root_run_ids:
-        return []
+        return {}
     records = _stored_records()
-    members, grew = set(root_run_ids), True
+    tree_of, grew = {run_id: run_id for run_id in root_run_ids}, True
     while grew:
         grew = False
         for run in records:
-            if run.run_id not in members and (run.parent_run_id in members or run.root_run_id in members):
-                members.add(run.run_id)
+            if run.run_id not in tree_of and (top := tree_of.get(run.parent_run_id or "") or tree_of.get(run.root_run_id or "")) is not None:
+                tree_of[run.run_id] = top
                 grew = True
     def current(run: AgentRun) -> AgentRun:
         status = _status_for(run)
@@ -2047,7 +2047,15 @@ def trees(root_run_ids: frozenset[str]) -> list[AgentRun]:
         # finished while nothing watched it) — the only case that pays for reading the stream.
         # `_derive` compare-and-swaps against the STORED record, so it gets that record as read.
         return _derive(run) if status == "interrupted" else run.model_copy(update={"status": status})
-    return sorted((current(run) for run in records if run.run_id in members), key=lambda run: run.started_at, reverse=True)
+    grouped: dict[str, list[AgentRun]] = {run_id: [] for run_id in root_run_ids}
+    for run in sorted((current(run) for run in records if run.run_id in tree_of), key=lambda run: run.started_at, reverse=True):
+        grouped[tree_of[run.run_id]].append(run)
+    return grouped
+
+
+def trees(root_run_ids: frozenset[str]) -> list[AgentRun]:
+    """The runs `root_run_ids` name and every run they launched (`forest`), newest first."""
+    return sorted((run for runs in forest(root_run_ids).values() for run in runs), key=lambda run: run.started_at, reverse=True)
 
 
 def session_ids() -> frozenset[str]:
