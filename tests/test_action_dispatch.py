@@ -439,8 +439,9 @@ async def test_desktop_screenshot_wait_elapses_before_each_capture(monkeypatch):
     await dispatch._run_actions_desktop(
         win, [ScreenshotAction(wait='50ms'), ScreenshotAction(wait='50ms')], None
     )
-    assert captured[0] - before >= .045
-    assert captured[1] - captured[0] >= .145  # step settle (100 ms) plus next requested wait
+    tick = max(.005, time.get_clock_info("monotonic").resolution)  # 15.6 ms on Windows
+    assert captured[0] - before >= .05 - tick
+    assert captured[1] - captured[0] >= .15 - tick  # step settle (100 ms) plus next requested wait
 
 
 # =============================================================================================
