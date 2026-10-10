@@ -275,7 +275,9 @@ def test_a_second_install_line_reopens_the_same_page_while_its_waiter_lives(join
     account_login.login("https://galaius.example.org", allow_runs=False, open_browser=True, detach=True)
     first = account_login.Pending.read  # its waiter has not refreshed it yet: not to be reused
     assert first() is None
-    account_login.Pending.model_validate_json(account_login.Pending.path().read_text()).current()  # the waiter's first poll
+    waiter = account_login.Pending.model_validate_json(account_login.Pending.path().read_text())
+    waiter.claim()  # the waiter names itself (this process), then polls
+    waiter.current()
     account_login.login("https://galaius.example.org", allow_runs=False, open_browser=True, detach=True)
     assert len(handed) == 1 and pages == ["https://x/plateform/link?code=BCDF-GHJK"] * 2
     stale = (datetime.now() - timedelta(minutes=2)).timestamp()
@@ -391,3 +393,16 @@ def test_logout_over_an_unreadable_machine_file_still_signs_out_with_the_cli_key
     account_login.logout()
     assert revoked == [PUBLIC] and not path.exists() and path.with_name(path.name + ".unreadable").exists()
     assert "Signed out" in capsys.readouterr().out
+
+
+def test_a_pending_page_whose_waiter_is_gone_is_never_reopened(joining: Path) -> None:
+    """An installer replacing Galaius stops an earlier install's waiter: the next install starts a
+    new sign-in instead of reopening a page no one would collect, whatever the file's age."""
+    pending = account_login.Pending(mark="mine", link="https://x/link?code=BCDF-GHJK", match="47", expires_at=datetime.now(UTC) + timedelta(minutes=9))
+    pending.write()
+    pending.claim()  # the waiter: this process
+    assert account_login.Pending.read().pid == os.getpid()
+    gone = subprocess.run([sys.executable, "-c", "import os; print(os.getpid())"], capture_output=True, text=True, check=True)
+    claimed = account_login.Pending.read()
+    account_login.PRIVATE_FILES.write_text(account_login.Pending.path(), claimed.model_copy(update={"pid": int(gone.stdout), "started": 1}).model_dump_json())
+    assert account_login.Pending.read() is None

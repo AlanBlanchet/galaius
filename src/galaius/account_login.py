@@ -42,6 +42,7 @@ from galaius.machine_service import MACHINE_SERVICE, ServiceUnavailable
 from galaius.machines import MachineConfig, MachineRunner
 from galaius.paths import UserPaths
 from galaius.private_files import PRIVATE_FILES
+from galaius.processes import process_started
 from galaius.windowless import console_python
 
 
@@ -541,6 +542,11 @@ class Pending(BaseModel):
     #: The number the approval page asks for when the browser is on another network (`DeviceLoginStarted.match`).
     match: str
     expires_at: datetime
+    #: The waiter's process (`process_started` names it for good), written by the waiter itself
+    #: (`claim`): a page whose waiter is gone (stopped by an installer replacing Galaius, the
+    #: computer restarted) is never reopened, whatever the file's age.
+    pid: int | None = None
+    started: int | None = None
     #: A waiter polls every few seconds: a file older than this has none behind it any more.
     alive_within: ClassVar[timedelta] = timedelta(seconds=30)
 
@@ -557,13 +563,25 @@ class Pending(BaseModel):
         except (OSError, ValueError):
             return None
         now = datetime.now(UTC)
-        return pending if pending.expires_at > now + timedelta(minutes=1) and now - touched < cls.alive_within else None
+        alive = pending.pid is not None and pending.started is not None and process_started(pending.pid) == pending.started
+        return pending if alive and pending.expires_at > now + timedelta(minutes=1) and now - touched < cls.alive_within else None
 
     def write(self) -> None:
         """Written stale: only its waiter's own refresh (`current`) makes it live, so a waiter that
         never started (or died starting, e.g. a second install replacing its files) is never reused."""
         PRIVATE_FILES.write_text(self.path(), self.model_dump_json())
         os.utime(self.path(), (0, 0))
+
+    def claim(self) -> None:
+        """The waiter (this process) names itself in its sign-in's file, still marked as its own. Not
+        locked: a second install writing its own sign-in in the same milliseconds may be overwritten,
+        and its waiter then stops (its page asks for a new sign-in at the next install line)."""
+        try:
+            pending = Pending.model_validate_json(PRIVATE_FILES.read_text(self.path()))
+        except (OSError, ValueError):
+            return
+        if pending.mark == self.mark:
+            PRIVATE_FILES.write_text(self.path(), pending.model_copy(update={"pid": os.getpid(), "started": process_started(os.getpid())}).model_dump_json())
 
     def current(self) -> bool:
         """Still this computer's pending sign-in (its file refreshed: the waiter is alive)."""
@@ -654,6 +672,7 @@ def _resumed(account: AccountLogin) -> None:
             _reconfigured(account, existing, agents=None)
         return
     pending = Pending(mark=handed.mark, link=handed.started.verification_uri_complete, match=handed.started.match, expires_at=datetime.now(UTC))
+    pending.claim()
     with account.client() as http:
         _joined(account, http, handed.started, agents=handed.agents, current=pending.current)
     Pending.path().unlink(missing_ok=True)
