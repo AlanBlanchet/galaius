@@ -483,7 +483,7 @@ class SaidHere(BaseModel):
     model_config = ConfigDict(frozen=True)
     #: `{machine}`, `{server}`: the server refused this computer's token (`_held`).
     not_held: str
-    #: `{kind}`, `{aside}`: the machine file did not read (`UnreadableMachine`), kept aside.
+    #: `{kind}` (an error name: the terminal's line only), `{aside}`: the machine file did not read (`UnreadableMachine`), kept aside.
     unreadable: str
 
 
@@ -492,7 +492,7 @@ SAID_HERE: dict[bool, SaidHere] = {
     False: SaidHere(not_held="This computer's connection (machine {machine}) is no longer known to {server} (removed on the web, or left by an earlier install): it signs in again.",
                     unreadable="This computer's machine file cannot be read ({kind}); kept as {aside}, this computer signs in again."),
     True: SaidHere(not_held="La connexion de cet ordinateur (machine {machine}) n'est plus connue de {server} (retiré sur le web, ou laissé par une installation précédente) : il se reconnecte.",
-                   unreadable="Le fichier de connexion de cet ordinateur est illisible ({kind}) ; gardé sous {aside}, il se reconnecte."),
+                   unreadable="Le fichier de connexion de cet ordinateur est illisible ; gardé sous {aside}, il se reconnecte."),
 }
 
 

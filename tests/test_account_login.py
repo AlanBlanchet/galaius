@@ -373,7 +373,7 @@ def test_the_install_line_signs_in_afresh_over_a_connection_the_server_no_longer
     kept = path if leftover == "removed" else path.with_name(path.name + ".unreadable")
     assert kept.read_bytes() == before and calls == (["stop"] if leftover == "removed" else [])
     said = capsys.readouterr()
-    assert "Installé : continuez dans votre navigateur" in said.out and "il se reconnecte" in said.out + said.err and "signs in again" not in said.out + said.err
+    assert "Installé : continuez dans votre navigateur" in said.out and "il se reconnecte" in said.out + said.err and "signs in again" not in said.out + said.err and "Error" not in said.out + said.err
 
 
 @pytest.mark.parametrize("answer, held", [
