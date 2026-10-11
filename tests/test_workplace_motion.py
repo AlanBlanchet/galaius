@@ -625,8 +625,10 @@ def test_forty_eight_actors_hold_frame_budget_and_input_reaches_the_next_paint(s
         return ordered[min(len(ordered) - 1, int(len(ordered) * fraction))]
 
     def nearest_rank_p95(values):
+        # Wall durations are differences of performance.now() readings, whose grain is >= 5 us:
+        # anything finer is float noise (20.000000000116 is a 20.0 ms reading), so compare in us.
         ordered = sorted(values)
-        return ordered[math.ceil(0.95 * len(ordered)) - 1] if ordered else None
+        return round(ordered[math.ceil(0.95 * len(ordered)) - 1], 3) if ordered else None
 
     for control in result["controls"]:
         samples = sorted(thread_samples[control["name"]], key=lambda item: item["sequence"])

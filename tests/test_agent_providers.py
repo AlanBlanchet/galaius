@@ -306,6 +306,7 @@ def test_codex_mixed_native_and_mcp_tools_needs_acceptance_but_still_enforces_th
 ])
 def test_codex_registration_uses_provider_effective_configuration(tmp_path, monkeypatch, rows, expected):
     provider = CodexProvider()
+    monkeypatch.setattr(provider, "available", lambda: True)
     monkeypatch.setattr(provider, "executable", lambda: "fixture-codex")
     calls = []
 
@@ -320,9 +321,17 @@ def test_codex_registration_uses_provider_effective_configuration(tmp_path, monk
     })]
 
 
+def test_no_codex_installed_registers_nothing_without_asking_it(tmp_path, monkeypatch):
+    provider = CodexProvider()
+    monkeypatch.setattr(provider, "available", lambda: False)
+    monkeypatch.setattr(subprocess, "run", lambda *_, **__: pytest.fail("no Codex to ask"))
+    assert provider.has_mcp_server("galaius", cwd=str(tmp_path)) is False
+
+
 @pytest.mark.parametrize("failure", ["timeout", "os-error", "exit", "json", "shape"])
 def test_codex_registration_discovery_fails_closed_without_echoing_output(tmp_path, monkeypatch, failure):
     provider = CodexProvider()
+    monkeypatch.setattr(provider, "available", lambda: True)
     monkeypatch.setattr(provider, "executable", lambda: "fixture-codex")
 
     def failed(argv, **kwargs):

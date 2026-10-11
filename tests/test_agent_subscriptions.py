@@ -29,6 +29,8 @@ from galaius.machine_agents import MachineAgents
 from galaius.cli.app_commands import agents_resume
 from tests.support.agents import ScriptedProvider, install_fake_cli, install_provider, use_policy
 
+#: Windows keeps no POSIX mode bits (`chmod` sets only the read-only flag).
+POSIX_MODES = sys.platform != "win32"
 FAKE_CLAUDE = Path(__file__).parent / "fixtures" / "agents" / "fake_claude_login.py"
 #: Lines as the vendors wrote them (a Claude Code run's stream; a Codex session record), only ids shortened.
 CLAUDE_LINE = ('{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1791559200,"rateLimitType":"five_hour","overageStatus":"rejected",'
@@ -67,7 +69,7 @@ def test_a_subscription_signs_in_and_out_in_its_own_folder_and_the_default_login
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     install_fake_cli(bin_dir, "claude", FAKE_CLAUDE)
-    path = f"{bin_dir}:{Path(sys.executable).parent}"
+    path = os.pathsep.join((str(bin_dir), str(Path(sys.executable).parent)))
     monkeypatch.setenv("PATH", path)
     monkeypatch.setattr(AgentPrograms, "poll_seconds", 0.05)
     monkeypatch.setattr(AgentPrograms, "installable", staticmethod(lambda: (PROVIDERS["claude"],)))
@@ -81,7 +83,7 @@ def test_a_subscription_signs_in_and_out_in_its_own_folder_and_the_default_login
     folder = Subscription.of(subscription_id).folder
     default = next(item for item in programs.states() if item.subscription_id is None)
     assert (state.step, state.account) == ("ready", "second@example.com") and len(state.login) == 16 and state.login != default.login
-    assert folder.stat().st_mode & 0o777 == 0o700 and (folder / ".credentials.json").exists()
+    assert (not POSIX_MODES or folder.stat().st_mode & 0o777 == 0o700) and (folder / ".credentials.json").exists()
     assert default.account == "owner@example.com"
     programs.sign_out("claude", subscription_id)
     assert not folder.exists()
@@ -92,7 +94,7 @@ def test_two_subscriptions_in_one_launch_are_two_login_checks(tmp_path: Path, mo
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     install_fake_cli(bin_dir, "claude", FAKE_CLAUDE)
-    path = f"{bin_dir}:{Path(sys.executable).parent}"
+    path = os.pathsep.join((str(bin_dir), str(Path(sys.executable).parent)))
     monkeypatch.setenv("PATH", path)
     log = tmp_path / "status.log"
     first, second = Subscription.create(uuid4(), "claude"), Subscription.create(uuid4(), "claude")
@@ -248,6 +250,7 @@ def test_a_fenced_run_binds_its_subscriptions_credential_and_no_other_login(tmp_
     assert len({bind.target for bind in fence.binds if bind.writable}) == len([bind for bind in fence.binds if bind.writable])
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no parent walk (`registry.ancestor_run`)")
 @pytest.mark.asyncio
 async def test_a_launch_inside_a_pinned_run_stays_on_its_subscription_whatever_its_environment_says(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The run this process descends from (here: pytest's own parent, registered as a pinned run)
@@ -331,7 +334,7 @@ def test_a_subscription_takes_the_owners_hooks_permissions_and_instructions_and_
     assert settings == {"statusLine": {"type": "command", "command": "own"}, "env": {"KEPT": "1"}, "permissions": {"allow": ["Bash(git:*)"]},
                         "hooks": {"Stop": [{"hooks": [{"type": "command", "command": f"{folder}/hooks/stop.sh"},
                                                       {"type": "command", "command": f"python3 {folder}/.credentials.json"}]}]}}
-    assert ".claude/" not in json.dumps(settings["hooks"]) and (claude.folder / "hooks" / "stop.sh").stat().st_mode & 0o700 == 0o700
+    assert ".claude/" not in json.dumps(settings["hooks"]) and (not POSIX_MODES or (claude.folder / "hooks" / "stop.sh").stat().st_mode & 0o700 == 0o700)
     source = home / ".claude" / "hooks"
     assert all((claude.folder / "hooks" / path.relative_to(source)).read_bytes() == path.read_bytes() for path in source.rglob("*") if path.is_file())
     codex_hooks = json.loads((codex.folder / "hooks.json").read_text())

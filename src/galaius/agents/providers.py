@@ -1657,7 +1657,10 @@ class CodexProvider(AgentProvider):
                          if line.strip().lower().startswith("logged in using "))
 
     def has_mcp_server(self, name: str, *, cwd: str) -> bool:
-        """Ask Codex to resolve all configuration layers; retain registration names only."""
+        """Ask Codex to resolve all configuration layers; retain registration names only.
+        No Codex CLI installed means no Codex configuration registers anything."""
+        if not self.available():
+            return False
         try:
             result = subprocess.run(
                 [self.executable(), "mcp", "list", "--json"],
