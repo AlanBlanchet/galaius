@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import re
 import time
 from pathlib import Path
 from uuid import uuid4
@@ -25,7 +26,8 @@ EVERYWHERE = ConversationScope(root="")
 
 
 def _claude_session(home: Path, project: Path, session: str, records: list[dict]) -> Path:
-    path = home / "projects" / str(project).replace("/", "-") / f"{session}.jsonl"
+    # The CLI's own folder name for a project: every character but a letter or digit as "-".
+    path = home / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(project)) / f"{session}.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     base = {"cwd": str(project), "sessionId": session}
     path.write_text("".join(json.dumps(base | record) + "\n" for record in records), encoding="utf-8")
@@ -49,6 +51,8 @@ def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
     project, other = tmp_path / "work" / "billing", tmp_path / "work" / "website"
     for folder in (project, other):
         (folder / ".git").mkdir(parents=True)
+    # As the scope resolves them (a temporary folder's 8.3 short name on Windows is not its resolved one).
+    project, other = project.resolve(), other.resolve()
     monkeypatch.setenv("SERVICE_PASSWORD", ENV_SECRET)
     claude = tmp_path / ".claude"
     _claude_session(claude, project, str(uuid4()), _turns("why does the invoice rounding drift", f"rounding drifts in cents; the key {ENV_SECRET} was in the log"))
