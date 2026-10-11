@@ -65,5 +65,6 @@ def test_a_program_left_running_never_stalls_the_install(tmp_path: Path) -> None
     started = time.monotonic()
     shown = sh(program, env={"HOME": str(tmp_path), "XDG_DATA_HOME": str(tmp_path / "data"), "LANG": "C"})
     assert time.monotonic() - started < 3 and shown.stdout.decode() == "opened\n"
-    log = next((tmp_path / "data/galaius/logs").glob("install-*.log")).read_text()
+    data = tmp_path / "Library/Application Support" if sys.platform == "darwin" else tmp_path / "data"  # as `run` picks it
+    log = next((data / "galaius/logs").glob("install-*.log")).read_text()
     assert [line.split(" ", 2)[2] for line in log.splitlines()][::2] == ["test install", "-- connecting this computer", "done"]
