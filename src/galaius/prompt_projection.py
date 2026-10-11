@@ -32,6 +32,10 @@ MANIFEST_NAME = "projection-manifest.json"
 PROJECTION_STATE = "galaius-prompts.json"
 
 
+class NoMainAgent(ValueError):
+    """The workspace has no main agent chosen yet: there are no instructions to install, nothing failed."""
+
+
 class ConsumerHomes(BaseModel):
     """Where the projection reaches each agent CLI: its folder (the user's own under home by default,
     a subscription's own folder otherwise), and whether home-level and editor files are written too.
@@ -173,7 +177,7 @@ def _server_outputs(catalog: AgentCatalog, home: Path, projection: Path, gateway
     roles = sorted(snapshot.agents, key=lambda agent: agent.role_key or str(agent.id))
     identifiers = {agent.id: agent.role_key or f"agent-{agent.id}" for agent in roles}
     if snapshot.root_agent is None:
-        raise ValueError("choose the workspace's main agent before installing its instructions")
+        raise NoMainAgent("choose the workspace's main agent before installing its instructions")
     main = snapshot.revision(snapshot.root_agent)
     if not snapshot.prompt_heads:
         raise ValueError("server catalog lacks authoritative prompt heads; upgrade the server first")

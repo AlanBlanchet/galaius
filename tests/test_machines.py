@@ -13,6 +13,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
@@ -22,7 +23,8 @@ import websockets
 from pydantic import SecretStr
 from galaius_core import ConnectionResourceRef, FunctionImplementation, MachineCommand, MachineDataRequest, MachineFileQuery, MachineRef, ModelImplementation, PortSpec, ScriptFile, ScriptImplementation, UserModelOrigin, WorkflowInterface, WorkflowKey, WorkflowNode, WorkflowRevision, WorkflowRevisionRef
 
-from galaius import server_workspace
+from galaius import prompt_mirror, prompt_projection, server_workspace
+from galaius.agents.catalog_connection import CatalogConnection
 from galaius.cli import machine_command
 from galaius.cli.machine_command import _described_step
 from galaius.functions import FunctionRegistry, discover_python, discover_shell
@@ -40,6 +42,27 @@ def test_the_machine_channel_never_trusts_the_systems_cached_intermediates(serve
     server_tls.cache_clear()
     tls = MachineRunner._channel(MachineRunner._channel_url(server), "token").connection_kwargs.get("ssl")
     assert (tls is server_tls() and tls.verify_mode == ssl.CERT_REQUIRED and tls.check_hostname) is verified
+
+
+@pytest.mark.parametrize(("refusal", "level"), [
+    (prompt_projection.NoMainAgent("choose the workspace's main agent before installing its instructions"), logging.INFO),
+    (OSError("disk full"), logging.WARNING),
+])
+def test_a_workspace_with_no_main_agent_is_not_a_prompt_sync_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, refusal: Exception, level: int) -> None:
+    """A fresh workspace has no main agent yet: its PC said « prompt sync failed » in its log, read as an error."""
+    def refuse(*_: object) -> None:
+        raise refusal
+
+    async def one_round(_: float) -> None:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(CatalogConnection, "load", classmethod(lambda cls: SimpleNamespace(auth_mode="machine")))
+    monkeypatch.setattr(prompt_mirror, "changed", lambda *_: True)
+    monkeypatch.setattr(prompt_mirror, "sync", refuse)
+    monkeypatch.setattr(asyncio, "sleep", one_round)
+    with caplog.at_level(logging.INFO, logger="galaius.machines"), pytest.raises(asyncio.CancelledError):
+        asyncio.run(MachineRunner(tmp_path / "machine.json")._sync_prompts())
+    assert [record.levelno for record in caplog.records if record.name == "galaius.machines"] == [level]
 
 
 def test_machine_config_round_trips_token_with_owner_only_permissions(tmp_path: Path) -> None:

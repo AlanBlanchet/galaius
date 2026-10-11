@@ -2014,6 +2014,10 @@ class MachineRunner:
                         or (not failed and await asyncio.to_thread(prompt_projection.unprojected_subscriptions))):
                     report = await asyncio.to_thread(prompt_mirror.sync, connection, prompt_mirror.mirror_root(), PromptMode.installed)
                     logger.info("prompts synced: %s", "; ".join(report.notes))
+            except prompt_projection.NoMainAgent:
+                seen.clear()
+                failed = True  # asked again next full round, once a main agent may be chosen
+                logger.info("no agent instructions to install yet: this workspace has no main agent chosen")
             except (OSError, ValueError, httpx.HTTPError) as error:
                 seen.clear()
                 failed = True  # a failed sync waits for the next full round
