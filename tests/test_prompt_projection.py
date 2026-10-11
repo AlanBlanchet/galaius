@@ -272,12 +272,12 @@ def test_each_subscription_folder_gets_its_own_clis_projection_and_no_default_lo
     assert set(prompt_projection.unprojected_subscriptions()) == {claude.folder, codex.folder}
     prompt_projection.install_subscription_projections(projection, home, vscode)
 
-    assert (claude.folder / "CLAUDE.md").read_text() == "instructions\n" and (claude.folder / "agents" / "a.md").is_file()
+    assert not (claude.folder / "CLAUDE.md").exists() and (claude.folder / "agents" / "a.md").is_file()  # its instructions are the owner's (adopt)
     assert (claude.folder / "skills" / "s" / "SKILL.md").is_file() and (claude.folder / "hooks" / "hook.sh").is_file()
     hook = json.loads((claude.folder / "settings.json").read_text())["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
     assert hook == f"{claude.folder.as_posix()}/hooks/hook.sh"
     assert (claude.folder / ".credentials.json").read_text() == '{"claudeAiOauth": {}}' and not (claude.folder / "AGENTS.md").exists()
-    assert (codex.folder / "AGENTS.md").read_text() == "agents\n" and (codex.folder / "skills" / "s" / "SKILL.md").is_file()
+    assert not (codex.folder / "AGENTS.md").exists() and (codex.folder / "skills" / "s" / "SKILL.md").is_file()
     assert not (codex.folder / "CLAUDE.md").exists() and not vscode.exists() and not (home / "AGENTS.md").exists()
     assert {folder: sorted((home / folder).rglob("*")) for folder in (".claude", ".codex")} == defaults
     assert prompt_projection.unprojected_subscriptions() == ()

@@ -223,6 +223,9 @@ class AgentProvider(ABC):
     #: one decides), and that folder's name under the user's home when none is set (`auth_home`).
     auth_home_env: ClassVar[tuple[str, ...]] = ()
     home_folder: ClassVar[str] = ""
+    #: Its user settings file in that folder, when it has one a subscription folder takes keys of
+    #: (`Subscription.adopt`).
+    settings_file: ClassVar[str | None] = None
     permission_option: ClassVar[str] = "--permission-mode"
     #: How this CLI is told to load none of the folder's own settings (`PROJECT_SETTINGS_OFF`);
     #: None: it cannot be, so it never starts or resumes where they must not load.
@@ -688,6 +691,7 @@ class ClaudeCodeProvider(AgentProvider):
     media_model_field = "claude_media_criteria"
     auth_home_env = ("CLAUDE_CONFIG_DIR",)
     home_folder = ".claude"
+    settings_file = "settings.json"
     no_extra_usage_guidance = (
         "in Claude Settings → Usage, keep Usage credits disabled, ensure prepaid balance is zero, "
         "and turn auto-reload off"

@@ -232,3 +232,28 @@ def test_a_folder_with_a_broken_state_file_still_has_its_token_masked() -> None:
     (subscription.folder / ".credentials.json").write_text(json.dumps({"claudeAiOauth": {"accessToken": token}}))
     subscription.state_path.write_text("{not json")
     assert Subscription.all() == () and token in Subscription.tokens()
+
+
+def test_a_subscription_takes_the_owners_hooks_permissions_and_instructions_and_nothing_else() -> None:
+    home = Path.home()
+    (home / ".claude").mkdir()
+    (home / ".codex").mkdir()
+    (home / ".claude" / "settings.json").write_text(json.dumps({
+        "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "~/.claude/hooks/stop.sh"}]}]}, "permissions": {"allow": ["Bash(git:*)"]},
+        "env": {"ANTHROPIC_API_KEY": "sk-owner"}, "apiKeyHelper": "~/bin/key", "model": "owner-model"}))
+    (home / ".claude" / "CLAUDE.md").write_text("owner instructions\n")
+    (home / ".claude" / ".credentials.json").write_text('{"claudeAiOauth": {"accessToken": "owner"}}')
+    (home / ".codex" / "AGENTS.md").write_text("owner codex instructions\n")
+    before = tree(home / ".claude"), tree(home / ".codex")
+    claude, codex = Subscription.create(uuid4(), "claude"), Subscription.create(uuid4(), "codex")
+    (claude.folder / "settings.json").write_text(json.dumps({"statusLine": {"type": "command", "command": "own"}, "env": {"KEPT": "1"}}))
+
+    for subscription in (claude, codex):
+        subscription.adopt({"HOME": str(home), **subscription.overlay()})  # as inside a pinned run: its variable names the folder
+
+    settings = json.loads((claude.folder / "settings.json").read_text())
+    assert settings == {"statusLine": {"type": "command", "command": "own"}, "env": {"KEPT": "1"},
+                        "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "~/.claude/hooks/stop.sh"}]}]}, "permissions": {"allow": ["Bash(git:*)"]}}
+    assert (claude.folder / "CLAUDE.md").read_text() == "owner instructions\n" and (codex.folder / "AGENTS.md").read_text() == "owner codex instructions\n"
+    assert not (claude.folder / ".credentials.json").exists() and not (codex.folder / "auth.json").exists()
+    assert (tree(home / ".claude"), tree(home / ".codex")) == before

@@ -54,8 +54,12 @@ class ConsumerHomes(BaseModel):
         return cls.of(home).model_copy(update={cli.removeprefix("."): folder, "only": frozenset({folder})})
 
     def writes(self, destination: Path) -> bool:
-        """Whether `destination` is written here: inside `only` when set, and never a CLI's credential file."""
-        return destination.name not in Subscription.CREDENTIALS and (not self.only or any(destination.is_relative_to(folder) for folder in self.only))
+        """Whether `destination` is written here: inside `only` when set, and never a CLI's credential
+        file; a subscription folder's own instructions file is the owner's (`Subscription.adopt`)."""
+        if destination.name in Subscription.CREDENTIALS:
+            return False
+        return not self.only or any(destination.is_relative_to(folder) and destination not in (folder / "CLAUDE.md", folder / "AGENTS.md")
+                                    for folder in self.only)
 _OUTPUT_ROOTS = ("agents", "skills", "rules", "scopes", "references")
 _OUTPUT_FILES = ("AGENTS.md", "instructions.md", "org.json")
 _PASSTHROUGH_ROOTS = ("hooks",)

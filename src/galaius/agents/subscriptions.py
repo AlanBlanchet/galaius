@@ -68,6 +68,9 @@ class Subscription(BaseModel):
     #: Written into a new folder, per provider: Codex keeps its login in a file there, never in the
     #: system keyring, which a second login would share.
     FIRST_FILES: ClassVar[dict[str, dict[str, str]]] = {"codex": {"config.toml": 'cli_auth_credentials_store = "file"\n'}}
+    #: The user settings keys a subscription folder takes from the default login's at each launch
+    #: (`adopt`): what its runs may do and the hooks that run, never `env`, `apiKeyHelper` or another key.
+    ADOPTED_SETTINGS: ClassVar[tuple[str, ...]] = ("hooks", "permissions")
     #: Shorter strings of a credential file are not secrets (a type, a plan name).
     SECRET_LENGTH: ClassVar[int] = 16
 
@@ -154,6 +157,26 @@ class Subscription(BaseModel):
     def program(self) -> AgentProvider:
         return PROVIDERS[self.provider]
 
+    def adopt(self, environment: Mapping[str, str]) -> None:
+        """The owner's own config, as his default login of this CLI has it now, written into this
+        folder before a launch: the user-level instructions file, and of the settings file only
+        `ADOPTED_SETTINGS` (the folder's other keys kept). Nothing else of the default home is read
+        (no credential, `.claude.json`, session or history) and nothing is ever written there."""
+        default = self.program.auth_home(environment)
+        if default.resolve().is_relative_to(self.root().resolve()):
+            # A launch inside a pinned run: its variables name this folder; the default is home's own.
+            default = self.program.auth_home({key: value for key, value in environment.items() if key not in self.program.auth_home_env})
+        login = {name: str(default) for name in self.program.auth_home_env}
+        if (instructions := self.program.user_instructions({**environment, **login})) is not None and instructions.is_file():
+            self._replace(self.folder / instructions.name, instructions.read_bytes())
+        if self.program.settings_file is not None and (settings := default / self.program.settings_file).is_file():
+            owner = json.loads(settings.read_text(encoding="utf-8"))
+            mine = self.folder / self.program.settings_file
+            kept = json.loads(mine.read_text(encoding="utf-8")) if mine.is_file() else {}
+            adopted = {key: owner[key] for key in self.ADOPTED_SETTINGS if key in owner}
+            kept = {key: value for key, value in kept.items() if key not in self.ADOPTED_SETTINGS}
+            self._replace(mine, (json.dumps({**kept, **adopted}, indent=2) + "\n").encode())
+
     def overlay(self) -> dict[str, str]:
         """What a child of this subscription's CLI runs with on top of its environment."""
         return {name: str(self.folder) for name in self.program.auth_home_env}
@@ -227,6 +250,13 @@ class Subscription(BaseModel):
     def _private(folder: Path) -> None:
         folder.mkdir(mode=0o700, parents=True, exist_ok=True)
         folder.chmod(0o700)
+
+    @staticmethod
+    def _replace(path: Path, content: bytes) -> None:
+        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        temporary.write_bytes(content)
+        temporary.chmod(0o600)
+        temporary.replace(path)
 
     def _write(self, state: SubscriptionState) -> None:
         temporary = self.state_path.with_suffix(f".{os.getpid()}.tmp")

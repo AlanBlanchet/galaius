@@ -858,6 +858,8 @@ class ResumeLaunch(AheadLaunch):
         environment = dict(os.environ if environment is None else environment)
         if run.subscription is not None:
             run.subscription.check()
+            if run.subscription.subscription_id is not None:
+                Subscription.of(run.subscription.subscription_id).adopt(environment)
             environment.update(run.subscription.overlay())
         policy = load_policy()
         policy, _ = policy.for_launch(run.agent, reference=run.agent_ref)
@@ -1306,6 +1308,8 @@ async def run_agent(
                                      child=parent is not None or ancestor is not None, environment=environment)
     if pinned is not None:
         pinned.check()
+        if pinned.subscription_id is not None:
+            Subscription.of(pinned.subscription_id).adopt(environment)
         environment.update(pinned.overlay())
         if pinned.subscription_id is not None:
             program = Subscription.of(pinned.subscription_id).program
