@@ -54,13 +54,13 @@ def test_a_job_that_breaks_ends_failed_and_a_late_code_never_reopens_it(tmp_path
     """Whatever stops a job (here its version probe and its install both break), its program reads
     `failed`, never stuck `installing`; a device code its sign-in prints afterwards changes nothing,
     and asking again starts a new job."""
-    monkeypatch.setattr(AgentPrograms, "_status", lambda self, provider: (False, ""))
+    monkeypatch.setattr(AgentPrograms, "_status", lambda self, provider, environment: (False, ""))
     monkeypatch.setattr(AgentPrograms, "installable", staticmethod(lambda: (PROVIDERS["claude"],)))
     monkeypatch.setattr(AgentPrograms, "version", lambda self, provider: (_ for _ in ()).throw(Broken("no version")))
     monkeypatch.setattr(type(PROVIDERS["claude"]), "available", lambda self: False)
     started = threading.Event()
 
-    def install(self, provider):
+    def install(self, provider, key):
         started.wait(5)
         raise Broken("the disk is gone")
 
@@ -73,5 +73,5 @@ def test_a_job_that_breaks_ends_failed_and_a_late_code_never_reopens_it(tmp_path
     while (state := {item.provider: item for item in jobs.states()}["claude"]).step == "installing" and time.monotonic() < deadline:
         time.sleep(0.05)
     assert (state.step, state.failure, state.detail) == ("failed", "install_failed", "Broken: the disk is gone")
-    jobs._update("claude", only_while="signing_in", sign_in=AgentSignIn(code="ABCD-12345", expires_at=datetime.now(UTC)))
+    jobs._update(("claude", None), only_while="signing_in", sign_in=AgentSignIn(code="ABCD-12345", expires_at=datetime.now(UTC)))
     assert {item.provider: item for item in jobs.states()}["claude"].sign_in is None

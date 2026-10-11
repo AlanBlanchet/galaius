@@ -18,10 +18,11 @@ import hmac
 import logging
 import time
 
-from galaius_core import MACHINE_AGENT_REQUESTS, MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentSettings, MachineAgentSettingsUpdate, MachineWorkspaceJob, WebLoad
+from galaius_core import MACHINE_AGENT_REQUESTS, MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentSettings, MachineAgentSettingsUpdate, MachineWorkspaceJob, SubscriptionLimits, UsageWindow, WebLoad
 from galaius.agents import agent_queue, messaging
 from galaius.agents import registry as reg
 from galaius.agents.host import ConversationRefused
+from galaius.agents.subscriptions import RunSubscription, Subscription, SubscriptionCapped, SubscriptionRefused
 from galaius.machine_agents import LogRing, MachineAgents, MachineSessions, WebRun, WebRuns, interaction_digest, redact
 from galaius.fence import FenceSpec
 from galaius.config import UserConfig
@@ -168,6 +169,51 @@ def test_tail_reads_whole_lines_from_the_cursor(base: Path, tmp_path: Path) -> N
     with path.open("ab") as handle:
         handle.write(b'xt":"two"}\n')
     assert [json.loads(line)["text"] for line in _answer(agents, _request("tail", run_id=run_id, cursor=first.cursor)).lines] == ["two"]
+
+
+def test_a_run_stays_on_its_subscription_and_a_lent_pc_lends_no_login(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A start runs on the subscription it names, refused at its cap; a message never moves a run to
+    another login; a member's run on a lent PC gets no CLI login (refused when nothing else runs it),
+    and no session or continued conversation either."""
+    agents, seen = _agents(base, tmp_path), _launches(monkeypatch)
+    mine, other = Subscription.create(uuid4(), "claude"), Subscription.create(uuid4(), "claude")
+    start = lambda **fields: _answer(agents, _request("start", root="project", role="tester", text="go", **fields))
+    start(subscription_id=str(mine.id), limits={"weekly_percent": 80})
+    assert seen[-1]["subscription"] == RunSubscription(id=mine.id, limits=SubscriptionLimits(weekly_percent=80))
+    mine.observe((UsageWindow(window="weekly", used_percent=85, observed_at=datetime.now(UTC)),))
+    with pytest.raises(SubscriptionCapped, match="85% of its weekly window, its cap is 80%"):
+        start(subscription_id=str(mine.id), limits={"weekly_percent": 80})
+    for pinned, asked in ((mine.id, other.id), (None, mine.id)):
+        run_id = str(uuid4())
+        reg.save_run(reg.AgentRun(run_id=run_id, provider="claude", name="w", cwd=str(base / "project"), started_at=1.0,
+                                  subscription=RunSubscription(id=pinned) if pinned else None))
+        agents.runs.add(WebRun(run_id=run_id, root="project"))
+        with pytest.raises(SubscriptionRefused, match="pinned to another subscription|own login"):
+            _answer(agents, _request("send", run_id=run_id, text="next", subscription_id=str(asked)))
+    start(lent=True)
+    assert seen[-1]["subscription"] == RunSubscription(lent=True)
+    assert set(RunSubscription(lent=True).overlay().values()) == {str(Subscription.root() / Subscription.LENT)}
+
+    async def nothing_runs(provider, task, **options):
+        raise RuntimeError("No candidate for 'tester' can start on this machine")
+
+    monkeypatch.setattr("galaius.machine_agents.run_agent", nothing_runs)
+    for asked in ({"op": "start", "root": "project", "role": "tester"}, {"op": "start", "root": "project", "kind": "session"},
+                  {"op": "continue", "session_id": str(uuid4())}):
+        with pytest.raises(SubscriptionRefused, match="never lent"):
+            _answer(agents, _request(text="go", lent=True, **asked))
+
+
+def test_a_subscriptions_token_never_shows_in_a_runs_output(base: Path, tmp_path: Path) -> None:
+    subscription = Subscription.create(uuid4(), "codex")
+    token = "eyJhbGciOiJSUzI1NiJ9." + "t" * 64
+    (subscription.folder / "auth.json").write_text(json.dumps({"auth_mode": "chatgpt", "tokens": {"access_token": token, "account_id": "acct"}}))
+    agents, run_id = _agents(base, tmp_path), str(uuid4())
+    reg.save_run(reg.AgentRun(run_id=run_id, provider="codex", name="r", cwd=str(base / "project"), started_at=1.0, last=f"printed {token}"))
+    agents.runs.add(WebRun(run_id=run_id, root="project"))
+    reg.events_path(run_id).write_text(json.dumps({"kind": "tool_result", "text": f"cat auth.json -> {token}"}) + "\n")
+    shown = (*_answer(agents, _request("tail", run_id=run_id, cursor=0)).lines, _answer(agents, _request("runs")).runs[0].last)
+    assert shown[0] and not any(token in line for line in shown)
 
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"\0" * 32
@@ -824,12 +870,12 @@ def test_the_web_cap_counts_conversations_never_the_agents_they_launched(base: P
         run(parent_run_id=run(parent_run_id=parent))  # an agent it launched, and the one that agent launched
     run(parent_run_id=str(uuid4()), root_run_id=second)  # its parent's record gone: still the second conversation's
     start = _request("start", root="project", role="main", text="go")
-    agents._prepare_start(start)
+    agents._prepare_start(start, None)
     assert agents.runs.live() == 2
     run(parent_run_id=started(kind="conversation", status="waiting"))  # idle itself, one of its agents working: it counts
     started()
     with pytest.raises(PermissionError, match=r"^4 conversations started from the web are already working on this computer \(at most 4\)"):
-        agents._prepare_start(start)
+        agents._prepare_start(start, None)
     listed = _answer(agents, _request("runs"))
     assert listed.web == WebLoad(working=4, limit=4)  # what the web's Auto reads to pass over a full PC
 

@@ -13,6 +13,8 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from galaius_core import UsageWindow
+
 from galaius.models import TokenMix
 
 EventKind = Literal[
@@ -310,6 +312,8 @@ class AgentEvent(BaseModel):
     #: view tell a working agent from a stopped one, order a conversation, and fire a message
     #: animation once at the right moment instead of guessing.
     at: float | None = None
+    #: A `rate_limit` event's usage windows as the vendor reported them (`AgentProvider.usage`).
+    usage: tuple[UsageWindow, ...] = ()
 
     def summary(self, viewer: str | None = None) -> str:
         """One line for a supervisor row — what this agent is doing right now."""

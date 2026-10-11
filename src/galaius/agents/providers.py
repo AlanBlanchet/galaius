@@ -32,6 +32,8 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, model_validator
 
+from galaius_core import UsageWindow, UsageWindowName
+
 from galaius.agents.catalog import AgentCatalog
 from galaius.agents.events import TOKEN_FIELDS, AgentEvent, TokenUsage, UsageLedger, stream_lines
 from galaius.agents.profiles import overlay_for
@@ -217,7 +219,10 @@ class AgentProvider(ABC):
     #: real binary — the adapter says so instead of pretending to be tested.
     verified: ClassVar[bool] = True
     caveat: ClassVar[str | None] = None
+    #: The variables naming the folder this CLI keeps its login, settings and sessions in (the first
+    #: one decides), and that folder's name under the user's home when none is set (`auth_home`).
     auth_home_env: ClassVar[tuple[str, ...]] = ()
+    home_folder: ClassVar[str] = ""
     permission_option: ClassVar[str] = "--permission-mode"
     #: How this CLI is told to load none of the folder's own settings (`PROJECT_SETTINGS_OFF`);
     #: None: it cannot be, so it never starts or resumes where they must not load.
@@ -267,8 +272,19 @@ class AgentProvider(ABC):
 
     #: Its vendor's install script, per kind of system (`windows`, `posix`); none: galaius does not install it.
     installers: ClassVar[dict[Literal["windows", "posix"], ProgramInstaller]] = {}
-    #: Its own sign-in command, run with no terminal (`AgentPrograms`).
+    #: Its own sign-in and sign-out commands, run with no terminal (`AgentPrograms`).
     login_arguments: ClassVar[tuple[str, ...]] = ()
+    logout_arguments: ClassVar[tuple[str, ...]] = ()
+
+    def auth_home(self, environment: Mapping[str, str]) -> Path:
+        """The folder this CLI keeps its login in, in `environment`: its `auth_home_env` value
+        (a subscription's own folder), else `home_folder` under the user's home."""
+        named = next((environment[name] for name in self.auth_home_env if environment.get(name)), None)
+        return Path(named) if named else Path(environment.get("HOME") or Path.home()) / self.home_folder
+
+    def usage(self, line: dict) -> tuple[UsageWindow, ...]:
+        """The usage windows one stream line reports (`AgentEvent.usage`); none for a CLI that reports none."""
+        return ()
 
     @classmethod
     def installer(cls) -> ProgramInstaller | None:
@@ -379,6 +395,10 @@ class AgentProvider(ABC):
             return False, "", ""
         login = hashlib.sha256(self.login_identity(*status[1:]).encode()).hexdigest()[:16]
         return True, self.signed_in_as(*status[1:]), login
+
+    async def login_digest(self, env: dict[str, str], *, timeout: float = 10) -> str:
+        """Which login its status command names in `env` now (`_login`); "" when none answers."""
+        return (await self._login(env, timeout=timeout))[2]
 
     def login_identity(self, stdout: str, stderr: str) -> str:
         """The part of the status answer that names the login (`_login`): its stdout, never a notice
@@ -675,6 +695,7 @@ class ClaudeCodeProvider(AgentProvider):
     native_providers = frozenset({"anthropic"})
     media_model_field = "claude_media_criteria"
     auth_home_env = ("CLAUDE_CONFIG_DIR",)
+    home_folder = ".claude"
     no_extra_usage_guidance = (
         "in Claude Settings → Usage, keep Usage credits disabled, ensure prepaid balance is zero, "
         "and turn auto-reload off"
@@ -697,6 +718,23 @@ class ClaudeCodeProvider(AgentProvider):
     }
     #: Opens this computer's browser on the sign-in page, which comes back to it (a localhost callback).
     login_arguments = ("auth", "login")
+    logout_arguments = ("auth", "logout")
+    #: `rate_limit_info.unifiedWindows` keys and the window each is (utilization: a share, 0-1).
+    #: `seven_day_overage_included` is the same week with the overage pool counted: not the plan's own.
+    WINDOWS: ClassVar[dict[str, UsageWindowName]] = {"five_hour": "five_hour", "seven_day": "weekly"}
+
+    def usage(self, line: dict) -> tuple[UsageWindow, ...]:
+        info = line.get("rate_limit_info") if line.get("type") == "rate_limit_event" else None
+        windows = info.get("unifiedWindows") if isinstance(info, dict) else None
+        if not isinstance(windows, dict):
+            return ()
+        now = datetime.now(UTC)
+        return tuple(
+            UsageWindow(window=self.WINDOWS[key], used_percent=round(float(value["utilization"]) * 100, 2), observed_at=now,
+                        resets_at=datetime.fromtimestamp(value["resetsAt"], UTC) if isinstance(value.get("resetsAt"), (int, float)) else None)
+            for key, value in windows.items()
+            if key in self.WINDOWS and isinstance(value, dict) and isinstance(value.get("utilization"), (int, float))
+        )
 
     def model_id_for(self, model: Model) -> str:
         """Derive Claude Code's hyphenated version spelling for every future catalog row."""
@@ -973,19 +1011,15 @@ class ClaudeCodeProvider(AgentProvider):
     _INSTRUCTIONS: ClassVar[tuple[str, ...]] = ("CLAUDE.md", "CLAUDE.local.md", "AGENTS.md")
     _IMPORT: ClassVar[re.Pattern[str]] = re.compile(r"(?<![\w`])@((?:~/|\.{0,2}/)?[\w.-]+(?:/[\w.-]+)*)")
 
-    @staticmethod
-    def _config_home(environment: Mapping[str, str]) -> Path:
-        return Path(environment.get("CLAUDE_CONFIG_DIR") or Path(environment.get("HOME") or Path.home()) / ".claude")
-
     def user_instructions(self, environment: Mapping[str, str]) -> Path:
         # `--setting-sources user` (folder settings off) still loads it.
-        return self._config_home(environment) / "CLAUDE.md"
+        return self.auth_home(environment) / "CLAUDE.md"
 
     def startup_files(self, cwd: Path, environment: Mapping[str, str]) -> tuple[Path, ...]:
         """The user's and every enclosing folder's instructions (with the files they import),
         settings, MCP servers, agents, skills, commands and rules; the folder's memory index; the
         installed plugins. The user's `~/.claude.json` is left out: Claude rewrites it at every start."""
-        home = self._config_home(environment)
+        home = self.auth_home(environment)
         folders = (cwd, *cwd.parents)
         scopes = (home, *(folder / ".claude" for folder in folders))
         instructions = [self.user_instructions(environment), *(folder / name for folder in folders for name in self._INSTRUCTIONS)]
@@ -1230,7 +1264,7 @@ class ClaudeCodeProvider(AgentProvider):
             reopens = info.get("resetsAt") if status == "rejected" else None
             if isinstance(reopens, (int, float)) and not isinstance(reopens, bool):
                 line += f"; resets {datetime.fromtimestamp(reopens, UTC).isoformat()}"
-            return AgentEvent(kind="rate_limit", session_id=sid, raw_type=kind, text=line)
+            return AgentEvent(kind="rate_limit", session_id=sid, raw_type=kind, text=line, usage=self.usage(raw))
 
         if kind == "result":
             settled, cost = self._settle_result(raw, ledger)
@@ -1441,6 +1475,24 @@ class CodexProvider(AgentProvider):
     }
     #: Prints its vendor's page and a one-time code the person types there, on any browser.
     login_arguments = ("login", "--device-auth")
+    logout_arguments = ("logout",)
+    auth_home_env = ("CODEX_HOME",)
+    home_folder = ".codex"
+
+    def usage(self, line: dict) -> tuple[UsageWindow, ...]:
+        """`rate_limits` (`primary` / `secondary`: used_percent, window_minutes, resets_at epoch s),
+        top-level or in the line's `payload` (a session record's `token_count` line)."""
+        payload = line.get("payload")
+        limits = line.get("rate_limits") or (payload.get("rate_limits") if isinstance(payload, dict) else None)
+        if not isinstance(limits, dict):
+            return ()
+        now = datetime.now(UTC)
+        return tuple(
+            UsageWindow(window=UsageWindow.nearest(window["window_minutes"]), used_percent=float(window["used_percent"]), observed_at=now,
+                        resets_at=datetime.fromtimestamp(window["resets_at"], UTC) if isinstance(window.get("resets_at"), (int, float)) else None)
+            for window in (limits.get("primary"), limits.get("secondary"))
+            if isinstance(window, dict) and isinstance(window.get("used_percent"), (int, float)) and isinstance(window.get("window_minutes"), (int, float))
+        )
     can_resume = True
     can_queue = True
     verified = True
@@ -1761,7 +1813,7 @@ class CodexProvider(AgentProvider):
         return [*argv, "--", session_id, message]
 
     def user_instructions(self, environment: Mapping[str, str]) -> Path | None:
-        home = Path(environment.get("CODEX_HOME") or Path(environment.get("HOME") or Path.home()) / ".codex")
+        home = self.auth_home(environment)
         # Codex reads AGENTS.override.md INSTEAD of AGENTS.md when both exist.
         return None if (home / "AGENTS.override.md").exists() else home / "AGENTS.md"
 
@@ -1851,6 +1903,9 @@ class CodexProvider(AgentProvider):
                     tool_input=_clip(detail), text=_clip(detail) if completed else "",
                     status=("failed" if item.get("status") == "failed" else "completed") if completed else "running",
                 )
+        if usage := self.usage(raw):
+            said = ", ".join(f"{window.window} {window.used_percent:g}%" for window in usage)
+            return AgentEvent(kind="rate_limit", session_id=session_id, turn_id=turn_id, raw_type=kind, text=f"usage: {said}", usage=usage)
         if kind == "turn.completed":
             # `usage` is the THREAD's cumulative total — a resumed `exec` reports every earlier
             # turn again (monotonic in all 615 recorded turns) — in OpenAI's meaning: cached and

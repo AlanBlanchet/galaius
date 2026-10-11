@@ -20,6 +20,7 @@ import sys
 import threading
 import time
 import uuid
+from uuid import UUID
 from pathlib import Path
 import subprocess
 import tempfile
@@ -39,6 +40,7 @@ from galaius.agents.policy import Policy, policy_path
 from galaius.agents.profiles import overlay_for, profiles_from
 from galaius.agents.providers import PROVIDERS, AgentProvider, CodexProvider, UnsupportedToolPolicy, validate_denied_tools, _safe_process_detail
 from galaius.agents.vocabulary import TouchScope
+from galaius.agents.subscriptions import RunSubscription, Subscription, SubscriptionRefused
 from galaius.agents.warm import WarmStart
 from galaius.agents.server_ranking import ServerRanking, ServerRankingUnavailable
 from galaius.criteria import Criteria, CriteriaError, Dropped, Variables
@@ -307,6 +309,7 @@ def _apply_provider_constraint(
 
 def resolve_continuable_model(
     model: str, env: dict[str, str], *, provider: AgentProvider, weights: str = "", role: str | None = None,
+    subscription: UUID | None = None,
 ) -> tuple[dict[str, str], str]:
     """Re-resolve a criterion for a RESUMED turn exactly like a fresh spawn does — walk the same
     ranked candidate list, skip anything still in quota cooldown — instead of replaying whatever
@@ -325,7 +328,7 @@ def resolve_continuable_model(
     candidates = rank_candidates(model, env, providers=[provider], weights=weights, role=role)
     cooled: dict[str, float] = {}
     for candidate in candidates:
-        until = quota.blocked_until(candidate.provider, candidate.model)
+        until = quota.blocked_until(candidate.provider, candidate.model, subscription=subscription)
         if until is None:
             return resolve_model(candidate.model, env, provider=provider, weights=weights)
         cooled[candidate.model] = until
@@ -850,8 +853,12 @@ class ResumeLaunch(AheadLaunch):
     @classmethod
     def of(cls, provider: AgentProvider, run: reg.AgentRun, session_id: str, *, model: str | None, criterion: str | None, reasoning: str | None,
            environment: Mapping[str, str] | None = None) -> "ResumeLaunch":
-        """The current policy's next turn of `run`, run in `environment` (this process's own when None)."""
+        """The current policy's next turn of `run`, run in `environment` (this process's own when None),
+        on the subscription `run` is pinned to: refused while it is at a cap."""
         environment = dict(os.environ if environment is None else environment)
+        if run.subscription is not None:
+            run.subscription.check()
+            environment.update(run.subscription.overlay())
         policy = load_policy()
         policy, _ = policy.for_launch(run.agent, reference=run.agent_ref)
         catalog = policy.catalog
@@ -862,7 +869,8 @@ class ResumeLaunch(AheadLaunch):
             criterion = policy.criterion_for(run.agent)
             if not criterion:
                 raise ModelUnavailable(f"No model criterion for {run.agent!r}")
-            routed, model = resolve_continuable_model(criterion, environment, provider=provider, weights=policy.weights_for(run.agent), role=run.agent)
+            routed, model = resolve_continuable_model(criterion, environment, provider=provider, weights=policy.weights_for(run.agent), role=run.agent,
+                                                      subscription=run.subscription_id)
             reasoning = policy.reasoning_for(run.agent, f"{provider.name}/{model}" if model else None)
         coarse_accepted = policy.accepts_coarse_tool_policy(run.agent, provider.name) if run.agent else False
         provider.validate_tool_policy(policy.tools_for(run.agent), run.denied_tools, coarse_accepted=coarse_accepted)
@@ -1238,6 +1246,7 @@ async def run_agent(
     fence: FenceSpec | None = None,
     environment: Mapping[str, str] | None = None,
     warm: WarmStart | None = None,
+    subscription: RunSubscription | None = None,
 ) -> RunHandle:
     """Spawn an agent run and register it, returning as soon as it is alive.
 
@@ -1267,6 +1276,10 @@ async def run_agent(
     server by :func:`mesh_config` — so an agent spawning an agent produces a connected tree with
     nobody passing the id by hand.
 
+    ``subscription`` pins the run to one subscription signed in here (`RunSubscription`): its CLI
+    alone, its login folder alone, its caps checked before the start; a child's is its parent run's,
+    whatever is asked (`RunSubscription.resolve`). None: this PC's default login.
+
     ``image_paths`` is an optional tuple of existing absolute PNG, JPEG, or WebP paths. The
     provider and resolved model are checked before any child process is created.
 
@@ -1284,6 +1297,18 @@ async def run_agent(
     that finally started, naming which candidate ran and why each earlier one was passed over.
     """
     environment = dict(os.environ if environment is None else environment)
+    parent = parent_run_id or environment.get("GALAIUS_PARENT_RUN_ID") or None
+    parent_run = reg.get_run(parent) if parent is not None else None
+    pinned = RunSubscription.resolve(subscription, parent=parent_run.subscription if parent_run is not None else None,
+                                     child=parent is not None, environment=environment)
+    if pinned is not None:
+        pinned.check()
+        environment.update(pinned.overlay())
+        if pinned.id is not None:
+            program = Subscription.of(pinned.id).program
+            if provider is not None and provider.name != program.name:
+                raise SubscriptionRefused(f"this subscription is a {program.name} login; it never runs {provider.name}")
+            provider = program
     validated_images = validate_image_paths(image_paths)
     validate_denied_tools(denied_tools)
     for provider_name, mode in (provider_modes or {}).items():
@@ -1311,8 +1336,6 @@ async def run_agent(
             raise RuntimeError(
                 f"the {provider.name!r} provider does not support image attachments"
             )
-    parent = parent_run_id or environment.get("GALAIUS_PARENT_RUN_ID") or None
-    parent_run = reg.get_run(parent) if parent is not None else None
     if policy.catalog is not None and parent is not None and (parent_run is None or parent_run.agent_ref is None):
         raise ModelUnavailable("Parent run has no recorded server revision; start the parent again")
     policy, agent = policy.for_launch(
@@ -1374,8 +1397,9 @@ async def run_agent(
     # out of it: tried once every other candidate refused or could not start — a stale note must never
     # be why nothing can run (16ed211e: two Codex models refused for the login, then the run failed
     # with the noted model never asked).
+    pinned_id = pinned.id if pinned is not None else None
     noted = {index: until for index, candidate in enumerate(candidates)
-             if (until := quota.blocked_until(candidate.provider, candidate.model)) is not None}
+             if (until := quota.blocked_until(candidate.provider, candidate.model, subscription=pinned_id)) is not None}
     chosen_index = -1
     walk = deque([index for index in range(len(candidates)) if index not in noted] + list(noted))
     #: Candidates passed over only because this login was refused them before: asked again, once, when
@@ -1530,12 +1554,12 @@ async def run_agent(
             mesh_enabled=mesh, reasoning=candidate_effort,
             candidates=candidates, skipped=tuple(skipped), denied_tools=denied_tools,
             provider_session_id=vendor_session if candidate_provider.name == "claude" else None,
-            agent_ref=selected_ref, definition_path=definition_path, fence=fence,
+            agent_ref=selected_ref, definition_path=definition_path, fence=fence, subscription=pinned,
         )
         # A model coming off a block is the re-check: it gets long enough to say "still refused"
         # that the answer falls through to the next candidate instead of killing this run.
         probe_window = max(quota_window or 0.0, quota.PROBATION_WINDOW) \
-            if index in noted or quota.on_probation(candidate.provider, candidate.model) else quota_window
+            if index in noted or quota.on_probation(candidate.provider, candidate.model, subscription=pinned_id) else quota_window
         quota_reason = await _quota_probe(
             run_id, candidate_process,
             **({} if probe_window is None else {"window": probe_window}),
@@ -1552,7 +1576,7 @@ async def run_agent(
             # remembered against that login: nothing about it clears in minutes.
             said = _child_output(run_id)
             if quota_reason == "quota_exceeded":
-                until = quota.record_refusal(candidate.provider, candidate.model, said=said)
+                until = quota.record_refusal(candidate.provider, candidate.model, said=said, subscription=pinned_id)
                 message = _quota_message(candidate.provider, candidate.model, said, until)
             else:
                 until = quota.record_unsupported(candidate.provider, candidate.model, login=login)
@@ -1594,7 +1618,7 @@ async def run_agent(
         reasoning=effort,
         candidates=candidates, skipped=tuple(skipped), denied_tools=denied_tools,
         provider_session_id=run_id if provider.name == "claude" else None,
-        agent_ref=selected_ref, definition_path=definition_path, fence=fence,
+        agent_ref=selected_ref, definition_path=definition_path, fence=fence, subscription=pinned,
     )
     pump = asyncio.create_task(_reap(run_id, process, registered.lifecycle_token))
     # Keep the panel's copy of the stream current WHILE it works: a running agent can be watched,

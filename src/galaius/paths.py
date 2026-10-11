@@ -34,6 +34,16 @@ class UserPaths:
         override = os.environ.get(UserPaths.AGENTS_OVERRIDE)
         return Path(override).expanduser() if override else Path.home() / ".galaius" / "out" / "agents"
 
+    #: Where subscription folders live when set (`subscriptions`).
+    SUBSCRIPTIONS_OVERRIDE: ClassVar[str] = "GALAIUS_SUBSCRIPTIONS_DIR"
+
+    @staticmethod
+    def subscriptions() -> Path:
+        """One folder per coding-agent subscription signed in on this PC, each its CLI's own home
+        (`galaius.agents.subscriptions`): `SUBSCRIPTIONS_OVERRIDE` when set, else `~/.galaius/subscriptions`."""
+        override = os.environ.get(UserPaths.SUBSCRIPTIONS_OVERRIDE)
+        return Path(override).expanduser() if override else Path.home() / ".galaius" / "subscriptions"
+
     @staticmethod
     def launcher() -> Path | None:
         """Where new launches start (`~/.local/bin/galaius`); None on Windows (uv's own entry)."""

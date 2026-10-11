@@ -239,6 +239,9 @@ class FenceSpec(BaseModel):
     staging: dict[str, Path] = Field(default_factory=dict)
     #: The CLIs whose state the run gets a private copy of (`TOOLS`).
     providers: tuple[str, ...] = ()
+    #: Per CLI, the folder its login lives in for this run when not its default under home: a
+    #: subscription's own folder (`AgentProvider.auth_home`), its credential bound from there.
+    homes: dict[str, Path] = Field(default_factory=dict)
     programs: tuple[Path, ...] = ()
     egress: tuple[str, ...] = ()
     #: Runner-owned folder holding this run's private tool state (never shared with another run).
@@ -305,18 +308,21 @@ class FenceSpec(BaseModel):
         binds = []
         for provider in self.providers:
             tool = TOOLS[provider]
-            folder = home / tool["folder"][0]
+            # A login folder of its own (a subscription's) keeps the files Claude Code otherwise
+            # keeps in home (`.claude.json`) inside it.
+            folder = self.homes.get(provider) or home / tool["folder"][0]
+            beside = folder if provider in self.homes else home
             private = self.state / provider
             binds.append(FenceBind(source=_private(private / "home"), target=folder, writable=True))
             binds += [FenceBind(source=folder / name, target=folder / name, writable=False) for name in tool["read"] if (folder / name).exists()]
             binds += [FenceBind(source=_private(private / name), target=folder / name, writable=True) for name in tool["sessions"]]
             for name in tool["copies"]:
                 copy = private / name
-                if not copy.exists() and (home / name).is_file():
-                    shutil.copy2(home / name, copy)
+                if not copy.exists() and (beside / name).is_file():
+                    shutil.copy2(beside / name, copy)
                     copy.chmod(0o600)
                 if copy.exists():
-                    binds.append(FenceBind(source=copy, target=home / name, writable=True))
+                    binds.append(FenceBind(source=copy, target=beside / name, writable=True))
         return binds
 
 

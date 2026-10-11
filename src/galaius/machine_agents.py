@@ -35,7 +35,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from galaius_core import (
     AGENT_TOUCH_SCOPES, MACHINE_AGENT_MEDIA, MACHINE_AGENT_READ, MACHINE_AGENT_TAIL, AgentAnswerRequest, AgentMedia, AgentMediaRequest, image_type, AgentContinueRequest, AgentFoldersRequest, AgentInteraction, AgentLogsRequest, AgentOptionsRequest,
-    AgentProgramInstallRequest, AgentProgramsRequest, AgentProviderState, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
+    AgentAllowanceRequest, AgentProgramInstallRequest, AgentProgramsRequest, AgentProviderState, AgentSignOutRequest, SubscriptionLimits, SubscriptionUse, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
     MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, PassedOverCandidate, ReadsAt, WebLoad, media_key, media_paths, MachineAgentSession, MachineFileEntry, WorkspaceCreateRequest, WorkspacePack, WorkspacePackRequest, WorkspacePrepareRequest, WorkspaceRefresh, WorkspacesRequest,
 )
 from galaius.agents import agent_queue
@@ -44,6 +44,7 @@ from galaius.agents.host import ConversationHost, ConversationRefused
 from galaius.agents.followup import FollowUps
 from galaius.agents.messaging import deliver_message
 from galaius.agents.providers import PROJECT_SETTINGS_OFF, PROVIDERS, provider_for
+from galaius.agents.subscriptions import RunSubscription, Subscription, SubscriptionRefused
 from galaius.agents.run import LAUNCH_STAMP, launch_editor_turn, load_policy, rank_candidates, run_agent
 from galaius.agents.warm import WarmStart
 from galaius.config import UserConfig
@@ -79,6 +80,8 @@ _WEB_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 #: The CLIs agents run on here, and the ranking the model list follows: every benchmarked model,
 #: most capable first (the order a role's own criterion walks).
 AGENT_PROVIDERS = ("claude", "codex")
+#: Why a member's run on a lent PC found nothing to run on (`SubscriptionUse.lent`); the server words it for him.
+LENT_REFUSAL = "subscriptions are never lent: a member's run on a lent PC uses none of its CLI logins; run it on your own PC or with an API key"
 MODEL_RANKING = "aa.intelligence and price.in >= 0"
 MODELS_PER_PROVIDER = 12
 #: A release date closing a model id: -20260416 or -2026-04-16.
@@ -113,10 +116,14 @@ _SECRET_SHAPES = re.compile(
 
 def redact(text: str, secrets: tuple[str, ...] = ()) -> str:
     """`text` with credential shapes and the exact `secrets` (this runner's own key values) masked."""
-    masked = _SECRET_SHAPES.sub(lambda found: (found.group(1) or found.group(2) or found.group(3) or "") + "•••", text)
+    return mask(_SECRET_SHAPES.sub(lambda found: (found.group(1) or found.group(2) or found.group(3) or "") + "•••", text), secrets)
+
+
+def mask(text: str, secrets: tuple[str, ...]) -> str:
+    """`text` with each of the exact `secrets` masked, nothing else touched."""
     for secret in secrets:
-        masked = masked.replace(secret, "•••")
-    return masked
+        text = text.replace(secret, "•••")
+    return text
 
 
 def secret_values(environment: dict[str, str]) -> tuple[str, ...]:
@@ -400,7 +407,7 @@ class MachineAgents(BaseModel):
         # With agents off (or no folder) what the web started here can still be read and stopped.
         # Programs are not agents: installed and signed in whatever the agent settings say.
         if not isinstance(request, AgentRunsRequest | AgentTailRequest | AgentMediaRequest | AgentStopRequest | AgentLogsRequest | WorkspacesRequest
-                          | AgentProgramsRequest | AgentProgramInstallRequest):
+                          | AgentProgramsRequest | AgentProgramInstallRequest | AgentSignOutRequest):
             if not self.run_agents:
                 raise PermissionError("agents are off on this computer; its owner turns them on on its page on the web, or there with `galaius machine agents on`")
             if not self.roots:
@@ -408,6 +415,8 @@ class MachineAgents(BaseModel):
         if self.fence_agents and isinstance(request, (AgentStartRequest, AgentContinueRequest)) and (request.kind == "session" if isinstance(request, AgentStartRequest) else True):
             raise PermissionError("sessions and continued conversations are not fenced yet, and the agent fence is on here: start an agent (a role), "
                                   "or its owner switches the fence off there with `galaius machine fence off`")
+        if isinstance(request, AgentContinueRequest) or (isinstance(request, AgentStartRequest) and request.kind == "session"):
+            self.default_login_only(request)
         match request:
             case AgentFoldersRequest():
                 return await asyncio.to_thread(self._folders, request)
@@ -459,8 +468,13 @@ class MachineAgents(BaseModel):
             case AgentProgramsRequest():
                 return MachineAgentAnswer(request_id=request.id, providers=await asyncio.to_thread(self._programs().states))
             case AgentProgramInstallRequest():
-                state = await asyncio.to_thread(self._programs().install, request.provider)
+                state = await asyncio.to_thread(self._programs().install, request.provider, request.subscription_id)
                 return MachineAgentAnswer(request_id=request.id, providers=(state,), detail=f"{request.provider}: {state.step}")
+            case AgentSignOutRequest():
+                state = await asyncio.to_thread(self._programs().sign_out, request.provider, request.subscription_id)
+                return MachineAgentAnswer(request_id=request.id, providers=(state,), detail=f"{request.provider}: signed out")
+            case AgentAllowanceRequest():
+                return await self._allow(request)
 
     def _programs(self) -> AgentPrograms:
         if self.programs is None:
@@ -550,7 +564,7 @@ class MachineAgents(BaseModel):
         started, runs = self._allowed()
         # A run launched inside a fenced run is inside the same fence.
         fenced = {run.run_id for run in runs if run.fence is not None}
-        found = []
+        found, secrets = [], self.secrets
         for run in runs[:200]:
             placed = started.get(run.run_id)
             root, path = (placed.root, placed.path) if placed else self._place(run.cwd)
@@ -558,12 +572,14 @@ class MachineAgents(BaseModel):
             found.append(MachineAgentRun(
                 run_id=UUID(run.run_id), name=run.name[:120], role=(run.agent or None) and run.agent[:80], provider=run.provider[:40],
                 model=run.model and run.model[:120], status=run.status, root=root[:240], path=path[:1024], task=run.task[:8000],
-                last=redact(run.last, self.secrets)[:400], started_at=run.started_at, finished_at=run.finished_at, cost_usd=run.cost_usd,
+                last=redact(run.last, secrets)[:400], started_at=run.started_at, finished_at=run.finished_at, cost_usd=run.cost_usd,
                 parent_run_id=UUID(run.parent_run_id) if run.parent_run_id and run.run_id not in started else None,
                 kind=kind, pending=self.pending(run.run_id) if kind == "session" and run.status == "waiting" else (),
                 fenced=bool({run.run_id, run.root_run_id, run.parent_run_id} & fenced),
                 passed_over=tuple(PassedOverCandidate(provider=item.candidate.provider, model=item.candidate.model[:120], reason=item.reason, until=item.until)
                                   for item in run.skipped[:16]),
+                subscription_id=run.subscription_id, capped=run.subscription.capped if run.subscription is not None else None,
+                allowance=run.subscription.allowance if run.subscription is not None else None,
             ))
         return MachineAgentAnswer(request_id=request.id, runs=tuple(found), web=self.runs.load())
 
@@ -587,7 +603,9 @@ class MachineAgents(BaseModel):
 
     @property
     def secrets(self) -> tuple[str, ...]:
-        return secret_values(self.environment)
+        """Exact values a run's output never shows: the environment's credentials and the tokens each
+        subscription's CLI keeps in its folder now (read again at each call: a refresh changes them)."""
+        return (*secret_values(self.environment), *Subscription.tokens())
 
     @staticmethod
     def pending(run_id: str) -> tuple[AgentInteraction, ...]:
@@ -633,7 +651,8 @@ class MachineAgents(BaseModel):
         whole, count = 0, 0
         while count < TAIL_LINES and (newline := data.find(b"\n", whole)) >= 0:
             whole, count = newline + 1, count + 1
-        lines = tuple(line.decode("utf-8", "replace") for line in data[:whole].split(b"\n") if line)
+        tokens = Subscription.tokens()
+        lines = tuple(mask(line.decode("utf-8", "replace"), tokens) for line in data[:whole].split(b"\n") if line)
         if cursor is None and (placed := next((item for item in self.runs.read() if item.run_id == request.run_id and item.source), None)):
             lines = (*self._editor_history(placed.source), *lines)[-TAIL_LINES:]
         return MachineAgentAnswer(request_id=request.id, lines=lines, cursor=start + whole, truncated=skipped, read_messages=self._read_messages(request.run_id))
@@ -754,8 +773,30 @@ class MachineAgents(BaseModel):
         reasons = dict.fromkeys(line.split(": ", 1)[-1] for line in lines[1:])
         return " ".join([*lines[:1], *reasons]).removeprefix("ERROR: ")[:400]
 
+    @staticmethod
+    def default_login_only(request: SubscriptionUse) -> None:
+        """Sessions and continued editor conversations run on this PC's default login only (the
+        editor's history lives there): one asked on a subscription, or for a member on a lent PC, is refused."""
+        if request.lent:
+            raise SubscriptionRefused(LENT_REFUSAL)
+        if request.subscription_id is not None:
+            raise SubscriptionRefused("sessions and continued editor conversations run on this PC's own login only; start an agent (a role) to use this subscription")
+
+    @staticmethod
+    def pinned(request: SubscriptionUse) -> RunSubscription | None:
+        """What a start is pinned to (`RunSubscription`): its subscription, signed in here and under its
+        caps (refused otherwise, saying which and until when), or no CLI login at all on a lent PC."""
+        if request.lent:
+            return RunSubscription(lent=True)
+        if request.subscription_id is None:
+            return None
+        pinned = RunSubscription(id=request.subscription_id, limits=request.limits or SubscriptionLimits())
+        pinned.check()
+        return pinned
+
     async def _start(self, request: AgentStartRequest) -> MachineAgentAnswer:
-        folder, written, fence, review = await asyncio.to_thread(self._prepare_start, request)
+        pinned = await asyncio.to_thread(self.pinned, request)
+        folder, written, fence, review = await asyncio.to_thread(self._prepare_start, request, pinned)
         refresh = await asyncio.to_thread(self._refresh, folder)
         environment = await asyncio.to_thread(self.launcher_environment_in, folder)
 
@@ -769,7 +810,7 @@ class MachineAgents(BaseModel):
                     handle = await run_agent(
                         provider_for(request.provider) if request.provider is not None else None, request.text,
                         cwd=str(folder), agent=str(request.role), permission_mode=self.scope(request.permission),
-                        quota_window=4.0, fence=fence, environment=environment, warm=self.warm,
+                        quota_window=4.0, fence=fence, environment=environment, warm=self.warm, subscription=pinned,
                     )
             except BaseException:
                 if review is not None:
@@ -788,10 +829,12 @@ class MachineAgents(BaseModel):
         except TimeoutError:
             raise RuntimeError(f"the agent is still starting after {START_SECONDS:.0f} s; it appears in the list once it runs") from None
         except (ValueError, RuntimeError) as error:
+            if request.lent:
+                raise SubscriptionRefused(LENT_REFUSAL) from error
             raise RuntimeError(self._said(str(error)) or "the agent did not start") from error
         return MachineAgentAnswer(request_id=request.id, run_id=run_id, fenced=fence is not None, refresh=refresh, detail=f"{written} project secrets written to .env" if written else "")
 
-    def _prepare_start(self, request: AgentStartRequest) -> tuple[Path, int, FenceSpec | None, UUID | None]:
+    def _prepare_start(self, request: AgentStartRequest, pinned: RunSubscription | None) -> tuple[Path, int, FenceSpec | None, UUID | None]:
         """What a start is checked and prepared with before anything runs: its folder, how many
         project secrets were written there, and its fence and staging review when the fence is on."""
         self.runs.refuse_full()
@@ -801,7 +844,9 @@ class MachineAgents(BaseModel):
             # honoured): refused, never silently replaced.
             raise PermissionError("an agent runs on the model its rule picks; change the rule on its Agents page, or start a session to choose the model")
         written = self._project_env(request, folder)
-        fence, review = self._fence(request.root, folder) if self.fence_agents else (None, None)
+        overlay = pinned.overlay() if pinned is not None else {}
+        homes = {name: provider_for(name).auth_home(overlay) for name in AGENT_PROVIDERS if overlay.keys() & set(provider_for(name).auth_home_env)}
+        fence, review = self._fence(request.root, folder, homes) if self.fence_agents else (None, None)
         return folder, written, fence, review
 
     def _project_env(self, request: AgentStartRequest, folder: Path) -> int:
@@ -821,7 +866,7 @@ class MachineAgents(BaseModel):
             self.logs.secrets = (*self.logs.secrets, *(value for value in values.values() if len(value) >= 8))
         return len(values)
 
-    def _fence(self, root: str, folder: Path) -> tuple[FenceSpec, UUID | None]:
+    def _fence(self, root: str, folder: Path, homes: dict[str, Path]) -> tuple[FenceSpec, UUID | None]:
         """What the fence of an agent starting in `folder` is built from, and the review holding its
         staging copy when that folder is write-after-review. The folder needs a level its owner set
         (read or later): an agent folder never opens on its own. Built once here so a start that
@@ -842,7 +887,7 @@ class MachineAgents(BaseModel):
         try:
             programs = tuple(Path(found) for found in (*(shutil.which(name) for name in AGENT_PROVIDERS), *self.cli) if found)
             spec = FenceSpec(working_directory=places.working_directory, levels_file=self.levels_file, levels=places.levels, internal=places.internal, start=folder,
-                             staging=staging, providers=AGENT_PROVIDERS, programs=programs, state=self.reviews.root.parent / "fence-state" / str(uuid4()), reviews=self.reviews.root,
+                             staging=staging, providers=AGENT_PROVIDERS, homes=homes, programs=programs, state=self.reviews.root.parent / "fence-state" / str(uuid4()), reviews=self.reviews.root,
                              egress=(*(host for provider in AGENT_PROVIDERS for host in EGRESS[provider]), *self.egress))
             spec.build()
             return spec, review
@@ -852,7 +897,7 @@ class MachineAgents(BaseModel):
             raise
 
     async def _send(self, request: AgentSendRequest) -> MachineAgentAnswer:
-        run = await asyncio.to_thread(self._require_run, request.run_id)
+        run = await asyncio.to_thread(self._pinned_run, request)
         if self._kind(request.run_id) == "continued":
             return await asyncio.to_thread(self._continue_turn, run, request.text, request_id=request.id)
         # Answered once the message is durably queued, under the request's id (the same request
@@ -868,6 +913,40 @@ class MachineAgents(BaseModel):
         if delivery.state == "error":
             raise RuntimeError(delivery.text.removeprefix("ERROR: ") or "not delivered")
         return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=delivery.text, reads_at=delivery.reads_at)
+
+    def _pinned_run(self, request: AgentSendRequest) -> reg.AgentRun:
+        """The run a message goes to, on the subscription it is pinned to: a message naming another
+        is refused; one naming its own brings that subscription's caps as the server has them now."""
+        run = self._require_run(request.run_id)
+        if request.lent and (run.subscription is None or not run.subscription.lent):
+            raise SubscriptionRefused(LENT_REFUSAL)
+        if run.subscription is None:
+            if request.subscription_id is not None:
+                raise SubscriptionRefused("this run runs on this PC's own login: its turns never move to a subscription")
+            return run
+        run.subscription.pins(request.subscription_id)
+        if request.limits is not None and request.limits != run.subscription.limits:
+            run = reg.merge_subscription(run.run_id, limits=request.limits) or run
+        return run
+
+    async def _allow(self, request: AgentAllowanceRequest) -> MachineAgentAnswer:
+        """`RunAllowance`: the run may go on its subscription up to `up_to_percent` of the window it is
+        held or cut at; one held between turns gets its next turn now (as « Reprendre » does)."""
+        run = await asyncio.to_thread(self._require_run, request.run_id)
+        if run.subscription is None or run.subscription.id is None:
+            raise PermissionError("this run is on no subscription: it has no cap to go past")
+        capped = run.subscription.capped
+        cap = run.subscription.limits.cap(capped.window) if capped is not None else None
+        if cap is not None and request.up_to_percent <= cap:
+            raise PermissionError(f"an allowance goes past the cap ({cap}%): ask for more than that, up to 100%")
+        run = await asyncio.to_thread(reg.merge_subscription, run.run_id, allowance=request.up_to_percent, capped=None) or run
+        if capped is None or run.status in {"running", "waiting"}:
+            return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=f"allowed up to {request.up_to_percent}%")
+        environment = await asyncio.to_thread(self.launcher_environment_in, Path(run.cwd))
+        delivery = await asyncio.to_thread(deliver_message, run.run_id, reg.RESUME_BRIEF, sender="operator", environment=environment, message_id=str(request.id))
+        if delivery.state == "error":
+            raise RuntimeError(delivery.text.removeprefix("ERROR: ") or "not resumed")
+        return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=f"allowed up to {request.up_to_percent}%; resumed", reads_at=delivery.reads_at)
 
     async def resume_limited(self) -> list[str]:
         """The runs a provider usage limit paused, on this PC: each says when it resumes
@@ -1041,6 +1120,7 @@ class MachineAgents(BaseModel):
         try:
             match request:
                 case AgentSendRequest():
+                    self.default_login_only(request)
                     detail = await self.sessions.send(run.run_id, request.text, request.id)
                     # A session reads nothing mid-turn: a message to one on its turn waits for that turn's end.
                     reads_at = "now" if detail == "sent" else "turn_end"

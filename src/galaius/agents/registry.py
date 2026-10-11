@@ -29,6 +29,7 @@ from contextlib import ExitStack, contextmanager, suppress
 from contextvars import ContextVar
 from pathlib import Path
 from typing import BinaryIO, ClassVar, Literal, Self
+from uuid import UUID
 
 from pydantic import BaseModel, Field, PrivateAttr, field_validator
 from galaius.agents import quota
@@ -38,6 +39,7 @@ from galaius.agents.events import TOKEN_FIELDS, AgentEvent, TokenUsage, UsageLed
 from galaius.agents.catalog_connection import CatalogConnection
 from galaius.agents.ceiling import end_run_scope
 from galaius.agents.providers import PROVIDERS, DeniedTool
+from galaius.agents.subscriptions import RunSubscription, Subscription, SubscriptionRefused
 from galaius.fence import FenceSpec
 from galaius.paths import UserPaths
 from galaius.file_lock import SoleHolder, exclusive
@@ -327,8 +329,15 @@ class AgentRun(BaseModel):
     #: True for a session galaius did NOT spawn — the user's own editor windows, surfaced so the
     #: supervisor shows the machine's real state rather than only its own children.
     foreign: bool = False
+    #: The subscription every turn and child of this run runs on (`galaius.agents.subscriptions`);
+    #: None: this PC's default login.
+    subscription: RunSubscription | None = None
 
     status: RunStatus = "running"
+
+    @property
+    def subscription_id(self) -> UUID | None:
+        return None if self.subscription is None else self.subscription.id
 
     @field_validator("status", mode="before")
     @classmethod
@@ -850,7 +859,8 @@ def register(*, run_id: str, pid: int | None, provider: str, name: str, task: st
              definition_path: Path | None = None, session_id: str | None = None,
              candidates: tuple[LaunchCandidate, ...] = (),
              skipped: tuple[SkippedCandidate, ...] = (),
-             denied_tools: tuple[DeniedTool, ...] = (), fence: FenceSpec | None = None) -> AgentRun:
+             denied_tools: tuple[DeniedTool, ...] = (), fence: FenceSpec | None = None,
+             subscription: RunSubscription | None = None) -> AgentRun:
     provider_impl = PROVIDERS.get(provider)
     definition = definition_path
     if definition is None and agent_ref is None:
@@ -863,7 +873,7 @@ def register(*, run_id: str, pid: int | None, provider: str, name: str, task: st
                    mesh_enabled=mesh_enabled,
                    reasoning=reasoning,
                    candidates=candidates, skipped=skipped, denied_tools=denied_tools, fence=fence,
-                   provider_session_id=provider_session_id,
+                   provider_session_id=provider_session_id, subscription=subscription,
                    lifecycle_token=secrets.token_hex(16),
                    started_at=time.time())
     _write(run)
@@ -916,7 +926,7 @@ def finish(
             return False
         if (terminal is not None and terminal.kind == "error" and terminal.text
                 and quota.REFUSAL.search(terminal.text)):
-            quota.record_refusal(stored.provider, stored.model, said=terminal.text)
+            quota.record_refusal(stored.provider, stored.model, said=terminal.text, subscription=stored.subscription_id)
         finished_at = time.time()
         # A stop is the owner's decision and stays the ending: the killed process then exits with
         # SIGTERM's code (-15, or 143 through a shell) and its reaper must not turn it "failed".
@@ -929,7 +939,7 @@ def finish(
             else _status_for(stored)
         )
         if status == "done" and (stored.output_tokens or 0) > 0:
-            quota.served(stored.provider, stored.model)  # it answered: nothing holds against it
+            quota.served(stored.provider, stored.model, subscription=stored.subscription_id)  # it answered: nothing holds against it
         finished = _merge_record_locked(run_id, {
             "finished_at": stored.finished_at if stored.status == "stopped" and stored.finished_at else finished_at,
             "exit_code": exit_code,
@@ -1032,6 +1042,37 @@ def _backfill_definition(run: AgentRun) -> AgentRun:
         return run
     run.definition_path = str(resolved)
     return run
+
+
+def merge_subscription(run_id: str, **changes: object) -> AgentRun | None:
+    """`changes` to the run's `RunSubscription` (its limits, allowance, cap), merged under the
+    record's lock; None for a run on no subscription."""
+    with record_lock(run_id):
+        stored = _read_record(run_id)
+        if stored is None or stored.subscription is None:
+            return None
+        merged = stored.subscription.model_copy(update=changes)
+        return _merge_record_locked(run_id, {"subscription": RunSubscription.model_validate(merged.model_dump()).model_dump(mode="json")})
+
+
+def subscription_heard(run: AgentRun, events: list[AgentEvent]) -> None:
+    """Usage readings in `run`'s new events: kept as its subscription's last (`Subscription.observe`).
+    At a cap they reach (this run's allowance counted), the cap goes on the run (`RunSubscription.capped`)
+    and, at `cut`, the run is stopped there; at `finish` its turn ends as it would, and its next turn
+    is refused while the window stays at the cap (`RunSubscription.check`)."""
+    windows = tuple(window for event in events if event.kind == "rate_limit" for window in event.usage)
+    if not windows or run.subscription is None or run.subscription.id is None:
+        return
+    try:
+        usage = Subscription.of(run.subscription.id).observe(windows)
+    except SubscriptionRefused:
+        return  # signed out while it ran: nothing to keep
+    cap = run.subscription.limits.reached(usage, run.subscription.allowance)
+    if cap is None or (run.subscription.capped is not None and run.subscription.capped.window == cap.window):
+        return
+    merge_subscription(run.run_id, capped=cap)
+    if cap.at_cap == "cut" and run.status in {"running", "waiting"}:
+        stop(run.run_id)
 
 
 def _merge_record_locked(run_id: str, updates: dict) -> AgentRun | None:
@@ -1171,12 +1212,12 @@ def append_event(run_id: str, event: AgentEvent) -> None:
             # the error that follows it a moment later says only "switch to another model". The
             # error can no longer shorten what the rate-limit line already wrote (`record_refusal`
             # never lowers a live block), so hearing both is strictly better than hearing one.
-            quota.record_refusal(stored.provider, stored.model, said=event.text)
+            quota.record_refusal(stored.provider, stored.model, said=event.text, subscription=stored.subscription_id)
         elif event.kind in ("text", "tool", "thinking") and (event.input_tokens or 0) > 0:
             # The MODEL answering — a turn that read tokens; the CLI's own notice reads none:
             # whatever an earlier refusal left against it is over, whatever reset it named. An
             # `allowed` rate-limit line proves nothing: one pool can allow while another refuses.
-            quota.served(stored.provider, stored.model)
+            quota.served(stored.provider, stored.model, subscription=stored.subscription_id)
         terminal = stored.status in TERMINAL_STATUSES
         same_turn = event.turn_id is None or event.turn_id == stored.provider_turn_id
         newer_root_turn = (
@@ -1880,13 +1921,13 @@ def _derive(run: AgentRun) -> AgentRun:
             if (ending == "error" and digest.ending_text
                     and original.get("status") != "failed" and run.status == "failed"
                     and quota.REFUSAL.search(digest.ending_text)):
-                quota.record_refusal(run.provider, run.model, said=digest.ending_text, now=_vendor_said_at(run))
+                quota.record_refusal(run.provider, run.model, said=digest.ending_text, subscription=run.subscription_id, now=_vendor_said_at(run))
             # The other way round: a run nobody reaped (`agents spawn` detaches) that ended on its
             # model's answer proves the model serves — as `finish` says for a reaped one — but only
             # against what was heard before that answer.
             elif (ending == "done" and original.get("status") not in ("done", "waiting")
                     and (run.output_tokens or 0) > 0 and (answered := _vendor_said_at(run)) is not None):
-                quota.served(run.provider, run.model, at=answered)
+                quota.served(run.provider, run.model, subscription=run.subscription_id, at=answered)
     return run
 
 

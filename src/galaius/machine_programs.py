@@ -2,7 +2,9 @@
 (`AgentProgramInstallRequest`): its vendor's own install script, fetched from the address the
 provider declares (`AgentProvider.installers`, never one the server sends), run for this user with
 a system-only environment, then the program's own sign-in, waited for until its status command
-says it is signed in. One job per program at a time; what each stands at is `AgentProviderState`."""
+says it is signed in. A subscription's sign-in (`subscription_id`) runs the same way inside that
+subscription's own folder (`Subscription`), never touching the default login: one job per program
+and login at a time; what each stands at is `AgentProviderState`."""
 
 import asyncio
 import logging
@@ -16,12 +18,14 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import ClassVar
 from urllib.parse import urljoin, urlsplit
+from uuid import UUID
 
 import httpx
 from galaius_core import DEVICE_CODE, AgentProgramFailure, AgentProgramStep, AgentProvider, AgentProviderState, AgentSignIn
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from galaius.agents.providers import PROVIDERS, AgentProvider as Program, ProgramInstaller
+from galaius.agents.subscriptions import Subscription
 from galaius.processes import end_process_tree, process_group_options
 
 logger = logging.getLogger(__name__)
@@ -59,7 +63,8 @@ class AgentPrograms(BaseModel):
     #: The steps a job is under way in: asked again, it is not started twice (threat M6).
     RUNNING: ClassVar[frozenset[str]] = frozenset({"installing", "signing_in"})
 
-    _jobs: dict[str, AgentProviderState] = PrivateAttr(default_factory=dict)
+    #: Each job by its program and login (a subscription's id; None: the default login).
+    _jobs: dict[tuple[str, UUID | None], AgentProviderState] = PrivateAttr(default_factory=dict)
     _lock: threading.Lock = PrivateAttr(default_factory=threading.Lock)
 
     @staticmethod
@@ -67,46 +72,67 @@ class AgentPrograms(BaseModel):
         return tuple(provider for provider in PROVIDERS.values() if provider.installer() is not None)
 
     def states(self) -> tuple[AgentProviderState, ...]:
-        """Each installable program: its job's state while it runs, else what it is now (a failed
-        job's failure stays shown until the program is installed and signed in)."""
+        """Each installable program's default login, then each subscription signed in here: its job's
+        state while it runs, else what it is now (a failed job's failure stays shown until it is
+        installed and signed in), a subscription's with its last usage reading."""
         with self._lock:
             jobs = dict(self._jobs)
-        return tuple(job if (job := jobs.get(provider.name)) is not None and job.step in self.RUNNING else self._now(provider, job)
-                     for provider in self.installable())
+        logins = [(provider, None) for provider in self.installable()] + [(subscription.program, subscription) for subscription in Subscription.all()]
+        return tuple(job if (job := jobs.get(self._key(provider, subscription))) is not None and job.step in self.RUNNING else self._now(provider, job, subscription)
+                     for provider, subscription in logins)
 
-    def install(self, name: AgentProvider) -> AgentProviderState:
-        """Starts `name`'s job unless one runs or it is ready; its state either way."""
+    def install(self, name: AgentProvider, subscription_id: UUID | None = None) -> AgentProviderState:
+        """Starts `name`'s job (inside `subscription_id`'s folder, made now when new) unless one runs or
+        it is ready; its state either way."""
         provider = PROVIDERS[name]
+        subscription = Subscription.create(subscription_id, name) if subscription_id is not None else None
+        key = self._key(provider, subscription)
         if provider.installer() is None:
-            return self._base(provider).model_copy(update={"step": "failed", "failure": "unsupported_system", "changed_at": datetime.now(UTC)})
+            return self._base(provider, subscription).model_copy(update={"step": "failed", "failure": "unsupported_system", "changed_at": datetime.now(UTC)})
         with self._lock:
-            if (job := self._jobs.get(name)) is not None and job.step in self.RUNNING:
+            if (job := self._jobs.get(key)) is not None and job.step in self.RUNNING:
                 return job
-        now = self._now(provider, None)
+        now = self._now(provider, None, subscription)
         if now.step == "ready":
             return now
         with self._lock:
-            if (job := self._jobs.get(name)) is not None and job.step in self.RUNNING:
+            if (job := self._jobs.get(key)) is not None and job.step in self.RUNNING:
                 return job
-            started = self._jobs[name] = now.model_copy(update={"step": "signing_in" if now.available else "installing", "changed_at": datetime.now(UTC)})
-        threading.Thread(target=self._job, args=(provider,), name=f"program-{name}", daemon=True).start()
+            started = self._jobs[key] = now.model_copy(update={"step": "signing_in" if now.available else "installing", "changed_at": datetime.now(UTC)})
+        threading.Thread(target=self._job, args=(provider, subscription), name=f"program-{name}", daemon=True).start()
         return started
+
+    def sign_out(self, name: AgentProvider, subscription_id: UUID) -> AgentProviderState:
+        """`subscription_id` signed out: its program's own sign-out inside its folder, then the folder
+        removed with whatever credential it kept. The default login is never touched. Its state after."""
+        subscription = Subscription.of(subscription_id)
+        if subscription.provider != name:
+            raise PermissionError(f"subscription {subscription_id} is a {subscription.provider} login, not {name}")
+        with self._lock:
+            if (job := self._jobs.get(self._key(subscription.program, subscription))) is not None and job.step in self.RUNNING:
+                raise PermissionError("its sign-in is under way; sign out once it ended")
+        state = self._base(subscription.program, subscription)
+        self._logout(subscription)
+        with self._lock:
+            self._jobs.pop(self._key(subscription.program, subscription), None)
+        return state.model_copy(update={"step": "signed_out", "signed_in": False, "usage": (), "changed_at": datetime.now(UTC)})
 
     # ---- the job -------------------------------------------------------------------------
 
-    def _job(self, provider: Program) -> None:
+    def _job(self, provider: Program, subscription: Subscription | None) -> None:
+        key = self._key(provider, subscription)
         try:
             if not provider.available():
-                self._install(provider)
-            self._sign_in(provider)
+                self._install(provider, key)
+            self._sign_in(provider, subscription)
         except ProgramFailed as failed:
             logger.warning("%s program: %s (%s)", provider.name, failed.code, failed)
-            self._update(provider.name, step="failed", failure=failed.code, detail=str(failed)[:400], sign_in=None)
+            self._update(key, step="failed", failure=failed.code, detail=str(failed)[:400], sign_in=None)
         except Exception as error:  # one job's crash is its own failure, never the runner's, never a stuck step
             logger.exception("%s program job crashed", provider.name)
-            self._update(provider.name, step="failed", failure="install_failed", detail=f"{type(error).__name__}: {error}"[:400], sign_in=None)
+            self._update(key, step="failed", failure="install_failed", detail=f"{type(error).__name__}: {error}"[:400], sign_in=None)
 
-    def _install(self, provider: Program) -> None:
+    def _install(self, provider: Program, key: tuple[str, UUID | None]) -> None:
         installer = provider.installer()
         assert installer is not None  # `install` refuses a program without one
         with tempfile.TemporaryDirectory(prefix="galaius-program-") as folder:  # 0700 on POSIX
@@ -122,7 +148,7 @@ class AgentPrograms(BaseModel):
         self._log(provider, done.stdout + done.stderr)
         if done.returncode != 0 or not provider.available():
             raise ProgramFailed("install_failed", self.last_line(done.stderr or done.stdout) or f"the installer exited {done.returncode}")
-        self._update(provider.name, available=True, version=self.version(provider))
+        self._update(key, available=True, version=self.version(provider))
 
     def download(self, installer: ProgramInstaller) -> bytes:
         """The script, over https, through `installer.hosts` only (each redirect checked), at most
@@ -150,25 +176,31 @@ class AgentPrograms(BaseModel):
             raise ProgramFailed("download_failed", f"{type(error).__name__}: {error}"[:300]) from error
         raise ProgramFailed("download_failed", "too many redirects")
 
-    def _sign_in(self, provider: Program) -> None:
+    def _sign_in(self, provider: Program, subscription: Subscription | None) -> None:
         """Its own sign-in command, kept waiting (stdin open, never written: no code is relayed)
         until its status says signed in, `sign_in_seconds` at most; Claude Code opens this
-        computer's browser, Codex prints a device code the web shows."""
-        signed_in, account = self._status(provider)
+        computer's browser, Codex prints a device code the web shows. A subscription's runs inside
+        its folder, and is undone when the default login no longer names the same login after it."""
+        key, environment = self._key(provider, subscription), self._environment(subscription)
+        signed_in, account = self._status(provider, environment)
         if signed_in:
-            self._update(provider.name, step="ready", signed_in=True, account=account, sign_in=None)
+            self._update(key, step="ready", signed_in=True, account=account, sign_in=None)
             return
+        default = asyncio.run(provider.login_digest(self.environment)) if subscription is not None else ""
         deadline = datetime.now(UTC) + timedelta(seconds=self.sign_in_seconds)
-        self._update(provider.name, step="signing_in", signed_in=False, sign_in=AgentSignIn(expires_at=deadline))
-        login = subprocess.Popen([provider.executable(), *provider.login_arguments], env=self.environment, stdin=subprocess.PIPE,
+        self._update(key, step="signing_in", signed_in=False, sign_in=AgentSignIn(expires_at=deadline))
+        login = subprocess.Popen([provider.executable(), *provider.login_arguments], env=environment, stdin=subprocess.PIPE,
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace", **process_group_options())
-        threading.Thread(target=self._read_code, args=(provider, login, deadline), daemon=True).start()
+        threading.Thread(target=self._read_code, args=(key, login, deadline), daemon=True).start()
         try:
             while True:
                 time.sleep(self.poll_seconds)
-                signed_in, account = self._status(provider)
+                signed_in, account = self._status(provider, environment)
                 if signed_in:
-                    self._update(provider.name, step="ready", signed_in=True, account=account, sign_in=None)
+                    if subscription is not None and asyncio.run(provider.login_digest(self.environment)) != default:
+                        self._logout(subscription)
+                        raise ProgramFailed("sign_in_failed", "the sign-in changed this computer's default login; the subscription was signed out again")
+                    self._update(key, step="ready", signed_in=True, account=account, sign_in=None)
                     return
                 if login.poll() is not None:
                     raise ProgramFailed("sign_in_failed", f"its sign-in ended (exit {login.returncode}) without signing in")
@@ -182,42 +214,62 @@ class AgentPrograms(BaseModel):
                 except subprocess.TimeoutExpired:
                     login.kill()
 
-    def _read_code(self, provider: Program, login: subprocess.Popen, deadline: datetime) -> None:
+    def _read_code(self, key: tuple[str, UUID | None], login: subprocess.Popen, deadline: datetime) -> None:
         """A device code the sign-in prints, onto its state while it still waits; its output is never
         logged (threat M4)."""
         assert login.stdout is not None
         for line in login.stdout:
             word = self.ANSI.sub("", line).strip()
             if self.CODE.match(word):
-                self._update(provider.name, only_while="signing_in", sign_in=AgentSignIn(code=word, expires_at=deadline))
+                self._update(key, only_while="signing_in", sign_in=AgentSignIn(code=word, expires_at=deadline))
 
     # ---- states ----------------------------------------------------------------------------
 
-    def _update(self, name: str, *, only_while: AgentProgramStep | None = None, **changes: object) -> None:
+    def _update(self, key: tuple[str, UUID | None], *, only_while: AgentProgramStep | None = None, **changes: object) -> None:
         """One job state change, under the lock, never running anything: a terminal state is always
         written; a change `only_while` a step is dropped once the job left it."""
         if unknown := changes.keys() - AgentProviderState.model_fields.keys():
             raise ValueError(f"not a program state field: {sorted(unknown)}")
         with self._lock:
-            current = self._jobs[name]
+            current = self._jobs[key]
             if only_while is not None and current.step != only_while:
                 return
-            self._jobs[name] = AgentProviderState.model_validate({**current.model_dump(), **changes, "changed_at": datetime.now(UTC)})
+            self._jobs[key] = AgentProviderState.model_validate({**current.model_dump(), **changes, "changed_at": datetime.now(UTC)})
 
-    def _status(self, provider: Program) -> tuple[bool | None, str]:
-        return asyncio.run(provider.login_status(self.environment))
+    @staticmethod
+    def _key(provider: Program, subscription: Subscription | None) -> tuple[str, UUID | None]:
+        return provider.name, subscription.id if subscription is not None else None
 
-    def _base(self, provider: Program) -> AgentProviderState:
+    def _environment(self, subscription: Subscription | None) -> dict[str, str]:
+        """What a program runs with for this login: the system variables, its folder named to it."""
+        return self.environment if subscription is None else {**self.environment, **subscription.overlay()}
+
+    def _status(self, provider: Program, environment: dict[str, str]) -> tuple[bool | None, str]:
+        return asyncio.run(provider.login_status(environment))
+
+    def _logout(self, subscription: Subscription) -> None:
+        """Its program's own sign-out inside its folder (best effort: the folder goes either way), then the folder."""
+        if subscription.program.logout_arguments and subscription.program.available():
+            try:
+                subprocess.run([subscription.program.executable(), *subscription.program.logout_arguments], env=self._environment(subscription),
+                               stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
+            except (OSError, subprocess.TimeoutExpired):
+                logger.warning("%s sign-out of a subscription did not complete; its folder is removed", subscription.provider)
+        subscription.remove()
+
+    def _base(self, provider: Program, subscription: Subscription | None = None) -> AgentProviderState:
         installed = provider.available()
         return AgentProviderState(provider=provider.name, active=self.active(provider.name), available=installed,
-                                  version=self.version(provider) if installed else "")
+                                  version=self.version(provider) if installed else "",
+                                  subscription_id=subscription.id if subscription is not None else None,
+                                  usage=subscription.usage() if subscription is not None else ())
 
-    def _now(self, provider: Program, last: AgentProviderState | None) -> AgentProviderState:
+    def _now(self, provider: Program, last: AgentProviderState | None, subscription: Subscription | None = None) -> AgentProviderState:
         """What `provider` is here now; `last`, a finished job's failure, while it is not signed in, and
         its `changed_at` (when the web's job last moved it) while it is still ready: the server tells
         the owner of a sign-in once, by that time."""
-        base = self._base(provider)
-        signed_in, account = self._status(provider) if base.available else (False, "")
+        base = self._base(provider, subscription)
+        signed_in, account = self._status(provider, self._environment(subscription)) if base.available else (False, "")
         if not signed_in and last is not None and last.step == "failed":
             return last
         step: AgentProgramStep = "missing" if not base.available else "ready" if signed_in else "signed_out"

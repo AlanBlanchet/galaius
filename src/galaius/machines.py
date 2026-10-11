@@ -34,6 +34,8 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, Valid
 from galaius_core import MACHINE_AGENT_REQUESTS, AgentSendRequest, MACHINE_MODELS, MachineProblem, MachineProblemCode, MachineAgentSettings, MachineAgentSettingsState, MachineAgentSettingsUpdate, PlacePath, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, MachineAgentAnswer, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachineRuntime, MachineTokenSwap, PlaceLevel, ScriptFile, ScriptLanguage, UserModelOrigin
 from galaius import USER_AGENT
 from galaius import prompt_mirror
+from galaius.agents.subscription_watch import SubscriptionWatch
+from galaius.agents.subscriptions import Subscription
 from galaius.agents.catalog import AgentCatalog
 from galaius.agents.catalog_connection import CatalogConnection
 from galaius.cli.prompts import PromptMode
@@ -829,6 +831,9 @@ class MachineRunner:
     settle_seconds = 60
     #: How often this PC looks whether its owner accepted an error report it prepared (only while one waits).
     deliver_seconds = 60
+    #: How often the usage lines of runs pinned to a subscription are read (caps applied) and moved
+    #: usage goes to the server (`SubscriptionWatch`).
+    subscription_seconds = 5
     reconnect_seconds = (1, 2, 5, 10, 20)
     #: Failed tries in a row (about 10 s with `reconnect_seconds`) before its page is told why.
     report_after_failures = 3
@@ -868,6 +873,7 @@ class MachineRunner:
         self._workspace_jobs = WorkspaceJobs(path=self.config_path.with_name("machine-workspaces.json"))
         #: Staged writes waiting for the owner's review, and the web's whole-PC browse budget.
         self.reviews = PlaceReviews.default()
+        self._subscriptions = SubscriptionWatch()
         self.browse_budget = BrowseBudget()
         #: The agent child started ahead of the next web start (`WarmStart`), and of the next turn of
         #: the runs whose turn ended last (`FollowUps`).
@@ -948,6 +954,7 @@ class MachineRunner:
         reports = asyncio.create_task(self._deliver_reports(config))
         followed = asyncio.create_task(self._follow_up(config))
         resumed = asyncio.create_task(self._resume_limited(config))
+        watched = asyncio.create_task(self._watch_subscriptions())
         swapped = False
         try:
             await self._connect(config)
@@ -968,15 +975,17 @@ class MachineRunner:
             reports.cancel()
             followed.cancel()
             resumed.cancel()
-            await asyncio.gather(settler, reports, followed, resumed, return_exceptions=True)
+            watched.cancel()
+            await asyncio.gather(settler, reports, followed, resumed, watched, return_exceptions=True)
             for ahead in (self.warm, self.followups):  # a child started ahead never outlives its runner; ended on the loop it lives on
                 AgentSpawns.loop().call_soon_threadsafe(ahead.close)
         if swapped:
             await self.connect(self.load())
 
     def _secrets(self, config: MachineConfig) -> tuple[str, ...]:
-        """Exact values masked in every kept log line: the token, the ones it replaced, the environment's secrets."""
-        return (config.token.get_secret_value(), *self._spent_tokens, *secret_values(self._safe_environment()))
+        """Exact values masked in every kept log line (and so in error reports): the token, the ones it
+        replaced, the environment's secrets, the tokens of the subscriptions signed in here."""
+        return (config.token.get_secret_value(), *self._spent_tokens, *secret_values(self._safe_environment()), *Subscription.tokens())
 
     async def _follow_up(self, config: MachineConfig) -> None:
         """At start: the messages to web runs a former runner left queued go to their dispatchers,
@@ -1002,6 +1011,23 @@ class MachineRunner:
             except Exception:  # one failed pass never stops the next
                 logger.exception("resuming runs paused by a usage limit failed")
             await asyncio.sleep(self.settle_seconds)
+
+    async def _watch_subscriptions(self) -> None:
+        """Every `subscription_seconds`, the usage lines runs pinned to a subscription appended
+        (`SubscriptionWatch.heard`): local, like `_settle_runs`, so a cap holds while offline too."""
+        while True:
+            try:
+                await asyncio.to_thread(self._subscriptions.heard)
+            except Exception:  # one failed pass never stops the next
+                logger.exception("reading subscription usage failed")
+            await asyncio.sleep(self.subscription_seconds)
+
+    async def _report_usage(self, socket) -> None:
+        """Every `subscription_seconds` while connected, the subscriptions whose usage moved enough (`SubscriptionWatch.report`)."""
+        while True:
+            await asyncio.sleep(self.subscription_seconds)
+            if (report := await asyncio.to_thread(self._subscriptions.report, datetime.now(UTC))) is not None:
+                await socket.send(report.model_dump_json())
 
     async def _settle_runs(self) -> None:
         """Every `settle_seconds`, mark ended the runs whose process is gone (`registry.settle_gone`)."""
@@ -1081,17 +1107,19 @@ class MachineRunner:
         receiver = asyncio.create_task(self._receive(socket, config, commands))
         worker = asyncio.create_task(self._command_worker(socket, config, commands))
         heartbeat = asyncio.create_task(self._heartbeat(socket, config))
+        usage = asyncio.create_task(self._report_usage(socket))
         upgrade = asyncio.create_task(self._leave_when_quiet(commands))
         prompts = asyncio.create_task(self._sync_prompts())
         policy = asyncio.create_task(self._renew_policy())
         try:
-            done, _ = await asyncio.wait((receiver, worker, heartbeat, upgrade), return_when=asyncio.FIRST_COMPLETED)
+            done, _ = await asyncio.wait((receiver, worker, heartbeat, usage, upgrade), return_when=asyncio.FIRST_COMPLETED)
             for task in done:
                 task.result()
             return receiver in done and receiver.result()
         finally:
             receiver.cancel()
             heartbeat.cancel()
+            usage.cancel()
             upgrade.cancel()
             prompts.cancel()
             policy.cancel()
@@ -1100,7 +1128,7 @@ class MachineRunner:
             commands.put_nowait(None)
             for query in self._queries:
                 query.cancel()
-            await asyncio.gather(receiver, heartbeat, upgrade, prompts, policy, *self._queries, return_exceptions=True)
+            await asyncio.gather(receiver, heartbeat, usage, upgrade, prompts, policy, *self._queries, return_exceptions=True)
             await asyncio.shield(worker)
 
     async def _command_worker(self, socket, config: MachineConfig, commands: asyncio.Queue[MachineCommand | None]) -> None:
@@ -1184,7 +1212,7 @@ class MachineRunner:
     #: listed without the PC's own browse switch (`galaius_core.PlaceLevel`).
     #: `AgentSendRequest.idempotent_feature`: a message asked again under the same id is never queued twice.
     FEATURES: ClassVar[tuple[str, ...]] = ("file_query", "script_file", "file_read", "agent_control", "agent_settings", "web_settings", "workspaces", "start_permission", "project_secrets", "places", "agent_media", "tool_gateway", "token_swap",
-                                           "workspace_copy", "places_direct", "agent_programs", str(AgentSendRequest.idempotent_feature))
+                                           "workspace_copy", "places_direct", "agent_programs", "agent_subscriptions", str(AgentSendRequest.idempotent_feature))
 
     @classmethod
     def features(cls) -> list[str]:

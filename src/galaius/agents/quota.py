@@ -30,6 +30,7 @@ from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Self
+from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -424,8 +425,10 @@ def _cooldown() -> float:
         return DEFAULT_COOLDOWN
 
 
-def _key(provider: str, model: str | None) -> str:
-    return f"{provider}/{model or ''}"
+def _key(provider: str, model: str | None, subscription: UUID | None = None) -> str:
+    """One model's block under one login: a subscription's own (`#<id>`), else the PC's default
+    login: subscription A exhausted never passes over subscription B or the default login."""
+    return f"{provider}/{model or ''}" + (f"#{subscription}" if subscription is not None else "")
 
 
 def _read(now: float) -> dict[str, Block]:
@@ -458,20 +461,20 @@ def _until(key: str, now: float | None) -> float | None:
     return block.until if block is not None and block.until > moment else None
 
 
-def blocked_until(provider: str, model: str | None, *, now: float | None = None) -> float | None:
+def blocked_until(provider: str, model: str | None, *, subscription: UUID | None = None, now: float | None = None) -> float | None:
     """When this model may be tried again, or None when nothing is remembered against it."""
-    return _until(_key(provider, model), now)
+    return _until(_key(provider, model, subscription), now)
 
 
-def on_probation(provider: str, model: str | None, *, now: float | None = None) -> bool:
+def on_probation(provider: str, model: str | None, *, subscription: UUID | None = None, now: float | None = None) -> bool:
     """Whether a launch of this model now is the re-check after a block: it gets
     `PROBATION_WINDOW` to refuse at startup."""
     moment = time.time() if now is None else now
-    block = _read(moment).get(_key(provider, model))
+    block = _read(moment).get(_key(provider, model, subscription))
     return block is not None and block.until <= moment
 
 
-def record_refusal(provider: str, model: str | None, *, said: str = "", now: float | None = None) -> float:
+def record_refusal(provider: str, model: str | None, *, said: str = "", subscription: UUID | None = None, now: float | None = None) -> float:
     """Remember that this model refused; returns when it may be tried again.
 
     `said` is whatever the vendor wrote — the child's raw stream, an exception message, one
@@ -480,7 +483,7 @@ def record_refusal(provider: str, model: str | None, *, said: str = "", now: flo
     """
     moment = time.time() if now is None else now
     entries = _read(moment)
-    key = _key(provider, model)
+    key = _key(provider, model, subscription)
     previous = entries.get(key)
     if previous is None:
         count = 1
@@ -524,14 +527,15 @@ def unsupported_until(provider: str, model: str | None, *, login: str, now: floa
     return _until(_login_key(provider, model, login), now)
 
 
-def served(provider: str, model: str | None, *, at: float | None = None) -> None:
+def served(provider: str, model: str | None, *, subscription: UUID | None = None, at: float | None = None) -> None:
     """This model answered (a turn it wrote, a run that finished) at `at` (default now): whatever
     was remembered against it BEFORE that is over. Writes only when there was something to forget;
     a refusal heard after the answer stands."""
     entries = _read(time.time())
-    found = entries.get(_key(provider, model))
+    key = _key(provider, model, subscription)
+    found = entries.get(key)
     if found is not None and (at is None or found.at <= at):
-        del entries[_key(provider, model)]
+        del entries[key]
         _write(entries)
 
 

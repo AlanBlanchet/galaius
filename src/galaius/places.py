@@ -82,12 +82,12 @@ NEVER_GRANTABLE = NeverGrantable(
         "linux": ("snap", "bin"),
     },
     names=frozenset({"id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "id_ecdsa_sk", "id_ed25519_sk", "authorized_keys", "known_hosts",
-                     "credentials", "credentials.json", "keychain", "keychains", "keyrings", "password-store", "wallets", "kubeconfig"}),
+                     "credentials", "credentials.json", "auth.json", "keychain", "keychains", "keyrings", "password-store", "wallets", "kubeconfig"}),
     suffixes=(".kdbx", ".kdb", ".keychain", ".keychain-db", ".ppk", ".p12", ".pfx", ".pem", ".key", ".jks", ".keystore", ".gpg", ".asc", ".ovpn",
               ".tfstate", ".tfstate.backup"),
     patterns=("service-account*.json", "*-service-account*.json", "client_secret*.json"),
     dot_names=frozenset({".env", ".netrc", ".npmrc", ".pypirc", ".pgpass", ".git-credentials", ".ssh", ".gnupg", ".aws", ".kube", ".docker",
-                         ".password-store", ".vault-token", ".terraform.d"}),
+                         ".password-store", ".vault-token", ".terraform.d", ".credentials.json"}),
     dot_prefixes=(".env.",),
 )
 #: Folders never walked or copied (dependencies, build output, caches): rebuilt where needed, never the project's own.
