@@ -211,8 +211,8 @@ def test_the_mesh_config_carries_no_credential():
 @pytest.fixture
 def codex_configuration(monkeypatch):
     """Provider-resolved entries, with no duplicate interpretation of config layers."""
-    # An installed program's full path: Windows resolves a bare name on PATH before spawning.
-    monkeypatch.setattr(CodexProvider, "executable", lambda self: sys.executable)
+    # Codex installed, for every CodexProvider (the launcher builds its own to read registrations).
+    monkeypatch.setattr(CodexProvider, "located", lambda self: sys.executable)
 
     def configure(entry):
         rows = [] if entry is None else [entry]
@@ -235,7 +235,6 @@ async def test_codex_launcher_mesh_reaches_spawn_boundary_without_overriding_opt
 ):
     codex_configuration(entry)
     provider = CodexProvider()
-    monkeypatch.setattr(provider, "available", lambda: True)
     monkeypatch.setattr(provider, "_inject_definition", lambda agent, task, agent_prompt=None: task)
     monkeypatch.setattr(run_module, "resolve_model", lambda *args, **kwargs: ({}, "fixture-model"))
     monkeypatch.setattr(provider, "authenticated", AsyncMock(return_value=True))
