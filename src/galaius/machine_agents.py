@@ -25,7 +25,6 @@ import sys
 import tempfile
 import threading
 import time
-from datetime import UTC, datetime
 from collections import deque
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -41,12 +40,11 @@ from galaius_core import (
 )
 from galaius.agents import agent_queue
 from galaius.agents import registry as reg
-from galaius.agents import quota
 from galaius.agents.host import ConversationHost, ConversationRefused
 from galaius.agents.followup import FollowUps
 from galaius.agents.messaging import deliver_message
 from galaius.agents.providers import PROJECT_SETTINGS_OFF, PROVIDERS, provider_for
-from galaius.agents.subscriptions import RunSubscription, Subscription, SubscriptionRefused, UsageLimited
+from galaius.agents.subscriptions import RunSubscription, Subscription, SubscriptionRefused
 from galaius.agents.run import LAUNCH_STAMP, launch_editor_turn, load_policy, rank_candidates, run_agent
 from galaius.agents.warm import WarmStart
 from galaius.config import UserConfig
@@ -904,7 +902,7 @@ class MachineAgents(BaseModel):
         if self._kind(request.run_id) == "continued":
             return await asyncio.to_thread(self._continue_turn, run, request.text, request_id=request.id)
         if request.text == reg.RESUME_BRIEF:  # his « Continuer »; a message he types waits for the turn it starts
-            self.reopened(run)
+            run.reopened()
         # Answered once the message is durably queued, under the request's id (the same request
         # again finds it there and queues nothing): this runner starts the turn when the run is
         # between turns (`FollowUps`), else its dispatcher resumes the agent; a resume refused after
@@ -933,18 +931,6 @@ class MachineAgents(BaseModel):
         if request.limits is not None and request.limits != run.subscription.limits:
             run = reg.merge_subscription(run.run_id, limits=request.limits) or run
         return run
-
-    @staticmethod
-    def reopened(run: reg.AgentRun) -> None:
-        """« Continuer » on a stopped run starts its turn only once what stopped it reopened: refused,
-        typed with its reset time, while its subscription is at a cap (`SubscriptionCapped`) or its vendor's usage limit
-        still holds (`UsageLimited`), also while the automatic resume at that reset is pending."""
-        if run.status in {"running", "waiting"}:
-            return
-        if run.subscription is not None:
-            run.subscription.check()
-        if (at := reg.limit_resume_at(run)) is not None and time.time() < (reopens := at - quota.RESET_SLACK):
-            raise UsageLimited(datetime.fromtimestamp(reopens, UTC))
 
     async def _move(self, request: AgentMoveRequest) -> MachineAgentAnswer:
         """`RunMove`: the stopped run's session carried to the other subscription's folder and resumed there, the run

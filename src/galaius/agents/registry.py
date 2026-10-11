@@ -24,6 +24,7 @@ import stat
 import subprocess
 import sys
 import time
+from datetime import UTC, datetime
 from collections.abc import Mapping
 from contextlib import ExitStack, contextmanager, suppress
 from contextvars import ContextVar
@@ -39,7 +40,7 @@ from galaius.agents.events import TOKEN_FIELDS, AgentEvent, TokenUsage, UsageLed
 from galaius.agents.catalog_connection import CatalogConnection
 from galaius.agents.ceiling import end_run_scope
 from galaius.agents.providers import PROVIDERS, DeniedTool
-from galaius.agents.subscriptions import RunSubscription, Subscription, SubscriptionRefused
+from galaius.agents.subscriptions import RunSubscription, Subscription, SubscriptionRefused, UsageLimited
 from galaius.fence import FenceSpec
 from galaius.paths import UserPaths
 from galaius.file_lock import SoleHolder, exclusive
@@ -334,6 +335,18 @@ class AgentRun(BaseModel):
     subscription: RunSubscription | None = None
 
     status: RunStatus = "running"
+
+    def reopened(self) -> None:
+        """« Continuer » on this run starts its turn only once what stopped it reopened: refused, typed with its reset
+        time, while its subscription is at a cap (`SubscriptionCapped`) or its vendor's usage limit still holds
+        (`UsageLimited`), also while the automatic resume at that reset is pending. Every resume path asks it: the web's
+        (`MachineAgents`) and the CLI's (`galaius agents resume`, which his editor-launched runs' page goes through)."""
+        if self.status in {"running", "waiting"}:
+            return
+        if self.subscription is not None:
+            self.subscription.check()
+        if (at := limit_resume_at(self)) is not None and time.time() < (reopens := at - quota.RESET_SLACK):
+            raise UsageLimited(datetime.fromtimestamp(reopens, UTC))
 
     @property
     def subscription_id(self) -> UUID | None:

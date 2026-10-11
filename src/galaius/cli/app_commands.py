@@ -24,6 +24,7 @@ from galaius.agents import messaging
 from galaius.agents import quota
 from galaius.agents import providers as agent_providers
 from galaius.agents import registry as reg
+from galaius.agents.subscriptions import SubscriptionRefused
 from galaius.agents.catalog import AgentCatalog
 from galaius.agents.catalog_connection import CatalogConnection, CatalogConnectionError
 from galaius.fence import FenceSpec
@@ -1001,10 +1002,23 @@ def agents_resume(
             print(f"  {run.run_id[:8]}  {run.agent or run.name:<20} stopped {(time.time() - stopped) / 60:.0f} min ago")
         print(f"\nResume them with  galaius agents resume --all-cut  (or by id).")
         return
-    quota.forget()  # the refusals that cut them would refuse the same models again
+    refused = False
     for identity in targets:
+        # A run whose cap or usage limit still holds is refused before anything is queued, typed on stderr (one JSON line
+        # `{"subscription_refusal": …}`) for the caller to word with its reset time.
+        if (run := reg.get_run(reg.resolve_run_id(identity) or identity)) is not None:
+            try:
+                run.reopened()
+            except SubscriptionRefused as refusal:
+                print(json.dumps({"run_id": run.run_id, "subscription_refusal": refusal.refusal.model_dump(mode="json")}), file=sys.stderr)
+                refused = True
+                continue
+        quota.forget()  # the refusals that cut it would refuse the same models again
         delivery = messaging.deliver_message(identity, reg.RESUME_BRIEF)
-        print(f"{identity[:8]}: {delivery.text}")
+        print(f"{identity[:8]}: {delivery.text}", file=sys.stderr if delivery.state == "error" else sys.stdout)
+        refused = refused or delivery.state == "error"
+    if refused:
+        raise SystemExit(1)
 
 
 @agents_app.command(name="variables")

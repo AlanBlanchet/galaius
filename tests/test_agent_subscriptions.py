@@ -26,6 +26,7 @@ from galaius.agents.subscriptions import RunSubscription, Subscription, Subscrip
 from galaius.fence import FenceBind, FenceSpec
 from galaius.machine_programs import AgentPrograms
 from galaius.machine_agents import MachineAgents
+from galaius.cli.app_commands import agents_resume
 from tests.support.agents import ScriptedProvider, install_fake_cli, install_provider, use_policy
 
 FAKE_CLAUDE = Path(__file__).parent / "fixtures" / "agents" / "fake_claude_login.py"
@@ -341,7 +342,7 @@ def test_a_subscription_takes_the_owners_hooks_permissions_and_instructions_and_
     assert (tree(home / ".claude"), tree(home / ".codex")) == before
 
 
-def test_continuing_on_another_subscription_carries_the_session_never_a_credential_and_pins_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_continuing_on_another_subscription_carries_the_session_never_a_credential_and_pins_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
     """Contract A9: his « Continuer sur Claude pro » after a usage limit copies that session's transcript from A's folder
     to B's (nothing else, never a credential), pins the run to B; a Codex login is never a target of a Claude session; a
     turn asked while a cap or the vendor's limit holds is refused typed, with when it reopens."""
@@ -371,10 +372,17 @@ def test_continuing_on_another_subscription_carries_the_session_never_a_credenti
     assert rehomed.homes["claude"] == b.folder and not (fence.state / "claude" / ".claude.json").exists()
     b.observe((UsageWindow(window="weekly", used_percent=95, observed_at=datetime.now(UTC)),))
     with pytest.raises(SubscriptionCapped):
-        MachineAgents.reopened(moved)
+        moved.reopened()
     reopens = datetime.now(UTC).replace(microsecond=0) + timedelta(hours=2)
     monkeypatch.setattr(reg, "limit_resume_at", lambda run: reopens.timestamp() + quota.RESET_SLACK)
     unpinned = moved.model_copy(update={"subscription": None})
     with pytest.raises(UsageLimited) as limited:
-        MachineAgents.reopened(unpinned)
+        unpinned.reopened()
     assert limited.value.refusal.model_dump(exclude_none=True) == {"reason": "usage_limit", "resets_at": reopens}
+    # His editor-launched run's page resumes through `galaius agents resume`: refused the same way, typed on stderr, nothing queued.
+    reg.save_run(unpinned)
+    monkeypatch.setattr(reg, "get_run", lambda run_id: unpinned)
+    with pytest.raises(SystemExit) as stopped:
+        agents_resume([run_id])
+    said = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
+    assert (stopped.value.code, said["subscription_refusal"]["reason"], said["subscription_refusal"]["resets_at"]) == (1, "usage_limit", reopens.isoformat().replace("+00:00", "Z"))
