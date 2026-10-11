@@ -35,7 +35,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from galaius_core import (
     AGENT_TOUCH_SCOPES, MACHINE_AGENT_MEDIA, MACHINE_AGENT_READ, MACHINE_AGENT_TAIL, AgentAnswerRequest, AgentMedia, AgentMediaRequest, image_type, AgentContinueRequest, AgentFoldersRequest, AgentInteraction, AgentLogsRequest, AgentOptionsRequest,
-    AgentAllowanceRequest, AgentProgramInstallRequest, AgentProgramsRequest, AgentProviderState, AgentSignOutRequest, SubscriptionAllowance, SubscriptionLimits, SubscriptionUse, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
+    AgentAllowanceRequest, AgentProgramInstallRequest, AgentProgramsRequest, AgentProviderState, AgentSignOutRequest, SubscriptionAllowance, SubscriptionUse, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
     MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, PassedOverCandidate, ReadsAt, WebLoad, media_key, media_paths, MachineAgentSession, MachineFileEntry, WorkspaceCreateRequest, WorkspacePack, WorkspacePackRequest, WorkspacePrepareRequest, WorkspaceRefresh, WorkspacesRequest,
 )
 from galaius.agents import agent_queue
@@ -792,7 +792,9 @@ class MachineAgents(BaseModel):
             return RunSubscription(lent=True)
         if request.subscription_id is None:
             return None
-        pinned = RunSubscription(subscription_id=request.subscription_id, limits=request.limits or SubscriptionLimits())
+        if request.limits is None:
+            raise SubscriptionRefused("a start on a subscription carries its caps (limits)")
+        pinned = RunSubscription(subscription_id=request.subscription_id, limits=request.limits)
         pinned.check()
         return pinned
 
@@ -934,7 +936,7 @@ class MachineAgents(BaseModel):
         """`RunAllowance`: the run may go on its subscription up to `up_to_percent` of the window it is
         held or cut at; one held between turns gets its next turn now (as « Reprendre » does)."""
         run = await asyncio.to_thread(self._require_run, request.run_id)
-        if run.subscription is None or run.subscription.subscription_id is None or run.subscription.limits is None:
+        if run.subscription is None or run.subscription.subscription_id is None:
             raise PermissionError("this run is on no subscription: it has no cap to go past")
         capped = run.subscription.capped
         if capped is None:

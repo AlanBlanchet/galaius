@@ -53,7 +53,7 @@ class SubscriptionWatch(BaseModel):
         if run.provider != "codex" or not run.provider_session_id:
             return None
         if run.run_id not in self._records:
-            folder = Subscription.of(run.subscription_id).folder / "sessions"
+            folder = run.fence.sessions("codex")[0] if run.fence is not None else Subscription.of(run.subscription_id).folder / "sessions"
             found = next(iter(sorted(folder.rglob(f"rollout-*-{run.provider_session_id}.jsonl"))), None) if folder.is_dir() else None
             if found is None:
                 return None

@@ -254,11 +254,6 @@ def test_installer_switches_only_declared_consumers_and_rejects_unmanaged_collis
 
 def test_each_subscription_folder_gets_its_own_clis_projection_and_no_default_login_is_touched(tmp_path: Path) -> None:
     repository = _fixture_repository(tmp_path)
-    (repository / "hooks" / "hooks.json").write_text(json.dumps({
-        "hooks": {"Stop": [{"hooks": [{"type": "prompt", "prompt": "placeholder"}]}],
-                  "PreToolUse": [{"hooks": [{"type": "command", "command": "~/.claude/hooks/hook.sh"}]}]},
-    }))
-    commit_all(repository, "hook by path")
     projection = tmp_path / "projection"
     compile_prompt_projection(repository, "HEAD", projection, tmp_path / "installed")
     home, vscode = Path.home(), tmp_path / "vscode"
@@ -273,9 +268,9 @@ def test_each_subscription_folder_gets_its_own_clis_projection_and_no_default_lo
     prompt_projection.install_subscription_projections(projection, home, vscode)
 
     assert not (claude.folder / "CLAUDE.md").exists() and (claude.folder / "agents" / "a.md").is_file()  # its instructions are the owner's (adopt)
-    assert (claude.folder / "skills" / "s" / "SKILL.md").is_file() and (claude.folder / "hooks" / "hook.sh").is_file()
-    hook = json.loads((claude.folder / "settings.json").read_text())["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
-    assert hook == f"{claude.folder.as_posix()}/hooks/hook.sh"
+    assert (claude.folder / "skills" / "s" / "SKILL.md").is_file()
+    # its hooks and settings are the owner's own, one writer (`Subscription.adopt`)
+    assert not (claude.folder / "hooks").exists() and not (claude.folder / "settings.json").exists()
     assert (claude.folder / ".credentials.json").read_text() == '{"claudeAiOauth": {}}' and not (claude.folder / "AGENTS.md").exists()
     assert not (codex.folder / "AGENTS.md").exists() and (codex.folder / "skills" / "s" / "SKILL.md").is_file()
     assert not (codex.folder / "CLAUDE.md").exists() and not vscode.exists() and not (home / "AGENTS.md").exists()

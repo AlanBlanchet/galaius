@@ -138,7 +138,7 @@ async def test_a_run_and_its_child_run_in_the_subscription_folder_never_the_defa
 ])
 def test_a_child_runs_on_its_parents_subscription_and_never_another(parent, asked, named, pinned) -> None:
     folders = {name: Subscription.create(uuid4(), "claude") for name in ("x", "y")}
-    run = {name: RunSubscription(subscription_id=folders[name].id) for name in folders}
+    run = {name: RunSubscription(subscription_id=folders[name].id, limits=SubscriptionLimits()) for name in folders}
     environment = {"CLAUDE_CONFIG_DIR": str(folders[named].folder)} if named else {}
     resolve = lambda: RunSubscription.resolve(run.get(asked), parent=run.get(parent), child=parent is not None or asked is None and named is not None,
                                               environment=environment)
@@ -204,13 +204,18 @@ async def test_a_launch_inside_a_pinned_run_stays_on_its_subscription_whatever_i
     assert [event.text for event in reg.read_events(child.run_id) if event.kind == "text"] == [str(subscription.folder)]
 
 
-def test_codex_usage_is_read_from_its_session_record_and_reported_once_sent() -> None:
+@pytest.mark.parametrize("fenced", [False, True])
+def test_codex_usage_is_read_from_its_session_record_and_reported_once_sent(tmp_path: Path, fenced: bool) -> None:
+    """Unfenced, Codex keeps its session record in the subscription folder; fenced, in the run's own
+    private state (`FenceSpec.sessions`)."""
     subscription = Subscription.create(uuid4(), "codex")
+    fence = FenceSpec(working_directory=tmp_path, start=tmp_path, state=tmp_path / "state", providers=("codex",)) if fenced else None
     worker = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True)
     try:
         run = reg.register(run_id=str(uuid4()), pid=worker.pid, provider="codex", name="w", provider_session_id="01a0440c-3356-7bb3-ba6b-b314ca533469",
-                           subscription=RunSubscription(subscription_id=subscription.id, limits=SubscriptionLimits()))
-        record = subscription.folder / "sessions" / "2026" / "09" / "22" / f"rollout-2026-09-22T20-46-43-{run.provider_session_id}.jsonl"
+                           subscription=RunSubscription(subscription_id=subscription.id, limits=SubscriptionLimits()), fence=fence)
+        sessions = fence.sessions("codex")[0] if fence is not None else subscription.folder / "sessions"
+        record = sessions / "2026" / "09" / "22" / f"rollout-2026-09-22T20-46-43-{run.provider_session_id}.jsonl"
         record.parent.mkdir(parents=True)
         record.write_text('{"type":"session_meta","payload":{}}\n' + CODEX_LINE + "\n")
         watch = SubscriptionWatch()
@@ -238,8 +243,13 @@ def test_a_subscription_takes_the_owners_hooks_permissions_and_instructions_and_
     home = Path.home()
     (home / ".claude").mkdir()
     (home / ".codex").mkdir()
+    (home / ".claude" / "hooks").mkdir()
+    (home / ".claude" / "hooks" / "stop.sh").write_text("#!/bin/sh\nexit 0\n")
+    (home / ".claude" / "hooks" / "stop.sh").chmod(0o700)
     (home / ".claude" / "settings.json").write_text(json.dumps({
-        "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "~/.claude/hooks/stop.sh"}]}]}, "permissions": {"allow": ["Bash(git:*)"]},
+        "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "~/.claude/hooks/stop.sh"},
+                                      {"type": "command", "command": "python3 $HOME/.claude/.credentials.json"}]}]},
+        "permissions": {"allow": ["Bash(git:*)"]},
         "env": {"ANTHROPIC_API_KEY": "sk-owner"}, "apiKeyHelper": "~/bin/key", "model": "owner-model"}))
     (home / ".claude" / "CLAUDE.md").write_text("owner instructions\n")
     (home / ".claude" / ".credentials.json").write_text('{"claudeAiOauth": {"accessToken": "owner"}}')
@@ -252,8 +262,11 @@ def test_a_subscription_takes_the_owners_hooks_permissions_and_instructions_and_
         subscription.adopt({"HOME": str(home), **subscription.overlay()})  # as inside a pinned run: its variable names the folder
 
     settings = json.loads((claude.folder / "settings.json").read_text())
-    assert settings == {"statusLine": {"type": "command", "command": "own"}, "env": {"KEPT": "1"},
-                        "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "~/.claude/hooks/stop.sh"}]}]}, "permissions": {"allow": ["Bash(git:*)"]}}
+    folder = claude.folder.as_posix()
+    assert settings == {"statusLine": {"type": "command", "command": "own"}, "env": {"KEPT": "1"}, "permissions": {"allow": ["Bash(git:*)"]},
+                        "hooks": {"Stop": [{"hooks": [{"type": "command", "command": f"{folder}/hooks/stop.sh"},
+                                                      {"type": "command", "command": f"python3 {folder}/.credentials.json"}]}]}}
+    assert ".claude/" not in json.dumps(settings["hooks"]) and (claude.folder / "hooks" / "stop.sh").stat().st_mode & 0o700 == 0o700
     assert (claude.folder / "CLAUDE.md").read_text() == "owner instructions\n" and (codex.folder / "AGENTS.md").read_text() == "owner codex instructions\n"
     assert not (claude.folder / ".credentials.json").exists() and not (codex.folder / "auth.json").exists()
     assert (tree(home / ".claude"), tree(home / ".codex")) == before

@@ -186,7 +186,7 @@ def test_a_run_stays_on_its_subscription_and_a_lent_pc_lends_no_login(base: Path
     for pinned, asked in ((mine.id, other.id), (None, mine.id)):
         run_id = str(uuid4())
         reg.save_run(reg.AgentRun(run_id=run_id, provider="claude", name="w", cwd=str(base / "project"), started_at=1.0,
-                                  subscription=RunSubscription(subscription_id=pinned) if pinned else None))
+                                  subscription=RunSubscription(subscription_id=pinned, limits=SubscriptionLimits()) if pinned else None))
         agents.runs.add(WebRun(run_id=run_id, root="project"))
         with pytest.raises(SubscriptionRefused, match="pinned to another subscription|own login"):
             _answer(agents, _request("send", run_id=run_id, text="next", subscription_id=str(asked)))

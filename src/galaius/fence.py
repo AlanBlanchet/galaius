@@ -302,6 +302,11 @@ class FenceSpec(BaseModel):
         own = {name for provider in self.providers for name in KEYS.get(provider, ())}
         return tuple(sorted(name for name in os.environ if name.upper().endswith(SECRET_SUFFIXES) and name not in own))
 
+    def sessions(self, provider: str) -> tuple[Path, ...]:
+        """Where a fenced run of `provider` keeps its sessions on the PC: this run's private folders,
+        never its login folder's (a Codex session record, with its usage, is there)."""
+        return tuple(self.state / provider / name for name in TOOLS[provider]["sessions"])
+
     def _tool_state(self, home: Path) -> list[FenceBind]:
         """Each CLI's state as a private copy: an empty folder, its sign-in / settings / owner
         instructions read-only, its sessions in this run's own folder, its rewritten files copied."""
@@ -315,7 +320,7 @@ class FenceSpec(BaseModel):
             private = self.state / provider
             binds.append(FenceBind(source=_private(private / "home"), target=folder, writable=True))
             binds += [FenceBind(source=folder / name, target=folder / name, writable=False) for name in tool["read"] if (folder / name).exists()]
-            binds += [FenceBind(source=_private(private / name), target=folder / name, writable=True) for name in tool["sessions"]]
+            binds += [FenceBind(source=_private(session), target=folder / session.name, writable=True) for session in self.sessions(provider)]
             for name in tool["copies"]:
                 copy = private / name
                 if not copy.exists() and (beside / name).is_file():

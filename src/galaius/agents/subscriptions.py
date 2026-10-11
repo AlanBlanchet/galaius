@@ -71,6 +71,9 @@ class Subscription(BaseModel):
     #: The user settings keys a subscription folder takes from the default login's at each launch
     #: (`adopt`): what its runs may do and the hooks that run, never `env`, `apiKeyHelper` or another key.
     ADOPTED_SETTINGS: ClassVar[tuple[str, ...]] = ("hooks", "permissions")
+    #: What of the default folder a hook's script is never taken from: the login's own state, its
+    #: history and its sessions.
+    NEVER_ADOPTED: ClassVar[frozenset[str]] = frozenset({".claude.json", "history.jsonl", "projects", "sessions"})
     #: Shorter strings of a credential file are not secrets (a type, a plan name).
     SECRET_LENGTH: ClassVar[int] = 16
 
@@ -173,9 +176,23 @@ class Subscription(BaseModel):
             owner = json.loads(settings.read_text(encoding="utf-8"))
             mine = self.folder / self.program.settings_file
             kept = json.loads(mine.read_text(encoding="utf-8")) if mine.is_file() else {}
-            adopted = {key: owner[key] for key in self.ADOPTED_SETTINGS if key in owner}
+            adopted, named = self.program.rehome({key: owner[key] for key in self.ADOPTED_SETTINGS if key in owner}, self.folder)
+            for relative in named:  # the scripts its hooks run, beside them in this folder (a fenced run reaches no other)
+                self._adopt_file(default, relative)
             kept = {key: value for key, value in kept.items() if key not in self.ADOPTED_SETTINGS}
             self._replace(mine, (json.dumps({**kept, **adopted}, indent=2) + "\n").encode())
+
+    def _adopt_file(self, default: Path, relative: str) -> None:
+        """One file an adopted hook names, copied from the default folder (mode kept); never a
+        credential, the login's own state file, its history or its sessions."""
+        source, parts = default / relative, Path(relative).parts
+        if (".." in parts or parts[0] in self.NEVER_ADOPTED or source.name in self.CREDENTIALS
+                or not source.is_file() or not source.resolve().is_relative_to(default.resolve())):
+            return
+        target = self.folder / relative
+        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self._replace(target, source.read_bytes())
+        target.chmod(source.stat().st_mode & 0o700)
 
     def overlay(self) -> dict[str, str]:
         """What a child of this subscription's CLI runs with on top of its environment."""
@@ -302,4 +319,4 @@ class RunSubscription(WireRunSubscription):
     def check(self) -> None:
         """Refused while its subscription is at a cap (this run's allowance counted)."""
         if self.subscription_id is not None:
-            Subscription.of(self.subscription_id).check(self.limits or SubscriptionLimits(), self.allowance)
+            Subscription.of(self.subscription_id).check(self.limits, self.allowance)

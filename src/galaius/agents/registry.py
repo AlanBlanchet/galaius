@@ -1057,7 +1057,12 @@ def merge_subscription(run_id: str, **changes: object) -> AgentRun | None:
 
 def ancestor_run() -> AgentRun | None:
     """The running run this process descends from (its pid and start time recorded on the run): the
-    parent a launch cannot hide by clearing `GALAIUS_PARENT_RUN_ID` from its environment."""
+    parent a launch cannot hide by clearing `GALAIUS_PARENT_RUN_ID` from its environment.
+
+    A deterrent, not the boundary: a process handed to a new parent (`setsid -f`, `systemd-run
+    --user`) with its login variables cleared escapes it, and Windows has no parent walk here. Only
+    the fence holds a run to its subscription (A3): a lent run starts only inside it; an unfenced run
+    on the owner's own subscription can reach his own default login, never another account's."""
     ancestors = set(process_ancestry(os.getpid()))
     return next((run for run in running_runs() if run.pid is not None and (run.pid, run.pid_started) in ancestors), None)
 
@@ -1068,7 +1073,7 @@ def subscription_heard(run: AgentRun, events: list[AgentEvent]) -> None:
     and, at `cut`, the run is stopped there; at `finish` its turn ends as it would, and its next turn
     is refused while the window stays at the cap (`RunSubscription.check`)."""
     windows = tuple(window for event in events for window in event.usage)
-    if not windows or run.subscription is None or run.subscription.subscription_id is None or run.subscription.limits is None:
+    if not windows or run.subscription is None or run.subscription.subscription_id is None:
         return
     try:
         usage = Subscription.of(run.subscription.subscription_id).observe(windows)

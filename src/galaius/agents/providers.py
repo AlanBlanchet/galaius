@@ -289,6 +289,17 @@ class AgentProvider(ABC):
         """The usage windows one stream line reports (`AgentEvent.usage`); none for a CLI that reports none."""
         return ()
 
+    def rehome(self, value: object, folder: Path) -> tuple[object, tuple[str, ...]]:
+        """`value` (settings JSON: hooks, a status line) with every path in this CLI's folder under
+        home (`~/<home_folder>/`, `$HOME/…`, `${HOME}/…`) naming the same path in `folder`, and those
+        paths relative to it: a run whose login lives in `folder` runs the hooks installed there."""
+        text = json.dumps(value)
+        spellings = tuple(f"{home}/{self.home_folder}/" for home in ("~", "$HOME", "${HOME}"))
+        named = tuple(dict.fromkeys(re.findall("(?:" + "|".join(map(re.escape, spellings)) + r")([\w./-]+)", text)))
+        for spelling in spellings:
+            text = text.replace(spelling, f"{folder.as_posix()}/")
+        return json.loads(text), named
+
     @classmethod
     def installer(cls) -> ProgramInstaller | None:
         """Its install script for this system, None where its vendor publishes none."""

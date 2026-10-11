@@ -55,11 +55,15 @@ class ConsumerHomes(BaseModel):
 
     def writes(self, destination: Path) -> bool:
         """Whether `destination` is written here: inside `only` when set, and never a CLI's credential
-        file; a subscription folder's own instructions file is the owner's (`Subscription.adopt`)."""
+        file. In a subscription folder its instructions, settings and hooks are the owner's own, one
+        writer (`Subscription.adopt`): the projection writes its agents, skills and rules."""
         if destination.name in Subscription.CREDENTIALS:
             return False
-        return not self.only or any(destination.is_relative_to(folder) and destination not in (folder / "CLAUDE.md", folder / "AGENTS.md")
-                                    for folder in self.only)
+        return not self.only or any(destination.is_relative_to(folder) and not self._adopted(destination.relative_to(folder)) for folder in self.only)
+
+    @staticmethod
+    def _adopted(relative: Path) -> bool:
+        return relative.parts[0] == "hooks" or str(relative) in {"CLAUDE.md", "AGENTS.md", "settings.json", "hooks.json"}
 _OUTPUT_ROOTS = ("agents", "skills", "rules", "scopes", "references")
 _OUTPUT_FILES = ("AGENTS.md", "instructions.md", "org.json")
 _PASSTHROUGH_ROOTS = ("hooks",)
@@ -843,9 +847,7 @@ def _consumer_payloads(
     hook_groups: dict[str, list[object]] = dict(prior_hook_groups)
     if consumers.writes(claude / "settings.json"):
         settings = claude / "settings.json"
-        settings_bytes, hook_groups = _merged_hook_settings(
-            outputs, settings, hook_scripts, prior_hook_groups, claude if claude != home / ".claude" else None,
-        )
+        settings_bytes, hook_groups = _merged_hook_settings(outputs, settings, hook_scripts, prior_hook_groups)
         targets[settings] = (settings_bytes, 0o600)
         mergeable.add(settings)
     if "hooks/codex-hooks.json" in outputs and consumers.writes(codex / "hooks.json"):
@@ -877,12 +879,9 @@ def _consumer_payloads(
 
 def _merged_hook_settings(
     outputs: dict[str, Path], settings: Path, managed_scripts: set[str],
-    prior_hook_groups: dict[str, list[object]], folder: Path | None = None,
+    prior_hook_groups: dict[str, list[object]],
 ) -> tuple[bytes, dict[str, list[object]]]:
-    """`settings` with the projection's hooks merged in; `folder`: Claude Code's own folder when it is
-    not `~/.claude` (a subscription's), the hook commands then name the scripts installed there."""
-    text = outputs["hooks/hooks.json"].read_text(encoding="utf-8")
-    fragment = json.loads(text if folder is None else text.replace("~/.claude/", f"{folder.as_posix()}/"))
+    fragment = json.loads(outputs["hooks/hooks.json"].read_text(encoding="utf-8"))
     prompt = outputs["hooks/turn-end-asks.md"].read_text(encoding="utf-8").rstrip("\n")
     fragment["hooks"]["Stop"][0]["hooks"][0]["prompt"] = prompt
     current = json.loads(settings.read_text(encoding="utf-8")) if settings.exists() else {}
