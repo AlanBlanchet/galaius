@@ -15,6 +15,7 @@ from galaius_core import (
 
 from galaius import USER_AGENT
 from galaius.prompt_cache import _PromptCache
+from galaius.server_tls import server_tls
 
 
 class _PromptClient:
@@ -57,7 +58,7 @@ class _PromptClient:
             self._endpoint + path,
             headers={"Authorization": f"Bearer {self._token}", "User-Agent": USER_AGENT},
         )
-        with urllib.request.urlopen(request, timeout=5) as response:
+        with urllib.request.urlopen(request, timeout=5, context=server_tls()) as response:
             body = response.read(self._MAX_RESPONSE_BYTES + 1)
             if len(body) > self._MAX_RESPONSE_BYTES:
                 raise ValueError("prompt service response exceeds the size limit")

@@ -17,6 +17,7 @@ from galaius_core import (
 
 from galaius import USER_AGENT
 from galaius.prompt_projection import MANIFEST_NAME, _validated_manifest_outputs
+from galaius.server_tls import server_tls
 
 
 def publish_projection(projection: Path, endpoint: str, token: str) -> PromptCatalogPage:
@@ -82,7 +83,7 @@ def _request(
         endpoint.rstrip("/") + path, data=encoded, method=method,
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json", "User-Agent": USER_AGENT},
     )
-    with urllib.request.urlopen(request, timeout=10) as response:
+    with urllib.request.urlopen(request, timeout=10, context=server_tls()) as response:
         payload = response.read(max_bytes + 1)
         if len(payload) > max_bytes:
             raise ValueError("prompt publication response exceeds the size limit")

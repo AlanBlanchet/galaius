@@ -42,6 +42,7 @@ from galaius.cli.prompts import PromptMode
 from galaius.agents import providers as agent_providers
 from galaius.file_lock import exclusive
 from galaius.private_files import PRIVATE_FILES
+from galaius.server_tls import server_tls
 from galaius.error_reports import MachineErrorReports
 from galaius.machine_places import PlaceDesk
 from galaius.machine_agents import AgentSpawns, LogRing, MachineAgents, MachineSessions, WebRuns, redact, secret_values
@@ -551,7 +552,7 @@ class CommandFiles(MachineFiles):
         partial = target.with_name(f".{target.name}.{os.getpid()}.part")
         digest, size = hashlib.sha256(), 0
         try:
-            with urllib.request.urlopen(self._request(self.command.input_file_path(port, index)), timeout=300) as response, partial.open("wb") as stream:
+            with urllib.request.urlopen(self._request(self.command.input_file_path(port, index)), timeout=300, context=server_tls()) as response, partial.open("wb") as stream:
                 while chunk := response.read(1 << 20):
                     size += len(chunk)
                     if size > ref.size:
@@ -636,7 +637,7 @@ class CommandFiles(MachineFiles):
             request = self._request(f"{self.command.upload_path}?{query}", data=stream, method="POST",
                                     headers={"x-galaius-digest": digest.hexdigest(), "Content-Length": str(facts.st_size), "Content-Type": mimetypes.guess_type(source.name)[0] or "application/octet-stream"})
             try:
-                with urllib.request.urlopen(request, timeout=300) as response:
+                with urllib.request.urlopen(request, timeout=300, context=server_tls()) as response:
                     stored = json.loads(response.read())
             except urllib.error.HTTPError as error:
                 raise RuntimeError(f"the server refused {source.name} (HTTP {error.code}): {error.read()[:200].decode(errors='replace')}") from error
@@ -1057,10 +1058,9 @@ class MachineRunner:
                 await asyncio.to_thread(self.report_problem, config, "channel_unreachable", self._last_failure, tuple(self._log_ring.lines), self._log_ring.secrets)
             endpoint = self._channel_url(config.server_url)
             try:
-                async with websockets.connect(
+                async with self._channel(
                     endpoint,
-                    additional_headers={"Authorization": f"Bearer {config.token.get_secret_value()}"},
-                    user_agent_header=USER_AGENT,
+                    config.token.get_secret_value(),
                     open_timeout=10,
                     close_timeout=3,
                     ping_interval=15,
@@ -2055,6 +2055,13 @@ class MachineRunner:
     @staticmethod
     def _channel_url(server_url: str) -> str:
         return MachineConfig.endpoint_on(server_url, "/v1/machine-channel", socket=True)
+
+    @staticmethod
+    def _channel(endpoint: str, token: str, open_timeout: float = 10, close_timeout: float = 3, ping_interval: float | None = 20, max_size: int = 1024 * 1024) -> websockets.connect:
+        """The machine channel at `endpoint`, trusting what every HTTP call to the server trusts (`server_tls`)."""
+        return websockets.connect(endpoint, additional_headers={"Authorization": f"Bearer {token}"}, user_agent_header=USER_AGENT,
+                                  ssl=server_tls() if endpoint.startswith("wss:") else None, open_timeout=open_timeout,
+                                  close_timeout=close_timeout, ping_interval=ping_interval, max_size=max_size)
 
     @classmethod
     def report_problem(cls, config: MachineConfig, code: MachineProblemCode, detail: str = "", lines: tuple[str, ...] = (), secrets: tuple[str, ...] = ()) -> bool:

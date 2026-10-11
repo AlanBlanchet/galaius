@@ -750,8 +750,7 @@ def _channel_accepts(server: str, token: str, timeout: float = 15) -> Literal["a
     probe closes at once and sends nothing."""
     async def probe() -> Literal["accepted", "refused", "unreachable"]:
         try:
-            async with websockets.connect(MachineRunner._channel_url(server), additional_headers={"Authorization": f"Bearer {token}"},
-                                          user_agent_header=USER_AGENT, open_timeout=timeout, close_timeout=3):
+            async with MachineRunner._channel(MachineRunner._channel_url(server), token, open_timeout=timeout, close_timeout=3):
                 return "accepted"
         except websockets.InvalidStatus as error:
             return "refused" if error.response.status_code == 403 else "unreachable"

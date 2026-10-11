@@ -37,6 +37,7 @@ from pathlib import Path
 from galaius_core import UserModelOrigin
 
 from . import USER_AGENT, model_safety
+from .server_tls import server_tls
 
 #: `ModelTask`s this machine's generalized loader (`vision_infer.py`'s transformers/timm path) can
 #: run today. Growing this list (a text-generation loader, an ONNX runtime) is that runtime's own
@@ -92,7 +93,7 @@ def _fetch_from_server(origin: UserModelOrigin, model_id: str, cache_root: Path,
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:
         try:
-            with urllib.request.urlopen(request, timeout=300) as response, os.fdopen(descriptor, "wb") as stream:
+            with urllib.request.urlopen(request, timeout=300, context=server_tls()) as response, os.fdopen(descriptor, "wb") as stream:
                 while chunk := response.read(1024 * 1024):
                     stream.write(chunk)
         except urllib.error.HTTPError as error:

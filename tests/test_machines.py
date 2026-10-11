@@ -6,6 +6,7 @@ import traceback
 import logging
 import os
 import shutil
+import ssl
 import subprocess
 import sys
 from collections.abc import Callable
@@ -27,7 +28,18 @@ from galaius.cli.machine_command import _described_step
 from galaius.functions import FunctionRegistry, discover_python, discover_shell
 from galaius.private_files import PRIVATE_FILES
 from tests.support.private_files import loosen
+from galaius.server_tls import server_tls
 from galaius.machines import CommandFiles, CommandLogs, MachineConfig, MachineFiles, MachineRunner, SCRIPT_RUNTIMES, ScriptRuntime
+
+
+@pytest.mark.parametrize(("server", "verified"), [("https://galaius.example", True), ("http://127.0.0.1:8817", False)])
+def test_the_machine_channel_never_trusts_the_systems_cached_intermediates(server: str, verified: bool, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Python's default context loads Windows' intermediate cache as anchors; an expired cross-sign
+    there failed galaius.ai's valid chain with "certificate has expired" while HTTP calls worked."""
+    monkeypatch.setattr(ssl.SSLContext, "load_default_certs", lambda *_: pytest.fail("the system store was loaded"))
+    server_tls.cache_clear()
+    tls = MachineRunner._channel(MachineRunner._channel_url(server), "token").connection_kwargs.get("ssl")
+    assert (tls is server_tls() and tls.verify_mode == ssl.CERT_REQUIRED and tls.check_hostname) is verified
 
 
 def test_machine_config_round_trips_token_with_owner_only_permissions(tmp_path: Path) -> None:
