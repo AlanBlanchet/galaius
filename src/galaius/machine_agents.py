@@ -829,7 +829,9 @@ class MachineAgents(BaseModel):
             if request.lent:
                 raise SubscriptionRefused("lent", LENT_REFUSAL) from error
             raise RuntimeError(self._said(str(error)) or "the agent did not start") from error
-        return MachineAgentAnswer(request_id=request.id, run_id=run_id, fenced=fence is not None, refresh=refresh, detail=f"{written} project secrets written to .env" if written else "")
+        started = await asyncio.to_thread(reg.get_run, str(run_id))
+        return MachineAgentAnswer(request_id=request.id, run_id=run_id, fenced=fence is not None, refresh=refresh, detail=f"{written} project secrets written to .env" if written else "",
+                                  subscription_id=started.subscription_id if started is not None else None)
 
     def _prepare_start(self, request: AgentStartRequest, pinned: RunSubscription | None) -> tuple[Path, int, FenceSpec | None, UUID | None]:
         """What a start is checked and prepared with before anything runs: its folder, how many
