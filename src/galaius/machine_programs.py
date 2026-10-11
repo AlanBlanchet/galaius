@@ -182,11 +182,11 @@ class AgentPrograms(BaseModel):
         computer's browser, Codex prints a device code the web shows. A subscription's runs inside
         its folder, and is undone when the default login no longer names the same login after it."""
         key, environment = self._key(provider, subscription), self._environment(subscription)
-        signed_in, account = self._status(provider, environment)
+        signed_in, account, login_digest = self._status(provider, environment)
         if signed_in:
-            self._update(key, step="ready", signed_in=True, account=account, sign_in=None)
+            self._update(key, step="ready", signed_in=True, account=account, login=login_digest, sign_in=None)
             return
-        default = asyncio.run(provider.login_digest(self.environment)) if subscription is not None else ""
+        default = self._status(provider, self.environment)[2] if subscription is not None else ""
         deadline = datetime.now(UTC) + timedelta(seconds=self.sign_in_seconds)
         self._update(key, step="signing_in", signed_in=False, sign_in=AgentSignIn(expires_at=deadline))
         login = subprocess.Popen([provider.executable(), *provider.login_arguments], env=environment, stdin=subprocess.PIPE,
@@ -195,12 +195,12 @@ class AgentPrograms(BaseModel):
         try:
             while True:
                 time.sleep(self.poll_seconds)
-                signed_in, account = self._status(provider, environment)
+                signed_in, account, login_digest = self._status(provider, environment)
                 if signed_in:
-                    if subscription is not None and asyncio.run(provider.login_digest(self.environment)) != default:
+                    if subscription is not None and self._status(provider, self.environment)[2] != default:
                         self._logout(subscription)
                         raise ProgramFailed("sign_in_failed", "the sign-in changed this computer's default login; the subscription was signed out again")
-                    self._update(key, step="ready", signed_in=True, account=account, sign_in=None)
+                    self._update(key, step="ready", signed_in=True, account=account, login=login_digest, sign_in=None)
                     return
                 if login.poll() is not None:
                     raise ProgramFailed("sign_in_failed", f"its sign-in ended (exit {login.returncode}) without signing in")
@@ -244,17 +244,21 @@ class AgentPrograms(BaseModel):
         """What a program runs with for this login: the system variables, its folder named to it."""
         return self.environment if subscription is None else {**self.environment, **subscription.overlay()}
 
-    def _status(self, provider: Program, environment: dict[str, str]) -> tuple[bool | None, str]:
+    def _status(self, provider: Program, environment: dict[str, str]) -> tuple[bool | None, str, str]:
         return asyncio.run(provider.login_status(environment))
 
     def _logout(self, subscription: Subscription) -> None:
-        """Its program's own sign-out inside its folder (best effort: the folder goes either way), then the folder."""
+        """Its program's own sign-out inside its folder, then the folder. A sign-out that fails keeps
+        the folder (refused, saying why): where the login also lives outside it (macOS keychain, keyed
+        by the folder's path), removing the folder alone would orphan it."""
         if subscription.program.logout_arguments and subscription.program.available():
             try:
-                subprocess.run([subscription.program.executable(), *subscription.program.logout_arguments], env=self._environment(subscription),
-                               stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
-            except (OSError, subprocess.TimeoutExpired):
-                logger.warning("%s sign-out of a subscription did not complete; its folder is removed", subscription.provider)
+                done = subprocess.run([subscription.program.executable(), *subscription.program.logout_arguments], env=self._environment(subscription),
+                                      stdin=subprocess.DEVNULL, capture_output=True, text=True, errors="replace", timeout=60)
+            except (OSError, subprocess.TimeoutExpired) as error:
+                raise PermissionError(f"{subscription.provider}'s sign-out did not complete ({type(error).__name__}); the subscription stays, sign out again") from error
+            if done.returncode != 0:
+                raise PermissionError(f"{subscription.provider}'s sign-out failed: {self.last_line(done.stderr or done.stdout) or f'exit {done.returncode}'}; the subscription stays, sign out again")
         subscription.remove()
 
     def _base(self, provider: Program, subscription: Subscription | None = None) -> AgentProviderState:
@@ -269,12 +273,12 @@ class AgentPrograms(BaseModel):
         its `changed_at` (when the web's job last moved it) while it is still ready: the server tells
         the owner of a sign-in once, by that time."""
         base = self._base(provider, subscription)
-        signed_in, account = self._status(provider, self._environment(subscription)) if base.available else (False, "")
+        signed_in, account, login_digest = self._status(provider, self._environment(subscription)) if base.available else (False, "", "")
         if not signed_in and last is not None and last.step == "failed":
             return last
         step: AgentProgramStep = "missing" if not base.available else "ready" if signed_in else "signed_out"
         kept = last.changed_at if last is not None and last.step == step else None
-        return base.model_copy(update={"step": step, "signed_in": signed_in if base.available else None, "account": account, "changed_at": kept})
+        return base.model_copy(update={"step": step, "signed_in": signed_in if base.available else None, "account": account, "login": login_digest, "changed_at": kept})
 
     def version(self, provider: Program) -> str:
         try:

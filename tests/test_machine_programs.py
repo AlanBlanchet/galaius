@@ -54,7 +54,7 @@ def test_a_job_that_breaks_ends_failed_and_a_late_code_never_reopens_it(tmp_path
     """Whatever stops a job (here its version probe and its install both break), its program reads
     `failed`, never stuck `installing`; a device code its sign-in prints afterwards changes nothing,
     and asking again starts a new job."""
-    monkeypatch.setattr(AgentPrograms, "_status", lambda self, provider, environment: (False, ""))
+    monkeypatch.setattr(AgentPrograms, "_status", lambda self, provider, environment: (False, "", ""))
     monkeypatch.setattr(AgentPrograms, "installable", staticmethod(lambda: (PROVIDERS["claude"],)))
     monkeypatch.setattr(AgentPrograms, "version", lambda self, provider: (_ for _ in ()).throw(Broken("no version")))
     monkeypatch.setattr(type(PROVIDERS["claude"]), "available", lambda self: False)

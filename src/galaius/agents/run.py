@@ -1299,13 +1299,16 @@ async def run_agent(
     environment = dict(os.environ if environment is None else environment)
     parent = parent_run_id or environment.get("GALAIUS_PARENT_RUN_ID") or None
     parent_run = reg.get_run(parent) if parent is not None else None
-    pinned = RunSubscription.resolve(subscription, parent=parent_run.subscription if parent_run is not None else None,
-                                     child=parent is not None, environment=environment)
+    # The run this process descends from holds it to its subscription whatever the environment says.
+    ancestor = reg.ancestor_run()
+    holder = ancestor if ancestor is not None and ancestor.subscription is not None else parent_run
+    pinned = RunSubscription.resolve(subscription, parent=holder.subscription if holder is not None else None,
+                                     child=parent is not None or ancestor is not None, environment=environment)
     if pinned is not None:
         pinned.check()
         environment.update(pinned.overlay())
-        if pinned.id is not None:
-            program = Subscription.of(pinned.id).program
+        if pinned.subscription_id is not None:
+            program = Subscription.of(pinned.subscription_id).program
             if provider is not None and provider.name != program.name:
                 raise SubscriptionRefused(f"this subscription is a {program.name} login; it never runs {provider.name}")
             provider = program
@@ -1397,7 +1400,7 @@ async def run_agent(
     # out of it: tried once every other candidate refused or could not start — a stale note must never
     # be why nothing can run (16ed211e: two Codex models refused for the login, then the run failed
     # with the noted model never asked).
-    pinned_id = pinned.id if pinned is not None else None
+    pinned_id = pinned.subscription_id if pinned is not None else None
     noted = {index: until for index, candidate in enumerate(candidates)
              if (until := quota.blocked_until(candidate.provider, candidate.model, subscription=pinned_id)) is not None}
     chosen_index = -1

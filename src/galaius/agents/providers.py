@@ -379,13 +379,9 @@ class AgentProvider(ABC):
         status = await self._auth_status(env, timeout=timeout)
         return status is not None and status[0] == 0 and self.accepts_subscription_auth(*status[1:])
 
-    async def login_status(self, env: dict[str, str], *, timeout: float = 10) -> tuple[bool | None, str]:
-        """Signed in (None: its status check could not complete), and as whom (`signed_in_as`), asked now."""
-        signed_in, account, _login = await self._login(env, timeout=timeout)
-        return signed_in, account
-
-    async def _login(self, env: dict[str, str], *, timeout: float) -> tuple[bool | None, str, str]:
-        """Signed in, as whom, and which login: a digest of the CLI's whole status answer, kept instead
+    async def login_status(self, env: dict[str, str], *, timeout: float = 10) -> tuple[bool | None, str, str]:
+        """Signed in (None: its status check could not complete), as whom (`signed_in_as`), and which
+        login, asked now: a digest of the CLI's whole status answer, kept instead
         of the answer. It tells apart what the answer names — Claude Code: account, organisation,
         plan; Codex: a ChatGPT login from an API key, never one ChatGPT account or plan from another."""
         status = await self._auth_status(env, timeout=timeout)
@@ -396,12 +392,8 @@ class AgentProvider(ABC):
         login = hashlib.sha256(self.login_identity(*status[1:]).encode()).hexdigest()[:16]
         return True, self.signed_in_as(*status[1:]), login
 
-    async def login_digest(self, env: dict[str, str], *, timeout: float = 10) -> str:
-        """Which login its status command names in `env` now (`_login`); "" when none answers."""
-        return (await self._login(env, timeout=timeout))[2]
-
     def login_identity(self, stdout: str, stderr: str) -> str:
-        """The part of the status answer that names the login (`_login`): its stdout, never a notice
+        """The part of the status answer that names the login (`login_status`): its stdout, never a notice
         a CLI prints beside it on stderr (an update, a warning), which would make every check read as
         a new login."""
         return stdout
@@ -417,7 +409,7 @@ class AgentProvider(ABC):
         confirmed = self._logged_in.get(key)
         if confirmed is not None and time.monotonic() - confirmed[0] < self.LOGIN_REUSE_SECONDS:
             return True
-        logged_in, _account, login = await self._login(env, timeout=timeout)
+        logged_in, _account, login = await self.login_status(env, timeout=timeout)
         if logged_in:
             self._logged_in[key] = (time.monotonic(), login)
         else:
@@ -425,7 +417,7 @@ class AgentProvider(ABC):
         return logged_in
 
     def login(self, env: dict[str, str]) -> str:
-        """Which login `authenticated` last confirmed for `env` (`_login`); "" when none was (a
+        """Which login `authenticated` last confirmed for `env` (`login_status`); "" when none was (a
         provider without a status command)."""
         confirmed = self._logged_in.get(self._login_key(env))
         return "" if confirmed is None else confirmed[1]
@@ -1850,6 +1842,15 @@ class CodexProvider(AgentProvider):
         return sorted(path.stem for path in root.glob("*.md"))
 
     def parse(self, line: str, ledger: UsageLedger | None = None) -> AgentEvent | None:
+        """`_parse_line`'s event, carrying the usage windows the line reports (`usage`): a line saying
+        nothing else is a `rate_limit` event of its own."""
+        event = self._parse_line(line, ledger)
+        if event is None or "rate_limits" not in line or not (usage := self.usage(json.loads(line))):
+            return event
+        said = ", ".join(f"{window.window} {window.used_percent:g}%" for window in usage)
+        return event.model_copy(update={"usage": usage, **({"kind": "rate_limit", "text": f"usage: {said}"} if event.kind == "other" else {})})
+
+    def _parse_line(self, line: str, ledger: UsageLedger | None = None) -> AgentEvent | None:
         line = line.strip()
         if not line:
             return None
@@ -1903,9 +1904,6 @@ class CodexProvider(AgentProvider):
                     tool_input=_clip(detail), text=_clip(detail) if completed else "",
                     status=("failed" if item.get("status") == "failed" else "completed") if completed else "running",
                 )
-        if usage := self.usage(raw):
-            said = ", ".join(f"{window.window} {window.used_percent:g}%" for window in usage)
-            return AgentEvent(kind="rate_limit", session_id=session_id, turn_id=turn_id, raw_type=kind, text=f"usage: {said}", usage=usage)
         if kind == "turn.completed":
             # `usage` is the THREAD's cumulative total — a resumed `exec` reports every earlier
             # turn again (monotonic in all 615 recorded turns) — in OpenAI's meaning: cached and

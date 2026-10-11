@@ -3,19 +3,23 @@ for every turn and child; its usage read from the vendor's own lines; its caps h
 
 import asyncio
 import hashlib
+import json
+import os
 import subprocess
 import sys
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from galaius_core import SubscriptionLimits
+from galaius_core import SubscriptionAllowance, SubscriptionLimits
 
 from galaius.agents import registry as reg
 from galaius.agents.events import AgentEvent
 from galaius.agents.providers import PROVIDERS, ClaudeCodeProvider
 from galaius.agents.run import run_agent
+from galaius.agents.subscription_watch import SubscriptionWatch
 from galaius.agents.subscriptions import RunSubscription, Subscription, SubscriptionCapped, SubscriptionRefused
 from galaius.fence import FenceBind, FenceSpec
 from galaius.machine_programs import AgentPrograms
@@ -71,9 +75,10 @@ def test_a_subscription_signs_in_and_out_in_its_own_folder_and_the_default_login
     while (state := next(item for item in programs.states() if item.subscription_id == subscription_id)).step == "signing_in" and time.monotonic() < deadline:
         time.sleep(0.05)
     folder = Subscription.of(subscription_id).folder
-    assert (state.step, state.account) == ("ready", "second@example.com")
+    default = next(item for item in programs.states() if item.subscription_id is None)
+    assert (state.step, state.account) == ("ready", "second@example.com") and len(state.login) == 16 and state.login != default.login
     assert folder.stat().st_mode & 0o777 == 0o700 and (folder / ".credentials.json").exists()
-    assert next(item for item in programs.states() if item.subscription_id is None).account == "owner@example.com"
+    assert default.account == "owner@example.com"
     programs.sign_out("claude", subscription_id)
     assert not folder.exists()
     assert (tree(home / ".claude"), tree(home / ".codex")) == before
@@ -115,7 +120,7 @@ async def test_a_run_and_its_child_run_in_the_subscription_folder_never_the_defa
     assert Subscription.create(uuid4(), "claude").overlay().keys() == {"CLAUDE_CONFIG_DIR"}
 
     parent = await run_agent(None, "p", agent="tester", cwd=str(tmp_path), environment={"PATH": "/usr/bin:/bin"},
-                             subscription=RunSubscription(id=subscription.id, limits=SubscriptionLimits(weekly_percent=80)))
+                             subscription=RunSubscription(subscription_id=subscription.id, limits=SubscriptionLimits(weekly_percent=80)))
     child = await run_agent(None, "c", agent="tester", cwd=str(tmp_path), parent_run_id=parent.run_id, environment={"PATH": "/usr/bin:/bin"})
     for handle in (parent, child):
         await asyncio.wait_for(handle.wait(), timeout=30)
@@ -133,7 +138,7 @@ async def test_a_run_and_its_child_run_in_the_subscription_folder_never_the_defa
 ])
 def test_a_child_runs_on_its_parents_subscription_and_never_another(parent, asked, named, pinned) -> None:
     folders = {name: Subscription.create(uuid4(), "claude") for name in ("x", "y")}
-    run = {name: RunSubscription(id=folders[name].id) for name in folders}
+    run = {name: RunSubscription(subscription_id=folders[name].id) for name in folders}
     environment = {"CLAUDE_CONFIG_DIR": str(folders[named].folder)} if named else {}
     resolve = lambda: RunSubscription.resolve(run.get(asked), parent=run.get(parent), child=parent is not None or asked is None and named is not None,
                                               environment=environment)
@@ -141,7 +146,7 @@ def test_a_child_runs_on_its_parents_subscription_and_never_another(parent, aske
         with pytest.raises(SubscriptionRefused):
             resolve()
     else:
-        assert resolve().id == folders[pinned].id
+        assert resolve().subscription_id == folders[pinned].id
 
 
 @pytest.mark.parametrize(("at_cap", "stopped"), [("finish", False), ("cut", True)])
@@ -150,7 +155,7 @@ def test_a_cap_reached_mid_run_holds_or_cuts_and_an_allowance_lets_it_go_on(at_c
     worker = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True)  # stop() ends its whole group
     try:
         run = reg.register(run_id=str(uuid4()), pid=worker.pid, provider="claude", name="w",
-                           subscription=RunSubscription(id=subscription.id, limits=SubscriptionLimits(weekly_percent=80, at_cap=at_cap)))
+                           subscription=RunSubscription(subscription_id=subscription.id, limits=SubscriptionLimits(five_hour_percent=2, weekly_percent=80, at_cap=at_cap)))
         reading = PROVIDERS["claude"].parse(CLAUDE_LINE)
         reg.subscription_heard(run, [AgentEvent(kind="text", text="working"), reading])
         held = reg.get_run(run.run_id)
@@ -158,21 +163,72 @@ def test_a_cap_reached_mid_run_holds_or_cuts_and_an_allowance_lets_it_go_on(at_c
         assert (held.status == "stopped") is stopped
         with pytest.raises(SubscriptionCapped, match="93% of its weekly window, its cap is 80%"):
             held.subscription.check()  # no next turn while the week stays at its cap
-        reg.merge_subscription(run.run_id, allowance=95, capped=None)
+        reg.merge_subscription(run.run_id, allowance=SubscriptionAllowance(window="weekly", up_to_percent=95), capped=None)
+        with pytest.raises(SubscriptionCapped, match="3% of its five hour window, its cap is 2%"):
+            reg.get_run(run.run_id).subscription.check()  # the week's allowance never lifts the five hours' cap
+        reg.merge_subscription(run.run_id, limits=SubscriptionLimits(weekly_percent=80, at_cap=at_cap))
         reg.get_run(run.run_id).subscription.check()
     finally:
         worker.kill()
         worker.wait()
 
 
-def test_a_fenced_run_binds_its_subscriptions_credential_never_the_default(tmp_path: Path) -> None:
+def test_a_fenced_run_binds_its_subscriptions_credential_and_no_other_login(tmp_path: Path) -> None:
     subscription = Subscription.create(uuid4(), "claude")
     (subscription.folder / ".credentials.json").write_text("{}")
-    (Path.home() / ".claude").mkdir()
-    (Path.home() / ".claude" / ".credentials.json").write_text("{}")
+    for folder, name in ((".claude", ".credentials.json"), (".codex", "auth.json")):
+        (Path.home() / folder).mkdir()
+        (Path.home() / folder / name).write_text("{}")
     work = tmp_path / "work"
     work.mkdir()
-    fence = FenceSpec(working_directory=work, start=work, state=tmp_path / "state", providers=("claude",), homes={"claude": subscription.folder}).build()
+    pinned = RunSubscription(subscription_id=subscription.id, limits=SubscriptionLimits())
+    fence = FenceSpec(working_directory=work, start=work, state=tmp_path / "state", providers=("claude", "codex"), homes=pinned.homes()).build()
     credential = subscription.folder / ".credentials.json"
     assert FenceBind(source=credential, target=credential, writable=False) in fence.binds
-    assert not any(bind.source.is_relative_to(Path.home() / ".claude") for bind in fence.binds)
+    assert not any(bind.source.is_relative_to(Path.home() / folder) for bind in fence.binds for folder in (".claude", ".codex"))
+    assert len({bind.target for bind in fence.binds if bind.writable}) == len([bind for bind in fence.binds if bind.writable])
+
+
+@pytest.mark.asyncio
+async def test_a_launch_inside_a_pinned_run_stays_on_its_subscription_whatever_its_environment_says(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The run this process descends from (here: pytest's own parent, registered as a pinned run)
+    holds a launch with no parent id and no login variable to that run's subscription."""
+    use_policy(monkeypatch, agents={"tester": "fixture-model"}, reasoning={"tester": "medium"})
+    install_provider(monkeypatch, _Codex())
+    subscription = Subscription.create(uuid4(), "codex")
+    holder = reg.register(run_id=str(uuid4()), pid=os.getppid(), provider="codex", name="holder",
+                          subscription=RunSubscription(subscription_id=subscription.id, limits=SubscriptionLimits()))
+    assert reg.ancestor_run().run_id == holder.run_id
+    child = await run_agent(None, "c", agent="tester", cwd=str(tmp_path), environment={"PATH": "/usr/bin:/bin"})
+    await asyncio.wait_for(child.wait(), timeout=30)
+    assert [event.text for event in reg.read_events(child.run_id) if event.kind == "text"] == [str(subscription.folder)]
+
+
+def test_codex_usage_is_read_from_its_session_record_and_reported_once_sent() -> None:
+    subscription = Subscription.create(uuid4(), "codex")
+    worker = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True)
+    try:
+        run = reg.register(run_id=str(uuid4()), pid=worker.pid, provider="codex", name="w", provider_session_id="01a0440c-3356-7bb3-ba6b-b314ca533469",
+                           subscription=RunSubscription(subscription_id=subscription.id, limits=SubscriptionLimits()))
+        record = subscription.folder / "sessions" / "2026" / "09" / "22" / f"rollout-2026-09-22T20-46-43-{run.provider_session_id}.jsonl"
+        record.parent.mkdir(parents=True)
+        record.write_text('{"type":"session_meta","payload":{}}\n' + CODEX_LINE + "\n")
+        watch = SubscriptionWatch()
+        watch.heard()
+        assert [(window.window, window.used_percent) for window in subscription.usage()] == [("weekly", 16.0)]
+        now = datetime.now(UTC)
+        report = watch.report(now)
+        assert watch.report(now) == report  # a report not sent yet is due again
+        watch.sent(report, now)
+        assert watch.report(now) is None
+    finally:
+        worker.kill()
+        worker.wait()
+
+
+def test_a_folder_with_a_broken_state_file_still_has_its_token_masked() -> None:
+    subscription = Subscription.create(uuid4(), "claude")
+    token = "sk-ant-oat01-" + "k" * 48
+    (subscription.folder / ".credentials.json").write_text(json.dumps({"claudeAiOauth": {"accessToken": token}}))
+    subscription.state_path.write_text("{not json")
+    assert Subscription.all() == () and token in Subscription.tokens()

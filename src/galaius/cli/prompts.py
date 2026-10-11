@@ -123,6 +123,7 @@ def _install(repository: Path) -> Path:
     state = prompt_projection.installed_state_path()
     adoption = state.parent / "bootstrap-adoption.json"
     install_prompt_projection(projection, _consumer_home(), vscode_root, state, adoption)
+    prompt_projection.install_subscription_projections(projection, _consumer_home(), vscode_root)
     return projection
 
 

@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 import yaml
 from galaius_core import PromptExecutionRef, PromptKey
 
+from galaius.agents.subscriptions import Subscription
 from galaius.agents.catalog import AgentCatalog, AgentInstructionSet
 from galaius.agents.catalog_connection import CatalogConnection
 from galaius.agents.policy import TOOL_PREFIX
@@ -27,6 +28,34 @@ from galaius.windowless import console_python
 
 
 MANIFEST_NAME = "projection-manifest.json"
+#: A subscription folder's own install state (`install_subscription_projections`).
+PROJECTION_STATE = "galaius-prompts.json"
+
+
+class ConsumerHomes(BaseModel):
+    """Where the projection reaches each agent CLI: its folder (the user's own under home by default,
+    a subscription's own folder otherwise), and whether home-level and editor files are written too.
+    A CLI in `only` alone is written when set: a subscription folder gets its own CLI's files only."""
+
+    model_config = ConfigDict(frozen=True)
+
+    home: Path
+    claude: Path
+    codex: Path
+    only: frozenset[Path] = frozenset()
+
+    @classmethod
+    def of(cls, home: Path) -> Self:
+        return cls(home=home, claude=home / ".claude", codex=home / ".codex")
+
+    @classmethod
+    def folder(cls, home: Path, cli: str, folder: Path) -> Self:
+        """`cli`'s (`.claude` / `.codex`) consumer files written into `folder` alone."""
+        return cls.of(home).model_copy(update={cli.removeprefix("."): folder, "only": frozenset({folder})})
+
+    def writes(self, destination: Path) -> bool:
+        """Whether `destination` is written here: inside `only` when set, and never a CLI's credential file."""
+        return destination.name not in Subscription.CREDENTIALS and (not self.only or any(destination.is_relative_to(folder) for folder in self.only))
 _OUTPUT_ROOTS = ("agents", "skills", "rules", "scopes", "references")
 _OUTPUT_FILES = ("AGENTS.md", "instructions.md", "org.json")
 _PASSTHROUGH_ROOTS = ("hooks",)
@@ -99,6 +128,7 @@ def install_server_prompt_projection(
     generation = UUID(manifest["access_generation"])
     with connection.access_guard(generation):
         install_prompt_projection(projection, home, vscode_root, state_path, adoption_path)
+        install_subscription_projections(projection, home, vscode_root)
     return projection
 
 
@@ -430,9 +460,10 @@ def coordinator_instructions(catalog: AgentCatalog, role: str, instructions: Pat
 
 def install_prompt_projection(
     projection_root: Path, home: Path, vscode_root: Path, state_path: Path,
-    adoption_path: Path | None = None,
+    adoption_path: Path | None = None, consumers: ConsumerHomes | None = None,
 ) -> None:
-    """Transactionally switch only manifest-owned provider consumer files."""
+    """Transactionally switch only manifest-owned provider consumer files (into `consumers` when set:
+    a subscription folder, with its own `state_path`)."""
     # Access guards serialize one connection; this lock serializes the shared
     # consumer state even when two different connections install into it.
     _safe_directory(state_path.parent, create=True)
@@ -440,12 +471,30 @@ def install_prompt_projection(
     with PinnedDirectory.at(lock.parent) as parent:
         descriptor = parent.file(lock.name, os.O_CREAT | os.O_RDWR, 0o600)
     with exclusive(descriptor):
-        _install_prompt_projection(projection_root, home, vscode_root, state_path, adoption_path)
+        _install_prompt_projection(projection_root, home, vscode_root, state_path, adoption_path, consumers or ConsumerHomes.of(home))
+
+
+def install_subscription_projections(projection_root: Path, home: Path, vscode_root: Path) -> tuple[Path, ...]:
+    """The projection installed into every subscription folder here, as into the default home: its
+    CLI's instructions, agents, skills, rules and hooks, its state beside them. A credential file is
+    never a projection target. Returns the folders installed."""
+    installed = []
+    for subscription in Subscription.all():
+        cli = subscription.program.home_folder
+        install_prompt_projection(projection_root, home, vscode_root, subscription.folder / PROJECTION_STATE,
+                                  consumers=ConsumerHomes.folder(home, cli, subscription.folder))
+        installed.append(subscription.folder)
+    return tuple(installed)
+
+
+def unprojected_subscriptions() -> tuple[Path, ...]:
+    """The subscription folders no projection was installed into yet (signed in since the last one)."""
+    return tuple(subscription.folder for subscription in Subscription.all() if not (subscription.folder / PROJECTION_STATE).exists())
 
 
 def _install_prompt_projection(
     projection_root: Path, home: Path, vscode_root: Path, state_path: Path,
-    adoption_path: Path | None,
+    adoption_path: Path | None, consumers: ConsumerHomes,
 ) -> None:
     transaction = state_path.parent / ".prompt-install-transaction"
     if transaction.exists() or transaction.is_symlink():
@@ -455,19 +504,18 @@ def _install_prompt_projection(
     server_owned = manifest.get("source_kind") == "server-catalog"
     state = InstalledState.load(state_path)
     adoption = _adoption_manifest(adoption_path)
-    settings = (home / ".claude" / "settings.json", home / ".codex" / "hooks.json",
-                home / ".cursor" / "hooks.json")
+    settings = tuple(filter(consumers.writes, (consumers.claude / "settings.json", consumers.codex / "hooks.json", home / ".cursor" / "hooks.json")))
     settings_before = {path: _entry_identity(path, symlink_target=adoption.get(path, (None, None))[0])
                        for path in settings} if not server_owned else {}
     targets, mergeable, hook_groups = _consumer_payloads(
-        outputs, home, vscode_root, state.hook_groups, prompt_only=server_owned,
+        outputs, home, vscode_root, state.hook_groups, prompt_only=server_owned, consumers=consumers,
     )
     previous = dict(state.managed)
     # Hooks are installed runtime code. A prompt-only snapshot cannot remove or rewrite them.
     retained = {}
     if server_owned:
-        runtime_roots = (home / ".claude" / "hooks",)
-        runtime_files = {home / ".claude" / "settings.json", home / ".codex" / "hooks.json",
+        runtime_roots = (consumers.claude / "hooks",)
+        runtime_files = {consumers.claude / "settings.json", consumers.codex / "hooks.json",
                          home / ".cursor" / "hooks.json"}
         retained = {target: digest for target, digest in previous.items()
                     if target in runtime_files or any(root in target.parents for root in runtime_roots)}
@@ -712,8 +760,12 @@ def _validated_manifest_outputs(projection_root: Path) -> dict[str, Path]:
 
 def _consumer_payloads(
     outputs: dict[str, Path], home: Path, vscode_root: Path,
-    prior_hook_groups: dict[str, list[object]], *, prompt_only: bool = False,
+    prior_hook_groups: dict[str, list[object]], *, prompt_only: bool = False, consumers: ConsumerHomes | None = None,
 ) -> tuple[dict[Path, tuple[bytes, int]], set[Path], dict[str, list[object]]]:
+    """Every consumer file the projection writes: under `home` and `vscode_root` by default; with
+    `consumers`, only into those CLI folders (a subscription's), never home's own nor the editor's."""
+    consumers = consumers or ConsumerHomes.of(home)
+    claude, codex = consumers.claude, consumers.codex
     targets: dict[Path, tuple[bytes, int]] = {}
     hook_scripts = {
         PurePosixPath(relative).name
@@ -727,34 +779,34 @@ def _consumer_payloads(
             # Codex reads the GLOBAL AGENTS.md at $CODEX_HOME, and the repo chain
             # from the git root down to cwd — never ~/AGENTS.md for a project
             # outside $HOME, so the home copy alone reached no Codex session.
-            destinations = (home / "AGENTS.md", home / ".codex" / "AGENTS.md")
+            destinations = (home / "AGENTS.md", codex / "AGENTS.md")
         elif relative == "instructions.md":
             # Only the user-level file: a copy at ~/CLAUDE.md was loaded a SECOND
             # time as an ancestor project file by every project under $HOME.
             destinations = (
-                home / ".claude" / "CLAUDE.md", vscode_root / "alan.instructions.md",
+                claude / "CLAUDE.md", vscode_root / "alan.instructions.md",
             )
         elif relative == "org.json":
-            destinations = (home / ".claude" / "org.json",)
+            destinations = (claude / "org.json",)
         elif len(path.parts) == 2 and path.parts[0] == "agents":
             destinations = (
-                home / ".claude" / "agents" / path.name,
+                claude / "agents" / path.name,
                 vscode_root / f"{path.stem}.agent.md",
             )
         elif len(path.parts) == 3 and path.parts[0] == "skills" and path.name == "SKILL.md":
             name = path.parts[1]
             destinations = (
-                home / ".claude" / "skills" / name / "SKILL.md",
-                home / ".codex" / "skills" / name / "SKILL.md",
+                claude / "skills" / name / "SKILL.md",
+                codex / "skills" / name / "SKILL.md",
                 vscode_root / f"{name}.skill.instructions.md",
             )
         elif len(path.parts) == 2 and path.parts[0] == "rules":
             destinations = (
-                home / ".claude" / "rules" / path.name,
+                claude / "rules" / path.name,
                 vscode_root / f"{path.stem}.instructions.md",
             )
             if prompt_only:
-                destinations += (home / ".codex" / "rules" / path.name,)
+                destinations += (codex / "rules" / path.name,)
         elif path.parts[0] == "references":
             # Immutable skill references are already in the verified projection cache.
             continue
@@ -762,14 +814,14 @@ def _consumer_payloads(
             # Domain-scoped agents / skills are HELD outside every consumer's
             # auto-load roots; `galaius prompts scope <name>` links a set into
             # one project's .claude/ so a coding project never loads another domain's agents.
-            destinations = (home / ".claude" / "scopes" / Path(*path.parts[1:]),)
+            destinations = (claude / "scopes" / Path(*path.parts[1:]),)
         elif len(path.parts) == 2 and path.parts[0] == "hooks" and path.suffix == ".sh":
-            destinations = (home / ".claude" / "hooks" / path.name,)
+            destinations = (claude / "hooks" / path.name,)
         elif relative in {"hooks/hooks.json", "hooks/turn-end-asks.md", "hooks/codex-hooks.json", "hooks/cursor-hooks.json"}:
             continue
         else:
             raise ValueError("projection output has no consumer mapping")
-        for destination in destinations:
+        for destination in filter(consumers.writes, destinations):
             if destination in targets:
                 raise ValueError("prompt consumer target collision")
             content = source.read_bytes()
@@ -783,14 +835,17 @@ def _consumer_payloads(
             targets[destination] = (content, 0o700 if path.suffix == ".sh" else 0o600)
     if prompt_only:
         return targets, set(), prior_hook_groups
-    settings = home / ".claude" / "settings.json"
-    settings_bytes, hook_groups = _merged_hook_settings(
-        outputs, settings, hook_scripts, prior_hook_groups
-    )
-    targets[settings] = (settings_bytes, 0o600)
-    mergeable = {settings}
-    if "hooks/codex-hooks.json" in outputs:
-        codex_settings = home / ".codex" / "hooks.json"
+    mergeable: set[Path] = set()
+    hook_groups: dict[str, list[object]] = dict(prior_hook_groups)
+    if consumers.writes(claude / "settings.json"):
+        settings = claude / "settings.json"
+        settings_bytes, hook_groups = _merged_hook_settings(
+            outputs, settings, hook_scripts, prior_hook_groups, claude if claude != home / ".claude" else None,
+        )
+        targets[settings] = (settings_bytes, 0o600)
+        mergeable.add(settings)
+    if "hooks/codex-hooks.json" in outputs and consumers.writes(codex / "hooks.json"):
+        codex_settings = codex / "hooks.json"
         current = json.loads(codex_settings.read_text()) if codex_settings.exists() else {}
         fragment = json.loads(outputs["hooks/codex-hooks.json"].read_text())
         hooks = current.setdefault("hooks", {})
@@ -801,7 +856,7 @@ def _consumer_payloads(
             hook_groups[f"codex:{event}"] = additions
         targets[codex_settings] = ((json.dumps(current, indent=2) + "\n").encode(), 0o600)
         mergeable.add(codex_settings)
-    if "hooks/cursor-hooks.json" in outputs:
+    if "hooks/cursor-hooks.json" in outputs and consumers.writes(home / ".cursor" / "hooks.json"):
         cursor_settings = home / ".cursor" / "hooks.json"
         current = json.loads(cursor_settings.read_text()) if cursor_settings.exists() else {"version": 1}
         fragment = json.loads(outputs["hooks/cursor-hooks.json"].read_text())
@@ -818,9 +873,12 @@ def _consumer_payloads(
 
 def _merged_hook_settings(
     outputs: dict[str, Path], settings: Path, managed_scripts: set[str],
-    prior_hook_groups: dict[str, list[object]],
+    prior_hook_groups: dict[str, list[object]], folder: Path | None = None,
 ) -> tuple[bytes, dict[str, list[object]]]:
-    fragment = json.loads(outputs["hooks/hooks.json"].read_text(encoding="utf-8"))
+    """`settings` with the projection's hooks merged in; `folder`: Claude Code's own folder when it is
+    not `~/.claude` (a subscription's), the hook commands then name the scripts installed there."""
+    text = outputs["hooks/hooks.json"].read_text(encoding="utf-8")
+    fragment = json.loads(text if folder is None else text.replace("~/.claude/", f"{folder.as_posix()}/"))
     prompt = outputs["hooks/turn-end-asks.md"].read_text(encoding="utf-8").rstrip("\n")
     fragment["hooks"]["Stop"][0]["hooks"][0]["prompt"] = prompt
     current = json.loads(settings.read_text(encoding="utf-8")) if settings.exists() else {}

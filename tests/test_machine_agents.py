@@ -173,26 +173,30 @@ def test_tail_reads_whole_lines_from_the_cursor(base: Path, tmp_path: Path) -> N
 
 def test_a_run_stays_on_its_subscription_and_a_lent_pc_lends_no_login(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A start runs on the subscription it names, refused at its cap; a message never moves a run to
-    another login; a member's run on a lent PC gets no CLI login (refused when nothing else runs it),
-    and no session or continued conversation either."""
+    another login; a member's run on a lent PC runs only inside the fence, with every CLI login closed
+    (refused when nothing else runs it), and no session or continued conversation either."""
     agents, seen = _agents(base, tmp_path), _launches(monkeypatch)
     mine, other = Subscription.create(uuid4(), "claude"), Subscription.create(uuid4(), "claude")
     start = lambda **fields: _answer(agents, _request("start", root="project", role="tester", text="go", **fields))
     start(subscription_id=str(mine.id), limits={"weekly_percent": 80})
-    assert seen[-1]["subscription"] == RunSubscription(id=mine.id, limits=SubscriptionLimits(weekly_percent=80))
+    assert seen[-1]["subscription"] == RunSubscription(subscription_id=mine.id, limits=SubscriptionLimits(weekly_percent=80))
     mine.observe((UsageWindow(window="weekly", used_percent=85, observed_at=datetime.now(UTC)),))
     with pytest.raises(SubscriptionCapped, match="85% of its weekly window, its cap is 80%"):
         start(subscription_id=str(mine.id), limits={"weekly_percent": 80})
     for pinned, asked in ((mine.id, other.id), (None, mine.id)):
         run_id = str(uuid4())
         reg.save_run(reg.AgentRun(run_id=run_id, provider="claude", name="w", cwd=str(base / "project"), started_at=1.0,
-                                  subscription=RunSubscription(id=pinned) if pinned else None))
+                                  subscription=RunSubscription(subscription_id=pinned) if pinned else None))
         agents.runs.add(WebRun(run_id=run_id, root="project"))
         with pytest.raises(SubscriptionRefused, match="pinned to another subscription|own login"):
             _answer(agents, _request("send", run_id=run_id, text="next", subscription_id=str(asked)))
-    start(lent=True)
-    assert seen[-1]["subscription"] == RunSubscription(lent=True)
-    assert set(RunSubscription(lent=True).overlay().values()) == {str(Subscription.root() / Subscription.LENT)}
+    with pytest.raises(SubscriptionRefused, match="never lent.*fence is off"):
+        start(lent=True)
+    fenced = agents.model_copy(update={"fence_agents": True})
+    lent = fenced.pinned(_request("start", root="project", role="tester", text="go", lent=True))
+    closed = Subscription.root() / Subscription.CLOSED
+    assert lent == RunSubscription(lent=True) and lent.homes() == {"claude": closed / "claude", "codex": closed / "codex"}
+    assert lent.overlay() == {"CLAUDE_CONFIG_DIR": str(closed / "claude"), "CODEX_HOME": str(closed / "codex")}
 
     async def nothing_runs(provider, task, **options):
         raise RuntimeError("No candidate for 'tester' can start on this machine")

@@ -33,7 +33,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, Valid
 
 from galaius_core import MACHINE_AGENT_REQUESTS, AgentSendRequest, MACHINE_MODELS, MachineProblem, MachineProblemCode, MachineAgentSettings, MachineAgentSettingsState, MachineAgentSettingsUpdate, PlacePath, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, MachineAgentAnswer, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachineRuntime, MachineTokenSwap, PlaceLevel, ScriptFile, ScriptLanguage, UserModelOrigin
 from galaius import USER_AGENT
-from galaius import prompt_mirror
+from galaius import prompt_mirror, prompt_projection
 from galaius.agents.subscription_watch import SubscriptionWatch
 from galaius.agents.subscriptions import Subscription
 from galaius.agents.catalog import AgentCatalog
@@ -954,7 +954,7 @@ class MachineRunner:
         reports = asyncio.create_task(self._deliver_reports(config))
         followed = asyncio.create_task(self._follow_up(config))
         resumed = asyncio.create_task(self._resume_limited(config))
-        watched = asyncio.create_task(self._watch_subscriptions())
+        watched = asyncio.create_task(self._watch_subscriptions(config))
         swapped = False
         try:
             await self._connect(config)
@@ -1012,22 +1012,31 @@ class MachineRunner:
                 logger.exception("resuming runs paused by a usage limit failed")
             await asyncio.sleep(self.settle_seconds)
 
-    async def _watch_subscriptions(self) -> None:
+    async def _watch_subscriptions(self, config: MachineConfig) -> None:
         """Every `subscription_seconds`, the usage lines runs pinned to a subscription appended
-        (`SubscriptionWatch.heard`): local, like `_settle_runs`, so a cap holds while offline too."""
+        (`SubscriptionWatch.heard`): local, like `_settle_runs`, so a cap holds while offline too. The
+        log ring's masked values follow the subscriptions signed in since (their tokens)."""
         while True:
             try:
+                self._log_ring.secrets = await asyncio.to_thread(self._secrets, self._current_config(config))
                 await asyncio.to_thread(self._subscriptions.heard)
             except Exception:  # one failed pass never stops the next
                 logger.exception("reading subscription usage failed")
             await asyncio.sleep(self.subscription_seconds)
 
     async def _report_usage(self, socket) -> None:
-        """Every `subscription_seconds` while connected, the subscriptions whose usage moved enough (`SubscriptionWatch.report`)."""
+        """Every `subscription_seconds` while connected, the subscriptions whose usage moved enough
+        (`SubscriptionWatch.report`), marked reported once sent; a pass that fails is tried again next time."""
         while True:
             await asyncio.sleep(self.subscription_seconds)
-            if (report := await asyncio.to_thread(self._subscriptions.report, datetime.now(UTC))) is not None:
-                await socket.send(report.model_dump_json())
+            try:
+                if (report := await asyncio.to_thread(self._subscriptions.report, datetime.now(UTC))) is not None:
+                    await socket.send(report.model_dump_json())
+                    await asyncio.to_thread(self._subscriptions.sent, report, datetime.now(UTC))
+            except websockets.ConnectionClosed:
+                raise
+            except Exception:  # never the connection's end: the next pass reports it
+                logger.exception("reporting subscription usage failed")
 
     async def _settle_runs(self) -> None:
         """Every `settle_seconds`, mark ended the runs whose process is gone (`registry.settle_gone`)."""
@@ -1988,19 +1997,28 @@ class MachineRunner:
 
     async def _sync_prompts(self) -> None:
         """Keep this PC's agents on the prompts of the workspace it runs, and its ~/galaius copies
-        current, without anyone running `galaius prompts sync` (`prompt_mirror.sync`). A failed
-        check is logged and retried next round; it never touches the machine channel."""
+        current, without anyone running `galaius prompts sync` (`prompt_mirror.sync`); a subscription
+        signed in since the last install gets it within `subscription_seconds`. A failed check is
+        logged and retried next round; it never touches the machine channel."""
         seen: dict[UUID, str] = {}
+        waited, failed = self.prompt_sync_seconds, False
         while True:
+            due = waited >= self.prompt_sync_seconds
+            if due:
+                waited, failed = 0, False
             try:
                 connection = CatalogConnection.load()
-                if connection is not None and connection.auth_mode == "machine" and await asyncio.to_thread(prompt_mirror.changed, connection, seen):
+                if connection is not None and connection.auth_mode == "machine" and (
+                        (due and await asyncio.to_thread(prompt_mirror.changed, connection, seen))
+                        or (not failed and await asyncio.to_thread(prompt_projection.unprojected_subscriptions))):
                     report = await asyncio.to_thread(prompt_mirror.sync, connection, prompt_mirror.mirror_root(), PromptMode.installed)
                     logger.info("prompts synced: %s", "; ".join(report.notes))
             except (OSError, ValueError, httpx.HTTPError) as error:
                 seen.clear()
+                failed = True  # a failed sync waits for the next full round
                 logger.warning("prompt sync failed: %s", error)
-            await asyncio.sleep(self.prompt_sync_seconds)
+            await asyncio.sleep(self.subscription_seconds)
+            waited += self.subscription_seconds
 
     async def _renew_policy(self) -> None:
         """Keep what a start reads first (`load_policy`: the agent catalog, the tool list) renewed in

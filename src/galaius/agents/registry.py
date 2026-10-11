@@ -47,7 +47,7 @@ from galaius.file_stamp import FileStamp
 from galaius.models import TokenMix
 from galaius.pinned_directory import DescriptorDirectory, PinnedDirectory
 from galaius.private_files import PRIVATE_FILES
-from galaius.processes import end_process_tree, process_started, process_unit
+from galaius.processes import end_process_tree, process_ancestry, process_started, process_unit
 from galaius.server_registry import (
     _alive,  # generic pid liveness (Windows-safe, no signal sent)
 )
@@ -337,7 +337,7 @@ class AgentRun(BaseModel):
 
     @property
     def subscription_id(self) -> UUID | None:
-        return None if self.subscription is None else self.subscription.id
+        return None if self.subscription is None else self.subscription.subscription_id
 
     @field_validator("status", mode="before")
     @classmethod
@@ -1051,8 +1051,15 @@ def merge_subscription(run_id: str, **changes: object) -> AgentRun | None:
         stored = _read_record(run_id)
         if stored is None or stored.subscription is None:
             return None
-        merged = stored.subscription.model_copy(update=changes)
-        return _merge_record_locked(run_id, {"subscription": RunSubscription.model_validate(merged.model_dump()).model_dump(mode="json")})
+        merged = RunSubscription.model_validate({**stored.subscription.model_dump(), **changes})
+        return _merge_record_locked(run_id, {"subscription": merged.model_dump(mode="json")})
+
+
+def ancestor_run() -> AgentRun | None:
+    """The running run this process descends from (its pid and start time recorded on the run): the
+    parent a launch cannot hide by clearing `GALAIUS_PARENT_RUN_ID` from its environment."""
+    ancestors = set(process_ancestry(os.getpid()))
+    return next((run for run in running_runs() if run.pid is not None and (run.pid, run.pid_started) in ancestors), None)
 
 
 def subscription_heard(run: AgentRun, events: list[AgentEvent]) -> None:
@@ -1060,11 +1067,11 @@ def subscription_heard(run: AgentRun, events: list[AgentEvent]) -> None:
     At a cap they reach (this run's allowance counted), the cap goes on the run (`RunSubscription.capped`)
     and, at `cut`, the run is stopped there; at `finish` its turn ends as it would, and its next turn
     is refused while the window stays at the cap (`RunSubscription.check`)."""
-    windows = tuple(window for event in events if event.kind == "rate_limit" for window in event.usage)
-    if not windows or run.subscription is None or run.subscription.id is None:
+    windows = tuple(window for event in events for window in event.usage)
+    if not windows or run.subscription is None or run.subscription.subscription_id is None or run.subscription.limits is None:
         return
     try:
-        usage = Subscription.of(run.subscription.id).observe(windows)
+        usage = Subscription.of(run.subscription.subscription_id).observe(windows)
     except SubscriptionRefused:
         return  # signed out while it ran: nothing to keep
     cap = run.subscription.limits.reached(usage, run.subscription.allowance)

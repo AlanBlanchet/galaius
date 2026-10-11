@@ -5,6 +5,7 @@ subscription (`RunSubscription`, on its record): every turn and every child runs
 before each start and on each usage reading, and its usage is kept here, last value per window."""
 
 import json
+import logging
 import os
 import shutil
 from datetime import UTC, datetime
@@ -13,11 +14,14 @@ from collections.abc import Mapping
 from typing import ClassVar, Self
 from uuid import UUID
 
-from galaius_core import AgentProvider as ProviderName, SubscriptionCap, SubscriptionLimits, SubscriptionUsage, SubscriptionUsageReport, UsageWindow
+from galaius_core import AgentProvider as ProviderName, RunSubscription as WireRunSubscription, SubscriptionAllowance, SubscriptionCap, SubscriptionLimits
+from galaius_core import SubscriptionUsage, SubscriptionUsageReport, UsageWindow
 from pydantic import BaseModel, ConfigDict
 
 from galaius.agents.providers import PROVIDERS, AgentProvider
 from galaius.paths import UserPaths
+
+logger = logging.getLogger(__name__)
 
 
 class SubscriptionRefused(PermissionError):
@@ -55,8 +59,9 @@ class Subscription(BaseModel):
     provider: ProviderName
 
     STATE: ClassVar[str] = "galaius-subscription.json"
-    #: The folder every CLI login is pointed at for a member's run on a lent PC: empty, never writable.
-    LENT: ClassVar[str] = ".lent"
+    #: Per CLI, the folder its login is pointed at where none of its logins may answer (another CLI than
+    #: a run's subscription's; every CLI for a member's run on a lent PC): empty, never writable.
+    CLOSED: ClassVar[str] = ".closed"
     #: The files a CLI keeps its tokens in, inside its home: their values are redacted wherever a run's
     #: output goes (`credentials`).
     CREDENTIALS: ClassVar[tuple[str, ...]] = (".credentials.json", "auth.json")
@@ -95,30 +100,40 @@ class Subscription(BaseModel):
         return cls(id=subscription_id, provider=state.provider)
 
     @classmethod
-    def all(cls) -> tuple[Self, ...]:
+    def folders(cls) -> tuple[Path, ...]:
+        """Every subscription folder here (named by a UUID), whatever its state file says."""
         if not cls.root().is_dir():
             return ()
+        return tuple(folder for folder in sorted(cls.root().iterdir()) if folder.is_dir() and cls._uuid(folder.name) is not None)
+
+    @classmethod
+    def all(cls) -> tuple[Self, ...]:
+        """Every subscription here whose state file reads; one that does not is logged, never silently skipped."""
         found = []
-        for folder in sorted(cls.root().iterdir()):
+        for folder in cls.folders():
             try:
                 found.append(cls.of(UUID(folder.name)))
-            except (ValueError, SubscriptionRefused):
-                continue
+            except (ValueError, SubscriptionRefused) as error:
+                logger.warning("subscription folder %s has no readable state: %s", folder.name, error)
         return tuple(found)
 
     @classmethod
     def tokens(cls) -> tuple[str, ...]:
-        """Every subscription's `credentials` here, longest first (a token inside another stays masked)."""
-        return tuple(sorted({value for subscription in cls.all() for value in subscription.credentials()}, key=len, reverse=True))
+        """The tokens kept in every subscription folder (`credentials`), whatever its state file says,
+        longest first (a token inside another stays masked)."""
+        return tuple(sorted({value for folder in cls.folders() for value in cls.credentials_in(folder)}, key=len, reverse=True))
 
     @classmethod
-    def lent_overlay(cls) -> dict[str, str]:
-        """Every CLI's login folder pointed at one empty folder nothing can write: no login answers there."""
-        folder = cls.root() / cls.LENT
-        if not folder.is_dir():
-            cls._private(cls.root())
-            folder.mkdir(mode=0o500)
-        return {name: str(folder) for provider in PROVIDERS.values() for name in provider.auth_home_env}
+    def closed_overlay(cls) -> dict[str, str]:
+        """Every CLI's login variable at its own closed folder (`CLOSED`), made empty and read-only."""
+        overlay = {}
+        for provider in PROVIDERS.values():
+            folder = cls.root() / cls.CLOSED / provider.name
+            if not folder.is_dir():
+                cls._private(folder.parent)
+                folder.mkdir(mode=0o500)
+            overlay |= {name: str(folder) for name in provider.auth_home_env}
+        return overlay
 
     @classmethod
     def named_in(cls, environment: Mapping[str, str]) -> frozenset[Path]:
@@ -157,7 +172,7 @@ class Subscription(BaseModel):
         self._write(state.model_copy(update={"usage": usage}))
         return usage
 
-    def check(self, limits: SubscriptionLimits, allowance: int | None = None) -> None:
+    def check(self, limits: SubscriptionLimits, allowance: SubscriptionAllowance | None = None) -> None:
         """Refused (`SubscriptionCapped`) while a window of its usage is at its cap."""
         if (cap := limits.reached(self.usage(), allowance)) is not None:
             raise SubscriptionCapped(cap)
@@ -176,16 +191,17 @@ class Subscription(BaseModel):
     def reported(self, usage: SubscriptionUsage, now: datetime) -> None:
         self._write(self.state().model_copy(update={"reported": usage.windows, "reported_at": now}))
 
-    def credentials(self) -> tuple[str, ...]:
-        """The token values its CLI keeps in this folder now, read again at each call (a refresh
-        changes them): what a run's output never shows."""
+    @classmethod
+    def credentials_in(cls, folder: Path) -> tuple[str, ...]:
+        """The token values a CLI keeps in `folder` now, read again at each call (a refresh changes
+        them): what a run's output never shows."""
         values: list[str] = []
-        for name in self.CREDENTIALS:
+        for name in cls.CREDENTIALS:
             try:
-                values += self._strings(json.loads((self.folder / name).read_text(encoding="utf-8")))
+                values += cls._strings(json.loads((folder / name).read_text(encoding="utf-8")))
             except (OSError, ValueError):
                 continue
-        return tuple(value for value in dict.fromkeys(values) if len(value) >= self.SECRET_LENGTH)
+        return tuple(value for value in dict.fromkeys(values) if len(value) >= cls.SECRET_LENGTH)
 
     def remove(self) -> None:
         shutil.rmtree(self.folder, ignore_errors=True)
@@ -201,6 +217,13 @@ class Subscription(BaseModel):
         return []
 
     @staticmethod
+    def _uuid(name: str) -> UUID | None:
+        try:
+            return UUID(name)
+        except ValueError:
+            return None
+
+    @staticmethod
     def _private(folder: Path) -> None:
         folder.mkdir(mode=0o700, parents=True, exist_ok=True)
         folder.chmod(0o700)
@@ -211,46 +234,42 @@ class Subscription(BaseModel):
         temporary.replace(self.state_path)
 
 
-class RunSubscription(BaseModel):
-    """The subscription a run is pinned to, on its record: every turn and child runs on `id` (a
-    member's run on a lent PC, `lent`, on no CLI login at all), under `limits`, raised for this run
-    only by `allowance`; `capped` is the cap its subscription reached while it ran."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    id: UUID | None = None
-    lent: bool = False
-    limits: SubscriptionLimits = SubscriptionLimits()
-    allowance: int | None = None
-    capped: SubscriptionCap | None = None
+class RunSubscription(WireRunSubscription):
+    """`galaius_core.RunSubscription` on a run's record, with what the PC does with it: the login
+    folders its CLIs run with, its caps checked, a child or a message held to it."""
 
     @classmethod
     def resolve(cls, asked: Self | None, *, parent: Self | None, child: bool, environment: Mapping[str, str]) -> Self | None:
-        """What a new run is pinned to: a child's is its parent run's (from the run records, never
-        from what its environment names), anything else what was asked. A child asking another, or an
-        environment naming another subscription's folder, is refused."""
+        """What a new run is pinned to: a child's is its parent run's (from the run records and the
+        process tree, never from what its environment names), anything else what was asked. A child
+        asking another, or an environment naming a folder of another subscription, is refused."""
         pinned = parent if child else asked
-        if child and asked is not None and (asked.id, asked.lent) != ((parent.id, parent.lent) if parent is not None else (None, False)):
+        if child and asked is not None and (asked.subscription_id, asked.lent) != ((parent.subscription_id, parent.lent) if parent is not None else (None, False)):
             raise SubscriptionRefused("a child runs on its parent run's subscription, never another")
         if child and pinned is not None:
             pinned = pinned.model_copy(update={"capped": None})
-        expected = frozenset() if pinned is None else frozenset({pinned.folder().resolve()})
+        expected = frozenset() if pinned is None else frozenset(Path(folder).resolve() for folder in pinned.overlay().values())
         if not Subscription.named_in(environment) <= expected:
             raise SubscriptionRefused("this run's environment names another subscription's folder; a run uses only the subscription it is pinned to")
         return pinned
 
-    def folder(self) -> Path:
-        return Subscription.root() / Subscription.LENT if self.id is None else Subscription.of(self.id).folder
-
     def pins(self, asked: UUID | None) -> None:
         """Refused unless `asked` (a turn or message's subscription) is this run's own."""
-        if asked is not None and asked != self.id:
+        if asked is not None and asked != self.subscription_id:
             raise SubscriptionRefused("this run is pinned to another subscription: its turns never move to a different one")
 
     def overlay(self) -> dict[str, str]:
-        return Subscription.lent_overlay() if self.id is None else Subscription.of(self.id).overlay()
+        """Every CLI's login variable for this run: its subscription's CLI at its folder, every other
+        CLI (every CLI, lent) at its closed folder, where no login answers."""
+        own = Subscription.of(self.subscription_id).overlay() if self.subscription_id is not None else {}
+        return {**Subscription.closed_overlay(), **own}
+
+    def homes(self) -> dict[str, Path]:
+        """Per CLI, the login folder a fenced run of it binds (`FenceSpec.homes`): never a default one."""
+        overlay = self.overlay()
+        return {provider.name: Path(overlay[provider.auth_home_env[0]]) for provider in PROVIDERS.values() if provider.auth_home_env}
 
     def check(self) -> None:
         """Refused while its subscription is at a cap (this run's allowance counted)."""
-        if self.id is not None:
-            Subscription.of(self.id).check(self.limits, self.allowance)
+        if self.subscription_id is not None:
+            Subscription.of(self.subscription_id).check(self.limits or SubscriptionLimits(), self.allowance)

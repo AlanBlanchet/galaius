@@ -259,6 +259,31 @@ def process_started(pid: int) -> int | None:
     return int(fields[19]) if fields is not None and len(fields) > 19 else None  # field 22, `starttime`
 
 
+def process_parent(pid: int) -> int | None:
+    """The pid of `pid`'s parent; None when it is gone, has none (pid 1), or the system cannot say
+    (Windows: no parent walk yet)."""
+    if sys.platform == "win32":
+        return None
+    if sys.platform == "darwin":
+        info = _ProcBsdInfo()
+        filled = _libproc().proc_pidinfo(pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info))  # PROC_PIDTBSDINFO
+        parent = info.ids[4] if filled == ctypes.sizeof(info) else 0
+    else:
+        fields = _stat_fields(pid)
+        parent = int(fields[1]) if fields is not None and len(fields) > 1 else 0  # field 4, `ppid`
+    return parent if parent > 1 else None
+
+
+def process_ancestry(pid: int) -> tuple[tuple[int, int | None], ...]:
+    """Each ancestor of `pid`, nearest first, as (pid, `process_started`): one process for good."""
+    found: list[tuple[int, int | None]] = []
+    parent = process_parent(pid)
+    while parent is not None and len(found) < 64:
+        found.append((parent, process_started(parent)))
+        parent = process_parent(parent)
+    return tuple(found)
+
+
 def process_exited(pid: int) -> bool:
     """Whether `pid` is a process that has EXITED but still holds its pid: a zombie its parent has not
     collected yet (Linux state Z, or X while being removed). Every pid probe (`kill(pid, 0)`, `/proc/<pid>`)

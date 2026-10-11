@@ -35,7 +35,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from galaius_core import (
     AGENT_TOUCH_SCOPES, MACHINE_AGENT_MEDIA, MACHINE_AGENT_READ, MACHINE_AGENT_TAIL, AgentAnswerRequest, AgentMedia, AgentMediaRequest, image_type, AgentContinueRequest, AgentFoldersRequest, AgentInteraction, AgentLogsRequest, AgentOptionsRequest,
-    AgentAllowanceRequest, AgentProgramInstallRequest, AgentProgramsRequest, AgentProviderState, AgentSignOutRequest, SubscriptionLimits, SubscriptionUse, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
+    AgentAllowanceRequest, AgentProgramInstallRequest, AgentProgramsRequest, AgentProviderState, AgentSignOutRequest, SubscriptionAllowance, SubscriptionLimits, SubscriptionUse, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
     MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, PassedOverCandidate, ReadsAt, WebLoad, media_key, media_paths, MachineAgentSession, MachineFileEntry, WorkspaceCreateRequest, WorkspacePack, WorkspacePackRequest, WorkspacePrepareRequest, WorkspaceRefresh, WorkspacesRequest,
 )
 from galaius.agents import agent_queue
@@ -578,8 +578,7 @@ class MachineAgents(BaseModel):
                 fenced=bool({run.run_id, run.root_run_id, run.parent_run_id} & fenced),
                 passed_over=tuple(PassedOverCandidate(provider=item.candidate.provider, model=item.candidate.model[:120], reason=item.reason, until=item.until)
                                   for item in run.skipped[:16]),
-                subscription_id=run.subscription_id, capped=run.subscription.capped if run.subscription is not None else None,
-                allowance=run.subscription.allowance if run.subscription is not None else None,
+                subscription=run.subscription,
             ))
         return MachineAgentAnswer(request_id=request.id, runs=tuple(found), web=self.runs.load())
 
@@ -782,15 +781,18 @@ class MachineAgents(BaseModel):
         if request.subscription_id is not None:
             raise SubscriptionRefused("sessions and continued editor conversations run on this PC's own login only; start an agent (a role) to use this subscription")
 
-    @staticmethod
-    def pinned(request: SubscriptionUse) -> RunSubscription | None:
+    def pinned(self, request: SubscriptionUse) -> RunSubscription | None:
         """What a start is pinned to (`RunSubscription`): its subscription, signed in here and under its
-        caps (refused otherwise, saying which and until when), or no CLI login at all on a lent PC."""
+        caps (refused otherwise, saying which and until when), or no CLI login at all on a lent PC —
+        only inside the fence there: unfenced, its agent could clear its login variables and run as
+        the owner, the same OS user."""
         if request.lent:
+            if not self.fence_agents:
+                raise SubscriptionRefused(f"{LENT_REFUSAL} (this PC runs a member's agent only inside its fence, and the fence is off)")
             return RunSubscription(lent=True)
         if request.subscription_id is None:
             return None
-        pinned = RunSubscription(id=request.subscription_id, limits=request.limits or SubscriptionLimits())
+        pinned = RunSubscription(subscription_id=request.subscription_id, limits=request.limits or SubscriptionLimits())
         pinned.check()
         return pinned
 
@@ -844,8 +846,7 @@ class MachineAgents(BaseModel):
             # honoured): refused, never silently replaced.
             raise PermissionError("an agent runs on the model its rule picks; change the rule on its Agents page, or start a session to choose the model")
         written = self._project_env(request, folder)
-        overlay = pinned.overlay() if pinned is not None else {}
-        homes = {name: provider_for(name).auth_home(overlay) for name in AGENT_PROVIDERS if overlay.keys() & set(provider_for(name).auth_home_env)}
+        homes = pinned.homes() if pinned is not None else {}
         fence, review = self._fence(request.root, folder, homes) if self.fence_agents else (None, None)
         return folder, written, fence, review
 
@@ -933,14 +934,16 @@ class MachineAgents(BaseModel):
         """`RunAllowance`: the run may go on its subscription up to `up_to_percent` of the window it is
         held or cut at; one held between turns gets its next turn now (as « Reprendre » does)."""
         run = await asyncio.to_thread(self._require_run, request.run_id)
-        if run.subscription is None or run.subscription.id is None:
+        if run.subscription is None or run.subscription.subscription_id is None or run.subscription.limits is None:
             raise PermissionError("this run is on no subscription: it has no cap to go past")
         capped = run.subscription.capped
-        cap = run.subscription.limits.cap(capped.window) if capped is not None else None
-        if cap is not None and request.up_to_percent <= cap:
-            raise PermissionError(f"an allowance goes past the cap ({cap}%): ask for more than that, up to 100%")
-        run = await asyncio.to_thread(reg.merge_subscription, run.run_id, allowance=request.up_to_percent, capped=None) or run
-        if capped is None or run.status in {"running", "waiting"}:
+        if capped is None:
+            raise PermissionError("no cap holds this run: an allowance goes past the cap a run was held or cut at")
+        if request.up_to_percent <= capped.cap_percent:
+            raise PermissionError(f"an allowance goes past the cap ({capped.cap_percent}%): ask for more than that, up to 100%")
+        allowance = SubscriptionAllowance(window=capped.window, up_to_percent=request.up_to_percent)
+        run = await asyncio.to_thread(reg.merge_subscription, run.run_id, allowance=allowance.model_dump(mode="json"), capped=None) or run
+        if run.status in {"running", "waiting"}:
             return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=f"allowed up to {request.up_to_percent}%")
         environment = await asyncio.to_thread(self.launcher_environment_in, Path(run.cwd))
         delivery = await asyncio.to_thread(deliver_message, run.run_id, reg.RESUME_BRIEF, sender="operator", environment=environment, message_id=str(request.id))
