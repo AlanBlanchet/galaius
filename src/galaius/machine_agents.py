@@ -35,7 +35,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from galaius_core import (
     AGENT_TOUCH_SCOPES, MACHINE_AGENT_MEDIA, MACHINE_AGENT_READ, MACHINE_AGENT_TAIL, AgentAnswerRequest, AgentMedia, AgentMediaRequest, image_type, AgentContinueRequest, AgentFoldersRequest, AgentInteraction, AgentLogsRequest, AgentOptionsRequest,
-    AgentAllowanceRequest, AgentProgramInstallRequest, AgentProgramsRequest, AgentProviderState, AgentSignOutRequest, SubscriptionAllowance, SubscriptionChoices, SubscriptionUse, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
+    AgentAllowanceRequest, AgentProgramInstallRequest, AgentProgramsRequest, AgentProviderState, AgentSignOutRequest, SubscriptionAllowance, Lent, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
     MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, PassedOverCandidate, ReadsAt, WebLoad, media_key, media_paths, MachineAgentSession, MachineFileEntry, WorkspaceCreateRequest, WorkspacePack, WorkspacePackRequest, WorkspacePrepareRequest, WorkspaceRefresh, WorkspacesRequest,
 )
 from galaius.agents import agent_queue
@@ -773,12 +773,12 @@ class MachineAgents(BaseModel):
         return " ".join([*lines[:1], *reasons]).removeprefix("ERROR: ")[:400]
 
     @staticmethod
-    def default_login_only(request: SubscriptionUse | SubscriptionChoices) -> None:
+    def default_login_only(request: Lent) -> None:
         """Sessions and continued editor conversations run on this PC's default login only (the
         editor's history lives there): one asked on a subscription, or for a member on a lent PC, is refused."""
         if request.lent:
             raise SubscriptionRefused("lent", LENT_REFUSAL)
-        if request.subscriptions if isinstance(request, SubscriptionChoices) else request.subscription_id is not None:
+        if request.names_subscription:
             raise SubscriptionRefused("default_login_only", "sessions and continued editor conversations run on this PC's own login only; start an agent (a role) to use this subscription")
 
     def pinned(self, request: AgentStartRequest) -> RunSubscription | None:
@@ -843,9 +843,8 @@ class MachineAgents(BaseModel):
             # honoured): refused, never silently replaced.
             raise PermissionError("an agent runs on the model its rule picks; change the rule on its Agents page, or start a session to choose the model")
         written = self._project_env(request, folder)
-        # A fenced run binds the login folder of whichever candidate starts: its provider's subscription, else the default.
-        homes = pinned.homes() if pinned is not None else {
-            choice.provider: RunSubscription(subscription_id=choice.subscription_id, limits=choice.limits).homes()[choice.provider] for choice in request.subscriptions}
+        # A lent run binds only closed login folders; a start's candidates each get theirs in the walk (`run_agent`).
+        homes = pinned.homes() if pinned is not None else {}
         fence, review = self._fence(request.root, folder, homes) if self.fence_agents else (None, None)
         return folder, written, fence, review
 

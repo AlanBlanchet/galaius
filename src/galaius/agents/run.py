@@ -1402,14 +1402,15 @@ async def run_agent(
     # out of it: tried once every other candidate refused or could not start — a stale note must never
     # be why nothing can run (16ed211e: two Codex models refused for the login, then the run failed
     # with the noted model never asked).
-    # Each candidate's subscription: the run's own when pinned, else its provider's choice (None: the default login).
-    bound = {} if pinned is not None or choices is None else \
-        {choice.provider: RunSubscription(subscription_id=choice.subscription_id, limits=choice.limits) for choice in choices.subscriptions}
-    pin_of = lambda candidate: bound.get(candidate.provider, pinned)  # noqa: E731
-    pin_id = lambda candidate: (pin.subscription_id if (pin := pin_of(candidate)) is not None else None)  # noqa: E731
+    # Each candidate's subscription: the run's own when pinned, else its provider's choice (None: the default login),
+    # and the fence it starts in: that login's folder bound, every other chosen one closed (never two in one run).
+    bound = {} if pinned is not None or choices is None else {choice.provider: RunSubscription.of(choice) for choice in choices.subscriptions}
+    pins = [bound.get(candidate.provider, pinned) for candidate in candidates]
+    fences = [fence if fence is None or not bound else fence.model_copy(update={"homes": pin.homes() if pin is not None else RunSubscription.closed(bound)})
+              for pin in pins]
     caps: list[SubscriptionCap] = []
     noted = {index: until for index, candidate in enumerate(candidates)
-             if (until := quota.blocked_until(candidate.provider, candidate.model, subscription=pin_id(candidate))) is not None}
+             if (until := quota.blocked_until(candidate.provider, candidate.model, subscription=pins[index].subscription_id if pins[index] is not None else None)) is not None}
     chosen_index = -1
     walk = deque([index for index in range(len(candidates)) if index not in noted] + list(noted))
     #: Candidates passed over only because this login was refused them before: asked again, once, when
@@ -1424,7 +1425,8 @@ async def run_agent(
         index = walk.popleft()
         candidate = candidates[index]
         candidate_provider = by_name[candidate.provider]
-        candidate_pin, candidate_pin_id, candidate_env = pin_of(candidate), pin_id(candidate), environment
+        candidate_pin, candidate_fence, candidate_env = pins[index], fences[index], environment
+        candidate_pin_id = candidate_pin.subscription_id if candidate_pin is not None else None
         if candidate.provider in bound:
             try:
                 candidate_env = candidate_pin.bound(environment)
@@ -1546,12 +1548,12 @@ async def run_agent(
             provider=candidate_provider, cwd=cwd, environment=env, arguments=command_kwargs,
             # Once, never twice: skip the mesh when the provider's own config already registers
             # galaius — else the child would carry two registrations of the same server.
-            meshed=mesh and not already_meshed(candidate_provider.name, cwd=cwd), fence=fence,
+            meshed=mesh and not already_meshed(candidate_provider.name, cwd=cwd), fence=candidate_fence,
         )
         # A child started ahead for this very launch skips its CLI's own startup. Its run id is the
         # vendor session id, so it serves only the first child handed to that vendor.
         ahead = (warm is not None and candidate_provider.starts_ahead and not validated_images
-                 and fence is None and vendor_session == run_id)
+                 and candidate_fence is None and vendor_session == run_id)
         held = warm.claim(launch.slot(), launch.key()) if warm is not None and ahead else None
         candidate_process = None
         if held is not None:
@@ -1575,7 +1577,7 @@ async def run_agent(
             mesh_enabled=mesh, reasoning=candidate_effort,
             candidates=candidates, skipped=tuple(skipped), denied_tools=denied_tools,
             provider_session_id=vendor_session if candidate_provider.name == "claude" else None,
-            agent_ref=selected_ref, definition_path=definition_path, fence=fence, subscription=candidate_pin,
+            agent_ref=selected_ref, definition_path=definition_path, fence=candidate_fence, subscription=candidate_pin,
         )
         # A model coming off a block is the re-check: it gets long enough to say "still refused"
         # that the answer falls through to the next candidate instead of killing this run.
@@ -1607,7 +1609,7 @@ async def run_agent(
         chosen = candidate
         chosen_index = index
         chosen_provider = candidate_provider
-        pinned = candidate_pin
+        pinned, fence = candidate_pin, candidate_fence
         chosen_ahead = launch if ahead else None
         process = candidate_process
         permission_mode = candidate_permission_mode
@@ -1627,6 +1629,8 @@ async def run_agent(
         if caps:
             # A cap is what stood in the way: said as such, the window reopening first (an allowance or a wait opens it).
             raise SubscriptionCapped(min(caps, key=lambda cap: cap.resets_at or datetime.max.replace(tzinfo=UTC)))
+        if skipped and all(entry.reason == "subscription_missing" for entry in skipped):
+            raise SubscriptionRefused("not_signed_in", skipped[0].message or "its subscription is not signed in on this PC")
         walked = "\n".join(
             f"  {s.candidate.provider}/{s.candidate.model}: {s.reason} — {s.message or 'no details recorded'}"
             for s in skipped

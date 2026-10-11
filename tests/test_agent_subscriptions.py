@@ -160,10 +160,21 @@ async def test_each_candidate_runs_on_its_own_providers_subscription_and_the_run
         await asyncio.wait_for(handle.wait(), timeout=30)
         said = [event.text for event in reg.read_events(handle.run_id) if event.kind == "text"]
         assert said == [folder] and reg.get_run(handle.run_id).subscription_id == pinned
+    # Fenced, the started candidate's login folder is the only one bound: every other chosen one is closed.
+    fence = FenceSpec(working_directory=tmp_path, start=tmp_path, state=tmp_path / "state", providers=("claude", "codex"))
+    closed = Subscription.root() / Subscription.CLOSED
+    for choices, homes in (((choice(codex), choice(claude)), {"claude": claude.folder, "codex": closed / "codex"}), ((choice(codex),), {"codex": closed / "codex"})):
+        handle = await run_agent(None, "go", agent="tester", cwd=str(tmp_path), environment={"PATH": "/usr/bin:/bin"}, fence=fence,
+                                 choices=SubscriptionChoices(subscriptions=choices))
+        await asyncio.wait_for(handle.wait(), timeout=30)
+        assert reg.get_run(handle.run_id).fence.homes == homes
     claude.observe((UsageWindow(window="weekly", used_percent=85, observed_at=datetime.now(UTC)),))
     with pytest.raises(SubscriptionCapped) as capped:  # its only provider is capped: never its default login instead
         await launch((choice(codex), choice(claude, weekly_percent=80)))
     assert (capped.value.refusal.reason, capped.value.cap.cap_percent) == ("capped", 80)
+    with pytest.raises(SubscriptionRefused) as missing:  # its only provider's subscription is not on this PC: said so, typed
+        await launch((SubscriptionChoice(provider="claude", subscription_id=uuid4(), limits=SubscriptionLimits()),))
+    assert missing.value.refusal.reason == "not_signed_in"
 
 
 @pytest.mark.parametrize(("parent", "asked", "named", "pinned"), [

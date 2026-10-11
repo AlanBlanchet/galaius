@@ -11,12 +11,12 @@ import re
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import ClassVar, Self
 from uuid import UUID
 
 from galaius_core import AgentProvider as ProviderName, RunSubscription as WireRunSubscription, SubscriptionAllowance, SubscriptionCap, SubscriptionLimits
-from galaius_core import SubscriptionRefusal, SubscriptionRefusalReason, SubscriptionUsage, SubscriptionUsageReport, UsageWindow
+from galaius_core import SubscriptionChoice, SubscriptionRefusal, SubscriptionRefusalReason, SubscriptionUsage, SubscriptionUsageReport, UsageWindow
 from pydantic import BaseModel, ConfigDict
 
 from galaius.agents.providers import PROVIDERS, AgentProvider
@@ -322,6 +322,18 @@ class Subscription(BaseModel):
 class RunSubscription(WireRunSubscription):
     """`galaius_core.RunSubscription` on a run's record, with what the PC does with it: the login
     folders its CLIs run with, its caps checked, a child or a message held to it."""
+
+    @classmethod
+    def of(cls, choice: SubscriptionChoice) -> Self:
+        """What a web start's candidate of `choice.provider` runs pinned to."""
+        return cls(subscription_id=choice.subscription_id, limits=choice.limits)
+
+    @classmethod
+    def closed(cls, providers: Iterable[str]) -> dict[str, Path]:
+        """`providers`' closed login folders (`homes` of a lent run): a fenced default-login run of another CLI never
+        reaches the subscription folders a start named for them."""
+        lent = cls(lent=True).homes()
+        return {name: lent[name] for name in providers}
 
     @classmethod
     def resolve(cls, asked: Self | None, *, parent: Self | None, child: bool, environment: Mapping[str, str]) -> Self | None:
