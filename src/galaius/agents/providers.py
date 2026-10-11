@@ -24,6 +24,7 @@ import sys
 import time
 import tomllib
 from abc import ABC, abstractmethod
+from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -36,7 +37,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapte
 from galaius_core import UsageWindow, UsageWindowName
 
 from galaius.agents.catalog import AgentCatalog
-from galaius.agents.events import TOKEN_FIELDS, AgentEvent, TokenUsage, UsageLedger, stream_lines
+from galaius.agents.events import TOKEN_FIELDS, AgentEvent, TokenUsage, UsageLedger, instant, stream_lines
 from galaius.agents.profiles import overlay_for
 from galaius.agents.vocabulary import ApprovalIntent, TouchScope, ThinkingLevel, vocabulary_for
 from galaius.inbox_hook import NOTE as INBOX_NOTE
@@ -651,6 +652,26 @@ class AgentProvider(ABC):
         a COPY of it under that new id (the original is never written)."""
         raise NotImplementedError(f"{type(self).__name__} cannot resume a session")
 
+    #: The conversations this CLI saves itself, as a glob under its login folder (`auth_home`):
+    #: the owner's editor sessions as well as the runs galaius started. Empty: it saves none galaius reads.
+    transcript_glob: ClassVar[str] = ""
+
+    def transcripts(self, home: Path) -> list[Path]:
+        """The conversation files this CLI saved under its login folder `home`."""
+        return list(home.glob(self.transcript_glob)) if self.transcript_glob else []
+
+    def transcript_id(self, path: Path) -> str:
+        """The session a saved conversation file holds, read from its name."""
+        return path.stem
+
+    def transcript_event(self, raw: dict) -> AgentEvent | None:
+        """One record of a saved conversation file as an event (its `at` set); None for one that says nothing."""
+        return None
+
+    def transcript_place(self, raw: dict) -> tuple[str, str]:
+        """(working folder, title) one record of a saved conversation file names; "" for each it does not."""
+        return "", ""
+
     def resume_ahead_command(self, session_id: str, **arguments) -> list[str]:
         """`resume_command`'s child with no message: it starts now and reads the message
         `task_message` writes (`starts_ahead`)."""
@@ -1194,6 +1215,8 @@ class ClaudeCodeProvider(AgentProvider):
             return None, cost
         return ledger.settle(per_model, cost, local)
 
+    transcript_glob = "projects/*/*.jsonl"
+
     def parse(self, line: str, ledger: UsageLedger | None = None) -> AgentEvent | None:
         line = line.strip()
         if not line:
@@ -1204,7 +1227,20 @@ class ClaudeCodeProvider(AgentProvider):
             return None  # a non-JSON line (a warning on stdout) is noise, not an event
         if not isinstance(raw, dict):
             return None
-        ledger = UsageLedger() if ledger is None else ledger
+        return self.event(raw, UsageLedger() if ledger is None else ledger)
+
+    def transcript_event(self, raw: dict) -> AgentEvent | None:
+        """A saved session's record reads as its stream line does; `isMeta` records are the harness's own notes."""
+        if raw.get("isMeta"):
+            return None
+        event = self.event(raw, UsageLedger())
+        return None if event is None else event.model_copy(update={"at": instant(raw.get("timestamp"))})
+
+    def transcript_place(self, raw: dict) -> tuple[str, str]:
+        return str(raw.get("cwd") or ""), str(raw.get("aiTitle") or "") if raw.get("type") == "ai-title" else ""
+
+    def event(self, raw: dict, ledger: UsageLedger) -> AgentEvent | None:
+        """One decoded stream line (or saved-session record) as an event."""
         kind = raw.get("type", "")
         sid = raw.get("session_id")
 
@@ -1258,7 +1294,9 @@ class ClaudeCodeProvider(AgentProvider):
                 return None  # the echo of a message handed on stdin; its sender recorded the message itself
             # Tool results come back as a USER turn — that is the other half of a transcript.
             msg = raw.get("message") or {}
-            for block in msg.get("content") or []:
+            # A typed prompt is saved as a plain string, a stream's turn as blocks.
+            content = msg.get("content")
+            for block in [{"type": "text", "text": content}] if isinstance(content, str) else content or []:
                 if block.get("type") == "tool_result":
                     body = block.get("content")
                     if isinstance(body, list):
@@ -1509,6 +1547,37 @@ class CodexProvider(AgentProvider):
     auth_home_env = ("CODEX_HOME",)
     home_folder = ".codex"
     settings_file = "hooks.json"
+    transcript_glob = "sessions/**/rollout-*.jsonl"
+    #: Text Codex itself puts in a user turn (its environment and instructions), never the person's.
+    _HARNESS_TURN = ("<", "# AGENTS.md instructions")
+
+    def transcript_id(self, path: Path) -> str:
+        """`rollout-<started>-<thread id>.jsonl`: the thread id is its last 36 characters."""
+        return path.stem[-36:]
+
+    def transcript_event(self, raw: dict) -> AgentEvent | None:
+        """A session record's `response_item`: what was asked, what it answered, each tool call.
+        Its `event_msg` records repeat the same turns and are not read."""
+        payload = raw.get("payload")
+        if raw.get("type") != "response_item" or not isinstance(payload, dict):
+            return None
+        at = instant(raw.get("timestamp"))
+        match payload.get("type"), payload.get("role"):
+            case "message", "user" | "assistant" as role:
+                text = "".join(str(block.get("text") or "") for block in payload.get("content") or () if isinstance(block, dict)).strip()
+                if not text or (role == "user" and text.startswith(self._HARNESS_TURN)):
+                    return None
+                return AgentEvent(kind="prompt" if role == "user" else "text", text=text, at=at)
+            case "function_call" | "custom_tool_call", _:
+                given = payload.get("arguments", payload.get("input"))
+                with suppress(ValueError, TypeError):
+                    given = json.loads(given)
+                return AgentEvent(kind="tool", tool=str(payload.get("name") or "tool"), tool_input=_summarise_input(given), at=at)
+        return None
+
+    def transcript_place(self, raw: dict) -> tuple[str, str]:
+        payload = raw.get("payload")
+        return (str(payload.get("cwd") or ""), "") if raw.get("type") == "session_meta" and isinstance(payload, dict) else ("", "")
 
     def usage(self, line: dict) -> tuple[UsageWindow, ...]:
         """`rate_limits` (`primary` / `secondary`: used_percent, window_minutes, resets_at epoch s),

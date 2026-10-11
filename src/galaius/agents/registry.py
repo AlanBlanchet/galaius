@@ -456,28 +456,40 @@ _PACKAGE_MARKERS = ("pyproject.toml", "package.json", "Cargo.toml", "go.mod")
 
 
 def project_for(cwd: str) -> str:
-    """The project a working directory belongs to — the enclosing REPOSITORY, by name.
-
-    A repo root wins over any package manifest inside it, so a sub-package (this repo's own
-    ``vscode-extension/`` and its package.json) files under the repo rather than as a project of
-    its own. Only when nothing above is version-controlled does a package manifest count, so a
-    loose tool still gets its own name instead of falling back to a home directory.
+    """The project a working directory belongs to, by name: its `project_root`, else the folder's own
+    name (a loose folder still gets one instead of falling back to a home directory).
 
     Empty for an unknown directory — a wrong project label is worse than none, because it
     silently merges unrelated work.
     """
-    if not cwd:
+    if (root := project_root(cwd)) is not None:
+        return root.name
+    try:
+        return Path(cwd).expanduser().resolve().name if cwd else ""
+    except (OSError, RuntimeError):
         return ""
+
+
+def project_root(cwd: str) -> Path | None:
+    """The folder a working directory's project is: its enclosing repository; None when no folder
+    from it upwards is one.
+
+    A repo root wins over any package manifest inside it, so a sub-package (this repo's own
+    ``vscode-extension/`` and its package.json) files under the repo rather than as a project of
+    its own. Only when nothing above is version-controlled does a package manifest count.
+    """
+    if not cwd:
+        return None
     try:
         here = Path(cwd).expanduser().resolve()
     except (OSError, RuntimeError):
-        return ""
+        return None
     chain = (here, *here.parents)
     for markers in (_REPO_MARKERS, _PACKAGE_MARKERS):
         for candidate in chain:
             if any((candidate / marker).exists() for marker in markers):
-                return candidate.name
-    return here.name
+                return candidate
+    return None
 
 
 def agents_dir() -> Path:

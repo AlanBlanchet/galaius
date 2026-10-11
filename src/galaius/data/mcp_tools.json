@@ -43,6 +43,18 @@
  },
  {
   "server": "galaius",
+  "name": "conversation_read",
+  "category": "agents",
+  "description": "Read one conversation this computer holds, `limit` lines at a time (what was asked, answered, said between agents, each tool call by its leading argument; never tool output; credentials masked)."
+ },
+ {
+  "server": "galaius",
+  "name": "conversation_search",
+  "category": "agents",
+  "description": "Search the conversations this computer holds \u2014 the runs galaius started and the sessions each agent CLI saved (the person's editor conversations) \u2014 for every word of `query`."
+ },
+ {
+  "server": "galaius",
   "name": "download_asset",
   "category": "browser",
   "description": "Download a URL to a local file. Uses the browser session's cookies for authenticated downloads."

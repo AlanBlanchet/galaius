@@ -24,6 +24,7 @@ from galaius.agents import messaging
 from galaius.agents import quota
 from galaius.agents import providers as agent_providers
 from galaius.agents import registry as reg
+from galaius.agents.conversations import ConversationAnswers
 from galaius.agents.subscriptions import SubscriptionRefused
 from galaius.agents.catalog import AgentCatalog
 from galaius.agents.catalog_connection import CatalogConnection, CatalogConnectionError
@@ -924,6 +925,23 @@ def agents_events(run_id: str, limit: int = 30, machine: str | None = None) -> N
         return
     for event in events[-max(1, limit):]:
         print(f"  {event.kind:11} {event.summary(viewer=resolved)}")
+
+
+@agents_app.command(name="search")
+def agents_search(query: str, limit: int = 20, project: str | None = None, since: str | None = None, every_project: bool = False) -> None:
+    """Search the conversations this computer holds (galaius's runs and each agent CLI's saved
+    sessions) for every word of QUERY, as the `conversation_search` tool does, in the same scope."""
+
+    answers = ConversationAnswers(environment=dict(os.environ), cwd=os.getcwd(), read_call="galaius agents read {id} --around {line}")
+    print(answers.search(query, limit, project, since, every_project))
+
+
+@agents_app.command(name="read")
+def agents_read(conversation: str, around: int | None = None, limit: int = 50, every_project: bool = False) -> None:
+    """Read one conversation `agents search` found, LIMIT lines around line AROUND (else its last), as
+    the `conversation_read` tool does."""
+
+    print(ConversationAnswers(environment=dict(os.environ), cwd=os.getcwd()).read(conversation, around, limit, every_project))
 
 
 @agents_app.command(name="stop")

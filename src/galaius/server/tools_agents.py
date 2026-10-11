@@ -13,6 +13,7 @@ from pathlib import Path
 from galaius_core import AgentRevisionRef
 
 from galaius.agents import messaging, registry as reg
+from galaius.agents.conversations import ConversationAnswers, ConversationScope
 from galaius.agents.providers import PROVIDERS, available_providers, provider_caveat_note, provider_for
 from galaius.agents.run import run_agent
 from galaius.server.core import instrumented, mcp
@@ -195,6 +196,14 @@ async def agent_list(include_foreign: bool = False, session_id: str | None = Non
 async def agent_events(run_id: str, limit: int = 20) -> str:
     """What an agent has actually been doing — its most recent events, oldest first."""
     resolved = reg.resolve_run_id(run_id) or run_id
+    try:
+        asking = ConversationScope.asking(os.environ)
+    except PermissionError as error:
+        return f"ERROR: {error}"
+    if asking is not None and (held := ConversationScope.held(asking)) is not None:
+        team = {run.run_id for run in reg.trees(frozenset({asking.root_run_id or asking.run_id}))}
+        if resolved not in team:
+            return f"ERROR: {held} reads only its own team's runs."
     events = reg.read_events(resolved)
     if not events:
         known = {r.run_id for r in reg.list_runs()}
@@ -256,3 +265,41 @@ async def agent_send(run_id: str, message: str, wait: bool = False) -> str:
     if delivery.state == "error" or not wait:
         return delivery.text
     return await messaging.wait_for_reply(delivery)
+
+
+@mcp.tool(category="agents")
+@instrumented
+async def conversation_search(query: str, limit: int = 20, project: str | None = None, since: str | None = None,
+                              every_project: bool = False) -> str:
+    """Search the conversations this computer holds — the runs galaius started and the sessions each
+    agent CLI saved (the person's editor conversations) — for every word of `query`.
+
+    Searched: what was asked, what was answered, what agents told each other, each tool call by its
+    leading argument. Never what a tool returned. Credentials are masked. An agent searches its own
+    project's conversations (the repository its folder is in); a fenced run, a member's run on a lent
+    PC, or a run denied reading files searches none (`ConversationScope`).
+
+    query: words that must all appear in one line; "quoted words" must appear together.
+    limit: conversations returned, best match first (1-50).
+    project: only conversations of the project with this name (a repository's folder name).
+    since: only conversations active since this date or moment (ISO 8601, e.g. 2026-10-11; UTC unless it says).
+    every_project: the person's own session only — search every project, not just this folder's.
+    Read one with conversation_read(id, around=<line>).
+    """
+    answers = ConversationAnswers(environment=dict(os.environ), cwd=os.getcwd())
+    return await asyncio.to_thread(answers.search, query, limit, project, since, every_project)
+
+
+@mcp.tool(category="agents")
+@instrumented
+async def conversation_read(id: str, around: int | None = None, limit: int = 50, every_project: bool = False) -> str:
+    """Read one conversation this computer holds, `limit` lines at a time (what was asked, answered,
+    said between agents, each tool call by its leading argument; never tool output; credentials masked).
+
+    id: its id (from conversation_search), or the start of exactly one.
+    around: the line to centre on (conversation_search names it); omitted: its last lines.
+    limit: lines returned (1-200). Page with around= the first or last line number shown.
+    every_project: the person's own session only — read outside this folder's project.
+    """
+    answers = ConversationAnswers(environment=dict(os.environ), cwd=os.getcwd())
+    return await asyncio.to_thread(answers.read, id, around, limit, every_project)

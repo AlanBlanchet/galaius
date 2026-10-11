@@ -35,6 +35,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from galaius.agents.events import instant
 from galaius.paths import UserPaths
 
 #: A vendor CLI's own refusal for QUOTA or RATE LIMIT — provider-neutral by construction, keyed
@@ -300,7 +301,7 @@ class Refusal(BaseModel):
     @classmethod
     def _instant_of(cls, refused: dict[str, Any], *, now: float) -> float | None:
         for key in _RESET_AT_KEYS:
-            if (moment := cls._as_instant(refused.get(key))) is not None:
+            if (moment := instant(refused.get(key))) is not None:
                 return moment
         for key in _RESET_IN_KEYS:
             if (seconds := cls._as_number(refused.get(key))) is not None:
@@ -317,11 +318,11 @@ class Refusal(BaseModel):
     @classmethod
     def _instant_in(cls, line: str, *, now: float) -> float | None:
         if (found := _RESET_AT_IN_TEXT.search(line)) is not None:
-            return cls._as_instant(found.group(1))
+            return instant(found.group(1))
         if (found := _RESET_IN_IN_TEXT.search(line)) is not None:
             return now + float(found.group(1))
         if (found := _ISO_INSTANT.search(line)) is not None:
-            return cls._as_instant(found.group(1))
+            return instant(found.group(1))
         if (found := _RESET_SPOKEN.search(line)) is not None:
             return cls._spoken_instant(found, now=now)
         return None
@@ -366,25 +367,6 @@ class Refusal(BaseModel):
         if isinstance(value, str):
             with suppress(ValueError):
                 return max(0.0, float(value.strip()))
-        return None
-
-    @staticmethod
-    def _as_instant(value: Any) -> float | None:
-        """An absolute epoch second, from a number or an ISO-8601 string.
-
-        A naive timestamp is read as UTC: every vendor observed writes an offset, and guessing
-        this machine's zone for one that does not would move the block by hours.
-        """
-        if isinstance(value, bool):
-            return None
-        if isinstance(value, (int, float)):
-            # Epoch seconds, not milliseconds and not a duration that wandered into this field.
-            return float(value) if value > 1e9 else None
-        if isinstance(value, str):
-            with suppress(ValueError):
-                moment = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
-                return (moment if moment.tzinfo is not None
-                        else moment.replace(tzinfo=UTC)).timestamp()
         return None
 
 

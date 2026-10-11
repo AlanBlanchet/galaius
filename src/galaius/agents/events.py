@@ -9,7 +9,9 @@ must never make a run look idle.
 """
 
 from collections.abc import Mapping
-from typing import Literal, Self
+from contextlib import suppress
+from datetime import UTC, datetime
+from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -36,6 +38,26 @@ EventKind = Literal[
     "cancelled",   # a turn was interrupted and acknowledged
     "other",       # recognised as valid, not specially handled — never silently dropped
 ]
+
+
+def instant(value: Any) -> float | None:
+    """An absolute epoch second, from a number or an ISO-8601 string; None for anything else.
+
+    A naive timestamp is read as UTC: every vendor observed writes an offset, and guessing
+    this machine's zone for one that does not would move the moment by hours.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        # Epoch seconds, not milliseconds and not a duration that wandered into this field.
+        return float(value) if value > 1e9 else None
+    if isinstance(value, str):
+        with suppress(ValueError):
+            moment = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+            return (moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)).timestamp()
+    return None
+
+
 def stream_lines(text: str) -> list[str]:
     """The lines of a JSON-lines stream. Only a newline ends one: `str.splitlines` also splits on
     U+2028, U+2029 and U+0085, which JSON leaves unescaped inside strings, cutting an event in two."""

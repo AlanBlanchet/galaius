@@ -192,7 +192,7 @@ class Subscription(BaseModel):
         `ADOPTED_SETTINGS` (the folder's other keys kept), every path into a CLI's default folder
         rehomed here with the scripts there it names (`_rehome`). Nothing else of the default homes is
         read (no credential, `.claude.json`, session or history) and nothing is ever written there."""
-        default = self._default_home(self.program, environment)
+        default = self.default_home(self.program, environment)
         login = {name: str(default) for name in self.program.auth_home_env}
         if (instructions := self.program.user_instructions({**environment, **login})) is not None and instructions.is_file():
             self._replace(self.folder / instructions.name, instructions.read_bytes())
@@ -204,10 +204,11 @@ class Subscription(BaseModel):
             kept = {key: value for key, value in kept.items() if key not in self.ADOPTED_SETTINGS}
             self._replace(mine, (json.dumps({**kept, **adopted}, indent=2) + "\n").encode())
 
-    def _default_home(self, program: AgentProvider, environment: Mapping[str, str]) -> Path:
+    @classmethod
+    def default_home(cls, program: AgentProvider, environment: Mapping[str, str]) -> Path:
         """`program`'s default login folder: its variable's, unless that names a subscription folder
         (a launch inside a pinned run), then home's own."""
-        root = self.root().resolve()
+        root = cls.root().resolve()
         unpinned = {key: value for key, value in environment.items() if not (key in program.auth_home_env and Path(value).resolve().is_relative_to(root))}
         return program.auth_home(unpinned)
 
@@ -221,7 +222,7 @@ class Subscription(BaseModel):
                 continue
             spellings = tuple(f"{home}/{program.home_folder}/" for home in ("~", "$HOME", "${HOME}"))
             for relative in dict.fromkeys(re.findall("(?:" + "|".join(map(re.escape, spellings)) + r")([\w./-]+)", text)):
-                self._adopt_folder(self._default_home(program, environment), Path(relative))
+                self._adopt_folder(self.default_home(program, environment), Path(relative))
             for spelling in spellings:
                 text = text.replace(spelling, f"{self.folder.as_posix()}/")
         return json.loads(text)
