@@ -30,7 +30,7 @@ class SubscriptionWatch(BaseModel):
         for run in running:
             provider = PROVIDERS[run.provider]
             files = (reg.raw_events_path(run.run_id), *filter(None, (self._session_record(run),)))
-            events = [event for path in files for line in self._appended(path) if (event := provider.parse(line)) is not None]
+            events = [event for path in files for line in self._appended(path, run.usage_from.get(str(path), 0)) if (event := provider.parse(line)) is not None]
             reg.subscription_heard(run, events)
         watched = {reg.raw_events_path(run.run_id) for run in running} | {self._records[run.run_id] for run in running if run.run_id in self._records}
         self._offsets = {path: offset for path, offset in self._offsets.items() if path in watched}
@@ -60,14 +60,16 @@ class SubscriptionWatch(BaseModel):
             self._records[run.run_id] = found
         return self._records[run.run_id]
 
-    def _appended(self, path: Path) -> list[str]:
-        """The complete lines `path` gained since the last read."""
+    def _appended(self, path: Path, start: int) -> list[str]:
+        """The complete lines `path` gained since the last read (first read: from byte `start`, where the run's current
+        subscription's readings begin, `AgentRun.usage_from`)."""
+        offset = self._offsets.get(path, start)
         try:
             with path.open("rb") as stream:
-                stream.seek(self._offsets.get(path, 0))
+                stream.seek(offset)
                 data = stream.read()
         except OSError:
             return []
         cut = data.rfind(b"\n") + 1
-        self._offsets[path] = self._offsets.get(path, 0) + cut
+        self._offsets[path] = offset + cut
         return stream_lines(data[:cut].decode(errors="replace"))

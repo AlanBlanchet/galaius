@@ -960,10 +960,14 @@ class MachineAgents(BaseModel):
         pinned.check()
         if target.provider != source.provider:
             raise SubscriptionRefused("pinned_elsewhere", f"subscription {target.id} is a {target.provider} login, not {source.provider}: a session never moves between them")
+        session = run.provider_session_id or run.run_id
         if run.fence is None:
-            source.carry_session(target, Path(run.cwd), run.provider_session_id or run.run_id)
+            source.carry_session(target, Path(run.cwd), session)
         fence = run.fence.rehomed(pinned.homes()) if run.fence is not None else None
-        moved = reg.repin(run.run_id, pinned, fence)
+        # Its usage is read on from here only: the readings already in its stream and session record are the old login's.
+        home = run.fence.state / target.provider if run.fence is not None else target.folder
+        files = (reg.raw_events_path(run.run_id), *target.program.session_files(home, Path(run.cwd), session))
+        moved = reg.repin(run.run_id, pinned, fence, {str(path): path.stat().st_size for path in files if path.is_file()})
         if moved is None:
             raise PermissionError("this run started again meanwhile: it stays on its subscription")
         return moved

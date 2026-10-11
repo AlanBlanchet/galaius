@@ -360,7 +360,15 @@ def test_continuing_on_another_subscription_carries_the_session_never_a_credenti
     with pytest.raises(SubscriptionRefused) as other:
         MachineAgents._carry(reg.get_run(run_id), move(codex))
     assert other.value.refusal.reason == "pinned_elsewhere"
+    raw = reg.raw_events_path(run_id)
+    raw.parent.mkdir(parents=True, exist_ok=True)
+    raw.write_text('{"type":"rate_limit_event","rate_limit_info":{"unifiedWindows":{"seven_day":{"utilization":0.97}}}}\n', encoding="utf-8")  # A's reading
     moved = MachineAgents._carry(reg.get_run(run_id), move(b))
+    watch = SubscriptionWatch()
+    assert watch._appended(raw, moved.usage_from[str(raw)]) == []  # A's 97 % never reaches B's run nor B's usage
+    with raw.open("a", encoding="utf-8") as stream:
+        stream.write('{"type":"result"}\n')
+    assert watch._appended(raw, moved.usage_from[str(raw)]) == ['{"type":"result"}']
     carried = ClaudeCodeProvider.project_folder(b.folder, cwd) / f"{session}.jsonl"
     assert carried.read_bytes() == transcript.read_bytes() and not (b.folder / ".credentials.json").exists()
     assert moved.subscription == RunSubscription(subscription_id=b.id, limits=SubscriptionLimits(weekly_percent=90))

@@ -289,6 +289,9 @@ class AgentRun(BaseModel):
     #: What the OS fence of every turn is built from, at that turn, from the levels as they are then
     #: (`galaius.fence`); None: unfenced. Held here, in the runner's store, never inside a fence.
     fence: FenceSpec | None = None
+    #: Where in the files its usage is read from (its raw stream, its session record: path -> byte offset) the readings
+    #: start being its CURRENT subscription's: set when it moved to another (`repin`), so the old one's never cap it.
+    usage_from: dict[str, int] = Field(default_factory=dict)
     parent_run_id: str | None = None
     root_run_id: str | None = None
     #: Owning caller conversation, independent of run genealogy and the child's vendor session.
@@ -1068,7 +1071,7 @@ def merge_subscription(run_id: str, **changes: object) -> AgentRun | None:
         return _merge_record_locked(run_id, {"subscription": merged.model_dump(mode="json")})
 
 
-def repin(run_id: str, subscription: RunSubscription, fence: FenceSpec | None) -> AgentRun | None:
+def repin(run_id: str, subscription: RunSubscription, fence: FenceSpec | None, usage_from: dict[str, int]) -> AgentRun | None:
     """A stopped run pinned to another of its account's subscriptions from now on (his « Continuer sur … », contract A9),
     with the fence its next turns build (that login's folder); None unless it is stopped and on a subscription."""
     with record_lock(run_id):
@@ -1076,7 +1079,7 @@ def repin(run_id: str, subscription: RunSubscription, fence: FenceSpec | None) -
         if stored is None or stored.subscription is None or stored.subscription.subscription_id is None or stored.status in {"running", "waiting"}:
             return None
         return _merge_record_locked(run_id, {"subscription": subscription.model_dump(mode="json"),
-                                             "fence": fence.model_dump(mode="json") if fence is not None else None})
+                                             "fence": fence.model_dump(mode="json") if fence is not None else None, "usage_from": usage_from})
 
 
 def ancestor_run() -> AgentRun | None:
