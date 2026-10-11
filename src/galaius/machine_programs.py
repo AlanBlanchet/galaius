@@ -21,12 +21,21 @@ from urllib.parse import urljoin, urlsplit
 from uuid import UUID
 
 import httpx
-from galaius_core import DEVICE_CODE, AgentProgramFailure, AgentProgramStep, AgentProvider, AgentProviderState, AgentSignIn
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+from galaius_core import (
+    DEVICE_CODE,
+    AgentProgramFailure,
+    AgentProgramStep,
+    AgentProvider,
+    AgentProviderState,
+    AgentSignIn,
+)
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
 
-from galaius.agents.providers import PROVIDERS, AgentProvider as Program, ProgramInstaller
+from galaius.agents.providers import PROVIDERS, ProgramInstaller
+from galaius.agents.providers import AgentProvider as Program
 from galaius.agents.subscriptions import Subscription
 from galaius.processes import end_process_tree, process_group_options
+from galaius.sign_in_browser import SignInHandoff
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +65,8 @@ class AgentPrograms(BaseModel):
     install_seconds: ClassVar[float] = 600
     sign_in_seconds: ClassVar[float] = 15 * 60
     poll_seconds: ClassVar[float] = 3
+    #: How long a sign-in may stay without an address or code before its terminal command is offered.
+    terminal_seconds: ClassVar[float] = 20
     script_bytes: ClassVar[int] = 2 * 1024 * 1024
     redirects: ClassVar[int] = 5
     CODE: ClassVar[re.Pattern[str]] = re.compile(DEVICE_CODE)
@@ -178,9 +189,12 @@ class AgentPrograms(BaseModel):
 
     def _sign_in(self, provider: Program, subscription: Subscription | None) -> None:
         """Its own sign-in command, kept waiting (stdin open, never written: no code is relayed)
-        until its status says signed in, `sign_in_seconds` at most; Claude Code opens this
-        computer's browser, Codex prints a device code the web shows. A subscription's runs inside
-        its folder, and is undone when the default login no longer names the same login after it."""
+        until its status says signed in, `sign_in_seconds` at most. Claude Code opens a browser on
+        this computer: the address it opens comes back through `SignInHandoff` onto the job's state
+        (the web shows it to open on this PC when no browser opened); Codex prints a device code the
+        web shows. Neither after `terminal_seconds` (a program that never called `BROWSER`): the
+        state offers the command to run it by hand in a terminal here. A subscription's runs inside its folder, and is undone when the default login no
+        longer names the same login after it."""
         key, environment = self._key(provider, subscription), self._environment(subscription)
         signed_in, account, login_digest = self._status(provider, environment)
         if signed_in:
@@ -189,39 +203,63 @@ class AgentPrograms(BaseModel):
         default = self._status(provider, self.environment)[2] if subscription is not None else ""
         deadline = datetime.now(UTC) + timedelta(seconds=self.sign_in_seconds)
         self._update(key, step="signing_in", signed_in=False, sign_in=AgentSignIn(expires_at=deadline))
-        login = subprocess.Popen([provider.executable(), *provider.login_arguments], env=environment, stdin=subprocess.PIPE,
-                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace", **process_group_options())
-        threading.Thread(target=self._read_code, args=(key, login, deadline), daemon=True).start()
-        try:
-            while True:
-                time.sleep(self.poll_seconds)
-                signed_in, account, login_digest = self._status(provider, environment)
-                if signed_in:
-                    if subscription is not None and self._status(provider, self.environment)[2] != default:
-                        self._logout(subscription)
-                        raise ProgramFailed("sign_in_failed", "the sign-in changed this computer's default login; the subscription was signed out again")
-                    self._update(key, step="ready", signed_in=True, account=account, login=login_digest, sign_in=None)
-                    return
-                if login.poll() is not None:
-                    raise ProgramFailed("sign_in_failed", f"its sign-in ended (exit {login.returncode}) without signing in")
-                if datetime.now(UTC) >= deadline:
-                    raise ProgramFailed("sign_in_expired", f"not signed in within {self.sign_in_seconds / 60:.0f} min")
-        finally:
-            if login.poll() is None:
-                end_process_tree(login.pid)
-                try:
-                    login.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    login.kill()
+        terminal = time.monotonic() + self.terminal_seconds
+        # 0700 on POSIX; on Windows a helper still holding the file never hides how the sign-in ended.
+        with tempfile.TemporaryDirectory(prefix="galaius-sign-in-", ignore_cleanup_errors=True) as folder:
+            handoff = SignInHandoff(link_file=Path(folder) / "link", browser=environment.get("BROWSER", ""))
+            login = subprocess.Popen([provider.executable(), *provider.login_arguments], env={**environment, **handoff.environment()}, stdin=subprocess.PIPE,
+                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace", **process_group_options())
+            threading.Thread(target=self._read_code, args=(key, login), daemon=True).start()
+            try:
+                while True:
+                    time.sleep(self.poll_seconds)
+                    if (link := handoff.link()) is not None:
+                        self._signing(key, link=link)
+                    elif time.monotonic() >= terminal and (heard := self._jobs[key].sign_in) is not None and heard.code is None:
+                        self._signing(key, command=provider.login_command(subscription.overlay() if subscription is not None else {}))
+                    signed_in, account, login_digest = self._status(provider, environment)
+                    if signed_in:
+                        if subscription is not None and self._status(provider, self.environment)[2] != default:
+                            self._logout(subscription)
+                            raise ProgramFailed("sign_in_failed", "the sign-in changed this computer's default login; the subscription was signed out again")
+                        self._update(key, step="ready", signed_in=True, account=account, login=login_digest, sign_in=None)
+                        return
+                    if login.poll() is not None:
+                        raise ProgramFailed("sign_in_failed", f"its sign-in ended (exit {login.returncode}) without signing in")
+                    if datetime.now(UTC) >= deadline:
+                        raise ProgramFailed("sign_in_expired", f"not signed in within {self.sign_in_seconds / 60:.0f} min")
+            finally:
+                if login.poll() is None:
+                    end_process_tree(login.pid)
+                    try:
+                        login.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        login.kill()
 
-    def _read_code(self, key: tuple[str, UUID | None], login: subprocess.Popen, deadline: datetime) -> None:
+    def _read_code(self, key: tuple[str, UUID | None], login: subprocess.Popen) -> None:
         """A device code the sign-in prints, onto its state while it still waits; its output is never
         logged (threat M4)."""
         assert login.stdout is not None
         for line in login.stdout:
             word = self.ANSI.sub("", line).strip()
             if self.CODE.match(word):
-                self._update(key, only_while="signing_in", sign_in=AgentSignIn(code=word, expires_at=deadline))
+                self._signing(key, code=word)
+
+    def _signing(self, key: tuple[str, UUID | None], **found: str) -> None:
+        """What the sign-in under way just said (its device code, the address it opened), onto its state
+        while it still waits; what is not a sign-in's (an address that is not https) is dropped, unlogged."""
+        with self._lock:
+            current = self._jobs[key]
+            if current.step != "signing_in" or current.sign_in is None:
+                return
+            try:
+                heard = AgentSignIn.model_validate({**current.sign_in.model_dump(), **found})
+            except ValidationError as refused:
+                # Which rule it broke, never the value (an address, a code: threat M4).
+                logger.info("%s sign-in: dropped what it reported (%s)", key[0], ", ".join(f"{error['loc'][0]}: {error['type']}" for error in refused.errors()))
+                return
+            if heard != current.sign_in:
+                self._jobs[key] = current.model_copy(update={"sign_in": heard, "changed_at": datetime.now(UTC)})
 
     # ---- states ----------------------------------------------------------------------------
 

@@ -9,7 +9,7 @@ license-files = ["LICENSE"]
 keywords = ["mcp", "automation", "browser", "desktop", "playwright", "vision", "agent", "llm"]
 requires-python = ">=3.11"
 dependencies = [
-    "galaius-core @ git+https://github.com/AlanBlanchet/galaius-core.git@2c3a26d0d2da59e2dc85f76a6af2d516262ea864",
+    "galaius-core @ git+https://github.com/AlanBlanchet/galaius-core.git@17b6948cb47c8f6c3762bc1b7798e1d83b20e1d9",
     "cyclopts>=3.0",
     "rich>=13.0",
     # /dev/uinput absolute input (X11 + Wayland). Same `evdev` import either way: prebuilt wheels
@@ -92,6 +92,7 @@ artifacts = [
 [project.scripts]
 galaius = "galaius.cli:main"
 galaius-fetch-upstream = "galaius.benchmarks.upstream:_main"
+galaius-sign-in-browser = "galaius.sign_in_browser:main"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

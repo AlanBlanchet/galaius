@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -63,6 +64,11 @@ def _safe_process_detail(value: str) -> str:
         value,
     )
     return _clip(value.replace("\x00", ""), 500)
+
+
+def _powershell_quoted(text: str) -> str:
+    """`text` as one PowerShell literal."""
+    return "'" + text.replace("'", "''") + "'"
 
 
 def _clip(text: str, limit: int = _CLIP, tail: int = 0) -> str:
@@ -306,16 +312,29 @@ class AgentProvider(ABC):
         installed = (entry for provider in PROVIDERS.values() if (installer := provider.installer()) is not None for entry in installer.found_dirs())
         return os.pathsep.join(dict.fromkeys([*current, *installed]))
 
+    def located(self) -> str | None:
+        """Where the CLI is found on the search path, as found (never the versioned file a link there
+        points to, gone after its next update); None when it is not installed."""
+        return shutil.which(self.binary, path=self.search_path())
+
     def available(self) -> bool:
         """Is the CLI installed? (Being logged in is the CLI's business, never ours.)"""
-        return shutil.which(self.binary, path=self.search_path()) is not None
+        return self.located() is not None
 
     def executable(self) -> str:
         """Resolve the installed executable for a CLI status probe."""
-        found = shutil.which(self.binary, path=self.search_path())
+        found = self.located()
         if found is None:
             raise FileNotFoundError(f"{self.name} CLI is not installed")
         return str(Path(found).resolve())
+
+    def login_command(self, overlay: Mapping[str, str]) -> str:
+        """Its sign-in as typed in a terminal here (PowerShell on Windows), with `overlay` (a
+        subscription's folder) set for it."""
+        arguments = [self.located() or self.binary, *self.login_arguments]
+        if sys.platform == "win32":
+            return "".join(f"$env:{name}={_powershell_quoted(value)}; " for name, value in overlay.items()) + "& " + " ".join(map(_powershell_quoted, arguments))
+        return " ".join([*(f"{name}={shlex.quote(value)}" for name, value in overlay.items()), shlex.join(arguments)])
 
     def signed_in_as(self, stdout: str, stderr: str) -> str:
         """Who its status command says it is signed in as (an e-mail, an organisation); "" when it does not say."""

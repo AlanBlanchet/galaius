@@ -1,6 +1,7 @@
 """An agent program installed from the web runs only its vendor's own script: fetched over https,
 through its vendor's hosts alone, never larger than a script."""
 
+import sys
 import threading
 import time
 from datetime import UTC, datetime
@@ -75,3 +76,45 @@ def test_a_job_that_breaks_ends_failed_and_a_late_code_never_reopens_it(tmp_path
     assert (state.step, state.failure, state.detail) == ("failed", "install_failed", "Broken: the disk is gone")
     jobs._update(("claude", None), only_while="signing_in", sign_in=AgentSignIn(code="ABCD-12345", expires_at=datetime.now(UTC)))
     assert {item.provider: item for item in jobs.states()}["claude"].sign_in is None
+
+
+CLAUDE_SIGN_IN = "https://claude.com/cai/oauth/authorize?code=true&redirect_uri=http%3A%2F%2Flocalhost%3A43117%2Fcallback&state=s7"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="its stand-in programs are POSIX shell scripts")
+@pytest.mark.parametrize("opens", [True, False])
+def test_the_address_claude_opens_reaches_the_job_through_its_browser_never_a_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, opens: bool) -> None:
+    """Claude Code opens its sign-in through `BROWSER`: the login runs with galaius's helper there, the
+    address it hands over lands on the job's state (with the person's own opener still run), and
+    no log carries it; the opener runs with the person's `BROWSER` back, never the helper. A program that never calls `BROWSER` gets its terminal command offered instead."""
+    claude = tmp_path / "claude"
+    claude.write_text('#!/bin/sh\n[ "$1" = auth ] || exit 0\n' + ('"$BROWSER" "' + CLAUDE_SIGN_IN + '"\n' if opens else "") + "sleep 30\n")
+    claude.chmod(0o755)
+    opened = tmp_path / "opened"
+    opener = tmp_path / "opener"
+    opener.write_text(f'#!/bin/sh\necho "$1 $BROWSER $GALAIUS_SIGN_IN_HANDOFF" > {opened}\n')
+    opener.chmod(0o755)
+    signed_in = threading.Event()
+    monkeypatch.setattr(AgentPrograms, "_status", lambda self, provider, environment: (signed_in.is_set(), "", ""))
+    monkeypatch.setattr(AgentPrograms, "poll_seconds", 0.1)
+    monkeypatch.setattr(AgentPrograms, "terminal_seconds", 0.5)
+    monkeypatch.setattr(type(PROVIDERS["claude"]), "available", lambda self: True)
+    monkeypatch.setattr(type(PROVIDERS["claude"]), "executable", lambda self: str(claude))
+    jobs = AgentPrograms(environment={"PATH": "/usr/bin:/bin", "BROWSER": str(opener)}, log_path=tmp_path / "agent-programs.log")
+    assert jobs.install("claude").step == "signing_in"
+    deadline = time.monotonic() + 10
+    while (state := jobs.states()[0]).sign_in is None or (state.sign_in.link or state.sign_in.command) is None:
+        assert time.monotonic() < deadline, "the sign-in never said where to sign in"
+        time.sleep(0.05)
+    if opens:
+        assert (state.sign_in.link, state.sign_in.command) == (CLAUDE_SIGN_IN, None)
+    else:
+        assert state.sign_in.link is None and state.sign_in.command is not None and state.sign_in.command.endswith("claude auth login")
+    signed_in.set()
+    while jobs.states()[0].step != "ready":
+        assert time.monotonic() < deadline + 5
+        time.sleep(0.05)
+    if opens:
+        assert opened.read_text().split() == [CLAUDE_SIGN_IN, str(opener)]
+    assert "43117" not in caplog.text
+    assert not jobs.log_path.exists() or "43117" not in jobs.log_path.read_text()
