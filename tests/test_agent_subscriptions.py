@@ -246,6 +246,10 @@ def test_a_subscription_takes_the_owners_hooks_permissions_and_instructions_and_
     (home / ".claude" / "hooks").mkdir()
     (home / ".claude" / "hooks" / "stop.sh").write_text("#!/bin/sh\nexit 0\n")
     (home / ".claude" / "hooks" / "stop.sh").chmod(0o700)
+    (home / ".claude" / "hooks" / "turn-end-asks.md").write_text("the gate's asks, read from beside it\n")
+    (home / ".claude" / "hooks" / "lib").mkdir()
+    (home / ".claude" / "hooks" / "lib" / "common.py").write_text("SHARED = 1\n")
+    (home / ".claude" / "hooks" / "codex-agent-policy.sh").write_text("#!/bin/sh\nexit 0\n")
     (home / ".claude" / "settings.json").write_text(json.dumps({
         "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "~/.claude/hooks/stop.sh"},
                                       {"type": "command", "command": "python3 $HOME/.claude/.credentials.json"}]}]},
@@ -254,6 +258,8 @@ def test_a_subscription_takes_the_owners_hooks_permissions_and_instructions_and_
     (home / ".claude" / "CLAUDE.md").write_text("owner instructions\n")
     (home / ".claude" / ".credentials.json").write_text('{"claudeAiOauth": {"accessToken": "owner"}}')
     (home / ".codex" / "AGENTS.md").write_text("owner codex instructions\n")
+    (home / ".codex" / "hooks.json").write_text(json.dumps({"hooks": {"PreToolUse": [{"hooks": [
+        {"type": "command", "command": "$HOME/.claude/hooks/codex-agent-policy.sh"}]}]}, "other": "never taken"}))
     before = tree(home / ".claude"), tree(home / ".codex")
     claude, codex = Subscription.create(uuid4(), "claude"), Subscription.create(uuid4(), "codex")
     (claude.folder / "settings.json").write_text(json.dumps({"statusLine": {"type": "command", "command": "own"}, "env": {"KEPT": "1"}}))
@@ -267,6 +273,11 @@ def test_a_subscription_takes_the_owners_hooks_permissions_and_instructions_and_
                         "hooks": {"Stop": [{"hooks": [{"type": "command", "command": f"{folder}/hooks/stop.sh"},
                                                       {"type": "command", "command": f"python3 {folder}/.credentials.json"}]}]}}
     assert ".claude/" not in json.dumps(settings["hooks"]) and (claude.folder / "hooks" / "stop.sh").stat().st_mode & 0o700 == 0o700
+    source = home / ".claude" / "hooks"
+    assert all((claude.folder / "hooks" / path.relative_to(source)).read_bytes() == path.read_bytes() for path in source.rglob("*") if path.is_file())
+    codex_hooks = json.loads((codex.folder / "hooks.json").read_text())
+    assert ".claude/" not in json.dumps(codex_hooks) and codex_hooks["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == f"{codex.folder.as_posix()}/hooks/codex-agent-policy.sh"
+    assert "other" not in codex_hooks and (codex.folder / "hooks" / "codex-agent-policy.sh").is_file()
     assert (claude.folder / "CLAUDE.md").read_text() == "owner instructions\n" and (codex.folder / "AGENTS.md").read_text() == "owner codex instructions\n"
     assert not (claude.folder / ".credentials.json").exists() and not (codex.folder / "auth.json").exists()
     assert (tree(home / ".claude"), tree(home / ".codex")) == before

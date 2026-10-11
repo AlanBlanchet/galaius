@@ -7,6 +7,7 @@ before each start and on each usage reading, and its usage is kept here, last va
 import json
 import logging
 import os
+import re
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
@@ -163,12 +164,10 @@ class Subscription(BaseModel):
     def adopt(self, environment: Mapping[str, str]) -> None:
         """The owner's own config, as his default login of this CLI has it now, written into this
         folder before a launch: the user-level instructions file, and of the settings file only
-        `ADOPTED_SETTINGS` (the folder's other keys kept). Nothing else of the default home is read
-        (no credential, `.claude.json`, session or history) and nothing is ever written there."""
-        default = self.program.auth_home(environment)
-        if default.resolve().is_relative_to(self.root().resolve()):
-            # A launch inside a pinned run: its variables name this folder; the default is home's own.
-            default = self.program.auth_home({key: value for key, value in environment.items() if key not in self.program.auth_home_env})
+        `ADOPTED_SETTINGS` (the folder's other keys kept), every path into a CLI's default folder
+        rehomed here with the scripts there it names (`_rehome`). Nothing else of the default homes is
+        read (no credential, `.claude.json`, session or history) and nothing is ever written there."""
+        default = self._default_home(self.program, environment)
         login = {name: str(default) for name in self.program.auth_home_env}
         if (instructions := self.program.user_instructions({**environment, **login})) is not None and instructions.is_file():
             self._replace(self.folder / instructions.name, instructions.read_bytes())
@@ -176,23 +175,49 @@ class Subscription(BaseModel):
             owner = json.loads(settings.read_text(encoding="utf-8"))
             mine = self.folder / self.program.settings_file
             kept = json.loads(mine.read_text(encoding="utf-8")) if mine.is_file() else {}
-            adopted, named = self.program.rehome({key: owner[key] for key in self.ADOPTED_SETTINGS if key in owner}, self.folder)
-            for relative in named:  # the scripts its hooks run, beside them in this folder (a fenced run reaches no other)
-                self._adopt_file(default, relative)
+            adopted = self._rehome({key: owner[key] for key in self.ADOPTED_SETTINGS if key in owner}, environment)
             kept = {key: value for key, value in kept.items() if key not in self.ADOPTED_SETTINGS}
             self._replace(mine, (json.dumps({**kept, **adopted}, indent=2) + "\n").encode())
 
-    def _adopt_file(self, default: Path, relative: str) -> None:
-        """One file an adopted hook names, copied from the default folder (mode kept); never a
-        credential, the login's own state file, its history or its sessions."""
-        source, parts = default / relative, Path(relative).parts
-        if (".." in parts or parts[0] in self.NEVER_ADOPTED or source.name in self.CREDENTIALS
-                or not source.is_file() or not source.resolve().is_relative_to(default.resolve())):
+    def _default_home(self, program: AgentProvider, environment: Mapping[str, str]) -> Path:
+        """`program`'s default login folder: its variable's, unless that names a subscription folder
+        (a launch inside a pinned run), then home's own."""
+        root = self.root().resolve()
+        unpinned = {key: value for key, value in environment.items() if not (key in program.auth_home_env and Path(value).resolve().is_relative_to(root))}
+        return program.auth_home(unpinned)
+
+    def _rehome(self, value: dict, environment: Mapping[str, str]) -> dict:
+        """`value` with every path into any CLI's default folder (`~/<folder>/`, `$HOME/…`,
+        `${HOME}/…`) naming the same path in this folder, and each folder holding a file it names
+        copied here from that CLI's default folder (`_adopt_folder`): a fenced run reaches no other."""
+        text = json.dumps(value)
+        for program in PROVIDERS.values():
+            if not program.home_folder:
+                continue
+            spellings = tuple(f"{home}/{program.home_folder}/" for home in ("~", "$HOME", "${HOME}"))
+            for relative in dict.fromkeys(re.findall("(?:" + "|".join(map(re.escape, spellings)) + r")([\w./-]+)", text)):
+                self._adopt_folder(self._default_home(program, environment), Path(relative))
+            for spelling in spellings:
+                text = text.replace(spelling, f"{self.folder.as_posix()}/")
+        return json.loads(text)
+
+    def _adopt_folder(self, default: Path, relative: Path) -> None:
+        """The folder holding the file `relative` names in `default`, copied here whole (a script reads
+        files beside it), or that file alone when it sits at the folder's top; never a credential, the
+        login's own state, its history or its sessions, never anything outside `default`."""
+        if ".." in relative.parts or relative.parts[0] in self.NEVER_ADOPTED:
             return
-        target = self.folder / relative
-        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        self._replace(target, source.read_bytes())
-        target.chmod(source.stat().st_mode & 0o700)
+        source = default / relative
+        files = [source] if len(relative.parts) == 1 else [path for path in source.parent.rglob("*") if path.is_file()] if source.parent.is_dir() else []
+        for path in files:
+            inside = path.relative_to(default)
+            if (path.is_symlink() or not path.is_file() or path.name in self.CREDENTIALS or inside.parts[0] in self.NEVER_ADOPTED
+                    or not path.resolve().is_relative_to(default.resolve())):
+                continue
+            target = self.folder / inside
+            target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            self._replace(target, path.read_bytes())
+            target.chmod(path.stat().st_mode & 0o700)
 
     def overlay(self) -> dict[str, str]:
         """What a child of this subscription's CLI runs with on top of its environment."""
