@@ -89,15 +89,20 @@ class Handoff(BaseModel):
         """Where a Windows child leaves the variables its successor starts with, for `parent`."""
         return self.store.root / f"handover-environment-{parent}.json"
 
-    def continue_in(self, runtime: Runtime, command: tuple[str, ...]) -> NoReturn:
+    def continue_in(self, runtime: Runtime, command: tuple[str, ...], long_lived: bool) -> NoReturn:
+        """Windows: a `long_lived` command's child is held (`Children`) so stopping this process (a
+        logon task stop) stops it too; any other runs unheld, as from a fresh install: a job closed
+        with this process would also end what it starts to outlive it (the install line's sign-in
+        waiter, an agent dispatcher) the moment it returns."""
         self.flushed()
         if sys.platform != "win32":
             os.execv(runtime.python, runtime.command(command))
-        base, children = {**os.environ, self.child: str(os.getpid())}, Children()
+        base, children = {**os.environ, self.child: str(os.getpid())}, Children() if long_lived else None
         environment, carried = base, self.carried_path(os.getpid())
         while True:
             process = subprocess.Popen(runtime.command(command), env=environment)
-            children.hold(process)  # stopping this process (a logon task stop) stops the child too
+            if children is not None:
+                children.hold(process)
             if (code := process.wait()) != EXIT_HANDOVER:
                 raise SystemExit(code)
             try:

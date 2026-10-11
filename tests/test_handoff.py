@@ -20,14 +20,15 @@ pytestmark = pytest.mark.skipif(UV is None, reason="needs uv to make a runtime")
 SAYS = 'import sys\nprint("{version} ran", " ".join(sys.argv[1:]))\n'
 
 
-def fake(store: RuntimeStore, version: str, minutes: int) -> Runtime:
-    """A real interpreter (a bare uv venv, on any OS) whose `galaius` only says who ran and with what."""
+def fake(store: RuntimeStore, version: str, minutes: int, main: str = SAYS) -> Runtime:
+    """A real interpreter (a bare uv venv, on any OS) whose `galaius` only says who ran and with what
+    (or runs `main`, formatted with `version`)."""
     path = store.root / f"{version}-fake"
     subprocess.run([UV, "venv", "--quiet", "--python", sys.executable, str(path)], check=True)
     site = next(path.glob("lib/python*/site-packages"), path / "Lib" / "site-packages")
     (site / "galaius").mkdir()
     (site / "galaius" / "__init__.py").write_text("")
-    (site / "galaius" / "__main__.py").write_text(SAYS.format(version=version))
+    (site / "galaius" / "__main__.py").write_text(main.format(version=version))
     build = BuildIdentity(version=version, released_at=datetime(2026, 9, 1, tzinfo=UTC) + timedelta(minutes=minutes), commit=f"{minutes:07x}")
     (path / "installation.json").write_text(RuntimeReceipt(build=build, identity=f"{minutes:064x}", source="local", installed_at=datetime.now(UTC), packages={}).model_dump_json())
     return Runtime(path=path)
@@ -64,6 +65,30 @@ def test_a_supervisor_handover_that_never_started_is_rolled_back(store: RuntimeS
     store.handover_path.write_text(json.dumps({**marker, "at": time.time() - 3600}))
     assert galaius(store, "agents", "list").strip() == "0.9.0 ran agents list"
     assert store.pointer().active == previous.path and broken.receipt().identity in store.pointer().failed
+
+
+#: A handed-off `galaius` that starts a process to outlive it (as `galaius login --detach` starts its
+#: sign-in waiter), then returns; the process writes its file 2 s later.
+DETACHES = (
+    "import subprocess, sys\n"
+    "later = 'import sys, time; time.sleep(2); open(sys.argv[1], \"w\").write(\"alive\")'\n"
+    "flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0\n"
+    "subprocess.Popen([sys.executable, '-c', later, sys.argv[1]], stdin=subprocess.DEVNULL, creationflags=flags, start_new_session=sys.platform != 'win32')\n"
+    "print('{version} detached')\n"
+)
+
+
+def test_a_process_a_handed_off_command_detaches_outlives_it(store: RuntimeStore, tmp_path: Path) -> None:
+    """Windows runs the active runtime as a child: held in a job closed with the command, what it
+    started died with it (a PC upgraded once then re-installed lost its sign-in waiter: approved on
+    the web, never collected)."""
+    store.activate(fake(store, "0.9.0", 1, DETACHES))
+    alive = tmp_path / "alive"
+    assert galaius(store, str(alive)).strip() == "0.9.0 detached"
+    deadline = time.monotonic() + 20
+    while not alive.exists() and time.monotonic() < deadline:
+        time.sleep(0.2)
+    assert alive.read_text() == "alive"
 
 
 def test_a_windowless_start_with_no_stdout_still_hands_off(store: RuntimeStore) -> None:

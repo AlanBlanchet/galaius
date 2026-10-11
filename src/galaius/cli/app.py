@@ -120,9 +120,9 @@ def main() -> None:
     force_utf8_io()
     command = Supervisor.command(tuple(sys.argv[1:]), sys.stdout is not None and sys.stdout.isatty())  # pythonw: no stdout
     if Supervisor.eligible():
-        handoff = Handoff(store=RuntimeStore.default())
-        if (target := handoff.target(command, Supervisor.member(command) is not None)) is not None:
-            handoff.continue_in(target, command)
+        handoff, long_lived = Handoff(store=RuntimeStore.default()), Supervisor.member(command) is not None
+        if (target := handoff.target(command, long_lived)) is not None:
+            handoff.continue_in(target, command, long_lived)
         if (supervisor := Supervisor.for_command(command)) is not None:
             raise SystemExit(supervisor.run())
     try:
