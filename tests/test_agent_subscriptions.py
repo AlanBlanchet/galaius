@@ -8,22 +8,24 @@ import os
 import subprocess
 import sys
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
-from galaius_core import SubscriptionAllowance, SubscriptionChoice, UsageWindow, SubscriptionChoices, SubscriptionLimits
+from galaius_core import AgentMoveRequest, MachineRef, SubscriptionAllowance, SubscriptionChoice, UsageWindow, SubscriptionChoices, SubscriptionLimits
 
 from galaius.agents import registry as reg
+from galaius.agents import quota
 from galaius.agents.events import AgentEvent
 from galaius.agents.providers import PROVIDERS, ClaudeCodeProvider
 from galaius.agents import run as run_module
 from galaius.agents.run import run_agent
 from galaius.agents.subscription_watch import SubscriptionWatch
-from galaius.agents.subscriptions import RunSubscription, Subscription, SubscriptionCapped, SubscriptionRefused
+from galaius.agents.subscriptions import RunSubscription, Subscription, SubscriptionCapped, SubscriptionRefused, UsageLimited
 from galaius.fence import FenceBind, FenceSpec
 from galaius.machine_programs import AgentPrograms
+from galaius.machine_agents import MachineAgents
 from tests.support.agents import ScriptedProvider, install_fake_cli, install_provider, use_policy
 
 FAKE_CLAUDE = Path(__file__).parent / "fixtures" / "agents" / "fake_claude_login.py"
@@ -337,3 +339,42 @@ def test_a_subscription_takes_the_owners_hooks_permissions_and_instructions_and_
     assert (claude.folder / "CLAUDE.md").read_text() == "owner instructions\n" and (codex.folder / "AGENTS.md").read_text() == "owner codex instructions\n"
     assert not (claude.folder / ".credentials.json").exists() and not (codex.folder / "auth.json").exists()
     assert (tree(home / ".claude"), tree(home / ".codex")) == before
+
+
+def test_continuing_on_another_subscription_carries_the_session_never_a_credential_and_pins_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Contract A9: his « Continuer sur Claude pro » after a usage limit copies that session's transcript from A's folder
+    to B's (nothing else, never a credential), pins the run to B; a Codex login is never a target of a Claude session; a
+    turn asked while a cap or the vendor's limit holds is refused typed, with when it reopens."""
+    a, b, codex = Subscription.create(uuid4(), "claude"), Subscription.create(uuid4(), "claude"), Subscription.create(uuid4(), "codex")
+    session, cwd = str(uuid4()), tmp_path / "project"
+    transcript = ClaudeCodeProvider.project_folder(a.folder, cwd) / f"{session}.jsonl"
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text('{"type":"user","message":"go"}\n', encoding="utf-8")
+    (a.folder / ".credentials.json").write_text('{"token":"A"}', encoding="utf-8")
+    run_id = str(uuid4())
+    reg.save_run(reg.AgentRun(run_id=run_id, provider="claude", name="r", cwd=str(cwd), started_at=1.0, finished_at=2.0, status="failed", provider_session_id=session,
+                              subscription=RunSubscription(subscription_id=a.id, limits=SubscriptionLimits())))
+    move = lambda target: AgentMoveRequest(id=uuid4(), machine=MachineRef(id=uuid4()), workspace_id=uuid4(), initiator_account=uuid4(), expires_at=datetime.now(UTC),  # noqa: E731
+                                           signature="0" * 64, run_id=UUID(run_id), subscription_id=target.id, limits=SubscriptionLimits(weekly_percent=90))
+    with pytest.raises(SubscriptionRefused) as other:
+        MachineAgents._carry(reg.get_run(run_id), move(codex))
+    assert other.value.refusal.reason == "pinned_elsewhere"
+    moved = MachineAgents._carry(reg.get_run(run_id), move(b))
+    carried = ClaudeCodeProvider.project_folder(b.folder, cwd) / f"{session}.jsonl"
+    assert carried.read_bytes() == transcript.read_bytes() and not (b.folder / ".credentials.json").exists()
+    assert moved.subscription == RunSubscription(subscription_id=b.id, limits=SubscriptionLimits(weekly_percent=90))
+    fence = FenceSpec(working_directory=tmp_path, start=tmp_path, state=tmp_path / "state", providers=("claude", "codex"), homes=RunSubscription.of(
+        SubscriptionChoice(provider="claude", subscription_id=a.id, limits=SubscriptionLimits())).homes())
+    (fence.state / "claude").mkdir(parents=True)
+    (fence.state / "claude" / ".claude.json").write_text('{"oauthAccount": "A"}', encoding="utf-8")
+    rehomed = fence.rehomed(moved.subscription.homes())  # a fenced run moved to B never keeps A's account copy
+    assert rehomed.homes["claude"] == b.folder and not (fence.state / "claude" / ".claude.json").exists()
+    b.observe((UsageWindow(window="weekly", used_percent=95, observed_at=datetime.now(UTC)),))
+    with pytest.raises(SubscriptionCapped):
+        MachineAgents.reopened(moved)
+    reopens = datetime.now(UTC).replace(microsecond=0) + timedelta(hours=2)
+    monkeypatch.setattr(reg, "limit_resume_at", lambda run: reopens.timestamp() + quota.RESET_SLACK)
+    unpinned = moved.model_copy(update={"subscription": None})
+    with pytest.raises(UsageLimited) as limited:
+        MachineAgents.reopened(unpinned)
+    assert limited.value.refusal.model_dump(exclude_none=True) == {"reason": "usage_limit", "resets_at": reopens}

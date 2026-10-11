@@ -51,6 +51,18 @@ class SubscriptionCapped(SubscriptionRefused):
         return SubscriptionRefusal(reason="capped", cap=self.cap)
 
 
+class UsageLimited(SubscriptionRefused):
+    """A turn asked of a run its vendor's usage limit stopped, before the window it named reopens (`resets_at`)."""
+
+    def __init__(self, resets_at: datetime) -> None:
+        super().__init__("usage_limit", f"its usage limit holds until {resets_at.isoformat(timespec='minutes')}")
+        self.resets_at = resets_at
+
+    @property
+    def refusal(self) -> SubscriptionRefusal:
+        return SubscriptionRefusal(reason="usage_limit", resets_at=self.resets_at)
+
+
 class SubscriptionState(BaseModel):
     """What galaius keeps in a subscription's folder (`Subscription.STATE`): its provider, its last
     usage reading per window, and the reading last reported to the server."""
@@ -231,6 +243,19 @@ class Subscription(BaseModel):
             target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             self._replace(target, path.read_bytes())
             target.chmod(path.stat().st_mode & 0o700)
+
+    def carry_session(self, to: Self, cwd: Path, session: str) -> int:
+        """Session `session`'s files (`AgentProvider.session_files`) copied from this folder to `to`'s, same place inside,
+        for it to continue there (contract A9): never a credential, never another file; refused when none is here. How
+        many were copied (`to` is the same provider's login: the caller checked)."""
+        files = [path for path in self.program.session_files(self.folder, cwd, session) if path.is_file() and not path.is_symlink() and path.name not in self.CREDENTIALS]
+        if not files:
+            raise SubscriptionRefused("session_missing", f"session {session} is not in subscription {self.id}'s folder: it cannot continue elsewhere")
+        for path in files:
+            target = to.folder / path.relative_to(self.folder)
+            target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            self._replace(target, path.read_bytes())
+        return len(files)
 
     def overlay(self) -> dict[str, str]:
         """What a child of this subscription's CLI runs with on top of its environment."""

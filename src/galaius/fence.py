@@ -39,7 +39,7 @@ import sys
 import tempfile
 import threading
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, Self
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -301,6 +301,16 @@ class FenceSpec(BaseModel):
         CLI this run uses (a model key of another provider, a cloud token): unset inside."""
         own = {name for provider in self.providers for name in KEYS.get(provider, ())}
         return tuple(sorted(name for name in os.environ if name.upper().endswith(SECRET_SUFFIXES) and name not in own))
+
+    def rehomed(self, homes: dict[str, Path]) -> Self:
+        """This fence on other login folders (a run moved to another subscription, contract A9): the private copies a CLI
+        rewrites (`TOOLS` copies, Claude's `.claude.json`: its account) of every CLI whose folder changed are dropped, so
+        the next turn copies them from the new folder, never carrying the old login's over."""
+        for provider in self.providers:
+            if homes.get(provider) != self.homes.get(provider):
+                for name in TOOLS[provider]["copies"]:
+                    (self.state / provider / name).unlink(missing_ok=True)
+        return self.model_copy(update={"homes": homes})
 
     def sessions(self, provider: str) -> tuple[Path, ...]:
         """Where a fenced run of `provider` keeps its sessions on the PC: this run's private folders,

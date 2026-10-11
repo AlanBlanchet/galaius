@@ -1055,6 +1055,17 @@ def merge_subscription(run_id: str, **changes: object) -> AgentRun | None:
         return _merge_record_locked(run_id, {"subscription": merged.model_dump(mode="json")})
 
 
+def repin(run_id: str, subscription: RunSubscription, fence: FenceSpec | None) -> AgentRun | None:
+    """A stopped run pinned to another of its account's subscriptions from now on (his « Continuer sur … », contract A9),
+    with the fence its next turns build (that login's folder); None unless it is stopped and on a subscription."""
+    with record_lock(run_id):
+        stored = _read_record(run_id)
+        if stored is None or stored.subscription is None or stored.subscription.subscription_id is None or stored.status in {"running", "waiting"}:
+            return None
+        return _merge_record_locked(run_id, {"subscription": subscription.model_dump(mode="json"),
+                                             "fence": fence.model_dump(mode="json") if fence is not None else None})
+
+
 def ancestor_run() -> AgentRun | None:
     """The running run this process descends from (its pid and start time recorded on the run): the
     parent a launch cannot hide by clearing `GALAIUS_PARENT_RUN_ID` from its environment.

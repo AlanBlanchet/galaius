@@ -244,6 +244,11 @@ class AgentProvider(ABC):
     #: nobody waits (`galaius.agents.warm.WarmStart`).
     starts_ahead: ClassVar[bool] = False
 
+    def session_files(self, home: Path, cwd: Path, session: str) -> tuple[Path, ...]:
+        """The files holding session `session` (started in `cwd`) inside login folder `home`, the ones its resume reads:
+        what continuing it under another login folder carries over (contract A9); empty for a CLI that cannot resume."""
+        return ()
+
     def ahead_command(self, **arguments) -> list[str]:
         """`command`'s child with no task: it starts now and reads the task `task_message` writes."""
         raise UnsupportedToolPolicy(f"{self.name} cannot start before its task")
@@ -1011,6 +1016,16 @@ class ClaudeCodeProvider(AgentProvider):
         # `--setting-sources user` (folder settings off) still loads it.
         return self.auth_home(environment) / "CLAUDE.md"
 
+    @staticmethod
+    def project_folder(home: Path, cwd: Path) -> Path:
+        """Where Claude Code keeps a folder's sessions and memory inside its login folder `home`."""
+        return home / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(cwd))
+
+    def session_files(self, home: Path, cwd: Path, session: str) -> tuple[Path, ...]:
+        """Its transcript, and the folder of that session's sub-agents and tool results beside it when there is one."""
+        folder = self.project_folder(home, cwd)
+        return (folder / f"{session}.jsonl", *(sorted(path for path in (folder / session).rglob("*") if path.is_file()) if (folder / session).is_dir() else ()))
+
     def startup_files(self, cwd: Path, environment: Mapping[str, str]) -> tuple[Path, ...]:
         """The user's and every enclosing folder's instructions (with the files they import),
         settings, MCP servers, agents, skills, commands and rules; the folder's memory index; the
@@ -1021,7 +1036,7 @@ class ClaudeCodeProvider(AgentProvider):
         instructions = [self.user_instructions(environment), *(folder / name for folder in folders for name in self._INSTRUCTIONS)]
         return (
             home / "plugins" / "installed_plugins.json",
-            home / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(cwd)) / "memory" / "MEMORY.md",
+            self.project_folder(home, cwd) / "memory" / "MEMORY.md",
             *(folder / ".mcp.json" for folder in folders),
             *(path for scope in scopes for pattern in self._SCOPE_FILES for path in sorted(scope.glob(pattern))),
             *instructions, *self._imports(instructions, home.parent),
@@ -1491,6 +1506,10 @@ class CodexProvider(AgentProvider):
             if isinstance(window, dict) and isinstance(window.get("used_percent"), (int, float)) and isinstance(window.get("window_minutes"), (int, float))
         )
     can_resume = True
+
+    def session_files(self, home: Path, cwd: Path, session: str) -> tuple[Path, ...]:
+        """Codex's rollout of thread `session` (`sessions/<y>/<m>/<d>/rollout-*-<thread>.jsonl`), wherever it was started."""
+        return tuple(sorted((home / "sessions").rglob(f"rollout-*-{session}.jsonl"))) if (home / "sessions").is_dir() else ()
     can_queue = True
     verified = True
     caveat = ("Read/Grep/Glob/Write/Edit/Bash map exactly onto --sandbox + feature flags; "

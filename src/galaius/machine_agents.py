@@ -25,6 +25,7 @@ import sys
 import tempfile
 import threading
 import time
+from datetime import UTC, datetime
 from collections import deque
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -35,16 +36,17 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from galaius_core import (
     AGENT_TOUCH_SCOPES, MACHINE_AGENT_MEDIA, MACHINE_AGENT_READ, MACHINE_AGENT_TAIL, AgentAnswerRequest, AgentMedia, AgentMediaRequest, image_type, AgentContinueRequest, AgentFoldersRequest, AgentInteraction, AgentLogsRequest, AgentOptionsRequest,
-    AgentAllowanceRequest, AgentProgramInstallRequest, AgentProgramsRequest, AgentProviderState, AgentSignOutRequest, SubscriptionAllowance, Lent, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
+    AgentAllowanceRequest, AgentMoveRequest, AgentProgramInstallRequest, AgentProgramsRequest, AgentProviderState, AgentSignOutRequest, SubscriptionAllowance, Lent, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
     MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, PassedOverCandidate, ReadsAt, WebLoad, media_key, media_paths, MachineAgentSession, MachineFileEntry, WorkspaceCreateRequest, WorkspacePack, WorkspacePackRequest, WorkspacePrepareRequest, WorkspaceRefresh, WorkspacesRequest,
 )
 from galaius.agents import agent_queue
 from galaius.agents import registry as reg
+from galaius.agents import quota
 from galaius.agents.host import ConversationHost, ConversationRefused
 from galaius.agents.followup import FollowUps
 from galaius.agents.messaging import deliver_message
 from galaius.agents.providers import PROJECT_SETTINGS_OFF, PROVIDERS, provider_for
-from galaius.agents.subscriptions import RunSubscription, Subscription, SubscriptionRefused
+from galaius.agents.subscriptions import RunSubscription, Subscription, SubscriptionRefused, UsageLimited
 from galaius.agents.run import LAUNCH_STAMP, launch_editor_turn, load_policy, rank_candidates, run_agent
 from galaius.agents.warm import WarmStart
 from galaius.config import UserConfig
@@ -475,6 +477,8 @@ class MachineAgents(BaseModel):
                 return MachineAgentAnswer(request_id=request.id, providers=(state,), detail=f"{request.provider}: signed out")
             case AgentAllowanceRequest():
                 return await self._allow(request)
+            case AgentMoveRequest():
+                return await self._move(request)
 
     def _programs(self) -> AgentPrograms:
         if self.programs is None:
@@ -899,6 +903,8 @@ class MachineAgents(BaseModel):
         run = await asyncio.to_thread(self._pinned_run, request)
         if self._kind(request.run_id) == "continued":
             return await asyncio.to_thread(self._continue_turn, run, request.text, request_id=request.id)
+        if request.text == reg.RESUME_BRIEF:  # his « Continuer »; a message he types waits for the turn it starts
+            self.reopened(run)
         # Answered once the message is durably queued, under the request's id (the same request
         # again finds it there and queues nothing): this runner starts the turn when the run is
         # between turns (`FollowUps`), else its dispatcher resumes the agent; a resume refused after
@@ -927,6 +933,54 @@ class MachineAgents(BaseModel):
         if request.limits is not None and request.limits != run.subscription.limits:
             run = reg.merge_subscription(run.run_id, limits=request.limits) or run
         return run
+
+    @staticmethod
+    def reopened(run: reg.AgentRun) -> None:
+        """« Continuer » on a stopped run starts its turn only once what stopped it reopened: refused,
+        typed with its reset time, while its subscription is at a cap (`SubscriptionCapped`) or its vendor's usage limit
+        still holds (`UsageLimited`), also while the automatic resume at that reset is pending."""
+        if run.status in {"running", "waiting"}:
+            return
+        if run.subscription is not None:
+            run.subscription.check()
+        if (at := reg.limit_resume_at(run)) is not None and time.time() < (reopens := at - quota.RESET_SLACK):
+            raise UsageLimited(datetime.fromtimestamp(reopens, UTC))
+
+    async def _move(self, request: AgentMoveRequest) -> MachineAgentAnswer:
+        """`RunMove`: the stopped run's session carried to the other subscription's folder and resumed there, the run
+        pinned to it from now on (contract A9); a fenced run's session already sits in its own state folder."""
+        run = await asyncio.to_thread(self._require_run, request.run_id)
+        moved = await asyncio.to_thread(self._carry, run, request)
+        # Moved from here on, whatever the resume does: the answer names the new pin so the server records it too.
+        try:
+            environment = await asyncio.to_thread(self.launcher_environment_in, Path(moved.cwd))
+            delivery = await asyncio.to_thread(deliver_message, moved.run_id, reg.RESUME_BRIEF, sender="operator", environment=environment, message_id=str(request.id))
+            detail, reads_at = (f"moved to subscription {request.subscription_id}; not resumed: {delivery.text.removeprefix('ERROR: ')}", None) if delivery.state == "error" \
+                else (f"continued on subscription {request.subscription_id}", delivery.reads_at)
+        except Exception as error:  # the move stands; its resume's failure is said, « Continuer » there resumes it
+            detail, reads_at = f"moved to subscription {request.subscription_id}; not resumed: {error}"[:400], None
+        return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=detail[:400], reads_at=reads_at, subscription_id=request.subscription_id)
+
+    @staticmethod
+    def _carry(run: reg.AgentRun, request: AgentMoveRequest) -> reg.AgentRun:
+        if run.subscription is None or run.subscription.subscription_id is None:
+            raise SubscriptionRefused("pinned_elsewhere", "this run runs on this PC's own login (or lent): it never moves to a subscription")
+        if run.status in {"running", "waiting"}:
+            raise PermissionError("a run moves to another subscription only once it stopped")
+        if request.subscription_id == run.subscription.subscription_id:
+            raise PermissionError("this run is on that subscription already: continue it there")
+        source, target = Subscription.of(run.subscription.subscription_id), Subscription.of(request.subscription_id)
+        pinned = RunSubscription(subscription_id=target.id, limits=request.limits)
+        pinned.check()
+        if target.provider != source.provider:
+            raise SubscriptionRefused("pinned_elsewhere", f"subscription {target.id} is a {target.provider} login, not {source.provider}: a session never moves between them")
+        if run.fence is None:
+            source.carry_session(target, Path(run.cwd), run.provider_session_id or run.run_id)
+        fence = run.fence.rehomed(pinned.homes()) if run.fence is not None else None
+        moved = reg.repin(run.run_id, pinned, fence)
+        if moved is None:
+            raise PermissionError("this run started again meanwhile: it stays on its subscription")
+        return moved
 
     async def _allow(self, request: AgentAllowanceRequest) -> MachineAgentAnswer:
         """`RunAllowance`: the run may go on its subscription up to `up_to_percent` of the window it is
