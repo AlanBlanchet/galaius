@@ -13,11 +13,12 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from galaius_core import SubscriptionAllowance, SubscriptionLimits
+from galaius_core import SubscriptionAllowance, SubscriptionChoice, UsageWindow, SubscriptionChoices, SubscriptionLimits
 
 from galaius.agents import registry as reg
 from galaius.agents.events import AgentEvent
 from galaius.agents.providers import PROVIDERS, ClaudeCodeProvider
+from galaius.agents import run as run_module
 from galaius.agents.run import run_agent
 from galaius.agents.subscription_watch import SubscriptionWatch
 from galaius.agents.subscriptions import RunSubscription, Subscription, SubscriptionCapped, SubscriptionRefused
@@ -127,6 +128,42 @@ async def test_a_run_and_its_child_run_in_the_subscription_folder_never_the_defa
         said = [event.text for event in reg.read_events(handle.run_id) if event.kind == "text"]
         assert said == [str(subscription.folder)] and reg.get_run(handle.run_id).subscription_id == subscription.id
     assert (subscription.folder / "config.toml").read_text() == 'cli_auth_credentials_store = "file"\n'
+
+
+class _Claude(_Codex):
+    """A Claude-named child saying which login folder it runs with."""
+
+    name = "claude"
+    auth_home_env = ("CLAUDE_CONFIG_DIR",)
+    script = _Codex.script.replace("CODEX_HOME", "CLAUDE_CONFIG_DIR")
+
+
+@pytest.mark.asyncio
+async def test_each_candidate_runs_on_its_own_providers_subscription_and_the_run_keeps_the_one_it_started_on(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """His order puts Codex first, the role ranks Claude only: it runs on his Claude subscription, never refused for
+    the Codex one; a provider he named none of runs on the PC's own login; a capped one is passed over, and when it
+    stood alone the refusal says the cap."""
+    use_policy(monkeypatch, agents={"tester": "fixture-model"}, reasoning={"tester": "medium"})
+    definition = tmp_path / "tester.md"
+    definition.write_text("---\nname: tester\n---\nTest.\n", encoding="utf-8")
+    monkeypatch.setattr(_Claude, "definition_path", lambda self, agent: definition)
+    for provider in (_Codex(), _Claude()):
+        install_provider(monkeypatch, provider)
+    monkeypatch.setattr(run_module, "rank_candidates", lambda rule, env, *, providers, weights="", role=None: (
+        reg.LaunchCandidate(provider="claude", model="fixture-model", rank=0),))
+    codex, claude = Subscription.create(uuid4(), "codex"), Subscription.create(uuid4(), "claude")
+    choice = lambda held, **limits: SubscriptionChoice(provider=held.provider, subscription_id=held.id, limits=SubscriptionLimits(**limits))  # noqa: E731
+    launch = lambda choices: run_agent(None, "go", agent="tester", cwd=str(tmp_path), environment={"PATH": "/usr/bin:/bin"},  # noqa: E731
+                                       choices=SubscriptionChoices(subscriptions=choices))
+    for choices, folder, pinned in (((choice(codex), choice(claude)), str(claude.folder), claude.id), ((choice(codex),), "", None)):
+        handle = await launch(choices)
+        await asyncio.wait_for(handle.wait(), timeout=30)
+        said = [event.text for event in reg.read_events(handle.run_id) if event.kind == "text"]
+        assert said == [folder] and reg.get_run(handle.run_id).subscription_id == pinned
+    claude.observe((UsageWindow(window="weekly", used_percent=85, observed_at=datetime.now(UTC)),))
+    with pytest.raises(SubscriptionCapped) as capped:  # its only provider is capped: never its default login instead
+        await launch((choice(codex), choice(claude, weekly_percent=80)))
+    assert (capped.value.refusal.reason, capped.value.cap.cap_percent) == ("capped", 80)
 
 
 @pytest.mark.parametrize(("parent", "asked", "named", "pinned"), [

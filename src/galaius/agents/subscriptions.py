@@ -16,7 +16,7 @@ from typing import ClassVar, Self
 from uuid import UUID
 
 from galaius_core import AgentProvider as ProviderName, RunSubscription as WireRunSubscription, SubscriptionAllowance, SubscriptionCap, SubscriptionLimits
-from galaius_core import SubscriptionUsage, SubscriptionUsageReport, UsageWindow
+from galaius_core import SubscriptionRefusal, SubscriptionRefusalReason, SubscriptionUsage, SubscriptionUsageReport, UsageWindow
 from pydantic import BaseModel, ConfigDict
 
 from galaius.agents.providers import PROVIDERS, AgentProvider
@@ -26,7 +26,16 @@ logger = logging.getLogger(__name__)
 
 
 class SubscriptionRefused(PermissionError):
-    """A start, turn or child a subscription cannot take; its message says why, for the owner."""
+    """A start, turn or child a subscription cannot take: `reason` typed for the server to word (`refusal`, sent on the
+    answer), its message in English for this PC's log."""
+
+    def __init__(self, reason: SubscriptionRefusalReason, message: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+    @property
+    def refusal(self) -> SubscriptionRefusal:
+        return SubscriptionRefusal(reason=self.reason)
 
 
 class SubscriptionCapped(SubscriptionRefused):
@@ -34,8 +43,12 @@ class SubscriptionCapped(SubscriptionRefused):
 
     def __init__(self, cap: SubscriptionCap) -> None:
         reopens = f"; it reopens {cap.resets_at.isoformat(timespec='minutes')}" if cap.resets_at is not None else ""
-        super().__init__(f"this subscription is at {cap.used_percent:g}% of its {cap.window.replace('_', ' ')} window, its cap is {cap.cap_percent}%{reopens}")
+        super().__init__("capped", f"this subscription is at {cap.used_percent:g}% of its {cap.window.replace('_', ' ')} window, its cap is {cap.cap_percent}%{reopens}")
         self.cap = cap
+
+    @property
+    def refusal(self) -> SubscriptionRefusal:
+        return SubscriptionRefusal(reason="capped", cap=self.cap)
 
 
 class SubscriptionState(BaseModel):
@@ -87,7 +100,7 @@ class Subscription(BaseModel):
         """The folder of `subscription_id` for `provider`, made (0700) when new; a folder of another provider is refused."""
         made = cls(id=subscription_id, provider=provider)
         if made.state_path.exists() and made.state().provider != provider:
-            raise SubscriptionRefused(f"subscription {subscription_id} is a {made.state().provider} login on this PC, not {provider}")
+            raise SubscriptionRefused("pinned_elsewhere", f"subscription {subscription_id} is a {made.state().provider} login on this PC, not {provider}")
         cls._private(cls.root())
         cls._private(made.folder)
         for name, text in cls.FIRST_FILES.get(provider, {}).items():
@@ -103,7 +116,7 @@ class Subscription(BaseModel):
         try:
             state = SubscriptionState.model_validate_json(path.read_text(encoding="utf-8"))
         except FileNotFoundError:
-            raise SubscriptionRefused(f"subscription {subscription_id} is not signed in on this PC; sign it in here from its page on the web") from None
+            raise SubscriptionRefused("not_signed_in", f"subscription {subscription_id} is not signed in on this PC; sign it in here from its page on the web") from None
         return cls(id=subscription_id, provider=state.provider)
 
     @classmethod
@@ -317,18 +330,18 @@ class RunSubscription(WireRunSubscription):
         asking another, or an environment naming a folder of another subscription, is refused."""
         pinned = parent if child else asked
         if child and asked is not None and (asked.subscription_id, asked.lent) != ((parent.subscription_id, parent.lent) if parent is not None else (None, False)):
-            raise SubscriptionRefused("a child runs on its parent run's subscription, never another")
+            raise SubscriptionRefused("pinned_elsewhere", "a child runs on its parent run's subscription, never another")
         if child and pinned is not None:
             pinned = pinned.model_copy(update={"capped": None})
         expected = frozenset() if pinned is None else frozenset(Path(folder).resolve() for folder in pinned.overlay().values())
         if not Subscription.named_in(environment) <= expected:
-            raise SubscriptionRefused("this run's environment names another subscription's folder; a run uses only the subscription it is pinned to")
+            raise SubscriptionRefused("pinned_elsewhere", "this run's environment names another subscription's folder; a run uses only the subscription it is pinned to")
         return pinned
 
     def pins(self, asked: UUID | None) -> None:
         """Refused unless `asked` (a turn or message's subscription) is this run's own."""
         if asked is not None and asked != self.subscription_id:
-            raise SubscriptionRefused("this run is pinned to another subscription: its turns never move to a different one")
+            raise SubscriptionRefused("pinned_elsewhere", "this run is pinned to another subscription: its turns never move to a different one")
 
     def overlay(self) -> dict[str, str]:
         """Every CLI's login variable for this run: its subscription's CLI at its folder, every other
@@ -345,3 +358,11 @@ class RunSubscription(WireRunSubscription):
         """Refused while its subscription is at a cap (this run's allowance counted)."""
         if self.subscription_id is not None:
             Subscription.of(self.subscription_id).check(self.limits, self.allowance)
+
+    def bound(self, environment: Mapping[str, str]) -> dict[str, str]:
+        """`environment` for one launch or turn on it: its caps checked (refused at one), the owner's config adopted into
+        its folder (`Subscription.adopt`), every CLI's login variable at its folder or a closed one (`overlay`)."""
+        self.check()
+        if self.subscription_id is not None:
+            Subscription.of(self.subscription_id).adopt(environment)
+        return {**environment, **self.overlay()}

@@ -18,11 +18,11 @@ import hmac
 import logging
 import time
 
-from galaius_core import MACHINE_AGENT_REQUESTS, MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentSettings, MachineAgentSettingsUpdate, MachineWorkspaceJob, SubscriptionLimits, UsageWindow, WebLoad
+from galaius_core import MACHINE_AGENT_REQUESTS, MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentSettings, MachineAgentSettingsUpdate, MachineWorkspaceJob, SubscriptionLimits, WebLoad
 from galaius.agents import agent_queue, messaging
 from galaius.agents import registry as reg
 from galaius.agents.host import ConversationRefused
-from galaius.agents.subscriptions import RunSubscription, Subscription, SubscriptionCapped, SubscriptionRefused
+from galaius.agents.subscriptions import RunSubscription, Subscription, SubscriptionRefused
 from galaius.machine_agents import LogRing, MachineAgents, MachineSessions, WebRun, WebRuns, interaction_digest, redact
 from galaius.fence import FenceSpec
 from galaius.config import UserConfig
@@ -178,11 +178,8 @@ def test_a_run_stays_on_its_subscription_and_a_lent_pc_lends_no_login(base: Path
     agents, seen = _agents(base, tmp_path), _launches(monkeypatch)
     mine, other = Subscription.create(uuid4(), "claude"), Subscription.create(uuid4(), "claude")
     start = lambda **fields: _answer(agents, _request("start", root="project", role="tester", text="go", **fields))
-    start(subscription_id=str(mine.id), limits={"weekly_percent": 80})
-    assert seen[-1]["subscription"] == RunSubscription(subscription_id=mine.id, limits=SubscriptionLimits(weekly_percent=80))
-    mine.observe((UsageWindow(window="weekly", used_percent=85, observed_at=datetime.now(UTC)),))
-    with pytest.raises(SubscriptionCapped, match="85% of its weekly window, its cap is 80%"):
-        start(subscription_id=str(mine.id), limits={"weekly_percent": 80})
+    start(subscriptions=[{"provider": "claude", "subscription_id": str(mine.id), "limits": {"weekly_percent": 80}}])
+    assert (seen[-1]["subscription"], seen[-1]["choices"].subscriptions[0].subscription_id) == (None, mine.id)  # the walk pins it (`run_agent`)
     for pinned, asked in ((mine.id, other.id), (None, mine.id)):
         run_id = str(uuid4())
         reg.save_run(reg.AgentRun(run_id=run_id, provider="claude", name="w", cwd=str(base / "project"), started_at=1.0,

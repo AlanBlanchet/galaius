@@ -25,7 +25,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 from typing import BinaryIO, ClassVar, Mapping, Sequence
-from galaius_core import AgentRevisionRef
+from galaius_core import AgentRevisionRef, SubscriptionCap, SubscriptionChoices
 from pydantic import BaseModel, ConfigDict
 
 from galaius.agents import agent_queue
@@ -40,7 +40,7 @@ from galaius.agents.policy import Policy, policy_path
 from galaius.agents.profiles import overlay_for, profiles_from
 from galaius.agents.providers import PROVIDERS, AgentProvider, CodexProvider, UnsupportedToolPolicy, validate_denied_tools, _safe_process_detail
 from galaius.agents.vocabulary import TouchScope
-from galaius.agents.subscriptions import RunSubscription, Subscription, SubscriptionRefused
+from galaius.agents.subscriptions import RunSubscription, Subscription, SubscriptionCapped, SubscriptionRefused
 from galaius.agents.warm import WarmStart
 from galaius.agents.server_ranking import ServerRanking, ServerRankingUnavailable
 from galaius.criteria import Criteria, CriteriaError, Dropped, Variables
@@ -857,10 +857,7 @@ class ResumeLaunch(AheadLaunch):
         on the subscription `run` is pinned to: refused while it is at a cap."""
         environment = dict(os.environ if environment is None else environment)
         if run.subscription is not None:
-            run.subscription.check()
-            if run.subscription.subscription_id is not None:
-                Subscription.of(run.subscription.subscription_id).adopt(environment)
-            environment.update(run.subscription.overlay())
+            environment = run.subscription.bound(environment)
         policy = load_policy()
         policy, _ = policy.for_launch(run.agent, reference=run.agent_ref)
         catalog = policy.catalog
@@ -1249,6 +1246,7 @@ async def run_agent(
     environment: Mapping[str, str] | None = None,
     warm: WarmStart | None = None,
     subscription: RunSubscription | None = None,
+    choices: SubscriptionChoices | None = None,
 ) -> RunHandle:
     """Spawn an agent run and register it, returning as soon as it is alive.
 
@@ -1282,6 +1280,10 @@ async def run_agent(
     alone, its login folder alone, its caps checked before the start; a child's is its parent run's,
     whatever is asked (`RunSubscription.resolve`). None: this PC's default login.
 
+    ``choices`` (a web start's, never a child's) names one subscription per provider: the walk runs each
+    candidate on its provider's, its caps checked first (a capped one is passed over, saying so), a
+    provider named none on this PC's default login; the run is pinned to the one its candidate started on.
+
     ``image_paths`` is an optional tuple of existing absolute PNG, JPEG, or WebP paths. The
     provider and resolved model are checked before any child process is created.
 
@@ -1307,14 +1309,11 @@ async def run_agent(
     pinned = RunSubscription.resolve(subscription, parent=holder.subscription if holder is not None else None,
                                      child=parent is not None or ancestor is not None, environment=environment)
     if pinned is not None:
-        pinned.check()
-        if pinned.subscription_id is not None:
-            Subscription.of(pinned.subscription_id).adopt(environment)
-        environment.update(pinned.overlay())
+        environment = pinned.bound(environment)
         if pinned.subscription_id is not None:
             program = Subscription.of(pinned.subscription_id).program
             if provider is not None and provider.name != program.name:
-                raise SubscriptionRefused(f"this subscription is a {program.name} login; it never runs {provider.name}")
+                raise SubscriptionRefused("pinned_elsewhere", f"this subscription is a {program.name} login; it never runs {provider.name}")
             provider = program
     validated_images = validate_image_paths(image_paths)
     validate_denied_tools(denied_tools)
@@ -1398,15 +1397,19 @@ async def run_agent(
     effort = policy.reasoning_for(agent)
     auth_cache: dict[tuple[str, str], tuple[bool | None, str]] = {}
     allowed_tools = policy.tools_for(agent)
-    base_env = environment
     # A model that refused for quota a moment ago refuses again: passing it over BEFORE the spawn
     # is what stops every launch paying the same dead-child tax. It goes to the END of the walk, never
     # out of it: tried once every other candidate refused or could not start — a stale note must never
     # be why nothing can run (16ed211e: two Codex models refused for the login, then the run failed
     # with the noted model never asked).
-    pinned_id = pinned.subscription_id if pinned is not None else None
+    # Each candidate's subscription: the run's own when pinned, else its provider's choice (None: the default login).
+    bound = {} if pinned is not None or choices is None else \
+        {choice.provider: RunSubscription(subscription_id=choice.subscription_id, limits=choice.limits) for choice in choices.subscriptions}
+    pin_of = lambda candidate: bound.get(candidate.provider, pinned)  # noqa: E731
+    pin_id = lambda candidate: (pin.subscription_id if (pin := pin_of(candidate)) is not None else None)  # noqa: E731
+    caps: list[SubscriptionCap] = []
     noted = {index: until for index, candidate in enumerate(candidates)
-             if (until := quota.blocked_until(candidate.provider, candidate.model, subscription=pinned_id)) is not None}
+             if (until := quota.blocked_until(candidate.provider, candidate.model, subscription=pin_id(candidate))) is not None}
     chosen_index = -1
     walk = deque([index for index in range(len(candidates)) if index not in noted] + list(noted))
     #: Candidates passed over only because this login was refused them before: asked again, once, when
@@ -1421,12 +1424,23 @@ async def run_agent(
         index = walk.popleft()
         candidate = candidates[index]
         candidate_provider = by_name[candidate.provider]
+        candidate_pin, candidate_pin_id, candidate_env = pin_of(candidate), pin_id(candidate), environment
+        if candidate.provider in bound:
+            try:
+                candidate_env = candidate_pin.bound(environment)
+            except SubscriptionCapped as capped:
+                caps.append(capped.cap)
+                skipped.append(_skip_record(candidate, _skip("subscription_capped", str(capped))))
+                continue
+            except SubscriptionRefused as refused:
+                skipped.append(_skip_record(candidate, _skip("subscription_missing", str(refused))))
+                continue
         # Named once per role, per provider (`accepts_coarse_tool_policy`) — a provider that can
         # only enforce a SANDBOX, not this role's specific tool names, runs it anyway only when
         # the operator recorded that tradeoff for THIS role; never a default, never widened by
         # naming it for a sibling role or a different provider.
         candidate_coarse_accepted = policy.accepts_coarse_tool_policy(agent, candidate.provider)
-        routed, resolved_model = resolve_model(candidate.model, base_env, provider=candidate_provider, weights=weights)
+        routed, resolved_model = resolve_model(candidate.model, candidate_env, provider=candidate_provider, weights=weights)
         # The auth cache is keyed on the CONNECTION (base URL, credential), never the model
         # name riding along on the same overlay — two candidates on the same routed endpoint
         # share one auth check regardless of which wire protocol's "bare model name" key
@@ -1439,7 +1453,7 @@ async def run_agent(
             candidate_provider, policy,
             permission_mode=permission_mode or (provider_modes or {}).get(candidate.provider) or default_permission_mode,
             images=bool(validated_images), allowed_tools=allowed_tools, denied_tools=denied_tools,
-            env={**base_env, **routed}, auth_cache=auth_cache, route_key=route_key,
+            env={**candidate_env, **routed}, auth_cache=auth_cache, route_key=route_key,
             coarse_accepted=candidate_coarse_accepted,
         )
         login = auth_cache.get((candidate_provider.name, route_key), (None, ""))[1]
@@ -1475,8 +1489,8 @@ async def run_agent(
         label = name or agent or candidate_provider.name
         # The agent's policy is authoritative; caller profiles were rejected above. Its model id
         # can still carry a provider prefix resolved through the operator's allowed routing.
-        candidate_routed, candidate_model = resolve_model(candidate.model, environment, provider=candidate_provider, weights=weights)
-        env = {**environment, **candidate_routed}
+        candidate_routed, candidate_model = resolve_model(candidate.model, candidate_env, provider=candidate_provider, weights=weights)
+        env = {**candidate_env, **candidate_routed}
         if validated_images:
             _require_vlm_model(candidate_model)
         if candidate_provider.name == "claude":
@@ -1561,12 +1575,12 @@ async def run_agent(
             mesh_enabled=mesh, reasoning=candidate_effort,
             candidates=candidates, skipped=tuple(skipped), denied_tools=denied_tools,
             provider_session_id=vendor_session if candidate_provider.name == "claude" else None,
-            agent_ref=selected_ref, definition_path=definition_path, fence=fence, subscription=pinned,
+            agent_ref=selected_ref, definition_path=definition_path, fence=fence, subscription=candidate_pin,
         )
         # A model coming off a block is the re-check: it gets long enough to say "still refused"
         # that the answer falls through to the next candidate instead of killing this run.
         probe_window = max(quota_window or 0.0, quota.PROBATION_WINDOW) \
-            if index in noted or quota.on_probation(candidate.provider, candidate.model, subscription=pinned_id) else quota_window
+            if index in noted or quota.on_probation(candidate.provider, candidate.model, subscription=candidate_pin_id) else quota_window
         quota_reason = await _quota_probe(
             run_id, candidate_process,
             **({} if probe_window is None else {"window": probe_window}),
@@ -1583,7 +1597,7 @@ async def run_agent(
             # remembered against that login: nothing about it clears in minutes.
             said = _child_output(run_id)
             if quota_reason == "quota_exceeded":
-                until = quota.record_refusal(candidate.provider, candidate.model, said=said, subscription=pinned_id)
+                until = quota.record_refusal(candidate.provider, candidate.model, said=said, subscription=candidate_pin_id)
                 message = _quota_message(candidate.provider, candidate.model, said, until)
             else:
                 until = quota.record_unsupported(candidate.provider, candidate.model, login=login)
@@ -1593,6 +1607,7 @@ async def run_agent(
         chosen = candidate
         chosen_index = index
         chosen_provider = candidate_provider
+        pinned = candidate_pin
         chosen_ahead = launch if ahead else None
         process = candidate_process
         permission_mode = candidate_permission_mode
@@ -1609,6 +1624,9 @@ async def run_agent(
     ), until=until) for index, until in noted.items()
         if index < chosen_index and chosen_index not in noted and not asking_again] + skipped
     if chosen is None or process is None or chosen_provider is None or model is None:
+        if caps:
+            # A cap is what stood in the way: said as such, the window reopening first (an allowance or a wait opens it).
+            raise SubscriptionCapped(min(caps, key=lambda cap: cap.resets_at or datetime.max.replace(tzinfo=UTC)))
         walked = "\n".join(
             f"  {s.candidate.provider}/{s.candidate.model}: {s.reason} — {s.message or 'no details recorded'}"
             for s in skipped

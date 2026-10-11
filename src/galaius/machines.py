@@ -31,11 +31,11 @@ import httpx
 import websockets
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, ValidationError, field_validator, model_validator
 
-from galaius_core import MACHINE_AGENT_REQUESTS, AgentSendRequest, MACHINE_MODELS, MachineProblem, MachineProblemCode, MachineAgentSettings, MachineAgentSettingsState, MachineAgentSettingsUpdate, PlacePath, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, MachineAgentAnswer, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachineRuntime, MachineTokenSwap, PlaceLevel, ScriptFile, ScriptLanguage, UserModelOrigin
+from galaius_core import MACHINE_AGENT_REQUESTS, SUBSCRIPTIONS_FEATURE, AgentSendRequest, MACHINE_MODELS, MachineProblem, MachineProblemCode, MachineAgentSettings, MachineAgentSettingsState, MachineAgentSettingsUpdate, PlacePath, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, MachineAgentAnswer, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachineRuntime, MachineTokenSwap, PlaceLevel, ScriptFile, ScriptLanguage, UserModelOrigin
 from galaius import USER_AGENT
 from galaius import prompt_mirror, prompt_projection
 from galaius.agents.subscription_watch import SubscriptionWatch
-from galaius.agents.subscriptions import Subscription
+from galaius.agents.subscriptions import Subscription, SubscriptionRefused
 from galaius.agents.catalog import AgentCatalog
 from galaius.agents.catalog_connection import CatalogConnection
 from galaius.cli.prompts import PromptMode
@@ -1221,7 +1221,7 @@ class MachineRunner:
     #: listed without the PC's own browse switch (`galaius_core.PlaceLevel`).
     #: `AgentSendRequest.idempotent_feature`: a message asked again under the same id is never queued twice.
     FEATURES: ClassVar[tuple[str, ...]] = ("file_query", "script_file", "file_read", "agent_control", "agent_settings", "web_settings", "workspaces", "start_permission", "project_secrets", "places", "agent_media", "tool_gateway", "token_swap",
-                                           "workspace_copy", "places_direct", "agent_programs", "agent_subscriptions", str(AgentSendRequest.idempotent_feature))
+                                           "workspace_copy", "places_direct", "agent_programs", SUBSCRIPTIONS_FEATURE, str(AgentSendRequest.idempotent_feature))
 
     @classmethod
     def features(cls) -> list[str]:
@@ -1389,7 +1389,8 @@ class MachineRunner:
             logger.log(logging.INFO if request.action else logging.DEBUG, "agent %s %s", request.op, said)
         except (PermissionError, OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
             reason = str(error) if isinstance(error, (PermissionError, ValueError, RuntimeError)) else f"{type(error).__name__}: {error}"
-            answer = MachineAgentAnswer(request_id=request.id, error=reason[:400] or type(error).__name__, code=error.code if isinstance(error, WorkspaceRefused) else None)
+            answer = MachineAgentAnswer(request_id=request.id, error=reason[:400] or type(error).__name__, code=error.code if isinstance(error, WorkspaceRefused) else None,
+                                        subscription_refusal=error.refusal if isinstance(error, SubscriptionRefused) else None)
             logger.warning("agent %s refused: %s", request.op, answer.error)
         if request.action:
             # The whole brief / message stays HERE, in the owner's local log; the server keeps a digest.

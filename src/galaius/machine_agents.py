@@ -35,7 +35,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from galaius_core import (
     AGENT_TOUCH_SCOPES, MACHINE_AGENT_MEDIA, MACHINE_AGENT_READ, MACHINE_AGENT_TAIL, AgentAnswerRequest, AgentMedia, AgentMediaRequest, image_type, AgentContinueRequest, AgentFoldersRequest, AgentInteraction, AgentLogsRequest, AgentOptionsRequest,
-    AgentAllowanceRequest, AgentProgramInstallRequest, AgentProgramsRequest, AgentProviderState, AgentSignOutRequest, SubscriptionAllowance, SubscriptionUse, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
+    AgentAllowanceRequest, AgentProgramInstallRequest, AgentProgramsRequest, AgentProviderState, AgentSignOutRequest, SubscriptionAllowance, SubscriptionChoices, SubscriptionUse, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
     MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, PassedOverCandidate, ReadsAt, WebLoad, media_key, media_paths, MachineAgentSession, MachineFileEntry, WorkspaceCreateRequest, WorkspacePack, WorkspacePackRequest, WorkspacePrepareRequest, WorkspaceRefresh, WorkspacesRequest,
 )
 from galaius.agents import agent_queue
@@ -773,30 +773,23 @@ class MachineAgents(BaseModel):
         return " ".join([*lines[:1], *reasons]).removeprefix("ERROR: ")[:400]
 
     @staticmethod
-    def default_login_only(request: SubscriptionUse) -> None:
+    def default_login_only(request: SubscriptionUse | SubscriptionChoices) -> None:
         """Sessions and continued editor conversations run on this PC's default login only (the
         editor's history lives there): one asked on a subscription, or for a member on a lent PC, is refused."""
         if request.lent:
-            raise SubscriptionRefused(LENT_REFUSAL)
-        if request.subscription_id is not None:
-            raise SubscriptionRefused("sessions and continued editor conversations run on this PC's own login only; start an agent (a role) to use this subscription")
+            raise SubscriptionRefused("lent", LENT_REFUSAL)
+        if request.subscriptions if isinstance(request, SubscriptionChoices) else request.subscription_id is not None:
+            raise SubscriptionRefused("default_login_only", "sessions and continued editor conversations run on this PC's own login only; start an agent (a role) to use this subscription")
 
-    def pinned(self, request: SubscriptionUse) -> RunSubscription | None:
-        """What a start is pinned to (`RunSubscription`): its subscription, signed in here and under its
-        caps (refused otherwise, saying which and until when), or no CLI login at all on a lent PC —
-        only inside the fence there: unfenced, its agent could clear its login variables and run as
-        the owner, the same OS user."""
-        if request.lent:
-            if not self.fence_agents:
-                raise SubscriptionRefused(f"{LENT_REFUSAL} (this PC runs a member's agent only inside its fence, and the fence is off)")
-            return RunSubscription(lent=True)
-        if request.subscription_id is None:
+    def pinned(self, request: AgentStartRequest) -> RunSubscription | None:
+        """What a start is pinned to before its walk: no CLI login at all on a lent PC — only inside the fence there:
+        unfenced, its agent could clear its login variables and run as the owner, the same OS user. Otherwise none:
+        the walk pins it to the subscription its candidate starts on (`request.subscriptions`, `run_agent`)."""
+        if not request.lent:
             return None
-        if request.limits is None:
-            raise SubscriptionRefused("a start on a subscription carries its caps (limits)")
-        pinned = RunSubscription(subscription_id=request.subscription_id, limits=request.limits)
-        pinned.check()
-        return pinned
+        if not self.fence_agents:
+            raise SubscriptionRefused("lent", f"{LENT_REFUSAL} (this PC runs a member's agent only inside its fence, and the fence is off)")
+        return RunSubscription(lent=True)
 
     async def _start(self, request: AgentStartRequest) -> MachineAgentAnswer:
         pinned = await asyncio.to_thread(self.pinned, request)
@@ -814,7 +807,7 @@ class MachineAgents(BaseModel):
                     handle = await run_agent(
                         provider_for(request.provider) if request.provider is not None else None, request.text,
                         cwd=str(folder), agent=str(request.role), permission_mode=self.scope(request.permission),
-                        quota_window=4.0, fence=fence, environment=environment, warm=self.warm, subscription=pinned,
+                        quota_window=4.0, fence=fence, environment=environment, warm=self.warm, subscription=pinned, choices=request,
                     )
             except BaseException:
                 if review is not None:
@@ -834,7 +827,7 @@ class MachineAgents(BaseModel):
             raise RuntimeError(f"the agent is still starting after {START_SECONDS:.0f} s; it appears in the list once it runs") from None
         except (ValueError, RuntimeError) as error:
             if request.lent:
-                raise SubscriptionRefused(LENT_REFUSAL) from error
+                raise SubscriptionRefused("lent", LENT_REFUSAL) from error
             raise RuntimeError(self._said(str(error)) or "the agent did not start") from error
         return MachineAgentAnswer(request_id=request.id, run_id=run_id, fenced=fence is not None, refresh=refresh, detail=f"{written} project secrets written to .env" if written else "")
 
@@ -848,7 +841,9 @@ class MachineAgents(BaseModel):
             # honoured): refused, never silently replaced.
             raise PermissionError("an agent runs on the model its rule picks; change the rule on its Agents page, or start a session to choose the model")
         written = self._project_env(request, folder)
-        homes = pinned.homes() if pinned is not None else {}
+        # A fenced run binds the login folder of whichever candidate starts: its provider's subscription, else the default.
+        homes = pinned.homes() if pinned is not None else {
+            choice.provider: RunSubscription(subscription_id=choice.subscription_id, limits=choice.limits).homes()[choice.provider] for choice in request.subscriptions}
         fence, review = self._fence(request.root, folder, homes) if self.fence_agents else (None, None)
         return folder, written, fence, review
 
@@ -922,10 +917,10 @@ class MachineAgents(BaseModel):
         is refused; one naming its own brings that subscription's caps as the server has them now."""
         run = self._require_run(request.run_id)
         if request.lent and (run.subscription is None or not run.subscription.lent):
-            raise SubscriptionRefused(LENT_REFUSAL)
+            raise SubscriptionRefused("lent", LENT_REFUSAL)
         if run.subscription is None:
             if request.subscription_id is not None:
-                raise SubscriptionRefused("this run runs on this PC's own login: its turns never move to a subscription")
+                raise SubscriptionRefused("pinned_elsewhere", "this run runs on this PC's own login: its turns never move to a subscription")
             return run
         run.subscription.pins(request.subscription_id)
         if request.limits is not None and request.limits != run.subscription.limits:
