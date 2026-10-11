@@ -31,7 +31,7 @@ import httpx
 import websockets
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, ValidationError, field_validator, model_validator
 
-from galaius_core import MACHINE_AGENT_REQUESTS, SUBSCRIPTIONS_FEATURE, AgentMoveRequest, AgentSendRequest, MACHINE_MODELS, MachineProblem, MachineProblemCode, MachineAgentSettings, MachineAgentSettingsState, MachineAgentSettingsUpdate, PlacePath, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, MachineAgentAnswer, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachineRuntime, MachineTokenSwap, PlaceLevel, ScriptFile, ScriptLanguage, UserModelOrigin
+from galaius_core import MACHINE_AGENT_REQUESTS, SUBSCRIPTIONS_FEATURE, WEB_LIMIT_FEATURE, AgentMoveRequest, AgentSendRequest, MACHINE_MODELS, MachineProblem, MachineProblemCode, MachineAgentSettings, MachineAgentSettingsState, MachineAgentSettingsUpdate, PlacePath, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, MachineAgentAnswer, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachineRuntime, MachineTokenSwap, PlaceLevel, ScriptFile, ScriptLanguage, UserModelOrigin
 from galaius import USER_AGENT
 from galaius import prompt_mirror, prompt_projection
 from galaius.agents.subscription_watch import SubscriptionWatch
@@ -45,7 +45,7 @@ from galaius.private_files import PRIVATE_FILES
 from galaius.server_tls import server_tls
 from galaius.error_reports import MachineErrorReports
 from galaius.machine_places import PlaceDesk
-from galaius.machine_agents import AgentSpawns, LogRing, MachineAgents, MachineSessions, WebRuns, redact, secret_values
+from galaius.machine_agents import AgentSpawns, LogRing, MachineAgents, MachineSessions, WebFull, WebRuns, redact, secret_values
 from galaius.machine_programs import AgentPrograms
 from galaius.machine_workspaces import MachineWorkspaces, WorkspaceJobs
 from galaius_core.sealing import SecretsSeal
@@ -1220,8 +1220,9 @@ class MachineRunner:
     #: `places_direct`: a level from the web applies at once; folder names in the home folder are
     #: listed without the PC's own browse switch (`galaius_core.PlaceLevel`).
     #: `AgentSendRequest.idempotent_feature`: a message asked again under the same id is never queued twice.
+    #: `WEB_LIMIT_FEATURE`: a start, a continued conversation and the runs list honour the web's `WebLimited.web_limit`.
     FEATURES: ClassVar[tuple[str, ...]] = ("file_query", "script_file", "file_read", "agent_control", "agent_settings", "web_settings", "workspaces", "start_permission", "project_secrets", "places", "agent_media", "tool_gateway", "token_swap",
-                                           "workspace_copy", "places_direct", "agent_programs", SUBSCRIPTIONS_FEATURE, AgentMoveRequest.feature, str(AgentSendRequest.idempotent_feature))
+                                           "workspace_copy", "places_direct", "agent_programs", SUBSCRIPTIONS_FEATURE, AgentMoveRequest.feature, str(AgentSendRequest.idempotent_feature), WEB_LIMIT_FEATURE)
 
     @classmethod
     def features(cls) -> list[str]:
@@ -1389,7 +1390,7 @@ class MachineRunner:
             logger.log(logging.INFO if request.action else logging.DEBUG, "agent %s %s", request.op, said)
         except (PermissionError, OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
             reason = str(error) if isinstance(error, (PermissionError, ValueError, RuntimeError)) else f"{type(error).__name__}: {error}"
-            answer = MachineAgentAnswer(request_id=request.id, error=reason[:400] or type(error).__name__, code=error.code if isinstance(error, WorkspaceRefused) else None,
+            answer = MachineAgentAnswer(request_id=request.id, error=reason[:400] or type(error).__name__, code=error.code if isinstance(error, (WorkspaceRefused, WebFull)) else None,
                                         subscription_refusal=error.refusal if isinstance(error, SubscriptionRefused) else None)
             logger.warning("agent %s refused: %s", request.op, answer.error)
         if request.action:

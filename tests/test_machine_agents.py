@@ -23,7 +23,7 @@ from galaius.agents import agent_queue, messaging
 from galaius.agents import registry as reg
 from galaius.agents.host import ConversationRefused
 from galaius.agents.subscriptions import RunSubscription, Subscription, SubscriptionRefused
-from galaius.machine_agents import LogRing, MachineAgents, MachineSessions, WebRun, WebRuns, interaction_digest, redact
+from galaius.machine_agents import LogRing, MachineAgents, MachineSessions, WebFull, WebRun, WebRuns, interaction_digest, redact
 from galaius.fence import FenceSpec
 from galaius.config import UserConfig
 from galaius.machines import MachineConfig, MachineRunner
@@ -875,10 +875,20 @@ def test_the_web_cap_counts_conversations_never_the_agents_they_launched(base: P
     assert agents.runs.live() == 2
     run(parent_run_id=started(kind="conversation", status="waiting"))  # idle itself, one of its agents working: it counts
     started()
-    with pytest.raises(PermissionError, match=r"^4 conversations started from the web are already working on this computer \(at most 4\)"):
+    with pytest.raises(WebFull, match=r"^4 conversations started from the web are already working on this computer \(at most 4\)") as refused:
         agents._prepare_start(start, None)
+    assert refused.value.code is None   # a web that sent no number may not know the typed code: it reads the sentence
+    with pytest.raises(WebFull) as refused:
+        agents._prepare_start(start.model_copy(update={"web_limit": 4}), None)
+    assert refused.value.code == "web_full"
     listed = _answer(agents, _request("runs"))
     assert listed.web == WebLoad(working=4, limit=4)  # what the web's Auto reads to pass over a full PC
+    # Its owner set another number on the web (owner 2026-10-11 « where do i set this number ? »): it rides on each start
+    # and runs read; one out of the settable range keeps the default rather than refusing the request it rides on.
+    agents._prepare_start(start.model_copy(update={"web_limit": 6}), None)
+    assert _answer(agents, _request("runs", web_limit=6)).web == WebLoad(working=4, limit=6)
+    agents._prepare_start(start.model_copy(update={"web_limit": 99}), None)   # above what this runner knows: held at its most
+    assert _answer(agents, _request("runs", web_limit=99)).web == WebLoad(working=4, limit=16)
 
 
 class TransferServer:
