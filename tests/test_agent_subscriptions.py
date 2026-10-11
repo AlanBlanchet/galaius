@@ -172,6 +172,14 @@ async def test_each_candidate_runs_on_its_own_providers_subscription_and_the_run
     with pytest.raises(SubscriptionCapped) as capped:  # its only provider is capped: never its default login instead
         await launch((choice(codex), choice(claude, weekly_percent=80)))
     assert (capped.value.refusal.reason, capped.value.cap.cap_percent) == ("capped", 80)
+    spare = Subscription.create(uuid4(), "claude")  # his second Claude subscription: the walk falls back to it, never to the default login
+    handle = await launch((choice(codex), choice(claude, weekly_percent=80), choice(spare)))
+    await asyncio.wait_for(handle.wait(), timeout=30)
+    record = reg.get_run(handle.run_id)
+    assert ([event.text for event in reg.read_events(handle.run_id) if event.kind == "text"], record.subscription_id) == ([str(spare.folder)], spare.id)
+    with pytest.raises(SubscriptionRefused) as elsewhere:  # a subscription offered as another provider's login is never run as this one
+        await launch((SubscriptionChoice(provider="claude", subscription_id=codex.id, limits=SubscriptionLimits()),))
+    assert elsewhere.value.refusal.reason == "not_signed_in" and "codex login here, never claude" in str(elsewhere.value)
     with pytest.raises(SubscriptionRefused) as missing:  # its only provider's subscription is not on this PC: said so, typed
         await launch((SubscriptionChoice(provider="claude", subscription_id=uuid4(), limits=SubscriptionLimits()),))
     assert missing.value.refusal.reason == "not_signed_in"

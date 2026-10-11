@@ -319,6 +319,15 @@ class Subscription(BaseModel):
         temporary.replace(self.state_path)
 
 
+class PassedOver(BaseModel):
+    """Why a launch passed over every subscription of one provider: the caps they were at, the English of each refusal."""
+
+    model_config = ConfigDict(frozen=True)
+
+    caps: tuple[SubscriptionCap, ...] = ()
+    said: str = ""
+
+
 class RunSubscription(WireRunSubscription):
     """`galaius_core.RunSubscription` on a run's record, with what the PC does with it: the login
     folders its CLIs run with, its caps checked, a child or a message held to it."""
@@ -327,6 +336,21 @@ class RunSubscription(WireRunSubscription):
     def of(cls, choice: SubscriptionChoice) -> Self:
         """What a web start's candidate of `choice.provider` runs pinned to."""
         return cls(subscription_id=choice.subscription_id, limits=choice.limits)
+
+    @classmethod
+    def first_under_cap(cls, offered: list[Self], environment: Mapping[str, str], provider: str) -> tuple[Self | None, dict[str, str], PassedOver]:
+        """The first of `offered` (one provider's, his order) a launch of `provider` can run on now, with its environment
+        (`bound`); none: why each was passed over (`PassedOver`: the caps reached, the English of the first refusal)."""
+        caps, said = [], []
+        for option in offered:
+            try:
+                return option, option.bound(environment, provider), PassedOver()
+            except SubscriptionCapped as capped:
+                caps.append(capped.cap)
+                said.append(str(capped))
+            except SubscriptionRefused as refused:
+                said.append(str(refused))
+        return None, dict(environment), PassedOver(caps=tuple(caps), said="; ".join(said)[:400])
 
     @classmethod
     def closed(cls, providers: Iterable[str]) -> dict[str, Path]:
@@ -371,9 +395,12 @@ class RunSubscription(WireRunSubscription):
         if self.subscription_id is not None:
             Subscription.of(self.subscription_id).check(self.limits, self.allowance)
 
-    def bound(self, environment: Mapping[str, str]) -> dict[str, str]:
-        """`environment` for one launch or turn on it: its caps checked (refused at one), the owner's config adopted into
-        its folder (`Subscription.adopt`), every CLI's login variable at its folder or a closed one (`overlay`)."""
+    def bound(self, environment: Mapping[str, str], provider: str | None = None) -> dict[str, str]:
+        """`environment` for one launch or turn on it (of `provider`'s CLI, refused when its subscription is another's
+        login): its caps checked (refused at one), the owner's config adopted into its folder (`Subscription.adopt`),
+        every CLI's login variable at its folder or a closed one (`overlay`)."""
+        if self.subscription_id is not None and provider is not None and (held := Subscription.of(self.subscription_id)).provider != provider:
+            raise SubscriptionRefused("pinned_elsewhere", f"subscription {self.subscription_id} is a {held.provider} login here, never {provider}")
         self.check()
         if self.subscription_id is not None:
             Subscription.of(self.subscription_id).adopt(environment)

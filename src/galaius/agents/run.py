@@ -1402,15 +1402,17 @@ async def run_agent(
     # out of it: tried once every other candidate refused or could not start — a stale note must never
     # be why nothing can run (16ed211e: two Codex models refused for the login, then the run failed
     # with the noted model never asked).
-    # Each candidate's subscription: the run's own when pinned, else its provider's choice (None: the default login),
-    # and the fence it starts in: that login's folder bound, every other chosen one closed (never two in one run).
-    bound = {} if pinned is not None or choices is None else {choice.provider: RunSubscription.of(choice) for choice in choices.subscriptions}
-    pins = [bound.get(candidate.provider, pinned) for candidate in candidates]
-    fences = [fence if fence is None or not bound else fence.model_copy(update={"homes": pin.homes() if pin is not None else RunSubscription.closed(bound)})
-              for pin in pins]
+    # A web start's subscriptions per provider, in his order (none when the run is pinned already): each candidate runs
+    # on the first of its provider's under its caps, in a fence binding that login alone (every other offered one
+    # closed); a provider offered none runs on this PC's default login. Never two in one run.
+    offered = {} if choices is None or pinned is not None else \
+        {provider: [RunSubscription.of(choice) for choice in choices.of(provider)] for provider in dict.fromkeys(choice.provider for choice in choices.subscriptions)}
     caps: list[SubscriptionCap] = []
+    # A quota note is read against the login a candidate would first run on: its provider's first offered, or the run's own.
+    first_login = {provider: options[0].subscription_id for provider, options in offered.items()}
+    pinned_id = pinned.subscription_id if pinned is not None else None
     noted = {index: until for index, candidate in enumerate(candidates)
-             if (until := quota.blocked_until(candidate.provider, candidate.model, subscription=pins[index].subscription_id if pins[index] is not None else None)) is not None}
+             if (until := quota.blocked_until(candidate.provider, candidate.model, subscription=first_login.get(candidate.provider, pinned_id))) is not None}
     chosen_index = -1
     walk = deque([index for index in range(len(candidates)) if index not in noted] + list(noted))
     #: Candidates passed over only because this login was refused them before: asked again, once, when
@@ -1425,18 +1427,16 @@ async def run_agent(
         index = walk.popleft()
         candidate = candidates[index]
         candidate_provider = by_name[candidate.provider]
-        candidate_pin, candidate_fence, candidate_env = pins[index], fences[index], environment
+        candidate_pin, candidate_env = pinned, environment
+        if candidate.provider in offered:
+            candidate_pin, candidate_env, passed = RunSubscription.first_under_cap(offered[candidate.provider], environment, candidate.provider)
+            if candidate_pin is None:
+                caps.extend(passed.caps)
+                skipped.append(_skip_record(candidate, _skip("subscription_capped" if passed.caps else "subscription_missing", passed.said)))
+                continue
         candidate_pin_id = candidate_pin.subscription_id if candidate_pin is not None else None
-        if candidate.provider in bound:
-            try:
-                candidate_env = candidate_pin.bound(environment)
-            except SubscriptionCapped as capped:
-                caps.append(capped.cap)
-                skipped.append(_skip_record(candidate, _skip("subscription_capped", str(capped))))
-                continue
-            except SubscriptionRefused as refused:
-                skipped.append(_skip_record(candidate, _skip("subscription_missing", str(refused))))
-                continue
+        candidate_fence = fence if fence is None or not offered else \
+            fence.model_copy(update={"homes": candidate_pin.homes() if candidate_pin is not None else RunSubscription.closed(offered)})
         # Named once per role, per provider (`accepts_coarse_tool_policy`) — a provider that can
         # only enforce a SANDBOX, not this role's specific tool names, runs it anyway only when
         # the operator recorded that tradeoff for THIS role; never a default, never widened by
