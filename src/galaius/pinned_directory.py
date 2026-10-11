@@ -146,9 +146,23 @@ class DescriptorDirectory(PinnedDirectory):
     def permissions(info: os.stat_result) -> int:
         return stat.S_IMODE(info.st_mode)
 
+    #: Opens of one entry by `file` with O_CREAT (no O_EXCL) before an ENOENT is final.
+    CREATE_ATTEMPTS: ClassVar[int] = 3
+
     def file(self, name: str, flags: int = os.O_RDONLY, mode: int = 0o600) -> int:
-        """A descriptor of entry `name`, refused (ELOOP) when that entry is a link."""
-        return os.open(self._name(name), flags | os.O_NOFOLLOW, mode, dir_fd=self.descriptor)
+        """A descriptor of entry `name`, refused (ELOOP) when that entry is a link.
+
+        macOS answers ENOENT to an O_CREAT open that races another creator of the same entry (two
+        threads taking one run's new lock file: one send lost while both said « queued »); the entry
+        exists then, so the open is asked again. An ENOENT that persists (the folder is gone) is raised."""
+        entry = self._name(name)
+        racing = flags & os.O_CREAT and not flags & os.O_EXCL
+        for _ in range(self.CREATE_ATTEMPTS - 1 if racing else 0):
+            try:
+                return os.open(entry, flags | os.O_NOFOLLOW, mode, dir_fd=self.descriptor)
+            except FileNotFoundError:
+                continue
+        return os.open(entry, flags | os.O_NOFOLLOW, mode, dir_fd=self.descriptor)
 
     def stat(self, name: str | None = None) -> os.stat_result:
         """The entry's own facts (a link is reported as a link); the folder's when `name` is None."""

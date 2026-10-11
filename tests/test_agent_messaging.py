@@ -445,7 +445,7 @@ def test_concurrent_resumes_have_one_writer_and_one_busy_result(monkeypatch):
         thread.start()
     for thread in threads:
         thread.join()
-    assert all(result.state == "queued" for result in results)
+    assert [result.state for result in results] == ["queued", "queued"]  # a send that raised says so here
     assert len(agent_queue.items("r1")) == 2
 
 
