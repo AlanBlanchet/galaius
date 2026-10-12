@@ -275,12 +275,14 @@ async def conversation_search(query: str, limit: int = 20, project: str | None =
     agent CLI saved (the person's editor conversations) — for every word of `query`.
 
     Searched: what was asked, what was answered, what agents told each other, each tool call by its
-    leading argument. Never what a tool returned. Credentials are masked. An agent searches its own
-    project's conversations (the repository its folder is in); a fenced run, a member's run on a lent
-    PC, or a run denied reading files searches none (`ConversationScope`).
+    leading argument. Never what a tool returned, a call searching conversations itself, or the asking
+    agent's own conversation. Credentials are masked. An agent searches its own project's
+    conversations (the repository its folder is in); a fenced run, a member's run on a lent PC, or a
+    run denied reading files searches none (`ConversationScope`).
 
     query: words that must all appear in one line; "quoted words" must appear together.
-    limit: conversations returned, best match first (1-50).
+    limit: conversations returned, best match first: the person's own prompts, then what agents were
+        asked, answered and told each other, then tool calls (1-50).
     project: only conversations of the project with this name (a repository's folder name).
     since: only conversations active since this date or moment (ISO 8601, e.g. 2026-10-11; UTC unless it says).
     every_project: the person's own session only — search every project, not just this folder's.

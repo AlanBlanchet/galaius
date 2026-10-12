@@ -29,6 +29,13 @@ from galaius.agents.catalog_connection import CatalogConnection, CatalogConnecti
 
 #: What every gateway tool's name starts with (the harness puts galaius's `mcp__galaius__` before it).
 GATEWAY_PREFIX = "ext__"
+#: galaius's own tools searching and reading the conversations this PC holds
+#: (`galaius.agents.conversations`): a role with a tool list gets them when it reads files already
+#: (`FILE_READERS`), as it gets its gateway tools; whom each call may read is decided when it is made
+#: (`ConversationScope`).
+CONVERSATION_TOOLS: tuple[str, ...] = ("conversation_search", "conversation_read")
+#: The harness tools that read this PC's files: a role or run with none of them reads no conversation.
+FILE_READERS = frozenset({"Read", "Bash"})
 
 
 class GatewayTool(BaseModel):
@@ -58,8 +65,10 @@ class AgentToolList(BaseModel):
 
     def granted(self, role: str, tools: list[str] | tuple[str, ...], prefix: str) -> list[str]:
         """`role`'s harness tools with its gateway tools added under `prefix` (galaius's own MCP
-        name). A role with no list is unrestricted and already reaches every one: it stays so."""
-        return [*tools, *(f"{prefix}{name}" for name in self.names(role) if f"{prefix}{name}" not in tools)] if tools else list(tools)
+        name), and the conversation tools when it reads files. A role with no list is unrestricted and
+        already reaches every one: it stays so."""
+        added = (*(CONVERSATION_TOOLS if FILE_READERS & set(tools) else ()), *self.names(role))
+        return [*tools, *(f"{prefix}{name}" for name in added if f"{prefix}{name}" not in tools)] if tools else list(tools)
 
     def tool(self, name: str) -> GatewayTool | None:
         return next((tool for tool in self.tools if tool.name == name), None)

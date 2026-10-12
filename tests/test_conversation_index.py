@@ -174,3 +174,67 @@ def test_a_held_run_searches_nothing_and_reads_only_its_team(world: dict, held: 
     reg.save_run(reg.AgentRun(run_id=other, provider="claude", name="other", cwd=str(world["other"]), started_at=1.0, pid=None, lifecycle_token="u" * 32))
     monkeypatch.setenv("GALAIUS_PARENT_RUN_ID", environment["GALAIUS_PARENT_RUN_ID"])
     assert asyncio.run(tools_agents.agent_events(other)).startswith("ERROR:")
+
+
+
+PHRASE = "the teal kettle which is not allowed"
+
+
+def _run(project: Path, task: str, *events: AgentEvent) -> str:
+    run_id = str(uuid4())
+    reg.save_run(reg.AgentRun(run_id=run_id, provider="claude", name="critic", agent="product-critic", cwd=str(project), task=task,
+                              started_at=1_760_100_000.0, pid=None, lifecycle_token="c" * 32))
+    for event in (*events, AgentEvent(kind="text", text="Done.", at=1_760_100_200.0)):
+        reg.append_event(run_id, event)
+    return run_id
+
+
+def _said(entrypoint: str, *blocks: str | dict) -> list[dict]:
+    """A saved Claude session written by `entrypoint`: a typed prompt (a string) or an answer's tool call (a dict)."""
+    return [{"type": "user" if isinstance(block, str) else "assistant", "entrypoint": entrypoint, "timestamp": "2026-10-11T23:48:00Z",
+             "message": {"role": "user", "content": block} if isinstance(block, str) else {"role": "assistant", "content": [block]}} for block in blocks]
+
+
+@pytest.mark.parametrize("asker", ["person", "run quoting the phrase"])
+def test_the_persons_prompt_ranks_first_and_no_search_finds_a_search(world: dict, asker: str) -> None:
+    """Agents searching for the person's words: his typed prompt first, an agent's brief or answer
+    next, a tool call last; a search or read call never matches, nor the asking run's own conversation."""
+    project, at, index = world["project"], 1_760_100_100.0, world["index"]
+    said = f"why does the dashboard keep showing {PHRASE} every morning"
+    person = str(uuid4())
+    summary = {"type": "user", "entrypoint": "claude-vscode", "isCompactSummary": True,
+               "message": {"role": "user", "content": f"This session is being continued from a previous conversation. Summary: {PHRASE}."}}
+    _claude_session(world["claude"], project, person, [*_said("claude-vscode", said), summary])
+    # A headless session quoting him (a run whose galaius record is gone): an agent's brief, not his prompt.
+    headless = str(uuid4())
+    _claude_session(world["claude"], project, headless, _said("sdk-cli", f"Owner words: « {said} »"))
+    # Three other agents' searches for his words: the MCP tool, the command, a read of what it found.
+    command = str(uuid4())
+    searching = _said("sdk-cli", "check the command", {"type": "tool_use", "id": "t1", "name": "Bash",
+                                                       "input": {"command": f"cd {project} && /opt/bin/galaius agents search \"{PHRASE}\" --limit 2"}})
+    searches = _claude_session(world["claude"], project, command, searching)
+    searchers = [
+        _run(project, "check the search", AgentEvent(kind="tool", tool="mcp__galaius__conversation_search", tool_input=f"query='{PHRASE}' limit=2", at=at)),
+        command,
+        _run(project, "check the read", AgentEvent(kind="tool", tool="Bash", tool_input=f"command='galaius agents read {person[:8]} --around 0 | grep \"{PHRASE}\"'", at=at)),
+    ]
+    answer = _run(project, "why is a model picked", AgentEvent(kind="text", text=f"The run used {PHRASE}: the policy picked it by score.", at=at))
+    grep = _run(project, "find the decision", AgentEvent(kind="tool", tool="Bash", tool_input=f"command='grep -rn \"{PHRASE}\" decisions.md'", at=at))
+    asking = _run(project, f"Owner words: « {said} » Find where he said it.")
+    index.refresh(None)
+    environment = {} if asker == "person" else {"GALAIUS_PARENT_RUN_ID": asking}
+    found = [hit.conversation.id for hit in index.search(PHRASE, ConversationScope.of_caller(environment, str(project), False))]
+    briefed = [headless, answer, *([asking] if asker == "person" else [])]
+    assert (found[0], sorted(found[1:-1]), found[-1]) == (person, sorted(briefed), grep)
+    assert not set(searchers) & set(found)
+    assert index.conversation(person, EVERYWHERE).lines == 1  # the harness's summary of earlier turns is not his prompt
+    assert "«" + PHRASE + "»" in index.search(PHRASE, EVERYWHERE, limit=1)[0].line.text  # the words in a row, never a word inside another
+    read = index.read(index.conversation(command, EVERYWHERE), None, 50)
+    assert [(line.kind, line.tier) for line in read] == [("prompt", 1), ("tool", None)]  # kept for reading, never found
+    # Read again whole, then gone: the full-text index stays exactly what its lines say.
+    searches.write_text("".join(json.dumps({"cwd": str(project), "sessionId": command} | record) + "\n" for record in reversed(searching)), encoding="utf-8")
+    index.refresh(None)
+    searches.unlink()
+    index.refresh(None)
+    with index.connect() as db:
+        db.execute("INSERT INTO lines_text(lines_text, rank) VALUES ('integrity-check', 1)")

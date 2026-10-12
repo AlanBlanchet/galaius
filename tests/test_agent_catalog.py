@@ -25,6 +25,7 @@ from galaius.agents.catalog_connection import (
     CatalogConnectionError,
 )
 from galaius.agents.policy import Policy
+from galaius.agents.tool_gateway import CONVERSATION_TOOLS
 from galaius.agents.providers import AgentProvider, ClaudeCodeProvider, CodexProvider
 from unittest.mock import AsyncMock
 from galaius.agents.run import ModelUnavailable, launch_continuation, run_agent
@@ -33,6 +34,9 @@ from galaius.private_files import PRIVATE_FILES
 from tests.support.private_files import loosen
 from galaius.cli.app import app
 from galaius.cli import app_commands
+
+#: The conversation tools a role reading files is given (`ToolGateway.granted`).
+CONVERSATIONS = [f"mcp__galaius__{name}" for name in CONVERSATION_TOOLS]
 
 
 def snapshot(version=1, tools=None):
@@ -123,7 +127,7 @@ def test_server_revisions_replace_prompt_policy_skills_and_team(catalog_home):
     policy = Policy.from_catalog(after)
     assert policy.criterion_for("fixture-worker") == "price.in >= 2"
     assert policy.reasoning_for("fixture-worker") == "low"
-    assert policy.tools_for("fixture-worker") == ["Write"]
+    assert policy.tools_for("fixture-worker") == ["Write"]  # reads no file: no conversation tool either
     assert policy.weights_for("fixture-worker") == "gui.screenspot=1"
     text = after.definition("fixture-worker", "bounded task")
     assert text.index("primary instruction") < text.index("first instruction") < text.index("second instruction")
@@ -834,7 +838,7 @@ async def test_local_delegation_and_resume_run_exact_parent_pin(advanced_catalog
     assert saved.model == "fixture-model-1" and saved.reasoning == "high"
     assert "primary instruction revision 1" in captured[0][1]["agent_prompt"]
     assert "primary instruction revision 2" not in captured[0][1]["agent_prompt"]
-    assert captured[0][1]["allowed_tools"] == ["Read"]
+    assert captured[0][1]["allowed_tools"] == ["Read", *CONVERSATIONS]
     assert str(worker_ref.revision) in saved.definition_path
     assert "primary instruction revision 1" in Path(saved.definition_path).read_text()
     resumed = launch_continuation(ClaudeCodeProvider(), saved, "fixture-session", "Continue pinned work",

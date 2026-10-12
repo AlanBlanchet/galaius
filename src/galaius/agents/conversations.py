@@ -4,9 +4,10 @@ run registry) and the sessions each agent CLI saved itself — the owner's edito
 Saved conversations here run to tens of gigabytes, most of it tool output, so a search reads an
 index, never the files: one SQLite full-text index beside the run registry (0600), holding what
 was asked, what was answered, what agents told each other and each tool call (its leading argument),
-never what a tool returned. Credentials are masked before a line is written to it (`redact`, as the
-PC masks a conversation before it goes to the web), and again, with the secrets known then, on
-every line, title and snippet read back.
+never what a tool returned. A call that itself searches or reads conversations is kept for reading,
+never found: agents searching would otherwise keep finding each other's searches. Credentials are
+masked before a line is written to it (`redact`, as the PC masks a conversation before it goes to
+the web), and again, with the secrets known then, on every line, title and snippet read back.
 
 The index follows the files: a file that grew is read from where it stopped (its bytes there
 unchanged, else it is read again whole); a session galaius started is read from its own stream,
@@ -37,6 +38,7 @@ from galaius.agents import registry as reg
 from galaius.agents.events import AgentEvent, instant
 from galaius.agents.providers import PROVIDERS, AgentProvider
 from galaius.agents.subscriptions import Subscription
+from galaius.agents.tool_gateway import CONVERSATION_TOOLS, FILE_READERS
 from galaius.file_lock import FILE_LOCK
 from galaius.machine_agents import redact, secret_values
 
@@ -64,8 +66,19 @@ _HARNESS_BLOCK = re.compile(r"<(system-reminder|hook-context)>[\s\S]*?(?:</\1>|\
 _TRUSTED_LOOKING = re.compile(r"(?m)^(?=\s*(?:\[Galaius: message from|Launch policy:|<system-reminder>|\[Interact agent provenance\]))")
 #: The leading `key=value` of a summarised tool input (`_summarise_input` puts the telling one first).
 _LEAD = re.compile(r"""^\w+=(?:'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|\S+)""")
+#: A tool call that searches or reads conversations: the MCP tools under any server prefix, or a
+#: command running `galaius agents search|read`.
+_SEARCH_TOOL = re.compile(r"(?:^|[\W_])(?:" + "|".join(map(re.escape, CONVERSATION_TOOLS)) + ")$")
+_SEARCH_COMMAND = re.compile(r"(?:^|[\s;&|('\"/\\])galaius(?:\.exe)?\s+agents\s+(?:search|read)\b")
+#: A line's place in a search's order, best first, before its full-text rank: a prompt typed in a
+#: session a person types in (`TYPED`: his terminal, his editor), then by its kind — what agents were
+#: asked, answered and told each other, then tool calls.
+TYPED = 0
+TIERS: dict[LineKind, int] = {"prompt": 1, "text": 1, "message": 1, "tool": 2}
+#: Wider than any full-text rank (bm25, a few units): a line of a better tier always ranks first.
+_TIER_SPAN = 1e6
 #: Bumped whenever what the index holds changes meaning (the masking, the kinds): a new file is built.
-SCHEMA = 4
+SCHEMA = 5
 
 #: A line's text lives apart from its place (`lines`): a search ranks thousands of matches through
 #: their narrow rows, never through pages of text (seconds on a cold disk cache, not tenths).
@@ -73,17 +86,18 @@ _TABLES = """
 CREATE TABLE IF NOT EXISTS conversations(
     id TEXT PRIMARY KEY, source TEXT NOT NULL, vendor TEXT, title TEXT NOT NULL DEFAULT '',
     agent TEXT NOT NULL DEFAULT '', project TEXT NOT NULL DEFAULT '', cwd TEXT NOT NULL DEFAULT '',
-    started REAL, last REAL NOT NULL, lines INTEGER NOT NULL DEFAULT 0);
+    started REAL, last REAL NOT NULL, lines INTEGER NOT NULL DEFAULT 0, typed INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS conversations_vendor ON conversations(vendor);
 CREATE TABLE IF NOT EXISTS files(
     path TEXT PRIMARY KEY, conversation TEXT NOT NULL, size INTEGER NOT NULL, mtime INTEGER NOT NULL,
     offset INTEGER NOT NULL, tail BLOB NOT NULL, skipped INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS lines(
-    id INTEGER PRIMARY KEY, conversation TEXT NOT NULL, n INTEGER NOT NULL, kind TEXT NOT NULL, at REAL);
+    id INTEGER PRIMARY KEY, conversation TEXT NOT NULL, n INTEGER NOT NULL, kind TEXT NOT NULL, at REAL, tier INTEGER);
 CREATE UNIQUE INDEX IF NOT EXISTS lines_order ON lines(conversation, n);
 CREATE TABLE IF NOT EXISTS line_texts(id INTEGER PRIMARY KEY, text TEXT NOT NULL);
+CREATE VIEW IF NOT EXISTS found_texts AS SELECT t.id, t.text FROM line_texts t JOIN lines l ON l.id = t.id WHERE l.tier IS NOT NULL;
 CREATE VIRTUAL TABLE IF NOT EXISTS lines_text USING fts5(
-    text, content='line_texts', content_rowid='id', tokenize='unicode61 remove_diacritics 2');
+    text, content='found_texts', content_rowid='id', tokenize='unicode61 remove_diacritics 2');
 """
 
 
@@ -94,6 +108,8 @@ class ConversationLine(BaseModel):
     kind: LineKind
     at: float | None = None
     text: str
+    #: Its place in a search's order (`TIERS`); None for a call searching conversations itself: read, never found.
+    tier: int | None = None
 
 
 class Conversation(BaseModel):
@@ -143,6 +159,8 @@ class SavedLine(BaseModel):
     event: AgentEvent | None = None
     cwd: str = ""
     title: str = ""
+    #: Its session is one a person types in (`AgentProvider.transcript_typed`); None: the record does not say.
+    typed: bool | None = None
 
 
 class ConversationFile(BaseModel):
@@ -179,7 +197,7 @@ class ConversationFile(BaseModel):
             if not isinstance(raw, dict):
                 return SavedLine()
             cwd, title = provider.transcript_place(raw)
-            return SavedLine(event=provider.transcript_event(raw), cwd=cwd, title=title)
+            return SavedLine(event=provider.transcript_event(raw), cwd=cwd, title=title, typed=provider.transcript_typed(raw))
         except (ValueError, AttributeError, TypeError, KeyError):  # a record of a shape its reader never met says nothing
             return SavedLine()
 
@@ -201,6 +219,9 @@ class ConversationScope(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     root: str
+    #: The asking run's own conversation: a search never finds it (its brief, its own calls); None for
+    #: the person's own session, whose earlier prompts stay found.
+    own: str | None = None
 
     @classmethod
     def of_caller(cls, environment: Mapping[str, str], cwd: str, every_project: bool) -> Self:
@@ -211,7 +232,7 @@ class ConversationScope(BaseModel):
             raise PermissionError(f"{held} reads no other conversation")
         if every_project:
             raise PermissionError("only the person's own session searches every project; an agent searches its own project")
-        return cls(root=cls.project(run.cwd or cwd))
+        return cls(root=cls.project(run.cwd or cwd), own=run.run_id)
 
     @staticmethod
     def asking(environment: Mapping[str, str]) -> reg.AgentRun | None:
@@ -244,7 +265,7 @@ class ConversationScope(BaseModel):
                 return "a fenced run"
             if each.subscription is not None and each.subscription.lent:
                 return "a member's run on a lent PC"
-            if {"Read", "Bash"} & set(each.denied_tools):
+            if FILE_READERS & set(each.denied_tools):
                 return "a run denied reading files"
             each = reg.get_run(each.parent_run_id) if each.parent_run_id else None
         return None
@@ -431,7 +452,7 @@ class ConversationIndex(BaseModel):
     @staticmethod
     def _forget(db: sqlite3.Connection, conversation: str) -> None:
         held = "SELECT id FROM lines WHERE conversation = ?"
-        db.execute(f"INSERT INTO lines_text(lines_text, rowid, text) SELECT 'delete', id, text FROM line_texts WHERE id IN ({held})", (conversation,))
+        db.execute(f"INSERT INTO lines_text(lines_text, rowid, text) SELECT 'delete', id, text FROM found_texts WHERE id IN ({held})", (conversation,))
         db.execute(f"DELETE FROM line_texts WHERE id IN ({held})", (conversation,))
         db.execute("DELETE FROM lines WHERE conversation = ?", (conversation,))
         db.execute("DELETE FROM conversations WHERE id = ?", (conversation,))
@@ -441,12 +462,12 @@ class ConversationIndex(BaseModel):
         """Index `found`'s whole lines from byte `start`, one line at a time (a session file runs to
         hundreds of megabytes); False when the deadline stopped it before its end."""
         run = reg.get_run(conversation) if found.provider is None else None
-        held = db.execute("SELECT lines, title, cwd, started, last FROM conversations WHERE id = ?", (conversation,)).fetchone()
-        n, title, cwd, started, last = held if held is not None else (0, "", "", None, None)
+        held = db.execute("SELECT lines, title, cwd, started, last, typed FROM conversations WHERE id = ?", (conversation,)).fetchone()
+        n, title, cwd, started, last, typed = held if held is not None else (0, "", "", None, None, False)
         task = run.task.strip() if run is not None else ""
         said: list[ConversationLine] = []
         if run is not None and n == 0 and task:
-            said.append(ConversationLine(n=0, kind="prompt", at=run.started_at or None, text=self.masked(task, secrets)))
+            said.append(ConversationLine(n=0, kind="prompt", at=run.started_at or None, text=self.masked(task, secrets), tier=TIERS["prompt"]))
         offset, stopped = start, False
         with found.path.open("rb") as handle:
             handle.seek(start)
@@ -455,18 +476,21 @@ class ConversationIndex(BaseModel):
                     break  # a line still being written: read once it is whole (the file changes then)
                 offset += len(raw_line)
                 line = found.decode(raw_line)
-                cwd, title = cwd or line.cwd, line.title or title
+                cwd, title, typed = cwd or line.cwd, line.title or title, typed if line.typed is None else line.typed
                 text = "" if line.event is None or line.event.kind not in KEPT else self.said(line.event, conversation)
                 # A turn the harness wrote into the person's side (a command's wrapper, its output).
                 if text and not (line.event.kind == "prompt" and (text.startswith("<") or text == task)):
-                    said.append(ConversationLine(n=n + len(said), kind=line.event.kind, at=line.event.at, text=self.masked(text, secrets)))
+                    said.append(ConversationLine(n=n + len(said), kind=line.event.kind, at=line.event.at, text=self.masked(text, secrets),
+                                                 tier=self.tier(line.event, typed)))
                 if deadline is not None and time.monotonic() > deadline:
                     stopped = True
                     break
         for line in said:
-            row = db.execute("INSERT INTO lines(conversation, n, kind, at) VALUES (?, ?, ?, ?)", (conversation, line.n, line.kind, line.at)).lastrowid
+            row = db.execute("INSERT INTO lines(conversation, n, kind, at, tier) VALUES (?, ?, ?, ?, ?)",
+                             (conversation, line.n, line.kind, line.at, line.tier)).lastrowid
             db.execute("INSERT INTO line_texts(id, text) VALUES (?, ?)", (row, line.text))
-            db.execute("INSERT INTO lines_text(rowid, text) VALUES (?, ?)", (row, line.text))
+            if line.tier is not None:
+                db.execute("INSERT INTO lines_text(rowid, text) VALUES (?, ?)", (row, line.text))
         first_prompt = next((line.text for line in said if line.kind == "prompt"), "")
         if run is not None:
             title = title or (task.splitlines()[0] if task else run.name)
@@ -479,11 +503,11 @@ class ConversationIndex(BaseModel):
         last = max((line.at for line in said if line.at), default=None) or last or found.mtime / 1e9
         agent = (run.agent or run.name) if run is not None else f"{found.source} (editor)"
         db.execute(
-            "INSERT INTO conversations(id, source, vendor, title, agent, project, cwd, started, last, lines) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "INSERT INTO conversations(id, source, vendor, title, agent, project, cwd, started, last, lines, typed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(id) DO UPDATE SET title = excluded.title, agent = excluded.agent, project = excluded.project, cwd = excluded.cwd, "
-            "started = excluded.started, last = excluded.last, lines = excluded.lines, vendor = excluded.vendor",
+            "started = excluded.started, last = excluded.last, lines = excluded.lines, vendor = excluded.vendor, typed = excluded.typed",
             (conversation, found.source, run.provider_session_id if run is not None else None, redact(title, secrets)[:200], agent,
-             reg.project_for(cwd), cwd, started, last, n + len(said)),
+             reg.project_for(cwd), cwd, started, last, n + len(said), typed),
         )
         # Stopped short: recorded at no size it can have, it stays changed and is read on from `offset`.
         self._file(db, found.model_copy(update={"size": -1}) if stopped else found, conversation, offset)
@@ -511,6 +535,14 @@ class ConversationIndex(BaseModel):
                 text = event.text
         return _TRUSTED_LOOKING.sub("(quoted) ", _HARNESS_BLOCK.sub("", text)).strip()
 
+    @staticmethod
+    def tier(event: AgentEvent, typed: bool) -> int | None:
+        """Where a search ranks `event`'s line (`TIERS`; `typed`: its session is one a person types in);
+        None for a tool call searching or reading conversations itself, never found."""
+        if event.kind == "tool" and (_SEARCH_TOOL.search(event.tool or "") or _SEARCH_COMMAND.search(event.tool_input)):
+            return None
+        return TYPED if typed and event.kind == "prompt" else TIERS[event.kind]
+
     def _file(self, db: sqlite3.Connection, found: ConversationFile, conversation: str, offset: int,
               skipped: bool = False, failed: bool = False) -> None:
         """Where `found` was read to. `skipped`: a CLI's copy of a run galaius started, never read;
@@ -524,7 +556,8 @@ class ConversationIndex(BaseModel):
 
     def search(self, query: str, scope: ConversationScope, limit: int = 20, project: str | None = None, since: float | None = None) -> list[ConversationHit]:
         """The conversations in `scope` whose lines hold every word of `query` ("quoted words" as a
-        phrase), best match first, each with its best line cut around the match."""
+        phrase), each with its best line cut around the match: best line first, by its tier (`TIERS`),
+        then its full-text rank. The asking run's own conversation is never one of them."""
         match = self.match(query)
         inside, held_in = scope.where()
         secrets = self.secrets
@@ -533,11 +566,11 @@ class ConversationIndex(BaseModel):
             # line (seconds, not tenths). SQLite fills the bare columns from the row min() picked.
             rows = db.execute(
                 "WITH hit AS MATERIALIZED (SELECT rowid AS id, rank FROM lines_text WHERE lines_text MATCH ?) "
-                "SELECT l.conversation, l.id, l.n, l.kind, l.at, min(hit.rank) AS best, count(*) FROM hit "
+                f"SELECT l.conversation, l.id, l.n, l.kind, l.at, min(l.tier * {_TIER_SPAN} + hit.rank) AS best, count(*) FROM hit "
                 "JOIN lines l ON l.id = hit.id JOIN conversations c ON c.id = l.conversation "
-                f"WHERE c.last >= ? AND (? = '' OR c.project = ? COLLATE NOCASE) AND {inside} "
+                f"WHERE c.last >= ? AND (? = '' OR c.project = ? COLLATE NOCASE) AND c.id != ? AND {inside} "
                 "GROUP BY l.conversation ORDER BY best LIMIT ?",
-                (match, since or 0.0, project or "", project or "", *held_in, limit),
+                (match, since or 0.0, project or "", project or "", scope.own or "", *held_in, limit),
             ).fetchall()
             held = {value.id: value for value in self._conversations(db, [row[0] for row in rows], secrets)}
             # Only the chosen lines' text is read: a line holds up to LINE_CHARACTERS, matches run to thousands.
@@ -562,16 +595,18 @@ class ConversationIndex(BaseModel):
 
     @staticmethod
     def snippet(text: str, terms: list[str]) -> str:
-        """`text` around the first place a term appears, that term marked «». Masked before it is cut:
-        cut first, a credential could lose the shape that masks it."""
+        """`text` around where the terms appear, marked «»: all of them in a row if they do, else the
+        first whole word among them, else the first place one appears inside a word. Masked before it is
+        cut: cut first, a credential could lose the shape that masks it."""
         flat = " ".join(text.split())
-        folded = flat.casefold()
-        at, term = min(((folded.find(term.casefold()), term) for term in terms if term.casefold() in folded), default=(-1, ""))
-        if at < 0:  # matched by the tokenizer only (an accent, a split word): the line's start
+        words = [re.escape(term) for term in terms if re.search(r"\w", term)]
+        tries = [r"(?<!\w)" + r"\W+".join(words) + r"(?!\w)", *(rf"(?<!\w){word}(?!\w)" for word in words), *words] if words else []
+        hit = next((found for pattern in tries if (found := re.search(pattern, flat, re.IGNORECASE))), None)
+        if hit is None:  # matched by the tokenizer only (an accent, a split word): the line's start
             return flat[:2 * SNIPPET_SIDE] + (" …" if len(flat) > 2 * SNIPPET_SIDE else "")
-        begin, end = max(0, at - SNIPPET_SIDE), at + len(term) + SNIPPET_SIDE
-        return (("… " if begin else "") + flat[begin:at] + "«" + flat[at:at + len(term)] + "»"
-                + flat[at + len(term):end] + (" …" if end < len(flat) else ""))
+        begin, end = max(0, hit.start() - SNIPPET_SIDE), hit.end() + SNIPPET_SIDE
+        return (("… " if begin else "") + flat[begin:hit.start()] + "«" + hit.group(0) + "»"
+                + flat[hit.end():end] + (" …" if end < len(flat) else ""))
 
     @staticmethod
     def _conversations(db: sqlite3.Connection, ids: list[str], secrets: tuple[str, ...]) -> list[Conversation]:
@@ -599,9 +634,9 @@ class ConversationIndex(BaseModel):
         start = max(0, conversation.lines - limit) if around is None else max(0, around - limit // 2)
         secrets = self.secrets
         with self.connect() as db:
-            rows = db.execute("SELECT l.n, l.kind, l.at, t.text FROM lines l JOIN line_texts t ON t.id = l.id WHERE l.conversation = ? AND l.n >= ? ORDER BY l.n LIMIT ?",
+            rows = db.execute("SELECT l.n, l.kind, l.at, t.text, l.tier FROM lines l JOIN line_texts t ON t.id = l.id WHERE l.conversation = ? AND l.n >= ? ORDER BY l.n LIMIT ?",
                               (conversation.id, start, limit)).fetchall()
-        return [ConversationLine(n=n, kind=kind, at=at, text=redact(text, secrets)) for n, kind, at, text in rows]
+        return [ConversationLine(n=n, kind=kind, at=at, text=redact(text, secrets), tier=tier) for n, kind, at, text, tier in rows]
 
 
 #: Opens every answer quoting past conversations: what follows is data, never instructions.

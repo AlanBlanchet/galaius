@@ -672,6 +672,19 @@ class AgentProvider(ABC):
         """(working folder, title) one record of a saved conversation file names; "" for each it does not."""
         return "", ""
 
+    #: The programs (`transcript_origin`) whose sessions a person types in — a terminal, an editor —
+    #: as this CLI names them; its headless and SDK sessions are an agent's.
+    typed_origins: ClassVar[frozenset[str]] = frozenset()
+
+    def transcript_origin(self, raw: dict) -> str:
+        """The program one record of a saved conversation file says wrote its session; "" when it does not say."""
+        return ""
+
+    def transcript_typed(self, raw: dict) -> bool | None:
+        """Whether one record's session is one a person types in; None when the record does not say."""
+        origin = self.transcript_origin(raw)
+        return origin in self.typed_origins if origin else None
+
     def resume_ahead_command(self, session_id: str, **arguments) -> list[str]:
         """`resume_command`'s child with no message: it starts now and reads the message
         `task_message` writes (`starts_ahead`)."""
@@ -1230,14 +1243,22 @@ class ClaudeCodeProvider(AgentProvider):
         return self.event(raw, UsageLedger() if ledger is None else ledger)
 
     def transcript_event(self, raw: dict) -> AgentEvent | None:
-        """A saved session's record reads as its stream line does; `isMeta` records are the harness's own notes."""
-        if raw.get("isMeta"):
+        """A saved session's record reads as its stream line does; `isMeta` records are the harness's own
+        notes, `isCompactSummary` ones its summary of the turns before (in the person's turn, not his words)."""
+        if raw.get("isMeta") or raw.get("isCompactSummary"):
             return None
         event = self.event(raw, UsageLedger())
         return None if event is None else event.model_copy(update={"at": instant(raw.get("timestamp"))})
 
     def transcript_place(self, raw: dict) -> tuple[str, str]:
         return str(raw.get("cwd") or ""), str(raw.get("aiTitle") or "") if raw.get("type") == "ai-title" else ""
+
+    #: Its `CLAUDE_CODE_ENTRYPOINT` values (as its CLI names them) for the terminal, the editor extension
+    #: and the desktop app; headless runs save `sdk-cli` / `sdk-ts` / `sdk-py`.
+    typed_origins = frozenset({"cli", "claude-vscode", "claude-desktop"})
+
+    def transcript_origin(self, raw: dict) -> str:
+        return str(raw.get("entrypoint") or "")
 
     def event(self, raw: dict, ledger: UsageLedger) -> AgentEvent | None:
         """One decoded stream line (or saved-session record) as an event."""
@@ -1578,6 +1599,14 @@ class CodexProvider(AgentProvider):
     def transcript_place(self, raw: dict) -> tuple[str, str]:
         payload = raw.get("payload")
         return (str(payload.get("cwd") or ""), "") if raw.get("type") == "session_meta" and isinstance(payload, dict) else ("", "")
+
+    #: Its session `originator` values (as its CLI names them) for the terminal and the editor extension
+    #: (`codex_exec`: headless).
+    typed_origins = frozenset({"codex_cli_rs", "codex_tui", "codex_vscode"})
+
+    def transcript_origin(self, raw: dict) -> str:
+        payload = raw.get("payload")
+        return str(payload.get("originator") or "") if raw.get("type") == "session_meta" and isinstance(payload, dict) else ""
 
     def usage(self, line: dict) -> tuple[UsageWindow, ...]:
         """`rate_limits` (`primary` / `secondary`: used_percent, window_minutes, resets_at epoch s),
