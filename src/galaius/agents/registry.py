@@ -1688,7 +1688,8 @@ def read_events(run_id: str) -> list[AgentEvent]:
 
 
 def _carry_observed_at(path: Path, events: list[AgentEvent]) -> None:
-    """Stamp when each event was first seen, keeping the stamps already on record.
+    """Stamp when each event was first seen, keeping the stamps already on record; an event that
+    carries its own time (a message or a refused resume from the run's messages file) keeps it.
 
     The mirror is rebuilt wholesale from a re-parse on every pass, so stamping the clock of the
     moment would march every event's time forward and mean nothing. The stream is append-only, so
@@ -1708,6 +1709,8 @@ def _carry_observed_at(path: Path, events: list[AgentEvent]) -> None:
         pass  # a line still being appended (`StreamMirror`): the stamps before it hold
     now = time.time()
     for i, event in enumerate(events):
+        if event.at is not None:
+            continue  # its own time (a message, a refused resume, written with its moment): never when its line was first seen
         prior = seen[i] if i < len(seen) else None
         event.at = prior if isinstance(prior, (int, float)) else now
 
@@ -1834,7 +1837,8 @@ class StreamMirror:
             if fresh:
                 now = time.time()
                 for event in fresh:
-                    event.at = now  # as `_carry_observed_at` stamps a line it has not seen
+                    if event.at is None:
+                        event.at = now  # as `_carry_observed_at` stamps a line it has not seen
                 payload = "".join(event.model_dump_json() + "\n" for event in fresh).encode()
                 if os.write(descriptor, payload) != len(payload):
                     raise OSError("short agent-registry append")

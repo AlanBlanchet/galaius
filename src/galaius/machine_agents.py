@@ -659,9 +659,11 @@ class MachineAgents(BaseModel):
 
     def _tail(self, request: AgentTailRequest) -> MachineAgentAnswer:
         run = self._require_run(request.run_id)
-        if run.status in {"running", "waiting"}:
+        if run.status in {"running", "waiting"} or not reg.mirror_is_current(str(run.run_id)):
             # The readable copy of a working run's stream is rebuilt on demand; nothing else on a
-            # PC with no editor open would rebuild it while the owner watches.
+            # PC with no editor open would rebuild it while the owner watches. An ended run's too once
+            # its messages moved: a resume refused before its turn started is read at once, never only
+            # when the next turn runs.
             reg.read_events(run.run_id)
         path = reg.events_path(str(request.run_id))
         try:

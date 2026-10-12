@@ -269,4 +269,4 @@ def restore(cwd: str, provider: AgentProvider, environment: Mapping[str, str], s
 def _denied(path: Path, folder: Path) -> FolderUnrecoverable:
     """No right to write in `folder`, where the run's folder goes back."""
     return FolderUnrecoverable(path, f"Pas le droit d’écrire dans {shown(folder)} : Galaius ne peut pas y recréer ce dossier.",
-                               "Donnez-vous le droit d’écrire dans ce dossier, ou recréez vous-même le dossier de la conversation, puis appuyez de nouveau sur « Continuer ».")
+                               f"Donnez-vous le droit d’écrire dans {shown(folder)}, ou recréez vous-même le dossier de la conversation, puis appuyez de nouveau sur « Continuer ».")

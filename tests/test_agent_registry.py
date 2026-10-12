@@ -994,6 +994,26 @@ def test_an_event_keeps_the_time_it_was_FIRST_seen(monkeypatch):
     assert out[1]["at"] == 2500.0, "a newly observed event takes the clock of the moment"
 
 
+def test_a_message_and_a_refused_resume_keep_their_own_time_when_the_next_turn_runs(monkeypatch):
+    """A resume refused at 17:23 read « 17:24 » once the next press ran: the mirror stamped every
+    event anchored before the new turn's lines with the moment it first saw them."""
+    register_run(run_id="r", name="r", provider="claude", task="t")
+    with reg.raw_events_path("r").open("ab") as raw:
+        raw.write(("\n".join(_CLAUDE_LINES[:2]) + "\n").encode())
+    monkeypatch.setattr(reg.time, "time", lambda: 1000.0)
+    reg.read_events("r")
+    reg.record_message(from_run="operator", to_run="r", text="continue")
+    reg.fail_turn("r", "resume refused: Dossier introuvable : ~/w/x.")
+    monkeypatch.setattr(reg.time, "time", lambda: 1150.0)
+    reg.record_message(from_run="operator", to_run="r", text="continue")
+    with reg.raw_events_path("r").open("ab") as raw:
+        raw.write(("\n".join(_CLAUDE_LINES[2:]) + "\n").encode())
+    for read in (lambda: reg.read_events("r"), reg.StreamMirror("r").refresh):
+        read()
+        stamps = [(event["kind"], event["at"]) for event in _mirrored_events("r") if event["kind"] in {"message", "error"}]
+        assert stamps == [("message", 1000.0), ("error", 1000.0), ("message", 1150.0)], stamps
+
+
 def test_re_mirroring_an_unchanged_stream_rewrites_nothing(monkeypatch):
     """Carrying the stamps forward is also what keeps a settled run free: if every pass re-stamped,
     the payload would differ every time and the panel would re-read a finished run forever."""

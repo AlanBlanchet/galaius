@@ -171,6 +171,20 @@ def test_tail_reads_whole_lines_from_the_cursor(base: Path, tmp_path: Path) -> N
     assert [json.loads(line)["text"] for line in _answer(agents, _request("tail", run_id=run_id, cursor=first.cursor)).lines] == ["two"]
 
 
+def test_tail_of_an_ended_run_carries_a_resume_refused_since(base: Path, tmp_path: Path) -> None:
+    """A resume refused before its turn started was read by the web only once the NEXT turn ran (an
+    ended run's mirror was rebuilt only while working): « Reprise refusée » never showed in time."""
+    agents = _agents(base, tmp_path)
+    run_id = str(uuid4())
+    reg.save_run(reg.AgentRun(run_id=run_id, provider="claude", name="r", cwd=str(base / "project"), started_at=1.0, status="failed"))
+    agents.runs.add(WebRun(run_id=run_id, root="project"))
+    reg.raw_events_path(run_id).write_text('{"type":"assistant","message":{"id":"m1","content":[{"type":"text","text":"one"}]},"session_id":"s"}\n')
+    reg.read_events(run_id)
+    reg.fail_turn(run_id, "resume refused: Dossier introuvable : ~/w/x.")
+    kinds = [json.loads(line)["kind"] for line in _answer(agents, _request("tail", run_id=run_id, cursor=0)).lines]
+    assert kinds[-1] == "error", kinds
+
+
 def test_a_run_stays_on_its_subscription_and_a_lent_pc_lends_no_login(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A start runs on the subscription it names, refused at its cap; a message never moves a run to
     another login; a member's run on a lent PC runs only inside the fence, with every CLI login closed
