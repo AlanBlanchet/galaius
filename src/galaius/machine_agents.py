@@ -43,7 +43,7 @@ from galaius.agents import registry as reg
 from galaius.agents.host import ConversationHost, ConversationRefused
 from galaius.agents.followup import FollowUps
 from galaius.agents.messaging import deliver_message
-from galaius.agents.providers import PROJECT_SETTINGS_OFF, PROVIDERS, provider_for
+from galaius.agents.providers import PROJECT_SETTINGS_OFF, PROVIDERS, UNTRUSTED_FOLDERS, provider_for
 from galaius.agents.subscriptions import RunSubscription, Subscription, SubscriptionRefused
 from galaius.agents.run import LAUNCH_STAMP, launch_editor_turn, load_policy, rank_candidates, run_agent
 from galaius.agents.warm import WarmStart
@@ -533,9 +533,12 @@ class MachineAgents(BaseModel):
 
     def environment_in(self, folder: Path) -> dict[str, str]:
         """The child's environment for an agent working in `folder`: a workspace cloned from the
-        web loads none of its own agent settings (its hooks would run code its owner never read)."""
+        web loads none of its own agent settings (its hooks would run code its owner never read),
+        and every folder put here from the web is named (`UNTRUSTED_FOLDERS`: no git of galaius's runs there)."""
+        placed = [str(place) for _, place in self.workspaces.placed()] if self.workspaces is not None else []
+        environment = {**self.environment, UNTRUSTED_FOLDERS: os.pathsep.join(placed)} if placed else self.environment
         untrusted = self.workspaces is not None and self.workspaces.prepared(folder)
-        return {**self.environment, PROJECT_SETTINGS_OFF: "1"} if untrusted else self.environment
+        return {**environment, PROJECT_SETTINGS_OFF: "1"} if untrusted else environment
 
     def launcher_environment_in(self, folder: Path) -> dict[str, str]:
         """What the launcher runs a role's agent in `folder` with: `environment_in` and this PC's

@@ -762,6 +762,15 @@ def record_lock(run_id: str):
         yield
 
 
+@contextmanager
+def folder_lock(folder: Path):
+    """The registry-wide lock on putting one removed folder back (`run_folder.restore`): runs resuming
+    in it at once (a lead and its specialists sharing a slice, the usage-limit resumes) rebuild it once."""
+    digest = hashlib.sha256(os.path.realpath(folder).encode()).hexdigest()[:24]
+    with exclusive(_open_private(agents_dir() / f"#folder-{digest}.lock", os.O_RDWR)):
+        yield
+
+
 def sole_holder(job: str) -> SoleHolder:
     """The registry-wide lock deciding which process on this computer does `job` (`#<job>.lock`: no run
     id contains `#`, so it never meets a run's own `record_lock`). Each MCP server mirroring every live
@@ -1459,6 +1468,8 @@ def _record_message_event_locked(
         return None
     message_id = event_id or secrets.token_hex(16)
     for side in (from_run, to_run):
+        if side in SYSTEM_SENDERS:
+            continue
         event = AgentEvent(kind="message", event_id=message_id, text=text,
                            from_run=from_run, to_run=to_run, at=time.time(),
                            raw_index=raw_line_count(side))
@@ -2090,6 +2101,14 @@ def settle_gone() -> list[AgentRun]:
 RESUME_GRACE = 300.0
 #: Who an automatic resume is from, on its queue item and message event (`from_run`): never the person.
 LIMIT_RESUME_SENDER = "limit-resume"
+#: Who the line saying a resumed run's missing folder was put back is from (`run_folder.FolderRestored.sentence`): never the person.
+FOLDER_RESTORED_SENDER = "folder-restored"
+#: The conversation's own machinery as message senders (never a person, never a run), as a reader names each: only the
+#: recipient's transcript holds their lines.
+SYSTEM_SENDERS: dict[str, str] = {
+    LIMIT_RESUME_SENDER: "automatic resume after the usage limit",
+    FOLDER_RESTORED_SENDER: "folder put back",
+}
 
 
 def limit_resume_at(run: AgentRun) -> float | None:

@@ -358,16 +358,17 @@ class MachineWorkspaces(BaseModel):
                    environment={**self.environment, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never", "GIT_LFS_SKIP_SMUDGE": "1", "GIT_SSH_COMMAND": self.SSH_COMMAND,
                                 **environment})
 
+    def placed(self) -> list[tuple[KeptJob, Path]]:
+        """The ready project folders put here from the web (clones or copies, never one found or
+        created empty), each with its top folder: code this PC's owner did not write."""
+        return [(job, (self.roots[job.root] / job.name).resolve()) for job in self.jobs.read()
+                if job.state == "ready" and job.source in {"clone", "copy"} and not job.found and job.root in self.roots]
+
     def job_at(self, folder: Path) -> tuple[KeptJob, Path] | None:
-        """The ready project folder put here from the web (a clone or a copy, never one found or
-        created empty) that `folder` lies in, and its top folder; None for any other folder."""
+        """The ready project folder put here from the web that `folder` lies in, and its top folder
+        (`placed`); None for any other folder."""
         resolved = folder.resolve()
-        for job in self.jobs.read():
-            if job.state == "ready" and job.source in {"clone", "copy"} and not job.found and job.root in self.roots:
-                place = (self.roots[job.root] / job.name).resolve()
-                if resolved == place or place in resolved.parents:
-                    return job, place
-        return None
+        return next(((job, place) for job, place in self.placed() if resolved == place or place in resolved.parents), None)
 
     def refresh(self, folder: Path) -> WorkspaceRefresh | None:
         """Before a launch in `folder`: a clone made here from the web, fast-forwarded to its remote

@@ -30,7 +30,7 @@ from galaius.machines import MachineConfig, MachineRunner
 from galaius.machine_workspaces import KeptJob, MachineWorkspaces, WorkspaceJobs
 from galaius.workspace_git import CloneFailure, Git
 from galaius.workspace_copy import WorkspaceTransfers
-from galaius.agents.providers import PROJECT_SETTINGS_OFF, ClaudeCodeProvider
+from galaius.agents.providers import PROJECT_SETTINGS_OFF, UNTRUSTED_FOLDERS, ClaudeCodeProvider
 from galaius.place_reviews import PlaceReviews
 from galaius.private_files import PRIVATE_FILES
 from galaius.project_secrets import MARKER, ProjectEnv
@@ -665,7 +665,7 @@ def test_a_start_asks_less_never_more_and_a_cloned_workspace_loads_no_project_se
         _answer(agents, _request("start", root="project", path=path, role="tester", text="- go", **({"permission": asked} if asked else {})))
         launched = seen[-1]
         assert (launched["permission_mode"], launched["environment"].get(PROJECT_SETTINGS_OFF), launched["task"]) == (scope, untrusted, "- go")
-        assert launched["environment"].keys() <= {"PATH", PROJECT_SETTINGS_OFF, "OLLAMA_HOST"} and launched["environment"]["OLLAMA_HOST"] == "http://gpu-box:11434"
+        assert launched["environment"].keys() <= {"PATH", PROJECT_SETTINGS_OFF, UNTRUSTED_FOLDERS, "OLLAMA_HOST"} and launched["environment"]["OLLAMA_HOST"] == "http://gpu-box:11434"
         assert launched["session"] == "web-test" and launched["quota_window"] == 4.0
 
 

@@ -31,6 +31,7 @@ from pydantic import BaseModel, ConfigDict
 from galaius.agents import agent_queue
 from galaius.agents import registry as reg
 from galaius.agents import quota
+from galaius.agents import run_folder
 from galaius.agents.catalog import AgentCatalog
 from galaius.agents.ceiling import contained
 from galaius.agents.events import stream_lines
@@ -735,6 +736,16 @@ def mesh_config(*, run_id: str) -> str:
     })
 
 
+def _folder_identity(folder: str) -> str:
+    """Which folder `folder` is right now: one removed and made again at the same path is another
+    (a child started ahead in the removed one works in nothing)."""
+    try:
+        status = os.stat(folder)
+    except OSError:
+        return "absent"
+    return f"{status.st_dev}:{status.st_ino}"
+
+
 class AheadLaunch(BaseModel):
     """How a child of one provider starts in one folder and fence, possibly before what it is to do
     is known (`start(..., ahead=True)`, then `hand`): a run's first turn (`ChildLaunch`) or its next
@@ -747,9 +758,9 @@ class AheadLaunch(BaseModel):
     fence: FenceSpec | None = None
 
     def digest(self, environment: Mapping[str, str], *parts: str) -> str:
-        """`parts`, today's date (the one a prompt states) and the content of each file the CLI reads
-        at its start here (a rewrite with unchanged content keeps the same digest)."""
-        digest = hashlib.sha256("\0".join((*parts, date.today().isoformat())).encode())
+        """`parts`, today's date (the one a prompt states), which folder it is (`_folder_identity`) and
+        the content of each file the CLI reads at its start here (a rewrite with unchanged content keeps the same digest)."""
+        digest = hashlib.sha256("\0".join((*parts, date.today().isoformat(), _folder_identity(self.cwd))).encode())
         for path in self.provider.startup_files(Path(self.cwd), environment):
             try:
                 content = path.read_bytes()
@@ -1020,6 +1031,15 @@ def _reap_continuation(lifecycle: ContinuationHandle) -> None:
         lifecycle.completed.set()
 
 
+def restore_folder(run: reg.AgentRun, provider: AgentProvider, session_id: str, environment: Mapping[str, str], *, record_locked: bool = False) -> None:
+    """Put `run`'s folder back before a turn resumes vendor session `session_id` in it, when it was
+    removed (`run_folder.restore`), and say so in the run; raises `run_folder.FolderUnrecoverable`.
+    Before anything reads the folder: a CLI's configuration lookup runs in it too."""
+    if (restored := run_folder.restore(run.cwd, provider, environment, session_id)) is not None:
+        record = reg.record_message_event_locked if record_locked else reg.record_message_event
+        record(from_run=reg.FOLDER_RESTORED_SENDER, to_run=run.run_id, text=restored.sentence())
+
+
 def launch_continuation(
     provider: AgentProvider,
     run: reg.AgentRun,
@@ -1033,6 +1053,7 @@ def launch_continuation(
     record_locked: bool = False,
 ) -> ContinuationHandle:
     """Spawn one resumed turn and start its reaper before returning to a caller."""
+    restore_folder(run, provider, session_id, {**os.environ, **(run.subscription.overlay() if run.subscription is not None else {})}, record_locked=record_locked)
     launch = ResumeLaunch.of(provider, run, session_id, model=model, criterion=criterion, reasoning=reasoning)
     return _spawn_turn(launch.command(message), run, env=launch.env, raw_index=raw_index, model=launch.model, criterion=launch.criterion,
                        reasoning=launch.reasoning, record_locked=record_locked)
@@ -1046,6 +1067,7 @@ def launch_editor_turn(
     (the editor's session is never written), later turns resume the copy. No role: the session
     keeps the model and instructions it was begun with; the permission is the run's recorded one,
     the environment exactly `environment` (never this process's)."""
+    restore_folder(run, provider, fork_from or run.run_id, environment)
     argv = provider.resume_command(fork_from or run.run_id, message, permission_mode=run.permission_mode, fork_to=run.run_id if fork_from else None)
     env = {**environment, "GALAIUS_RUN_ID": run.run_id}
     return _spawn_turn(argv, run, env=env, raw_index=reg.raw_line_count(run.run_id), model=run.model, criterion=None, reasoning=None)

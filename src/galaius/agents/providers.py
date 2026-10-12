@@ -48,6 +48,9 @@ from galaius.processes import run_isolated_process
 #: must not load - a workspace cloned from the web: its hooks and permission rules are code and
 #: policy its owner never read. Children inherit it, so a subagent there obeys it too.
 PROJECT_SETTINGS_OFF = "GALAIUS_PROJECT_SETTINGS_OFF"
+#: The folders put on this PC from the web (clones, copies), joined by `os.pathsep`: code its owner never read,
+#: where galaius runs no git of its own (`run_folder.restore`). Set by the PC runner for every child it starts.
+UNTRUSTED_FOLDERS = "GALAIUS_UNTRUSTED_FOLDERS"
 
 #: A transcript is read by a human, and a 50k-char tool result is not read — it is scrolled past,
 #: while bloating every refresh that parses the file. Keep the head, say what was cut.
@@ -672,6 +675,10 @@ class AgentProvider(ABC):
         """(working folder, title) one record of a saved conversation file names; "" for each it does not."""
         return "", ""
 
+    def transcript_branch(self, raw: dict) -> str:
+        """The git branch one record of a saved conversation file says its session worked on; "" when it does not say."""
+        return ""
+
     #: The origins (`transcript_origin`) of sessions a person types in — a terminal, an editor —
     #: as this CLI names them; its headless, SDK and sub-agent sessions are an agent's.
     typed_origins: ClassVar[frozenset[str]] = frozenset()
@@ -1254,6 +1261,9 @@ class ClaudeCodeProvider(AgentProvider):
     def transcript_place(self, raw: dict) -> tuple[str, str]:
         return str(raw.get("cwd") or ""), str(raw.get("aiTitle") or "") if raw.get("type") == "ai-title" else ""
 
+    def transcript_branch(self, raw: dict) -> str:
+        return str(raw.get("gitBranch") or "")
+
     #: Its `CLAUDE_CODE_ENTRYPOINT` values (as its CLI names them) for the terminal, the editor extension
     #: and the desktop app; headless runs save `sdk-cli` / `sdk-ts` / `sdk-py`.
     typed_origins = frozenset({"cli", "claude-vscode", "claude-desktop"})
@@ -1600,6 +1610,11 @@ class CodexProvider(AgentProvider):
     def transcript_place(self, raw: dict) -> tuple[str, str]:
         payload = raw.get("payload")
         return (str(payload.get("cwd") or ""), "") if raw.get("type") == "session_meta" and isinstance(payload, dict) else ("", "")
+
+    def transcript_branch(self, raw: dict) -> str:
+        payload = raw.get("payload")
+        git = payload.get("git") if raw.get("type") == "session_meta" and isinstance(payload, dict) else None
+        return str(git.get("branch") or "") if isinstance(git, dict) else ""
 
     #: Its session `originator` values (as its CLI names them) for the terminal and the editor extension
     #: (`codex_exec`: headless).
