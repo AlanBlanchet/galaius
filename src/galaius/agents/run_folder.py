@@ -7,6 +7,7 @@ repository holds there; else empty. What was done is one French line of the run'
 do (`FolderUnrecoverable`), never a bare errno."""
 
 from collections.abc import Mapping
+import errno
 import json
 import os
 from pathlib import Path
@@ -29,13 +30,32 @@ MISSING_PREFIX = "Dossier introuvable : "
 GIT_SAFE = ("-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false")
 
 RestoredAs = Literal["worktree_branch", "worktree_detached", "repo_files", "empty"]
+#: An OS refusal in the conversation's words: its `strerror` is the PC's language, often English (visual-critic 2026-10-12 r1:
+#: « Galaius n’a pas pu le recréer (Permission denied) »). A refusal of a write right is said with the folder it concerns.
+OS_REFUSALS: Mapping[int, str] = {code: words for name, words in (
+    ("ENOSPC", "le disque est plein"),
+    ("EDQUOT", "votre quota de disque est atteint"),
+    ("EROFS", "ce disque est en lecture seule"),
+    ("ENAMETOOLONG", "le chemin est trop long"),
+    ("ENOTDIR", "un fichier occupe le chemin d’un de ses dossiers parents"),
+) if (code := getattr(errno, name, None)) is not None}  # an OS without one never raises it
+DENIED = (errno.EACCES, errno.EPERM)
+
+
+def shown(path: Path) -> str:
+    """`path` as the conversation names a PC's folder: its home folder as `~` (the web says every folder so)."""
+    try:
+        inside = path.relative_to(Path.home())
+    except (ValueError, RuntimeError):
+        return str(path)
+    return "~" if inside == Path() else f"~/{inside.as_posix()}"
 
 
 class FolderUnrecoverable(RuntimeError):
     """The run's folder is missing and could not be put back: the sentence says why and what to do."""
 
     def __init__(self, path: Path, why: str, action: str = "Recréez ce dossier à cet emplacement, puis appuyez de nouveau sur « Continuer ».") -> None:
-        super().__init__(f"{MISSING_PREFIX}{path}. {why} {action}")
+        super().__init__(f"{MISSING_PREFIX}{shown(path)}. {why} {action}")
 
 
 class FolderRestored(BaseModel):
@@ -63,8 +83,8 @@ class FolderRestored(BaseModel):
             "repo_files": f"fichiers suivis de {repository}",
             "empty": "dossier vide : ce n’était le dossier d’aucun dépôt git connu",
         }[self.restored_as]
-        inside = f", dans {self.top}" if self.top != self.path else ""
-        return f"{RESTORED_PREFIX}{self.path} ({how}{inside})."
+        inside = f", dans {shown(self.top)}" if self.top != self.path else ""
+        return f"{RESTORED_PREFIX}{shown(self.path)} ({how}{inside})."
 
 
 def _git(folder: Path, *arguments: str) -> str:
@@ -220,6 +240,8 @@ def restore(cwd: str, provider: AgentProvider, environment: Mapping[str, str], s
     if path.exists() or existing is None:
         raise FolderUnrecoverable(path, f"{'Un fichier occupe ce chemin' if path.exists() else 'Aucun dossier parent n’existe'} : Galaius ne peut pas le recréer.",
                                   "Libérez ou recréez ce chemin, puis appuyez de nouveau sur « Continuer ».")
+    if not os.access(existing, os.W_OK):
+        raise _denied(path, existing)  # said by the right itself, never by an OS or git sentence in the PC's language
     # The removed folder itself: the run's own, or the one it lay in (`<worktree>/frontend`).
     top = existing / path.relative_to(existing).parts[0]
     untrusted = tuple(Path(os.path.realpath(folder)) for folder in environment.get(UNTRUSTED_FOLDERS, "").split(os.pathsep) if folder)
@@ -235,5 +257,16 @@ def restore(cwd: str, provider: AgentProvider, environment: Mapping[str, str], s
         except subprocess.CalledProcessError as error:
             said = next((line.strip() for line in reversed((error.stderr or "").splitlines()) if line.strip()), f"code {error.returncode}")
             raise FolderUnrecoverable(path, f"git n’a pas pu le recréer ({said}).") from error
-        except (OSError, subprocess.SubprocessError) as error:
-            raise FolderUnrecoverable(path, f"Galaius n’a pas pu le recréer ({getattr(error, 'strerror', None) or error}).") from error
+        except OSError as error:
+            if error.errno in DENIED:
+                raise _denied(path, Path(error.filename).parent if isinstance(error.filename, str) else existing) from error
+            said = OS_REFUSALS.get(error.errno or 0, f"erreur système {errno.errorcode.get(error.errno or 0, error.errno)}")
+            raise FolderUnrecoverable(path, f"Galaius n’a pas pu le recréer : {said}.") from error
+        except subprocess.TimeoutExpired as error:
+            raise FolderUnrecoverable(path, f"git n’a pas répondu en {GIT_SECONDS:.0f} s.") from error
+
+
+def _denied(path: Path, folder: Path) -> FolderUnrecoverable:
+    """No right to write in `folder`, where the run's folder goes back."""
+    return FolderUnrecoverable(path, f"Pas le droit d’écrire dans {shown(folder)} : Galaius ne peut pas y recréer ce dossier.",
+                               "Donnez-vous le droit d’écrire dans ce dossier, ou recréez vous-même le dossier de la conversation, puis appuyez de nouveau sur « Continuer ».")

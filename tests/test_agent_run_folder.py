@@ -3,6 +3,7 @@ folder, put back, through the real dispatcher and a real child process; one that
 fails with a sentence, never a bare errno."""
 
 import json
+import os
 import subprocess
 import sys
 
@@ -13,7 +14,7 @@ from galaius.agents import registry as reg
 import threading
 
 from galaius.agents.providers import PROJECT_SETTINGS_OFF, UNTRUSTED_FOLDERS
-from galaius.agents.run_folder import MISSING_PREFIX, RESTORED_PREFIX
+from galaius.agents.run_folder import MISSING_PREFIX, RESTORED_PREFIX, shown
 from tests.support.agents import ScriptedProvider, install_provider, use_policy
 
 REPLY = (
@@ -121,7 +122,7 @@ def test_a_run_whose_folder_was_removed_resumes_in_it_put_back(monkeypatch, tmp_
     assert [item.state for item in agent_queue.items("r1")] == ["replied"], run.last
     assert folder.is_dir()
     notice = next(event for event in reg.read_events("r1") if event.from_run == reg.FOLDER_RESTORED_SENDER)
-    assert notice.text.startswith(f"{RESTORED_PREFIX}{folder} ({how}"), notice.text
+    assert notice.text.startswith(f"{RESTORED_PREFIX}{shown(folder)} ({how}"), notice.text
     if layout in {"branch_deleted", "branch_in_other_repo"}:
         assert _git(folder, "rev-parse", "HEAD") == _git(repository, "rev-parse", "main")
         assert "la branche fix/slice n’existe plus" in notice.text
@@ -134,21 +135,35 @@ def test_a_run_whose_folder_was_removed_resumes_in_it_put_back(monkeypatch, tmp_
     assert not (reg.agents_dir() / f"{reg.FOLDER_RESTORED_SENDER}.messages.jsonl").exists()
 
 
-@pytest.mark.parametrize("layout", ["file_in_the_way", "removal_staged"])
+@pytest.mark.parametrize("layout", ["file_in_the_way", "removal_staged", "parent_read_only"])
 def test_a_folder_that_cannot_be_put_back_fails_the_resume_with_why_and_what_to_do(monkeypatch, tmp_path, layout):
     if layout == "file_in_the_way":
         (tmp_path / "blocker").write_text("a file where the folder's parent was")
         folder = tmp_path / "blocker" / "work"
+    elif layout == "parent_read_only":
+        if os.geteuid() == 0:
+            pytest.skip("root writes anywhere")
+        locked = tmp_path / "archives"
+        locked.mkdir()
+        folder = locked / "notes-2025"
+        locked.chmod(0o555)
     else:
         repository = _repository(tmp_path / "proj")
         _git(repository, "rm", "-rq", "sub")
         folder = repository / "sub"
 
-    run = _resume(monkeypatch, tmp_path, folder)
+    try:
+        run = _resume(monkeypatch, tmp_path, folder)
+    finally:
+        if layout == "parent_read_only":
+            locked.chmod(0o755)
 
     assert run.status == "failed"
-    assert run.last.startswith(f"resume refused: {MISSING_PREFIX}{folder}. "), run.last
+    assert run.last.startswith(f"resume refused: {MISSING_PREFIX}{shown(folder)}. "), run.last
     assert "« Continuer »" in run.last and "Errno" not in run.last
+    if layout == "parent_read_only":
+        # The OS's own words (« Permission denied ») never; the folder it concerns and what to do (visual-critic r1).
+        assert f"Pas le droit d’écrire dans {shown(locked)} : " in run.last and "Permission denied" not in run.last, run.last
     assert not folder.is_dir()
 
 
