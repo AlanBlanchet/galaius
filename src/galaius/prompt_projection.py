@@ -77,12 +77,8 @@ def compile_server_prompt_projection(connection: CatalogConnection, installed_ro
     """Compile one verified server snapshot without executing downloaded source code."""
     catalog = AgentCatalog.refresh(connection, allow_stale=False)
     gateway = ToolGateway.current(online=True)
-    cache_home = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
-    consumer_key = hashlib.sha256(str(installed_root.resolve()).encode()).hexdigest()[:16]
-    root = cache_home / "galaius" / "prompts" / "server" / str(connection.workspace_id)
-    # The gateway's revision names the projection too: a tool connected or removed on the server
-    # changes the roles' tools with no new catalog cursor.
-    destination = root / "-".join((catalog.snapshot.cursor, consumer_key, str(catalog.access_generation), *((gateway.revision[:16],) if gateway.revision else ())))
+    destination = _server_destination(catalog, installed_root, gateway)
+    root = destination.parent
     _safe_directory(root, create=True)
     outputs = _server_outputs(catalog, installed_root, destination, gateway)
     if destination.exists():
@@ -120,6 +116,22 @@ def compile_server_prompt_projection(connection: CatalogConnection, installed_ro
         if staging.exists():
             with PinnedDirectory.at(root) as parent:
                 parent.rmtree(staging.name)
+
+
+#: Where a projection is compiled to name it: its files name their own folder, so what they hold is
+#: told apart by compiling them here first.
+_UNPLACED = Path("/galaius-projection")
+
+
+def _server_destination(catalog: AgentCatalog, installed_root: Path, gateway: AgentToolList) -> Path:
+    """The folder `catalog`'s projection for `installed_root` is compiled to, named by what its files
+    hold: a tool connected on the server, or a galaius that grants other tools, changes them with no new
+    catalog cursor, and a cache of the same name holding other files reads as forged."""
+    cache_home = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+    consumer_key = hashlib.sha256(str(installed_root.resolve()).encode()).hexdigest()[:16]
+    held = hashlib.sha256(json.dumps(_server_outputs(catalog, installed_root, _UNPLACED, gateway), sort_keys=True).encode()).hexdigest()[:16]
+    root = cache_home / "galaius" / "prompts" / "server" / str(catalog.connection.workspace_id)
+    return root / "-".join((catalog.snapshot.cursor, consumer_key, str(catalog.access_generation), held))
 
 
 def _verified_server_cache(destination: Path, outputs: dict[str, str]) -> None:

@@ -24,7 +24,7 @@ from galaius.agents.run import _role_prompt
 from galaius.pinned_directory import PathDirectory
 from galaius.agents.tool_gateway import CONVERSATION_TOOLS, AgentToolList, GatewayTool
 from galaius.prompt_projection import (
-    MANIFEST_NAME, _server_outputs, compile_server_prompt_projection, install_prompt_projection,
+    MANIFEST_NAME, _server_destination, _server_outputs, compile_server_prompt_projection, install_prompt_projection,
     install_server_prompt_projection,
 )
 
@@ -349,9 +349,7 @@ def test_server_cache_compares_verified_content_on_every_hit(tmp_path, monkeypat
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     monkeypatch.setattr(AgentCatalog, "refresh", lambda *args, **kwargs: catalog)
     home = tmp_path / "home"
-    key = hashlib.sha256(str(home.resolve()).encode()).hexdigest()[:16]
-    destination = (tmp_path / "cache/galaius/prompts/server" / str(catalog.connection.workspace_id)
-                   / f"{catalog.snapshot.cursor}-{key}-{catalog.access_generation}")
+    destination = _server_destination(catalog, home, AgentToolList())
 
     def corrupt():
         outputs = _server_outputs(catalog, home, destination)
@@ -369,6 +367,19 @@ def test_server_cache_compares_verified_content_on_every_hit(tmp_path, monkeypat
         corrupt()
     with pytest.raises(ValueError, match="differs from verified"):
         compile_server_prompt_projection(catalog.connection, home)
+
+
+def test_a_galaius_granting_other_tools_compiles_the_same_catalog_beside_the_last_one(tmp_path, monkeypatch):
+    """A galaius that lists other tools for the same catalog (an upgrade) compiles anew: the last
+    one's files are never read as a forged cache."""
+    catalog = catalog_fixture(worker_tools=['Read'])
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setattr(AgentCatalog, "refresh", lambda *args, **kwargs: catalog)
+    with monkeypatch.context() as earlier:  # the galaius before: no tool added to any list
+        earlier.setattr(AgentToolList, "granted", lambda self, role, tools, prefix: list(tools))
+        before = compile_server_prompt_projection(catalog.connection, tmp_path / "home")
+    after = compile_server_prompt_projection(catalog.connection, tmp_path / "home")
+    assert after != before and before.exists()
 
 
 def test_server_cache_rejects_symlink_ancestor_before_writing(tmp_path, monkeypatch):
