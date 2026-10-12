@@ -1086,3 +1086,21 @@ def test_a_copy_of_a_folder_with_no_file_arrives_as_an_empty_folder(tmp_path: Pa
     archive = {**server.serve(uuid4(), _tar()), "files": 0}
     job = _settled(pc_b.workspaces, _answer(pc_b, _request("workspace_create", root="galaius/projets", name="aino", copy_of=archive)).workspaces[0].id)
     assert (job.state, job.name) == ("ready", "aino") and list((pc_b_base / "galaius" / "projets" / "aino").iterdir()) == []
+
+
+def test_a_run_its_lost_login_stopped_resumes_only_once_signed_in_again(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """« Failed to authenticate: OAuth session expired » ended the run: while the login stays lost it waits;
+    the pass after it is signed in again resumes it once, from the login resume, with the resume brief."""
+    reg.register(run_id="lost-login", pid=421, provider="claude", name="w", agent="app-engineer", model="claude-opus-5-5", cwd=str(base / "project"))
+    reg.raw_events_path("lost-login").write_text(json.dumps({"type": "result", "is_error": True, "session_id": "SID",
+                                                             "result": "Failed to authenticate: OAuth session expired and could not be refreshed"}) + "\n")
+    assert reg.finish("lost-login", exit_code=1, expected_pid=421, expected_lifecycle_token=reg.get_run("lost-login").lifecycle_token)
+    signed_in = {"claude": False}
+    sent: list[tuple[str, str, str]] = []
+    monkeypatch.setattr("galaius.machine_agents.deliver_message", lambda run_id, text, *, sender, environment: sent.append((run_id, text, sender)) or SimpleNamespace(state="queued", text=""))
+    agents = _agents(base, tmp_path).model_copy(update={"programs": SimpleNamespace(signed_in=lambda provider, subscription: signed_in[provider])})
+    assert asyncio.run(agents.resume_paused()) == [] and sent == []
+    signed_in["claude"] = True
+    assert asyncio.run(agents.resume_paused()) == ["lost-login"]
+    assert sent == [("lost-login", reg.RESUME_BRIEF, reg.LOGIN_RESUME_SENDER)]
+    assert asyncio.run(agents.resume_paused()) == [] and len(sent) == 1

@@ -954,7 +954,7 @@ class MachineRunner:
         settler = asyncio.create_task(self._settle_runs())
         reports = asyncio.create_task(self._deliver_reports(config))
         followed = asyncio.create_task(self._follow_up(config))
-        resumed = asyncio.create_task(self._resume_limited(config))
+        resumed = asyncio.create_task(self._resume_paused(config))
         watched = asyncio.create_task(self._watch_subscriptions(config))
         swapped = False
         try:
@@ -998,19 +998,19 @@ class MachineRunner:
         except Exception:  # its own failure never stops the runner: a follow-up then starts as before
             logger.exception("queued follow-ups not recovered")
 
-    async def _resume_limited(self, config: MachineConfig) -> None:
-        """Every `settle_seconds`, while agents run here: the runs a provider usage limit paused say when
-        they resume, and each one whose reset came is resumed (`MachineAgents.resume_limited`). Local and
+    async def _resume_paused(self, config: MachineConfig) -> None:
+        """Every `settle_seconds`, while agents run here: the runs a provider usage limit or a lost login
+        paused are resumed once what stopped them reopened (`MachineAgents.resume_paused`). Local and
         independent of the server, like `_settle_runs`: web-started and terminal-started runs alike."""
         while True:
             try:
                 agents = await asyncio.to_thread(self._agents, self._current_config(config))
                 if agents.run_agents:
-                    await agents.resume_limited()
+                    await agents.resume_paused()
             except EnrollmentChanged:
                 pass  # the connection loop reconnects with the new enrollment; the next pass reads it
             except Exception:  # one failed pass never stops the next
-                logger.exception("resuming runs paused by a usage limit failed")
+                logger.exception("resuming paused runs failed")
             await asyncio.sleep(self.settle_seconds)
 
     async def _watch_subscriptions(self, config: MachineConfig) -> None:

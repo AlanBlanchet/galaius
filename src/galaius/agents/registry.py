@@ -25,7 +25,7 @@ import subprocess
 import sys
 import time
 from datetime import UTC, datetime
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import ExitStack, contextmanager, suppress
 from contextvars import ContextVar
 from pathlib import Path
@@ -2109,12 +2109,18 @@ def settle_gone() -> list[AgentRun]:
 RESUME_GRACE = 300.0
 #: Who an automatic resume is from, on its queue item and message event (`from_run`): never the person.
 LIMIT_RESUME_SENDER = "limit-resume"
+#: Who the resume of a run its lost login stopped is from, once that login is signed in again (`login_lost`).
+LOGIN_RESUME_SENDER = "login-resume"
+#: How long after it stopped a run its lost login stopped is resumed by itself once signed in again
+#: (a login lost overnight comes back the next morning); past it, « Continuer ».
+LOGIN_RESUME_WINDOW = 24 * 3600.0
 #: Who the line saying a resumed run's missing folder was put back is from (`run_folder.FolderRestored.sentence`): never the person.
 FOLDER_RESTORED_SENDER = "folder-restored"
 #: The conversation's own machinery as message senders (never a person, never a run), as a reader names each: only the
 #: recipient's transcript holds their lines.
 SYSTEM_SENDERS: dict[str, str] = {
     LIMIT_RESUME_SENDER: "automatic resume after the usage limit",
+    LOGIN_RESUME_SENDER: "automatic resume after signing in again",
     FOLDER_RESTORED_SENDER: "folder put back",
 }
 
@@ -2170,12 +2176,47 @@ def claim_limit_resume(run_id: str, *, now: float | None = None) -> AgentRun | N
     after: clears it and records `resumed_at`, so no second runner (nor a restart) resumes it again.
     The run as claimed, or None when it is not due, too late, or no longer paused."""
     moment = time.time() if now is None else now
+    return _claim(run_id, lambda stored: stored.status == "failed" and stored.resume_at is not None and stored.resume_at <= moment <= stored.resume_at + RESUME_GRACE,
+                  {"resume_at": None, "resumed_at": moment})
+
+
+def _claim(run_id: str, due: Callable[[AgentRun], bool], written: dict) -> AgentRun | None:
+    """Run `run_id`'s automatic resume taken once, under its lock: `written` merged when its record, read
+    again there, is still `due`; the run as claimed, else None."""
     with record_lock(run_id):
         stored = _read_record(run_id)
-        if (stored is None or stored.status != "failed" or stored.resume_at is None
-                or not stored.resume_at <= moment <= stored.resume_at + RESUME_GRACE):
-            return None
-        return _merge_record_locked(run_id, {"resume_at": None, "resumed_at": moment})
+        return _merge_record_locked(run_id, written) if stored is not None and due(stored) else None
+
+
+def login_lost(run: AgentRun, *, now: float | None = None) -> bool:
+    """`run` stopped only because its program's login was lost (`AgentProvider.login_lost` matched its
+    last words): a launched process run that failed on it within `LOGIN_RESUME_WINDOW`, not resumed by
+    itself for it already — a resume that met the same lost login within `RESUME_GRACE` is left to
+    « Continuer »."""
+    digest = run.stream_digest
+    lost = PROVIDERS[run.provider].login_lost if run.provider in PROVIDERS else None
+    if (lost is None or run.foreign or run.kind != "process" or run.status != "failed" or run.finished_at is None
+            or digest is None or digest.ending != "error" or not lost.search(digest.ending_text)):
+        return False
+    if (time.time() if now is None else now) - run.finished_at > LOGIN_RESUME_WINDOW:
+        return False
+    return run.resumed_at is None or (run.resumed_at < run.finished_at and run.finished_at - run.resumed_at > RESUME_GRACE)
+
+
+def login_paused(*, now: float | None = None) -> list[AgentRun]:
+    """The runs a lost login stopped (`login_lost`) that are their own to resume: a sub-run whose parent
+    is in this store is its parent's, as after a usage limit (`schedule_limit_resumes`)."""
+    records = _stored_records()
+    known = {run.run_id for run in records}
+    return [run for run in records if run.parent_run_id not in known and login_lost(run, now=now)]
+
+
+def claim_login_resume(run_id: str, *, now: float | None = None) -> AgentRun | None:
+    """Take the resume of run `run_id`, stopped by a lost login now signed in again, once: records
+    `resumed_at` under its lock, so no second runner (nor a restart) resumes it again. The run as
+    claimed, or None when it no longer is one (`login_lost`)."""
+    moment = time.time() if now is None else now
+    return _claim(run_id, lambda stored: login_lost(stored, now=moment), {"resumed_at": moment})
 
 
 def forest(root_run_ids: frozenset[str]) -> dict[str, list[AgentRun]]:

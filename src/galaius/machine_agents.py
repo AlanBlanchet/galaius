@@ -1028,29 +1028,42 @@ class MachineAgents(BaseModel):
             raise RuntimeError(delivery.text.removeprefix("ERROR: ") or "not resumed")
         return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=f"allowed up to {request.up_to_percent}%; resumed", reads_at=delivery.reads_at)
 
-    async def resume_limited(self) -> list[str]:
-        """The runs a provider usage limit paused, on this PC: each says when it resumes
-        (`registry.schedule_limit_resumes`), and each whose moment came is resumed once with
-        `RESUME_BRIEF`, as « Reprendre » does (its dispatcher, the launcher's environment for its
-        folder), from `LIMIT_RESUME_SENDER`. A resume refused before its turn starts becomes the run's
-        failure, with why, so « Reprendre » stays offered. Returns the ids it resumed."""
+    async def resume_paused(self) -> list[str]:
+        """The runs paused here until what stopped them reopens, each resumed once by itself with
+        `RESUME_BRIEF`, as « Continuer » does (its dispatcher, the launcher's environment for its folder):
+        a provider usage limit's at its reset (`registry.schedule_limit_resumes`, from `LIMIT_RESUME_SENDER`),
+        a lost login's once that login is signed in again here (`registry.login_paused`, its status asked
+        once per login, from `LOGIN_RESUME_SENDER`). A resume refused before its turn starts becomes the
+        run's failure, with why, so « Continuer » stays offered. Returns the ids it resumed."""
         resumed = []
         for run in await asyncio.to_thread(reg.schedule_limit_resumes):
-            if await asyncio.to_thread(reg.claim_limit_resume, run.run_id) is None:
-                continue
-            try:
-                environment = await asyncio.to_thread(self.launcher_environment_in, Path(run.cwd))
-                delivery = await asyncio.to_thread(deliver_message, run.run_id, reg.RESUME_BRIEF, sender=reg.LIMIT_RESUME_SENDER, environment=environment)
-                refused = delivery.text.removeprefix("ERROR: ") if delivery.state == "error" else ""
-            except Exception as error:  # claimed: whatever stops it must end as the run's failure, never a silent pause
-                refused = str(error) or type(error).__name__
-            if refused:
-                await asyncio.to_thread(reg.fail_turn, run.run_id, f"Automatic resume after the usage limit failed: {refused}")
-                logger.warning("run %s not resumed after its usage limit: %s", run.run_id[:8], refused)
-            else:
+            if await asyncio.to_thread(reg.claim_limit_resume, run.run_id) is not None and await self._resume(run, reg.LIMIT_RESUME_SENDER, "the usage limit"):
                 resumed.append(run.run_id)
-                logger.info("run %s resumed after its usage limit", run.run_id[:8])
+        signed_in: dict[tuple[str, UUID | None], bool | None] = {}
+        for run in await asyncio.to_thread(reg.login_paused) if self.programs is not None else ():
+            login = run.provider, run.subscription_id
+            if login not in signed_in:
+                signed_in[login] = await asyncio.to_thread(self.programs.signed_in, *login)
+            if signed_in[login] and await asyncio.to_thread(reg.claim_login_resume, run.run_id) is not None \
+                    and await self._resume(run, reg.LOGIN_RESUME_SENDER, "signing in again"):
+                resumed.append(run.run_id)
         return resumed
+
+    async def _resume(self, run: reg.AgentRun, sender: str, after: str) -> bool:
+        """Claimed run `run` resumed from `sender`; whatever stops it ends as the run's failure (« … after
+        `after` failed: why »), never a silent pause."""
+        try:
+            environment = await asyncio.to_thread(self.launcher_environment_in, Path(run.cwd))
+            delivery = await asyncio.to_thread(deliver_message, run.run_id, reg.RESUME_BRIEF, sender=sender, environment=environment)
+            refused = delivery.text.removeprefix("ERROR: ") if delivery.state == "error" else ""
+        except Exception as error:  # claimed: never a silent pause
+            refused = str(error) or type(error).__name__
+        if refused:
+            await asyncio.to_thread(reg.fail_turn, run.run_id, f"Automatic resume after {after} failed: {refused}")
+            logger.warning("run %s not resumed after %s: %s", run.run_id[:8], after, refused)
+            return False
+        logger.info("run %s resumed after %s", run.run_id[:8], after)
+        return True
 
     async def follow_up(self) -> None:
         """At the runner's start (`FollowUps`): messages its web runs still had queued go to their

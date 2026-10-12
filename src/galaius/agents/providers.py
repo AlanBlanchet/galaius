@@ -215,6 +215,21 @@ ANTHROPIC_INSTALL_HOSTS = frozenset({"claude.ai", "downloads.claude.ai"})
 OPENAI_INSTALL_HOSTS = frozenset({"chatgpt.com", "releases.openai.com"})
 
 
+class LoginStatus(BaseModel):
+    """What a CLI's own status commands say of one login, asked now (`AgentProvider.login_status`)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    #: Signed in; None: its status check could not complete.
+    signed_in: bool | None
+    #: As whom (`signed_in_as`), once signed in.
+    account: str = ""
+    #: Which login: a digest of its status answer (`login_identity`), once signed in.
+    login: str = ""
+    #: Signed out because the login saved here expired and could not be refreshed (`expiry_command`).
+    expired: bool = False
+
+
 class AgentProvider(ABC):
     """How to launch one vendor's agent CLI and read what it emits."""
 
@@ -393,9 +408,30 @@ class AgentProvider(ABC):
         key-authenticated CLI runs it as well as a subscription one does."""
         return self.accepts_subscription_auth(stdout, stderr)
 
-    async def _auth_status(self, env: dict[str, str], *, timeout: float) -> tuple[int, str, str] | None:
-        """Run the CLI's own auth-status command without reading a credential store."""
-        argv = self.auth_command()
+    #: What a turn's last words say when its login was lost (expired, signed out) and no turn can run
+    #: until it is signed in again (`registry.login_lost`); None: not known for this CLI.
+    login_lost: ClassVar[re.Pattern[str] | None] = None
+
+    #: What `expiry_command` says of a login `auth_command` still reports signed in but that expired and
+    #: could not be refreshed; None: its status command alone says.
+    expired_said: ClassVar[re.Pattern[str] | None] = None
+
+    def expiry_command(self) -> list[str] | None:
+        """A second status command, asked once `auth_command` reports signed in, that says `expired_said`
+        while that login expired; None: its status command alone says."""
+        return None
+
+    async def _expired(self, env: dict[str, str], *, timeout: float) -> bool:
+        """The login `auth_command` reports signed in expired: `expiry_command` failed AND said so
+        (`expired_said`); a check that could not complete, or failed for another reason (a CLI too old
+        for that command), says nothing."""
+        argv = self.expiry_command()
+        status = None if argv is None or self.expired_said is None else await self._auth_status(env, timeout=timeout, argv=argv)
+        return status is not None and status[0] != 0 and self.expired_said.search(f"{status[1]}\n{status[2]}") is not None
+
+    async def _auth_status(self, env: dict[str, str], *, timeout: float, argv: list[str] | None = None) -> tuple[int, str, str] | None:
+        """Run the CLI's own auth-status command (`argv`: another of its status commands) without reading a credential store."""
+        argv = self.auth_command() if argv is None else argv
         try:
             returncode, stdout_bytes, stderr_bytes = await run_isolated_process(
                 argv, cwd=Path.cwd(), env=env, timeout=timeout
@@ -408,20 +444,22 @@ class AgentProvider(ABC):
         self, env: dict[str, str], *, timeout: float = 10
     ) -> bool:
         status = await self._auth_status(env, timeout=timeout)
-        return status is not None and status[0] == 0 and self.accepts_subscription_auth(*status[1:])
+        return status is not None and status[0] == 0 and self.accepts_subscription_auth(*status[1:]) and not await self._expired(env, timeout=timeout)
 
-    async def login_status(self, env: dict[str, str], *, timeout: float = 10) -> tuple[bool | None, str, str]:
-        """Signed in (None: its status check could not complete), as whom (`signed_in_as`), and which
-        login, asked now: a digest of the CLI's whole status answer, kept instead
-        of the answer. It tells apart what the answer names — Claude Code: account, organisation,
-        plan; Codex: a ChatGPT login from an API key, never one ChatGPT account or plan from another."""
+    async def login_status(self, env: dict[str, str], *, timeout: float = 10) -> LoginStatus:
+        """Signed in, as whom and which login, asked now (`LoginStatus`): the login is a digest of the
+        CLI's whole status answer, kept instead of the answer. It tells apart what the answer names —
+        Claude Code: account, organisation, plan; Codex: a ChatGPT login from an API key, never one
+        ChatGPT account or plan from another. A login its status still reports but `expiry_command`
+        says expired is signed out (`LoginStatus.expired`); that second command runs only then, one CLI at a time."""
         status = await self._auth_status(env, timeout=timeout)
         if status is None:
-            return None, "", ""
+            return LoginStatus(signed_in=None)
         if not (status[0] == 0 and self.accepts_any_auth(*status[1:])):
-            return False, "", ""
-        login = hashlib.sha256(self.login_identity(*status[1:]).encode()).hexdigest()[:16]
-        return True, self.signed_in_as(*status[1:]), login
+            return LoginStatus(signed_in=False)
+        if await self._expired(env, timeout=timeout):
+            return LoginStatus(signed_in=False, expired=True)
+        return LoginStatus(signed_in=True, account=self.signed_in_as(*status[1:]), login=hashlib.sha256(self.login_identity(*status[1:]).encode()).hexdigest()[:16])
 
     def login_identity(self, stdout: str, stderr: str) -> str:
         """The part of the status answer that names the login (`login_status`): its stdout, never a notice
@@ -440,12 +478,12 @@ class AgentProvider(ABC):
         confirmed = self._logged_in.get(key)
         if confirmed is not None and time.monotonic() - confirmed[0] < self.LOGIN_REUSE_SECONDS:
             return True
-        logged_in, _account, login = await self.login_status(env, timeout=timeout)
-        if logged_in:
-            self._logged_in[key] = (time.monotonic(), login)
+        status = await self.login_status(env, timeout=timeout)
+        if status.signed_in:
+            self._logged_in[key] = (time.monotonic(), status.login)
         else:
             self._logged_in.pop(key, None)
-        return logged_in
+        return status.signed_in
 
     def login(self, env: dict[str, str]) -> str:
         """Which login `authenticated` last confirmed for `env` (`login_status`); "" when none was (a
@@ -757,6 +795,9 @@ class ClaudeCodeProvider(AgentProvider):
     media_model_field = "claude_media_criteria"
     auth_home_env = ("CLAUDE_CONFIG_DIR",)
     home_folder = ".claude"
+    # 2.1.288: « Failed to authenticate: OAuth session expired and could not be refreshed »; its docs:
+    # « Login expired · Please run /login ».
+    login_lost = re.compile(r"OAuth session expired|OAuth token has expired|Login expired|Please run /login|Not logged in", re.IGNORECASE)
     settings_file = "settings.json"
     no_extra_usage_guidance = (
         "in Claude Settings → Usage, keep Usage credits disabled, ensure prepaid balance is zero, "
@@ -805,6 +846,13 @@ class ClaudeCodeProvider(AgentProvider):
 
     def auth_command(self) -> list[str]:
         return [self.executable(), "auth", "status"]
+
+    # Its JSON status keeps `loggedIn: true` for a claude.ai login that expired and could not be
+    # refreshed; its text status then says « Login: Expired — log in again » and exits 1 (2.1.288).
+    expired_said = re.compile(r"^Login:\s*Expired\b", re.IGNORECASE | re.MULTILINE)
+
+    def expiry_command(self) -> list[str]:
+        return [self.executable(), "auth", "status", "--text"]
 
     def media_help_text(self) -> str:
         """Installed parser vocabulary only; this never authenticates or starts a model turn."""

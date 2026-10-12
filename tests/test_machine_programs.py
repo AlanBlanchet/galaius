@@ -11,7 +11,7 @@ import httpx
 import pytest
 from galaius_core import AgentSignIn
 
-from galaius.agents.providers import PROVIDERS
+from galaius.agents.providers import PROVIDERS, AgentProvider, LoginStatus
 from galaius.machine_programs import AgentPrograms, ProgramFailed
 
 SCRIPT = b"#!/bin/sh\necho installed\n"
@@ -55,7 +55,7 @@ def test_a_job_that_breaks_ends_failed_and_a_late_code_never_reopens_it(tmp_path
     """Whatever stops a job (here its version probe and its install both break), its program reads
     `failed`, never stuck `installing`; a device code its sign-in prints afterwards changes nothing,
     and asking again starts a new job."""
-    monkeypatch.setattr(AgentPrograms, "_status", lambda self, provider, environment: (False, "", ""))
+    monkeypatch.setattr(AgentPrograms, "_status", lambda self, provider, environment: LoginStatus(signed_in=False))
     monkeypatch.setattr(AgentPrograms, "installable", staticmethod(lambda: (PROVIDERS["claude"],)))
     monkeypatch.setattr(AgentPrograms, "version", lambda self, provider: (_ for _ in ()).throw(Broken("no version")))
     monkeypatch.setattr(type(PROVIDERS["claude"]), "available", lambda self: False)
@@ -95,7 +95,7 @@ def test_the_address_claude_opens_reaches_the_job_through_its_browser_never_a_lo
     opener.write_text(f'#!/bin/sh\necho "$1 $BROWSER $GALAIUS_SIGN_IN_HANDOFF" > {opened}\n')
     opener.chmod(0o755)
     signed_in = threading.Event()
-    monkeypatch.setattr(AgentPrograms, "_status", lambda self, provider, environment: (signed_in.is_set(), "", ""))
+    monkeypatch.setattr(AgentPrograms, "_status", lambda self, provider, environment: LoginStatus(signed_in=signed_in.is_set()))
     monkeypatch.setattr(AgentPrograms, "poll_seconds", 0.1)
     monkeypatch.setattr(AgentPrograms, "terminal_seconds", 0.5)
     monkeypatch.setattr(type(PROVIDERS["claude"]), "available", lambda self: True)
@@ -118,3 +118,46 @@ def test_the_address_claude_opens_reaches_the_job_through_its_browser_never_a_lo
         assert opened.read_text().split() == [CLAUDE_SIGN_IN, str(opener)]
     assert "43117" not in caplog.text
     assert not jobs.log_path.exists() or "43117" not in jobs.log_path.read_text()
+
+
+#: Claude Code 2.1.288 with its claude.ai login expired and not refreshable: the JSON status still says
+#: `loggedIn: true`, the text status says « Login: Expired » and exits 1. `old` is a Claude Code without
+#: `--text` (its own refusal, exit 1); `slow` answers neither in time.
+EXPIRED_CLAUDE = """#!/bin/sh
+[ -e "$0.slow" ] && sleep 30
+[ "$1 $2" = "auth status" ] || exit 0
+if [ "$3" = --text ]; then
+  [ -e "$0.old" ] && { echo "error: unknown option '--text'" >&2; exit 1; }
+  [ -e "$0.expired" ] && { echo "Login: Expired — log in again"; echo "Not logged in. Run claude auth login to authenticate."; exit 1; }
+  echo "Email: alan@example.com"; exit 0
+fi
+echo '{"loggedIn": true, "authMethod": "claude.ai", "email": "alan@example.com", "subscriptionType": "max"}'
+"""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="its stand-in program is a POSIX shell script")
+def test_an_expired_login_reads_signed_out_never_ready_and_a_slow_check_keeps_the_last_answer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Claude installed, its login expired: signed out with `expired` (installed, so « Se reconnecter »,
+    never an install), never ready; signed in again: ready, also on a Claude Code too old for the text
+    status (its refusal is no expiry). A status check that cannot answer in time on a busy PC keeps that
+    last answer instead of reading signed out."""
+    claude = tmp_path / "claude"
+    claude.write_text(EXPIRED_CLAUDE)
+    claude.chmod(0o755)
+    (tmp_path / "claude.expired").touch()
+    monkeypatch.setattr(type(PROVIDERS["claude"]), "available", lambda self: True)
+    monkeypatch.setattr(type(PROVIDERS["claude"]), "executable", lambda self: str(claude))
+    monkeypatch.setattr(AgentPrograms, "installable", staticmethod(lambda: (PROVIDERS["claude"],)))
+    monkeypatch.setattr(AgentPrograms, "version", lambda self, provider: "2.1.288 (Claude Code)")
+    jobs = AgentPrograms(environment={"PATH": "/usr/bin:/bin"}, log_path=tmp_path / "agent-programs.log")
+    expired = jobs.states()[0]
+    assert (expired.step, expired.available, expired.signed_in, expired.expired) == ("signed_out", True, False, True)
+    (tmp_path / "claude.expired").unlink()
+    ready = jobs.states()[0]
+    assert (ready.step, ready.signed_in, ready.expired, ready.account) == ("ready", True, False, "alan@example.com")
+    (tmp_path / "claude.old").touch()
+    assert jobs.states()[0].step == "ready"
+    (tmp_path / "claude.slow").touch()
+    asked = AgentProvider.login_status
+    monkeypatch.setattr(AgentProvider, "login_status", lambda self, env, timeout=10: asked(self, env, timeout=0.3))
+    assert jobs.states()[0].step == "ready"

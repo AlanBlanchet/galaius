@@ -1799,6 +1799,37 @@ def test_a_paused_run_is_claimed_once_at_its_reset_and_its_sub_run_is_left_to_it
     assert reg.get_run("lim-sub").resume_at is None
 
 
+# A run its expired login stopped resumes by itself once that login is signed in again (owner 2026-10-12:
+# run dcb9f38e ended on this line when the PC's Claude Code login expired).
+_LOGIN_EXPIRED = "Failed to authenticate: OAuth session expired and could not be refreshed"
+
+
+@pytest.mark.parametrize("said, paused", [
+    (_LOGIN_EXPIRED, True),
+    ("Login expired · Please run /login", True),
+    (_SESSION_LIMIT, False),  # the usage limit's own resume, at its reset
+    ("Error: the build failed", False),
+])
+def test_only_a_lost_login_pauses_a_run_until_signed_in_again(said, paused):
+    _ended_on("login1", said, pid=411)
+    _ended_on("login1-sub", said, pid=412, parent="login1")
+    assert [run.run_id for run in reg.login_paused()] == (["login1"] if paused else [])
+
+
+def test_a_run_its_lost_login_stopped_is_claimed_once_and_a_second_loss_at_once_is_left_to_continuer(monkeypatch):
+    run = _ended_on("login2", _LOGIN_EXPIRED, pid=413)
+    assert reg.claim_login_resume("login2", now=run.finished_at + reg.LOGIN_RESUME_WINDOW + 1) is None, "resumed a day after it stopped"
+    claimed = reg.claim_login_resume("login2", now=run.finished_at + 60)
+    assert claimed is not None and claimed.resumed_at == run.finished_at + 60
+    assert reg.claim_login_resume("login2", now=run.finished_at + 61) is None, "a second runner resumed it again"
+    resumed = reg.begin_turn("login2", pid=414, model="claude-opus-5-5")
+    with reg.raw_events_path("login2").open("a") as stream:
+        stream.write(_claude_error_stream(_LOGIN_EXPIRED))
+    monkeypatch.setattr(reg.time, "time", lambda: claimed.resumed_at + 10)
+    assert reg.finish("login2", exit_code=1, expected_pid=414, expected_lifecycle_token=resumed.lifecycle_token)
+    assert reg.login_paused(now=claimed.resumed_at + 20) == [], "a login still lost after its resume looped"
+
+
 def test_a_resumed_turn_refused_again_right_away_is_left_to_reprendre(monkeypatch):
     """The resumed turn hears the same « resets 5:20pm » just after 17:20: read then, it names TOMORROW's
     17:20 (code-reviewer r1) — the window did not reopen, so it is never paused for a day, nor looped."""

@@ -31,9 +31,9 @@ from galaius_core import (
 )
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
 
-from galaius.agents.providers import PROVIDERS, ProgramInstaller
+from galaius.agents.providers import PROVIDERS, LoginStatus, ProgramInstaller
 from galaius.agents.providers import AgentProvider as Program
-from galaius.agents.subscriptions import Subscription
+from galaius.agents.subscriptions import Subscription, SubscriptionRefused
 from galaius.processes import end_process_tree, process_group_options
 from galaius.sign_in_browser import SignInHandoff
 
@@ -76,6 +76,8 @@ class AgentPrograms(BaseModel):
 
     #: Each job by its program and login (a subscription's id; None: the default login).
     _jobs: dict[tuple[str, UUID | None], AgentProviderState] = PrivateAttr(default_factory=dict)
+    #: Each login's last status check that completed and when (monotonic), by program and environment (`_status`).
+    _answered: dict[tuple[str, frozenset[tuple[str, str]]], tuple[float, LoginStatus]] = PrivateAttr(default_factory=dict)
     _lock: threading.Lock = PrivateAttr(default_factory=threading.Lock)
 
     @staticmethod
@@ -109,9 +111,18 @@ class AgentPrograms(BaseModel):
         with self._lock:
             if (job := self._jobs.get(key)) is not None and job.step in self.RUNNING:
                 return job
-            started = self._jobs[key] = now.model_copy(update={"step": "signing_in" if now.available else "installing", "changed_at": datetime.now(UTC)})
+            started = self._jobs[key] = now.model_copy(update={"step": "signing_in" if now.available else "installing", "expired": False, "changed_at": datetime.now(UTC)})
         threading.Thread(target=self._job, args=(provider, subscription), name=f"program-{name}", daemon=True).start()
         return started
+
+    def signed_in(self, name: str, subscription_id: UUID | None) -> bool | None:
+        """Whether `name`'s login (`subscription_id`'s; None: the default one) is signed in here now, as its
+        state reads (`_status`); a subscription no longer here is not."""
+        try:
+            subscription = Subscription.of(subscription_id) if subscription_id is not None else None
+        except SubscriptionRefused:
+            return False
+        return self._status(PROVIDERS[name], self._environment(subscription)).signed_in
 
     def sign_out(self, name: AgentProvider, subscription_id: UUID) -> AgentProviderState:
         """`subscription_id` signed out: its program's own sign-out inside its folder, then the folder
@@ -126,6 +137,7 @@ class AgentPrograms(BaseModel):
         self._logout(subscription)
         with self._lock:
             self._jobs.pop(self._key(subscription.program, subscription), None)
+            self._answered.pop((subscription.program.name, frozenset(self._environment(subscription).items())), None)
         return state.model_copy(update={"step": "signed_out", "signed_in": False, "usage": (), "changed_at": datetime.now(UTC)})
 
     # ---- the job -------------------------------------------------------------------------
@@ -196,13 +208,13 @@ class AgentPrograms(BaseModel):
         state offers the command to run it by hand in a terminal here. A subscription's runs inside its folder, and is undone when the default login no
         longer names the same login after it."""
         key, environment = self._key(provider, subscription), self._environment(subscription)
-        signed_in, account, login_digest = self._status(provider, environment)
-        if signed_in:
-            self._update(key, step="ready", signed_in=True, account=account, login=login_digest, sign_in=None)
+        status = self._status(provider, environment)
+        if status.signed_in:
+            self._update(key, step="ready", signed_in=True, expired=False, account=status.account, login=status.login, sign_in=None)
             return
-        default = self._status(provider, self.environment)[2] if subscription is not None else ""
+        default = self._status(provider, self.environment).login if subscription is not None else ""
         deadline = datetime.now(UTC) + timedelta(seconds=self.sign_in_seconds)
-        self._update(key, step="signing_in", signed_in=False, sign_in=AgentSignIn(expires_at=deadline))
+        self._update(key, step="signing_in", signed_in=False, expired=False, sign_in=AgentSignIn(expires_at=deadline))
         terminal = time.monotonic() + self.terminal_seconds
         # 0700 on POSIX; on Windows a helper still holding the file never hides how the sign-in ended.
         with tempfile.TemporaryDirectory(prefix="galaius-sign-in-", ignore_cleanup_errors=True) as folder:
@@ -217,12 +229,12 @@ class AgentPrograms(BaseModel):
                         self._signing(key, link=link)
                     elif time.monotonic() >= terminal and (heard := self._jobs[key].sign_in) is not None and heard.code is None:
                         self._signing(key, command=provider.login_command(subscription.overlay() if subscription is not None else {}))
-                    signed_in, account, login_digest = self._status(provider, environment)
-                    if signed_in:
-                        if subscription is not None and self._status(provider, self.environment)[2] != default:
+                    status = self._status(provider, environment)
+                    if status.signed_in:
+                        if subscription is not None and self._status(provider, self.environment).login != default:
                             self._logout(subscription)
                             raise ProgramFailed("sign_in_failed", "the sign-in changed this computer's default login; the subscription was signed out again")
-                        self._update(key, step="ready", signed_in=True, account=account, login=login_digest, sign_in=None)
+                        self._update(key, step="ready", signed_in=True, account=status.account, login=status.login, sign_in=None)
                         return
                     if login.poll() is not None:
                         raise ProgramFailed("sign_in_failed", f"its sign-in ended (exit {login.returncode}) without signing in")
@@ -282,8 +294,17 @@ class AgentPrograms(BaseModel):
         """What a program runs with for this login: the system variables, its folder named to it."""
         return self.environment if subscription is None else {**self.environment, **subscription.overlay()}
 
-    def _status(self, provider: Program, environment: dict[str, str]) -> tuple[bool | None, str, str]:
-        return asyncio.run(provider.login_status(environment))
+    def _status(self, provider: Program, environment: dict[str, str]) -> LoginStatus:
+        """Its login now; a check that could not complete (a CLI slow to answer on a busy PC) is its last
+        completed answer within `LOGIN_REUSE_SECONDS`, never « signed out »; past that, unknown."""
+        key = provider.name, frozenset(environment.items())
+        status = asyncio.run(provider.login_status(environment))
+        with self._lock:
+            if status.signed_in is not None:
+                self._answered[key] = time.monotonic(), status
+            elif (last := self._answered.get(key)) is not None and time.monotonic() - last[0] < provider.LOGIN_REUSE_SECONDS:
+                return last[1]
+        return status
 
     def _logout(self, subscription: Subscription) -> None:
         """Its program's own sign-out inside its folder, then the folder. A sign-out that fails keeps
@@ -311,12 +332,12 @@ class AgentPrograms(BaseModel):
         its `changed_at` (when the web's job last moved it) while it is still ready: the server tells
         the owner of a sign-in once, by that time."""
         base = self._base(provider, subscription)
-        signed_in, account, login_digest = self._status(provider, self._environment(subscription)) if base.available else (False, "", "")
-        if not signed_in and last is not None and last.step == "failed":
+        status = self._status(provider, self._environment(subscription)) if base.available else LoginStatus(signed_in=None)
+        if not status.signed_in and last is not None and last.step == "failed":
             return last
-        step: AgentProgramStep = "missing" if not base.available else "ready" if signed_in else "signed_out"
+        step: AgentProgramStep = "missing" if not base.available else "ready" if status.signed_in else "signed_out"
         kept = last.changed_at if last is not None and last.step == step else None
-        return base.model_copy(update={"step": step, "signed_in": signed_in if base.available else None, "account": account, "login": login_digest, "changed_at": kept})
+        return base.model_copy(update={"step": step, "signed_in": status.signed_in, "expired": status.expired, "account": status.account, "login": status.login, "changed_at": kept})
 
     def version(self, provider: Program) -> str:
         try:
