@@ -11,12 +11,12 @@ from uuid import uuid4
 import pytest
 
 from galaius.agents import registry as reg
-from galaius.agents.conversations import ConversationIndex, ConversationScope
+from galaius.agents.conversations import TIERS, TYPED, ConversationIndex, ConversationScope
 from galaius.agents.events import AgentEvent, instant
 from galaius.agents.subscriptions import Subscription
 from galaius.agents.subscriptions import RunSubscription
 from galaius.fence import FenceSpec
-from galaius.machine_agents import redact
+from galaius.machine_agents import MachineAgents, redact
 from galaius.server import tools_agents
 
 # Built in pieces so no secret scanner mistakes the fixture for a real key.
@@ -238,3 +238,50 @@ def test_the_persons_prompt_ranks_first_and_no_search_finds_a_search(world: dict
     index.refresh(None)
     with index.connect() as db:
         db.execute("INSERT INTO lines_text(lines_text, rank) VALUES ('integrity-check', 1)")
+
+
+def _web_run(project: Path, task: str, *events: AgentEvent, parent: str | None = None) -> str:
+    """A run in the web launcher session of this computer: the chat the person opened there, or (`parent`) one an agent of it started."""
+    run_id = str(uuid4())
+    reg.save_run(reg.AgentRun(run_id=run_id, provider="claude", name="main", agent="main", cwd=str(project), task=task, parent_run_id=parent,
+                              session_id=MachineAgents.web_session(str(uuid4())), started_at=1_760_200_000.0, pid=None, lifecycle_token="w" * 32))
+    for event in (*events, AgentEvent(kind="text", text="Done.", at=1_760_200_200.0)):
+        reg.append_event(run_id, event)
+    return run_id
+
+
+def _codex(project: Path, source: str | dict, prompt: str) -> str:
+    """A saved Codex session its `source` opened (`vscode`: his editor; `exec`: headless; a sub-agent thread)."""
+    thread = str(uuid4())
+    folder = project.parent.parent / ".codex" / "sessions" / "2026" / "10" / "12"
+    folder.mkdir(parents=True, exist_ok=True)
+    meta = {"cwd": str(project), "originator": "codex_vscode", "source": source} | ({"parent_thread_id": str(uuid4())} if isinstance(source, dict) else {})
+    (folder / f"rollout-2026-10-12T01-00-00-{thread}.jsonl").write_text("".join(json.dumps(record) + "\n" for record in (
+        {"type": "session_meta", "timestamp": "2026-10-12T01:00:00Z", "payload": meta},
+        {"type": "response_item", "timestamp": "2026-10-12T01:00:01Z", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": prompt}]}},
+    )), encoding="utf-8")
+    return thread
+
+
+@pytest.mark.parametrize("who, typed", [
+    ("web chat prompt", True), ("web chat message", True), ("web chat continue button", False), ("agent of a web chat", False),
+    ("codex editor", True), ("codex approval review", False), ("codex headless", False),
+])
+def test_the_person_typed_it_in_the_web_or_his_editor_never_an_agent_quoting_him(world: dict, who: str, typed: bool) -> None:
+    project, said = world["project"], f"can we stop {PHRASE} today"
+    quoted = f"The following is the Codex agent history whose request action you are assessing. >>> {said}"
+    chat = _web_run(project, "first thing he asked")
+    made = {
+        "web chat prompt": lambda: _web_run(project, said),
+        "web chat message": lambda: _web_run(project, "something else", AgentEvent(kind="message", text=said, from_run="operator", to_run="x", at=1_760_200_100.0)),
+        "web chat continue button": lambda: _web_run(project, "something else", AgentEvent(kind="message", text=reg.RESUME_BRIEF, from_run="operator", to_run="x", at=1_760_200_100.0)),
+        "agent of a web chat": lambda: _web_run(project, f"Owner words: « {said} »", parent=chat),
+        "codex editor": lambda: _codex(project, "vscode", said),
+        "codex approval review": lambda: _codex(project, {"subagent": {"other": "guardian"}}, quoted),
+        "codex headless": lambda: _codex(project, "exec", f"AGENT_ROLE: tester. Owner words: « {said} »"),
+    }[who]()
+    index = world["index"]
+    index.refresh(None)
+    sought = reg.RESUME_BRIEF.split(".")[0] if who == "web chat continue button" else PHRASE
+    line = next(line for line in index.read(index.conversation(made, EVERYWHERE), None, 50) if sought in line.text)
+    assert line.tier == (TYPED if typed else TIERS[line.kind])

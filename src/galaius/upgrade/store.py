@@ -73,6 +73,13 @@ class Runtime(BaseModel):
     def usable(self) -> bool:
         return self.python.is_file()
 
+    @property
+    def site_packages(self) -> Path | None:
+        """Where its packages are installed, or None: it holds none."""
+        if sys.platform == "win32":
+            return found if (found := self.path / "Lib" / "site-packages").is_dir() else None
+        return next(self.path.glob("lib/python*/site-packages"), None)
+
     def receipt(self) -> "RuntimeReceipt | None":
         try:
             return RuntimeReceipt.model_validate_json((self.path / self.receipt_name).read_bytes())

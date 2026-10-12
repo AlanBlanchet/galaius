@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pytest
 
+from galaius import __version__
+from galaius.data import PackageData
 from galaius.upgrade.handoff import Handoff
 from galaius.upgrade.release import BuildIdentity
 from galaius.upgrade.store import Runtime, RuntimeReceipt, RuntimeStore, active_interpreter
@@ -33,6 +35,11 @@ WORKER = textwrap.dedent('''\
         stream.write(f"{{version}} {{os.getpid()}}\\n")
     if mode == "crash-on-start":
         sys.exit(3)
+    if mode in ("slow-start", "crash-later"):  # a real worker imports its server for seconds before it reads a line
+        time.sleep(4)
+        if mode == "crash-later":
+            sys.exit(3)
+        (here / "serving").touch()
     from galaius.upgrade.quiet import QuietPoint, UpgradeReady
     quiet = QuietPoint.current()
     if quiet.supervision.mode == "exit":
@@ -61,6 +68,8 @@ WORKER = textwrap.dedent('''\
         if method == "initialize":
             send({{"jsonrpc": "2.0", "id": message["id"], "result": {{"protocolVersion": message["params"]["protocolVersion"],
                   "capabilities": {{"tools": {{}}}}, "serverInfo": {{"name": "fake", "version": version}}}}}})
+        elif method == "tools/list":
+            send({{"jsonrpc": "2.0", "id": message["id"], "result": {{"tools": json.loads((here / "tools.json").read_text())}}}})
         elif method == "tools/call":
             name = message["params"]["name"]
             if name == "crash":
@@ -180,6 +189,39 @@ def test_relay_swaps_the_worker_behind_the_same_client_pipe(store: RuntimeStore)
     assert client.process.poll() is None  # same supervisor, same pipe
     assert any("upgraded from 0.1.0" in note.get("params", {}).get("data", "") for note in client.notifications)
     client.close()
+
+
+@pytest.mark.parametrize("worker", ["says the same", "says otherwise", "dies"])
+def test_relay_answers_the_handshake_and_tool_list_from_the_runtime_install_while_its_worker_starts(store: RuntimeStore, worker: str) -> None:
+    runtime = fake_runtime(store, "0.1.0", 1, mode="crash-later" if worker == "dies" else "slow-start")
+    announced = json.loads(PackageData.read(PackageData.MCP_ANNOUNCEMENT))
+    site = runtime.path / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
+    for name, version in (("galaius", "9.9.9"), ("mcp", "8.8.8")):  # what the WORKER's runtime installed, never this process's
+        (site / f"{name}-{version}.dist-info").mkdir(parents=True)
+        (site / f"{name}-{version}.dist-info" / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n")
+    (site / "galaius" / "data").mkdir(parents=True)
+    (site / "galaius" / "data" / PackageData.MCP_ANNOUNCEMENT).write_text(json.dumps(announced))
+    (runtime.path / "tools.json").write_text(json.dumps(announced["lists"]["tools/list"]["tools"][: 1 if worker == "says otherwise" else None]))
+    store.activate(runtime)
+    client = Client(store)
+    try:
+        assert client.call("server/discover")["error"]["code"] == -32601  # said at once: a client waits seconds on it
+        answer = client.initialize()["result"]
+        listed = {method: client.call(method)["result"] for method in announced["lists"]}  # a client asks for every list before its first turn
+        assert not (runtime.path / "serving").exists()  # all answered before the worker read a line
+        assert (answer["protocolVersion"], answer["serverInfo"]["version"], answer["capabilities"]["tools"]["listChanged"]) == ("2025-06-18", "8.8.8", True)
+        assert answer["instructions"].startswith("galaius v9.9.9 ")
+        assert listed == announced["lists"] and listed["tools/list"]["tools"]
+
+        call = client.call("tools/call", {"name": "whoami", "arguments": {}})  # held, then the worker the relay initialized takes it
+        if worker == "dies":
+            assert "did not run" in call["error"]["message"]
+            return
+        assert call["result"]["content"][0]["text"].startswith("0.1.0")
+        # The worker's own list was asked for before this call reached it: any notice came first.
+        assert any(note.get("method") == "notifications/tools/list_changed" for note in client.notifications) == (worker == "says otherwise")
+    finally:
+        client.close()
 
 
 def test_relay_swaps_only_once_every_call_is_answered_and_nothing_is_held(store: RuntimeStore) -> None:

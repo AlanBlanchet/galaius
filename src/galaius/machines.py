@@ -1435,7 +1435,7 @@ class MachineRunner:
         """What answers the web's agent requests, from the owner's current settings `current`."""
         self._sessions = self._sessions or MachineSessions(current.working_directory)
         return MachineAgents(roots=current.agent_roots_by_name(), permission=current.agent_permission, run_agents=current.run_agents,
-                             continue_conversations=current.continue_conversations, answer_approvals=current.answer_approvals, session=f"web-{current.machine_id}",
+                             continue_conversations=current.continue_conversations, answer_approvals=current.answer_approvals, session=MachineAgents.web_session(current.machine_id),
                              runs=self.web_runs, environment=self._safe_environment(),
                              sessions=self._sessions, logs=self._log_ring, seal=SecretsSeal.for_token(current.token.get_secret_value()),
                              workspaces=MachineWorkspaces(roots=current.agent_roots_by_name(), origins=current.clone_origins, jobs=self._workspace_jobs,

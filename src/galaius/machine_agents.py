@@ -381,8 +381,20 @@ class MachineAgents(BaseModel):
     run_agents: bool
     continue_conversations: bool = False
     answer_approvals: bool = False
-    #: The launcher session every web-started run is recorded under (one per machine).
+    #: The launcher session every web-started run is recorded under (one per machine, `web_session`).
     session: str
+    #: How a web launcher session's id starts.
+    web_prefix: ClassVar[str] = "web-"
+
+    @classmethod
+    def web_session(cls, machine_id: str) -> str:
+        """The launcher session of the runs the web starts on machine `machine_id`."""
+        return f"{cls.web_prefix}{machine_id}"
+
+    @classmethod
+    def is_web_session(cls, session_id: str | None) -> bool:
+        """`session_id` is a web launcher session (`web_session`)."""
+        return (session_id or "").startswith(cls.web_prefix)
     runs: WebRuns
     environment: dict[str, str]
     sessions: MachineSessions | None = None

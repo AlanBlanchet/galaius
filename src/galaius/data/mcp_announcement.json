@@ -1,0 +1,4240 @@
+{
+ "protocol_versions": [
+  "2024-11-05",
+  "2025-03-26",
+  "2025-06-18",
+  "2025-11-25"
+ ],
+ "server_name": "galaius",
+ "server_version": null,
+ "capabilities": {
+  "experimental": {},
+  "prompts": {
+   "listChanged": false
+  },
+  "resources": {
+   "subscribe": false,
+   "listChanged": false
+  },
+  "tools": {
+   "listChanged": false
+  }
+ },
+ "instructions": "galaius v{version} — drives a browser and desktop windows by vision/refs over MCP. Act by `ref` (from get_interactive_elements / get_page_state / screenshot), a CSS `selector`, accessible `name`, or `x,y` — whichever fits. Browser automation works on Linux, macOS and Windows. THE DESKTOP ITSELF works on all three too (Linux = X11): target=\"screen\", or one monitor target=\"screen:<n>\" (list_desktop_windows lists monitors with geometry, and windows). On it, run_actions key_press sends OS keys and chords — \"super\" (the Windows key; the Linux launcher), \"cmd+space\" (Spotlight), \"alt+tab\", \"Escape\" — type_text types into whatever has focus, click/scroll act at x,y; screenshot takes region=[x,y,w,h] and max_width= to keep one area of one monitor at a readable size; wait_for window=\"<title>\" or text=\"<words>\" (READ by OCR in the ACTIVE window by default, region=\"screen\" or [x,y,w,h] to widen or narrow; whole words only, never the echo of what you just typed; state visible/hidden) waits for a window or a launcher's result row instead of a sleep. Per-window targets and launch_app's sandbox are Linux-only. SEEING & MEDIA — pick the cheapest tool that answers your question: a FACT about the page (element present, text, count, attribute, URL) → get_page_state / get_interactive_elements / evaluate_js, no pixels needed. How it LOOKS → screenshot (add query= only when you need an interpretation, it costs a VLM call). Judging quality → review_ui (find defects) / verify_ui (PASS-FAIL your requirements) / measure_ui (deterministic contrast, free). BATCHING — reading or clicking over MANY elements is ONE run_actions evaluate_js step (a JS program run against the live page: query → filter → loop → read/act, args + return value, browser-isolated), NOT N get_interactive_elements→act round-trips. MOTION & VIDEO — an animation, a transition, 'did it move smoothly', or WHAT HAPPENED over time is invisible to a still screenshot: record it (start=True → act → start=False, browser AND desktop; duration= for a fixed clip), then pass query= to have the video model EXPLAIN the sequence (a native video model watches it; others sample frames). HEARING — galaius can HEAR, not only see: transcribe(path, query=…) turns any local audio OR video file (a download_asset clip, a record(path=…) capture, any mp3/wav/mp4/mov) into text, or ANSWERS a question about the sound — speakers, tone, music, spoken words — acoustically when the audio model can listen (Gemini, gpt-4o-audio). Sandbox recordings carry the launched app's own audio, so record(path=…) then transcribe(path=…) hears what a native app said or played. SESSIONS: omit `session` and you get your OWN isolated browser session — every reply names it in its `[session: …]` prefix, and it stays yours for this whole connection, so there is no name to invent and nothing to remember. Pass `session=\"default\"` only when you deliberately want to SHARE tabs with other callers on this connection. DESKTOP: use galaius's own tools — never shell out to xdotool/wmctrl, crop with ImageMagick, or `sleep` between steps: each has an equivalent above. For an app that fights the window manager, runs in the background, or is GPU-rendered and screen-grabs black (Flutter/Electron/games/emulators), launch it with `launch_app(\"<cmd>\")` — just the binary/command, no env tricks needed (the sandbox forces software GL itself so a GPU app renders instead of capturing black) — and drive it via `target=\"nested:<title>\"`, an isolated, occlusion-proof display. If `launch_app` isn't in your tool list, your galaius server is out of date: it moves to the newest installed version by itself once no browser session or sandbox is open (`galaius upgrade` shows its state); don't fall back to raw shell automation. If sandbox launches start failing (e.g. rc=1 for every app after many launches), the display is respawned automatically on the next `launch_app`, or call `reset_sandbox` to force a clean one — keep using the sandbox, don't switch to driving the real desktop. If galaius itself errors in a way that blocks you, behaves unexpectedly, or is missing a capability you needed, call `report_issue` — it sends the problem to galaius's maintainers so it gets fixed. That's the channel for feedback about the tool (not about the site you automate). If its result says a prefilled issue page was opened in the browser, tell the user to press Submit there; never copy report files into repos.",
+ "lists": {
+  "tools/list": {
+   "tools": [
+    {
+     "name": "agent_spawn",
+     "description": "Start another agent to work alongside you, and return its run id immediately.\n\nRuns as its own process on this machine, using the vendor CLI's own login — you never handle\na credential. Given galaius as an MCP server, so it can call these same tools: it can spawn\nagents of its own, including from a DIFFERENT provider than yours.\n\nReturns as soon as the agent is alive, not when it finishes — use agent_list / agent_events\nto watch it, agent_stop to end it.\n\nprofile: one of the OPERATOR's own named profiles (GALAIUS_PROFILE_* in ~/.galaius/config.env)\n    deciding what this agent runs on — e.g. a local Ollama model for a cheap critic while a\n    reviewer stays on a frontier one. A profile resolves to a fixed, allow-listed set of\n    variables; you cannot pass an environment, and an unknown name is refused rather than\n    silently ignored.\n\nsession_id: owning caller conversation, shared by spawn and list. Omit only when a\n    recorded parent or GALAIUS_SESSION_ID provides it. No cwd or MCP transport inference.\ntask: what the agent should do — write it as a complete brief; the agent cannot ask you.\nprovider: which CLI to run (\"claude\", \"codex\"). Omit it to rank the role's criterion across\n    every installed, switched-on CLI and start the first candidate this machine can run;\n    naming one restricts the ranked list to it and never falls through to another.\nagent: a definition the CLI resolves itself — Claude Code reads ~/.claude/agents/<name>.md —\n    so the run IS that agent (e.g. \"code-reviewer\"), with its own system prompt and tools.\n    The run is named after it, which is what makes a team readable at a glance.\nname: a short role label for the supervisor view. Defaults to the agent definition, then to\n    the provider — so several runs are not all just called \"claude\".\nmodel: does not override a configured role policy. Edit the rule in the agent UI instead.\n    A named agent and a satisfiable role criterion are required; no silent model fallback.\ncwd: directory to work in; defaults to galaius's own working directory.\npermission_mode: shared intent describing how much the agent may do on its own. galaius\n    translates it into each provider's CLI vocabulary; an intent with no exact provider\n    equivalent uses the provider's safest useful mapping. Omit to leave the CLI's own\n    configured default alone. Modes that act WITHOUT ASKING cannot be set from here — a person\n    chooses those for themselves, from the CLI or the panel.\nimage_paths: optional absolute paths to existing PNG, JPEG, or WebP files to attach to the\n    initial prompt. The provider must support native image attachments and the resolved model\n    must meet cap.vlm; paths are bounded and validated before spawn.\nagent_ref: exact server agent identity and revision. Both prompt and model policy come from\n    this revision, never the current head. Conflicts with a parent's capability pin fail.\ndelegate: name of a delegate capability on the parent run's recorded revision. Its exact\n    agent reference is resolved automatically. Named-role delegation also honours parent pins.\ndenied_tools: exact built-in or qualified MCP tool names to remove for this run and its\n    continuations. Only narrows the role tool set; never changes permissions or user config.",
+     "inputSchema": {
+      "$defs": {
+       "AgentRevisionRef": {
+        "additionalProperties": true,
+        "properties": {
+         "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+         },
+         "revision": {
+          "format": "uuid",
+          "title": "Revision",
+          "type": "string"
+         }
+        },
+        "required": [
+         "id",
+         "revision"
+        ],
+        "title": "AgentRevisionRef",
+        "type": "object"
+       }
+      },
+      "properties": {
+       "task": {
+        "title": "Task",
+        "type": "string"
+       },
+       "provider": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Provider"
+       },
+       "agent": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Agent"
+       },
+       "name": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Name"
+       },
+       "model": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Model"
+       },
+       "cwd": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Cwd"
+       },
+       "permission_mode": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Permission Mode"
+       },
+       "profile": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Profile"
+       },
+       "image_paths": {
+        "anyOf": [
+         {
+          "items": {
+           "type": "string"
+          },
+          "type": "array"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Image Paths"
+       },
+       "agent_ref": {
+        "anyOf": [
+         {
+          "$ref": "#/$defs/AgentRevisionRef"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null
+       },
+       "delegate": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Delegate"
+       },
+       "session_id": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Session Id"
+       },
+       "denied_tools": {
+        "anyOf": [
+         {
+          "items": {
+           "type": "string"
+          },
+          "type": "array"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Denied Tools"
+       }
+      },
+      "required": [
+       "task"
+      ],
+      "title": "agent_spawnArguments",
+      "type": "object"
+     },
+     "outputSchema": {
+      "properties": {
+       "result": {
+        "title": "Result",
+        "type": "string"
+       }
+      },
+      "required": [
+       "result"
+      ],
+      "title": "agent_spawnOutput",
+      "type": "object"
+     },
+     "_meta": {
+      "category": "agents"
+     }
+    },
+    {
+     "name": "agent_list",
+     "description": "Launched runs owned by this conversation, including nested children; not the agent roster.\n\nPass session_id used at spawn, or inherit the recorded parent / GALAIUS_SESSION_ID.\nMissing identity requires an explicit choice; it never lists unrelated sessions.\nall_sessions=True opts into machine-wide history, including unassigned old records.\ninclude_foreign=True only adds discovered editor sessions when all_sessions=True.\n\nAPI-equivalent cost is an estimate, not proof of billed spend. Charge path and account impact\nare unknown here: subscription usage may be included, limited, credited, or separately charged.",
+     "inputSchema": {
+      "properties": {
+       "include_foreign": {
+        "default": false,
+        "title": "Include Foreign",
+        "type": "boolean"
+       },
+       "session_id": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Session Id"
+       },
+       "all_sessions": {
+        "default": false,
+        "title": "All Sessions",
+        "type": "boolean"
+       }
+      },
+      "title": "agent_listArguments",
+      "type": "object"
+     },
+     "outputSchema": {
+      "properties": {
+       "result": {
+        "title": "Result",
+        "type": "string"
+       }
+      },
+      "required": [
+       "result"
+      ],
+      "title": "agent_listOutput",
+      "type": "object"
+     },
+     "_meta": {
+      "category": "agents"
+     }
+    },
+    {
+     "name": "agent_events",
+     "description": "What an agent has actually been doing — its most recent events, oldest first.",
+     "inputSchema": {
+      "properties": {
+       "run_id": {
+        "title": "Run Id",
+        "type": "string"
+       },
+       "limit": {
+        "default": 20,
+        "title": "Limit",
+        "type": "integer"
+       }
+      },
+      "required": [
+       "run_id"
+      ],
+      "title": "agent_eventsArguments",
+      "type": "object"
+     },
+     "outputSchema": {
+      "properties": {
+       "result": {
+        "title": "Result",
+        "type": "string"
+       }
+      },
+      "required": [
+       "result"
+      ],
+      "title": "agent_eventsOutput",
+      "type": "object"
+     },
+     "_meta": {
+      "category": "agents"
+     }
+    },
+    {
+     "name": "agent_stop",
+     "description": "Stop a running agent (and the tool processes it spawned).",
+     "inputSchema": {
+      "properties": {
+       "run_id": {
+        "title": "Run Id",
+        "type": "string"
+       }
+      },
+      "required": [
+       "run_id"
+      ],
+      "title": "agent_stopArguments",
+      "type": "object"
+     },
+     "outputSchema": {
+      "properties": {
+       "result": {
+        "title": "Result",
+        "type": "string"
+       }
+      },
+      "required": [
+       "result"
+      ],
+      "title": "agent_stopOutput",
+      "type": "object"
+     },
+     "_meta": {
+      "category": "agents"
+     }
+    },
+    {
+     "name": "agent_providers",
+     "description": "Which agent CLIs can be spawned here, and which named agents each can resolve.\n\nThe definitions matter as much as the providers: `agent_spawn(agent=...)` runs one of them\nwith its own system prompt and tools, and a caller — usually an agent, which cannot ask a\nfollow-up question — has no other way to learn the names.",
+     "inputSchema": {
+      "properties": {},
+      "title": "agent_providersArguments",
+      "type": "object"
+     },
+     "outputSchema": {
+      "properties": {
+       "result": {
+        "title": "Result",
+        "type": "string"
+       }
+      },
+      "required": [
+       "result"
+      ],
+      "title": "agent_providersOutput",
+      "type": "object"
+     },
+     "_meta": {
+      "category": "agents"
+     }
+    },
+    {
+     "name": "agent_send",
+     "description": "Send a message to another agent — it answers with its full context intact.\n\nDelivery resumes the recipient's own session rather than handing it a cold summary, so it\nremembers everything it already did and its reply lands in the same transcript — what makes\nthe exchange readable afterwards, and what a sequence view draws its arrows from.\n\nUse it to ask a teammate for something, or answer one. The exchange is recorded on BOTH\nsides, so either agent's history shows it.\n\nrun_id: the agent to address (agent_list shows the ids).\nmessage: what to say — write it as a complete request; it cannot ask you a follow-up.\nwait: block until it has replied, instead of returning as soon as the message is delivered.",
+     "inputSchema": {
+      "properties": {
+       "run_id": {
+        "title": "Run Id",
+        "type": "string"
+       },
+       "message": {
+        "title": "Message",
+        "type": "string"
+       },
+       "wait": {
+        "default": false,
+        "title": "Wait",
+        "type": "boolean"
+       }
+      },
+      "required": [
+       "run_id",
+       "message"
+      ],
+      "title": "agent_sendArguments",
+      "type": "object"
+     },
+     "outputSchema": {
+      "properties": {
+       "result": {
+        "title": "Result",
+        "type": "string"
+       }
+      },
+      "required": [
+       "result"
+      ],
+      "title": "agent_sendOutput",
+      "type": "object"
+     },
+     "_meta": {
+      "category": "agents"
+     }
+    },
+    {
+     "name": "conversation_search",
+     "description": "Search the conversations this computer holds — the runs galaius started and the sessions each\nagent CLI saved (the person's editor conversations) — for every word of `query`.\n\nSearched: what was asked, what was answered, what agents told each other, each tool call by its\nleading argument. Never what a tool returned, a call searching conversations itself, or the asking\nagent's own conversation. Credentials are masked. An agent searches its own project's\nconversations (the repository its folder is in); a fenced run, a member's run on a lent PC, or a\nrun denied reading files searches none (`ConversationScope`).\n\nquery: words that must all appear in one line; \"quoted words\" must appear together.\nlimit: conversations returned, best match first: the person's own prompts, then what agents were\n    asked, answered and told each other, then tool calls (1-50).\nproject: only conversations of the project with this name (a repository's folder name).\nsince: only conversations active since this date or moment (ISO 8601, e.g. 2026-10-11; UTC unless it says).\nevery_project: the person's own session only — search every project, not just this folder's.\nRead one with conversation_read(id, around=<line>).",
+     "inputSchema": {
+      "properties": {
+       "query": {
+        "title": "Query",
+        "type": "string"
+       },
+       "limit": {
+        "default": 20,
+        "title": "Limit",
+        "type": "integer"
+       },
+       "project": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Project"
+       },
+       "since": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Since"
+       },
+       "every_project": {
+        "default": false,
+        "title": "Every Project",
+        "type": "boolean"
+       }
+      },
+      "required": [
+       "query"
+      ],
+      "title": "conversation_searchArguments",
+      "type": "object"
+     },
+     "outputSchema": {
+      "properties": {
+       "result": {
+        "title": "Result",
+        "type": "string"
+       }
+      },
+      "required": [
+       "result"
+      ],
+      "title": "conversation_searchOutput",
+      "type": "object"
+     },
+     "_meta": {
+      "category": "agents"
+     }
+    },
+    {
+     "name": "conversation_read",
+     "description": "Read one conversation this computer holds, `limit` lines at a time (what was asked, answered,\nsaid between agents, each tool call by its leading argument; never tool output; credentials masked).\n\nid: its id (from conversation_search), or the start of exactly one.\naround: the line to centre on (conversation_search names it); omitted: its last lines.\nlimit: lines returned (1-200). Page with around= the first or last line number shown.\nevery_project: the person's own session only — read outside this folder's project.",
+     "inputSchema": {
+      "properties": {
+       "id": {
+        "title": "Id",
+        "type": "string"
+       },
+       "around": {
+        "anyOf": [
+         {
+          "type": "integer"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Around"
+       },
+       "limit": {
+        "default": 50,
+        "title": "Limit",
+        "type": "integer"
+       },
+       "every_project": {
+        "default": false,
+        "title": "Every Project",
+        "type": "boolean"
+       }
+      },
+      "required": [
+       "id"
+      ],
+      "title": "conversation_readArguments",
+      "type": "object"
+     },
+     "outputSchema": {
+      "properties": {
+       "result": {
+        "title": "Result",
+        "type": "string"
+       }
+      },
+      "required": [
+       "result"
+      ],
+      "title": "conversation_readOutput",
+      "type": "object"
+     },
+     "_meta": {
+      "category": "agents"
+     }
+    },
+    {
+     "name": "list_desktop_windows",
+     "description": "List desktop targets for the `target` param, on Linux, Windows and macOS: each monitor with\nits geometry (target=\"screen\" for the whole desktop, target=\"screen:<index>\" or\n\"screen:<name>\" for one) and each open window. On Linux target a window by its title, or — when\na title isn't unique — by target=\"wid:<id>\". On Windows / macOS windows are listed (for\nwait_for window=… and for screenshot region=…) but driven through the screen target.",
+     "inputSchema": {
+      "properties": {},
+      "title": "list_desktop_windowsArguments",
+      "type": "object"
+     },
+     "outputSchema": {
+      "properties": {
+       "result": {
+        "title": "Result",
+        "type": "string"
+       }
+      },
+      "required": [
+       "result"
+      ],
+      "title": "list_desktop_windowsOutput",
+      "type": "object"
+     },
+     "_meta": {
+      "category": "desktop"
+     }
+    },
+    {
+     "name": "launch_app",
+     "description": "Launch an app in galaius's isolated sandbox display and drive it there.\n\nThe sandbox is a clean, WM-less X display the agent owns — non-intrusive (it never touches the\nuser's real windows, cursor, or focus) and occlusion-proof. Use it when a window must be driven\nreliably regardless of what the user is doing, or when a GPU/desktop app won't screen-grab on\nthe real desktop. After launching, drive it with the normal tools using target=\"nested:<title>\"\n(one window) or target=\"nested\" (the whole sandbox screen): screenshot, run_actions, etc.\n\nSizing the display: the default is 1280x800 (desktop-shaped). A MOBILE/phone app laid out for\nportrait looks wrong there — pass device=\"phone\" (or \"tablet\"/\"desktop\") for a correctly-shaped\nscreen, or size=\"WxH\" (e.g. \"412x915\") for an exact resolution. The launched window is fitted to\nfill the display. Changing the size respawns the shared sandbox (any other app in it is dropped).\n\nScrolling a FLUTTER surface: use `scroll` (the wheel), not `drag`. Flutter's default\nScrollBehavior excludes the mouse from `dragDevices` on desktop, so a mouse DRAG on a\nscrollable (a ListView, a DraggableScrollableSheet) is ignored by the framework itself — a\nreal mouse behaves the same way, so this is not something automation can work around. `drag`\nis still right for reordering, sliders, and canvas gestures.\n\nTransient popups — menus, Qt/QComboBox drop-downs, tooltips — open as SEPARATE override-redirect\nwindows that a single-window capture (target=\"nested:<title>\") doesn't include; capture the whole\nsandbox screen (target=\"nested\") to see/act on them, or drive the widget by keyboard (arrows +\nEnter). A blurred bar (Flutter BackdropFilter) can render as a black strip under software GL —\nreach its controls via in-app routing or run on a real GPU.\n\ncommand: the command to run (e.g. \"xterm\", \"flutter run -d linux\", a built binary's path).\n    Shell syntax works too — \"cd /my/proj && uv run app\" runs via bash — but prefer `cwd=`\n    for a project directory (a plain command keeps the launch rewrites, e.g. Flutter's\n    software-GL flag, which shell commands bypass). A `VAR=value` prefix (\"FLUTTER_DEBUG=1\n    ./bundle/app\") sets that variable for the launch and keeps the rewrites too.\nwait: seconds to wait for a window to appear before returning.\nsize: nested display resolution as \"WxH\" (overrides device + the default).\ndevice: a display shape — \"phone\" (412x915), \"tablet\" (820x1180), or \"desktop\" (1280x800).\ncwd: working directory to launch in (so \"uv run app\" finds the project without a cd).\nreplace: stop whatever was launched into the sandbox before starting this app (the default).\n    The sandbox is shared, so relaunching used to ADD an instance rather than replace one:\n    several live copies of the same app accumulated and captures composited a stray widget\n    from an older instance over the current window. Pass replace=False to run two apps side\n    by side on one display.",
+     "inputSchema": {
+      "properties": {
+       "command": {
+        "title": "Command",
+        "type": "string"
+       },
+       "wait": {
+        "default": 6.0,
+        "title": "Wait",
+        "type": "number"
+       },
+       "size": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Size"
+       },
+       "device": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Device"
+       },
+       "cwd": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Cwd"
+       },
+       "replace": {
+        "default": true,
+        "title": "Replace",
+        "type": "boolean"
+       }
+      },
+      "required": [
+       "command"
+      ],
+      "title": "launch_appArguments",
+      "type": "object"
+     },
+     "outputSchema": {
+      "properties": {
+       "result": {
+        "title": "Result",
+        "type": "string"
+       }
+      },
+      "required": [
+       "result"
+      ],
+      "title": "launch_appOutput",
+      "type": "object"
+     },
+     "_meta": {
+      "category": "desktop"
+     }
+    },
+    {
+     "name": "reset_sandbox",
+     "description": "Tear down galaius's isolated sandbox display — kill every app launched into it and stop the\nnested X server. The next launch_app starts a fresh display.\n\nUse it when sandbox launches start failing (e.g. after many launch_app cycles a long session can\nleak apps and exhaust the display), or to clear all running sandbox apps between rebuilds. The\nreal desktop is unaffected — this only touches the isolated display galaius owns. A dead display\nis also respawned automatically on the next launch_app, so this is mainly for a proactive reset.",
+     "inputSchema": {
+      "properties": {},
+      "title": "reset_sandboxArguments",
+      "type": "object"
+     },
+     "outputSchema": {
+      "properties": {
+       "result": {
+        "title": "Result",
+        "type": "string"
+       }
+      },
+      "required": [
+       "result"
+      ],
+      "title": "reset_sandboxOutput",
+      "type": "object"
+     },
+     "_meta": {
+      "category": "desktop"
+     }
+    },
+    {
+     "name": "record",
+     "description": "Record actions as video and optionally analyze with vision.\n\nBrowser (target unset): Two-step — record(start=True), perform actions, then record(start=False).\nStarting AND stopping browser recording reload the page. Cookies and localStorage carry over,\nbut in-memory state and sessionStorage can reset. Seed the state under test after starting;\nreacquire refs after either transition. The result repeats this warning.\nDesktop (target=<window title> / nested): same two-step by default — record(start=True) begins a\nNON-blocking session and returns at once (so you can drive actions, e.g. tap a control to trigger\nan animation, while it captures), then record(start=False) stops and analyzes. Pass duration= for\na blocking one-shot clip of fixed length instead (no interleaved actions).\nA desktop target and a session you named are mutually exclusive (list_desktop_windows lists them).\n\nSandbox (nested) recordings include the APP'S AUDIO: launched apps play into the sandbox's\nprivate sink (never the user's speakers), and its monitor is muxed into the mp4 — so\nrecord(path=...) then transcribe(path=...) hears what the app said. Real-desktop/browser\nrecordings stay video-only.\n\nstart: True to begin recording, False to stop and export.\nquery: question for VLM visual analysis of the recording.\nduration: fixed clip length in seconds (desktop one-shot mode); omit for a start/stop session.\nfps: requested frames per second, default from config. Desktop capture uses this rate.\n    Browser capture uses the recorder's own encoded rate; requested_fps preserves your\n    request and measured_fps reports the saved clip's rate when probeable. Sample timestamps\n    describe sampled frames, not distinct source observations.\npath: save the video here. A relative path lands under ~/.galaius/out (galaius's output dir),\n    never the server's cwd; \"~\" expands. The reply names the absolute file written.\n\nSAMPLING LIMIT — read before asking about a FAST animation. Session backends always sample the\nclip into still frames at `video.fps` (default 5/s) and cap it at `video.max_frames`; an API\nbackend may send native video when supported. A sampled result cannot see anything shorter than\none interval (~200ms at the default), so it can report \"it happened all at once\" even when a\nfaster stagger exists. That is a limit of the sampling, NOT evidence the animation is missing\n(#86). For CSS timing claims — a staggered reveal, a transition duration, an animation-delay\nladder — do not use record at all: ask the page directly with evaluate_js and\n`document.getAnimations()`, reading each animation's `effect.getComputedTiming()`\n(delay/duration) and its keyframes. That is deterministic, free, and exact. Use record for WHAT\nHAPPENED over time at human speed; use getAnimations for sub-second timing.",
+     "inputSchema": {
+      "properties": {
+       "start": {
+        "default": true,
+        "title": "Start",
+        "type": "boolean"
+       },
+       "query": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Query"
+       },
+       "duration": {
+        "anyOf": [
+         {
+          "type": "number"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Duration"
+       },
+       "fps": {
+        "anyOf": [
+         {
+          "type": "integer"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Fps"
+       },
+       "path": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Path"
+       },
+       "target": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Target"
+       },
+       "session": {
+        "default": "auto",
+        "title": "Session",
+        "type": "string"
+       }
+      },
+      "title": "recordArguments",
+      "type": "object"
+     },
+     "outputSchema": {
+      "$defs": {
+       "MediaAnalysis": {
+        "properties": {
+         "status": {
+          "enum": [
+           "not_requested",
+           "completed",
+           "unavailable",
+           "failed"
+          ],
+          "title": "Status",
+          "type": "string"
+         },
+         "eligible": {
+          "anyOf": [
+           {
+            "type": "boolean"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "title": "Eligible"
+         },
+         "attempted": {
+          "title": "Attempted",
+          "type": "boolean"
+         },
+         "input_kind": {
+          "enum": [
+           "none",
+           "native_video",
+           "sampled_frames"
+          ],
+          "title": "Input Kind",
+          "type": "string"
+         },
+         "sample_timestamps": {
+          "items": {
+           "type": "number"
+          },
+          "title": "Sample Timestamps",
+          "type": "array"
+         },
+         "text": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Text"
+         }
+        },
+        "required": [
+         "status",
+         "eligible",
+         "attempted",
+         "input_kind"
+        ],
+        "title": "MediaAnalysis",
+        "type": "object"
+       },
+       "RecordingCapture": {
+        "properties": {
+         "status": {
+          "enum": [
+           "started",
+           "captured",
+           "unavailable"
+          ],
+          "title": "Status",
+          "type": "string"
+         },
+         "artifact": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Artifact"
+         },
+         "requested_fps": {
+          "title": "Requested Fps",
+          "type": "integer"
+         },
+         "measured_fps": {
+          "anyOf": [
+           {
+            "type": "number"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Measured Fps"
+         },
+         "duration": {
+          "anyOf": [
+           {
+            "type": "number"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Duration"
+         },
+         "max_frame_gap": {
+          "anyOf": [
+           {
+            "type": "number"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Max Frame Gap"
+         },
+         "timestamp_basis": {
+          "enum": [
+           "source_pts",
+           "derived_cadence"
+          ],
+          "title": "Timestamp Basis",
+          "type": "string"
+         },
+         "observation": {
+          "description": "Change among returned samples only; bounded by max_frame_gap and frames_truncated.",
+          "enum": [
+           "observed",
+           "not_observed",
+           "indeterminate"
+          ],
+          "title": "Observation",
+          "type": "string"
+         },
+         "frames_truncated": {
+          "default": false,
+          "title": "Frames Truncated",
+          "type": "boolean"
+         },
+         "frame_timestamps": {
+          "items": {
+           "type": "number"
+          },
+          "title": "Frame Timestamps",
+          "type": "array"
+         }
+        },
+        "required": [
+         "status",
+         "requested_fps",
+         "timestamp_basis",
+         "observation"
+        ],
+        "title": "RecordingCapture",
+        "type": "object"
+       }
+      },
+      "properties": {
+       "capture": {
+        "$ref": "#/$defs/RecordingCapture"
+       },
+       "analysis": {
+        "$ref": "#/$defs/MediaAnalysis"
+       }
+      },
+      "required": [
+       "capture",
+       "analysis"
+      ],
+      "title": "RecordingResult",
+      "type": "object"
+     },
+     "_meta": {
+      "category": "media"
+     }
+    },
+    {
+     "name": "report_issue",
+     "description": "Report a problem, missing capability, or feedback about GALAIUS ITSELF — not the\nsite/app you're automating — to its maintainers, so it gets fixed. Use when galaius errors\nin a way that blocks you, behaves unexpectedly, or is missing something you needed.\n\nFiles a GitHub issue on galaius's repo when gh is authed; otherwise opens the prefilled\nissue page in the user's browser (they just press Submit — tell them). Don't include\nsecrets/credentials; galaius appends its version + platform itself.\nkind: bug | limitation | feedback.",
+     "inputSchema": {
+      "properties": {
+       "title": {
+        "title": "Title",
+        "type": "string"
+       },
+       "body": {
+        "title": "Body",
+        "type": "string"
+       },
+       "kind": {
+        "default": "bug",
+        "title": "Kind",
+        "type": "string"
+       }
+      },
+      "required": [
+       "title",
+       "body"
+      ],
+      "title": "report_issueArguments",
+      "type": "object"
+     },
+     "outputSchema": {
+      "properties": {
+       "result": {
+        "title": "Result",
+        "type": "string"
+       }
+      },
+      "required": [
+       "result"
+      ],
+      "title": "report_issueOutput",
+      "type": "object"
+     },
+     "_meta": {
+      "category": "feedback"
+     }
+    },
+    {
+     "name": "list_providers",
+     "description": "Return subscription visual CLIs, API/local providers, and current configuration.\n\nUse to discover what models can be passed as the 'model' override to\nget_interactive_elements and screenshot tools.",
+     "inputSchema": {
+      "properties": {},
+      "title": "list_providersArguments",
+      "type": "object"
+     },
+     "outputSchema": {
+      "properties": {
+       "result": {
+        "title": "Result",
+        "type": "string"
+       }
+      },
+      "required": [
+       "result"
+      ],
+      "title": "list_providersOutput",
+      "type": "object"
+     },
+     "_meta": {
+      "category": "vision"
+     }
+    },
+    {
+     "name": "screenshot",
+     "description": "Capture the current page or a desktop window.\n\nDefault (target unset): operates on your own browser session (named in the reply).\ntarget=<window title>: captures a desktop window. target=\"screen\"/\"screen:<index>\": the whole\ndesktop or one monitor (use list_desktop_windows to discover windows + monitor indexes).\ntarget=\"file:<path>\": ANALYZE an existing image file (with query) instead of capturing — for an\nartifact produced out-of-band; this never writes, so it can't clobber the file.\nA desktop target and a session you named are mutually exclusive.\n\nReturns depend on parameters:\n- No selector/element, no query: page title + visible text content (browser) or, for a\n  desktop window, already-detected interactive elements as a numbered ref list if any exist\n  (else metadata + a pointer to get_interactive_elements). screenshot never runs VLM grounding.\n- No selector/element, with query: full screenshot analyzed by VLM.\n- With selector/element, no query: element metadata (browser only).\n- With selector/element, with query: cropped element screenshot analyzed by VLM (browser only).\n\nelement: integer index from get_interactive_elements (priority over selector).\nselector: CSS selector targeting one element (browser only).\nquery: question for VLM visual analysis of the captured content.\nscope: CSS selector to restrict text extraction to a sub-tree (browser only).\npath: OUTPUT sink — saves the captured PNG here (overwrites any existing file, and says so). A\n    relative path lands under ~/.galaius/out (galaius's output dir), never the server's cwd;\n    \"~\" expands. The reply names the absolute file written. To ANALYZE an existing image, use\n    target=\"file:<path>\", not path.\nreturn_image: when True, return the raw screenshot bytes as an MCP ImageContent alongside the text,\n    so the calling agent can SEE the pixels directly (not just a VLM summary).\nregion: [x, y, w, h] — keep only this rectangle of the capture (in the capture's own pixels:\n    monitor-relative for screen:<n>, window-relative for a window). Applied before query/path.\nmax_width: shrink the (cropped) image to at most this many pixels wide, aspect kept — a\n    5760-wide multi-monitor grab stays readable and cheap. With region/max_width the reply\n    states how an image point maps back to the capture coordinates click/hover take.\nmodel: override the configured VLM model for this call. Uses the VS Code configured model when not set.",
+     "inputSchema": {
+      "properties": {
+       "query": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Query"
+       },
+       "scope": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Scope"
+       },
+       "selector": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Selector"
+       },
+       "element": {
+        "anyOf": [
+         {
+          "type": "integer"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Element"
+       },
+       "path": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Path"
+       },
+       "return_image": {
+        "default": false,
+        "title": "Return Image",
+        "type": "boolean"
+       },
+       "debug_dir": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Debug Dir"
+       },
+       "target": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Target"
+       },
+       "session": {
+        "default": "auto",
+        "title": "Session",
+        "type": "string"
+       },
+       "model": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Model"
+       },
+       "region": {
+        "anyOf": [
+         {
+          "maxItems": 4,
+          "minItems": 4,
+          "prefixItems": [
+           {
+            "type": "integer"
+           },
+           {
+            "type": "integer"
+           },
+           {
+            "type": "integer"
+           },
+           {
+            "type": "integer"
+           }
+          ],
+          "type": "array"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Region"
+       },
+       "max_width": {
+        "anyOf": [
+         {
+          "type": "integer"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Max Width"
+       }
+      },
+      "title": "screenshotArguments",
+      "type": "object"
+     },
+     "_meta": {
+      "category": "vision"
+     }
+    },
+    {
+     "name": "get_interactive_elements",
+     "description": "List the interactive elements with numbered badges + their details; act on them by the\nreturned `ref`/`element` in run_actions.\n\nDefault (target unset): your own browser session — sets data-galaius-ref attributes via a\npure DOM scan (no VLM). get_page_state and screenshot return these refs too, so you often\nalready have them without a separate call. target=<window title>: VLM-detects elements in a\ndesktop window;\ntarget=\"screen\"/\"screen:<index>\": VLM-detects across the whole desktop or one monitor.\nA desktop target and a session you named are mutually exclusive (list_desktop_windows lists them).\n\nReturns a numbered list with role/name for each element.\nUse element indices in subsequent click_element actions, or ref values for click/type_text/hover (browser only).\nscope: CSS selector to restrict to a page sub-tree (browser only).\nelement: re-detect within a previously detected element's bounding box (crop and refine, window only).\nlimit: Maximum number of elements to return (browser only).\nWith query, also returns a vision analysis of the annotated screenshot.\ndebug_dir: when set, dump inputs/outputs/screenshots to this directory for debugging.\nmethod: detection strategy — \"default\" (AT-SPI with VLM fallback) or \"vlm\" (force VLM only). Applies to desktop windows.\nmodel: override the configured VLM model for this call. Uses the VS Code configured model when not set.\nfresh: desktop/nested only — force-clear this window's accumulated element cache before detecting,\n    so the returned refs reflect ONLY the current frame. Use it to recover if clicks stop landing\n    or the ref list looks stale/duplicated after many interactions (#57).",
+     "inputSchema": {
+      "properties": {
+       "scope": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Scope"
+       },
+       "query": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Query"
+       },
+       "element": {
+        "anyOf": [
+         {
+          "type": "integer"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Element"
+       },
+       "limit": {
+        "default": 50,
+        "title": "Limit",
+        "type": "integer"
+       },
+       "tab": {
+        "anyOf": [
+         {
+          "type": "integer"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Tab"
+       },
+       "debug_dir": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Debug Dir"
+       },
+       "target": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Target"
+       },
+       "session": {
+        "default": "auto",
+        "title": "Session",
+        "type": "string"
+       },
+       "method": {
+        "default": "default",
+        "title": "Method",
+        "type": "string"
+       },
+       "model": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Model"
+       },
+       "fresh": {
+        "default": false,
+        "title": "Fresh",
+        "type": "boolean"
+       }
+      },
+      "title": "get_interactive_elementsArguments",
+      "type": "object"
+     },
+     "outputSchema": {
+      "properties": {
+       "result": {
+        "title": "Result",
+        "type": "string"
+       }
+      },
+      "required": [
+       "result"
+      ],
+      "title": "get_interactive_elementsOutput",
+      "type": "object"
+     },
+     "_meta": {
+      "category": "vision"
+     }
+    },
+    {
+     "name": "review_ui",
+     "description": "Capture the UI and return a STRUCTURED critique of what's WRONG with it — low-contrast or\nunreadable text, overflow/clipping, truncation, misalignment, broken/empty/error states, black or\noccluded regions, tiny tap targets, off-theme colors — so you can JUDGE a UI's quality without\nhand-writing a vision prompt. Use it after a change to confirm the result looks right, or to hunt\ndefects on any screen.\n\nFindings come back severity-sorted, one per line as `[critical|major|minor]/<category> location:\nissue → fix`; a clean screen reports no defects. Works on any target like screenshot: unset/\n\"browser\" = the browser session, a window title = a desktop window, \"screen\"/\"nested[:title]\" =\nthe sandbox or whole desktop.\n\nfocus: optional extra emphasis (e.g. \"the background should be warm sand, not purple\"; \"check the\n    bottom nav isn't black/occluded\") — narrows the review WITHOUT replacing the built-in rubric.\nreference: path to a reference/target image (a design or a prior good build). When set, the review\n    judges how the capture DIVERGES from this reference (wrong accent, missing nav, layout drift),\n    instead of against a generic ideal — the reliable way to catch a build that's subtly off.\npath: save the reviewed PNG here. A relative path lands under ~/.galaius/out (galaius's output\n    dir), never the server's cwd; \"~\" expands. Requires a configured vision model (same as\n    screenshot's query).\nquality: pick the model by STAKES, not by name — \"low\"/\"medium\" use a cheap sovereign self-host\n    model, \"high\"/\"critical\" the best frontier model; \"critical\" also drops findings whose element\n    galaius can't confirm (highest precision, for a pre-ship sign-off). Unset = the configured/\n    auto model. An explicit model= still overrides this.",
+     "inputSchema": {
+      "properties": {
+       "focus": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Focus"
+       },
+       "reference": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Reference"
+       },
+       "target": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Target"
+       },
+       "session": {
+        "default": "auto",
+        "title": "Session",
+        "type": "string"
+       },
+       "scope": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Scope"
+       },
+       "path": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Path"
+       },
+       "model": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Model"
+       },
+       "quality": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Quality"
+       }
+      },
+      "title": "review_uiArguments",
+      "type": "object"
+     },
+     "outputSchema": {
+      "properties": {
+       "result": {
+        "title": "Result",
+        "type": "string"
+       }
+      },
+      "required": [
+       "result"
+      ],
+      "title": "review_uiOutput",
+      "type": "object"
+     },
+     "_meta": {
+      "category": "vision"
+     }
+    },
+    {
+     "name": "verify_ui",
+     "description": "Judge a UI against your LITERAL requirements — one PASS/FAIL per requirement, each anchored to\nthe exact element it judged. The acceptance complement to review_ui (which DISCOVERS defects): hand\nit the checklist a freeform critique glosses (\"the coin pill shows a GOLD coin, not a flame\"; \"the\nbottom nav has exactly 4 tabs\"; \"the FAB does not overlap the tab bar\") and it tests each to the\nletter — presence is not enough, the form/color/count/state must match.\n\nCaptures like review_ui — target unset/\"browser\" = the page; a window title; \"screen\";\n\"nested[:title]\"; or \"file:<path>\" to verify a saved image. Pass a reference image to judge each\nrequirement against a target design. For a hard form-defect, confirm the number with measure_ui.\n\nrequirements: the literal requirements to check, each judged PASS / FAIL / UNCLEAR with evidence.\nfocus: optional extra emphasis layered onto the rubric.\nreference: a target/design image to judge the build against.\npath: save the judged PNG here. A relative path lands under ~/.galaius/out (galaius's output\n    dir), never the server's cwd; \"~\" expands.\nquality: pick the model by STAKES — \"low\"/\"medium\" use a cheap sovereign model, \"high\"/\"critical\"\n    the best frontier; \"critical\" downgrades any PASS resting on an element galaius can't confirm.\n    Unset = configured/auto. An explicit model= overrides this.",
+     "inputSchema": {
+      "properties": {
+       "requirements": {
+        "items": {
+         "type": "string"
+        },
+        "title": "Requirements",
+        "type": "array"
+       },
+       "target": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Target"
+       },
+       "reference": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Reference"
+       },
+       "focus": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Focus"
+       },
+       "session": {
+        "default": "auto",
+        "title": "Session",
+        "type": "string"
+       },
+       "scope": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Scope"
+       },
+       "path": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Path"
+       },
+       "model": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Model"
+       },
+       "quality": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Quality"
+       }
+      },
+      "required": [
+       "requirements"
+      ],
+      "title": "verify_uiArguments",
+      "type": "object"
+     },
+     "outputSchema": {
+      "properties": {
+       "result": {
+        "title": "Result",
+        "type": "string"
+       }
+      },
+      "required": [
+       "result"
+      ],
+      "title": "verify_uiOutput",
+      "type": "object"
+     },
+     "_meta": {
+      "category": "vision"
+     }
+    },
+    {
+     "name": "measure_ui",
+     "description": "DETERMINISTIC pixel measurement of a UI — exact colors + WCAG contrast, NO VLM (no spend, fully\nreproducible). Use it for a number you can trust instead of a model's guess: the contrast ratio of\ntext vs background, the exact color at a point, or the biggest empty band on screen.\n\nCaptures like screenshot/review_ui — target unset/\"browser\" = the page; a window title; \"screen\";\n\"nested[:title]\"; or \"file:<path>\" to measure an existing image. Then:\n- region=\"x,y,w,h\": dominant colors in that box, the two-color WCAG contrast ratio (PASS/FAIL for\n  AA-normal 4.5, AA-large 3.0, AAA 7.0), and the largest uniform band inside it.\n- point=\"x,y\": the exact color (hex) at that pixel.\n- neither: whole-image palette + the largest uniform (empty) band.\n\nPairs with review_ui: the VLM flags a suspect (\"this text looks low-contrast\") → measure_ui\nconfirms the actual ratio. Coordinates are image pixels (as screenshot / get_interactive_elements\nreport them).\npath: save the measured PNG here. A relative path lands under ~/.galaius/out (galaius's output\n    dir), never the server's cwd; \"~\" expands. The reply names the absolute file written.",
+     "inputSchema": {
+      "properties": {
+       "target": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Target"
+       },
+       "region": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Region"
+       },
+       "point": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Point"
+       },
+       "session": {
+        "default": "auto",
+        "title": "Session",
+        "type": "string"
+       },
+       "scope": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Scope"
+       },
+       "path": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Path"
+       }
+      },
+      "title": "measure_uiArguments",
+      "type": "object"
+     },
+     "outputSchema": {
+      "properties": {
+       "result": {
+        "title": "Result",
+        "type": "string"
+       }
+      },
+      "required": [
+       "result"
+      ],
+      "title": "measure_uiOutput",
+      "type": "object"
+     },
+     "_meta": {
+      "category": "vision"
+     }
+    },
+    {
+     "name": "transcribe",
+     "description": "Transcribe an audio (or audio-bearing) file to text, and optionally answer a question about it.\n\nPoint it at a local file `path` — a clip you grabbed with download_asset, or a recording you\nsaved with record(path=...). Accepts mp3/wav/m4a/webm/ogg/flac and mp4/mov (the audio track is\nused). Returns the transcript; with `query`, returns an answer about the audio instead.\n\nAudio understanding is acoustic (it HEARS the clip — tone, speakers, music, sound events) when the\naudio model can take audio in chat (Gemini, gpt-4o-audio); with a transcription-only model\n(Whisper, gpt-4o-transcribe) the query is answered over the transcript. Set the model with the\n`audio.model` setting / GALAIUS_AUDIO_MODEL, or override per-call with `model`. Claude\nsubscription sessions are visual-only: audio requires `media.billing=api_allowed` and uses the\nconfigured API or local-compatible audio transport regardless of `media.backend`; transcript\nQ&A may use a session after a transcription-only model has produced text.\n\npath: local audio/media file to read.\nquery: optional question about the audio (omit for a plain transcript).\nmodel: override the configured audio model for this call.",
+     "inputSchema": {
+      "properties": {
+       "path": {
+        "title": "Path",
+        "type": "string"
+       },
+       "query": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Query"
+       },
+       "model": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Model"
+       }
+      },
+      "required": [
+       "path"
+      ],
+      "title": "transcribeArguments",
+      "type": "object"
+     },
+     "outputSchema": {
+      "properties": {
+       "result": {
+        "title": "Result",
+        "type": "string"
+       }
+      },
+      "required": [
+       "result"
+      ],
+      "title": "transcribeOutput",
+      "type": "object"
+     },
+     "_meta": {
+      "category": "media"
+     }
+    },
+    {
+     "name": "navigate",
+     "description": "Navigate to a URL and return page content. Browser-only — requires a session, not a window.\n\nscope: CSS selector to restrict to a page sub-tree.\nwait: \"networkidle\", \"load\", \"domcontentloaded\", a number of seconds (e.g. \"3\"), or a CSS\n    selector (waits for visibility, 10s timeout). Also accepted per-action in run_actions.\ntimeout: max milliseconds to wait for navigation. Default uses the 10s context default; raise it\n    for slow dev servers that compile routes on first hit (e.g. 60000 for a cold Next.js route).\nquery: when set, returns vision analysis instead of text summary.\nhttp_credentials: \"user:password\" for an HTTP Basic-auth site — Playwright authenticates at the\n    context level so the browser's native Sign-in dialog never appears (that dialog can't be\n    typed into reliably). Persists for the session; pass again to change it.\ndebug_dir: when set, dump inputs/outputs/screenshots to this directory for debugging.",
+     "inputSchema": {
+      "properties": {
+       "url": {
+        "title": "Url",
+        "type": "string"
+       },
+       "query": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Query"
+       },
+       "scope": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Scope"
+       },
+       "wait": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Wait"
+       },
+       "timeout": {
+        "anyOf": [
+         {
+          "type": "number"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Timeout"
+       },
+       "debug_dir": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Debug Dir"
+       },
+       "session": {
+        "default": "auto",
+        "title": "Session",
+        "type": "string"
+       },
+       "http_credentials": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Http Credentials"
+       }
+      },
+      "required": [
+       "url"
+      ],
+      "title": "navigateArguments",
+      "type": "object"
+     },
+     "outputSchema": {
+      "properties": {
+       "result": {
+        "title": "Result",
+        "type": "string"
+       }
+      },
+      "required": [
+       "result"
+      ],
+      "title": "navigateOutput",
+      "type": "object"
+     },
+     "_meta": {
+      "category": "browser"
+     }
+    },
+    {
+     "name": "run_actions",
+     "description": "Execute a sequence of actions on a browser session or desktop window.\n\nTARGET — the `target` param picks ONE surface:\n- A web page (the common case): leave `target` unset (or \"browser\"); actions run on browser\n  your own session (or the named `session`). This is the default for all web automation.\n- A NATIVE desktop app (not a web page — e.g. a terminal, editor, Electron/GTK/Qt window):\n  set `target=<window title substring>`. Call list_desktop_windows FIRST to discover titles.\n- The whole desktop: `target=\"screen\"` (all monitors combined) or `target=\"screen:<index>\"`\n  for one monitor (list_desktop_windows shows the monitor indexes) — Linux, Windows, macOS.\n  key_press / type_text there go to the desktop itself (the focused window, the OS launcher;\n  \"super\" is the Windows key / Linux launcher, \"cmd+space\" Spotlight on macOS):\n  [{\"type\":\"key_press\",\"key\":\"super\"}, {\"type\":\"type_text\",\"text\":\"settings\",\"clear_first\":false},\n   {\"type\":\"wait_for\",\"text\":\"Settings\"}, {\"type\":\"key_press\",\"key\":\"Return\"},\n   {\"type\":\"wait_for\",\"window\":\"Settings\"}].\nA desktop `target` and a `session` you named are mutually exclusive. For a website, leave\n`target` unset.\n\nTARGETING a click/type_text/hover/drag/scroll — any of: `ref` (browser, from\nget_interactive_elements / get_page_state / screenshot — unique, survives re-renders),\n`element` index (desktop), `selector` (CSS), `name`(+`role`) (accessible name), or `x`,`y`\ncoordinates. Use whichever fits; a `ref` avoids the \"N elements match\" ambiguity a bare\nname/selector can hit. A scroll's anchor picks WHICH widget receives the wheel (the one\nunder the pointer) — anchor it on the scrollable area (unanchored = window center on\ndesktop, current pointer in the browser).\n\nEach action needs a 'type' key to select the action model.\n\nMutating: click, double_click, type_text, scroll, drag, navigate, evaluate_js, upload_file, key_press, click_element, resize\n  - type_text with NO ref/selector types into whatever is focused — after a click on a field,\n    just type; you don't need to name the field twice.\n  - press (browser): mousedown, HOLD for `hold` seconds, mouseup — the only way to observe a\n    `:active` depth cue, since a click's down+up is instantaneous and a JS-dispatched\n    PointerEvent is untrusted so Chromium ignores it. Pair with record/screenshot to capture\n    the held frame; read the effect via computed style (`matches(':active')` under-reports).\n  - `wait` accepts a duration on ANY action (\"3\", \"8s\", \"1500ms\", \"1m\"), a load state\n    (\"networkidle\"/\"load\"/\"domcontentloaded\"), or a CSS selector to wait for.\n  - click: `button` picks which mouse button — \"left\" (default), \"right\", or \"middle\". A\n    right-click is the ONLY way to open a context menu gated on Qt.RightButton / contextmenu;\n    works on both desktop and browser targets.\n  - resize (DESKTOP/nested only): set the window to an exact width+height after launch — check\n    a layout at a narrower size without relaunching. Browser targets use emulate_device instead.\n  - double_click: a real dblclick on browser AND desktop/nested targets — select a word, fire\n    a dblclick handler (two clicks don't coalesce); takes `button` like click.\n  - select_text (browser): make a real DOM text selection in an element — for a selection-gated\n    control like a Lexical inline toolbar (drag dispatches drag-and-drop, not a selection).\nObservations: screenshot, wait_for, http_request, hover, annotate\nDialogs: handle_dialog — arm how the NEXT native JS dialog (confirm/alert/prompt) is answered:\n  {\"type\":\"handle_dialog\",\"action\":\"accept\"|\"dismiss\",\"prompt_text\":\"...\"} placed BEFORE the\n  step that triggers it (one-shot). Unarmed dialogs are dismissed (a confirm()-gated click\n  then no-ops) — every dialog is reported in the step output with its message.\nTab control: new_tab, switch_tab, close_tab\nMedia: emulate_device also forces CSS media features — `reduced_motion:\"reduce\"` (verify a\n  site's `@media (prefers-reduced-motion)` branch live), `color_scheme:\"dark\"`,\n  `forced_colors:\"active\"`; `\"null\"` clears one. They can be set ALONE (no viewport needed,\n  no page reload) and persist across new tabs and viewport changes.\nViewport: emulate_device — set the session to a device profile (a Playwright `device` name like\n  \"iPhone 13\", or explicit width+height (+ device_scale_factor/is_mobile/has_touch), or\n  reset=true) to verify responsive/mobile layouts at true device metrics. Run it before\n  navigating; the return value of an evaluate_js step is surfaced JSON-serialised as that step's\n  output (use `return <expr>` or an arrow that returns).\nTiming: sleep — a FIXED pause (max 30s). Use ONLY for genuine fixed delays (e.g. an\n  animation). To wait on something concrete, do NOT sleep-and-guess: attach `wait` to the\n  preceding action, or add a `wait_for` step — both block exactly until the condition holds.\nComparison: compare — VLM comparison of snapshots from earlier steps (by 1-based index).\n\nBrowser-only actions (navigate, evaluate_js, wait_for, upload_file, new_tab, switch_tab, close_tab, emulate_device, select_text) error when used with a desktop target.\n\nAny action can include 'wait' to wait after execution (networkidle, load, domcontentloaded, or a CSS selector — browser only).\nwait_for blocks until ONE condition holds — prefer it over `sleep`. Browser: a `selector`\n  reaches `state`, or a `text` substring appears. Desktop (any OS): `window=\"<title substring>\"`\n  appears (state \"visible\") or is gone (\"hidden\"); `text=\"<words>\"` is READ on screen (OCR, this\n  OS's own engine) until it appears / is gone, as whole words, never counting the echo of text\n  galaius typed there. What is read: `region=\"window\"` (default: the ACTIVE window of a screen\n  target), `\"screen\"`, or `[x,y,w,h]`. No condition = a pause of `timeout` ms.\nAny action can include 'observe' (a VLM query string) to capture a screenshot after execution and analyze it. The snapshot is stored by step index for later compare actions.\n\nscope: CSS selector to restrict the final capture to a page sub-tree (browser only).\nwait: after all actions, wait for a condition (browser only).\nquery: when set, returns vision analysis of the final state (or, with record, of the recording).\nrecord: when True, capture one frame per step and have a video model read them in order — so\n    it understands what each action produced (the flow), not just the end state. Works on\n    browser and desktop targets, on the live session (no context reset). Cost is bounded: the\n    frames are sampled to config.video_max_frames, so a short interaction keeps every step and\n    a long one is evenly down-sampled.\ndebug_dir: when set, dump inputs/outputs/screenshots to this directory for debugging.\nallow_self: permit driving the editor window hosting THIS session. Refused by default,\n    because a command typed there (a reload, a close) can kill the agent mid-task. Prefer\n    opening a separate window — a fresh one also picks up a rebuilt extension.",
+     "inputSchema": {
+      "$defs": {
+       "AnnotateAction": {
+        "additionalProperties": false,
+        "properties": {
+         "wait": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Wait"
+         },
+         "observe": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Observe"
+         },
+         "type": {
+          "const": "annotate",
+          "default": "annotate",
+          "title": "Type",
+          "type": "string"
+         },
+         "scope": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Scope"
+         },
+         "query": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Query"
+         },
+         "limit": {
+          "default": 50,
+          "title": "Limit",
+          "type": "integer"
+         }
+        },
+        "title": "AnnotateAction",
+        "type": "object"
+       },
+       "ClickAction": {
+        "additionalProperties": false,
+        "properties": {
+         "wait": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Wait"
+         },
+         "observe": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Observe"
+         },
+         "ref": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Ref"
+         },
+         "selector": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Selector"
+         },
+         "x": {
+          "anyOf": [
+           {
+            "type": "integer"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "X"
+         },
+         "y": {
+          "anyOf": [
+           {
+            "type": "integer"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Y"
+         },
+         "name": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Name"
+         },
+         "role": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Role"
+         },
+         "type": {
+          "const": "click",
+          "default": "click",
+          "title": "Type",
+          "type": "string"
+         },
+         "element": {
+          "anyOf": [
+           {
+            "type": "integer"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Element"
+         },
+         "button": {
+          "default": "left",
+          "enum": [
+           "left",
+           "right",
+           "middle"
+          ],
+          "title": "Button",
+          "type": "string"
+         }
+        },
+        "title": "ClickAction",
+        "type": "object"
+       },
+       "ClickElementAction": {
+        "additionalProperties": false,
+        "properties": {
+         "wait": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Wait"
+         },
+         "observe": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Observe"
+         },
+         "type": {
+          "const": "click_element",
+          "default": "click_element",
+          "title": "Type",
+          "type": "string"
+         },
+         "element": {
+          "title": "Element",
+          "type": "integer"
+         }
+        },
+        "required": [
+         "element"
+        ],
+        "title": "ClickElementAction",
+        "type": "object"
+       },
+       "CloseTabAction": {
+        "additionalProperties": false,
+        "properties": {
+         "wait": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Wait"
+         },
+         "observe": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Observe"
+         },
+         "type": {
+          "const": "close_tab",
+          "default": "close_tab",
+          "title": "Type",
+          "type": "string"
+         },
+         "index": {
+          "anyOf": [
+           {
+            "type": "integer"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Index"
+         }
+        },
+        "title": "CloseTabAction",
+        "type": "object"
+       },
+       "CompareAction": {
+        "additionalProperties": false,
+        "properties": {
+         "wait": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Wait"
+         },
+         "observe": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Observe"
+         },
+         "type": {
+          "const": "compare",
+          "default": "compare",
+          "title": "Type",
+          "type": "string"
+         },
+         "steps": {
+          "items": {
+           "type": "integer"
+          },
+          "title": "Steps",
+          "type": "array"
+         },
+         "query": {
+          "title": "Query",
+          "type": "string"
+         }
+        },
+        "required": [
+         "steps",
+         "query"
+        ],
+        "title": "CompareAction",
+        "type": "object"
+       },
+       "DoubleClickAction": {
+        "additionalProperties": false,
+        "description": "Double-click a target — selects a word in a contenteditable (Lexical/Payload richtext) so\na selection-gated toolbar appears, fires a dblclick handler, etc. Two separate `click`\nactions do NOT coalesce into a dblclick, so this is the way to get one (#32): Playwright's\nnative dblclick on the browser, and on a desktop/nested window the click primitive with\ncount=2, presses spaced inside the toolkit's double-click interval (#116). IS a click —\nsame targeting (ref/selector/element/name/x+y), same `button` — only the count differs.",
+        "properties": {
+         "wait": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Wait"
+         },
+         "observe": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Observe"
+         },
+         "ref": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Ref"
+         },
+         "selector": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Selector"
+         },
+         "x": {
+          "anyOf": [
+           {
+            "type": "integer"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "X"
+         },
+         "y": {
+          "anyOf": [
+           {
+            "type": "integer"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Y"
+         },
+         "name": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Name"
+         },
+         "role": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Role"
+         },
+         "type": {
+          "const": "double_click",
+          "default": "double_click",
+          "title": "Type",
+          "type": "string"
+         },
+         "element": {
+          "anyOf": [
+           {
+            "type": "integer"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Element"
+         },
+         "button": {
+          "default": "left",
+          "enum": [
+           "left",
+           "right",
+           "middle"
+          ],
+          "title": "Button",
+          "type": "string"
+         }
+        },
+        "title": "DoubleClickAction",
+        "type": "object"
+       },
+       "DragAction": {
+        "additionalProperties": false,
+        "properties": {
+         "wait": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Wait"
+         },
+         "observe": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Observe"
+         },
+         "type": {
+          "const": "drag",
+          "default": "drag",
+          "title": "Type",
+          "type": "string"
+         },
+         "name": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Name"
+         },
+         "role": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Role"
+         },
+         "from_x": {
+          "anyOf": [
+           {
+            "type": "integer"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "From X"
+         },
+         "from_y": {
+          "anyOf": [
+           {
+            "type": "integer"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "From Y"
+         },
+         "to_x": {
+          "anyOf": [
+           {
+            "type": "integer"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "To X"
+         },
+         "to_y": {
+          "anyOf": [
+           {
+            "type": "integer"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "To Y"
+         },
+         "from_ref": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "From Ref"
+         },
+         "to_ref": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "To Ref"
+         },
+         "steps": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Steps",
+          "type": "integer"
+         }
+        },
+        "title": "DragAction",
+        "type": "object"
+       },
+       "EmulateDeviceAction": {
+        "additionalProperties": false,
+        "description": "Reconfigure the browser session's viewport / device profile for the rest of the session —\nto verify responsive & mobile layouts at true device metrics (CSS size, DPR, touch). Give a\nPlaywright ``device`` name (``\"iPhone 13\"``, ``\"Pixel 7\"``, ``\"iPad Mini\"``) OR an explicit\n``width``+``height`` (plus optional ``device_scale_factor`` / ``is_mobile`` / ``has_touch`` /\n``user_agent``); ``reset=true`` restores the configured default viewport.\n\nViewport/DPR/mobile/touch are fixed when a browser context is created, so this rebuilds the\nsession context — cookies are preserved and the current URL is re-opened. Run it before\nnavigating (or it reloads the current page at the new size). At ``device_scale_factor`` ≠ 1 a\nscreenshot is DPR-scaled, so VLM/annotator ref boxes can be offset; layout/visual checks are\nunaffected. ``is_mobile`` is Chromium-only (ignored on Firefox/WebKit).",
+        "properties": {
+         "wait": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Wait"
+         },
+         "observe": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Observe"
+         },
+         "type": {
+          "const": "emulate_device",
+          "default": "emulate_device",
+          "title": "Type",
+          "type": "string"
+         },
+         "device": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Device"
+         },
+         "width": {
+          "anyOf": [
+           {
+            "type": "integer"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Width"
+         },
+         "height": {
+          "anyOf": [
+           {
+            "type": "integer"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Height"
+         },
+         "device_scale_factor": {
+          "anyOf": [
+           {
+            "type": "number"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Device Scale Factor"
+         },
+         "is_mobile": {
+          "anyOf": [
+           {
+            "type": "boolean"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Is Mobile"
+         },
+         "has_touch": {
+          "anyOf": [
+           {
+            "type": "boolean"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Has Touch"
+         },
+         "user_agent": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "User Agent"
+         },
+         "reduced_motion": {
+          "anyOf": [
+           {
+            "enum": [
+             "reduce",
+             "no-preference",
+             "null"
+            ],
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Reduced Motion"
+         },
+         "color_scheme": {
+          "anyOf": [
+           {
+            "enum": [
+             "light",
+             "dark",
+             "no-preference",
+             "null"
+            ],
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Color Scheme"
+         },
+         "forced_colors": {
+          "anyOf": [
+           {
+            "enum": [
+             "active",
+             "none",
+             "null"
+            ],
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Forced Colors"
+         },
+         "reset": {
+          "default": false,
+          "title": "Reset",
+          "type": "boolean"
+         }
+        },
+        "title": "EmulateDeviceAction",
+        "type": "object"
+       },
+       "EvaluateJsAction": {
+        "additionalProperties": false,
+        "description": "Run a JS PROGRAM against the live page and get its value back — galaius's batch\nprimitive.\n\nPrefer this for any iterate-over-elements flow (query → filter → loop → read/act) over many\nget_interactive_elements→act round-trips: runs in ONE call, inside the browser's own\nisolate (no access to galaius's host/filesystem), takes `args` for data, surfaces the\nreturn value JSON-serialised. E.g. read every row's price, or click each matching element,\nin one step — `document.querySelectorAll(...)` + a loop, returning the collected result.",
+        "properties": {
+         "wait": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Wait"
+         },
+         "observe": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Observe"
+         },
+         "type": {
+          "default": "evaluate_js",
+          "enum": [
+           "evaluate_js",
+           "eval_js"
+          ],
+          "title": "Type",
+          "type": "string"
+         },
+         "script": {
+          "title": "Script",
+          "type": "string"
+         },
+         "args": {
+          "anyOf": [
+           {},
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Args"
+         }
+        },
+        "required": [
+         "script"
+        ],
+        "title": "EvaluateJsAction",
+        "type": "object"
+       },
+       "HandleDialogAction": {
+        "additionalProperties": false,
+        "description": "Arm how the NEXT native JS dialog (alert/confirm/prompt) is answered — browser only.\n\nPlaywright dismisses an unhandled dialog, so a confirm()-gated button click silently no-ops\n(#77). Place this step BEFORE the action that triggers the dialog: the next dialog is\naccepted or dismissed as asked (one-shot; later dialogs revert to dismiss-and-report), and\n``prompt_text`` is the answer typed into a prompt(). Every dialog — armed or not — is\nreported in the step output with its message.",
+        "properties": {
+         "wait": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Wait"
+         },
+         "observe": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Observe"
+         },
+         "type": {
+          "const": "handle_dialog",
+          "default": "handle_dialog",
+          "title": "Type",
+          "type": "string"
+         },
+         "action": {
+          "default": "accept",
+          "enum": [
+           "accept",
+           "dismiss"
+          ],
+          "title": "Action",
+          "type": "string"
+         },
+         "prompt_text": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Prompt Text"
+         }
+        },
+        "title": "HandleDialogAction",
+        "type": "object"
+       },
+       "HoverAction": {
+        "additionalProperties": false,
+        "properties": {
+         "wait": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Wait"
+         },
+         "observe": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Observe"
+         },
+         "ref": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Ref"
+         },
+         "selector": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Selector"
+         },
+         "x": {
+          "anyOf": [
+           {
+            "type": "integer"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "X"
+         },
+         "y": {
+          "anyOf": [
+           {
+            "type": "integer"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Y"
+         },
+         "name": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Name"
+         },
+         "role": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Role"
+         },
+         "type": {
+          "const": "hover",
+          "default": "hover",
+          "title": "Type",
+          "type": "string"
+         }
+        },
+        "title": "HoverAction",
+        "type": "object"
+       },
+       "HttpRequestAction": {
+        "additionalProperties": false,
+        "properties": {
+         "wait": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Wait"
+         },
+         "observe": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Observe"
+         },
+         "type": {
+          "const": "http_request",
+          "default": "http_request",
+          "title": "Type",
+          "type": "string"
+         },
+         "method": {
+          "default": "GET",
+          "enum": [
+           "GET",
+           "POST",
+           "PUT",
+           "PATCH",
+           "DELETE"
+          ],
+          "title": "Method",
+          "type": "string"
+         },
+         "url": {
+          "title": "Url",
+          "type": "string"
+         },
+         "headers": {
+          "additionalProperties": {
+           "type": "string"
+          },
+          "title": "Headers",
+          "type": "object"
+         },
+         "body": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Body"
+         }
+        },
+        "required": [
+         "url"
+        ],
+        "title": "HttpRequestAction",
+        "type": "object"
+       },
+       "KeyPressAction": {
+        "additionalProperties": false,
+        "properties": {
+         "wait": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Wait"
+         },
+         "observe": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Observe"
+         },
+         "type": {
+          "const": "key_press",
+          "default": "key_press",
+          "title": "Type",
+          "type": "string"
+         },
+         "key": {
+          "title": "Key",
+          "type": "string"
+         }
+        },
+        "required": [
+         "key"
+        ],
+        "title": "KeyPressAction",
+        "type": "object"
+       },
+       "NavigateAction": {
+        "additionalProperties": false,
+        "properties": {
+         "wait": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Wait"
+         },
+         "observe": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Observe"
+         },
+         "type": {
+          "const": "navigate",
+          "default": "navigate",
+          "title": "Type",
+          "type": "string"
+         },
+         "url": {
+          "title": "Url",
+          "type": "string"
+         }
+        },
+        "required": [
+         "url"
+        ],
+        "title": "NavigateAction",
+        "type": "object"
+       },
+       "NewTabAction": {
+        "additionalProperties": false,
+        "properties": {
+         "wait": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Wait"
+         },
+         "observe": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Observe"
+         },
+         "type": {
+          "const": "new_tab",
+          "default": "new_tab",
+          "title": "Type",
+          "type": "string"
+         },
+         "url": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Url"
+         }
+        },
+        "title": "NewTabAction",
+        "type": "object"
+       },
+       "ResizeAction": {
+        "additionalProperties": false,
+        "description": "Resize the target NATIVE window to ``width`` x ``height`` pixels — desktop/nested only.\n\nUse it to check a layout at a different size without relaunching the app: resize, screenshot,\nresize back. Before this the only way was to shell out to ``xdotool windowsize`` alongside\ngalaius (#84). Coordinates and refs are window-relative, so re-detect after a resize — the\nprevious detection's boxes describe the OLD layout.\n\nFor a BROWSER viewport use ``emulate_device`` instead (true device metrics: CSS size, DPR,\ntouch), which this action deliberately does not duplicate.",
+        "properties": {
+         "wait": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Wait"
+         },
+         "observe": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Observe"
+         },
+         "type": {
+          "const": "resize",
+          "default": "resize",
+          "title": "Type",
+          "type": "string"
+         },
+         "width": {
+          "exclusiveMinimum": 0,
+          "title": "Width",
+          "type": "integer"
+         },
+         "height": {
+          "exclusiveMinimum": 0,
+          "title": "Height",
+          "type": "integer"
+         }
+        },
+        "required": [
+         "width",
+         "height"
+        ],
+        "title": "ResizeAction",
+        "type": "object"
+       },
+       "ScreenshotAction": {
+        "additionalProperties": false,
+        "properties": {
+         "wait": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Wait"
+         },
+         "observe": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Observe"
+         },
+         "type": {
+          "const": "screenshot",
+          "default": "screenshot",
+          "title": "Type",
+          "type": "string"
+         },
+         "scope": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Scope"
+         },
+         "query": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Query"
+         },
+         "selector": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Selector"
+         },
+         "element": {
+          "anyOf": [
+           {
+            "type": "integer"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Element"
+         },
+         "path": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Path"
+         }
+        },
+        "title": "ScreenshotAction",
+        "type": "object"
+       },
+       "ScrollAction": {
+        "additionalProperties": false,
+        "properties": {
+         "wait": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Wait"
+         },
+         "observe": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Observe"
+         },
+         "ref": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Ref"
+         },
+         "selector": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Selector"
+         },
+         "x": {
+          "anyOf": [
+           {
+            "type": "integer"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "X"
+         },
+         "y": {
+          "anyOf": [
+           {
+            "type": "integer"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Y"
+         },
+         "name": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Name"
+         },
+         "role": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Role"
+         },
+         "type": {
+          "const": "scroll",
+          "default": "scroll",
+          "title": "Type",
+          "type": "string"
+         },
+         "direction": {
+          "default": "down",
+          "enum": [
+           "down",
+           "up",
+           "left",
+           "right"
+          ],
+          "title": "Direction",
+          "type": "string"
+         },
+         "amount": {
+          "default": 3,
+          "title": "Amount",
+          "type": "integer"
+         }
+        },
+        "title": "ScrollAction",
+        "type": "object"
+       },
+       "SelectTextAction": {
+        "additionalProperties": false,
+        "description": "Select the text inside an element as a real DOM Selection — so a selection-gated control\n(a Lexical inline toolbar, a colour swatch) shows. `drag` across text dispatches HTML5\ndrag-and-drop, not a selection, so it can't do this (#32). Browser only.",
+        "properties": {
+         "wait": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Wait"
+         },
+         "observe": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Observe"
+         },
+         "type": {
+          "const": "select_text",
+          "default": "select_text",
+          "title": "Type",
+          "type": "string"
+         },
+         "ref": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Ref"
+         },
+         "selector": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Selector"
+         }
+        },
+        "title": "SelectTextAction",
+        "type": "object"
+       },
+       "SleepAction": {
+        "additionalProperties": false,
+        "properties": {
+         "wait": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Wait"
+         },
+         "observe": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Observe"
+         },
+         "type": {
+          "const": "sleep",
+          "default": "sleep",
+          "title": "Type",
+          "type": "string"
+         },
+         "duration": {
+          "default": 1.0,
+          "exclusiveMinimum": 0,
+          "maximum": 300,
+          "title": "Duration",
+          "type": "number"
+         }
+        },
+        "title": "SleepAction",
+        "type": "object"
+       },
+       "SwitchTabAction": {
+        "additionalProperties": false,
+        "properties": {
+         "wait": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Wait"
+         },
+         "observe": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Observe"
+         },
+         "type": {
+          "const": "switch_tab",
+          "default": "switch_tab",
+          "title": "Type",
+          "type": "string"
+         },
+         "index": {
+          "default": 0,
+          "title": "Index",
+          "type": "integer"
+         }
+        },
+        "title": "SwitchTabAction",
+        "type": "object"
+       },
+       "TypeTextAction": {
+        "additionalProperties": false,
+        "description": "Type into a field, replacing what's there unless ``clear_first`` is off.\n\n``clear_first`` replaces the WHOLE field, and in a mode-prefixed input the mode lives in the\ntext: VS Code's command palette opens pre-filled with ``>``, go-to-line with ``:``, symbol\nsearch with ``@``. Typing a command name alone doesn't fail to match — it silently switches\nthe widget to a different search and reports no results, reads like a wrong command name,\ncost one caller four round-trips to work out (#114).\n\nSo when a shortcut opened a prefixed input, type the prefix yourself (``\">Galaius: Show\nTeam\"``), or pass ``clear_first=false`` to append to what is already there. Deliberately not\ninferred: preserving a leading character that \"looks like\" a mode would mean this tool\ncarrying one editor's prefix alphabet, and would refuse to clear a field whose content\ngenuinely starts with it.",
+        "properties": {
+         "wait": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Wait"
+         },
+         "observe": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Observe"
+         },
+         "type": {
+          "const": "type_text",
+          "default": "type_text",
+          "title": "Type",
+          "type": "string"
+         },
+         "ref": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Ref"
+         },
+         "selector": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Selector"
+         },
+         "name": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Name"
+         },
+         "role": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Role"
+         },
+         "text": {
+          "title": "Text",
+          "type": "string"
+         },
+         "clear_first": {
+          "default": true,
+          "title": "Clear First",
+          "type": "boolean"
+         }
+        },
+        "required": [
+         "text"
+        ],
+        "title": "TypeTextAction",
+        "type": "object"
+       },
+       "UploadFileAction": {
+        "additionalProperties": false,
+        "properties": {
+         "wait": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Wait"
+         },
+         "observe": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Observe"
+         },
+         "ref": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Ref"
+         },
+         "selector": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Selector"
+         },
+         "type": {
+          "const": "upload_file",
+          "default": "upload_file",
+          "title": "Type",
+          "type": "string"
+         },
+         "path": {
+          "title": "Path",
+          "type": "string"
+         }
+        },
+        "required": [
+         "path"
+        ],
+        "title": "UploadFileAction",
+        "type": "object"
+       },
+       "WaitForAction": {
+        "additionalProperties": false,
+        "description": "Block until ONE condition holds, instead of a guessed sleep.\n\nBrowser: ``selector`` reaches ``state``, or ``text`` appears in the page.\nDesktop (any OS): ``window`` — a window whose title contains it appears (``state=\"visible\"``)\nor is gone (``\"hidden\"``); ``text`` — the words are READ on the target by OCR (this OS's own\nengine) until they appear / are gone, as whole words, never counting the echo of what galaius\nitself typed there. ``region`` picks what is read: ``\"window\"`` (default: the ACTIVE window of\na screen target — the launcher, not the editor beside it), ``\"screen\"``, or ``[x, y, w, h]``\nin the target's pixels. No condition = a pause of ``timeout`` ms, on any target.",
+        "properties": {
+         "wait": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Wait"
+         },
+         "observe": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Observe"
+         },
+         "type": {
+          "const": "wait_for",
+          "default": "wait_for",
+          "title": "Type",
+          "type": "string"
+         },
+         "selector": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Selector"
+         },
+         "text": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Text"
+         },
+         "window": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Window"
+         },
+         "region": {
+          "anyOf": [
+           {
+            "maxItems": 4,
+            "minItems": 4,
+            "prefixItems": [
+             {
+              "type": "integer"
+             },
+             {
+              "type": "integer"
+             },
+             {
+              "type": "integer"
+             },
+             {
+              "type": "integer"
+             }
+            ],
+            "type": "array"
+           },
+           {
+            "enum": [
+             "window",
+             "screen"
+            ],
+            "type": "string"
+           }
+          ],
+          "default": "window",
+          "title": "Region"
+         },
+         "state": {
+          "default": "visible",
+          "enum": [
+           "visible",
+           "hidden",
+           "attached",
+           "detached"
+          ],
+          "title": "State",
+          "type": "string"
+         },
+         "timeout": {
+          "default": 10000,
+          "title": "Timeout",
+          "type": "integer"
+         }
+        },
+        "title": "WaitForAction",
+        "type": "object"
+       }
+      },
+      "properties": {
+       "actions": {
+        "items": {
+         "discriminator": {
+          "mapping": {
+           "annotate": "#/$defs/AnnotateAction",
+           "click": "#/$defs/ClickAction",
+           "click_element": "#/$defs/ClickElementAction",
+           "close_tab": "#/$defs/CloseTabAction",
+           "compare": "#/$defs/CompareAction",
+           "double_click": "#/$defs/DoubleClickAction",
+           "drag": "#/$defs/DragAction",
+           "emulate_device": "#/$defs/EmulateDeviceAction",
+           "eval_js": "#/$defs/EvaluateJsAction",
+           "evaluate_js": "#/$defs/EvaluateJsAction",
+           "handle_dialog": "#/$defs/HandleDialogAction",
+           "hover": "#/$defs/HoverAction",
+           "http_request": "#/$defs/HttpRequestAction",
+           "key_press": "#/$defs/KeyPressAction",
+           "navigate": "#/$defs/NavigateAction",
+           "new_tab": "#/$defs/NewTabAction",
+           "resize": "#/$defs/ResizeAction",
+           "screenshot": "#/$defs/ScreenshotAction",
+           "scroll": "#/$defs/ScrollAction",
+           "select_text": "#/$defs/SelectTextAction",
+           "sleep": "#/$defs/SleepAction",
+           "switch_tab": "#/$defs/SwitchTabAction",
+           "type_text": "#/$defs/TypeTextAction",
+           "upload_file": "#/$defs/UploadFileAction",
+           "wait_for": "#/$defs/WaitForAction"
+          },
+          "propertyName": "type"
+         },
+         "oneOf": [
+          {
+           "$ref": "#/$defs/ClickAction"
+          },
+          {
+           "$ref": "#/$defs/HoverAction"
+          },
+          {
+           "$ref": "#/$defs/TypeTextAction"
+          },
+          {
+           "$ref": "#/$defs/ScrollAction"
+          },
+          {
+           "$ref": "#/$defs/DragAction"
+          },
+          {
+           "$ref": "#/$defs/NavigateAction"
+          },
+          {
+           "$ref": "#/$defs/EvaluateJsAction"
+          },
+          {
+           "$ref": "#/$defs/KeyPressAction"
+          },
+          {
+           "$ref": "#/$defs/ScreenshotAction"
+          },
+          {
+           "$ref": "#/$defs/WaitForAction"
+          },
+          {
+           "$ref": "#/$defs/UploadFileAction"
+          },
+          {
+           "$ref": "#/$defs/NewTabAction"
+          },
+          {
+           "$ref": "#/$defs/SwitchTabAction"
+          },
+          {
+           "$ref": "#/$defs/CloseTabAction"
+          },
+          {
+           "$ref": "#/$defs/HttpRequestAction"
+          },
+          {
+           "$ref": "#/$defs/AnnotateAction"
+          },
+          {
+           "$ref": "#/$defs/ClickElementAction"
+          },
+          {
+           "$ref": "#/$defs/DoubleClickAction"
+          },
+          {
+           "$ref": "#/$defs/SelectTextAction"
+          },
+          {
+           "$ref": "#/$defs/EmulateDeviceAction"
+          },
+          {
+           "$ref": "#/$defs/SleepAction"
+          },
+          {
+           "$ref": "#/$defs/CompareAction"
+          },
+          {
+           "$ref": "#/$defs/HandleDialogAction"
+          },
+          {
+           "$ref": "#/$defs/ResizeAction"
+          }
+         ]
+        },
+        "title": "Actions",
+        "type": "array"
+       },
+       "query": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Query"
+       },
+       "scope": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Scope"
+       },
+       "wait": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Wait"
+       },
+       "debug_dir": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Debug Dir"
+       },
+       "target": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Target"
+       },
+       "session": {
+        "default": "auto",
+        "title": "Session",
+        "type": "string"
+       },
+       "record": {
+        "default": false,
+        "title": "Record",
+        "type": "boolean"
+       },
+       "allow_self": {
+        "default": false,
+        "title": "Allow Self",
+        "type": "boolean"
+       }
+      },
+      "required": [
+       "actions"
+      ],
+      "title": "run_actionsArguments",
+      "type": "object"
+     },
+     "outputSchema": {
+      "properties": {
+       "result": {
+        "title": "Result",
+        "type": "string"
+       }
+      },
+      "required": [
+       "result"
+      ],
+      "title": "run_actionsOutput",
+      "type": "object"
+     },
+     "_meta": {
+      "category": "browser"
+     }
+    },
+    {
+     "name": "get_page_state",
+     "description": "Get current page URL, title, accessibility tree, focused element, visible text, and the\npage's interactive elements as a numbered `ref` list — so you can act by `ref` in run_actions\nimmediately, no separate get_interactive_elements call needed. Refs come from a pure DOM scan\n(no VLM, works with any model). scope: CSS selector to restrict to a page sub-tree.\ntab: read a specific tab by index (like get_interactive_elements); unset = the active tab (#74).",
+     "inputSchema": {
+      "properties": {
+       "scope": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Scope"
+       },
+       "tab": {
+        "anyOf": [
+         {
+          "type": "integer"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Tab"
+       },
+       "session": {
+        "default": "auto",
+        "title": "Session",
+        "type": "string"
+       }
+      },
+      "title": "get_page_stateArguments",
+      "type": "object"
+     },
+     "outputSchema": {
+      "properties": {
+       "result": {
+        "title": "Result",
+        "type": "string"
+       }
+      },
+      "required": [
+       "result"
+      ],
+      "title": "get_page_stateOutput",
+      "type": "object"
+     },
+     "_meta": {
+      "category": "browser"
+     }
+    },
+    {
+     "name": "session",
+     "description": "Manage browser sessions — one tool for the whole lifecycle.\n\naction:\n  - \"list\"  — active sessions + how long each has been idle (ignores name/path).\n  - \"save\"  — export `name`'s cookies + localStorage to `path` (path required).\n  - \"load\"  — restore `name` from a previously saved `path` (path required).\n  - \"close\" — close `name` and free its browser/resources.\n\nname: the session to act on — omit it for YOUR OWN session (the one every reply names in\n    its `[session: …]` prefix); \"default\" is the shared one.\npath: the session-state file for save/load. A relative path lands under ~/.galaius/out\n    (galaius's output dir), never the server's cwd; \"~\" expands. The reply names the\n    absolute file.",
+     "inputSchema": {
+      "properties": {
+       "action": {
+        "enum": [
+         "list",
+         "save",
+         "load",
+         "close"
+        ],
+        "title": "Action",
+        "type": "string"
+       },
+       "name": {
+        "default": "auto",
+        "title": "Name",
+        "type": "string"
+       },
+       "path": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Path"
+       }
+      },
+      "required": [
+       "action"
+      ],
+      "title": "sessionArguments",
+      "type": "object"
+     },
+     "outputSchema": {
+      "properties": {
+       "result": {
+        "title": "Result",
+        "type": "string"
+       }
+      },
+      "required": [
+       "result"
+      ],
+      "title": "sessionOutput",
+      "type": "object"
+     },
+     "_meta": {
+      "category": "browser"
+     }
+    },
+    {
+     "name": "download_asset",
+     "description": "Download a URL to a local file. Uses the browser session's cookies for authenticated\ndownloads.\n\npath: where to save it. A relative path lands under ~/.galaius/out (galaius's output dir),\n    never the server's cwd; \"~\" expands. The reply names the absolute file written.",
+     "inputSchema": {
+      "properties": {
+       "url": {
+        "title": "Url",
+        "type": "string"
+       },
+       "path": {
+        "title": "Path",
+        "type": "string"
+       },
+       "session": {
+        "default": "auto",
+        "title": "Session",
+        "type": "string"
+       }
+      },
+      "required": [
+       "url",
+       "path"
+      ],
+      "title": "download_assetArguments",
+      "type": "object"
+     },
+     "outputSchema": {
+      "properties": {
+       "result": {
+        "title": "Result",
+        "type": "string"
+       }
+      },
+      "required": [
+       "result"
+      ],
+      "title": "download_assetOutput",
+      "type": "object"
+     },
+     "_meta": {
+      "category": "browser"
+     }
+    },
+    {
+     "name": "get_logs",
+     "description": "Return captured browser logs (last `limit` entries). source=\"network\" → requests\n(method/status/url), source=\"console\" → console messages + errors. clear=True flushes after reading.",
+     "inputSchema": {
+      "properties": {
+       "source": {
+        "enum": [
+         "network",
+         "console"
+        ],
+        "title": "Source",
+        "type": "string"
+       },
+       "clear": {
+        "default": false,
+        "title": "Clear",
+        "type": "boolean"
+       },
+       "limit": {
+        "default": 50,
+        "title": "Limit",
+        "type": "integer"
+       },
+       "session": {
+        "default": "auto",
+        "title": "Session",
+        "type": "string"
+       }
+      },
+      "required": [
+       "source"
+      ],
+      "title": "get_logsArguments",
+      "type": "object"
+     },
+     "outputSchema": {
+      "properties": {
+       "result": {
+        "title": "Result",
+        "type": "string"
+       }
+      },
+      "required": [
+       "result"
+      ],
+      "title": "get_logsOutput",
+      "type": "object"
+     },
+     "_meta": {
+      "category": "browser"
+     }
+    },
+    {
+     "name": "audit_ui",
+     "description": "Drive every interactive element through its own states and report MEASURED anomalies — no\nvision model, no opinion. A still screenshot cannot show a menu that closed the instant the\npointer moved toward it, a tray covering its own trigger, focus that vanished, or a page that\nshifted when something opened; this catches exactly that class by actually hovering, focusing,\npressing, opening and closing each control and comparing real geometry / hit-testing / focus /\naccessible-name / text-fit / settle-time before and after.\n\nDefect classes it measures, each with the geometry/DOM evidence that proves it:\n- unrequested_movement: an ancestor or sibling's box, scroll extent, or the page's own\n  scrollWidth/Height changed on hover/focus/close when nothing asked for it.\n- outside_viewport / clipped_by_ancestor / covers_trigger: where an opened surface (menu,\n  listbox, dialog, tooltip, popover — by ARIA role, not this app's CSS names) actually renders.\n- hit_test_mismatch: elementFromPoint at the control's own centre does not resolve to it — the\n  exact \"every hover dead after a route change\" shape (hit-testing disagreeing with geometry).\n- focus_not_landed / focus_not_returned / escape_does_not_close / keyboard_unreachable: the\n  full open/close focus lifecycle, and whether every control has a keyboard path at all.\n- name_leak: the accessible name is long, sentence-shaped, and shares little with the text the\n  control itself paints — the measurable shape of a name pulled from a hint bubble or a hidden\n  native control behind the one the user actually operates.\n- text_overflow / text_wrap_degenerate: content wider than its box, or wrapped to near one\n  character per line (measured via the browser's own line-fragment rects, not a guess).\n- never_settles: animation or layout still running well past the bounded settle wait.\n\nScope: BROWSER sessions only (errors on a desktop `target` for now — no AT-SPI state walker\nyet). Checks the page AT ITS CURRENT viewport/locale; re-run after `emulate_device` (narrower\nwidth) or a locale switch via run_actions to cover those — this tool composes with the existing\nprimitives rather than reimplementing viewport/locale control.\n\nscope: CSS selector to audit one component instead of the whole page.\nlimit: max interactive elements to drive through the full state walk (cost bound on a busy\n    page); elements beyond it are named in the reply, never silently dropped.\ntab: which browser tab (default: the session's active tab).",
+     "inputSchema": {
+      "properties": {
+       "scope": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Scope"
+       },
+       "limit": {
+        "default": 20,
+        "title": "Limit",
+        "type": "integer"
+       },
+       "tab": {
+        "anyOf": [
+         {
+          "type": "integer"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Tab"
+       },
+       "target": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Target"
+       },
+       "session": {
+        "default": "auto",
+        "title": "Session",
+        "type": "string"
+       }
+      },
+      "title": "audit_uiArguments",
+      "type": "object"
+     },
+     "outputSchema": {
+      "properties": {
+       "result": {
+        "title": "Result",
+        "type": "string"
+       }
+      },
+      "required": [
+       "result"
+      ],
+      "title": "audit_uiOutput",
+      "type": "object"
+     },
+     "_meta": {
+      "category": "vision"
+     }
+    }
+   ]
+  },
+  "prompts/list": {
+   "prompts": []
+  },
+  "resources/list": {
+   "resources": []
+  },
+  "resources/templates/list": {
+   "resourceTemplates": []
+  }
+ }
+}

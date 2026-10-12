@@ -672,12 +672,13 @@ class AgentProvider(ABC):
         """(working folder, title) one record of a saved conversation file names; "" for each it does not."""
         return "", ""
 
-    #: The programs (`transcript_origin`) whose sessions a person types in — a terminal, an editor —
-    #: as this CLI names them; its headless and SDK sessions are an agent's.
+    #: The origins (`transcript_origin`) of sessions a person types in — a terminal, an editor —
+    #: as this CLI names them; its headless, SDK and sub-agent sessions are an agent's.
     typed_origins: ClassVar[frozenset[str]] = frozenset()
 
     def transcript_origin(self, raw: dict) -> str:
-        """The program one record of a saved conversation file says wrote its session; "" when it does not say."""
+        """Where one record of a saved conversation file says its session came from (the program, or
+        how it was opened); "" when it does not say."""
         return ""
 
     def transcript_typed(self, raw: dict) -> bool | None:
@@ -1602,11 +1603,21 @@ class CodexProvider(AgentProvider):
 
     #: Its session `originator` values (as its CLI names them) for the terminal and the editor extension
     #: (`codex_exec`: headless).
-    typed_origins = frozenset({"codex_cli_rs", "codex_tui", "codex_vscode"})
+    #: Its session record's `source`: its terminal UI, its editor extension. Never `exec` (headless,
+    #: an agent's run) or a sub-agent's thread (`{"subagent": ...}`: a delegate, an approval review),
+    #: whatever program (`originator`) wrote them.
+    typed_origins = frozenset({"cli", "vscode"})
 
     def transcript_origin(self, raw: dict) -> str:
+        """Its session record's `source`; a sub-agent thread's (`{"subagent": {...}}`) by its one key."""
         payload = raw.get("payload")
-        return str(payload.get("originator") or "") if raw.get("type") == "session_meta" and isinstance(payload, dict) else ""
+        match payload.get("source") if raw.get("type") == "session_meta" and isinstance(payload, dict) else None:
+            case str() as source:
+                return source
+            case dict() as source:
+                return next(iter(source), "")
+            case _:
+                return ""
 
     def usage(self, line: dict) -> tuple[UsageWindow, ...]:
         """`rate_limits` (`primary` / `secondary`: used_percent, window_minutes, resets_at epoch s),

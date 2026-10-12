@@ -24,11 +24,15 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
+from mcp import types
 from mcp.server.fastmcp import FastMCP
+from mcp.shared.version import SUPPORTED_PROTOCOL_VERSIONS
 
+from galaius import __version__
 from galaius.agents.tool_gateway import GATEWAY_PREFIX, ServedGateway
 from galaius.browser import SessionRegistry
 from galaius.debug_utils import _CURRENT_INV, Debug, resolve_output_path
+from galaius.mcp_announcement import McpAnnouncement
 from galaius.desktop import CaptureError
 from galaius.runtime import (  # noqa: F401 — breaker re-exported for tests/vlm
     breaker,
@@ -319,6 +323,29 @@ def tool_catalog() -> list[dict[str, str]]:
     )
 
 
+def announcement() -> dict:
+    """What this server says before any call, as `galaius.data`'s `mcp_announcement.json` snapshots
+    it for the upgrade relay (`galaius.mcp_announcement.McpAnnouncement`): the handshake answer's
+    parts no install changes and every list as the server puts it on the wire (gateway tools are
+    the server's word at start, never snapshotted)."""
+
+    async def listed() -> dict[str, types.Result]:
+        return {
+            "tools/list": types.ListToolsResult(tools=await FastMCP.list_tools(mcp)),
+            "prompts/list": types.ListPromptsResult(prompts=await mcp.list_prompts()),
+            "resources/list": types.ListResourcesResult(resources=await mcp.list_resources()),
+            "resources/templates/list": types.ListResourceTemplatesResult(resourceTemplates=await mcp.list_resource_templates()),
+        }
+
+    options = mcp._mcp_server.create_initialization_options()
+    return McpAnnouncement(
+        protocol_versions=tuple(SUPPORTED_PROTOCOL_VERSIONS), server_name=options.server_name,
+        capabilities=options.capabilities.model_dump(by_alias=True, mode="json", exclude_none=True),
+        instructions=_instructions(McpAnnouncement.version_marker),
+        lists={method: result.model_dump(by_alias=True, mode="json", exclude_none=True) for method, result in asyncio.run(listed()).items()},
+    ).model_dump(mode="json")
+
+
 def dispatchable_tools() -> frozenset[str]:
     """Every tool name this server can DISPATCH, read off the registry ``call_tool`` looks in.
 
@@ -386,11 +413,10 @@ async def _lifespan(_: FastMCP) -> AsyncIterator[None]:
         unregister_server(reg)
 
 
-def _instructions() -> str:
-    from galaius import __version__
-
+def _instructions(version: str | None = None) -> str:
+    """The server's instructions, naming `version` (the running one by default)."""
     return (
-        f"galaius v{__version__} — drives a browser and desktop windows by vision/refs over MCP. "
+        f"galaius v{version or __version__} — drives a browser and desktop windows by vision/refs over MCP. "
         "Act by `ref` (from get_interactive_elements / get_page_state / screenshot), a CSS `selector`, "
         "accessible `name`, or `x,y` — whichever fits. "
         "Browser automation works on Linux, macOS and Windows. "
@@ -481,8 +507,13 @@ class _SessionScopedMCP(FastMCP):
         return await super().call_tool(name, arguments)
 
     def tool(self, *args, category: ToolCategory, meta: dict | None = None, **kwargs):
-        """Every galaius tool names its `ToolCategory`; it travels in the tool's `_meta`."""
-        register = super().tool(*args, meta={**(meta or {}), "category": category}, **kwargs)
+        """Every galaius tool names its `ToolCategory`; it travels in the tool's `_meta`. Its
+        description is its docstring cleaned (`inspect.cleandoc`): the same on every Python (3.13
+        dedents docstrings itself), so the snapshot the upgrade relay answers from is too."""
+
+        def register(fn):
+            described = {"description": inspect.cleandoc(fn.__doc__)} if fn.__doc__ else {}
+            return FastMCP.tool(self, *args, meta={**(meta or {}), "category": category}, **(described | kwargs))(fn)
 
         def decorator(fn):
             slots = self._session_params(fn)

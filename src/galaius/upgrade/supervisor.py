@@ -14,6 +14,10 @@ failure both share (not signed in, a broken environment) blames this computer, n
 A crash is restarted; a message the crashed worker had received is answered with an error, never
 sent twice.
 
+Until its first worker serves (seconds: a worker imports the whole server), an MCP relay answers the
+client's handshake and listings itself, from what the worker's runtime ships (`McpAhead`): an
+agent CLI waits only a moment for its MCP servers before its first turn.
+
 Kept small on purpose: it only upgrades itself when its client reconnects."""
 
 import json
@@ -31,6 +35,7 @@ from typing import ClassVar, Literal, NoReturn
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from galaius.mcp_announcement import McpAnnouncement
 from galaius.upgrade.handoff import Children, Handoff
 from galaius.private_files import PRIVATE_FILES
 from galaius.upgrade.store import EXIT_UPGRADE, Runtime, RuntimeStore
@@ -380,6 +385,61 @@ class RelayProtocol(BaseModel):
     def notice(self, text: str, warning: bool) -> list[Message]:
         return []
 
+    def before_handshake(self, request: Message) -> Message | None:
+        """The relay's own answer to a request the client sends before its handshake, or None: held."""
+        return None
+
+    def ahead(self, runtime: Runtime) -> "RelayAhead | None":
+        """What `runtime` says of itself before its worker starts, or None: nothing."""
+        return None
+
+
+class RelayAhead(BaseModel):
+    """What a worker's runtime ships about itself: the relay answers the client's handshake and some
+    first requests from it while that worker still starts, then asks the serving worker whether it
+    says the same."""
+
+    model_config = ConfigDict(frozen=True)
+
+    def answer(self, request: Message) -> Message | None:
+        """The answer the starting worker would give `request`, or None: only the worker knows."""
+        raise NotImplementedError
+
+    def confirmation(self, identifier: str) -> Message:
+        """The request (under the relay's private `identifier`) whose answer `changed` reads."""
+        raise NotImplementedError
+
+    def changed(self, answer: Message) -> list[Message]:
+        """What the client is told when the serving worker's `answer` differs from what was said ahead."""
+        raise NotImplementedError
+
+
+class McpAhead(RelayAhead):
+    """An MCP worker's handshake answer and tool list, as its runtime's install announces them."""
+
+    announced: McpAnnouncement
+
+    def answer(self, request: Message) -> Message | None:
+        body = request.body or {}
+        params = body.get("params") if isinstance(body.get("params"), dict) else {}
+        match body.get("method"):
+            case "initialize" if isinstance(params.get("protocolVersion"), str):
+                result = self.announced.initialize_result(params["protocolVersion"])
+            case str() as method if method in self.announced.lists and not params.get("cursor"):
+                result = self.announced.lists[method]
+            case _:
+                return None
+        return Message.of({"jsonrpc": "2.0", "id": body["id"], "result": result})
+
+    def confirmation(self, identifier: str) -> Message:
+        """Its tool list: the one list a galaius worker adds to at start (the gateway's tools)."""
+        return Message.of({"jsonrpc": "2.0", "id": identifier, "method": "tools/list"})
+
+    def changed(self, answer: Message) -> list[Message]:
+        if answer.body.get("result") == self.announced.lists.get("tools/list"):
+            return []
+        return [Message.of({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"})]
+
 
 class McpProtocol(RelayProtocol):
     """MCP over stdio (JSON-RPC 2.0). The client learns of a swap through `tools/list_changed`
@@ -412,6 +472,18 @@ class McpProtocol(RelayProtocol):
 
     def notice(self, text: str, warning: bool) -> list[Message]:
         return [Message.of({"jsonrpc": "2.0", "method": "notifications/message", "params": {"level": "warning" if warning else "info", "logger": "galaius", "data": text}})]
+
+    def before_handshake(self, request: Message) -> Message:
+        """A ping is answered; anything else (a newer protocol's `server/discover`) is unknown before
+        the handshake, said at once: a client waits seconds on an unanswered one before initializing."""
+        if self.method(request) == "ping":
+            return Message.of({"jsonrpc": "2.0", "id": request.body["id"], "result": {}})
+        return Message.of({"jsonrpc": "2.0", "id": request.body["id"], "error": {"code": -32601, "message": f"{self.method(request)} comes after initialize, if at all"}})
+
+    def ahead(self, runtime: Runtime) -> McpAhead | None:
+        site = runtime.site_packages
+        announced = None if site is None else McpAnnouncement.installed(site)
+        return None if announced is None else McpAhead(announced=announced)
 
 
 class ConsoleProtocol(RelayProtocol):
@@ -510,6 +582,12 @@ class _Relay:
         self.held: list[Message] = []
         self.notices: list[tuple[str, bool]] = []
         self.swapping_from: Runtime | None = None
+        #: What the first worker's runtime said of itself, until a serving worker confirms it.
+        self.ahead: RelayAhead | None = None
+        #: The private request id asking the serving worker to confirm `ahead`.
+        self.confirming: str | None = None
+        #: A worker answered the handshake: the relay never answers ahead again.
+        self.served = False
         self.last_answer = 0.0
         self.checker: subprocess.Popen | None = None
         self.closing = False
@@ -561,6 +639,8 @@ class _Relay:
         threading.Thread(target=self._read, args=(self.worker.process.stdout, ("worker", self.generation)), daemon=True, name=f"relay-worker-{self.generation}").start()
         self.phase = "handshake"
         self.worker_requests = set()
+        if not self.client_initialized:
+            self.ahead = self.protocol.ahead(runtime)
         if self.initialize is not None:
             self.send_initialize()
 
@@ -596,13 +676,22 @@ class _Relay:
         method = self.protocol.method(message)
         if method == self.protocol.handshake and self.initialize is None:
             self.initialize = message
+            if self.ahead is not None and (answer := self.ahead.answer(message)) is not None:
+                self.to_client(self.protocol.first_answer(answer))
+                self.client_initialized = True  # the worker gets the handshake under a private id
             if self.phase == "handshake":
                 self.send_initialize()
+            return None
+        if self.initialize is None and self.protocol.is_request(message) and (answer := self.protocol.before_handshake(message)) is not None:
+            self.to_client(answer)
             return None
         if method is not None and method == self.protocol.handshake_done:
             self.initialized = message
             if self.phase == "serving":
                 self.to_worker(message)
+            return None
+        if not self.served and self.ahead is not None and (answer := self.ahead.answer(message)) is not None:
+            self.to_client(answer)
             return None
         if self.phase != "serving":
             self.held.append(message)
@@ -625,6 +714,11 @@ class _Relay:
         if self.protocol.is_answer(message) and key == self.handshake_key and self.phase == "handshake":
             self.handshake_done(message)
             return
+        if self.protocol.is_answer(message) and self.confirming is not None and key == self.confirming:
+            for note in self.ahead.changed(message):
+                self.to_client(note)
+            self.ahead, self.confirming = None, None
+            return
         if self.protocol.is_answer(message):
             self.pending.pop(key, None)
             self.last_answer = time.time()
@@ -643,6 +737,11 @@ class _Relay:
             self.to_worker(self.initialized)
         self.phase = "serving"
         self.handshake_key = None
+        self.served = True
+        if self.ahead is not None:  # asked again of a worker that replaced one dying before it answered
+            confirmation = self.ahead.confirmation(f"{StdioRelay.handshake_prefix}ahead-{self.generation}")
+            self.confirming = self.protocol.key(confirmation)
+            self.to_worker(confirmation)
         if (text := self.lifecycle.started(self.worker)) is not None:
             self.notices.append((text, True))
         elif self.swapping_from is not None:
@@ -681,13 +780,20 @@ class _Relay:
         if worker.probation:
             target = self.lifecycle.failed_start(worker, f"failed to start (exited {code} before answering the handshake)")
         elif self.phase == "handshake" or code == 0:
-            return code  # it never served, or it ended on its own: as an unsupervised server would
+            return self.ended(code)  # it never served, or it ended on its own: as an unsupervised server would
         else:
             target = self.lifecycle.crashed(worker, code)
         if target is None:
-            return code or 1
+            return self.ended(code or 1)
         self.start(target, probation=self.lifecycle.suspect is not None)
         return None
+
+    def ended(self, code: int) -> int:
+        """This relay ends with `code`: a request it held for a worker (one sent on a tool list it
+        answered ahead) is told it never ran."""
+        for request in (message for message in self.held if self.protocol.is_request(message)):
+            self.to_client(self.protocol.interrupted(request, f"galaius stopped (exit {code}) before a worker took the call; it did not run"))
+        return code
 
     def handing_over(self, target: Runtime) -> NoReturn:
         """Become `target`'s supervisor in place, with the client's session carried over."""
@@ -715,7 +821,7 @@ class _Relay:
     def quiet(self) -> bool:
         """Nothing written to the worker is unanswered (either way), and its report, taken after
         its last answer, says it holds nothing a swap would lose."""
-        if self.pending or self.worker_requests:
+        if self.pending or self.worker_requests or self.confirming is not None:
             return False
         state = self.worker.reported()
         return state is not None and not state.holds and state.at > max(self.last_answer, self.worker.started)

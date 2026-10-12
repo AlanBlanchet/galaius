@@ -31,6 +31,8 @@ class PackageData:
     #: Snapshot of the MCP tool list (`galaius.server.core.tool_catalog`), for readers that list
     #: galaius's tools without importing its server.
     MCP_TOOLS = "mcp_tools.json"
+    #: Snapshot of what the MCP server says before any call (`galaius.server.core.announcement`).
+    MCP_ANNOUNCEMENT = "mcp_announcement.json"
 
     @classmethod
     def path(cls, name: str) -> Path:

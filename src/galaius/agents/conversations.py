@@ -40,7 +40,7 @@ from galaius.agents.providers import PROVIDERS, AgentProvider
 from galaius.agents.subscriptions import Subscription
 from galaius.agents.tool_gateway import CONVERSATION_TOOLS, FILE_READERS
 from galaius.file_lock import FILE_LOCK
-from galaius.machine_agents import redact, secret_values
+from galaius.machine_agents import MachineAgents, redact, secret_values
 
 logger = logging.getLogger(__name__)
 
@@ -70,15 +70,16 @@ _LEAD = re.compile(r"""^\w+=(?:'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|\S+)""")
 #: command running `galaius agents search|read`.
 _SEARCH_TOOL = re.compile(r"(?:^|[\W_])(?:" + "|".join(map(re.escape, CONVERSATION_TOOLS)) + ")$")
 _SEARCH_COMMAND = re.compile(r"(?:^|[\s;&|('\"/\\])galaius(?:\.exe)?\s+agents\s+(?:search|read)\b")
-#: A line's place in a search's order, best first, before its full-text rank: a prompt typed in a
-#: session a person types in (`TYPED`: his terminal, his editor), then by its kind — what agents were
-#: asked, answered and told each other, then tool calls.
+#: A line's place in a search's order, best first, before its full-text rank: what the person typed
+#: (`TYPED`: a prompt in his terminal or editor session, his chat in the web — its first prompt and
+#: what he sent it after), then by its kind — what agents were asked, answered and told each other,
+#: then tool calls.
 TYPED = 0
 TIERS: dict[LineKind, int] = {"prompt": 1, "text": 1, "message": 1, "tool": 2}
 #: Wider than any full-text rank (bm25, a few units): a line of a better tier always ranks first.
 _TIER_SPAN = 1e6
 #: Bumped whenever what the index holds changes meaning (the masking, the kinds): a new file is built.
-SCHEMA = 5
+SCHEMA = 6
 
 #: A line's text lives apart from its place (`lines`): a search ranks thousands of matches through
 #: their narrow rows, never through pages of text (seconds on a cold disk cache, not tenths).
@@ -466,8 +467,11 @@ class ConversationIndex(BaseModel):
         n, title, cwd, started, last, typed = held if held is not None else (0, "", "", None, None, False)
         task = run.task.strip() if run is not None else ""
         said: list[ConversationLine] = []
-        if run is not None and n == 0 and task:
-            said.append(ConversationLine(n=0, kind="prompt", at=run.started_at or None, text=self.masked(task, secrets), tier=TIERS["prompt"]))
+        if run is not None:
+            # A chat the person opened in the web: a run the web started (its launcher session), no run above it.
+            typed = run.parent_run_id is None and MachineAgents.is_web_session(run.session_id)
+            if n == 0 and task:
+                said.append(ConversationLine(n=0, kind="prompt", at=run.started_at or None, text=self.masked(task, secrets), tier=TYPED if typed else TIERS["prompt"]))
         offset, stopped = start, False
         with found.path.open("rb") as handle:
             handle.seek(start)
@@ -537,11 +541,14 @@ class ConversationIndex(BaseModel):
 
     @staticmethod
     def tier(event: AgentEvent, typed: bool) -> int | None:
-        """Where a search ranks `event`'s line (`TIERS`; `typed`: its session is one a person types in);
-        None for a tool call searching or reading conversations itself, never found."""
+        """Where a search ranks `event`'s line (`TIERS`; `typed`: its session is one a person types in,
+        where a prompt, or a message the person sent that Galaius did not write for him — the resume
+        brief his « Continuer » sends — is his); None for a tool call searching or reading
+        conversations itself, never found."""
         if event.kind == "tool" and (_SEARCH_TOOL.search(event.tool or "") or _SEARCH_COMMAND.search(event.tool_input)):
             return None
-        return TYPED if typed and event.kind == "prompt" else TIERS[event.kind]
+        his = event.kind == "prompt" or (event.kind == "message" and event.from_run == "operator" and event.text != reg.RESUME_BRIEF)
+        return TYPED if typed and his else TIERS[event.kind]
 
     def _file(self, db: sqlite3.Connection, found: ConversationFile, conversation: str, offset: int,
               skipped: bool = False, failed: bool = False) -> None:
