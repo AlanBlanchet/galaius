@@ -1732,6 +1732,10 @@ def _mirror_normalised(run_id: str, events: list[AgentEvent]) -> FileStamp | Non
     try:
         existing = _read_private_stamped(path)
         if existing is not None and existing[0].decode(errors="replace") == payload:
+            if any(source is not None and source.mtime_ns > existing[1].mtime_ns for source in stream_signature(run_id)):
+                # Same events from newer sources (a raw line no parser keeps): marked current, never re-read on every look.
+                os.utime(path)
+                return FileStamp.at(path)
             return existing[1]
     except OSError:
         pass

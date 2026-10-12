@@ -185,6 +185,27 @@ def test_tail_of_an_ended_run_carries_a_resume_refused_since(base: Path, tmp_pat
     assert kinds[-1] == "error", kinds
 
 
+def test_tail_of_an_ended_run_whose_last_line_says_nothing_reads_it_once(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A run that ended on a raw line no parser keeps (a hook's own notice) left its mirror older than its
+    stream for good: every look of the web would re-parse the whole stream (code-reviewer r3)."""
+    agents = _agents(base, tmp_path)
+    run_id = str(uuid4())
+    reg.save_run(reg.AgentRun(run_id=run_id, provider="claude", name="r", cwd=str(base / "project"), started_at=1.0, status="done"))
+    agents.runs.add(WebRun(run_id=run_id, root="project"))
+    raw = reg.raw_events_path(run_id)
+    raw.write_text('{"type":"assistant","message":{"id":"m1","content":[{"type":"text","text":"one"}]},"session_id":"s"}\n')
+    reg.read_events(run_id)
+    os.utime(raw, ns=(reg.events_path(run_id).stat().st_mtime_ns + 10**9,) * 2)  # a later line the parser drops
+    with raw.open("a") as handle:
+        handle.write('{"type":"system","subtype":"hook_response"}\n')
+    reads = []
+    real = reg.read_events
+    monkeypatch.setattr(reg, "read_events", lambda run: reads.append(run) or real(run))
+    for _ in range(3):
+        _answer(agents, _request("tail", run_id=run_id, cursor=0))
+    assert len(reads) == 1, reads
+
+
 def test_a_run_stays_on_its_subscription_and_a_lent_pc_lends_no_login(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A start runs on the subscription it names, refused at its cap; a message never moves a run to
     another login; a member's run on a lent PC runs only inside the fence, with every CLI login closed
