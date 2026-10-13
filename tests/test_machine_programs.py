@@ -1,6 +1,7 @@
 """An agent program installed from the web runs only its vendor's own script: fetched over https,
 through its vendor's hosts alone, never larger than a script."""
 
+import base64
 import os
 import shlex
 import sys
@@ -11,6 +12,8 @@ from pathlib import Path
 from uuid import UUID
 
 import httpx
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 import pytest
 from galaius_core import AgentSignIn
 
@@ -103,7 +106,19 @@ def stand_in_claude(tmp_path: Path, *, opens: bool, prints: bool) -> Path:
     return claude
 
 
-def signing(jobs: AgentPrograms, until, seconds: float = 10):
+#: Another key than the sign-in's own (SubjectPublicKeyInfo DER, base64), as a browser would seal to.
+OTHER_KEY = base64.b64encode(rsa.generate_private_key(public_exponent=65537, key_size=2048).public_key()
+                             .public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)).decode()
+
+
+def sealer(seal_key: str | None):
+    """What his browser does with a code (WebCrypto RSA-OAEP, SHA-256) for the sign-in that published `seal_key`."""
+    assert seal_key is not None
+    key = serialization.load_der_public_key(base64.b64decode(seal_key))
+    return lambda code: base64.b64encode(key.encrypt(code.encode(), AgentPrograms.SEAL)).decode()
+
+
+def signing(jobs: AgentPrograms, until, seconds: float = 30):  # a loaded PC starts the helper slowly
     deadline = time.monotonic() + seconds
     while not until(state := jobs.states()[0]):
         assert time.monotonic() < deadline, f"stuck at {state.step} {state.sign_in}"
@@ -144,19 +159,21 @@ def test_claude_signs_in_from_any_browser_with_the_code_its_page_shows(tmp_path:
     state = signing(jobs, lambda state: state.sign_in is not None and (state.sign_in.paste if pasted is not None else state.sign_in.link is not None if opens else state.sign_in.command is not None))
     if pasted is not None:
         assert (state.sign_in.link, state.sign_in.command, state.sign_in.pasted) == (CLAUDE_PASTE, None, False)
-        attempt = state.sign_in.attempt
+        attempt, seal = state.sign_in.attempt, sealer(state.sign_in.seal_key)
         with pytest.raises(PermissionError, match="no claude sign-in"):
-            jobs.paste("claude", UUID(int=7), attempt, pasted)  # another login's: nothing waits there
+            jobs.paste("claude", UUID(int=7), attempt, seal(pasted))  # another login's: nothing waits there
         with pytest.raises(PermissionError, match="no claude sign-in"):
-            jobs.paste("claude", None, UUID(int=8), pasted)  # another attempt's (an older link)
+            jobs.paste("claude", None, UUID(int=8), seal(pasted))  # another attempt's (an older link)
+        with pytest.raises(PermissionError, match="sealed to this"):
+            jobs.paste("claude", None, attempt, sealer(OTHER_KEY)(pasted))  # sealed to another key: whoever carried it cannot swap it
         with pytest.raises(PermissionError, match="not a claude"):
-            jobs.paste("claude", None, attempt, pasted + "\nsecond line")
-        assert jobs.paste("claude", None, attempt, pasted).sign_in.pasted
+            jobs.paste("claude", None, attempt, seal(pasted + "\nsecond line"))
+        assert jobs.paste("claude", None, attempt, seal(f" {pasted}\n")).sign_in.pasted  # what a paste carries around it is trimmed
         with pytest.raises(PermissionError, match="already"):
-            jobs.paste("claude", None, attempt, pasted)
+            jobs.paste("claude", None, attempt, seal(pasted))
     else:
         with pytest.raises(PermissionError):
-            jobs.paste("claude", None, UUID(int=8), CODE)  # no address for any browser: no code is taken
+            jobs.paste("claude", None, UUID(int=8), sealer(OTHER_KEY)(CODE))  # no address for any browser: no code is taken
         if opens:
             assert (state.sign_in.link, state.sign_in.paste) == (CLAUDE_SIGN_IN, False)  # a terminal command may come first under load
         else:

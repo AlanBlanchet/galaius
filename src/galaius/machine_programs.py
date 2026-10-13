@@ -7,6 +7,7 @@ subscription's own folder (`Subscription`), never touching the default login: on
 and login at a time; what each stands at is `AgentProviderState`."""
 
 import asyncio
+import base64
 import logging
 import re
 import subprocess
@@ -21,6 +22,8 @@ from urllib.parse import urljoin, urlsplit
 from uuid import UUID, uuid4
 
 import httpx
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from galaius_core import (
     DEVICE_CODE,
     SIGN_IN_CODE,
@@ -75,14 +78,17 @@ class AgentPrograms(BaseModel):
     redirects: ClassVar[int] = 5
     CODE: ClassVar[re.Pattern[str]] = re.compile(DEVICE_CODE)
     PASTED: ClassVar[re.Pattern[str]] = re.compile(SIGN_IN_CODE)
+    #: How a code comes sealed to a sign-in's key (`AgentSignIn.seal_key`): what WebCrypto's RSA-OAEP with SHA-256 makes.
+    SEAL: ClassVar[padding.OAEP] = padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
     ANSI: ClassVar[re.Pattern[str]] = re.compile(r"\x1b\[[0-9;]*m")
     #: The steps a job is under way in: asked again, it is not started twice (threat M6).
     RUNNING: ClassVar[frozenset[str]] = frozenset({"installing", "signing_in"})
 
     #: Each job by its program and login (a subscription's id; None: the default login).
     _jobs: dict[tuple[str, UUID | None], AgentProviderState] = PrivateAttr(default_factory=dict)
-    #: Each sign-in under way, by the same key: the program a pasted code is handed to (`paste`).
-    _logins: dict[tuple[str, UUID | None], subprocess.Popen] = PrivateAttr(default_factory=dict)
+    #: Each sign-in under way, by the same key: the program a pasted code is handed to (`paste`), and its attempt's id and
+    #: own private key the code comes sealed to (`AgentSignIn.seal_key`), never written anywhere.
+    _logins: dict[tuple[str, UUID | None], tuple[subprocess.Popen, UUID, rsa.RSAPrivateKey]] = PrivateAttr(default_factory=dict)
     #: Each login's last status check that completed and when (monotonic), by program and environment (`_status`).
     _answered: dict[tuple[str, frozenset[tuple[str, str]]], tuple[float, LoginStatus]] = PrivateAttr(default_factory=dict)
     _lock: threading.Lock = PrivateAttr(default_factory=threading.Lock)
@@ -131,21 +137,26 @@ class AgentPrograms(BaseModel):
             return False
         return self._status(PROVIDERS[name], self._environment(subscription)).signed_in
 
-    def paste(self, name: AgentProvider, subscription_id: UUID | None, attempt: UUID, code: str) -> AgentProviderState:
-        """`code`, the one its vendor's page showed the person (`AgentSignIn.paste`), written once to the program of sign-in
-        `attempt` of `name` waiting here (`subscription_id`'s; None: the default login), its input then closed: nothing else
-        reaches it. Never kept or logged. Its state after. Refused (PermissionError) when that sign-in no longer waits for a
-        code (ended, another attempt since) or one was already handed to it."""
-        if not self.PASTED.fullmatch(code):  # the wire checked it; checked again where it becomes input
-            raise PermissionError(f"not a {name} sign-in code")
+    def paste(self, name: AgentProvider, subscription_id: UUID | None, attempt: UUID, sealed: str) -> AgentProviderState:
+        """The code its vendor's page showed the person (`AgentSignIn.paste`), `sealed` in his browser to sign-in `attempt`'s
+        own key, opened here and written once to that program of `name` waiting here (`subscription_id`'s; None: the default
+        login), its input then closed: nothing else reaches it. Never kept or logged. Its state after. Refused
+        (PermissionError) when that sign-in no longer waits for a code (ended, another attempt since), one was already
+        handed to it, or what came is not a code sealed to it."""
         key = name, subscription_id
         with self._lock:
-            job, login = self._jobs.get(key), self._logins.get(key)
+            job, (login, waiting, private) = self._jobs.get(key), self._logins.get(key, (None, None, None))
             heard = None if job is None or job.step != "signing_in" else job.sign_in
-            if heard is None or not heard.paste or heard.attempt != attempt or login is None or login.poll() is not None:
+            if heard is None or not heard.paste or heard.attempt != attempt or waiting != attempt or login is None or private is None or login.poll() is not None:
                 raise PermissionError(f"no {name} sign-in waits for this code here: start it again")
             if heard.pasted:
                 raise PermissionError(f"a code was already handed to this {name} sign-in: start it again for another")
+            try:
+                code = private.decrypt(base64.b64decode(sealed, validate=True), self.SEAL).decode("utf-8").strip()
+            except (ValueError, UnicodeError) as error:
+                raise PermissionError(f"not a {name} sign-in code sealed to this sign-in") from error
+            if not self.PASTED.fullmatch(code):  # one line, nothing a terminal would read as more input
+                raise PermissionError(f"not a {name} sign-in code")
             self._jobs[key] = job = job.model_copy(update={"sign_in": heard.model_copy(update={"pasted": True}), "changed_at": datetime.now(UTC)})
             assert login.stdin is not None
             try:
@@ -251,9 +262,11 @@ class AgentPrograms(BaseModel):
             handoff = SignInHandoff(link_file=Path(folder) / "link", browser=environment.get("BROWSER", ""), opens=provider.paste_link is None)
             login = subprocess.Popen([provider.executable(), *provider.login_arguments], env={**environment, **handoff.environment()}, stdin=subprocess.PIPE,
                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace", **process_group_options())
+            attempt, private = uuid4(), rsa.generate_private_key(public_exponent=65537, key_size=2048)
             with self._lock:
-                self._logins[key] = login
-            threading.Thread(target=self._read_output, args=(provider, key, login, uuid4()), daemon=True).start()
+                self._logins[key] = login, attempt, private
+            seal = base64.b64encode(private.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)).decode()
+            threading.Thread(target=self._read_output, args=(provider, key, login, attempt, seal), daemon=True).start()
             try:
                 while True:
                     time.sleep(self.poll_seconds)
@@ -288,7 +301,7 @@ class AgentPrograms(BaseModel):
                     except subprocess.TimeoutExpired:
                         login.kill()
 
-    def _read_output(self, provider: Program, key: tuple[str, UUID | None], login: subprocess.Popen, attempt: UUID) -> None:
+    def _read_output(self, provider: Program, key: tuple[str, UUID | None], login: subprocess.Popen, attempt: UUID, seal: str) -> None:
         """What the sign-in prints for the person, onto its state while it still waits: a device code, or the address any
         browser signs in at (`paste_link`, then waiting for the code its page shows). Its output is never logged (threat M4)."""
         assert login.stdout is not None
@@ -299,7 +312,7 @@ class AgentPrograms(BaseModel):
             if self.CODE.match(word):
                 self._signing(key, code=word)
             elif provider.paste_link is not None and (found := provider.paste_link.search(word)) is not None:
-                self._signing(key, link=found.group(1), paste=True, attempt=attempt, command=None)  # over a terminal command offered first
+                self._signing(key, link=found.group(1), paste=True, attempt=attempt, seal_key=seal, command=None)  # over a terminal command offered first
 
     def _signing(self, key: tuple[str, UUID | None], **found: object) -> None:
         """What the sign-in under way just said (its device code, the address it opened), onto its state
