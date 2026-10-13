@@ -117,6 +117,9 @@ def test_the_services_programs_run_with_the_shells_path(tmp_path: Path, monkeypa
     async def connect(runner, _config) -> None:
         seen.append(runner.programs.environment["PATH"])
     monkeypatch.setattr(MachineRunner, "connect", connect)
+    package = logging.getLogger("galaius")   # the service's journal handler it adds stays out of the later tests
+    monkeypatch.setattr(package, "handlers", list(package.handlers))
+    monkeypatch.setattr(package, "level", package.level)
     asyncio.run(connect_command("http://127.0.0.1:8817", uuid4(), uuid4(), "t" * 40, "full_access", tmp_path, serve=True))
     assert seen[0].split(os.pathsep)[0] == "/opt/nvm/versions/node/v22/bin"
 
