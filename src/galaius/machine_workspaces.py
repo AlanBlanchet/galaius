@@ -188,8 +188,8 @@ class MachineWorkspaces(BaseModel):
         """Refused when `root` is not an agent root here, or (`space`) its disk is nearly full. The
         projects folder (`PROJECTS_ROOT`) is made by the first project put there, hidden on Windows too."""
         with PinnedDirectory.open(self.working_directory.resolve(), *self._parts(root), create=root == PROJECTS_ROOT) as folder:
-            if folder.created and sys.platform == "win32":
-                ctypes.windll.kernel32.SetFileAttributesW(str(self.roots[root]), FILE_ATTRIBUTE_HIDDEN)
+            if folder.created and sys.platform == "win32" and not ctypes.windll.kernel32.SetFileAttributesW(str(self.roots[root]), FILE_ATTRIBUTE_HIDDEN):
+                logger.warning("the projects folder %s could not be hidden: Explorer shows it", self.roots[root])
         if space and shutil.disk_usage(self.roots[root]).free < self.disk_floor:
             raise WorkspaceRefused("disk_full", f"less than {self.disk_floor // 1024**3} GB free under {root} on this computer")
 
