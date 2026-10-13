@@ -31,7 +31,7 @@ from urllib.parse import urlsplit
 
 import httpx
 import websockets
-from galaius_core import MACHINE_TOKEN_PATTERN, PROJECTS_DIR, PROJECTS_ROOT, DeviceLoginIssued, DeviceLoginStart, DeviceLoginStarted, DeviceTokenRefusal, MachineSummary, ReleaseInfo
+from galaius_core import MACHINE_TOKEN_PATTERN, PROJECTS_ROOT, DeviceLoginIssued, DeviceLoginStart, DeviceLoginStarted, DeviceTokenRefusal, MachineSummary, ReleaseInfo
 from pydantic import BaseModel, ConfigDict, SecretStr, TypeAdapter
 
 from galaius import USER_AGENT, __version__
@@ -418,8 +418,8 @@ class AgentChoice(BaseModel):
         if not config.run_agents:
             return "Agents: off here. Turn them on from its page on the web (or here:  galaius machine agents on)."
         folders = [name for name in config.agent_roots_by_name() if name != PROJECTS_ROOT]
-        projects = (f"Projects put here from the web land in {config.working_directory / PROJECTS_DIR}, a hidden folder made the first time."
-                    if config.projects_root() is not None else f"Projects cannot be put here from the web: {unusable(PROJECTS_ROOT)}.")
+        projects = (f"Projects put here from the web land in {found}, a hidden folder made the first time."
+                    if (found := config.projects_root()) is not None else f"Projects cannot be put here from the web: {unusable(PROJECTS_ROOT)}.")
         extras = "\n" + projects + (f"\nEditor conversations continued from the web: {'on' if config.continue_conversations else 'off'}; approvals answered from the web: "
                   f"{'on' if config.answer_approvals else 'off'}. To change:  galaius machine agents on --continue on|off --approvals on|off")
         if not folders:
