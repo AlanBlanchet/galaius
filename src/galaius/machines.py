@@ -1945,7 +1945,7 @@ class MachineRunner:
                  "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP", "USERPROFILE", "USERNAME", "USERDOMAIN", "APPDATA", "LOCALAPPDATA",
                  "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)", "COMMONPROGRAMFILES", "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS", "OS", "PSMODULEPATH"}
         system = {key: value for key, value in os.environ.items() if key in fixed or key.startswith("LC_")}
-        return {**system, "PATH": agent_providers.AgentProvider.search_path(system.get("PATH", ""))}
+        return {**system, "PATH": agent_providers.AgentProvider.search_path(system.get("PATH", os.defpath))}
 
     @staticmethod
     def _runtimes(config: MachineConfig) -> list[dict[str, str]]:

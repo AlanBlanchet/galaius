@@ -352,7 +352,7 @@ class AgentProvider(ABC):
         """`path` (this process's PATH by default) followed by every program's own user folder here."""
         current = (os.environ.get("PATH", os.defpath) if path is None else path).split(os.pathsep)
         installed = (entry for provider in PROVIDERS.values() if (installer := provider.installer()) is not None for entry in installer.found_dirs())
-        return os.pathsep.join(dict.fromkeys([*current, *installed]))
+        return os.pathsep.join(dict.fromkeys(entry for entry in (*current, *installed) if entry))  # an empty entry means the current folder
 
     def located(self) -> str | None:
         """Where the CLI is found on the search path, as found (never the versioned file a link there

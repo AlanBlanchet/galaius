@@ -24,7 +24,8 @@ from galaius.agents.providers import (
     PROVIDERS, ClaudeCodeProvider, CodexProvider, UnsupportedToolPolicy, provider_for,
 )
 from galaius.models import Model
-from galaius.processes import NpmShim
+from galaius.agents.registry import participant_environment
+from galaius.processes import NpmShim, spawnable
 
 
 @pytest.mark.parametrize("resume", [False, True])
@@ -1159,6 +1160,23 @@ def test_npm_shim_starts_its_script_without_cmd(tmp_path: Path, shim: str, node:
     assert (parsed and parsed.argv) == (expected and tuple(
         shutil.which("node", path=str(tools)) if part == "PATH" else str(folder / part) for part in expected
     ))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a POSIX service manager's PATH")
+@pytest.mark.parametrize("provider", list(PROVIDERS.values()), ids=list(PROVIDERS))
+def test_a_bare_program_name_starts_from_its_own_folder_off_the_service_path(tmp_path: Path, monkeypatch, provider) -> None:
+    """A resumed turn's argv names its program bare and a systemd user service's PATH lacks
+    ~/.local/bin (`systemd-run`: « Failed to find executable claude »): every agent child's argv0
+    leaves the spawn absolute, found in the program's own folder, which its PATH carries."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    folder = tmp_path / ".local" / "bin"
+    folder.mkdir(parents=True)
+    program = folder / provider.binary
+    program.write_text("#!/bin/sh\n")
+    program.chmod(0o755)
+    env = participant_environment({"HOME": str(tmp_path), "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin"})
+    assert spawnable([provider.binary, "--version"], env) == [str(program), "--version"]
+    assert str(folder) in env["PATH"].split(":")
 
 
 @pytest.mark.parametrize(("text", "kind"), [

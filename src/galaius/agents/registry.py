@@ -39,7 +39,7 @@ from galaius_core import AgentRevisionRef, PromptExecutionRef
 from galaius.agents.events import TOKEN_FIELDS, AgentEvent, TokenUsage, UsageLedger, stream_lines
 from galaius.agents.catalog_connection import CatalogConnection
 from galaius.agents.ceiling import end_run_scope
-from galaius.agents.providers import PROVIDERS, DeniedTool
+from galaius.agents.providers import PROVIDERS, AgentProvider, DeniedTool
 from galaius.agents.subscriptions import RunSubscription, Subscription, SubscriptionRefused, UsageLimited
 from galaius.fence import FenceSpec
 from galaius.paths import UserPaths
@@ -500,9 +500,11 @@ def agents_dir() -> Path:
 def participant_environment(environment: Mapping[str, str]) -> dict[str, str]:
     """`environment` for a process this one starts to work on its runs (an agent's turn and the inbox
     hook it runs, a dispatcher): carrying this process's registry override, so a scrubbed environment
-    (a PC runner's) never sends it to read the default registry, where it finds no run and no message."""
+    (a PC runner's) never sends it to read the default registry, where it finds no run and no message;
+    its PATH reaching every agent program's own folder, which a service manager's PATH lacks."""
     override = os.environ.get(UserPaths.AGENTS_OVERRIDE)
-    return {**environment, UserPaths.AGENTS_OVERRIDE: str(agents_dir())} if override else dict(environment)
+    found = {**environment, "PATH": AgentProvider.search_path(environment.get("PATH", os.defpath))}
+    return {**found, UserPaths.AGENTS_OVERRIDE: str(agents_dir())} if override else found
 
 
 def _ensure_registry_directory() -> Path:

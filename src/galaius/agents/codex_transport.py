@@ -38,7 +38,7 @@ from galaius.agents.events import (
 )
 from galaius.agents.ceiling import contained
 from galaius.agents.providers import CodexProvider
-from galaius.agents.registry import AgentRun
+from galaius.agents.registry import AgentRun, participant_environment
 from galaius.processes import process_group_options, spawnable, stop_process_tree
 from galaius.agents.transport import (
     _ConversationStart,
@@ -944,7 +944,7 @@ class _CodexTransport(_ConversationTransport):
         return value
 
     async def _spawn(self) -> None:
-        env = self.provider.subscription_env(dict(os.environ))
+        env = participant_environment(self.provider.subscription_env(dict(os.environ)))
         # Its own process tree (Codex runs tools as children): a failed or closed session stops them all.
         self._process = await asyncio.create_subprocess_exec(
             *contained(spawnable(self.provider.app_server_command(), env)),

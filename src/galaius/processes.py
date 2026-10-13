@@ -63,21 +63,20 @@ class NpmShim(BaseModel):
 
 
 def spawnable(argv: Sequence[str], env: Mapping[str, str] | None = None) -> list[str]:
-    """`argv` as the OS can start it, program looked up on `env`'s PATH (this process's by default).
+    """`argv` as the OS can start it, a bare program name resolved on `env`'s PATH (this process's by default).
 
-    POSIX exec already searches PATH, so argv is unchanged there. Windows' CreateProcess finds only
-    `.exe` files, while npm installs `codex` / `claude` as `.cmd` shims that cmd.exe would re-parse
-    (a line break ends the command, `&` starts another): a bare name is resolved on PATH and an npm
-    shim replaced by the interpreter + script it launches, so every argument arrives as written.
+    Resolved here, never left to whatever stands between: `systemd-run` (the agent ceiling) looks a
+    bare name up on its own PATH, and a user service's lacks ~/.local/bin. Windows' CreateProcess
+    finds only `.exe` files, while npm installs `codex` / `claude` as `.cmd` shims that cmd.exe would
+    re-parse (a line break ends the command, `&` starts another): an npm shim is replaced by the
+    interpreter + script it launches, so every argument arrives as written.
     """
-    if sys.platform != "win32":
-        return list(argv)
     search_path = (os.environ if env is None else env).get("PATH")
     program, *arguments = argv
     resolved = program if Path(program).parent != Path() else shutil.which(program, path=search_path)
     if resolved is None:
-        return list(argv)  # not installed: the spawn itself says so, as exec does on POSIX
-    if Path(resolved).suffix.lower() not in {".cmd", ".bat"}:
+        return list(argv)  # not installed: the spawn itself says so
+    if sys.platform != "win32" or Path(resolved).suffix.lower() not in {".cmd", ".bat"}:
         return [resolved, *arguments]
     shim = NpmShim.read(Path(resolved), search_path)
     if shim is not None:
