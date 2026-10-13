@@ -422,6 +422,7 @@ def test_each_login_here_says_its_own_usage_and_a_subscriptions_never_mixes_with
     assert [usage.subscription_id for usage in report.usage] == [subscription.id]
     watch.sent(report, now)
     assert watch.report(now) is None
-    (Path.home() / "silent").touch()
-    asyncio.run(watch.ask(environment))
-    assert [window.used_percent for window in watch.login_usage("claude")] == [13.0, 36.0]
+    for stalled in ("failing", "silent"):  # the vendor unreachable, a CLI ending without a word: the last reading stands
+        (Path.home() / stalled).touch()
+        asyncio.run(watch.ask(environment))
+        assert [window.used_percent for window in watch.login_usage("claude")] == [13.0, 36.0]

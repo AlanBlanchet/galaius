@@ -865,21 +865,25 @@ class ClaudeCodeProvider(AgentProvider):
     def usage_command(self) -> tuple[list[str], tuple[dict, ...]]:
         """Its `get_usage` control request (2.1.288: its SDK's `usage_EXPERIMENTAL…`, the `/usage` screen's data): the
         plan's windows as claude.ai has them; `skip_behaviors` skips its scan of the local transcripts (1-2 s instead of
-        15). No session kept, no settings, hooks or plugins loaded: no model turn, no transcript written."""
+        15). No session kept, no settings, hooks, plugins or MCP servers loaded: no model turn, no transcript, no child.
+        Probed 2026-10-13: 0 tokens, ~1 s of CPU, no child process."""
         return ([self.executable(), "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
-                 "--no-session-persistence", "--setting-sources", ""],
+                 "--no-session-persistence", "--setting-sources", "", "--strict-mcp-config"],
                 ({"type": "control_request", "request_id": self.USAGE_REQUEST, "request": {"subtype": "get_usage", "skip_behaviors": True}},))
 
     def usage_answer(self, line: dict) -> tuple[UsageWindow, ...] | None:
-        """`response.response.rate_limits`: `five_hour` / `seven_day` {utilization 0-100, resets_at ISO}; null when the
-        login has no plan windows (signed out, an API key: `rate_limits_available` false)."""
+        """`response.response.rate_limits`: `five_hour` / `seven_day` {utilization 0-100, resets_at ISO}; none when the
+        login has no plan windows (signed out, an API key: `rate_limits_available` false). An error (the vendor
+        unreachable) says nothing: the last reading stands."""
         response = line.get("response") if line.get("type") == "control_response" else None
         if not isinstance(response, dict) or response.get("request_id") != self.USAGE_REQUEST:
             return None
         answer = response.get("response") if response.get("subtype") == "success" else None
-        limits = answer.get("rate_limits") if isinstance(answer, dict) else None
+        if not isinstance(answer, dict):
+            return None
+        limits = answer.get("rate_limits")
         if not isinstance(limits, dict):
-            return ()
+            return () if answer.get("rate_limits_available") is False else None
         now = datetime.now(UTC)
         return tuple(UsageWindow(window=self.WINDOWS[key], used_percent=float(value["utilization"]), observed_at=now, resets_at=self._moment(value.get("resets_at")))
                      for key, value in limits.items() if key in self.WINDOWS and isinstance(value, dict) and isinstance(value.get("utilization"), (int, float)))
@@ -1865,6 +1869,9 @@ class CodexProvider(AgentProvider):
         """The installed local-session protocol entry point, resolved before spawning."""
         return [self.executable(), *self.platform_flags(), "app-server", "--listen", "stdio://"]
 
+    #: Its app-server's refusal when no account is signed in (0.155.1).
+    SIGNED_OUT: ClassVar[re.Pattern[str]] = re.compile(r"authentication required", re.IGNORECASE)
+
     def usage_command(self) -> tuple[list[str], tuple[dict, ...]]:
         """`account/rateLimits/read` on its app-server (0.155.1): the login's windows as ChatGPT has them."""
         return (self.app_server_command(),
@@ -1873,13 +1880,16 @@ class CodexProvider(AgentProvider):
 
     def usage_answer(self, line: dict) -> tuple[UsageWindow, ...] | None:
         """Its answer to request 2: `result.rateLimits` `primary` / `secondary` {usedPercent, windowDurationMins, resetsAt
-        epoch s}; an error (« codex account authentication required »): none."""
+        epoch s}; signed out (« codex account authentication required … »): none; any other error says nothing."""
         if line.get("id") != 2:
             return None
+        error = line.get("error")
+        if isinstance(error, dict):
+            return () if self.SIGNED_OUT.search(str(error.get("message", ""))) else None
         result = line.get("result")
         limits = result.get("rateLimits") if isinstance(result, dict) else None
         if not isinstance(limits, dict):
-            return ()
+            return None
         return self.usage({"rate_limits": {name: {"used_percent": window.get("usedPercent"), "window_minutes": window.get("windowDurationMins"), "resets_at": window.get("resetsAt")}
                                            for name in ("primary", "secondary") if isinstance(window := limits.get(name), dict)}})
 

@@ -8,6 +8,7 @@ only, and the incremental stream mirror runs in the MCP server's loop, not in th
 writes its usage only into its session record inside the subscription folder, never on the stream."""
 
 import asyncio
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import get_args
@@ -37,6 +38,8 @@ class SubscriptionWatch(BaseModel):
     _offsets: dict[Path, int] = PrivateAttr(default_factory=dict)
     _records: dict[str, Path] = PrivateAttr(default_factory=dict)
     _logins: dict[AgentProvider, LoginReading] = PrivateAttr(default_factory=dict)
+    #: `ask` writes `_logins` on the runner's loop; `report`, `sent` and the program states read it from threads.
+    _lock: threading.Lock = PrivateAttr(default_factory=threading.Lock)
 
     async def ask(self, environment: dict[str, str]) -> None:
         """Each program's default login (`environment`: the system variables), then each subscription in its own folder:
@@ -46,14 +49,16 @@ class SubscriptionWatch(BaseModel):
             provider = PROVIDERS[name]
             usage = await provider.current_usage(environment) if provider.available() else ()
             if usage is not None:
-                self._logins[name] = self._logins.get(name, LoginReading()).model_copy(update={"usage": usage})
+                with self._lock:
+                    self._logins[name] = self._logins.get(name, LoginReading()).model_copy(update={"usage": usage})
         for subscription in await asyncio.to_thread(Subscription.all):
             if usage := await subscription.program.current_usage({**environment, **subscription.overlay()}):
                 await asyncio.to_thread(subscription.observe, usage)
 
     def login_usage(self, provider: AgentProvider) -> tuple[UsageWindow, ...]:
         """`provider`'s default login's last reading here (`ask`)."""
-        reading = self._logins.get(provider)
+        with self._lock:
+            reading = self._logins.get(provider)
         return () if reading is None else reading.usage
 
     def heard(self) -> None:
@@ -72,15 +77,17 @@ class SubscriptionWatch(BaseModel):
         """What the server should hear now (`Subscription.report_due`); None: nothing. Marked reported
         only once sent (`sent`)."""
         due = tuple(usage for subscription in Subscription.all() if (usage := subscription.report_due(now)) is not None)
-        logins = tuple(LoginUsage(provider=name, windows=reading.usage) for name, reading in self._logins.items()
-                       if reading.reported is None or SubscriptionUsageReport.due(reading.usage, reading.reported, reading.reported_at, now))
+        with self._lock:
+            logins = tuple(LoginUsage(provider=name, windows=reading.usage) for name, reading in self._logins.items()
+                           if reading.reported is None or SubscriptionUsageReport.due(reading.usage, reading.reported, reading.reported_at, now))
         return SubscriptionUsageReport(usage=due, logins=logins) if due or logins else None
 
     def sent(self, report: SubscriptionUsageReport, now: datetime) -> None:
         for usage in report.usage:
             Subscription.of(usage.subscription_id).reported(usage, now)
-        for login in report.logins:
-            self._logins[login.provider] = self._logins[login.provider].model_copy(update={"reported": login.windows, "reported_at": now})
+        with self._lock:
+            for login in report.logins:
+                self._logins[login.provider] = self._logins[login.provider].model_copy(update={"reported": login.windows, "reported_at": now})
 
     def _session_record(self, run: reg.AgentRun) -> Path | None:
         """A Codex run's session record in its subscription's folder (`sessions/**/rollout-*-<thread>.jsonl`),
