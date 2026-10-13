@@ -30,10 +30,9 @@ from mcp.shared.version import SUPPORTED_PROTOCOL_VERSIONS
 
 from galaius import __version__
 from galaius.agents.tool_gateway import ServedGateway
-from galaius.mcp_announcement import GATEWAY_PREFIX
 from galaius.browser import SessionRegistry
 from galaius.debug_utils import _CURRENT_INV, Debug, resolve_output_path
-from galaius.mcp_announcement import McpAnnouncement
+from galaius.mcp_announcement import GATEWAY_PREFIX, McpAnnouncement
 from galaius.desktop import CaptureError
 from galaius.runtime import (  # noqa: F401 — breaker re-exported for tests/vlm
     breaker,
