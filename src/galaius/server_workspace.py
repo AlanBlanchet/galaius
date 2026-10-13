@@ -10,7 +10,7 @@ from urllib.parse import quote, urlencode
 from uuid import UUID, uuid4
 
 import httpx
-from galaius_core import AgentGraph, AgentGraphUpdate, AgentRevision, AgentRevisionRef, AgentStartSpec, AgentTouchScope, ArtifactRef, CompanyProfile, ConfiguredModelRef, MachineRunEvents, MachineSummary, ReleaseInfo, TriggerInvocation, WorkflowEvent, WorkflowRevision, WorkflowRevisionRef, WorkflowRun
+from galaius_core import AgentGraph, AgentGraphUpdate, AgentRevision, AgentRevisionRef, AgentStartSpec, AgentTouchScope, ArtifactRef, CompanyProfile, ConfiguredModelRef, MachineRunEvents, MachineSummary, ReasoningLevel, ReleaseInfo, TriggerInvocation, WorkflowEvent, WorkflowRevision, WorkflowRevisionRef, WorkflowRun
 from galaius_core.accounts import Bootstrap
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
@@ -50,7 +50,7 @@ class AgentEdit(BaseModel):
     reports_to: UUID | None = None
     criteria: str | None = None
     criteria_weights: str = ""
-    reasoning: Literal["minimal", "low", "medium", "high", "xhigh", "max", "ultra"] = "high"
+    reasoning: ReasoningLevel = "high"
     model: ConfiguredModelRef | None = None
 
     def apply(self, current: AgentRevision):

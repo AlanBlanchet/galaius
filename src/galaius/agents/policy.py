@@ -27,8 +27,8 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
-from galaius_core import AgentRevisionRef
+from typing import Literal, get_args
+from galaius_core import AgentRevisionRef, ReasoningLevel
 
 from galaius.agents.catalog import AgentCatalog
 from galaius.agents.catalog_connection import CatalogConnectionError
@@ -240,7 +240,7 @@ class Policy:
                 ) from error
         if self.defaults.get("model"):
             self.rule(self.defaults["model"], wearer="default")
-        efforts = {"minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
+        efforts = get_args(ReasoningLevel)
         for agent, effort in {"default": self.defaults.get("reasoning", "medium"),
                               **self.reasoning}.items():
             if effort not in efforts:

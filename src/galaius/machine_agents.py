@@ -617,7 +617,7 @@ class MachineAgents(BaseModel):
             kind = placed.kind if placed else "agent"
             found.append(MachineAgentRun(
                 run_id=UUID(run.run_id), name=run.name[:120], role=(run.agent or None) and run.agent[:80], provider=run.provider[:40],
-                model=run.model and run.model[:120], status=run.status, root=root[:240], path=path[:1024], task=run.task[:8000],
+                model=run.model and run.model[:120], reasoning=run.reasoning, status=run.status, root=root[:240], path=path[:1024], task=run.task[:8000],
                 last=redact(run.last, secrets)[:400], started_at=run.started_at, finished_at=run.finished_at, cost_usd=run.cost_usd,
                 parent_run_id=UUID(run.parent_run_id) if run.parent_run_id and run.run_id not in started else None,
                 kind=kind, pending=self.pending(run.run_id) if kind == "session" and run.status == "waiting" else (),

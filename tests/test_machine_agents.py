@@ -146,6 +146,24 @@ def test_runs_say_which_ranked_candidates_were_passed_over_and_until_when(base: 
         ("claude", "claude-opus-5-5", "quota_exceeded", 1791000000.0), ("claude", "claude-fable-5-1", "cli_missing", None)]
 
 
+@pytest.mark.parametrize(("kind", "recorded", "turned", "said"), [
+    ("agent", "high", None, "high"),  # a start from the web or a spawn: the effort `register` recorded
+    ("agent", "high", "xhigh", "xhigh"),  # a turn resumed at another effort: the one it runs at now
+    ("session", None, None, None),  # an open conversation whose program does not say: not known
+    ("agent", "turbo", None, None),  # a word outside the levels: not known, never guessed
+])
+def test_runs_say_the_reasoning_effort_the_pc_launched_them_at(base: Path, tmp_path: Path, kind: str, recorded: str | None, turned: str | None, said: str | None) -> None:
+    """The web's model line says the effort the PC launched with (owner 2026-10-09 « at what reasoning effort »), read
+    from the run's record: it read « inconnu » for every PC run while only the launch preview knew it."""
+    agents = _agents(base, tmp_path)
+    run_id = str(uuid4())
+    reg.save_run(reg.AgentRun(run_id=run_id, provider="claude", model="claude-opus-5-5", name="r", cwd=str(base / "project"), started_at=1.0, exit_code=0, reasoning=recorded))
+    if turned is not None:
+        reg.begin_turn(run_id, pid=os.getpid(), reasoning=turned)
+    agents.runs.add(WebRun(run_id=run_id, root="project", kind=kind))
+    assert _answer(agents, _request("runs")).runs[0].reasoning == said
+
+
 def test_off_switch_and_missing_roots_refuse_everything_but_reading_and_stopping(base: Path, tmp_path: Path) -> None:
     off = _agents(base, tmp_path, run_agents=False)
     with pytest.raises(PermissionError, match="agents are off"):
