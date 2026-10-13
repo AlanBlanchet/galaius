@@ -182,16 +182,6 @@ class ToolGateway(BaseModel):
             raise GatewayCallFailed(str(words or f"the Galaius server refused the call (HTTP {response.status_code})"))
         return "\n".join(str(part.get("text", "")) for part in answer.get("content", ()) if isinstance(part, dict))
 
-    @staticmethod
-    def calling_role(listing: AgentToolList, name: str) -> tuple[str | None, str | None]:
-        """(role, run id) a call from this process is made for: the role of the agent run this
-        galaius serves (`GatewayServed.role`, set by the launcher), when that role is given `name`;
-        None otherwise — the owner's own session, or a sub-agent the run started (the server then
-        checks the call against every agent the PC's owner may run)."""
-        run_id, role = os.environ.get("GALAIUS_RUN_ID") or os.environ.get("GALAIUS_PARENT_RUN_ID"), GatewayServed.role()
-        return (role if role is not None and name in listing.names(role) else None), run_id
-
-
 class ServedGateway(BaseModel):
     """The gateway tools galaius's MCP server serves in this process: the cached listing at start
     (written by the sync or start that launched this run), read again every `interval` seconds."""
@@ -214,7 +204,8 @@ class ServedGateway(BaseModel):
         gateway = ToolGateway.linked()
         if gateway is None:
             raise ToolError("this PC is not linked to a Galaius server (run `galaius login`): its external tools are unavailable")
-        role, run_id = ToolGateway.calling_role(self.listing, name)
+        # The run this server serves and the role it plays: `serves` routed only that role's tools here.
+        role, run_id = GatewayServed.role(), os.environ.get("GALAIUS_RUN_ID") or os.environ.get("GALAIUS_PARENT_RUN_ID")
         listed = self.listing.tool(name)
         try:
             text = await anyio.to_thread.run_sync(lambda: gateway.call(name, arguments, role=role, run_id=run_id, budget=listed.timeout if listed else None))

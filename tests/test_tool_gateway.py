@@ -11,6 +11,7 @@ import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
 from galaius.agents.catalog_connection import CatalogConnection
+from galaius.mcp_announcement import GatewayServed
 from galaius.agents.tool_gateway import AgentToolList, GatewayTool, ServedGateway, ToolGateway
 
 
@@ -63,6 +64,7 @@ def test_a_gateway_call_answers_the_server_s_words_or_a_plain_error(tmp_path, mo
     fake = FakeServer(status, body, delay)
     monkeypatch.setattr(ToolGateway, "linked", classmethod(lambda cls: fake.gateway(tmp_path)))
     monkeypatch.setenv("GALAIUS_RUN_ID", "run-without-record")
+    monkeypatch.setenv(GatewayServed.ROLE, "researcher")
     served = ServedGateway(listing=LISTING.model_copy(update={"tools": (LISTING.tools[0].model_copy(update={"timeout": budget}),)}))
     call = served.call("ext__Context7__query-docs", {"query": "react hooks"})
     if isinstance(said, ToolError):
@@ -70,5 +72,5 @@ def test_a_gateway_call_answers_the_server_s_words_or_a_plain_error(tmp_path, mo
             asyncio.run(call)
     else:
         assert asyncio.run(call)[0].text == said
-    assert fake.calls[0] == {"name": "ext__Context7__query-docs", "arguments": {"query": "react hooks"}, "role_key": None, "run_id": "run-without-record"}
+    assert fake.calls[0] == {"name": "ext__Context7__query-docs", "arguments": {"query": "react hooks"}, "role_key": "researcher", "run_id": "run-without-record"}
     fake.server.shutdown()
