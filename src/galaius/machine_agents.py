@@ -940,7 +940,7 @@ class MachineAgents(BaseModel):
         if self._kind(request.run_id) == "continued":
             return await asyncio.to_thread(self._continue_turn, run, request.text, request_id=request.id)
         if request.text == reg.RESUME_BRIEF:  # his « Continuer »; a message he types waits for the turn it starts
-            run.reopened()
+            run.prepare_continue()
         # Answered once the message is durably queued, under the request's id (the same request
         # again finds it there and queues nothing): this runner starts the turn when the run is
         # between turns (`FollowUps`), else its dispatcher resumes the agent; a resume refused after

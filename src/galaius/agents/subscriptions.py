@@ -10,7 +10,7 @@ import os
 import re
 import shutil
 import threading
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from collections.abc import Iterable, Mapping
 from typing import ClassVar, Self
@@ -50,18 +50,6 @@ class SubscriptionCapped(SubscriptionRefused):
     @property
     def refusal(self) -> SubscriptionRefusal:
         return SubscriptionRefusal(reason="capped", cap=self.cap)
-
-
-class UsageLimited(SubscriptionRefused):
-    """A turn asked of a run its vendor's usage limit stopped, before the window it named reopens (`resets_at`)."""
-
-    def __init__(self, resets_at: datetime) -> None:
-        super().__init__("usage_limit", f"its usage limit holds until {resets_at.isoformat(timespec='minutes')}")
-        self.resets_at = resets_at
-
-    @property
-    def refusal(self) -> SubscriptionRefusal:
-        return SubscriptionRefusal(reason="usage_limit", resets_at=self.resets_at)
 
 
 class SubscriptionState(BaseModel):

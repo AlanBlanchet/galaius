@@ -21,7 +21,6 @@ from galaius import feedback, live_sources, model_catalog, ollama
 from galaius_core import AGENT_TOUCH_SCOPES
 
 from galaius.agents import messaging
-from galaius.agents import quota
 from galaius.agents import providers as agent_providers
 from galaius.agents import registry as reg
 from galaius.agents.conversations import ConversationAnswers
@@ -1022,16 +1021,15 @@ def agents_resume(
         return
     refused = False
     for identity in targets:
-        # A run whose cap or usage limit still holds is refused before anything is queued, typed on stderr (one JSON line
+        # A run at one of his subscription caps is refused before anything is queued, typed on stderr (one JSON line
         # `{"subscription_refusal": …}`) for the caller to word with its reset time.
         if (run := reg.get_run(reg.resolve_run_id(identity) or identity)) is not None:
             try:
-                run.reopened()
+                run.prepare_continue()
             except SubscriptionRefused as refusal:
                 print(json.dumps({"run_id": run.run_id, "subscription_refusal": refusal.refusal.model_dump(mode="json")}), file=sys.stderr)
                 refused = True
                 continue
-        quota.forget()  # the refusals that cut it would refuse the same models again
         delivery = messaging.deliver_message(identity, reg.RESUME_BRIEF)
         print(f"{identity[:8]}: {delivery.text}", file=sys.stderr if delivery.state == "error" else sys.stdout)
         refused = refused or delivery.state == "error"

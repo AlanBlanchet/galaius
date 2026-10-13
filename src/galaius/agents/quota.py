@@ -428,12 +428,15 @@ def _read(now: float) -> dict[str, Block]:
 
 
 def _write(entries: dict[str, Block]) -> None:
-    path = _path()
+    _write_json(_path(), {key: block.model_dump() for key, block in entries.items()})
+
+
+def _write_json(path: Path, data: dict) -> None:
+    """`data` replaces `path` in one rename; a failed write leaves the last one."""
     with suppress(Exception):
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps({key: block.model_dump() for key, block in entries.items()},
-                                  sort_keys=True), encoding="utf-8")
+        tmp.write_text(json.dumps(data, sort_keys=True), encoding="utf-8")
         tmp.replace(path)
 
 
@@ -511,14 +514,70 @@ def unsupported_until(provider: str, model: str | None, *, login: str, now: floa
 
 def served(provider: str, model: str | None, *, subscription: UUID | None = None, at: float | None = None) -> None:
     """This model answered (a turn it wrote, a run that finished) at `at` (default now): whatever
-    was remembered against it BEFORE that is over. Writes only when there was something to forget;
-    a refusal heard after the answer stands."""
+    was remembered against it BEFORE that is over, and its login answered past every refusal
+    remembered under it then (`lifted_after`). Writes only when there was something to forget or a
+    lift to note; a refusal heard after the answer stands."""
+    moment = time.time() if at is None else at
     entries = _read(time.time())
     key = _key(provider, model, subscription)
     found = entries.get(key)
-    if found is not None and (at is None or found.at <= at):
+    if found is not None and found.at <= moment:
         del entries[key]
         _write(entries)
+    refused = max((block.at for name, block in ((key, found), *entries.items())
+                   if block is not None and block.at <= moment and _of_login(name, provider, subscription)), default=None)
+    if refused is not None:
+        lifted = _read_lifted()
+        login = _login(provider, subscription)
+        if lifted.get(login, 0.0) < refused:
+            _write_json(_lifted_path(), {**lifted, login: moment})
+
+
+def _login(provider: str, subscription: UUID | None) -> str:
+    """One provider login: a subscription's own, else the PC's default login (`_key`'s suffix)."""
+    return provider + (f"#{subscription}" if subscription is not None else "")
+
+
+def _of_login(key: str, provider: str, subscription: UUID | None) -> bool:
+    """`key` is a quota block of one of `provider`'s models under that login (`_key`), never a model the vendor refuses
+    to a login (`_login_key`). A model id holding `#` or `@` reads as no model (none of these vendors names one so)."""
+    head, tail = f"{provider}/", f"#{subscription}" if subscription is not None else ""
+    if not key.startswith(head) or not key.endswith(tail):
+        return False
+    model = key[len(head):len(key) - len(tail)]
+    return "#" not in model and "@" not in model
+
+
+def _lifted_path() -> Path:
+    return UserPaths.agents() / "quota-lifted.json"
+
+
+def _read_lifted() -> dict[str, float]:
+    """Per login (`_login`), when it last answered past a refusal remembered under it (`served`), kept `MAX_COOLDOWN`."""
+    floor = time.time() - MAX_COOLDOWN
+    with suppress(Exception):
+        raw = json.loads(_lifted_path().read_text(encoding="utf-8"))
+        return {str(login): float(at) for login, at in raw.items() if isinstance(at, (int, float)) and at >= floor}
+    return {}
+
+
+def lifted_after(provider: str, since: float, *, subscription: UUID | None = None) -> float | None:
+    """When this provider login answered again after `since` (a refusal it gave then), whichever model answered: the
+    limit is over from that moment, whatever reset the vendor named (2026-10-13: « session limit · resets 1:40pm » heard
+    13:06, the same login answering from 13:10). The server's `_lifted_at` counts the same answers. None when it has not."""
+    at = _read_lifted().get(_login(provider, subscription))
+    return at if at is not None and at > since else None
+
+
+def forget_login(provider: str, *, subscription: UUID | None = None, now: float | None = None) -> None:
+    """End now every block remembered against `provider`'s models under one login: his « Continuer » asks the vendor
+    again. Ended, never dropped: the answer that follows still notes the login's lift (`served`) for its other paused runs."""
+    moment = time.time() if now is None else now
+    entries = _read(moment)
+    ended = {key: block.model_copy(update={"until": moment}) for key, block in entries.items()
+             if _of_login(key, provider, subscription) and block.until > moment}
+    if ended:
+        _write({**entries, **ended})
 
 
 def forget(provider: str | None = None, model: str | None = None) -> None:

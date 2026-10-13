@@ -1785,6 +1785,43 @@ def test_only_a_usage_limit_naming_its_reset_pauses_a_run(said, paused):
     assert 0 < reopens - run.finished_at <= 24 * 3600
 
 
+@pytest.mark.parametrize("answered_by, after, early", [
+    ("claude-opus-5-5", 240.0, True),  # 2026-10-13: refused 13:06 « resets 1:40pm », same login answering 13:10
+    ("claude-sonnet-5", 240.0, True),  # another model of that login: the server's « limit lifted » counts it too
+    ("claude-opus-5-5", -60.0, False),  # an answer heard before the refusal
+])
+def test_a_paused_run_resumes_once_its_login_answers_again_before_the_named_reset(answered_by, after, early):
+    from galaius.agents import quota
+
+    run = _ended_on("lim-lift", _SESSION_LIMIT, pid=404)
+    reset = quota.Refusal.read(_SESSION_LIMIT, now=run.finished_at).reopens_at + quota.RESET_SLACK
+    quota.served("claude", answered_by, at=run.finished_at + after)
+
+    reg.schedule_limit_resumes(now=run.finished_at + after + 1)
+
+    assert reg.get_run("lim-lift").resume_at == (run.finished_at + after if early else reset)
+
+
+def test_his_press_keeps_the_lift_for_other_paused_runs_and_a_refused_early_resume_keeps_the_named_reset():
+    from galaius.agents import quota
+
+    first, other = _ended_on("lim-a", _SESSION_LIMIT, pid=405), _ended_on("lim-b", _SESSION_LIMIT, pid=406)
+    reset = quota.Refusal.read(_SESSION_LIMIT, now=other.finished_at).reopens_at + quota.RESET_SLACK
+    first.prepare_continue()  # his « Continuer » on A: the vendor is asked again
+    assert quota.blocked_until("claude", "claude-opus-5-5") is None
+    answered = first.finished_at + 30
+    quota.served("claude", "claude-opus-5-5", at=answered)  # A answers
+    reg.schedule_limit_resumes(now=answered + 1)
+    assert reg.get_run("lim-b").resume_at == answered, "B waits for the named reset though its login answered"
+    assert reg.claim_limit_resume("lim-b", now=answered + 2) is not None
+    reg._update_fields("lim-b", {"finished_at": answered + 60})  # its early resume refused again within RESUME_GRACE
+    reg.schedule_limit_resumes(now=answered + 61)
+    assert reg.get_run("lim-b").resume_at == reset, "a refused early resume lost the resume at the named reset"
+    quota.served("claude", "claude-sonnet-5", at=answered + 90)  # another model's pool keeps answering
+    reg.schedule_limit_resumes(now=answered + 91)
+    assert reg.get_run("lim-b").resume_at == reset, "resumed and refused again at every answer of another model"
+
+
 def test_a_paused_run_is_claimed_once_at_its_reset_and_its_sub_run_is_left_to_it():
     _ended_on("lim-root", _SESSION_LIMIT, pid=402)
     _ended_on("lim-sub", _SESSION_LIMIT, pid=403, parent="lim-root")
