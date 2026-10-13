@@ -30,6 +30,9 @@ class SignInHandoff(BaseModel):
     link_file: Path
     #: The `BROWSER` the program would have used without the helper ("": the system's own opener).
     browser: str = ""
+    #: Whether the address is also opened here; False for a sign-in whose own printed address opens in the person's
+    #: browser wherever he is (`AgentSignIn.paste`): no browser pops up on this PC.
+    opens: bool = True
 
     @staticmethod
     def helper() -> Path | None:
@@ -40,11 +43,13 @@ class SignInHandoff(BaseModel):
         return None if found is None else Path(found)
 
     def environment(self) -> dict[str, str]:
-        """What the sign-in runs with on top of its environment: the helper as `BROWSER`, or nothing (an
-        install without it, said in the log: the program opens the browser itself, its address never
-        reaches the web, and the web offers the terminal command)."""
+        """What the sign-in runs with on top of its environment: the helper as `BROWSER`; in an install without it, a
+        `BROWSER` opening nothing when the address must not open here (`opens`), else nothing (said in the log: the
+        program opens the browser itself, its address never reaches the web, and the web offers the terminal command)."""
         helper = self.helper()
         if helper is None:
+            if not self.opens and (quiet := shutil.which("true")) is not None:  # its printed address reaches the web anyway
+                return {"BROWSER": quiet}
             logger.warning("%s is missing from this install: a sign-in's address cannot reach the web", HELPER)
             return {}
         return {"BROWSER": str(helper), HANDOFF_VARIABLE: self.model_dump_json()}
@@ -81,6 +86,8 @@ def main(arguments: list[str] | None = None) -> int:
     handoff = SignInHandoff.model_validate_json(os.environ[HANDOFF_VARIABLE])
     for address in sys.argv[1:] if arguments is None else arguments:
         handoff.hand(address)
+        if not handoff.opens:
+            continue
         try:
             handoff.open(address)
         except OSError:  # no opener here: the owner opens the address the web shows

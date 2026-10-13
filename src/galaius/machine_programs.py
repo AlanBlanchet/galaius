@@ -18,11 +18,12 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import ClassVar
 from urllib.parse import urljoin, urlsplit
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 from galaius_core import (
     DEVICE_CODE,
+    SIGN_IN_CODE,
     AgentProgramFailure,
     AgentProgramStep,
     AgentProvider,
@@ -73,12 +74,15 @@ class AgentPrograms(BaseModel):
     script_bytes: ClassVar[int] = 2 * 1024 * 1024
     redirects: ClassVar[int] = 5
     CODE: ClassVar[re.Pattern[str]] = re.compile(DEVICE_CODE)
+    PASTED: ClassVar[re.Pattern[str]] = re.compile(SIGN_IN_CODE)
     ANSI: ClassVar[re.Pattern[str]] = re.compile(r"\x1b\[[0-9;]*m")
     #: The steps a job is under way in: asked again, it is not started twice (threat M6).
     RUNNING: ClassVar[frozenset[str]] = frozenset({"installing", "signing_in"})
 
     #: Each job by its program and login (a subscription's id; None: the default login).
     _jobs: dict[tuple[str, UUID | None], AgentProviderState] = PrivateAttr(default_factory=dict)
+    #: Each sign-in under way, by the same key: the program a pasted code is handed to (`paste`).
+    _logins: dict[tuple[str, UUID | None], subprocess.Popen] = PrivateAttr(default_factory=dict)
     #: Each login's last status check that completed and when (monotonic), by program and environment (`_status`).
     _answered: dict[tuple[str, frozenset[tuple[str, str]]], tuple[float, LoginStatus]] = PrivateAttr(default_factory=dict)
     _lock: threading.Lock = PrivateAttr(default_factory=threading.Lock)
@@ -126,6 +130,30 @@ class AgentPrograms(BaseModel):
         except SubscriptionRefused:
             return False
         return self._status(PROVIDERS[name], self._environment(subscription)).signed_in
+
+    def paste(self, name: AgentProvider, subscription_id: UUID | None, attempt: UUID, code: str) -> AgentProviderState:
+        """`code`, the one its vendor's page showed the person (`AgentSignIn.paste`), written once to the program of sign-in
+        `attempt` of `name` waiting here (`subscription_id`'s; None: the default login), its input then closed: nothing else
+        reaches it. Never kept or logged. Its state after. Refused (PermissionError) when that sign-in no longer waits for a
+        code (ended, another attempt since) or one was already handed to it."""
+        if not self.PASTED.fullmatch(code):  # the wire checked it; checked again where it becomes input
+            raise PermissionError(f"not a {name} sign-in code")
+        key = name, subscription_id
+        with self._lock:
+            job, login = self._jobs.get(key), self._logins.get(key)
+            heard = None if job is None or job.step != "signing_in" else job.sign_in
+            if heard is None or not heard.paste or heard.attempt != attempt or login is None or login.poll() is not None:
+                raise PermissionError(f"no {name} sign-in waits for this code here: start it again")
+            if heard.pasted:
+                raise PermissionError(f"a code was already handed to this {name} sign-in: start it again for another")
+            self._jobs[key] = job = job.model_copy(update={"sign_in": heard.model_copy(update={"pasted": True}), "changed_at": datetime.now(UTC)})
+            assert login.stdin is not None
+            try:
+                login.stdin.write(code + "\n")
+                login.stdin.close()
+            except OSError:  # it ended between the check and the write: its job ends failed, saying so
+                pass
+        return job
 
     def sign_out(self, name: AgentProvider, subscription_id: UUID) -> AgentProviderState:
         """`subscription_id` signed out: its program's own sign-out inside its folder, then the folder
@@ -203,13 +231,12 @@ class AgentPrograms(BaseModel):
         raise ProgramFailed("download_failed", "too many redirects")
 
     def _sign_in(self, provider: Program, subscription: Subscription | None) -> None:
-        """Its own sign-in command, kept waiting (stdin open, never written: no code is relayed)
-        until its status says signed in, `sign_in_seconds` at most. Claude Code opens a browser on
-        this computer: the address it opens comes back through `SignInHandoff` onto the job's state
-        (the web shows it to open on this PC when no browser opened); Codex prints a device code the
-        web shows. Neither after `terminal_seconds` (a program that never called `BROWSER`): the
-        state offers the command to run it by hand in a terminal here. A subscription's runs inside its folder, and is undone when the default login no
-        longer names the same login after it."""
+        """Its own sign-in command, kept waiting (stdin open) until its status says signed in, `sign_in_seconds` at most.
+        Claude Code prints an address any browser signs in at (`paste_link`): the web opens it in the person's browser,
+        wherever he is, and the code its page then shows comes back once (`paste`); this PC opens no browser. Codex prints
+        a device code the web shows. A program with neither: the address it handed `BROWSER` (`SignInHandoff`), to open
+        on this PC; none after `terminal_seconds`: the command to run it by hand in a terminal here. A subscription's runs
+        inside its folder, and is undone when the default login no longer names the same login after it."""
         key, environment = self._key(provider, subscription), self._environment(subscription)
         status = self._status(provider, environment)
         if status.signed_in:
@@ -221,16 +248,22 @@ class AgentPrograms(BaseModel):
         terminal = time.monotonic() + self.terminal_seconds
         # 0700 on POSIX; on Windows a helper still holding the file never hides how the sign-in ended.
         with tempfile.TemporaryDirectory(prefix="galaius-sign-in-", ignore_cleanup_errors=True) as folder:
-            handoff = SignInHandoff(link_file=Path(folder) / "link", browser=environment.get("BROWSER", ""))
+            handoff = SignInHandoff(link_file=Path(folder) / "link", browser=environment.get("BROWSER", ""), opens=provider.paste_link is None)
             login = subprocess.Popen([provider.executable(), *provider.login_arguments], env={**environment, **handoff.environment()}, stdin=subprocess.PIPE,
                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace", **process_group_options())
-            threading.Thread(target=self._read_code, args=(key, login), daemon=True).start()
+            with self._lock:
+                self._logins[key] = login
+            threading.Thread(target=self._read_output, args=(provider, key, login, uuid4()), daemon=True).start()
             try:
                 while True:
                     time.sleep(self.poll_seconds)
-                    if (link := handoff.link()) is not None:
-                        self._signing(key, link=link)
-                    elif time.monotonic() >= terminal and (heard := self._jobs[key].sign_in) is not None and heard.code is None:
+                    heard = self._jobs[key].sign_in
+                    waited = time.monotonic() >= terminal
+                    if heard is None or heard.paste or heard.code is not None:
+                        pass
+                    elif (link := handoff.link()) is not None and (provider.paste_link is None or waited):
+                        self._signing(key, link=link)  # no address for any browser printed: this PC's own
+                    elif waited and heard.link is None:
                         self._signing(key, command=provider.login_command(subscription.overlay() if subscription is not None else {}))
                     status = self._status(provider, environment)
                     if status.signed_in:
@@ -240,10 +273,14 @@ class AgentPrograms(BaseModel):
                         self._update(key, step="ready", signed_in=True, account=status.account, login=status.login, sign_in=None)
                         return
                     if login.poll() is not None:
+                        if (heard := self._jobs[key].sign_in) is not None and heard.pasted:
+                            raise ProgramFailed("code_refused", f"its sign-in ended (exit {login.returncode}) after the code: its vendor refused it")
                         raise ProgramFailed("sign_in_failed", f"its sign-in ended (exit {login.returncode}) without signing in")
                     if datetime.now(UTC) >= deadline:
                         raise ProgramFailed("sign_in_expired", f"not signed in within {self.sign_in_seconds / 60:.0f} min")
             finally:
+                with self._lock:
+                    self._logins.pop(key, None)
                 if login.poll() is None:
                     end_process_tree(login.pid)
                     try:
@@ -251,16 +288,20 @@ class AgentPrograms(BaseModel):
                     except subprocess.TimeoutExpired:
                         login.kill()
 
-    def _read_code(self, key: tuple[str, UUID | None], login: subprocess.Popen) -> None:
-        """A device code the sign-in prints, onto its state while it still waits; its output is never
-        logged (threat M4)."""
+    def _read_output(self, provider: Program, key: tuple[str, UUID | None], login: subprocess.Popen, attempt: UUID) -> None:
+        """What the sign-in prints for the person, onto its state while it still waits: a device code, or the address any
+        browser signs in at (`paste_link`, then waiting for the code its page shows). Its output is never logged (threat M4)."""
         assert login.stdout is not None
         for line in login.stdout:
+            if (heard := self._jobs[key].sign_in) is not None and heard.pasted:
+                continue  # after the code, nothing it prints reaches the web (it may echo it)
             word = self.ANSI.sub("", line).strip()
             if self.CODE.match(word):
                 self._signing(key, code=word)
+            elif provider.paste_link is not None and (found := provider.paste_link.search(word)) is not None:
+                self._signing(key, link=found.group(1), paste=True, attempt=attempt, command=None)  # over a terminal command offered first
 
-    def _signing(self, key: tuple[str, UUID | None], **found: str) -> None:
+    def _signing(self, key: tuple[str, UUID | None], **found: object) -> None:
         """What the sign-in under way just said (its device code, the address it opened), onto its state
         while it still waits; what is not a sign-in's (an address that is not https) is dropped, unlogged."""
         with self._lock:

@@ -35,7 +35,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from galaius_core import (
     AGENT_TOUCH_SCOPES, MACHINE_AGENT_MEDIA, MACHINE_AGENT_READ, MACHINE_AGENT_TAIL, AgentAnswerRequest, AgentMedia, AgentMediaRequest, image_type, AgentContinueRequest, AgentFoldersRequest, AgentInteraction, AgentLogsRequest, AgentOptionsRequest,
-    AgentAllowanceRequest, AgentMoveRequest, AgentProgramInstallRequest, AgentProgramsRequest, AgentProviderState, AgentSignOutRequest, SubscriptionAllowance, Lent, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
+    AgentAllowanceRequest, AgentMoveRequest, AgentProgramInstallRequest, AgentProgramsRequest, AgentProviderState, AgentSignInCodeRequest, AgentSignOutRequest, SubscriptionAllowance, Lent, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
     MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, PassedOverCandidate, ReadsAt, AgentRefusalCode, WebLimited, WebLoad, media_key, media_paths, MachineAgentSession, MachineFileEntry, WorkspaceCreateRequest, WorkspacePack, WorkspacePackRequest, WorkspacePrepareRequest, WorkspaceRefresh, WorkspacesRequest,
 )
 from galaius.agents import agent_queue
@@ -437,7 +437,7 @@ class MachineAgents(BaseModel):
         # With agents off (or no folder) what the web started here can still be read and stopped.
         # Programs are not agents: installed and signed in whatever the agent settings say.
         if not isinstance(request, AgentRunsRequest | AgentTailRequest | AgentMediaRequest | AgentStopRequest | AgentLogsRequest | WorkspacesRequest
-                          | AgentProgramsRequest | AgentProgramInstallRequest | AgentSignOutRequest):
+                          | AgentProgramsRequest | AgentProgramInstallRequest | AgentSignOutRequest | AgentSignInCodeRequest):
             if not self.run_agents:
                 raise PermissionError("agents are off on this computer; its owner turns them on on its page on the web, or there with `galaius machine agents on`")
             if not self.roots:
@@ -503,6 +503,9 @@ class MachineAgents(BaseModel):
             case AgentSignOutRequest():
                 state = await asyncio.to_thread(self._programs().sign_out, request.provider, request.subscription_id)
                 return MachineAgentAnswer(request_id=request.id, providers=(state,), detail=f"{request.provider}: signed out")
+            case AgentSignInCodeRequest():
+                state = await asyncio.to_thread(self._programs().paste, request.provider, request.subscription_id, request.attempt, request.code)
+                return MachineAgentAnswer(request_id=request.id, providers=(state,), detail=f"{request.provider}: code handed to its sign-in")
             case AgentAllowanceRequest():
                 return await self._allow(request)
             case AgentMoveRequest():

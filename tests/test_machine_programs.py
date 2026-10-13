@@ -1,11 +1,14 @@
 """An agent program installed from the web runs only its vendor's own script: fetched over https,
 through its vendor's hosts alone, never larger than a script."""
 
+import os
+import shlex
 import sys
 import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import UUID
 
 import httpx
 import pytest
@@ -13,6 +16,7 @@ from galaius_core import AgentSignIn
 
 from galaius.agents.providers import PROVIDERS, AgentProvider, LoginStatus
 from galaius.machine_programs import AgentPrograms, ProgramFailed
+from galaius.sign_in_browser import SignInHandoff
 
 SCRIPT = b"#!/bin/sh\necho installed\n"
 
@@ -78,46 +82,94 @@ def test_a_job_that_breaks_ends_failed_and_a_late_code_never_reopens_it(tmp_path
     assert {item.provider: item for item in jobs.states()}["claude"].sign_in is None
 
 
+#: What Claude Code 2.1.288 hands `BROWSER` (comes back to this PC) and what it prints for any browser (its page shows a code).
 CLAUDE_SIGN_IN = "https://claude.com/cai/oauth/authorize?code=true&redirect_uri=http%3A%2F%2Flocalhost%3A43117%2Fcallback&state=s7"
+CLAUDE_PASTE = "https://claude.com/cai/oauth/authorize?code=true&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&state=s7"
+#: The code its page shows once accepted, as the stand-in expects it.
+CODE = "Zq81vB_x-3kLm0Pa#s7s7s7s7s7"
+
+
+def stand_in_claude(tmp_path: Path, *, opens: bool, prints: bool) -> Path:
+    """`claude auth login` as 2.1.288 runs it with no terminal: `BROWSER` with this PC's address, the address for any
+    browser, then « Paste code here if prompted > » (no newline) and one line read: `CODE` signs in, anything else fails
+    (« Login failed: Request failed with status code 400 », exit 1)."""
+    claude = tmp_path / "claude"
+    claude.write_text('#!/bin/sh\n[ "$1" = auth ] || exit 0\n' + ('"$BROWSER" "' + CLAUDE_SIGN_IN + '"\n' if opens else "")
+                      + ("echo 'Opening browser to sign in…'\necho \"If the browser didn't open, visit: " + CLAUDE_PASTE + "\"\n"
+                         + "printf 'Paste code here if prompted > '\nread code\n"
+                         + f'[ "$code" = "{CODE}" ] && {{ touch "$0.in"; echo "Login successful."; sleep 30; }}\n'
+                         + "echo 'Login failed: Request failed with status code 400'; exit 1\n" if prints else "sleep 30\n"))
+    claude.chmod(0o755)
+    return claude
+
+
+def signing(jobs: AgentPrograms, until, seconds: float = 10):
+    deadline = time.monotonic() + seconds
+    while not until(state := jobs.states()[0]):
+        assert time.monotonic() < deadline, f"stuck at {state.step} {state.sign_in}"
+        time.sleep(0.05)
+    return state
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="its stand-in programs are POSIX shell scripts")
-@pytest.mark.parametrize("opens", [True, False])
-def test_the_address_claude_opens_reaches_the_job_through_its_browser_never_a_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, opens: bool) -> None:
-    """Claude Code opens its sign-in through `BROWSER`: the login runs with galaius's helper there, the
-    address it hands over lands on the job's state (with the person's own opener still run), and
-    no log carries it; the opener runs with the person's `BROWSER` back, never the helper. A program that never calls `BROWSER` gets its terminal command offered instead."""
-    claude = tmp_path / "claude"
-    claude.write_text('#!/bin/sh\n[ "$1" = auth ] || exit 0\n' + ('"$BROWSER" "' + CLAUDE_SIGN_IN + '"\n' if opens else "") + "sleep 30\n")
-    claude.chmod(0o755)
+@pytest.mark.parametrize(("opens", "prints", "pasted", "ends"), [
+    (True, True, CODE, "ready"),               # his browser anywhere, the code back: signed in, no browser on this PC
+    (True, True, "WrongCode_12345", "failed"),  # a code its vendor refuses: code_refused
+    (True, False, None, "ready"),              # an older program printing no address for any browser: this PC's own
+    (False, False, None, "ready"),             # neither: the terminal command
+])
+def test_claude_signs_in_from_any_browser_with_the_code_its_page_shows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+                                                                       opens: bool, prints: bool, pasted: str | None, ends: str) -> None:
+    """The sign-in's address for any browser reaches the job (`paste`) and no browser opens on this PC; the code the
+    person pastes is written once to the program that printed that address (another attempt's, a second code, a second
+    line refused) and never logged. A program printing no such address: the address it handed `BROWSER` (this PC's own),
+    else its terminal command."""
+    claude = stand_in_claude(tmp_path, opens=opens, prints=prints)
     opened = tmp_path / "opened"
     opener = tmp_path / "opener"
-    opener.write_text(f'#!/bin/sh\necho "$1 $BROWSER $GALAIUS_SIGN_IN_HANDOFF" > {opened}\n')
+    opener.write_text(f'#!/bin/sh\necho "$1 $BROWSER" > {opened}\n')
     opener.chmod(0o755)
-    signed_in = threading.Event()
-    monkeypatch.setattr(AgentPrograms, "_status", lambda self, provider, environment: LoginStatus(signed_in=signed_in.is_set()))
+    helper = tmp_path / "galaius-sign-in-browser"  # this install's helper, whatever the test environment installed
+    helper.write_text(f'#!/bin/sh\nPYTHONPATH={shlex.quote(os.pathsep.join(sys.path))} exec {shlex.quote(sys.executable)} -m galaius.sign_in_browser "$@"\n')
+    helper.chmod(0o755)
+    monkeypatch.setattr(SignInHandoff, "helper", staticmethod(lambda: helper))
+    by_hand = threading.Event()
+    monkeypatch.setattr(AgentPrograms, "_status", lambda self, provider, environment: LoginStatus(signed_in=Path(f"{claude}.in").exists() or by_hand.is_set()))
     monkeypatch.setattr(AgentPrograms, "poll_seconds", 0.1)
     monkeypatch.setattr(AgentPrograms, "terminal_seconds", 0.5)
     monkeypatch.setattr(type(PROVIDERS["claude"]), "available", lambda self: True)
     monkeypatch.setattr(type(PROVIDERS["claude"]), "executable", lambda self: str(claude))
     jobs = AgentPrograms(environment={"PATH": "/usr/bin:/bin", "BROWSER": str(opener)}, log_path=tmp_path / "agent-programs.log")
     assert jobs.install("claude").step == "signing_in"
-    deadline = time.monotonic() + 10
-    while (state := jobs.states()[0]).sign_in is None or (state.sign_in.link or state.sign_in.command) is None:
-        assert time.monotonic() < deadline, "the sign-in never said where to sign in"
-        time.sleep(0.05)
-    if opens:
-        assert (state.sign_in.link, state.sign_in.command) == (CLAUDE_SIGN_IN, None)
+    state = signing(jobs, lambda state: state.sign_in is not None and (state.sign_in.paste if pasted is not None else state.sign_in.link is not None if opens else state.sign_in.command is not None))
+    if pasted is not None:
+        assert (state.sign_in.link, state.sign_in.command, state.sign_in.pasted) == (CLAUDE_PASTE, None, False)
+        attempt = state.sign_in.attempt
+        with pytest.raises(PermissionError, match="no claude sign-in"):
+            jobs.paste("claude", UUID(int=7), attempt, pasted)  # another login's: nothing waits there
+        with pytest.raises(PermissionError, match="no claude sign-in"):
+            jobs.paste("claude", None, UUID(int=8), pasted)  # another attempt's (an older link)
+        with pytest.raises(PermissionError, match="not a claude"):
+            jobs.paste("claude", None, attempt, pasted + "\nsecond line")
+        assert jobs.paste("claude", None, attempt, pasted).sign_in.pasted
+        with pytest.raises(PermissionError, match="already"):
+            jobs.paste("claude", None, attempt, pasted)
     else:
-        assert state.sign_in.link is None and state.sign_in.command is not None and state.sign_in.command.endswith("claude auth login")
-    signed_in.set()
-    while jobs.states()[0].step != "ready":
-        assert time.monotonic() < deadline + 5
-        time.sleep(0.05)
-    if opens:
-        assert opened.read_text().split() == [CLAUDE_SIGN_IN, str(opener)]
-    assert "43117" not in caplog.text
-    assert not jobs.log_path.exists() or "43117" not in jobs.log_path.read_text()
+        with pytest.raises(PermissionError):
+            jobs.paste("claude", None, UUID(int=8), CODE)  # no address for any browser: no code is taken
+        if opens:
+            assert (state.sign_in.link, state.sign_in.paste) == (CLAUDE_SIGN_IN, False)  # a terminal command may come first under load
+        else:
+            assert state.sign_in.link is None and state.sign_in.command is not None and state.sign_in.command.endswith("claude auth login")
+        by_hand.set()
+    state = signing(jobs, lambda state: state.step in ("ready", "failed"))
+    assert state.step == ends
+    if ends == "failed":
+        assert state.failure == "code_refused"
+    assert not opened.exists()  # Claude Code's sign-in opens in the person's browser, wherever he is: nothing pops up on this PC
+    for secret in ("43117", "Zq81vB", "WrongCode"):
+        assert secret not in caplog.text
+        assert not jobs.log_path.exists() or secret not in jobs.log_path.read_text()
 
 
 #: Claude Code 2.1.288 with its claude.ai login expired and not refreshable: the JSON status still says
