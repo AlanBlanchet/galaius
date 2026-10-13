@@ -10,7 +10,6 @@ Regenerate both after changing a tool or the instructions:
 
 import asyncio
 import json
-import os
 from importlib.metadata import version
 from types import SimpleNamespace
 from typing import get_args
@@ -64,7 +63,10 @@ def test_the_relay_first_lists_the_gateway_tools_of_its_run_s_role(monkeypatch, 
     tools the server will list once started — those of the role its run plays, of the company the PC
     is linked to now (re-linked, unlinked), none for another role or outside a run."""
     snapshot = McpAnnouncement.read(PackageData.path(PackageData.MCP_ANNOUNCEMENT))
-    monkeypatch.setattr(os, "environ", GatewayServed.environment(dict(os.environ), role))
+    if role is None:
+        monkeypatch.delenv(GatewayServed.ROLE, raising=False)
+    else:
+        monkeypatch.setenv(GatewayServed.ROLE, role)
     for linked in (_listing("ext__galaius__list_workflows"), _listing("ext__other__search"), None):
         monkeypatch.setattr(ToolGateway, "linked", classmethod(lambda cls, linked=linked: None if linked is None else SimpleNamespace(cached=lambda: linked)))
         monkeypatch.setattr(core.mcp.gateway, "listing", ToolGateway.current(online=False))

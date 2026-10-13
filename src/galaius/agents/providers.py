@@ -44,6 +44,7 @@ from galaius.agents.vocabulary import ApprovalIntent, TouchScope, ThinkingLevel,
 from galaius.inbox_hook import NOTE as INBOX_NOTE
 from galaius.models import Model
 from galaius.processes import ask_process, run_isolated_process
+from galaius.mcp_announcement import GatewayServed
 
 #: Set (to anything) in the environment of an agent working in a folder whose own agent settings
 #: must not load - a workspace cloned from the web: its hooks and permission rules are code and
@@ -1523,7 +1524,7 @@ class _CodexMeshServer(BaseModel):
 
     command: str = Field(min_length=1)
     args: list[str]
-    env: dict[Literal["GALAIUS_PARENT_RUN_ID", "GALAIUS_RUN_ROLE"], Annotated[str, Field(min_length=1)]] = Field(min_length=1)
+    env: dict[Literal["GALAIUS_PARENT_RUN_ID", GatewayServed.ROLE], Annotated[str, Field(min_length=1)]] = Field(min_length=1)
 
 
 class _CodexMesh(BaseModel):

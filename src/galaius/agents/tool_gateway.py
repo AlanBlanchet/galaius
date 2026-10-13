@@ -25,9 +25,8 @@ from mcp import types
 from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from galaius.agents import registry
 from galaius.agents.catalog_connection import CatalogConnection, CatalogConnectionError
-from galaius.mcp_announcement import GATEWAY_PREFIX, GatewayServed, GatewayToolName, GatewayToolWire, McpAnnouncement
+from galaius.mcp_announcement import GatewayServed, GatewayToolName, GatewayToolWire, McpAnnouncement
 from galaius.private_files import PRIVATE_FILES
 
 logger = logging.getLogger(__name__)
@@ -59,7 +58,7 @@ class AgentToolList(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     revision: str = ""
-    agents: dict[str, tuple[str, ...]] = Field(default_factory=dict)
+    agents: dict[str, tuple[GatewayToolName, ...]] = Field(default_factory=dict)
     tools: tuple[GatewayTool, ...] = ()
 
     def names(self, role: str) -> tuple[str, ...]:
@@ -186,12 +185,10 @@ class ToolGateway(BaseModel):
     @staticmethod
     def calling_role(listing: AgentToolList, name: str) -> tuple[str | None, str | None]:
         """(role, run id) a call from this process is made for: the role of the agent run this
-        galaius serves (`GALAIUS_RUN_ID`, set by the launcher), when that role is given `name`;
+        galaius serves (`GatewayServed.role`, set by the launcher), when that role is given `name`;
         None otherwise — the owner's own session, or a sub-agent the run started (the server then
         checks the call against every agent the PC's owner may run)."""
-        run_id = os.environ.get("GALAIUS_RUN_ID") or os.environ.get("GALAIUS_PARENT_RUN_ID")
-        run = registry.get_run(run_id) if run_id else None
-        role = run.agent if run is not None else None
+        run_id, role = os.environ.get("GALAIUS_RUN_ID") or os.environ.get("GALAIUS_PARENT_RUN_ID"), GatewayServed.role()
         return (role if role is not None and name in listing.names(role) else None), run_id
 
 
@@ -208,7 +205,8 @@ class ServedGateway(BaseModel):
         return [types.Tool.model_validate(tool.model_dump()) for tool in self.listing.served().of(GatewayServed.role())]
 
     def serves(self, name: str) -> bool:
-        return name.startswith(GATEWAY_PREFIX)
+        """Whether `name` is one of the tools this server lists (its run's role's), never another's."""
+        return any(tool.name == name for tool in self.listing.served().of(GatewayServed.role()))
 
     async def call(self, name: str, arguments: dict[str, Any]) -> list[types.TextContent]:
         """Forward one call; a refusal or an unreachable server raises ToolError with its words (the

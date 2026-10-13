@@ -813,6 +813,8 @@ class ChildLaunch(AheadLaunch):
     arguments: dict[str, object]
     #: Whether the child gets galaius's MCP server from `mesh_config` (its CLI registers none itself).
     meshed: bool
+    #: The role the child plays (`GatewayServed.ROLE`); None: none, even one its parent's environment holds.
+    role: str | None
 
     #: The run id launches are compared under (`key`).
     _ANY_RUN: ClassVar[str] = str(uuid.UUID(int=0))
@@ -820,11 +822,11 @@ class ChildLaunch(AheadLaunch):
     def env(self, run_id: str) -> dict[str, str]:
         """The environment MINUS any parent tag, set explicitly: a grandchild would otherwise inherit
         its grandparent's id and the tree would be wrong."""
-        return {**self.environment, "GALAIUS_RUN_ID": run_id, "GALAIUS_PARENT_RUN_ID": run_id}
+        return {**GatewayServed.environment(self.environment, self.role), "GALAIUS_RUN_ID": run_id, "GALAIUS_PARENT_RUN_ID": run_id}
 
     def command_arguments(self, run_id: str, session: str) -> dict[str, object]:
         arguments = {**self.arguments, "run_id": session, "environment": self.env(run_id),
-                     "mcp_config": mesh_config(run_id=run_id, role=self.arguments.get("agent")) if self.meshed else None}
+                     "mcp_config": mesh_config(run_id=run_id, role=self.role) if self.meshed else None}
         if self.provider.reads_mid_turn:
             arguments["inbox_hook"] = agent_queue.inbox_hook(run_id)
         return arguments
@@ -1572,7 +1574,7 @@ async def run_agent(
             provider=candidate_provider, cwd=cwd, environment=env, arguments=command_kwargs,
             # Once, never twice: skip the mesh when the provider's own config already registers
             # galaius — else the child would carry two registrations of the same server.
-            meshed=mesh and not already_meshed(candidate_provider.name, cwd=cwd), fence=candidate_fence,
+            meshed=mesh and not already_meshed(candidate_provider.name, cwd=cwd), fence=candidate_fence, role=agent,
         )
         # A child started ahead for this very launch skips its CLI's own startup. Its run id is the
         # vendor session id, so it serves only the first child handed to that vendor.
