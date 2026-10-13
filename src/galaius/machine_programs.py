@@ -32,6 +32,7 @@ from galaius_core import (
     AgentProvider,
     AgentProviderState,
     AgentSignIn,
+    PasteSignIn,
     UsageWindow,
 )
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
@@ -78,7 +79,7 @@ class AgentPrograms(BaseModel):
     redirects: ClassVar[int] = 5
     CODE: ClassVar[re.Pattern[str]] = re.compile(DEVICE_CODE)
     PASTED: ClassVar[re.Pattern[str]] = re.compile(SIGN_IN_CODE)
-    #: How a code comes sealed to a sign-in's key (`AgentSignIn.seal_key`): what WebCrypto's RSA-OAEP with SHA-256 makes.
+    #: How a code comes sealed to a sign-in's key (`PasteSignIn.seal_key`): what WebCrypto's RSA-OAEP with SHA-256 makes.
     SEAL: ClassVar[padding.OAEP] = padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
     ANSI: ClassVar[re.Pattern[str]] = re.compile(r"\x1b\[[0-9;]*m")
     #: The steps a job is under way in: asked again, it is not started twice (threat M6).
@@ -87,7 +88,7 @@ class AgentPrograms(BaseModel):
     #: Each job by its program and login (a subscription's id; None: the default login).
     _jobs: dict[tuple[str, UUID | None], AgentProviderState] = PrivateAttr(default_factory=dict)
     #: Each sign-in under way, by the same key: the program a pasted code is handed to (`paste`), and its attempt's id and
-    #: own private key the code comes sealed to (`AgentSignIn.seal_key`), never written anywhere.
+    #: own private key the code comes sealed to (`PasteSignIn.seal_key`), never written anywhere.
     _logins: dict[tuple[str, UUID | None], tuple[subprocess.Popen, UUID, rsa.RSAPrivateKey]] = PrivateAttr(default_factory=dict)
     #: Each login's last status check that completed and when (monotonic), by program and environment (`_status`).
     _answered: dict[tuple[str, frozenset[tuple[str, str]]], tuple[float, LoginStatus]] = PrivateAttr(default_factory=dict)
@@ -146,8 +147,8 @@ class AgentPrograms(BaseModel):
         key = name, subscription_id
         with self._lock:
             job, (login, waiting, private) = self._jobs.get(key), self._logins.get(key, (None, None, None))
-            heard = None if job is None or job.step != "signing_in" else job.sign_in
-            if heard is None or not heard.paste or heard.attempt != attempt or waiting != attempt or login is None or private is None or login.poll() is not None:
+            heard = None if job is None or job.step != "signing_in" or job.sign_in is None else job.sign_in.paste
+            if heard is None or heard.attempt != attempt or waiting != attempt or login is None or private is None or login.poll() is not None:
                 raise PermissionError(f"no {name} sign-in waits for this code here: start it again")
             if heard.pasted:
                 raise PermissionError(f"a code was already handed to this {name} sign-in: start it again for another")
@@ -157,13 +158,15 @@ class AgentPrograms(BaseModel):
                 raise PermissionError(f"not a {name} sign-in code sealed to this sign-in") from error
             if not self.PASTED.fullmatch(code):  # one line, nothing a terminal would read as more input
                 raise PermissionError(f"not a {name} sign-in code")
-            self._jobs[key] = job = job.model_copy(update={"sign_in": heard.model_copy(update={"pasted": True}), "changed_at": datetime.now(UTC)})
-            assert login.stdin is not None
+            assert job is not None and job.sign_in is not None and login.stdin is not None
+            unsent = job
+            self._jobs[key] = job = job.model_copy(update={"sign_in": job.sign_in.model_copy(update={"paste": heard.model_copy(update={"pasted": True})}), "changed_at": datetime.now(UTC)})
             try:
                 login.stdin.write(code + "\n")
                 login.stdin.close()
-            except OSError:  # it ended between the check and the write: its job ends failed, saying so
-                pass
+            except OSError as error:  # it ended between the check and the write: it ends « stopped », never « code refused »
+                self._jobs[key] = unsent
+                raise PermissionError(f"the {name} sign-in ended before its code: start it again") from error
         return job
 
     def sign_out(self, name: AgentProvider, subscription_id: UUID) -> AgentProviderState:
@@ -272,11 +275,11 @@ class AgentPrograms(BaseModel):
                     time.sleep(self.poll_seconds)
                     heard = self._jobs[key].sign_in
                     waited = time.monotonic() >= terminal
-                    if heard is None or heard.paste or heard.code is not None:
+                    if heard is None or heard.code is not None:
                         pass
-                    elif (link := handoff.link()) is not None and (provider.paste_link is None or waited):
+                    elif heard.paste is None and heard.link is None and (link := handoff.link()) is not None and (provider.paste_link is None or waited):
                         self._signing(key, link=link)  # no address for any browser printed: this PC's own
-                    elif waited and heard.link is None:
+                    elif waited and heard.command is None:  # beside any address: the web shows it when it cannot show the address
                         self._signing(key, command=provider.login_command(subscription.overlay() if subscription is not None else {}))
                     status = self._status(provider, environment)
                     if status.signed_in:
@@ -286,7 +289,7 @@ class AgentPrograms(BaseModel):
                         self._update(key, step="ready", signed_in=True, account=status.account, login=status.login, sign_in=None)
                         return
                     if login.poll() is not None:
-                        if (heard := self._jobs[key].sign_in) is not None and heard.pasted:
+                        if (heard := self._jobs[key].sign_in) is not None and heard.paste is not None and heard.paste.pasted:
                             raise ProgramFailed("code_refused", f"its sign-in ended (exit {login.returncode}) after the code: its vendor refused it")
                         raise ProgramFailed("sign_in_failed", f"its sign-in ended (exit {login.returncode}) without signing in")
                     if datetime.now(UTC) >= deadline:
@@ -306,23 +309,26 @@ class AgentPrograms(BaseModel):
         browser signs in at (`paste_link`, then waiting for the code its page shows). Its output is never logged (threat M4)."""
         assert login.stdout is not None
         for line in login.stdout:
-            if (heard := self._jobs[key].sign_in) is not None and heard.pasted:
+            if (heard := self._jobs[key].sign_in) is not None and heard.paste is not None and heard.paste.pasted:
                 continue  # after the code, nothing it prints reaches the web (it may echo it)
             word = self.ANSI.sub("", line).strip()
             if self.CODE.match(word):
                 self._signing(key, code=word)
             elif provider.paste_link is not None and (found := provider.paste_link.search(word)) is not None:
-                self._signing(key, link=found.group(1), paste=True, attempt=attempt, seal_key=seal, command=None)  # over a terminal command offered first
+                self._signing(key, link=found.group(1), paste=PasteSignIn(attempt=attempt, seal_key=seal))
 
-    def _signing(self, key: tuple[str, UUID | None], **found: object) -> None:
-        """What the sign-in under way just said (its device code, the address it opened), onto its state
-        while it still waits; what is not a sign-in's (an address that is not https) is dropped, unlogged."""
+    def _signing(self, key: tuple[str, UUID | None], *, code: str | None = None, link: str | None = None, command: str | None = None,
+                 paste: PasteSignIn | None = None) -> None:
+        """What the sign-in under way just said (its device code, an address, its terminal command, that it waits for a
+        pasted code), onto its state while it still waits; what is not a sign-in's (an address that is not https) is
+        dropped, unlogged."""
+        found = {name: value for name, value in (("code", code), ("link", link), ("command", command), ("paste", paste)) if value is not None}
         with self._lock:
             current = self._jobs[key]
             if current.step != "signing_in" or current.sign_in is None:
                 return
             try:
-                heard = AgentSignIn.model_validate({**current.sign_in.model_dump(), **found})
+                heard = AgentSignIn.model_validate({**current.sign_in.model_dump(), **{name: value.model_dump() if isinstance(value, PasteSignIn) else value for name, value in found.items()}})
             except ValidationError as refused:
                 # Which rule it broke, never the value (an address, a code: threat M4).
                 logger.info("%s sign-in: dropped what it reported (%s)", key[0], ", ".join(f"{error['loc'][0]}: {error['type']}" for error in refused.errors()))

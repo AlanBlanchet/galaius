@@ -18,7 +18,8 @@ import hmac
 import logging
 import time
 
-from galaius_core import MACHINE_AGENT_REQUESTS, MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentSettings, MachineAgentSettingsUpdate, MachineWorkspaceJob, SubscriptionLimits, WebLoad
+from galaius_core import MACHINE_AGENT_REQUESTS, AgentProviderState, MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentSettings, MachineAgentSettingsUpdate, MachineWorkspaceJob, SubscriptionLimits, WebLoad
+from galaius.machine_programs import AgentPrograms
 from galaius.agents import agent_queue, messaging
 from galaius.agents import registry as reg
 from galaius.agents.host import ConversationRefused
@@ -1104,3 +1105,14 @@ def test_a_run_its_lost_login_stopped_resumes_only_once_signed_in_again(base: Pa
     assert asyncio.run(agents.resume_paused()) == ["lost-login"]
     assert sent == [("lost-login", reg.RESUME_BRIEF, reg.LOGIN_RESUME_SENDER)]
     assert asyncio.run(agents.resume_paused()) == [] and len(sent) == 1
+
+
+def test_a_pasted_code_reaches_its_sign_in_through_the_web_request(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The web's `sign_in_code` request hands its sealed code, its attempt and its login to that program's sign-in here,
+    agents off or on (a program is not an agent)."""
+    agents = _agents(base, tmp_path, run_agents=False).model_copy(update={"programs": AgentPrograms(environment={}, log_path=tmp_path / "programs.log")})
+    handed: list[tuple] = []
+    monkeypatch.setattr(AgentPrograms, "paste", lambda self, *given: handed.append(given) or AgentProviderState(provider="claude", active=True, available=True, step="signing_in"))
+    attempt, subscription, sealed = uuid4(), uuid4(), "Q" * 342 + "=="
+    answer = _answer(agents, _request("sign_in_code", provider="claude", subscription_id=str(subscription), attempt=str(attempt), sealed=sealed))
+    assert (handed, answer.providers[0].step) == ([("claude", subscription, attempt, sealed)], "signing_in")

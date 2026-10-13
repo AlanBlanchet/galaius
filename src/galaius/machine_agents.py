@@ -504,7 +504,7 @@ class MachineAgents(BaseModel):
                 state = await asyncio.to_thread(self._programs().sign_out, request.provider, request.subscription_id)
                 return MachineAgentAnswer(request_id=request.id, providers=(state,), detail=f"{request.provider}: signed out")
             case AgentSignInCodeRequest():
-                state = await asyncio.to_thread(self._programs().paste, request.provider, request.subscription_id, request.attempt, request.code)
+                state = await asyncio.to_thread(self._programs().paste, request.provider, request.subscription_id, request.attempt, request.sealed)
                 return MachineAgentAnswer(request_id=request.id, providers=(state,), detail=f"{request.provider}: code handed to its sign-in")
             case AgentAllowanceRequest():
                 return await self._allow(request)

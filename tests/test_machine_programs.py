@@ -156,10 +156,10 @@ def test_claude_signs_in_from_any_browser_with_the_code_its_page_shows(tmp_path:
     monkeypatch.setattr(type(PROVIDERS["claude"]), "executable", lambda self: str(claude))
     jobs = AgentPrograms(environment={"PATH": "/usr/bin:/bin", "BROWSER": str(opener)}, log_path=tmp_path / "agent-programs.log")
     assert jobs.install("claude").step == "signing_in"
-    state = signing(jobs, lambda state: state.sign_in is not None and (state.sign_in.paste if pasted is not None else state.sign_in.link is not None if opens else state.sign_in.command is not None))
+    state = signing(jobs, lambda state: state.sign_in is not None and (state.sign_in.paste is not None if pasted is not None else state.sign_in.link is not None if opens else state.sign_in.command is not None))
     if pasted is not None:
-        assert (state.sign_in.link, state.sign_in.command, state.sign_in.pasted) == (CLAUDE_PASTE, None, False)
-        attempt, seal = state.sign_in.attempt, sealer(state.sign_in.seal_key)
+        assert (state.sign_in.link, state.sign_in.paste.pasted) == (CLAUDE_PASTE, False)
+        attempt, seal = state.sign_in.paste.attempt, sealer(state.sign_in.paste.seal_key)
         with pytest.raises(PermissionError, match="no claude sign-in"):
             jobs.paste("claude", UUID(int=7), attempt, seal(pasted))  # another login's: nothing waits there
         with pytest.raises(PermissionError, match="no claude sign-in"):
@@ -168,14 +168,14 @@ def test_claude_signs_in_from_any_browser_with_the_code_its_page_shows(tmp_path:
             jobs.paste("claude", None, attempt, sealer(OTHER_KEY)(pasted))  # sealed to another key: whoever carried it cannot swap it
         with pytest.raises(PermissionError, match="not a claude"):
             jobs.paste("claude", None, attempt, seal(pasted + "\nsecond line"))
-        assert jobs.paste("claude", None, attempt, seal(f" {pasted}\n")).sign_in.pasted  # what a paste carries around it is trimmed
+        assert jobs.paste("claude", None, attempt, seal(f" {pasted}\n")).sign_in.paste.pasted  # what a paste carries around it is trimmed
         with pytest.raises(PermissionError, match="already"):
             jobs.paste("claude", None, attempt, seal(pasted))
     else:
         with pytest.raises(PermissionError):
             jobs.paste("claude", None, UUID(int=8), sealer(OTHER_KEY)(CODE))  # no address for any browser: no code is taken
         if opens:
-            assert (state.sign_in.link, state.sign_in.paste) == (CLAUDE_SIGN_IN, False)  # a terminal command may come first under load
+            assert (state.sign_in.link, state.sign_in.paste) == (CLAUDE_SIGN_IN, None)  # a terminal command may come first under load
         else:
             assert state.sign_in.link is None and state.sign_in.command is not None and state.sign_in.command.endswith("claude auth login")
         by_hand.set()
