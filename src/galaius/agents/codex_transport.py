@@ -163,6 +163,7 @@ class _CodexTransport(_ConversationTransport):
     """One supervised app-server subprocess and its correlation-owned RPC state."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+    compacts = True
 
     provider: CodexProvider
     workspace_root: Path

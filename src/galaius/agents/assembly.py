@@ -85,11 +85,16 @@ class _TransportRegistry(BaseModel):
         self._run_transports[run.run_id] = transport
         return transport
 
+    @staticmethod
+    def transport_type(run: AgentRun) -> type[_ConversationTransport]:
+        """What a stored run's conversation goes through: the Codex app-server for a local session, else a completion route."""
+        return _CodexTransport if run.connection == "local_session" else _CompletionTransport
+
     async def for_run(self, run: AgentRun) -> _ConversationTransport:
         transport = self._run_transports.get(run.run_id)
         if transport is not None:
             return transport
-        if run.connection == "local_session":
+        if self.transport_type(run) is _CodexTransport:
             if self._session is None:
                 await self.session_route(time.time())
             if self._session is None:

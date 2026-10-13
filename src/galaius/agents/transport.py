@@ -2,6 +2,7 @@
 
 from abc import ABC, abstractmethod
 from pathlib import Path
+from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict
 
@@ -32,6 +33,9 @@ class _ConversationTransport(BaseModel, ABC):
     """One route-owned connection, including cancellation and deterministic cleanup."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    #: It compacts a conversation on request (`compact_conversation`); one that cannot refuses.
+    compacts: ClassVar[bool] = False
 
     @property
     def pid(self) -> int | None:

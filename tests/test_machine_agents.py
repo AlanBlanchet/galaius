@@ -326,26 +326,32 @@ def test_a_message_is_answered_once_durably_queued_and_its_dispatcher_gets_the_m
         _answer(agents, request)
 
 
-def test_the_web_reads_a_runs_context_gauge_and_compacts_it_as_a_queued_turn(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The runs list carries the gauge as the run's record has it; a compaction is answered once queued, as a turn
-    of its own under the request's id, and refused for a CLI that has none."""
+def test_the_web_reads_a_runs_context_gauge_and_whether_it_compacts_by_the_rule_its_compaction_obeys(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The runs list carries the gauge as the run's record has it, and whether the run compacts before any press: a
+    Claude run compacts as a queued turn under the request's id; a Codex run of its CLI cannot (only its app-server
+    compacts: a session) and is refused by that same rule; an editor's continued conversation compacts in its editor."""
     agents = _agents(base, tmp_path)
-    run_id, codex_id = str(uuid4()), str(uuid4())
-    reg.save_run(reg.AgentRun(run_id=run_id, provider="claude", agent="tester", name="r", cwd=str(base / "project"), started_at=1.0, exit_code=0,
-                              provider_session_id=run_id, context_tokens=63_028, context_window=1_000_000))
-    reg.save_run(reg.AgentRun(run_id=codex_id, provider="codex", agent="tester", name="c", cwd=str(base / "project"), started_at=1.0, exit_code=0,
+    claude, codex, session, continued = (str(uuid4()) for _ in range(4))
+    reg.save_run(reg.AgentRun(run_id=claude, provider="claude", agent="tester", name="r", cwd=str(base / "project"), started_at=1.0, exit_code=0,
+                              provider_session_id=claude, context_tokens=63_028, context_window=1_000_000))
+    reg.save_run(reg.AgentRun(run_id=codex, provider="codex", agent="tester", name="c", cwd=str(base / "project"), started_at=1.0, exit_code=0,
                               provider_session_id="thread"))
-    for identity in (run_id, codex_id):
-        agents.runs.add(WebRun(run_id=identity, root="project"))
+    reg.save_run(reg.AgentRun(run_id=session, provider="codex", name="s", cwd=str(base / "project"), started_at=1.0, connection="local_session"))
+    reg.save_run(reg.AgentRun(run_id=continued, provider="claude", name="e", cwd=str(base / "project"), started_at=1.0, exit_code=0))
+    for identity, kind in ((claude, "agent"), (codex, "agent"), (session, "session"), (continued, "continued")):
+        agents.runs.add(WebRun(run_id=identity, root="project", kind=kind))
     monkeypatch.setattr(messaging, "policy_for_continuation", lambda run, provider, environment: (None, "criterion", "model", "high"))
     monkeypatch.setattr(agent_queue, "ensure_dispatcher_locked", lambda *args, **kwargs: 1)
     listed = {str(run.run_id): run for run in _answer(agents, _request("runs")).runs}
-    assert (listed[run_id].context_tokens, listed[run_id].context_window) == (63_028, 1_000_000)
-    request = _request("compact", run_id=run_id)
+    assert (listed[claude].context_tokens, listed[claude].context_window) == (63_028, 1_000_000)
+    assert {identity: listed[identity].compacts for identity in (claude, codex, session, continued)} == {claude: True, codex: False, session: True, continued: False}
+    request = _request("compact", run_id=claude)
     assert _answer(agents, request).detail == "compacting"
-    assert [(item.turn.kind, item.message_id) for item in agent_queue.items(run_id)] == [("compact", str(request.id))]
-    with pytest.raises(RuntimeError, match="cannot compact"):
-        _answer(agents, _request("compact", run_id=codex_id))
+    assert [(item.turn.kind, item.message_id) for item in agent_queue.items(claude)] == [("compact", str(request.id))]
+    for refused, words in ((codex, "cannot compact"), (continued, "in its editor")):
+        with pytest.raises(PermissionError, match=words):
+            _answer(agents, _request("compact", run_id=refused))
+    assert agent_queue.items(codex) == []
 
 
 def _signed(config: MachineConfig, request: MachineAgentRequest) -> dict:

@@ -111,7 +111,17 @@ class CompactionTurn(QueuedTurn):
     unaccepted = "the provider did not compact the conversation"
 
     def refusal(self, text: str, provider: AgentProvider) -> str | None:
-        return f"the {provider.name!r} CLI cannot compact its conversation." if provider.compact_prompt is None else None
+        return self.refused_for(provider.name)
+
+    @staticmethod
+    def refused_for(provider: str) -> str | None:
+        """Why a run of `provider` cannot compact by its CLI's own command (`AgentProvider.compact_prompt`); None
+        when it can: the rule a queued compaction obeys, and every surface saying before a press whether one can."""
+        try:
+            command = provider_for(provider).compact_prompt
+        except ValueError as unknown:
+            return str(unknown)
+        return f"the {provider!r} CLI cannot compact its conversation." if command is None else None
 
     def entry(self, text: str, origin: reg.AgentRun | None) -> str | None:
         return None

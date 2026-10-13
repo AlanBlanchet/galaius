@@ -40,6 +40,7 @@ from galaius_core import (
 )
 from galaius.agents import agent_queue
 from galaius.agents import registry as reg
+from galaius.agents.assembly import _TransportRegistry
 from galaius.agents.host import ConversationHost, ConversationRefused
 from galaius.agents.followup import FollowUps
 from galaius.agents.messaging import deliver_message
@@ -462,10 +463,10 @@ class MachineAgents(BaseModel):
                 return await self._start_session(request)
             case AgentStartRequest():
                 return await self._start(request)
-            case AgentSendRequest() | AgentStopRequest() | AgentAnswerRequest() | AgentCompactRequest() if self._kind(request.run_id) == "session":
-                return await self._session_action(request)
             case AgentCompactRequest():
                 return await self._compact(request)
+            case AgentSendRequest() | AgentStopRequest() | AgentAnswerRequest() if self._kind(request.run_id) == "session":
+                return await self._session_action(request)
             case AgentSendRequest():
                 return await self._send(request)
             case AgentStopRequest():
@@ -615,12 +616,23 @@ class MachineAgents(BaseModel):
                 last=redact(run.last, secrets)[:400], started_at=run.started_at, finished_at=run.finished_at, cost_usd=run.cost_usd,
                 parent_run_id=UUID(run.parent_run_id) if run.parent_run_id and run.run_id not in started else None,
                 kind=kind, pending=self.pending(run.run_id) if kind == "session" and run.status == "waiting" else (),
-                fenced=bool({run.run_id, run.root_run_id, run.parent_run_id} & fenced),
+                fenced=bool({run.run_id, run.root_run_id, run.parent_run_id} & fenced), compacts=self.compact_refusal(run, kind) is None,
                 passed_over=tuple(PassedOverCandidate(provider=item.candidate.provider, model=item.candidate.model[:120], reason=item.reason, until=item.until)
                                   for item in run.skipped[:16]),
                 subscription=run.subscription, **{field: getattr(run, field) for field in ContextGauge.model_fields},
             ))
         return MachineAgentAnswer(request_id=request.id, runs=tuple(found), web=self.runs.load(request))
+
+    @staticmethod
+    def compact_refusal(run: reg.AgentRun, kind: AgentRunKind) -> str | None:
+        """Why `run` cannot be compacted from the web; None when it can. Its row's `compacts` says it before any press,
+        `_compact` refuses by it: a session through its transport (Codex's app-server compacts, a completion route
+        cannot), a queued run through its CLI's own command (`CompactionTurn`), an editor's conversation in its editor."""
+        if kind == "continued":
+            return "a continued editor conversation is compacted in its editor"
+        if kind == "session":
+            return None if _TransportRegistry.transport_type(run).compacts else "this conversation's provider cannot compact it"
+        return agent_queue.CompactionTurn.refused_for(run.provider)
 
     def _place(self, cwd: str) -> tuple[str, str]:
         """(agent root, path beneath it) of a folder a launched child works in; ("", "") elsewhere."""
@@ -958,11 +970,14 @@ class MachineAgents(BaseModel):
         return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=delivery.text, reads_at=delivery.reads_at)
 
     async def _compact(self, request: AgentCompactRequest) -> MachineAgentAnswer:
-        """Queued as a turn of its own (`CompactionTurn`) under the request's id: its dispatcher starts it once
-        the run is between turns; a CLI that cannot compact is refused here."""
+        """Refused by `compact_refusal`, the rule its row says; a session compacts through its host, a queued run as a
+        turn of its own (`CompactionTurn`) under the request's id, started by its dispatcher once it is between turns."""
         run = await asyncio.to_thread(self._require_run, request.run_id)
-        if self._kind(request.run_id) == "continued":
-            raise PermissionError("a continued editor conversation is compacted in its editor")
+        kind = self._kind(request.run_id)
+        if (refusal := self.compact_refusal(run, kind)) is not None:
+            raise PermissionError(refusal)
+        if kind == "session":
+            return await self._session_action(request)
         environment = await asyncio.to_thread(self.launcher_environment_in, Path(run.cwd))
         delivery = await asyncio.to_thread(deliver_message, run.run_id, "", sender="operator", environment=environment,
                                            message_id=str(request.id), turn=agent_queue.CompactionTurn())
