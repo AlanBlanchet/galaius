@@ -148,10 +148,10 @@ class AgentPrograms(BaseModel):
         with self._lock:
             job, (login, waiting, private) = self._jobs.get(key), self._logins.get(key, (None, None, None))
             heard = None if job is None or job.step != "signing_in" or job.sign_in is None else job.sign_in.paste
+            if heard is not None and heard.attempt == attempt and heard.pasted:  # a second press, its program done or not
+                raise PermissionError(f"a code was already handed to this {name} sign-in: start it again for another")
             if heard is None or heard.attempt != attempt or waiting != attempt or login is None or private is None or login.poll() is not None:
                 raise PermissionError(f"no {name} sign-in waits for this code here: start it again")
-            if heard.pasted:
-                raise PermissionError(f"a code was already handed to this {name} sign-in: start it again for another")
             try:
                 code = private.decrypt(base64.b64decode(sealed, validate=True), self.SEAL).decode("utf-8").strip()
             except (ValueError, UnicodeError) as error:
