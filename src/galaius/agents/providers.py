@@ -312,6 +312,9 @@ class AgentProvider(ABC):
     #: The line of its sign-in's output naming (group 1) an address any browser signs in at, whose page then shows a code
     #: the sign-in waits for on its input (`AgentSignIn.paste`); none: its sign-in returns to this PC by itself.
     paste_link: ClassVar[re.Pattern[str] | None] = None
+    #: What a whole code its page shows looks like: anything else is refused before it reaches the program (which may keep
+    #: waiting on a code it cannot use).
+    paste_code: ClassVar[re.Pattern[str] | None] = None
 
     def auth_home(self, environment: Mapping[str, str]) -> Path:
         """The folder this CLI keeps its login in, in `environment`: its `auth_home_env` value
@@ -847,6 +850,9 @@ class ClaudeCodeProvider(AgentProvider):
     #: redirect_uri=https://platform.claude.com/oauth/code/callback… », then « Paste code here if prompted > »).
     login_arguments = ("auth", "login")
     paste_link = re.compile(r"visit:\s*(https://\S+)")
+    #: `<code>#<state>`: given only the part before `#` it says « Invalid code. Please make sure the full code was copied. »
+    #: and waits for another (2.1.288).
+    paste_code = re.compile(r"^[^#\s]+#[^#\s]+$")
     logout_arguments = ("auth", "logout")
     #: `rate_limit_info.unifiedWindows` keys and the window each is (utilization: a share, 0-1).
     #: `seven_day_overage_included` is the same week with the overage pool counted: not the plan's own.

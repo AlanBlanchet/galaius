@@ -92,7 +92,7 @@ CLAUDE_PASTE = "https://claude.com/cai/oauth/authorize?code=true&redirect_uri=ht
 CODE = "Zq81vB_x-3kLm0Pa#s7s7s7s7s7"
 
 
-def stand_in_claude(tmp_path: Path, *, opens: bool, prints: bool) -> Path:
+def stand_in_claude(tmp_path: Path, *, opens: bool, prints: bool, hangs: bool = False) -> Path:
     """`claude auth login` as 2.1.288 runs it with no terminal: `BROWSER` with this PC's address, the address for any
     browser, then « Paste code here if prompted > » (no newline) and one line read: `CODE` signs in, anything else fails
     (« Login failed: Request failed with status code 400 », exit 1)."""
@@ -101,6 +101,7 @@ def stand_in_claude(tmp_path: Path, *, opens: bool, prints: bool) -> Path:
                       + ("echo 'Opening browser to sign in…'\necho \"If the browser didn't open, visit: " + CLAUDE_PASTE + "\"\n"
                          + "printf 'Paste code here if prompted > '\nread code\n"
                          + f'[ "$code" = "{CODE}" ] && {{ touch "$0.in"; echo "Login successful."; sleep 30; }}\n'
+                         + ("sleep 30\n" if hangs else "")  # some codes never get an answer
                          + "echo 'Login failed: Request failed with status code 400'; exit 1\n" if prints else "sleep 30\n"))
     claude.chmod(0o755)
     return claude
@@ -129,7 +130,7 @@ def signing(jobs: AgentPrograms, until, seconds: float = 30):  # a loaded PC sta
 @pytest.mark.skipif(sys.platform == "win32", reason="its stand-in programs are POSIX shell scripts")
 @pytest.mark.parametrize(("opens", "prints", "pasted", "ends"), [
     (True, True, CODE, "ready"),               # his browser anywhere, the code back: signed in, no browser on this PC
-    (True, True, "WrongCode_12345", "failed"),  # a code its vendor refuses: code_refused
+    (True, True, "WrongCode_12345#s7s7s7s7", "failed"),  # a code its vendor refuses: code_refused
     (True, False, None, "ready"),              # an older program printing no address for any browser: this PC's own
     (False, False, None, "ready"),             # neither: the terminal command
 ])
@@ -187,6 +188,27 @@ def test_claude_signs_in_from_any_browser_with_the_code_its_page_shows(tmp_path:
     for secret in ("43117", "Zq81vB", "WrongCode"):
         assert secret not in caplog.text
         assert not jobs.log_path.exists() or secret not in jobs.log_path.read_text()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="its stand-in program is a POSIX shell script")
+def test_a_part_of_the_code_is_refused_and_a_code_never_answered_ends_the_sign_in(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Claude Code given only the part before `#` says « Invalid code » and waits for another: such a code never reaches
+    it (he can paste the whole one); a code it never answers ends the sign-in after `code_seconds`, never 15 minutes."""
+    claude = stand_in_claude(tmp_path, opens=False, prints=True, hangs=True)
+    monkeypatch.setattr(AgentPrograms, "_status", lambda self, provider, environment: LoginStatus(signed_in=False))
+    monkeypatch.setattr(AgentPrograms, "poll_seconds", 0.1)
+    monkeypatch.setattr(AgentPrograms, "code_seconds", 1)
+    monkeypatch.setattr(type(PROVIDERS["claude"]), "available", lambda self: True)
+    monkeypatch.setattr(type(PROVIDERS["claude"]), "executable", lambda self: str(claude))
+    jobs = AgentPrograms(environment={"PATH": "/usr/bin:/bin"}, log_path=tmp_path / "agent-programs.log")
+    assert jobs.install("claude").step == "signing_in"
+    state = signing(jobs, lambda state: state.sign_in is not None and state.sign_in.paste is not None)
+    attempt, seal = state.sign_in.paste.attempt, sealer(state.sign_in.paste.seal_key)
+    with pytest.raises(PermissionError, match="whole code"):
+        jobs.paste("claude", None, attempt, seal("Zq81vB_x-3kLm0Pa"))
+    assert jobs.paste("claude", None, attempt, seal("Zq81vB_x-3kLm0Pa#other_state")).sign_in.paste.pasted  # still waiting: the whole one goes
+    state = signing(jobs, lambda state: state.step != "signing_in", seconds=15)
+    assert (state.step, state.failure) == ("failed", "code_refused")
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="its stand-in program is a POSIX shell script")

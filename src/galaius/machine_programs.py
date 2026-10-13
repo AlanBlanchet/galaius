@@ -72,6 +72,8 @@ class AgentPrograms(BaseModel):
     transport: httpx.BaseTransport | None = None
     install_seconds: ClassVar[float] = 600
     sign_in_seconds: ClassVar[float] = 15 * 60
+    #: How long a program may check the code it was handed before its sign-in ends (it never answers on some codes).
+    code_seconds: ClassVar[float] = 90
     poll_seconds: ClassVar[float] = 3
     #: How long a sign-in may stay without an address or code before its terminal command is offered.
     terminal_seconds: ClassVar[float] = 20
@@ -158,6 +160,8 @@ class AgentPrograms(BaseModel):
                 raise PermissionError(f"not a {name} sign-in code sealed to this sign-in") from error
             if not self.PASTED.fullmatch(code):  # one line, nothing a terminal would read as more input
                 raise PermissionError(f"not a {name} sign-in code")
+            if (whole := PROVIDERS[name].paste_code) is not None and not whole.fullmatch(code):
+                raise PermissionError(f"not the whole code {name}'s page shows: it is still waiting for it")
             assert job is not None and job.sign_in is not None and login.stdin is not None
             unsent = job
             self._jobs[key] = job = job.model_copy(update={"sign_in": job.sign_in.model_copy(update={"paste": heard.model_copy(update={"pasted": True})}), "changed_at": datetime.now(UTC)})
@@ -271,7 +275,7 @@ class AgentPrograms(BaseModel):
         default = self._status(provider, self.environment).login if subscription is not None else ""
         deadline = datetime.now(UTC) + timedelta(seconds=self.sign_in_seconds)
         self._update(key, step="signing_in", signed_in=False, expired=False, sign_in=AgentSignIn(expires_at=deadline))
-        terminal = time.monotonic() + self.terminal_seconds
+        terminal, handed = time.monotonic() + self.terminal_seconds, 0.0
         # 0700 on POSIX; on Windows a helper still holding the file never hides how the sign-in ended.
         with tempfile.TemporaryDirectory(prefix="galaius-sign-in-", ignore_cleanup_errors=True) as folder:
             handoff = SignInHandoff(link_file=Path(folder) / "link", browser=environment.get("BROWSER", ""), opens=provider.paste_link is None)
@@ -306,6 +310,10 @@ class AgentPrograms(BaseModel):
                         raise ProgramFailed("sign_in_failed", f"its sign-in ended (exit {login.returncode}) without signing in")
                     if datetime.now(UTC) >= deadline:
                         raise ProgramFailed("sign_in_expired", f"not signed in within {self.sign_in_seconds / 60:.0f} min")
+                    if (heard := self._heard(key)) is not None and heard.paste is not None and heard.paste.pasted:
+                        handed = handed or time.monotonic()
+                        if time.monotonic() - handed > self.code_seconds:
+                            raise ProgramFailed("code_refused", f"no answer within {self.code_seconds:g} s after the code")
             finally:
                 with self._lock:
                     self._logins.pop(key, None)
