@@ -31,7 +31,7 @@ import httpx
 import websockets
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, ValidationError, field_validator, model_validator
 
-from galaius_core import MACHINE_AGENT_REQUESTS, SUBSCRIPTIONS_FEATURE, WEB_LIMIT_FEATURE, AgentCompactRequest, AgentMoveRequest, AgentSendRequest, AgentSignInCodeRequest, MACHINE_MODELS, MachineProblem, MachineProblemCode, MachineAgentSettings, MachineAgentSettingsState, MachineAgentSettingsUpdate, PlacePath, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, MachineAgentAnswer, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachineRuntime, MachineTokenSwap, PlaceLevel, ScriptFile, ScriptLanguage, UserModelOrigin
+from galaius_core import MACHINE_AGENT_REQUESTS, PROJECTS_DIR, PROJECTS_ROOT, PROJECTS_ROOT_FEATURE, SUBSCRIPTIONS_FEATURE, WEB_LIMIT_FEATURE, AgentCompactRequest, AgentMoveRequest, AgentSendRequest, AgentSignInCodeRequest, MACHINE_MODELS, MachineProblem, MachineProblemCode, MachineAgentSettings, MachineAgentSettingsState, MachineAgentSettingsUpdate, PlacePath, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, MachineAgentAnswer, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachineRuntime, MachineTokenSwap, PlaceLevel, ScriptFile, ScriptLanguage, UserModelOrigin
 from galaius import USER_AGENT
 from galaius import prompt_mirror, prompt_projection
 from galaius.agents.subscription_watch import SubscriptionWatch
@@ -162,15 +162,34 @@ class MachineConfig(MachineAgentSettings):
         return tuple(root for root in usable if root not in overlapping), (*refused, *(root.relative_to(base).as_posix() for root in overlapping))
 
     def agent_roots_by_name(self) -> dict[str, Path]:
-        """The usable agent roots, by the name the web shows (relative to the working directory)."""
+        """The usable agent roots, by the name the web shows (relative to the working directory), and
+        the projects folder under `PROJECTS_ROOT` while it is safe (`projects_root`)."""
         base = self.working_directory.resolve()
-        return {root.relative_to(base).as_posix(): root for root in self.usable_agent_roots()[0]}
+        named = {root.relative_to(base).as_posix(): root for root in self.usable_agent_roots()[0]}
+        return named | ({PROJECTS_ROOT: projects} if (projects := self.projects_root()) is not None else {})
+
+    def projects_root(self) -> Path | None:
+        """`PROJECTS_DIR` beneath the working directory, holding the projects put here from the web
+        (`PROJECTS_ROOT` on the wire; made by the first one), apart from the runner's own folders; None
+        while anything but a plain folder sits there (a link, a junction or a file is never followed)
+        or it holds or sits in one of the runner's own folders."""
+        declared = self.working_directory.resolve() / PROJECTS_DIR
+        if any(declared == folder or folder in declared.parents or declared in folder.parents for folder in self._internal()):
+            return None
+        try:
+            facts = declared.lstat()
+        except FileNotFoundError:
+            return declared
+        if not stat.S_ISDIR(facts.st_mode) or PinnedDirectory.link_like(facts) or declared.resolve() != declared:
+            return None
+        return declared
 
     def _internal(self) -> tuple[Path, ...]:
         """The runner's own folders (its settings, its installed runtimes, its data): code every
         long-lived process runs, never opened to a workflow or an agent."""
         base = self.working_directory.resolve()
-        return (base / ".galaius", MachineRunner.default_config_path().parent.resolve(), UserPaths.data().resolve(), RuntimeStore.default().root.resolve())
+        return (base / ".galaius", MachineRunner.default_config_path().parent.resolve(), UserPaths.data().resolve(), RuntimeStore.default().root.resolve(),
+                UserPaths.agents().resolve(), UserPaths.subscriptions().resolve())
 
     def _usable_roots(self, names: tuple[str, ...]) -> tuple[tuple[Path, ...], tuple[str, ...]]:
         """A usable root is strictly below the working directory, never the home folder or above
@@ -1236,9 +1255,11 @@ class MachineRunner:
     #: listed without the PC's own browse switch (`galaius_core.PlaceLevel`).
     #: `AgentSendRequest.idempotent_feature`: a message asked again under the same id is never queued twice.
     #: `WEB_LIMIT_FEATURE`: a start, a continued conversation and the runs list honour the web's `WebLimited.web_limit`.
+    #: `PROJECTS_ROOT_FEATURE`: `PROJECTS_ROOT` names the projects folder (`MachineConfig.projects_root`); kept ahead of the
+    #: `script:*` entries, past which a server keeps no more.
     FEATURES: ClassVar[tuple[str, ...]] = ("file_query", "script_file", "file_read", "agent_control", "agent_settings", "web_settings", "workspaces", "start_permission", "project_secrets", "places", "agent_media", "tool_gateway", "token_swap",
                                            "workspace_copy", "places_direct", "agent_programs", SUBSCRIPTIONS_FEATURE, AgentMoveRequest.feature, str(AgentSendRequest.idempotent_feature), WEB_LIMIT_FEATURE,
-                                           AgentSignInCodeRequest.feature, AgentCompactRequest.feature)
+                                           AgentSignInCodeRequest.feature, AgentCompactRequest.feature, PROJECTS_ROOT_FEATURE)
 
     @classmethod
     def features(cls) -> list[str]:

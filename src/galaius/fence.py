@@ -33,6 +33,7 @@ import os
 import shutil
 import signal
 import socket
+import stat
 import struct
 import subprocess
 import sys
@@ -45,6 +46,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from galaius_core import PlaceLevel
 
+from galaius.pinned_directory import PinnedDirectory
 from galaius.places import DEPENDENCY_FOLDERS, LEVEL_RANK, NEVER_GRANTABLE, PlaceMap, split
 
 #: Per CLI: its state folder under home, what of it the agent reads (sign-in, settings, the
@@ -235,6 +237,9 @@ class FenceSpec(BaseModel):
     #: The runner's own folders: never opened.
     internal: tuple[Path, ...] = ()
     start: Path
+    #: The project folder put on this PC from the web (beneath `PROJECTS_ROOT`) that `start` is in:
+    #: written there with no level (the hidden projects folder takes none), its siblings never bound.
+    project: Path | None = None
     #: `write_on_review` folder -> its staging copy for this run.
     staging: dict[str, Path] = Field(default_factory=dict)
     #: The CLIs whose state the run gets a private copy of (`TOOLS`).
@@ -262,10 +267,16 @@ class FenceSpec(BaseModel):
             start_parts = self.start.resolve().relative_to(base).parts
         except ValueError:
             raise PermissionError(f"{self.start} is outside this PC's working directory") from None
-        if start_parts and LEVEL_RANK[places.reach(start_parts)] < LEVEL_RANK["read"]:
+        opened = sorted(places.in_force("read").items(), key=lambda item: len(split(item[0])))
+        if self.project is not None:
+            facts = self.project.lstat()
+            if not stat.S_ISDIR(facts.st_mode) or PinnedDirectory.link_like(facts) or self.project.resolve() != self.project or self.project not in (self.start.resolve(), *self.start.resolve().parents):
+                raise PermissionError(f"{self.start} is not inside the plain project folder {self.project}")
+            opened.append((self.project.relative_to(base).as_posix(), (self.project, "write")))
+        elif start_parts and LEVEL_RANK[places.reach(start_parts)] < LEVEL_RANK["read"]:
             raise PermissionError(f"no level opens {'/'.join(start_parts)} to agents; its owner sets one on this PC with `galaius machine places`")
         binds, emptied, blanked, guards = [], [], [], []
-        for path, (folder, level) in sorted(places.in_force("read").items(), key=lambda item: len(split(item[0]))):
+        for path, (folder, level) in opened:
             parts = split(path)
             if level == "write_on_review" and path not in self.staging and start_parts[:len(parts)] == parts:
                 raise PermissionError(f"{path} is write-after-review: an agent works there only in its staging copy")

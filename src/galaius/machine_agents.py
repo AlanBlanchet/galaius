@@ -34,7 +34,7 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 from galaius_core import (
-    AGENT_TOUCH_SCOPES, AgentCompactRequest, ContextGauge, MACHINE_AGENT_MEDIA, MACHINE_AGENT_READ, MACHINE_AGENT_TAIL, AgentAnswerRequest, AgentMedia, AgentMediaRequest, image_type, AgentContinueRequest, AgentFoldersRequest, AgentInteraction, AgentLogsRequest, AgentOptionsRequest,
+    PROJECTS_ROOT, AGENT_TOUCH_SCOPES, AgentCompactRequest, ContextGauge, MACHINE_AGENT_MEDIA, MACHINE_AGENT_READ, MACHINE_AGENT_TAIL, AgentAnswerRequest, AgentMedia, AgentMediaRequest, image_type, AgentContinueRequest, AgentFoldersRequest, AgentInteraction, AgentLogsRequest, AgentOptionsRequest,
     AgentAllowanceRequest, AgentMoveRequest, AgentProgramInstallRequest, AgentProgramsRequest, AgentProviderState, AgentSignInCodeRequest, AgentSignOutRequest, SubscriptionAllowance, Lent, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
     MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, PassedOverCandidate, ReadsAt, AgentRefusalCode, WebLimited, WebLoad, media_key, media_paths, MachineAgentSession, MachineFileEntry, WorkspaceCreateRequest, WorkspacePack, WorkspacePackRequest, WorkspacePrepareRequest, WorkspaceRefresh, WorkspacesRequest,
 )
@@ -52,7 +52,7 @@ from galaius.config import UserConfig
 from galaius.fence import EGRESS, FenceSpec, available
 from galaius.file_lock import exclusive
 from galaius.machine_programs import AgentPrograms
-from galaius.machine_workspaces import MachineWorkspaces
+from galaius.machine_workspaces import MachineWorkspaces, unusable
 from galaius.pinned_directory import PinnedDirectory
 from galaius.workspace_copy import WorkspaceRefused
 from galaius.place_reviews import PlaceReviews
@@ -570,16 +570,16 @@ class MachineAgents(BaseModel):
             return ()
 
     def folder(self, root: str, path: str) -> Path:
-        """`path` beneath agent root `root`, walked part by part: every part a plain, unhidden
-        folder, never a link. Raises PermissionError otherwise."""
+        """`path` beneath agent root `root`, walked part by part from the root itself: every part a
+        plain, unhidden folder, never a link. Raises PermissionError otherwise."""
         base = self.roots.get(root)
         if base is None:
-            raise PermissionError(f"{root!r} is not an agent folder on this computer")
-        current = base
-        for part in (part for part in path.split("/") if part):
-            if part in {".", ".."} or part.startswith(".") or "\\" in part:
-                raise PermissionError("agent folders never include hidden or relative names")
-            current = current / part
+            raise PermissionError(unusable(root))
+        parts = [part for part in path.split("/") if part]
+        if any(part in {".", ".."} or part.startswith(".") or "\\" in part for part in parts):
+            raise PermissionError("agent folders never include hidden or relative names")
+        for index in range(len(parts) + 1):
+            current = base.joinpath(*parts[:index])
             try:
                 facts = current.lstat()
             except FileNotFoundError:
@@ -936,15 +936,21 @@ class MachineAgents(BaseModel):
             raise PermissionError("the agent fence is on but this runner holds no levels")
         places, base = self.places, self.places.base
         parts = folder.relative_to(base).parts
-        if LEVEL_RANK[places.reach(parts)] < LEVEL_RANK["read"]:
+        project = None
+        if root == PROJECTS_ROOT:   # one project folder written, no level (`FenceSpec.project`)
+            inside = folder.relative_to(self.roots[root]).parts
+            if not inside:
+                raise PermissionError("with the fence on, an agent starts inside one project folder, never in the projects folder itself")
+            project = self.roots[root] / inside[0]
+        elif LEVEL_RANK[places.reach(parts)] < LEVEL_RANK["read"]:
             raise PermissionError(f"no level opens {'/'.join(parts)} to agents; with the fence on, its owner sets one there first (`galaius machine places {root} write`)")
         staging, review = {}, None
-        if places.reach(parts) == "write_on_review":
+        if project is None and places.reach(parts) == "write_on_review":
             place, _ = places.place_of(parts)
             review, staging[place] = self.reviews.stage_copy(place, base.joinpath(*split(place)), origin="agent", run_id=None)
         try:
             programs = tuple(Path(found) for found in (*(shutil.which(name) for name in AGENT_PROVIDERS), *self.cli) if found)
-            spec = FenceSpec(working_directory=places.working_directory, levels_file=self.levels_file, levels=places.levels, internal=places.internal, start=folder,
+            spec = FenceSpec(working_directory=places.working_directory, levels_file=self.levels_file, levels=places.levels, internal=places.internal, start=folder, project=project,
                              staging=staging, providers=AGENT_PROVIDERS, homes=homes, programs=programs, state=self.reviews.root.parent / "fence-state" / str(uuid4()), reviews=self.reviews.root,
                              egress=(*(host for provider in AGENT_PROVIDERS for host in EGRESS[provider]), *self.egress))
             spec.build()

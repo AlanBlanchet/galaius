@@ -85,6 +85,23 @@ def test_the_start_folder_must_have_a_level_the_owner_set(home: Path, tmp_path: 
         _spec(home, tmp_path, start="private").build()
 
 
+@pytest.mark.parametrize("planted", [False, True])
+def test_a_project_folder_opens_alone_and_never_through_a_link(home: Path, tmp_path: Path, planted: bool) -> None:
+    projects = home / ".galaius-projets"
+    (projects / "other").mkdir(parents=True)
+    if planted:
+        (projects / "aino").symlink_to(home / ".galaius")
+    else:
+        (projects / "aino").mkdir()
+    spec = _spec(home, tmp_path, start=".galaius-projets/aino", levels={}, project=projects / "aino")
+    if planted:
+        with pytest.raises(PermissionError, match="plain project folder"):
+            spec.build()
+        return
+    binds = {(bind.target, bind.writable) for bind in spec.build().binds}
+    assert (projects / "aino", True) in binds and not any(target in {projects, projects / "other", home / ".galaius"} for target, _ in binds)
+
+
 def test_the_desktop_and_session_sockets_are_unset_inside(home: Path, tmp_path: Path) -> None:
     command = _spec(home, tmp_path).build().command(["true"])
     for name in ("DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "SSH_AUTH_SOCK", "XDG_RUNTIME_DIR"):

@@ -31,7 +31,7 @@ from urllib.parse import urlsplit
 
 import httpx
 import websockets
-from galaius_core import MACHINE_TOKEN_PATTERN, DeviceLoginIssued, DeviceLoginStart, DeviceLoginStarted, DeviceTokenRefusal, MachineSummary, ReleaseInfo
+from galaius_core import MACHINE_TOKEN_PATTERN, PROJECTS_DIR, DeviceLoginIssued, DeviceLoginStart, DeviceLoginStarted, DeviceTokenRefusal, MachineSummary, ReleaseInfo
 from pydantic import BaseModel, ConfigDict, SecretStr, TypeAdapter
 
 from galaius import USER_AGENT, __version__
@@ -416,8 +416,9 @@ class AgentChoice(BaseModel):
         """The result line, and how to change it later."""
         if not config.run_agents:
             return "Agents: off here. Turn them on from its page on the web (or here:  galaius machine agents on)."
-        folders = list(config.agent_roots_by_name())
-        extras = (f"\nEditor conversations continued from the web: {'on' if config.continue_conversations else 'off'}; approvals answered from the web: "
+        folders = [root.relative_to(config.working_directory.resolve()).as_posix() for root in config.usable_agent_roots()[0]]
+        projects = f"\nProjects put here from the web land in {config.working_directory / PROJECTS_DIR}, a hidden folder made the first time."
+        extras = projects + (f"\nEditor conversations continued from the web: {'on' if config.continue_conversations else 'off'}; approvals answered from the web: "
                   f"{'on' if config.answer_approvals else 'off'}. To change:  galaius machine agents on --continue on|off --approvals on|off")
         if not folders:
             return "Agents: on here, no folder to start them in from the web yet. To add one:  galaius machine agent-roots <folder…>" + extras

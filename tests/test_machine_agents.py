@@ -18,7 +18,7 @@ import hmac
 import logging
 import time
 
-from galaius_core import MACHINE_AGENT_REQUESTS, AgentProviderState, MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentSettings, MachineAgentSettingsUpdate, MachineWorkspaceJob, SubscriptionLimits, WebLoad
+from galaius_core import MACHINE_AGENT_REQUESTS, PROJECTS_ROOT, PROJECTS_ROOT_FEATURE, AgentProviderState, MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentSettings, MachineAgentSettingsUpdate, MachineWorkspaceJob, SubscriptionLimits, WebLoad
 from galaius.machine_programs import AgentPrograms
 from galaius.agents import agent_queue, messaging
 from galaius.agents import registry as reg
@@ -109,9 +109,60 @@ def test_start_folder_stays_beneath_a_root(base: Path, tmp_path: Path, path: str
             agents.folder("project", path)
 
 
+def test_a_project_put_here_from_the_web_lands_in_the_hidden_projects_folder(base: Path, tmp_path: Path) -> None:
+    agents = _agents(base, tmp_path)
+    assert (base / ".galaius-projets").exists() is False and PROJECTS_ROOT in _answer(agents, _request("folders")).roots
+    job = _answer(agents, _request("workspace_create", root=PROJECTS_ROOT, name="aino")).workspaces[0]
+    assert (job.root, job.name, job.state) == (PROJECTS_ROOT, "aino", "ready")
+    assert agents.folder(PROJECTS_ROOT, "aino") == base.resolve() / ".galaius-projets" / "aino"
+    assert [entry.name for entry in _answer(agents, _request("folders", root=PROJECTS_ROOT)).entries] == ["aino"]
+
+
+@pytest.mark.parametrize("plant", ["root_link", "root_file", "root_swapped", "child_link", "climb", "hidden_child", "web_named"])
+def test_the_projects_folder_never_reaches_the_runners_own(base: Path, tmp_path: Path, plant: str) -> None:
+    """Credentials, subscriptions and run logs (`~/.galaius`) stay out of reach however the projects folder is planted or named."""
+    own, projects = base / ".galaius" / "subscriptions", base / ".galaius-projets"
+    own.mkdir(parents=True)
+    if plant == "root_link":
+        projects.symlink_to(own)
+    elif plant == "root_file":
+        projects.write_text("")
+    else:
+        (projects / "aino").mkdir(parents=True)
+    if plant == "child_link":
+        (projects / "keys").symlink_to(own)
+    agents = _agents(base, tmp_path, agent_roots=("project", ".galaius-projets", ".galaius/subscriptions") if plant == "web_named" else ("project",))
+    if plant == "root_swapped":
+        (projects / "aino").rmdir(), projects.rmdir(), projects.symlink_to(own)
+    path = {"child_link": "keys", "climb": "../.galaius/subscriptions", "hidden_child": ".git"}.get(plant, "")
+    if plant in ("root_link", "root_file"):
+        assert PROJECTS_ROOT not in agents.roots
+    elif plant == "web_named":
+        assert set(agents.roots) == {"project", PROJECTS_ROOT}
+    with pytest.raises(PermissionError):
+        agents.folder(".galaius/subscriptions" if plant == "web_named" else PROJECTS_ROOT, path)
+
+
+def test_the_projects_folder_is_said_within_the_features_a_server_keeps() -> None:
+    assert PROJECTS_ROOT_FEATURE in MachineRunner.features()[:32]   # the server keeps the first 32
+
+
+def test_with_the_fence_on_an_agent_writes_its_own_project_folder_only(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("galaius.machine_agents.available", lambda: (True, ""))
+    seen = _launches(monkeypatch)
+    for name in ("aino", "other"):
+        (base / ".galaius-projets" / name).mkdir(parents=True)
+    agents = _fenced_agents(base, tmp_path, ("false",))
+    _answer(agents, _request("start", root=PROJECTS_ROOT, path="aino", role="app-engineer", text="tidy"))
+    binds = {(bind.target.relative_to(base.resolve()).as_posix(), bind.writable) for bind in seen[-1]["fence"].build().binds if bind.target.is_relative_to(base.resolve())}
+    assert (".galaius-projets/aino", True) in binds and not any(target.startswith((".galaius-projets/other", ".galaius/")) for target, _ in binds)
+    with pytest.raises(PermissionError, match="inside one project folder"):
+        _answer(agents, _request("start", root=PROJECTS_ROOT, role="app-engineer", text="tidy"))
+
+
 def test_folders_lists_plain_subfolders_only(base: Path, tmp_path: Path) -> None:
     agents = _agents(base, tmp_path)
-    assert _answer(agents, _request("folders")).roots == ("project",)
+    assert _answer(agents, _request("folders")).roots == (PROJECTS_ROOT, "project")
     listing = _answer(agents, _request("folders", root="project"))
     assert [entry.name for entry in listing.entries] == ["src"] and listing.permission == "workspace_write"
 
