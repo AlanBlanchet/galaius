@@ -273,7 +273,7 @@ class AgentPrograms(BaseModel):
             try:
                 while True:
                     time.sleep(self.poll_seconds)
-                    heard = self._jobs[key].sign_in
+                    heard = self._heard(key)
                     waited = time.monotonic() >= terminal
                     if heard is None or heard.code is not None:
                         pass
@@ -289,7 +289,7 @@ class AgentPrograms(BaseModel):
                         self._update(key, step="ready", signed_in=True, account=status.account, login=status.login, sign_in=None)
                         return
                     if login.poll() is not None:
-                        if (heard := self._jobs[key].sign_in) is not None and heard.paste is not None and heard.paste.pasted:
+                        if (heard := self._heard(key)) is not None and heard.paste is not None and heard.paste.pasted:
                             raise ProgramFailed("code_refused", f"its sign-in ended (exit {login.returncode}) after the code: its vendor refused it")
                         raise ProgramFailed("sign_in_failed", f"its sign-in ended (exit {login.returncode}) without signing in")
                     if datetime.now(UTC) >= deadline:
@@ -309,13 +309,18 @@ class AgentPrograms(BaseModel):
         browser signs in at (`paste_link`, then waiting for the code its page shows). Its output is never logged (threat M4)."""
         assert login.stdout is not None
         for line in login.stdout:
-            if (heard := self._jobs[key].sign_in) is not None and heard.paste is not None and heard.paste.pasted:
+            if (heard := self._heard(key)) is not None and heard.paste is not None and heard.paste.pasted:
                 continue  # after the code, nothing it prints reaches the web (it may echo it)
             word = self.ANSI.sub("", line).strip()
             if self.CODE.match(word):
                 self._signing(key, code=word)
             elif provider.paste_link is not None and (found := provider.paste_link.search(word)) is not None:
                 self._signing(key, link=found.group(1), paste=PasteSignIn(attempt=attempt, seal_key=seal))
+
+    def _heard(self, key: tuple[str, UUID | None]) -> AgentSignIn | None:
+        """What sign-in `key` said so far, read under the lock (a paste may be changing it)."""
+        with self._lock:
+            return self._jobs[key].sign_in
 
     def _signing(self, key: tuple[str, UUID | None], *, code: str | None = None, link: str | None = None, command: str | None = None,
                  paste: PasteSignIn | None = None) -> None:
@@ -328,7 +333,7 @@ class AgentPrograms(BaseModel):
             if current.step != "signing_in" or current.sign_in is None:
                 return
             try:
-                heard = AgentSignIn.model_validate({**current.sign_in.model_dump(), **{name: value.model_dump() if isinstance(value, PasteSignIn) else value for name, value in found.items()}})
+                heard = AgentSignIn.model_validate({**current.sign_in.model_dump(), **found})
             except ValidationError as refused:
                 # Which rule it broke, never the value (an address, a code: threat M4).
                 logger.info("%s sign-in: dropped what it reported (%s)", key[0], ", ".join(f"{error['loc'][0]}: {error['type']}" for error in refused.errors()))
