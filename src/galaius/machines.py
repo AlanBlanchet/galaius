@@ -1429,7 +1429,7 @@ class MachineRunner:
     @property
     def web_runs(self) -> WebRuns:
         """The agent runs this computer started for the web (`machine-agent-runs.json` beside the machine file)."""
-        return WebRuns(path=self.config_path.with_name("machine-agent-runs.json"))
+        return WebRuns.in_folder(self.config_path.parent)
 
     def busy(self) -> bool:
         """Work of its own is going on here: a step, a web session's turn, a workspace being

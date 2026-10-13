@@ -176,6 +176,11 @@ class WebRuns(BaseModel):
     path: Path
     KEEP: ClassVar[int] = 500
 
+    @classmethod
+    def in_folder(cls, folder: Path) -> "WebRuns":
+        """The file the runner whose machine file is in `folder` keeps them in."""
+        return cls(path=folder / "machine-agent-runs.json")
+
     def read(self) -> tuple[WebRun, ...]:
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))

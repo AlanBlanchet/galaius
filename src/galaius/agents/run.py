@@ -1286,6 +1286,7 @@ async def run_agent(
     warm: WarmStart | None = None,
     subscription: RunSubscription | None = None,
     choices: SubscriptionChoices | None = None,
+    run_id: str | None = None,
 ) -> RunHandle:
     """Spawn an agent run and register it, returning as soon as it is alive.
 
@@ -1322,6 +1323,9 @@ async def run_agent(
     ``choices`` (a web start's, never a child's) names one subscription per provider: the walk runs each
     candidate on its provider's, its caps checked first (a capped one is passed over, saying so), a
     provider named none on this PC's default login; the run is pinned to the one its candidate started on.
+
+    ``run_id`` is the id a caller already handed out for it (`spawn_line`: a spawn that waited its
+    turn); a new one when None. A child started ahead (`warm`) brings its own, so none is taken for it.
 
     ``image_paths`` is an optional tuple of existing absolute PNG, JPEG, or WebP paths. The
     provider and resolved model are checked before any child process is created.
@@ -1391,7 +1395,8 @@ async def run_agent(
         raise ModelUnavailable(f"Agent provider {provider.name!r} is disabled by policy")
     if not agent:
         raise ModelUnavailable("Choose a named agent role; anonymous delegation bypasses role criteria")
-    run_id = str(uuid.uuid4())
+    named = run_id is not None
+    run_id = run_id or str(uuid.uuid4())
     selected_ref = None
     definition_path = None
     if policy.catalog is not None:
@@ -1592,7 +1597,7 @@ async def run_agent(
         # A child started ahead for this very launch skips its CLI's own startup. Its run id is the
         # vendor session id, so it serves only the first child handed to that vendor.
         ahead = (warm is not None and candidate_provider.starts_ahead and not validated_images
-                 and candidate_fence is None and vendor_session == run_id)
+                 and candidate_fence is None and vendor_session == run_id and not named)
         held = warm.claim(launch.slot(), launch.key()) if warm is not None and ahead else None
         candidate_process = None
         if held is not None:

@@ -1,0 +1,432 @@
+"""The line agent runs wait in on this computer once as many work here as it allows (`Config.agent_runs_max`).
+
+Agents fan out: three conversations each starting their own team put 20+ runs at work at once
+(2026-10-13), the agents' shared memory cap (`galaius.agents.ceiling`) was reached and the kernel
+killed builds, browsers and whole runs. A spawn (`galaius agents spawn`, the `agent_spawn` tool) is
+never refused: past the limit its run id is handed back at once and it waits, in the order asked,
+held by a detached waiter (`main`) in a scope of its own, so it outlives the process that asked. A
+message to an ended run waits the same way before its resumed turn starts (`agent_queue.dispatch`).
+
+Never counted nor held: the owner's own conversations — his editor sessions (no galaius process),
+the runs he starts from the web (capped there: `WebLimited`). Every other run counts, whatever its
+role: measured that day, a browser-driving critic held ~0.75 GB, a code reviewer ~0.37 GB, a builder
+0.4-0.6 GB. One exception keeps a team from blocking on itself, as make's jobserver does: a run in a
+place of its own and its first child at work share that place (one level only), so a lead waiting
+for the critic it started never waits behind its own place; at most twice as many runs as places.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import sys
+import time
+import uuid
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Literal
+
+from galaius_core import AgentRevisionRef
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from galaius.agents import registry as reg
+from galaius.agents.providers import provider_for
+from galaius.agents.run import RunHandle, run_agent
+from galaius.config import Config
+from galaius.fence import FenceSpec
+from galaius.machine_agents import WebRuns
+from galaius.paths import UserPaths
+from galaius.processes import process_exited, process_started
+from galaius.upgrade.store import Runtime, RuntimeStore
+
+#: How often a waiter, or a resume, looks whether its turn came.
+POLL_SECONDS = 3.0
+#: Said of a run waiting when every place is held by a team with a run waiting in line (`SpawnLine._stuck`).
+STUCK = "chaque place est tenue par une équipe dont une run attend ici ; si elles s'attendent, arrêtez-en une"
+#: How long a spawn that could not start stays readable (`agents list`, `agents events`) before it is forgotten.
+FAILED_KEPT_SECONDS = 24 * 3600.0
+
+logger = logging.getLogger(__name__)
+
+
+class Spawn(BaseModel):
+    """What one spawn starts: `run_agent`'s arguments of the same names (`provider` by name, `session_id` the
+    conversation it belongs to), kept while it waits."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    task: str
+    cwd: str
+    provider: str | None = None
+    agent: str | None = None
+    name: str | None = None
+    model: str | None = None
+    permission_mode: str | None = None
+    profile: str | None = None
+    image_paths: tuple[Path, ...] = ()
+    agent_ref: AgentRevisionRef | None = None
+    delegate: str | None = None
+    parent_run_id: str | None = None
+    session_id: str | None = None
+    denied_tools: tuple[str, ...] = ()
+    provider_modes: dict[str, str] = Field(default_factory=dict)
+    quota_window: float | None = None
+    fence: FenceSpec | None = None
+
+    @classmethod
+    def asked(cls, *, parent_run_id: str | None = None, **fields) -> Spawn:
+        """A spawn as its caller asks it: its parent the run asking (`GALAIUS_PARENT_RUN_ID`) unless one is named."""
+        return cls(parent_run_id=parent_run_id or os.environ.get("GALAIUS_PARENT_RUN_ID") or None, **fields)
+
+    async def start(self, run_id: str, runner: Callable[..., Awaitable[RunHandle]] | None = None) -> RunHandle:
+        """Start it as run `run_id` (the id its caller was given) through `runner` (`run_agent` when None), and give
+        the child a moment to be alive before a caller about to exit lets go of it."""
+        arguments = {name: getattr(self, name) for name in type(self).model_fields if name not in {"task", "provider", "session_id"}}
+        arguments |= {"name": self.name or self.agent, "provider_modes": self.provider_modes or None}
+        with reg.session_context(self.session_id, parent_run_id=self.parent_run_id):
+            handle = await (runner or run_agent)(provider_for(self.provider) if self.provider is not None else None, self.task, run_id=run_id, **arguments)
+        await asyncio.sleep(0.2)
+        return handle
+
+
+class Place(BaseModel):
+    """One run in the line. `starting`: admitted, its process not on record yet; `waiting`: held by its waiter;
+    `failed`: it will not start (`said` why). A resumed turn (`spawn` None) is only ever `starting`."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    run_id: str
+    asked_at: float
+    state: Literal["starting", "waiting", "failed"]
+    #: The process holding it (the one that asked, then its waiter; a resume's dispatcher) and when that process
+    #: started: a place whose holder is gone is nobody's (`SpawnLine._prune`).
+    holder: int
+    holder_started: int | None
+    parent_run_id: str | None = None
+    spawn: Spawn | None = None
+    said: str = ""
+
+    def held(self) -> bool:
+        return self.holder_started is not None and process_started(self.holder) == self.holder_started and not process_exited(self.holder)
+
+    def asked(self) -> bool:
+        """A spawn someone asked for (every place but a resumed turn's): one `agents list` shows until it starts."""
+        return self.spawn is not None or self.state == "failed"
+
+    def label(self) -> str:
+        return (self.spawn.name or self.spawn.agent or "-") if self.spawn is not None else "-"
+
+    @classmethod
+    def unreadable(cls, raw: object, error: Exception) -> Place | None:
+        """An entry this build cannot read, kept as failed under its run id (None: it has none)."""
+        run_id = raw.get("run_id") if isinstance(raw, dict) else None
+        if not isinstance(run_id, str):
+            return None
+        asked = raw.get("asked_at")
+        return cls(run_id=run_id, asked_at=asked if isinstance(asked, (int, float)) else time.time(), state="failed", holder=0, holder_started=None,
+                   said=f"its place in line is unreadable by this galaius ({type(error).__name__}); spawn it again")
+
+
+class Load(BaseModel):
+    """What works here against the limit: runs, and the places they take (`SpawnLine.load`)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    runs: int
+    places: int
+    limit: int
+
+    @property
+    def full(self) -> bool:
+        return self.places >= self.limit
+
+
+class Admission(BaseModel):
+    """A spawn's answer: its run id, and how many wait before it (None: it starts now)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    run_id: str
+    ahead: int | None
+    load: Load
+
+    def sentence(self) -> str:
+        """« en file : 2 avant elle (8 agents au travail sur ce PC, 6 places prises sur 6) »; "" when it starts now."""
+        if self.ahead is None:
+            return ""
+        return f"en file : {self.ahead} avant elle ({self.load.runs} agents au travail sur ce PC, {self.load.places} places prises sur {self.load.limit})"
+
+
+class SpawnLine(BaseModel):
+    """This computer's line (`registry.shared_state("spawn-line")`)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    limit: int = Field(ge=1)
+
+    @classmethod
+    def here(cls) -> SpawnLine:
+        return cls(limit=Config().agent_runs_max)
+
+    @contextmanager
+    def _places(self) -> Iterator[list[Place]]:
+        """The line, pruned, for the block to change in place; written back after it, all under one lock. Never
+        refuses: unreadable state reads as an empty line, an unreadable entry as a failed one."""
+        with reg.shared_state("spawn-line") as (raw, replace, keep_aside):
+            try:
+                entries = json.loads(raw) if raw else []
+            except ValueError as error:
+                keep_aside()
+                logger.warning("spawn line unreadable, kept aside and started over: %s", error)
+                entries = []
+            places = []
+            for entry in entries if isinstance(entries, list) else []:
+                try:
+                    places.append(Place.model_validate(entry))
+                except ValidationError as error:
+                    if (failed := Place.unreadable(entry, error)) is not None:
+                        places.append(failed)
+            before = [place.model_dump(mode="json") for place in places]
+            places[:] = self._prune(places)
+            yield places
+            after = [place.model_dump(mode="json") for place in places]
+            if after != before:
+                replace(json.dumps(after, ensure_ascii=False).encode())
+
+    @staticmethod
+    def _prune(places: list[Place]) -> list[Place]:
+        """A place whose holder is gone: `starting` — dropped once its run is on record, else failed (its start was
+        cut off); `waiting` — failed, quoting what its waiter wrote. A failed one is forgotten after `FAILED_KEPT_SECONDS`."""
+        now, kept = time.time(), []
+        for place in places:
+            if place.state == "failed":
+                if now - place.asked_at < FAILED_KEPT_SECONDS:
+                    kept.append(place)
+                elif reg.get_run(place.run_id) is None:
+                    reg.stderr_path(place.run_id).unlink(missing_ok=True)
+            elif place.held():
+                kept.append(place)
+            elif place.spawn is not None and reg.get_run(place.run_id) is None:
+                said = reg.read_stderr(place.run_id, 300).strip()
+                gone = "the process holding its place in line went away" if place.state == "waiting" else "its start was cut off"
+                kept.append(place.model_copy(update={"state": "failed", "said": f"{gone}{': ' + said if said else ''}; spawn it again"}))
+        return kept
+
+    @staticmethod
+    def _owners() -> frozenset[str]:
+        """The runs the owner started himself from the web (`WebRuns`): never counted."""
+        try:
+            return frozenset(str(run.run_id) for run in WebRuns.in_folder(UserPaths.config()).read())
+        except (OSError, ValueError):
+            return frozenset()
+
+    def _taken(self, places: list[Place]) -> dict[str, str | None]:
+        """Every run at work here and every run starting (run id -> its parent), the owner's own runs left out."""
+        owners = self._owners()
+        taken = {run.run_id: run.parent_run_id for run in reg.running_runs()
+                 if run.kind == "process" and not run.foreign and run.run_id not in owners}
+        return taken | {place.run_id: place.parent_run_id for place in places if place.state == "starting"}
+
+    @staticmethod
+    def _sharing(taken: dict[str, str | None]) -> set[str]:
+        """The runs whose place a child shares: in a place of their own (their parent not at work here) with a child at work."""
+        return {parent for parent in taken.values() if parent in taken and taken[parent] not in taken}
+
+    def load(self, places: list[Place]) -> Load:
+        taken = self._taken(places)
+        return Load(runs=len(taken), places=len(taken) - len(self._sharing(taken)), limit=self.limit)
+
+    def _shares(self, places: list[Place], parent: str | None) -> bool:
+        """Whether a child of `parent` takes no place of its own: `parent` works here in a place of its own, no child yet."""
+        taken = self._taken(places)
+        return parent in taken and taken[parent] not in taken and parent not in taken.values()
+
+    def _admits(self, places: list[Place], parent: str | None, *, first: bool) -> bool:
+        """Whether a run of `parent` starts now: it shares its parent's place, or it is `first` in line and a place is free."""
+        return self._shares(places, parent) or (first and not self.load(places).full)
+
+    def enter(self, spawn: Spawn) -> Admission:
+        """Take a place for `spawn`: `starting` when it may start now (the caller starts it, then `leave`s), else
+        `waiting` behind every spawn already waiting, held by a waiter started here."""
+        run_id, me = str(uuid.uuid4()), os.getpid()
+        with self._places() as places:
+            ahead = sum(place.state == "waiting" for place in places)
+            load = self.load(places)
+            starts = self._admits(places, spawn.parent_run_id, first=ahead == 0)
+            places.append(Place(run_id=run_id, asked_at=time.time(), state="starting" if starts else "waiting", holder=me,
+                                holder_started=process_started(me), parent_run_id=spawn.parent_run_id, spawn=spawn))
+        if not starts:
+            self._hold(run_id, spawn, me)
+        return Admission(run_id=run_id, ahead=None if starts else ahead, load=load)
+
+    def _hold(self, run_id: str, spawn: Spawn, asker: int) -> None:
+        """Start the waiter holding `run_id`'s place, writing to the run's own stderr file (`_prune` quotes it)."""
+        try:
+            with reg.open_stderr(run_id, append=True) as stderr:
+                process = reg.start_participant("galaius.agents.spawn_line", run_id, cwd=spawn.cwd, contain=True, stderr=stderr)
+        except OSError as error:
+            self._settle(run_id, f"its waiter could not start: {error}")
+            raise
+        with self._places() as places:  # unless the waiter already took it over itself (`_turn`)
+            for index, place in enumerate(places):
+                if place.run_id == run_id and place.state == "waiting" and place.holder == asker:
+                    places[index] = place.model_copy(update={"holder": process.pid, "holder_started": process_started(process.pid)})
+
+    def leave(self, run_id: str) -> None:
+        """Its run is on record (counted from there) or never started: the place is free."""
+        with self._places() as places:
+            places[:] = [place for place in places if place.run_id != run_id]
+
+    def _settle(self, run_id: str, said: str) -> None:
+        with self._places() as places:
+            for index, place in enumerate(places):
+                if place.run_id == run_id:
+                    places[index] = place.model_copy(update={"state": "failed", "said": said[:500]})
+
+    def _exempt(self, run: reg.AgentRun) -> bool:
+        """The owner's own runs (`_owners`) and what is not a galaius process here: never held."""
+        return run.kind != "process" or run.foreign or run.run_id in self._owners()
+
+    @contextmanager
+    def resuming(self, run: reg.AgentRun) -> Iterator[bool]:
+        """Whether `run`'s next turn may start now (`agent_queue.dispatch`, which asks again every `POLL_SECONDS` until it
+        may). Its place waits in line like a spawn's, held by the dispatcher asking, and starts in the same order (or at
+        once when it shares its parent's place); while the block starts the turn, the place is taken."""
+        if self._exempt(run):
+            yield True
+            return
+        me = os.getpid()
+        with self._places() as places:
+            place = next((place for place in places if place.run_id == run.run_id), None)
+            if place is None or place.state == "failed":
+                if place is not None:
+                    places.remove(place)
+                place = Place(run_id=run.run_id, asked_at=time.time(), state="waiting", holder=me,
+                              holder_started=process_started(me), parent_run_id=run.parent_run_id)
+                places.append(place)
+            index = places.index(place)
+            head = next((other for other in places if other.state == "waiting"), None)
+            admitted = place.state == "waiting" and self._admits(places, run.parent_run_id, first=head is place)
+            if admitted:
+                places[index] = place.model_copy(update={"state": "starting", "holder": me, "holder_started": process_started(me)})
+        try:
+            yield admitted
+        finally:
+            if admitted:
+                self.leave(run.run_id)
+
+    def waits(self, run_id: str) -> str | None:
+        """Where `run_id`'s next turn stands when it waits for a place (`agents send`): its place's line, or, its dispatcher
+        not having asked yet, the one it is about to join; None when it starts now (or the run is at work: what is sent
+        reaches its turn running)."""
+        run = reg.get_run(run_id)
+        if run is None or self._exempt(run) or run.working():
+            return None
+        with self._places() as places:
+            if (place := next((place for place in places if place.run_id == run_id), None)) is not None:
+                return None if place.state == "starting" else self._said(places, place)
+            waiting = sum(place.state == "waiting" for place in places)
+            if self._admits(places, run.parent_run_id, first=waiting == 0):
+                return None
+            return Admission(run_id=run_id, ahead=waiting, load=self.load(places)).sentence()
+
+    @staticmethod
+    def _match(places: list[Place], prefix: str) -> Place | None:
+        """The one spawn not started whose run id starts with `prefix` (`agents list` prints 8 characters); None when none or several."""
+        found = [place for place in places if prefix and place.asked() and place.run_id.startswith(prefix)]
+        return found[0] if len(found) == 1 else None
+
+    def _said(self, places: list[Place], place: Place) -> str:
+        if place.state == "failed":
+            return f"not started: {place.said}"
+        if place.state == "starting":
+            return "starting"
+        ahead = [other.run_id for other in places if other.state == "waiting"].index(place.run_id)
+        said = Admission(run_id=place.run_id, ahead=ahead, load=self.load(places)).sentence()
+        return f"{said} — {STUCK}" if self._stuck(places) else said
+
+    def _stuck(self, places: list[Place]) -> bool:
+        """Every place is held by a team one of whose runs waits in line: should each wait for that run, none frees."""
+        taken = self._taken(places)
+
+        def team(run_id: str) -> str:
+            """The run in a place of its own whose team `run_id` is in (up its parents while they work here)."""
+            seen = set()
+            while (parent := taken.get(run_id)) in taken and run_id not in seen:
+                seen.add(run_id)
+                run_id = parent
+            return run_id
+
+        holders = {team(run_id) for run_id in taken}
+        waiting = {team(place.parent_run_id) for place in places if place.state == "waiting" and place.parent_run_id in taken}
+        return self.load(places).full and bool(holders) and holders <= waiting
+
+    def cancel(self, prefix: str, *, within: frozenset[str] | None = None) -> str | None:
+        """Take a spawn not started out of the line (`agents stop`): its run id, None when none matches (or its parent
+        is not in `within`, the asking team, when given)."""
+        with self._places() as places:
+            found = self._match(places, prefix)
+            if found is None or found.state == "starting" or (within is not None and found.parent_run_id not in within):
+                return None
+            places.remove(found)
+        return found.run_id
+
+    def describe(self, prefix: str, *, within: frozenset[str] | None = None) -> str | None:
+        """One line on a spawn not started (`agents events` / `agent_events`), None when none matches (or its parent is
+        not in `within`, the asking team, when given)."""
+        with self._places() as places:
+            found = self._match(places, prefix)
+            if found is None or (within is not None and found.parent_run_id not in within):
+                return None
+            return self._said(places, found)
+
+    def session(self, session_id: str | None) -> list[tuple[Place, str]]:
+        """The spawns not started of conversation `session_id` (every one when None), each with its line (`describe`)."""
+        with self._places() as places:
+            return [(place, self._said(places, place)) for place in places if place.asked() and place.state != "starting"
+                    and (session_id is None or (place.spawn is not None and place.spawn.session_id == session_id))]
+
+    def _turn(self, run_id: str) -> Place | Literal["wait", "gone"]:
+        """The waiter's look: `run_id`'s place, marked `starting`, when it may start now; else whether it waits or is gone
+        (cancelled). The waiter holds the place from its first look on."""
+        me = os.getpid()
+        with self._places() as places:
+            place = next((place for place in places if place.run_id == run_id), None)
+            if place is None or place.state != "waiting" or place.spawn is None:
+                return "gone"
+            index = places.index(place)
+            if place.holder != me:
+                places[index] = place = place.model_copy(update={"holder": me, "holder_started": process_started(me)})
+            head = next(other for other in places if other.state == "waiting")
+            if not self._admits(places, place.parent_run_id, first=head.run_id == run_id):
+                return "wait"
+            places[index] = place = place.model_copy(update={"state": "starting"})
+            return place
+
+    def wait(self, run_id: str) -> None:
+        """The waiter: once `run_id` may start, start it, then free its place; ends when the place is gone."""
+        while (turn := self._turn(run_id)) == "wait":
+            time.sleep(POLL_SECONDS)
+        if turn == "gone":
+            return
+        assert turn.spawn is not None
+        try:
+            asyncio.run(turn.spawn.start(run_id))
+        except Exception as error:  # every way a start fails: the place says why, the run id resolves to it
+            self._settle(run_id, str(error) or type(error).__name__)
+            return
+        self.leave(run_id)
+
+
+def main() -> None:
+    if len(sys.argv) != 2:
+        raise SystemExit("usage: python -m galaius.agents.spawn_line RUN_ID")
+    RuntimeStore.default().register(Runtime.own(), os.getpid())  # its runtime stays until it ends
+    SpawnLine.here().wait(sys.argv[1])
+
+
+if __name__ == "__main__":
+    main()

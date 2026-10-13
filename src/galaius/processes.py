@@ -94,6 +94,14 @@ def process_group_options() -> dict:
     return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
 
 
+def detached_options() -> dict:
+    """Spawn options for a process that outlives the one starting it: its own session (POSIX); on Windows its
+    own group and no console window, so closing the console that asked for it never ends it."""
+    if os.name == "posix":
+        return {"start_new_session": True}
+    return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW}
+
+
 def end_process_tree(pid: int) -> bool:
     """Ask the tree `pid` leads (spawned with `process_group_options`) to stop, without waiting:
     POSIX TERMs its group; Windows has no signal a console-less process receives, so `taskkill /T /F`.

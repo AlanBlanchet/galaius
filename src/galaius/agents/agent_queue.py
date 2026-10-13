@@ -20,7 +20,6 @@ import time
 import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from pathlib import Path
 from typing import Annotated, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -35,7 +34,6 @@ from galaius.upgrade.store import Runtime, RuntimeStore, active_interpreter
 MAX_PENDING = 128
 _POLL_SECONDS = 0.1
 _DISPATCHER_RECOVERY_TIMEOUT = 30.0
-_DETACHED = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 class CorruptQueueStateError(RuntimeError):
@@ -374,20 +372,7 @@ def ensure_dispatcher_locked(run_id: str, *, cwd: str = ".", environment: Mappin
     state["dispatcher_token"] = token
     _write_state(run_id, state)
     try:
-        process = subprocess.Popen(
-            # The ACTIVE runtime's interpreter, never this process's: a dispatcher deliberately keeps
-            # its runtime until its run ends (see `main`), so one started by a process that still runs
-            # an older build would keep that build alive for hours after an upgrade.
-            # -P: it runs in the run's folder, whose modules must never shadow galaius's own.
-            [active_interpreter(), "-P", "-m", "galaius.agents.agent_queue", "--dispatch", run_id, token],
-            cwd=cwd if cwd and Path(cwd).is_dir() else ".",
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL, start_new_session=True,
-            env=reg.participant_environment(os.environ if environment is None else environment),
-            # Windows: outlives the console that asked for it (its own group; no console window,
-            # and the dispatcher hides its own children's: `galaius.windowless`). 0 on POSIX.
-            creationflags=_DETACHED,
-        )
+        process = reg.start_participant("galaius.agents.agent_queue", "--dispatch", run_id, token, cwd=cwd, environment=environment)
     except BaseException:
         current = _state(run_id)
         if current.get("dispatcher_token") == token:
@@ -521,6 +506,7 @@ def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
     try:
         while True:
             recover: tuple[QueueItem, reg.AgentRun] | None = None
+            pause = _POLL_SECONDS
             with reg.record_lock(run_id):
                 state = _state(run_id)
                 queued_items = _items(state)
@@ -544,37 +530,44 @@ def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
                     recover = (running, run)
                     item = None
                 else:
-                    item = claim_next_locked(run_id)
-                    if item is not None:
-                        prompt = item.turn.prompt(run, item.message_id)
-                        if prompt is None:
-                            _replace_item_locked(
-                                run_id, item.id, state="failed", finished_at=time.time(),
-                                error="message transcript entry is missing",
-                            )
-                            item = None
-                        else:
-                            try:
-                                provider, criterion, model, reasoning = _fresh_policy(run)
-                                # Circular layers: run imports this module (its turns' inbox hook).
-                                from galaius.agents.run import launch_continuation
-                                lifecycle = launch_continuation(
-                                    provider, run, run.provider_session_id or run.run_id,
-                                    prompt, model=model, criterion=criterion,
-                                    reasoning=reasoning, raw_index=item.raw_index or 0,
-                                    record_locked=True,
-                                )
-                            except Exception as error:
-                                # The run itself reads failed, with the reason: a message to an
-                                # ended run whose resume cannot start otherwise leaves it "done"
-                                # and its sender watching a message "delivered" forever.
-                                detail = _safe_process_detail(str(error))
+                    # Circular layers: spawn_line imports run (its turns' inbox hook) and machine_agents (the web's runs),
+                    # both of which import this module.
+                    from galaius.agents.spawn_line import POLL_SECONDS, SpawnLine
+
+                    # A resumed turn is a run at work like a spawn: it waits for a place on this computer.
+                    with SpawnLine.here().resuming(run) as admitted:
+                        pause = _POLL_SECONDS if admitted else POLL_SECONDS
+                        item = claim_next_locked(run_id) if admitted else None
+                        if item is not None:
+                            prompt = item.turn.prompt(run, item.message_id)
+                            if prompt is None:
                                 _replace_item_locked(
                                     run_id, item.id, state="failed", finished_at=time.time(),
-                                    error=detail,
+                                    error="message transcript entry is missing",
                                 )
-                                reg.fail_turn_locked(run_id, f"resume refused: {detail}")
                                 item = None
+                            else:
+                                try:
+                                    provider, criterion, model, reasoning = _fresh_policy(run)
+                                    # Circular layers: run imports this module (its turns' inbox hook).
+                                    from galaius.agents.run import launch_continuation
+                                    lifecycle = launch_continuation(
+                                        provider, run, run.provider_session_id or run.run_id,
+                                        prompt, model=model, criterion=criterion,
+                                        reasoning=reasoning, raw_index=item.raw_index or 0,
+                                        record_locked=True,
+                                    )
+                                except Exception as error:
+                                    # The run itself reads failed, with the reason: a message to an
+                                    # ended run whose resume cannot start otherwise leaves it "done"
+                                    # and its sender watching a message "delivered" forever.
+                                    detail = _safe_process_detail(str(error))
+                                    _replace_item_locked(
+                                        run_id, item.id, state="failed", finished_at=time.time(),
+                                        error=detail,
+                                    )
+                                    reg.fail_turn_locked(run_id, f"resume refused: {detail}")
+                                    item = None
             if recover is not None:
                 recovered_item, _ = recover
                 attempt_state, attempt_error = _classify_attempt(run_id, recovered_item)
@@ -587,7 +580,7 @@ def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
                         )
                 continue
             if item is None:
-                time.sleep(_POLL_SECONDS)
+                time.sleep(pause)
                 continue
 
             settle(run_id, item, lifecycle.wait())

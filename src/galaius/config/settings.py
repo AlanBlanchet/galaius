@@ -194,6 +194,9 @@ class Config(BaseSettings):
     # so one run's memory cannot kill another (`galaius.agents.ceiling`). Linux with a systemd user
     # manager; elsewhere the agent runs uncapped. Percent of physical RAM / of all CPU cores.
     agent_ceiling: bool = True
+    # How many agent runs may work on this computer at once, every conversation's; one more spawn waits
+    # in line until one ends (`galaius.agents.spawn_line`). The owner's own conversations are not counted.
+    agent_runs_max: Annotated[int, Field(ge=1)] = 6
     agent_memory_max_percent: Annotated[int, Field(ge=1, le=100)] = 45
     agent_run_memory_max_percent: Annotated[int, Field(ge=1, le=100)] = 20
     # systemd-oomd acts on the agents' slice when it stalls this share of the time on memory.

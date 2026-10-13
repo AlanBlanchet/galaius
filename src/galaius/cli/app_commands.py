@@ -38,6 +38,7 @@ from galaius.agents.providers import (
     provider_for,
 )
 from galaius.agents.run import ModelUnavailable, is_criterion, Ranking, rank, resolve_model, run_agent
+from galaius.agents.spawn_line import Spawn, SpawnLine
 from galaius.cli.clients import ClientTarget, MCPServer, Scope
 from galaius.cli.command_bootstrap import Config, UserConfig
 from galaius.cli.render import CliRenderer
@@ -873,8 +874,11 @@ def agents_list(foreign: bool = False, session_id: str | None = None, all_sessio
         print(f"ERROR: {error}", file=sys.stderr)
         raise SystemExit(2) from None
     print("All sessions (including unknown owners)" if all_sessions else f"Session: {identity}")
-    if not runs:
-
+    places = SpawnLine.here().session(None if all_sessions else identity)
+    for place, said in places:
+        state = "failed" if place.state == "failed" else "queued"
+        print(f"  {state:8} {place.run_id[:8]}  {'-':7} {place.label():16} {'—':>10}  {said}")
+    if not runs and not places:
         names = ", ".join(p.name for p in available_providers()) or "none installed"
         print(f"No agent runs. Providers available here: {names}.")
         return
@@ -920,7 +924,8 @@ def agents_events(run_id: str, limit: int = 30, machine: str | None = None) -> N
     resolved = reg.resolve_run_id(run_id) or run_id
     events = reg.read_events(resolved)
     if not events:
-        print(f"No events for {run_id!r}.")
+        waiting = SpawnLine.here().describe(run_id)
+        print(f"  {'queued':11} {waiting}" if waiting else f"No events for {run_id!r}.")
         return
     for event in events[-max(1, limit):]:
         print(f"  {event.kind:11} {event.summary(viewer=resolved)}")
@@ -949,7 +954,8 @@ def agents_stop(run_id: str) -> None:
 
     resolved = reg.resolve_run_id(run_id)
     if resolved is None:
-        print(f"No agent run {run_id!r}.")
+        cancelled = SpawnLine.here().cancel(run_id)
+        print(f"Taken out of the line: {cancelled[:8]} never started." if cancelled else f"No agent run {run_id!r}.")
         return
     print(f"Stopped {resolved[:8]}." if reg.stop(resolved) else f"No agent run {run_id!r}.")
 
@@ -984,11 +990,15 @@ def agents_send(run_id: str, message: str) -> None:
     """
 
 
+    if reg.resolve_run_id(run_id) is None and (waiting := SpawnLine.here().describe(run_id)) is not None:
+        print(f"ERROR: {run_id} has not started ({waiting}); send once it runs.")
+        raise SystemExit(1)
     delivery = messaging.deliver_message(run_id, message)
     if (refused := messaging.wait_for_start(delivery)) is not None:
         print(f"ERROR: the resumed turn did not start: {refused}")
         raise SystemExit(1)
-    print(delivery.text)
+    waiting = SpawnLine.here().waits(delivery.run_id) if delivery.state == "queued" else None
+    print(f"{delivery.text} Its turn: {waiting}" if waiting else delivery.text)
     if delivery.state == "error":
         raise SystemExit(1)
 
@@ -1592,28 +1602,32 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
         print("ERROR: --folder names a folder on another computer: pass --machine too (here, use --cwd)", file=sys.stderr)
         raise SystemExit(2)
 
-    async def _go():
-        handle = await _agent_runner()(
-            provider_for(provider) if provider is not None else None, task, name=name or agent,
-            cwd=cwd or os.getcwd(), agent=agent, model=model,
-            permission_mode=permission_mode,
-            image_paths=tuple(image_paths or ()),
-            agent_ref=AgentCatalog.reference(agent_id, agent_revision),
-            delegate=delegate, parent_run_id=parent_run_id,
-            denied_tools=tuple(denied_tools or ()),
-            provider_modes=_provider_modes(provider_modes),
-            quota_window=quota_window,
-            fence=FenceSpec.model_validate_json(fence.read_text()) if fence is not None else None,
-        )
-        # Give the child a moment to be alive before this process exits out from under it.
-        await asyncio.sleep(0.2)
-        return handle.run_id
-
     try:
         with reg.session_context(session_id, parent_run_id=parent_run_id, cli_harness=True) as owner:
             if owner is None:
                 print("Session unknown: pass --session-id for conversation-scoped listings.", file=sys.stderr)
-            print(asyncio.run(_go()))
+            if provider is not None:
+                provider_for(provider)  # an unknown name is refused here, never by a waiter later
+            spawn = Spawn.asked(
+                task=task, cwd=cwd or os.getcwd(), provider=provider, agent=agent, name=name, model=model,
+                permission_mode=permission_mode, image_paths=tuple(image_paths or ()),
+                agent_ref=AgentCatalog.reference(agent_id, agent_revision), delegate=delegate,
+                parent_run_id=parent_run_id, session_id=owner,
+                denied_tools=tuple(denied_tools or ()), provider_modes=_provider_modes(provider_modes),
+                quota_window=quota_window,
+                fence=FenceSpec.model_validate_json(fence.read_text()) if fence is not None else None,
+            )
+            line = SpawnLine.here()
+            admission = line.enter(spawn)
+            if admission.ahead is not None:
+                # Before the id: a caller reading the last line (`2>&1 | tail -1`) still gets the id.
+                print(admission.sentence(), file=sys.stderr)
+                print(admission.run_id)
+                return
+            try:
+                print(asyncio.run(spawn.start(admission.run_id, _agent_runner())).run_id)
+            finally:
+                line.leave(admission.run_id)
     except (ValueError, RuntimeError) as e:
         # argv builder validates permission mode, four frames down; a criterion nothing clears, a
         # nonexistent profile, and a provider switched off all refuse the same way. Without this

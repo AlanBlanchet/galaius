@@ -16,6 +16,7 @@ from galaius.agents import messaging, registry as reg
 from galaius.agents.conversations import ConversationAnswers, ConversationScope
 from galaius.agents.providers import PROVIDERS, available_providers, provider_caveat_note, provider_for
 from galaius.agents.run import run_agent
+from galaius.agents.spawn_line import Spawn, SpawnLine
 from galaius.server.core import instrumented, mcp
 
 
@@ -125,16 +126,25 @@ async def agent_spawn(
                 f"from a tool call. Choose one of: {allowed}. To run an agent unrestricted, start "
                 f"it yourself — `galaius agents spawn ... --permission-mode {permission_mode}` — "
                 "so the choice has a person behind it.")
+    label = name or agent or (prov.name if prov else "agent")
     try:
         with reg.session_context(session_id) as owner:
-            handle = await run_agent(
-                prov, task, name=name or agent, cwd=cwd or os.getcwd(),
-                agent=agent, model=model, permission_mode=permission_mode,
-                profile=profile,
-                agent_ref=agent_ref, delegate=delegate,
-                image_paths=tuple(Path(path) for path in (image_paths or ())),
-                denied_tools=tuple(denied_tools or ()),
+            spawn = Spawn.asked(
+                task=task, cwd=cwd or os.getcwd(), provider=provider, agent=agent, name=name, model=model,
+                permission_mode=permission_mode, profile=profile, agent_ref=agent_ref, delegate=delegate,
+                image_paths=tuple(Path(path) for path in (image_paths or ())), denied_tools=tuple(denied_tools or ()),
+                session_id=owner,
             )
+            line = SpawnLine.here()
+            admission = line.enter(spawn)
+            if admission.ahead is not None:
+                return (f"Queued [{label}] — run_id={admission.run_id}, {admission.sentence()}.\n"
+                        f"It starts by itself once a place frees; agent_events(run_id=\"{admission.run_id}\") says where it stands, "
+                        "agent_stop takes it out of the line.")
+            try:
+                handle = await spawn.start(admission.run_id, run_agent)
+            finally:
+                line.leave(admission.run_id)
     except ValueError as e:  # an unknown permission mode, refused before it reaches a shell
         return f"ERROR: {e}"
     except (OSError, RuntimeError) as e:
@@ -177,7 +187,9 @@ async def agent_list(include_foreign: bool = False, session_id: str | None = Non
     except ValueError as error:
         return f"ERROR: {error}"
     scope = "All sessions (including unknown owners)" if all_sessions else f"Session {reg.resolve_session_id(session_id)}"
-    if not runs:
+    queued = [f"[{'failed' if place.state == 'failed' else 'queued'}] {place.run_id[:8]} {place.label()}  {said}"
+              for place, said in SpawnLine.here().session(None if all_sessions else reg.resolve_session_id(session_id))]
+    if not runs and not queued:
         installed = ", ".join(p.name for p in available_providers()) or "none installed"
         return f"{scope}: No agent runs. Providers available here: {installed}."
     lines = [_fmt(r) for r in runs]
@@ -186,9 +198,20 @@ async def agent_list(include_foreign: bool = False, session_id: str | None = Non
     tree = [f"  {r.run_id[:8]} ← spawned by {r.parent_run_id[:8]}"
             for r in runs if r.parent_run_id]
     out = [f"{scope}: {len(runs)} agent run(s), {live} running, ~${total:.4f} API-equivalent:", *lines]
+    if queued:
+        out += ["", "Not started (waiting for a place on this computer):", *queued]
     if tree:
         out += ["", "Team tree:", *tree]
     return "\n".join(out)
+
+
+def _fenced_team() -> tuple[str, frozenset[str]] | None:
+    """When the asking agent is fenced (`ConversationScope.held`): what holds it and its team's run ids, the only runs
+    it may read or stop; None when it is not. Raises PermissionError as `ConversationScope.asking` does."""
+    asking = ConversationScope.asking(os.environ)
+    if asking is None or (held := ConversationScope.held(asking)) is None:
+        return None
+    return held, frozenset(run.run_id for run in reg.trees(frozenset({asking.root_run_id or asking.run_id})))
 
 
 @mcp.tool(category="agents")
@@ -197,15 +220,16 @@ async def agent_events(run_id: str, limit: int = 20) -> str:
     """What an agent has actually been doing — its most recent events, oldest first."""
     resolved = reg.resolve_run_id(run_id) or run_id
     try:
-        asking = ConversationScope.asking(os.environ)
+        fenced = _fenced_team()
     except PermissionError as error:
         return f"ERROR: {error}"
-    if asking is not None and (held := ConversationScope.held(asking)) is not None:
-        team = {run.run_id for run in reg.trees(frozenset({asking.root_run_id or asking.run_id}))}
-        if resolved not in team:
-            return f"ERROR: {held} reads only its own team's runs."
+    if fenced is not None and resolved not in (team := fenced[1]):
+        waiting = SpawnLine.here().describe(run_id, within=team)  # its own child, not started yet
+        return f"{run_id[:8]}: {waiting}" if waiting is not None else f"ERROR: {fenced[0]} reads only its own team's runs."
     events = reg.read_events(resolved)
     if not events:
+        if (waiting := SpawnLine.here().describe(run_id)) is not None:
+            return f"{run_id[:8]}: {waiting}"
         known = {r.run_id for r in reg.list_runs()}
         if resolved not in known:
             return f"ERROR: no agent run {run_id!r}. Use agent_list to see the run ids."
@@ -217,9 +241,15 @@ async def agent_events(run_id: str, limit: int = 20) -> str:
 @mcp.tool(category="agents")
 @instrumented
 async def agent_stop(run_id: str) -> str:
-    """Stop a running agent (and the tool processes it spawned)."""
+    """Stop a running agent (and the tool processes it spawned), or take one not started yet out of the line."""
     if reg.stop(run_id):
         return f"Stopped {run_id[:8]}."
+    try:
+        fenced = _fenced_team()
+    except PermissionError as error:
+        return f"ERROR: {error}"
+    if reg.resolve_run_id(run_id) is None and (cancelled := SpawnLine.here().cancel(run_id, within=fenced[1] if fenced else None)) is not None:
+        return f"Taken out of the line: {cancelled[:8]} never started."
     return f"ERROR: no agent run {run_id!r}. Use agent_list to see the run ids."
 
 
@@ -260,11 +290,16 @@ async def agent_send(run_id: str, message: str, wait: bool = False) -> str:
     message: what to say — write it as a complete request; it cannot ask you a follow-up.
     wait: block until it has replied, instead of returning as soon as the message is delivered.
     """
+    if reg.resolve_run_id(run_id) is None and (waiting := SpawnLine.here().describe(run_id)) is not None:
+        return f"ERROR: {run_id[:8]} has not started ({waiting}); send once it runs."
     # Shared with `galaius agents send`, so both surfaces use one routing and policy lifecycle.
     delivery = messaging.deliver_message(run_id, message)
+    waiting = SpawnLine.here().waits(delivery.run_id) if delivery.state == "queued" else None
+    said = f"{delivery.text} Its turn: {waiting}" if waiting else delivery.text
     if delivery.state == "error" or not wait:
-        return delivery.text
-    return await messaging.wait_for_reply(delivery)
+        return said
+    reply = await messaging.wait_for_reply(delivery)
+    return f"{said}\n{reply}" if waiting else reply
 
 
 @mcp.tool(category="agents")

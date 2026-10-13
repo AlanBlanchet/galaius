@@ -24,7 +24,7 @@ import stat
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import ExitStack, contextmanager, suppress
 from contextvars import ContextVar
 from pathlib import Path
@@ -37,7 +37,7 @@ from galaius_core import AgentRevisionRef, ContextGauge, PromptExecutionRef
 
 from galaius.agents.events import CONTEXT_FIELDS, TOKEN_FIELDS, AgentEvent, TokenUsage, UsageLedger, stream_lines
 from galaius.agents.catalog_connection import CatalogConnection
-from galaius.agents.ceiling import end_run_scope, is_run_scope
+from galaius.agents.ceiling import contained, end_run_scope, is_run_scope
 from galaius.agents.providers import PROVIDERS, AgentProvider, DeniedTool
 from galaius.agents.subscriptions import RunSubscription, Subscription, SubscriptionRefused
 from galaius.fence import FenceSpec
@@ -47,7 +47,8 @@ from galaius.file_stamp import FileStamp
 from galaius.models import TokenMix
 from galaius.pinned_directory import DescriptorDirectory, PinnedDirectory
 from galaius.private_files import PRIVATE_FILES
-from galaius.processes import end_process_tree, process_ancestry, process_started, process_unit
+from galaius.processes import detached_options, end_process_tree, process_ancestry, process_started, process_unit
+from galaius.upgrade.store import active_interpreter
 from galaius.server_registry import (
     _alive,  # generic pid liveness (Windows-safe, no signal sent)
 )
@@ -518,6 +519,21 @@ def participant_environment(environment: Mapping[str, str]) -> dict[str, str]:
     return {**found, UserPaths.AGENTS_OVERRIDE: str(agents_dir())} if override else found
 
 
+def start_participant(module: str, *arguments: str, cwd: str, environment: Mapping[str, str] | None = None,
+                      contain: bool = False, stderr: int | BinaryIO = subprocess.DEVNULL) -> subprocess.Popen:
+    """Start `python -m <module> <arguments>` detached to work on runs here (a dispatcher, a spawn's waiter), in
+    `environment` (`participant_environment` of this process's own when None), in `cwd` when it is a folder. On the
+    ACTIVE runtime's interpreter, never this process's: one that outlives an upgrade would otherwise keep the build
+    that started it alive. -P: it runs in a run's folder, whose modules must never shadow galaius's own. `contain`:
+    in a scope of its own in the agents' slice (`ceiling.contained`), so stopping its starter's scope never ends it."""
+    argv = [active_interpreter(), "-P", "-m", module, *arguments]
+    return subprocess.Popen(
+        contained(argv) if contain else argv, cwd=cwd if cwd and Path(cwd).is_dir() else ".",
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=stderr,
+        env=participant_environment(os.environ if environment is None else environment), **detached_options(),
+    )
+
+
 def _ensure_registry_directory() -> Path:
     """Create and repair the private directory chain without changing the user's home mode."""
     directory = agents_dir()
@@ -782,6 +798,18 @@ def folder_lock(folder: Path):
     digest = hashlib.sha256(os.path.realpath(folder).encode()).hexdigest()[:24]
     with exclusive(_open_private(agents_dir() / f"#folder-{digest}.lock", os.O_RDWR)):
         yield
+
+
+@contextmanager
+def shared_state(name: str) -> Iterator[tuple[bytes | None, Callable[[bytes], None], Callable[[], None]]]:
+    """A registry-wide state file `#<name>.state`: its bytes (None: none yet), how to replace them whole, and how to
+    keep a copy of them aside (`#<name>.state.unreadable-<epoch>`, evidence of a state its reader could not read), all
+    under its own lock `#<name>.lock` (no run id contains `#`, so none meets a run's own files)."""
+    path = agents_dir() / f"#{name}.state"
+    with exclusive(_open_private(agents_dir() / f"#{name}.lock", os.O_RDWR)):
+        raw = _read_private(path)
+        yield (raw, lambda payload: _replace_private(path, payload),
+               lambda: _replace_private(path.with_name(f"{path.name}.unreadable-{int(time.time())}"), raw or b""))
 
 
 def sole_holder(job: str) -> SoleHolder:
