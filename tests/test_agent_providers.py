@@ -570,6 +570,24 @@ def test_the_context_gauge_and_a_manual_compaction_read_off_a_real_compacted_ses
     assert provider.parse(json.dumps(subagent), UsageLedger()).context_tokens is None
 
 
+def test_a_claude_run_knows_its_window_before_its_first_turn_ends():
+    """Claude Code 2.1.288 answers the `get_context_usage` request its task follows on stdin before the turn starts
+    (captured: haiku-5-5 200k, opus-5-5 1M, local paths removed): its gauge has the window from its first line on,
+    which it never takes as the message read; another request's answer, or a refusal, reports none."""
+    provider = ClaudeCodeProvider()
+    request, task = (json.loads(line) for line in provider.task_message("- list the files").decode().splitlines())
+    assert (request["request"]["subtype"], request["request_id"], task["message"]["content"]) == ("get_context_usage", provider.CONTEXT_REQUEST, "- list the files")
+    lines = (Path(__file__).parent / "fixtures" / "agents" / "claude_context_usage.jsonl").read_text().splitlines()
+    assert [provider.parse(line).context_window for line in lines] == [200_000, 1_000_000]
+    assert not any(provider.took_message(line) for line in lines)
+    stream = [lines[0], *(Path(__file__).parent / "fixtures" / "agents" / "claude_compact_stream.jsonl").read_text().splitlines()[:3]]
+    assert StreamDigest.of("", [e for line in stream if (e := provider.parse(line)) is not None], viewer="").context == ContextGauge(
+        context_tokens=10 + 13803 + 8587, context_window=200_000)
+    other = json.loads(lines[1])
+    for answer in ({"request_id": provider.USAGE_REQUEST}, {"subtype": "error", "error": "unsupported"}):
+        assert provider.parse(json.dumps(other | {"response": other["response"] | answer})).context_window is None
+
+
 
 def test_the_real_stream_parses_end_to_end():
     evs = _events()

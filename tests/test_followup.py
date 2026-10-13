@@ -21,7 +21,7 @@ from tests.support.agents import ScriptedProvider, install_provider, use_policy
 #: The next turn's child: waits for its message, says it read it (as `--replay-user-messages` does), answers it.
 READER = (
     "import json, sys\n"
-    "said = json.loads(sys.stdin.readline())['message']['content']\n"
+    "said = next(m for line in sys.stdin if (m := json.loads(line))['type'] == 'user')['message']['content']\n"
     "print(json.dumps({'type':'user','isReplay':True,'message':{'role':'user','content':said}}), flush=True)\n"
     "print(json.dumps({'type':'assistant','session_id':'vendor','message':{'content':[{'type':'text','text':'got ' + said}]}}), flush=True)\n"
     "print(json.dumps({'type':'result','is_error':False,'session_id':'vendor'}), flush=True)\n"
@@ -38,7 +38,7 @@ class _Provider(ScriptedProvider):
 
     def resume_command(self, session_id, message, **kwargs):
         self.resumed.append(message)  # the dispatcher's own resume: the message on its command line, no echo
-        script = READER.replace("json.loads(sys.stdin.readline())['message']['content']", repr(message))
+        script = READER.replace("next(m for line in sys.stdin if (m := json.loads(line))['type'] == 'user')['message']['content']", repr(message))
         return [sys.executable, "-c", "\n".join(line for line in script.splitlines() if "isReplay" not in line)]
 
     def resume_ahead_command(self, session_id, **kwargs):

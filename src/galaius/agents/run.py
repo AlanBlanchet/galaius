@@ -831,8 +831,21 @@ class ChildLaunch(AheadLaunch):
             arguments["inbox_hook"] = agent_queue.inbox_hook(run_id)
         return arguments
 
-    def command(self, task: str, run_id: str, session: str) -> list[str]:
-        return self.provider.command(task, **self.command_arguments(run_id, session))
+    async def launch(self, run_id: str, session: str, task: str) -> asyncio.subprocess.Process:
+        """Run `run_id`'s child doing `task` (as vendor session `session`): handed on its stdin as to a child started
+        ahead when its CLI reads it there (with what it asks its CLI before the turn: `task_message`), else on its
+        command line."""
+        if not self.provider.starts_ahead:
+            return await self.start(run_id, self.provider.command(task, **self.command_arguments(run_id, session)), env=self.env(run_id))
+        process = await self._ahead(run_id, session)
+        try:
+            await self.hand(process, task)
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # it ended before reading its task: its stream and exit status say how
+        return process
+
+    async def _ahead(self, run_id: str, session: str) -> asyncio.subprocess.Process:
+        return await self.start(run_id, self.provider.ahead_command(**self.command_arguments(run_id, session)), env=self.env(run_id), ahead=True)
 
     def slot(self) -> str:
         """Which launch this is, whatever run it serves: its command, environment, folder and fence."""
@@ -847,7 +860,7 @@ class ChildLaunch(AheadLaunch):
 
     async def start_ahead(self, run_id: str) -> asyncio.subprocess.Process:
         """A child started as run `run_id` before its task, reading it from its stdin."""
-        return await self.start(run_id, self.provider.ahead_command(**self.command_arguments(run_id, run_id)), env=self.env(run_id), ahead=True)
+        return await self._ahead(run_id, run_id)
 
 
 class ResumeLaunch(AheadLaunch):
@@ -1591,7 +1604,7 @@ async def run_agent(
                 run_id = vendor_session = held.run_id
                 candidate_process = held.process
         if candidate_process is None:
-            candidate_process = await launch.start(run_id, launch.command(brief, run_id, vendor_session), env=launch.env(run_id))
+            candidate_process = await launch.launch(run_id, vendor_session, brief)
         # The child resolves its owning conversation from this run's record, so the record must
         # exist before it can ask — the probe otherwise sits between spawn and register and the
         # child reads a stale owner. Registering here also means a candidate skipped for quota

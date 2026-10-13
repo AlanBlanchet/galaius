@@ -935,10 +935,12 @@ def test_the_live_mirror_built_from_appended_lines_equals_a_whole_rebuild():
     """The one process mirroring every live run reads only what each raw stream appended
     (`StreamMirror`); a whole re-parse per append was 0.8 s on an 8.7 MB stream. Pieces cut inside a
     line and inside a UTF-8 character, a message arriving mid-run: the mirror must read as `read_events`
-    writes it, every step."""
+    writes it, every step; the record carries the gauge its whole lines fold to as they arrive (Claude's
+    window answered before its first turn: a real reply), as a whole read derives it."""
     for run_id in ("lead", "inc", "full"):
         register_run(run_id=run_id, name=run_id, provider="claude", task="t")
-    stream = ("\n".join(_CLAUDE_LINES) + "\n").encode()
+    window = (Path(__file__).parent / "fixtures" / "agents" / "claude_context_usage.jsonl").read_text().splitlines()[0]
+    stream = ("\n".join([window, *_CLAUDE_LINES]) + "\n").encode()
     cuts = [0, 40, stream.index("é".encode()) + 1, stream.index(b"tool_use"), stream.index(b'"type":"user"'), stream.index(b"Done"), len(stream)]
     mirror = reg.StreamMirror("inc")
 
@@ -954,8 +956,10 @@ def test_the_live_mirror_built_from_appended_lines_equals_a_whole_rebuild():
             if step == 3:
                 reg.record_message(from_run="lead", to_run=run_id, text="also check b.py")
         mirror.refresh()
-        reg.read_events("full")
+        gauge = reg.StreamDigest.of("", reg.read_events("full"), viewer="").context
         assert mirrored("inc") == mirrored("full"), f"step {step}"
+        assert reg.ContextGauge.reported(dict(reg.get_run("inc"))) == reg.ContextGauge.reported(dict(gauge)), f"step {step}"
+        assert step == 0 or reg.get_run("inc").context_window == 200_000
     assert [event["kind"] for event in mirrored("inc")][-1] == "done"
     assert reg.get_run("inc").provider_session_id == reg.get_run("full").provider_session_id == "s"
 

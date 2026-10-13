@@ -1771,6 +1771,7 @@ class StreamMirror:
         self.parsed: list[AgentEvent] = []
         self.written: list[AgentEvent] = []
         self.written_stamp: FileStamp | None = None
+        self.gauge = ContextGauge()  # what its whole lines' events fold to (`StreamDigest.context`)
 
     def _appended(self) -> bytes | None:
         """The raw bytes past `offset`; None when the stream is gone or shorter (rewritten: start over)."""
@@ -1807,7 +1808,10 @@ class StreamMirror:
         # to it splits exactly as decoding the whole file does.
         cut = data.rfind(b"\n") + 1
         complete, tail = data[:cut].decode(errors="replace"), data[cut:].decode(errors="replace")
-        self.parsed += self._parse(complete, self.lines, provider, self.ledger)
+        fresh = self._parse(complete, self.lines, provider, self.ledger)
+        for event in fresh:
+            self.gauge = self.gauge.model_copy(update=event.gauge_onto(self.gauge))
+        self.parsed += fresh
         self.offset += cut
         self.lines += len(stream_lines(complete))
         # A last line still being written counts as `read_events` counts it, parsed on a copy of the ledger.
@@ -1815,7 +1819,8 @@ class StreamMirror:
         if stored is not None:
             session_id = next((event.session_id for event in parsed if event.session_id), None)
             turn_id = next((event.turn_id for event in reversed(parsed) if event.turn_id), None)
-            updates = {}
+            # Its gauge on the record as it fills, not only once a read derives it (a run list reads records alone).
+            updates = {field: value for field, value in self.gauge.model_dump().items() if getattr(stored, field) != value}
             if session_id and stored.provider_session_id != session_id:
                 updates["provider_session_id"] = session_id
             if turn_id and stored.provider_turn_id != turn_id:

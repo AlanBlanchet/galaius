@@ -51,23 +51,18 @@ class _FakeProvider(ScriptedProvider):
 
 
 class _AheadProvider(_FakeProvider):
-    """Starts ahead as Claude Code does: its task arrives as the first stream-json line on its stdin.
-    Each child says how it got its task, and a child given its task as an argument says what its
-    stdin is."""
+    """Starts ahead as Claude Code does: its task arrives as a stream-json line on its stdin, whether
+    it was started before it or with it. Each child says which run it was started as and its task."""
 
     name = "ahead"
     starts_ahead = True
-    said = (
-        'print(json.dumps({"type":"system","subtype":"init","session_id":"SID"}), flush=True)\n'
-        'print(json.dumps({"type":"assistant","message":{"content":[{"type":"text","text":said}]}}), flush=True)\n'
-        'print(json.dumps({"type":"result","subtype":"success","is_error":False,"usage":{"output_tokens":1},"session_id":"SID"}), flush=True)\n'
-    )
 
-    def command(self, task, **_arguments):
-        return [sys.executable, "-c", 'import json,os,sys\nsaid=f"cold {os.path.realpath(\'/proc/self/fd/0\')} {sys.argv[1]}"\n' + self.said, task]
-
-    def ahead_command(self, **_arguments):
-        return [sys.executable, "-c", 'import json,sys\nsaid="ahead " + json.loads(sys.stdin.readline())["message"]["content"]\n' + self.said]
+    def ahead_command(self, *, run_id, **_arguments):
+        return [sys.executable, "-c", 'import json,sys\n'
+                f'said = "{run_id} " + next(m for line in sys.stdin if (m := json.loads(line))["type"] == "user")["message"]["content"]\n'
+                'print(json.dumps({"type":"system","subtype":"init","session_id":"SID"}), flush=True)\n'
+                'print(json.dumps({"type":"assistant","message":{"content":[{"type":"text","text":said}]}}), flush=True)\n'
+                'print(json.dumps({"type":"result","subtype":"success","is_error":False,"usage":{"output_tokens":1},"session_id":"SID"}), flush=True)\n']
 
     def task_message(self, task):
         return ClaudeCodeProvider().task_message(task)
@@ -614,12 +609,13 @@ async def _held(warm: WarmStart) -> str:
     raise AssertionError("no child was started ahead")
 
 
-def _said(run_id: str) -> str:
-    return next(event.text for event in reg.read_events(run_id) if event.kind == "text")
+def _said(run_id: str) -> tuple[str, str]:
+    """The run its child was started as, and the end of the task it read."""
+    said = next(event.text for event in reg.read_events(run_id) if event.kind == "text")
+    return said.split(" ", 1)[0], said.rsplit("\n", 1)[-1]
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="the child reads its stdin through /proc")
 async def test_the_next_start_of_the_same_launch_runs_on_the_child_started_ahead(tmp_path):
     warm = WarmStart(delay=0, check_every=0.05)
     other = tmp_path / "other"
@@ -636,17 +632,17 @@ async def test_the_next_start_of_the_same_launch_runs_on_the_child_started_ahead
             for descriptor in (saved, read, write):
                 os.close(descriptor)
         await asyncio.wait_for(first.wait(), timeout=30)
-        assert _said(first.run_id).startswith("cold /dev/null "), "a child started with its task never reads the launcher's stdin"
+        assert _said(first.run_id) == (first.run_id, "first task"), "a child started with its task reads it on its own stdin, never the launcher's"
 
         held = await _held(warm)
         second = await run_agent(_AheadProvider(), "second task", agent="tester", cwd=str(tmp_path), warm=warm)
         await asyncio.wait_for(second.wait(), timeout=30)
-        assert second.run_id == held and _said(second.run_id).startswith("ahead ") and "second task" in _said(second.run_id)
+        assert second.run_id == held and _said(second.run_id) == (held, "second task")
 
         held = await _held(warm)
         third = await run_agent(_AheadProvider(), "third task", agent="tester", cwd=str(other), warm=warm)
         await asyncio.wait_for(third.wait(), timeout=30)
-        assert third.run_id != held and _said(third.run_id).startswith("cold "), "another folder is another launch"
+        assert third.run_id != held and _said(third.run_id) == (third.run_id, "third task"), "another folder is another launch"
         assert held in warm.holding, "the first folder's child still waits for its next start"
     finally:
         warm.close()

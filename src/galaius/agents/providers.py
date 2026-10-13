@@ -890,15 +890,20 @@ class ClaudeCodeProvider(AgentProvider):
                  "--no-session-persistence", "--setting-sources", "", "--strict-mcp-config"],
                 ({"type": "control_request", "request_id": self.USAGE_REQUEST, "request": {"subtype": "get_usage", "skip_behaviors": True}},))
 
+    @staticmethod
+    def _answer(line: dict, request: str) -> dict | None:
+        """What `line` answers to control request `request`, when it is its success."""
+        response = line.get("response") if line.get("type") == "control_response" else None
+        if not isinstance(response, dict) or response.get("request_id") != request or response.get("subtype") != "success":
+            return None
+        answer = response.get("response")
+        return answer if isinstance(answer, dict) else None
+
     def usage_answer(self, line: dict) -> tuple[UsageWindow, ...] | None:
         """`response.response.rate_limits`: `five_hour` / `seven_day` {utilization 0-100, resets_at ISO}; none when the
         login has no plan windows (signed out, an API key: `rate_limits_available` false). An error (the vendor
         unreachable) says nothing: the last reading stands."""
-        response = line.get("response") if line.get("type") == "control_response" else None
-        if not isinstance(response, dict) or response.get("request_id") != self.USAGE_REQUEST:
-            return None
-        answer = response.get("response") if response.get("subtype") == "success" else None
-        if not isinstance(answer, dict):
+        if (answer := self._answer(line, self.USAGE_REQUEST)) is None:
             return None
         limits = answer.get("rate_limits")
         if not isinstance(limits, dict):
@@ -1187,8 +1192,18 @@ class ClaudeCodeProvider(AgentProvider):
         (settings, hooks, agents, MCP servers) at once and then waits for it."""
         return [*self._options(**arguments), "--input-format", "stream-json"]
 
+    #: The id its context request answers under (`task_message`).
+    CONTEXT_REQUEST: ClassVar[str] = "galaius-context"
+
     def task_message(self, task: str) -> bytes:
-        return (json.dumps({"type": "user", "message": {"role": "user", "content": task}}) + "\n").encode()
+        """`task` after a `get_context_usage` control request (2.1.288, its SDK's `getContextUsage`), answered before
+        the turn starts: `maxTokens` is the window this CLI sizes the conversation to (by model, account and flags: 200k
+        or 1M for one model id), so a run's gauge has it from its start, not only from the turn's `result`. Probed
+        2026-10-13: answered before `init`, 0 tokens; the same window as `result.modelUsage` (haiku-5-5 200k, opus-5-5,
+        opus-5-5[1m], sonnet-5 1M)."""
+        lines = ({"type": "control_request", "request_id": self.CONTEXT_REQUEST, "request": {"subtype": "get_context_usage", "detail": "summary"}},
+                 {"type": "user", "message": {"role": "user", "content": task}})
+        return "".join(json.dumps(line) + "\n" for line in lines).encode()
 
     #: What Claude Code reads under the user's folder and under each enclosing folder's `.claude`.
     _SCOPE_FILES: ClassVar[tuple[str, ...]] = ("settings.json", "settings.local.json", "agents/*.md", "skills/*/SKILL.md", "commands/**/*.md", "rules/**/*.md")
@@ -1282,7 +1297,9 @@ class ClaudeCodeProvider(AgentProvider):
             raw = json.loads(line)
         except ValueError:
             return False
-        return (isinstance(raw, dict) and raw.get("type") == "user" and raw.get("isReplay") is True) or super().took_message(line)
+        # Its answer to the context request comes before it reads the message.
+        return isinstance(raw, dict) and raw.get("type") != "control_response" and (
+            (raw.get("type") == "user" and raw.get("isReplay") is True) or super().took_message(line))
 
     def _resume_options(
         self, session_id: str, *, model: str | None = None, permission_mode: str | None = None, reasoning: str | None = None,
@@ -1413,6 +1430,10 @@ class ClaudeCodeProvider(AgentProvider):
                               compaction=trigger if trigger in get_args(CompactionTrigger) else None,
                               compacted_from=before if isinstance(before, int) else None,
                               **ContextGauge.reported({"context_tokens": after}))
+
+        if kind == "control_response":
+            answer = self._answer(raw, self.CONTEXT_REQUEST) or {}
+            return AgentEvent(kind="other", session_id=sid, raw_type=kind, **ContextGauge.reported({"context_window": answer.get("maxTokens")}))
 
         if kind == "system" and raw.get("subtype") == "init":
             tools = raw.get("tools") or []
