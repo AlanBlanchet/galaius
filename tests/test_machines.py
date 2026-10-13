@@ -85,7 +85,7 @@ def test_machine_config_round_trips_token_with_owner_only_permissions(tmp_path: 
     assert ("iwm_" in path.read_text()) != (sys.platform == "win32")  # Windows keeps the token DPAPI-sealed on disk
 
 
-from galaius.machines import shell_path
+from galaius.machines import connect_command, shell_path
 import galaius
 from galaius.error_reports import MachineErrorReports
 
@@ -101,6 +101,24 @@ def test_shell_path_puts_the_shell_path_first_and_survives_a_broken_shell(tmp_pa
     shell.chmod(0o755)
     assert shell_path("/usr/bin:/service/bin", str(shell)) == expected
     assert shell_path("/usr/bin", str(tmp_path / "missing")) == "/usr/bin"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="no login shell on Windows: the logon task starts with the user's own PATH")
+def test_the_services_programs_run_with_the_shells_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """2026-10-13: a Codex installed with npm under nvm read « not installed » on the owner's PC: the runner took its
+    programs' PATH before it asked the shell for it."""
+    shell = tmp_path / "shell"
+    shell.write_text('#!/bin/sh\nprintf "__galaius_path__/opt/nvm/versions/node/v22/bin:/usr/bin__galaius_path__"\n')
+    shell.chmod(0o755)
+    monkeypatch.setenv("SHELL", str(shell))
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    seen: list[str] = []
+
+    async def connect(runner, _config) -> None:
+        seen.append(runner.programs.environment["PATH"])
+    monkeypatch.setattr(MachineRunner, "connect", connect)
+    asyncio.run(connect_command("http://127.0.0.1:8817", uuid4(), uuid4(), "t" * 40, "full_access", tmp_path, serve=True))
+    assert seen[0].split(os.pathsep)[0] == "/opt/nvm/versions/node/v22/bin"
 
 
 def test_accelerators_reports_cuda_gpus_from_nvidia_smi(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

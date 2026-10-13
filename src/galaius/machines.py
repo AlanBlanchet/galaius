@@ -2138,6 +2138,8 @@ def shell_path(current: str, shell: str | None = None, timeout: float = 10) -> s
 
 
 async def connect_command(server_url: str | None, workspace_id: UUID | None, machine_id: UUID | None, token: str | None, permission_ceiling: PermissionLevel, working_directory: Path | None, serve: bool) -> None:
+    if serve:  # before the runner: its programs take their PATH from it once, when it is built (`_system_environment`)
+        os.environ["PATH"] = shell_path(os.environ.get("PATH", ""))
     runner = MachineRunner()
     try:
         if server_url is None and workspace_id is None and machine_id is None and token is None:
@@ -2151,7 +2153,6 @@ async def connect_command(server_url: str | None, workspace_id: UUID | None, mac
         if not serve:
             print(f"Saved machine configuration to {runner.config_path}; enable the galaius-machine user service to keep it connected.")
             return
-        os.environ["PATH"] = shell_path(os.environ.get("PATH", ""))
         # The service's journal gets one JSON object per line, the same fields the server stores.
         printer = logging.StreamHandler(sys.stderr)
         printer.setFormatter(JsonLines())
