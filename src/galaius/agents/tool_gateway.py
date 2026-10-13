@@ -14,6 +14,7 @@ and a start read it with no network, and a server that does not answer leaves th
 
 import asyncio
 import hashlib
+import json
 import os
 from pathlib import Path
 from typing import Any, Self
@@ -25,6 +26,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from galaius.agents import registry
+from galaius.mcp_announcement import McpAnnouncement
 from galaius.agents.catalog_connection import CatalogConnection, CatalogConnectionError
 
 #: What every gateway tool's name starts with (the harness puts galaius's `mcp__galaius__` before it).
@@ -72,6 +74,10 @@ class AgentToolList(BaseModel):
 
     def tool(self, name: str) -> GatewayTool | None:
         return next((tool for tool in self.tools if tool.name == name), None)
+
+    def wire(self) -> list[dict[str, Any]]:
+        """Its tools as galaius's MCP server lists them (`ServedGateway.tools`, `McpAnnouncement.gateway_path`)."""
+        return [{"name": tool.name, "description": tool.description, "inputSchema": tool.input_schema} for tool in self.tools]
 
 
 class GatewayCallFailed(Exception):
@@ -129,6 +135,7 @@ class ToolGateway(BaseModel):
         except httpx.HTTPError as error:
             raise CatalogConnectionError(f"the server's tool list could not be read ({type(error).__name__})") from error
         if response.status_code == 304:
+            self.serve(cached)
             return cached
         if response.status_code != 200:
             raise CatalogConnectionError(f"the server refused its tool list (HTTP {response.status_code})")
@@ -137,7 +144,19 @@ class ToolGateway(BaseModel):
         except ValidationError as error:
             raise CatalogConnectionError("the server's tool list is not one this galaius reads") from error
         CatalogConnection.replace_text(self.cache_path, value.model_dump_json())
+        self.serve(value)
         return value
+
+    @staticmethod
+    def serve(listing: AgentToolList) -> None:
+        """What galaius's MCP server starts with here: `listing`'s tools, for the relay's first list."""
+        wire, path = json.dumps(listing.wire()), McpAnnouncement.gateway_path()
+        try:
+            if path.read_text() == wire:
+                return
+        except OSError:
+            pass
+        CatalogConnection.replace_text(path, wire)
 
     def refreshed(self) -> AgentToolList:
         """`listing`, or the cached one when the server cannot be read now."""
@@ -191,7 +210,7 @@ class ServedGateway(BaseModel):
     interval: float = 120.0
 
     def tools(self) -> list[types.Tool]:
-        return [types.Tool(name=tool.name, description=tool.description, inputSchema=tool.input_schema) for tool in self.listing.tools]
+        return [types.Tool.model_validate(tool) for tool in self.listing.wire()]
 
     def serves(self, name: str) -> bool:
         return name.startswith(GATEWAY_PREFIX)

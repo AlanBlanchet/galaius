@@ -20,6 +20,7 @@ from mcp.server.session import ServerSession
 from mcp.shared.message import SessionMessage
 
 from galaius import __version__
+from galaius.agents.tool_gateway import AgentToolList, GatewayTool, ToolGateway
 from galaius.data import PackageData
 from galaius.mcp_announcement import McpAnnouncement
 from galaius.server import core
@@ -48,3 +49,21 @@ def test_the_announcement_snapshot_is_current_and_answers_as_the_server_does(req
     assert announced.initialize_result(requested) == asyncio.run(_initialize_answer(requested))
     wire = [tool.model_dump(by_alias=True, mode="json", exclude_none=True) for tool in asyncio.run(core.mcp.list_tools())]
     assert announced.lists["tools/list"] == {"tools": wire}
+
+
+def test_the_relay_first_lists_the_gateway_tools_the_server_will_serve(tmp_path, monkeypatch) -> None:
+    """An agent CLI fixes its tools at start: the relay's first `tools/list` already holds the PC's
+    gateway tools, as the server lists them once started (no `list_changed` needed to see them)."""
+    listing = AgentToolList(revision="r", agents={"galaius": ("ext__galaius__list_workflows",)},
+                            tools=(GatewayTool(name="ext__galaius__list_workflows", server_id="s", tool="list_workflows", description="[galaius] List the workflows.",
+                                               input_schema={"type": "object", "properties": {}, "additionalProperties": False}),))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    ToolGateway.serve(listing)
+    served = McpAnnouncement.gateway_path()
+    assert served.is_relative_to(tmp_path)
+    monkeypatch.setattr(core.mcp.gateway, "listing", listing)
+    announced = McpAnnouncement.read(PackageData.path(PackageData.MCP_ANNOUNCEMENT)).with_gateway(served)
+    wire = [tool.model_dump(by_alias=True, mode="json", exclude_none=True) for tool in asyncio.run(core.mcp.list_tools())]
+    assert announced.lists["tools/list"] == {"tools": wire} and wire[-1]["name"] == "ext__galaius__list_workflows"
+    assert McpAnnouncement.read(PackageData.path(PackageData.MCP_ANNOUNCEMENT)).with_gateway(tmp_path / "none.json").lists["tools/list"]["tools"] == wire[:-1]
+

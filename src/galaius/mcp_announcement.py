@@ -5,9 +5,10 @@ upgrade relay answers a client's handshake and first listings from its worker's 
 while that worker still starts (`galaius.upgrade.supervisor.McpProtocol`), so an agent CLI that
 waits only a moment for its MCP servers finds every galaius tool in its first tool list."""
 
+import json
 from importlib.metadata import distributions
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, Self
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
@@ -52,6 +53,28 @@ class McpAnnouncement(BaseModel):
     def resolved(self, galaius_version: str, server_version: str) -> "McpAnnouncement":
         """The snapshot as an install running galaius `galaius_version` on MCP library `server_version` says it."""
         return self.model_copy(update={"server_version": server_version, "instructions": self.instructions.replace(self.version_marker, galaius_version)})
+
+    @staticmethod
+    def gateway_path() -> Path:
+        """The external tools galaius's MCP server on this PC serves beside its own (`ext__…`), as the
+        PC's last gateway listing gave them, in their wire shape (`ToolGateway.serve` writes it): the
+        relay adds them to its first tool list, since an agent CLI fixes its tools before a later
+        `tools/list_changed` could add them. In `UserConfig.PATH`'s folder, named here so the relay
+        never imports the config package (it answers within its first second)."""
+        return Path.home() / ".galaius" / "mcp-gateway-tools.json"
+
+    def with_gateway(self, path: Path | None = None) -> Self:
+        """The announcement with the PC's gateway tools (`gateway_path`) after galaius's own, as the
+        server lists them (`GalaiusMcp.list_tools`); unchanged when the PC never listed any."""
+        path = path or self.gateway_path()
+        try:
+            tools = json.loads(path.read_bytes())
+        except (OSError, ValueError):
+            return self
+        listed = self.lists.get("tools/list")
+        if not tools or not isinstance(tools, list) or listed is None:
+            return self
+        return self.model_copy(update={"lists": {**self.lists, "tools/list": {**listed, "tools": [*listed["tools"], *tools]}}})
 
     def initialize_result(self, requested: str) -> dict:
         """The `initialize` result the server gives a client asking for protocol `requested`."""
