@@ -9,11 +9,12 @@ import logging
 import os
 import re
 import shutil
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from collections.abc import Iterable, Mapping
 from typing import ClassVar, Self
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from galaius_core import AgentProvider as ProviderName, RunSubscription as WireRunSubscription, SubscriptionAllowance, SubscriptionCap, SubscriptionLimits
 from galaius_core import SubscriptionChoice, SubscriptionRefusal, SubscriptionRefusalReason, SubscriptionUsage, SubscriptionUsageReport, UsageWindow
@@ -85,6 +86,8 @@ class Subscription(BaseModel):
     provider: ProviderName
 
     STATE: ClassVar[str] = "galaius-subscription.json"
+    #: Held around every read-then-write of a state file: the runner's threads (its usage ask, its stream reader, its report) each write it.
+    WRITING: ClassVar[threading.Lock] = threading.Lock()
     #: Per CLI, the folder its login is pointed at where none of its logins may answer (another CLI than
     #: a run's subscription's; every CLI for a member's run on a lent PC): empty, never writable.
     CLOSED: ClassVar[str] = ".closed"
@@ -271,10 +274,11 @@ class Subscription(BaseModel):
     def observe(self, windows: tuple[UsageWindow, ...], *, whole: bool = False) -> tuple[UsageWindow, ...]:
         """`windows` (oldest first) replace the readings of the same windows, or, `whole` (its CLI's full answer now, none
         when signed out), every reading; the usage now."""
-        state = self.state()
-        latest = {window.window: window for window in (*(() if whole else state.usage), *windows)}
-        usage = tuple(latest.values())
-        self._write(state.model_copy(update={"usage": usage}))
+        with self.WRITING:
+            state = self.state()
+            latest = {window.window: window for window in (*(() if whole else state.usage), *windows)}
+            usage = tuple(latest.values())
+            self._write(state.model_copy(update={"usage": usage}))
         return usage
 
     def check(self, limits: SubscriptionLimits, allowance: SubscriptionAllowance | None = None) -> None:
@@ -289,7 +293,8 @@ class Subscription(BaseModel):
         return SubscriptionUsage(subscription_id=self.id, windows=state.usage) if due else None
 
     def reported(self, usage: SubscriptionUsage, now: datetime) -> None:
-        self._write(self.state().model_copy(update={"reported": usage.windows, "reported_at": now}))
+        with self.WRITING:
+            self._write(self.state().model_copy(update={"reported": usage.windows, "reported_at": now}))
 
     @classmethod
     def credentials_in(cls, folder: Path) -> tuple[str, ...]:
@@ -336,7 +341,8 @@ class Subscription(BaseModel):
         temporary.replace(path)
 
     def _write(self, state: SubscriptionState) -> None:
-        temporary = self.state_path.with_suffix(f".{os.getpid()}.tmp")
+        """Through a temporary file of its own (two writers never rename each other's half-written one)."""
+        temporary = self.state_path.with_suffix(f".{uuid4().hex}.tmp")
         temporary.write_text(state.model_dump_json(), encoding="utf-8")
         temporary.replace(self.state_path)
 
