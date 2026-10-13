@@ -129,6 +129,12 @@ def run_scope_name(run_id: str) -> str:
     return f"{_RUN_SCOPE}{run_id}-{secrets.token_hex(4)}.scope"
 
 
+def is_run_scope(unit: str | None, run_id: str) -> bool:
+    """Whether ``unit`` is a scope :func:`contained` made for run ``run_id``: never its launcher's unit (the
+    editor, the machine runner, a parent run's scope), which a pid sits in until ``systemd-run`` moves it."""
+    return bool(unit) and unit.startswith(f"{_RUN_SCOPE}{run_id}-") and unit.endswith(".scope")
+
+
 def _prepare_slice(systemctl: str, ceiling: Ceiling) -> None:
     """Start the slice and apply the ceiling for this boot only; nothing is written to disk."""
     run = dict(check=True, capture_output=True, timeout=_SYSTEMCTL_TIMEOUT)
@@ -144,7 +150,7 @@ def end_run_scope(unit: str | None, run_id: str) -> bool:
     stopped; a run without a scope of its own shares its launcher's unit, which is never touched.
     True when a stop was sent."""
     systemctl = shutil.which("systemctl")
-    if not unit or not unit.startswith(f"{_RUN_SCOPE}{run_id}-") or not unit.endswith(".scope") or systemctl is None:
+    if not is_run_scope(unit, run_id) or systemctl is None:
         return False
     try:
         subprocess.run([systemctl, "--user", "stop", unit], capture_output=True, timeout=_SYSTEMCTL_TIMEOUT)

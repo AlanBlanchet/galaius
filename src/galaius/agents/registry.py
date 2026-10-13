@@ -31,13 +31,13 @@ from pathlib import Path
 from typing import BinaryIO, ClassVar, Literal, Self
 from uuid import UUID
 
-from pydantic import BaseModel, Field, PrivateAttr, field_validator
+from pydantic import BaseModel, Field, PrivateAttr, ValidationInfo, field_validator
 from galaius.agents import quota
 from galaius_core import AgentRevisionRef, ContextGauge, PromptExecutionRef
 
 from galaius.agents.events import CONTEXT_FIELDS, TOKEN_FIELDS, AgentEvent, TokenUsage, UsageLedger, stream_lines
 from galaius.agents.catalog_connection import CatalogConnection
-from galaius.agents.ceiling import end_run_scope
+from galaius.agents.ceiling import end_run_scope, is_run_scope
 from galaius.agents.providers import PROVIDERS, AgentProvider, DeniedTool
 from galaius.agents.subscriptions import RunSubscription, Subscription, SubscriptionRefused
 from galaius.fence import FenceSpec
@@ -264,8 +264,8 @@ class AgentRun(ContextGauge):
     #: given to another process is not this run's (Windows reuses pids within minutes). None when
     #: unknown (a record from before it was kept, or a system without start times).
     pid_started: int | None = None
-    #: The systemd unit holding `pid` (`process_unit`), recorded with it: the journal says how that unit
-    #: ended (out of memory) under its name, never under the pid. None off systemd.
+    #: The run's own scope holding `pid` (`own_scope`), recorded with it: the journal says how that unit ended
+    #: (out of memory) under its name, never under the pid. None off systemd or until it is known.
     unit: str | None = None
     #: How its process went away when it ended without saying so (`interrupted`); None otherwise.
     interruption: Interruption | None = None
@@ -358,6 +358,13 @@ class AgentRun(ContextGauge):
     @property
     def subscription_id(self) -> UUID | None:
         return None if self.subscription is None else self.subscription.subscription_id
+
+    @field_validator("unit")
+    @classmethod
+    def own_scope(cls, unit: str | None, info: ValidationInfo) -> str | None:
+        """Only the run's own scope (`ceiling.is_run_scope`): a launcher's unit, as records written before this
+        check hold, tells how the launcher ended, never this run."""
+        return unit if is_run_scope(unit, info.data.get("run_id", "")) else None
 
     @field_validator("status", mode="before")
     @classmethod
@@ -887,9 +894,17 @@ def session_runs(*, session_id: str | None = None, all_sessions: bool = False, i
     return list_runs(session_id=identity)
 
 
-def _process_identity(pid: int | None) -> dict:
-    """A run's process as recorded: its pid and when that process started (see `AgentRun.pid_started`)."""
-    return {"pid": pid, "pid_started": process_started(pid) if pid else None, "unit": process_unit(pid) if pid else None}
+def _run_unit(pid: int | None, run_id: str) -> str | None:
+    """The run's own scope holding `pid` (`ceiling.is_run_scope`), else None. Read at launch, the pid is often
+    still in its launcher's unit (`systemd-run --scope` moves it a moment later): that unit's journal tells
+    how the launcher ended, never this run, so it is never recorded; a running run learns its own later."""
+    unit = process_unit(pid) if pid else None
+    return unit if is_run_scope(unit, run_id) else None
+
+
+def _process_identity(pid: int | None, run_id: str) -> dict:
+    """A run's process as recorded: its pid, when that process started (see `AgentRun.pid_started`), its own scope."""
+    return {"pid": pid, "pid_started": process_started(pid) if pid else None, "unit": _run_unit(pid, run_id)}
 
 
 def register(*, run_id: str, pid: int | None, provider: str, name: str, task: str = "",
@@ -908,7 +923,7 @@ def register(*, run_id: str, pid: int | None, provider: str, name: str, task: st
     definition = definition_path
     if definition is None and agent_ref is None:
         definition = provider_impl.definition_path(agent) if (provider_impl and agent) else None
-    run = AgentRun(run_id=run_id, **_process_identity(pid), provider=provider, name=name, task=task, cwd=cwd,
+    run = AgentRun(run_id=run_id, **_process_identity(pid, run_id), provider=provider, name=name, task=task, cwd=cwd,
                    project=project_for(cwd), model=model, parent_run_id=parent_run_id,
                    session_id=resolve_session_id(session_id, parent_run_id=parent_run_id),
                    agent=agent, agent_ref=agent_ref, definition_path=str(definition) if definition else None,
@@ -1207,7 +1222,7 @@ def begin_turn(
 ) -> AgentRun | None:
     """Move one stopped run back to active state for a newly spawned provider turn."""
     updates = {
-        **_process_identity(pid), "lifecycle_token": secrets.token_hex(16),
+        **_process_identity(pid, run_id), "lifecycle_token": secrets.token_hex(16),
         "exit_code": None, "finished_at": None, "status": "running",
         "pending_model": None, "pending_criterion": None, "pending_reasoning": None,
     }
@@ -1226,7 +1241,7 @@ def begin_turn_locked(
 ) -> AgentRun | None:
     """Same transition for a caller already holding ``record_lock(run_id)``."""
     updates = {
-        **_process_identity(pid), "lifecycle_token": secrets.token_hex(16),
+        **_process_identity(pid, run_id), "lifecycle_token": secrets.token_hex(16),
         "exit_code": None, "finished_at": None, "status": "running",
         "pending_model": None, "pending_criterion": None, "pending_reasoning": None,
     }
@@ -1950,9 +1965,9 @@ def _derive(run: AgentRun) -> AgentRun:
         raw = raw_events_path(run.run_id)
         run.interruption = Interruption.observe(run.unit, now=time.time(), since=raw.stat().st_mtime if raw.exists() else 0.0)
         end_run_scope(run.unit, run.run_id)
-    # A run launched before its unit was recorded learns it while its process still runs.
+    # A run whose own scope is not on record yet (launched moments before `systemd-run` moved it) learns it while it runs.
     if run.status == "running" and run.unit is None and run.pid:
-        run.unit = process_unit(run.pid)
+        run.unit = _run_unit(run.pid, run.run_id)
     if run.finished_at is None and run.status != "running":
         # Whichever of its two streams was written last: a run whose ending is known only from the
         # normalised copy (or that never wrote a raw byte) still has to carry WHEN it stopped, or
@@ -2105,8 +2120,8 @@ def settle_gone() -> list[AgentRun]:
         if run.status not in ("starting", "running"):
             continue
         if _status_for(run) == run.status:
-            if run.unit is None and run.pid and (unit := process_unit(run.pid)) is not None:
-                # Launched before units were recorded: learn it while the process is still there.
+            if run.unit is None and run.pid and (unit := _run_unit(run.pid, run.run_id)) is not None:
+                # Its own scope, not on record yet: learn it while the process is still there.
                 _update_fields(run.run_id, {"unit": unit}, expected={"pid": run.pid})
             continue
         healed = _derive(run.model_copy())  # `_derive` heals in place: the cached record stays as read

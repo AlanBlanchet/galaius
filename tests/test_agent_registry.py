@@ -581,6 +581,30 @@ def test_settle_gone_writes_interrupted_with_the_cause(reused):
             child.wait()
 
 
+@pytest.mark.parametrize("unit, recorded", [
+    pytest.param("galaius-run-r1-0a1b2c3d.scope", "galaius-run-r1-0a1b2c3d.scope", id="own_scope"),
+    pytest.param("galaius-machine.service", None, id="machine_runner"),
+    pytest.param("galaius-run-parent-0a1b2c3d.scope", None, id="parent_runs_scope"),
+    pytest.param("app-com.microsoft.VSCode-1.scope", None, id="editor"),
+])
+def test_a_run_records_only_its_own_scope(monkeypatch, unit, recorded):
+    """Read at launch, the pid is still in its launcher's unit until `systemd-run --scope` moves it: 2026-10-13,
+    159 of 988 recorded units were a parent run's scope, the machine runner's or the editor's, whose journal then
+    named the run's cause of death.
+    A launcher's unit is never recorded nor read; the run learns its own while it runs."""
+    monkeypatch.setattr(reg, "process_unit", lambda pid: unit)
+    register_run(pid=os.getpid())
+    assert reg.get_run("r1").unit == recorded
+    monkeypatch.setattr(reg, "process_unit", lambda pid: "galaius-run-r1-feedc0de.scope")
+    reg.settle_gone()
+    assert reg.get_run("r1").unit == (recorded or "galaius-run-r1-feedc0de.scope")
+    read: list[str | None] = []
+    monkeypatch.setattr(reg.Interruption, "_journal", classmethod(lambda cls, name: read.append(name) or []))
+    reg._update_fields("r1", {"unit": unit, "pid_started": -1})  # a record from before units were checked, then cut
+    reg.settle_gone()
+    assert read == ([unit] if recorded else []) and reg.get_run("r1").interruption.cause == "process_gone"
+
+
 #: The user journal's lines for a scope, as `journalctl --user --all -o json USER_UNIT=…` prints them.
 _STARTED = {"MESSAGE_ID": "39f53479d3a045ac8e11786248231fbf", "__REALTIME_TIMESTAMP": "1791277759553166"}
 _OOMD = {"MESSAGE_ID": "d989611b15e44c9dbf31e3c81256e4ed", "__REALTIME_TIMESTAMP": "1791288056578685"}
