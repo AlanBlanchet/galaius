@@ -27,7 +27,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from galaius.agents import registry
 from galaius.agents.catalog_connection import CatalogConnection, CatalogConnectionError
-from galaius.mcp_announcement import GATEWAY_PREFIX, GatewayToolName, GatewayToolWire, McpAnnouncement
+from galaius.mcp_announcement import GATEWAY_PREFIX, GatewayServed, GatewayToolName, GatewayToolWire, McpAnnouncement
 from galaius.private_files import PRIVATE_FILES
 
 logger = logging.getLogger(__name__)
@@ -76,9 +76,9 @@ class AgentToolList(BaseModel):
     def tool(self, name: str) -> GatewayTool | None:
         return next((tool for tool in self.tools if tool.name == name), None)
 
-    def wire(self) -> tuple[GatewayToolWire, ...]:
-        """Its tools as galaius's MCP server lists them (`ServedGateway.tools`, `McpAnnouncement.record_gateway`)."""
-        return tuple(GatewayToolWire(name=tool.name, description=tool.description, inputSchema=tool.input_schema) for tool in self.tools)
+    def served(self) -> GatewayServed:
+        """Its tools as galaius's MCP server lists them, per role (`ServedGateway.tools`, `McpAnnouncement.record_gateway`)."""
+        return GatewayServed(agents=self.agents, tools=tuple(GatewayToolWire(name=tool.name, description=tool.description, inputSchema=tool.input_schema) for tool in self.tools))
 
 
 class GatewayCallFailed(Exception):
@@ -113,7 +113,7 @@ class ToolGateway(BaseModel):
         else:
             listing = gateway.connection.recent("agent-tools", lambda _: gateway.refreshed()) if online else gateway.cached()
         try:
-            McpAnnouncement.record_gateway(listing.wire())
+            McpAnnouncement.record_gateway(listing.served())
         except OSError as error:
             logger.warning("this PC's external tools could not be written for galaius's next start (%s): "
                            "an agent started now gets them only once its MCP server lists them", error)
@@ -205,7 +205,7 @@ class ServedGateway(BaseModel):
     interval: float = 120.0
 
     def tools(self) -> list[types.Tool]:
-        return [types.Tool.model_validate(tool.model_dump()) for tool in self.listing.wire()]
+        return [types.Tool.model_validate(tool.model_dump()) for tool in self.listing.served().of(GatewayServed.role())]
 
     def serves(self, name: str) -> bool:
         return name.startswith(GATEWAY_PREFIX)

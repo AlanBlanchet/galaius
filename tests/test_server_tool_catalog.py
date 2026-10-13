@@ -10,6 +10,7 @@ Regenerate both after changing a tool or the instructions:
 
 import asyncio
 import json
+import os
 from importlib.metadata import version
 from types import SimpleNamespace
 from typing import get_args
@@ -23,7 +24,7 @@ from mcp.shared.message import SessionMessage
 from galaius import __version__
 from galaius.agents.tool_gateway import AgentToolList, GatewayTool, ToolGateway
 from galaius.data import PackageData
-from galaius.mcp_announcement import McpAnnouncement
+from galaius.mcp_announcement import GatewayServed, McpAnnouncement
 from galaius.server import core
 
 
@@ -57,14 +58,16 @@ def _listing(name: str) -> AgentToolList:
                                                                                       input_schema={"type": "object", "properties": {}, "additionalProperties": False}),))
 
 
-def test_the_relay_first_lists_the_gateway_tools_of_the_company_this_pc_is_linked_to(monkeypatch) -> None:
+@pytest.mark.parametrize(("role", "listed"), [("galaius", True), ("main", False), (None, False)])
+def test_the_relay_first_lists_the_gateway_tools_of_its_run_s_role(monkeypatch, role, listed) -> None:
     """An agent CLI fixes its tools at start: the relay's first `tools/list` already holds the gateway
-    tools the server will list once started — the linked company's, re-linked or unlinked included."""
+    tools the server will list once started — those of the role its run plays, of the company the PC
+    is linked to now (re-linked, unlinked), none for another role or outside a run."""
     snapshot = McpAnnouncement.read(PackageData.path(PackageData.MCP_ANNOUNCEMENT))
+    monkeypatch.setattr(os, "environ", GatewayServed.environment(dict(os.environ), role))
     for linked in (_listing("ext__galaius__list_workflows"), _listing("ext__other__search"), None):
         monkeypatch.setattr(ToolGateway, "linked", classmethod(lambda cls, linked=linked: None if linked is None else SimpleNamespace(cached=lambda: linked)))
-        served = ToolGateway.current(online=False)
-        monkeypatch.setattr(core.mcp.gateway, "listing", served)
+        monkeypatch.setattr(core.mcp.gateway, "listing", ToolGateway.current(online=False))
         wire = [tool.model_dump(by_alias=True, mode="json", exclude_none=True) for tool in asyncio.run(core.mcp.list_tools())]
         assert snapshot.with_gateway().lists["tools/list"] == {"tools": wire}
-        assert [tool["name"] for tool in wire if tool["name"].startswith("ext__")] == ([] if linked is None else [linked.tools[0].name])
+        assert [tool["name"] for tool in wire if tool["name"].startswith("ext__")] == ([linked.tools[0].name] if listed and linked else [])
