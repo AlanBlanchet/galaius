@@ -5,13 +5,60 @@ upgrade relay answers a client's handshake and first listings from its worker's 
 while that worker still starts (`galaius.upgrade.supervisor.McpProtocol`), so an agent CLI that
 waits only a moment for its MCP servers finds every galaius tool in its first tool list."""
 
+import os
 from importlib.metadata import distributions
 from pathlib import Path
-from typing import ClassVar
+from typing import Annotated, ClassVar, Self
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from galaius.data import PackageData
+from galaius.private_files import PRIVATE_FILES
+
+
+#: What every gateway tool's name starts with (galaius's MCP server puts `mcp__galaius__` before it on a PC).
+GATEWAY_PREFIX = "ext__"
+#: A gateway tool's name: the prefix, then what providers accept within 64 characters with both prefixes.
+GatewayToolName = Annotated[str, Field(pattern=rf"^{GATEWAY_PREFIX}[A-Za-z0-9_-]{{1,60}}$")]
+
+
+class GatewayToolWire(BaseModel):
+    """One gateway tool as galaius's MCP server puts it on the wire (`AgentToolList.wire`)."""
+
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+    name: GatewayToolName
+    description: str = ""
+    inputSchema: dict
+
+
+class GatewayServed(BaseModel):
+    """The gateway tools of this PC's linked company, per role (`McpAnnouncement.gateway_path`): a
+    galaius MCP server lists only those of the role its run plays (`role`), none outside a run — an
+    agent holds its own tools, never another's (the main agent calls the one that holds them)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    #: Set by the launcher on every run it starts (`galaius.agents.run`): the role the run plays.
+    ROLE: ClassVar[str] = "GALAIUS_RUN_ROLE"
+
+    agents: dict[str, tuple[GatewayToolName, ...]] = {}
+    tools: tuple[GatewayToolWire, ...] = ()
+
+    @classmethod
+    def role(cls) -> str | None:
+        """The role this process's run plays; None outside a run started by galaius (an editor session)."""
+        return os.environ.get(cls.ROLE) or None
+
+    @classmethod
+    def environment(cls, environment: dict[str, str], role: str | None) -> dict[str, str]:
+        """`environment` for a run playing `role` (None: none, even one inherited from a parent run)."""
+        return {**{key: value for key, value in environment.items() if key != cls.ROLE}, **({cls.ROLE: role} if role else {})}
+
+    def of(self, role: str | None) -> tuple[GatewayToolWire, ...]:
+        names = set(self.agents.get(role, ())) if role else set()
+        return tuple(tool for tool in self.tools if tool.name in names)
+
 
 
 class McpAnnouncement(BaseModel):
@@ -53,6 +100,34 @@ class McpAnnouncement(BaseModel):
         """The snapshot as an install running galaius `galaius_version` on MCP library `server_version` says it."""
         return self.model_copy(update={"server_version": server_version, "instructions": self.instructions.replace(self.version_marker, galaius_version)})
 
+    @staticmethod
+    def gateway_path() -> Path:
+        """The external tools galaius's MCP server on this PC serves beside its own (`ext__…`), as the
+        PC's linked company last gave them, in their wire shape: the relay adds them to its first tool
+        list, since an agent CLI fixes its tools before a later `tools/list_changed` could add them. In
+        `UserConfig.PATH`'s folder, named here so the relay never imports the config package (it
+        answers within its first second)."""
+        return Path.home() / ".galaius" / "mcp-gateway-tools.json"
+
+    @classmethod
+    def record_gateway(cls, served: GatewayServed) -> None:
+        """Write the tools the next server start serves (`ToolGateway.current`, each time it answers:
+        a re-linked or unlinked PC's file follows it). OSError when it cannot be written."""
+        PRIVATE_FILES.replace_text(cls.gateway_path(), served.model_dump_json())
+
+    def with_gateway(self, path: Path | None = None) -> Self:
+        """The announcement with the gateway tools of this run's role (`GatewayServed`) after galaius's
+        own, as the server lists them (`GalaiusMcp.list_tools`); unchanged when there are none or the
+        file is not one this galaius wrote (unreadable, not private, another shape)."""
+        try:
+            tools = GatewayServed.model_validate_json(PRIVATE_FILES.read_text(path or self.gateway_path())).of(GatewayServed.role())
+        except (OSError, ValueError):
+            return self
+        listed = self.lists.get("tools/list")
+        if not tools or listed is None:
+            return self
+        return self.model_copy(update={"lists": {**self.lists, "tools/list": {**listed, "tools": [*listed["tools"], *(tool.model_dump(mode="json") for tool in tools)]}}})
+
     def initialize_result(self, requested: str) -> dict:
         """The `initialize` result the server gives a client asking for protocol `requested`."""
         return {
@@ -63,4 +138,4 @@ class McpAnnouncement(BaseModel):
         }
 
 
-__all__ = ["McpAnnouncement"]
+__all__ = ["GATEWAY_PREFIX", "GatewayServed", "GatewayToolName", "GatewayToolWire", "McpAnnouncement"]

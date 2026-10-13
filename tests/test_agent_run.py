@@ -21,6 +21,7 @@ from galaius.agents import quota, registry as reg, run as run_module
 from galaius.agents.events import AgentEvent
 from galaius.agents.providers import ClaudeCodeProvider, CodexProvider
 from galaius.agents.run import ChildLaunch, mesh_config, run_agent, validate_image_paths
+from galaius.mcp_announcement import GatewayServed
 from galaius.agents.warm import WarmStart
 from tests.support.agents import ScriptedProvider, install_provider, use_policy
 
@@ -187,23 +188,26 @@ async def test_a_child_is_attributed_to_its_parent(tmp_path):
 def test_the_mesh_config_declares_galaius_as_an_mcp_server():
     import json
 
-    cfg = json.loads(mesh_config(run_id="r1"))
+    cfg = json.loads(mesh_config(run_id="r1", role=None))
     assert "galaius" in cfg["mcpServers"]
     entry = cfg["mcpServers"]["galaius"]
     assert entry["command"] and isinstance(entry["args"], list)
 
 
-def test_the_mesh_config_tags_the_child_so_its_own_spawns_are_attributed():
+@pytest.mark.parametrize("role", ["galaius", None])
+def test_the_mesh_config_tags_the_child_with_its_run_and_its_role(role):
     import json
 
-    cfg = json.loads(mesh_config(run_id="r1"))
-    env = cfg["mcpServers"]["galaius"]["env"]
-    # Without this the tree is flat and "who started this agent" is unanswerable.
-    assert env["GALAIUS_PARENT_RUN_ID"] == "r1"
+    env = json.loads(mesh_config(run_id="r1", role=role))["mcpServers"]["galaius"]["env"]
+    # Without the run the tree is flat and "who started this agent" is unanswerable; without the
+    # role galaius cannot serve the run its own gateway tools only (`GatewayServed`).
+    assert env == {"GALAIUS_PARENT_RUN_ID": "r1", **({GatewayServed.ROLE: role} if role else {})}
+    assert CodexProvider.mesh_arguments(json.dumps({"mcpServers": {"galaius": {"command": "g", "args": [], "env": env}}}))[-2:] == (
+        ["-c", f'mcp_servers.galaius.env.{GatewayServed.ROLE}="{role}"'] if role else ["-c", 'mcp_servers.galaius.env.GALAIUS_PARENT_RUN_ID="r1"'])
 
 
 def test_the_mesh_config_carries_no_credential():
-    cfg = mesh_config(run_id="r1").lower()
+    cfg = mesh_config(run_id="r1", role="tester").lower()
     for banned in ("api_key", "apikey", "token", "oauth", "secret"):
         assert banned not in cfg, f"{banned!r} must never be handed to a spawned agent"
 
@@ -281,7 +285,7 @@ def test_codex_resume_replays_only_recorded_mesh_opt_in(tmp_path, monkeypatch, c
     data = tomllib.loads("\n".join(overrides))
     assert ("mcp_servers" in data) == (mesh is True and entry is None)
     if mesh is True and entry is None:
-        assert data["mcp_servers"]["galaius"]["env"] == {"GALAIUS_PARENT_RUN_ID": run.run_id}
+        assert data["mcp_servers"]["galaius"]["env"] == {"GALAIUS_PARENT_RUN_ID": run.run_id, GatewayServed.ROLE: "tester"}
     assert "approval_policy" not in data and "sandbox_mode" not in data
     assert reg.get_run(run.run_id).session_id == "fixture-owner"
 
@@ -649,12 +653,21 @@ async def test_the_next_start_of_the_same_launch_runs_on_the_child_started_ahead
     assert not reg.raw_events_path(held).exists() and reg.get_run(held) is None, "an unused child leaves nothing behind"
 
 
-def _launch(folder: Path, home: Path, *, arguments: dict | None = None, env: dict | None = None) -> ChildLaunch:
+def _launch(folder: Path, home: Path, *, arguments: dict | None = None, env: dict | None = None, role: str | None = "tester") -> ChildLaunch:
     return ChildLaunch(
-        provider=ClaudeCodeProvider(), cwd=str(folder), environment={"HOME": str(home), **(env or {})}, meshed=True,
+        provider=ClaudeCodeProvider(), cwd=str(folder), environment={"HOME": str(home), **(env or {})}, meshed=True, role=role,
         arguments={"cwd": str(folder), "model": "claude-opus-5-5", "agent": "tester", "permission_mode": "manual",
                    "reasoning": "medium", **(arguments or {})},
     )
+
+
+@pytest.mark.parametrize("role", ["coder", None])
+def test_a_child_plays_its_own_role_never_its_parent_s(tmp_path, role):
+    """A child's environment and its galaius MCP config name ITS role (`GatewayServed`): galaius
+    serves it that role's gateway tools only; a role-less child gets none, even under a tester run."""
+    launch = _launch(tmp_path, tmp_path, env={GatewayServed.ROLE: "tester"}, role=role)
+    assert launch.env("r2").get(GatewayServed.ROLE) == role
+    assert json.loads(launch.command_arguments("r2", "s")["mcp_config"])["mcpServers"]["galaius"]["env"].get(GatewayServed.ROLE) == role
 
 
 @pytest.mark.parametrize("change", [

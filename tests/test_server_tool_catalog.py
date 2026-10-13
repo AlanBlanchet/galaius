@@ -11,6 +11,7 @@ Regenerate both after changing a tool or the instructions:
 import asyncio
 import json
 from importlib.metadata import version
+from types import SimpleNamespace
 from typing import get_args
 
 import anyio
@@ -20,8 +21,9 @@ from mcp.server.session import ServerSession
 from mcp.shared.message import SessionMessage
 
 from galaius import __version__
+from galaius.agents.tool_gateway import AgentToolList, GatewayTool, ToolGateway
 from galaius.data import PackageData
-from galaius.mcp_announcement import McpAnnouncement
+from galaius.mcp_announcement import GatewayServed, McpAnnouncement
 from galaius.server import core
 
 
@@ -48,3 +50,26 @@ def test_the_announcement_snapshot_is_current_and_answers_as_the_server_does(req
     assert announced.initialize_result(requested) == asyncio.run(_initialize_answer(requested))
     wire = [tool.model_dump(by_alias=True, mode="json", exclude_none=True) for tool in asyncio.run(core.mcp.list_tools())]
     assert announced.lists["tools/list"] == {"tools": wire}
+
+
+def _listing(name: str) -> AgentToolList:
+    return AgentToolList(revision=name, agents={"galaius": (name,)}, tools=(GatewayTool(name=name, server_id="s", tool="list_workflows", description="[galaius] List the workflows.",
+                                                                                      input_schema={"type": "object", "properties": {}, "additionalProperties": False}),))
+
+
+@pytest.mark.parametrize(("role", "listed"), [("galaius", True), ("main", False), (None, False)])
+def test_the_relay_first_lists_the_gateway_tools_of_its_run_s_role(monkeypatch, role, listed) -> None:
+    """An agent CLI fixes its tools at start: the relay's first `tools/list` already holds the gateway
+    tools the server will list once started — those of the role its run plays, of the company the PC
+    is linked to now (re-linked, unlinked), none for another role or outside a run."""
+    snapshot = McpAnnouncement.read(PackageData.path(PackageData.MCP_ANNOUNCEMENT))
+    if role is None:
+        monkeypatch.delenv(GatewayServed.ROLE, raising=False)
+    else:
+        monkeypatch.setenv(GatewayServed.ROLE, role)
+    for linked in (_listing("ext__galaius__list_workflows"), _listing("ext__other__search"), None):
+        monkeypatch.setattr(ToolGateway, "linked", classmethod(lambda cls, linked=linked: None if linked is None else SimpleNamespace(cached=lambda: linked)))
+        monkeypatch.setattr(core.mcp.gateway, "listing", ToolGateway.current(online=False))
+        wire = [tool.model_dump(by_alias=True, mode="json", exclude_none=True) for tool in asyncio.run(core.mcp.list_tools())]
+        assert snapshot.with_gateway().lists["tools/list"] == {"tools": wire}
+        assert [tool["name"] for tool in wire if tool["name"].startswith("ext__")] == ([linked.tools[0].name] if listed and linked else [])

@@ -328,3 +328,21 @@ def test_a_probe_refused_for_quota_never_blocks_the_owners_own_runs(tmp_path, mo
     monkeypatch.setenv("GALAIUS_AGENTS_DIR", str(owner))
     assert quota.blocked_until("claude", "claude-opus-5-5") is None
     assert (probe / "quota-cooldowns.json").exists() and not (owner / "quota-cooldowns.json").exists()
+
+
+@pytest.mark.parametrize("key, ended", [
+    ("claude/claude-opus-5-5", True),  # the PC's default login
+    ("claude/", True),  # a run naming no model
+    ("claude/claude-opus-5-5#7f9c4f0e-0000-4000-8000-000000000001", False),  # a subscription's own login
+    ("claude/claude-opus-5-5@0123abcd", False),  # a model the vendor refuses to a login, not a quota block
+    ("codex/gpt-6-sol", False),  # another provider
+])
+def test_his_continue_ends_the_blocks_of_one_login_only(key, ended):
+    """« Continuer » asks the vendor again on the run's own login (2026-10-13: refused on « resumes at 13:40 » while the
+    login answered from 13:10): every other block stands."""
+    now = 1_791_890_000.0
+    quota._write({key: quota.Block(until=now + 3600, count=1, at=now - 60)})
+
+    quota.forget_login("claude", now=now)
+
+    assert (quota._read(now)[key].until == now) is ended

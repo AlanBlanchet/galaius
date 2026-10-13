@@ -24,7 +24,6 @@ import stat
 import subprocess
 import sys
 import time
-from datetime import UTC, datetime
 from collections.abc import Callable, Mapping
 from contextlib import ExitStack, contextmanager, suppress
 from contextvars import ContextVar
@@ -40,7 +39,7 @@ from galaius.agents.events import CONTEXT_FIELDS, TOKEN_FIELDS, AgentEvent, Toke
 from galaius.agents.catalog_connection import CatalogConnection
 from galaius.agents.ceiling import end_run_scope
 from galaius.agents.providers import PROVIDERS, AgentProvider, DeniedTool
-from galaius.agents.subscriptions import RunSubscription, Subscription, SubscriptionRefused, UsageLimited
+from galaius.agents.subscriptions import RunSubscription, Subscription, SubscriptionRefused
 from galaius.fence import FenceSpec
 from galaius.paths import UserPaths
 from galaius.file_lock import SoleHolder, exclusive
@@ -332,8 +331,8 @@ class AgentRun(ContextGauge):
     #: only (`schedule_limit_resumes`, `claim_limit_resume`); None otherwise.
     resume_at: float | None = None
     #: When the runner last resumed it by itself (`claim_limit_resume`): a refusal naming a reset no
-    #: later than this, or heard within `RESUME_GRACE` of it (the window did not reopen), is left to
-    #: « Reprendre », never resumed again.
+    #: later than this, or heard within `RESUME_GRACE` of it naming about this instant (the window did
+    #: not reopen), is left to « Reprendre », never resumed again (`limit_resume_at`).
     resumed_at: float | None = None
     #: True for a session galaius did NOT spawn — the user's own editor windows, surfaced so the
     #: supervisor shows the machine's real state rather than only its own children.
@@ -344,17 +343,17 @@ class AgentRun(ContextGauge):
 
     status: RunStatus = "running"
 
-    def reopened(self) -> None:
-        """« Continuer » on this run starts its turn only once what stopped it reopened: refused, typed with its reset
-        time, while its subscription is at a cap (`SubscriptionCapped`) or its vendor's usage limit still holds
-        (`UsageLimited`), also while the automatic resume at that reset is pending. Every resume path asks it: the web's
-        (`MachineAgents`) and the CLI's (`galaius agents resume`, which his editor-launched runs' page goes through)."""
+    def prepare_continue(self) -> None:
+        """His « Continuer » on this run, asked by every resume path (the web's `MachineAgents`, the CLI's `galaius agents
+        resume`): refused, typed, only while its subscription is at one of HIS caps (`SubscriptionCapped`). A vendor's
+        usage limit never refuses it: the reset it named is a forecast (2026-10-13 « session limit · resets 1:40pm » heard
+        13:06, the same login answering from 13:10), so what this PC remembers against its login is dropped and the
+        vendor answers the turn itself; a refusal then is the run's ending again, its automatic resume rescheduled."""
         if self.status in {"running", "waiting"}:
             return
         if self.subscription is not None:
             self.subscription.check()
-        if (at := limit_resume_at(self)) is not None and time.time() < (reopens := at - quota.RESET_SLACK):
-            raise UsageLimited(datetime.fromtimestamp(reopens, UTC))
+        quota.forget_login(self.provider, subscription=self.subscription_id)
 
     @property
     def subscription_id(self) -> UUID | None:
@@ -2133,11 +2132,15 @@ SYSTEM_SENDERS: dict[str, str] = {
 }
 
 
-def limit_resume_at(run: AgentRun) -> float | None:
+def limit_resume_at(run: AgentRun, *, now: float | None = None) -> float | None:
     """When `run` can be resumed by itself: one `quota.RESET_SLACK` after the instant its provider
     said the usage window that refused its last turn reopens (the cooldown that refusal recorded ends
-    then too). None unless it is a launched process run that failed on that refusal within the last
-    `quota.MAX_COOLDOWN`, the refusal named the instant, and no automatic resume answered it already."""
+    then too), or as soon as its login answered again after that refusal, while that answer is under
+    `RESUME_GRACE` old at `now` (`quota.lifted_after`: a vendor lifts a limit before the reset it named).
+    None unless it is a launched process run that failed on that refusal within the last
+    `quota.MAX_COOLDOWN`, the refusal named the instant, and no automatic resume answered it already:
+    one made at or after that instant, or one that refusal was heard right after while naming about
+    the instant it was made at (the window did not reopen). A refused early resume keeps the named one."""
     digest = run.stream_digest
     if (run.foreign or run.kind != "process" or run.status != "failed" or run.finished_at is None
             or digest is None or digest.ending != "error" or not quota.REFUSAL.search(digest.ending_text)):
@@ -2145,10 +2148,17 @@ def limit_resume_at(run: AgentRun) -> float | None:
     refusal = quota.Refusal.read(digest.ending_text, now=run.finished_at)
     if refusal is None or refusal.reopens_at is None or refusal.reopens_at - run.finished_at > quota.MAX_COOLDOWN:
         return None
-    moment = refusal.reopens_at + quota.RESET_SLACK
-    if run.resumed_at is not None and (moment <= run.resumed_at or run.finished_at - run.resumed_at <= RESUME_GRACE):
+    reset = refusal.reopens_at + quota.RESET_SLACK
+    if run.resumed_at is not None and (reset <= run.resumed_at or (
+            run.finished_at - run.resumed_at <= RESUME_GRACE and reset <= run.resumed_at + RESUME_GRACE)):
         return None
-    return moment
+    # One early try per limit: a resume refused right away means this model's own pool is shut though its login answers
+    # (one pool can allow while another refuses), so the named reset alone resumes it, never every later answer.
+    if run.resumed_at is not None and run.finished_at - run.resumed_at <= RESUME_GRACE:
+        return reset
+    lifted = quota.lifted_after(run.provider, run.finished_at, subscription=run.subscription_id)
+    moment = time.time() if now is None else now
+    return min(reset, lifted) if lifted is not None and moment <= lifted + RESUME_GRACE else reset
 
 
 def schedule_limit_resumes(*, now: float | None = None) -> list[AgentRun]:
@@ -2162,7 +2172,7 @@ def schedule_limit_resumes(*, now: float | None = None) -> list[AgentRun]:
     known = {run.run_id for run in records}
     paused = []
     for run in records:
-        at = limit_resume_at(run) if run.parent_run_id not in known else None
+        at = limit_resume_at(run, now=moment) if run.parent_run_id not in known else None
         wanted = at if at is not None and moment <= at + RESUME_GRACE else None
         if wanted == run.resume_at:
             if wanted is not None:

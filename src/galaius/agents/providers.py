@@ -44,6 +44,7 @@ from galaius.agents.vocabulary import ApprovalIntent, TouchScope, ThinkingLevel,
 from galaius.inbox_hook import NOTE as INBOX_NOTE
 from galaius.models import Model
 from galaius.processes import ask_process, run_isolated_process
+from galaius.mcp_announcement import GatewayServed
 
 #: Set (to anything) in the environment of an agent working in a folder whose own agent settings
 #: must not load - a workspace cloned from the web: its hooks and permission rules are code and
@@ -1543,7 +1544,7 @@ class _CodexMeshServer(BaseModel):
 
     command: str = Field(min_length=1)
     args: list[str]
-    env: dict[Literal["GALAIUS_PARENT_RUN_ID"], Annotated[str, Field(min_length=1)]] = Field(min_length=1)
+    env: dict[Literal["GALAIUS_PARENT_RUN_ID", GatewayServed.ROLE], Annotated[str, Field(min_length=1)]] = Field(min_length=1)
 
 
 class _CodexMesh(BaseModel):
@@ -1976,8 +1977,7 @@ class CodexProvider(AgentProvider):
         return [
             "-c", f"mcp_servers.galaius.command={json.dumps(server.command, ensure_ascii=False)}",
             "-c", f"mcp_servers.galaius.args={json.dumps(server.args, ensure_ascii=False)}",
-            "-c", "mcp_servers.galaius.env.GALAIUS_PARENT_RUN_ID="
-            + json.dumps(server.env["GALAIUS_PARENT_RUN_ID"], ensure_ascii=False),
+            *(item for key, value in sorted(server.env.items()) for item in ("-c", f"mcp_servers.galaius.env.{key}=" + json.dumps(value, ensure_ascii=False))),
         ]
 
     def validate_tool_policy(self, allowed_tools: list[str], denied_tools: tuple[str, ...], *,

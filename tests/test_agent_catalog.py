@@ -410,7 +410,7 @@ def test_the_sign_in_key_of_a_linked_pc_never_reads_its_own_company(linked_pc, c
     key = catalog_home / "key"
     PRIVATE_FILES.write_secret(key, "iwk_" + "k" * 40)
     company = linked_pc.workspace_id if own_company else uuid4()
-    CatalogConnection.replace_text(CatalogConnection.path(), CatalogConnection(
+    PRIVATE_FILES.replace_text(CatalogConnection.path(), CatalogConnection(
         endpoint="http://127.0.0.1:8767", workspace_id=company, auth_mode="token", token_file=key).model_dump_json())
     assert (CatalogConnection.load().auth_mode, CatalogConnection.load().workspace_id) == (read_as, company)
 
@@ -434,7 +434,7 @@ def test_a_linked_pc_keeps_no_catalog_file_so_nothing_rewrites_what_running_proc
 def test_an_unreadable_catalog_file_names_why_and_never_breaks_local_settings(catalog_home, payload, said):
     from galaius.server_tool_settings import ServerToolSettings
 
-    CatalogConnection.replace_text(CatalogConnection.path(), payload)
+    PRIVATE_FILES.replace_text(CatalogConnection.path(), payload)
     with pytest.raises(CatalogConnectionError, match=said):
         CatalogConnection.load()
     UserConfig.PATH.write_text("GALAIUS_EXAMPLE=kept\n")
@@ -656,7 +656,7 @@ def historical_http(advanced_catalogs, monkeypatch):
 
     connect = CatalogConnection.connect
     monkeypatch.setattr(CatalogConnection, "connect", lambda self, **kwargs: connect(self, **{"transport": httpx.MockTransport(respond), **kwargs}))
-    CatalogConnection.replace_text(AgentCatalog.cache_path(), current.model_dump_json())
+    PRIVATE_FILES.replace_text(AgentCatalog.cache_path(), current.model_dump_json())
     return requests
 
 
@@ -689,7 +689,7 @@ def test_historical_response_must_match_every_exact_reference(advanced_catalogs,
     old, current, worker_ref, _ = advanced_catalogs
     agent = old.snapshot.revision(worker_ref)
     before = current.model_dump_json()
-    CatalogConnection.replace_text(AgentCatalog.cache_path(), before)
+    PRIVATE_FILES.replace_text(AgentCatalog.cache_path(), before)
 
     def respond(request):
         if request.url.path == "/v1/auth/local-preview":
@@ -726,7 +726,7 @@ def test_historical_response_must_match_every_exact_reference(advanced_catalogs,
 @pytest.mark.parametrize("endpoint", ["agent", "prompt"])
 def test_exact_read_refusal_invalidates_cache_before_later_outage(advanced_catalogs, monkeypatch, status, endpoint):
     old, current, worker_ref, _ = advanced_catalogs
-    CatalogConnection.replace_text(AgentCatalog.cache_path(), current.model_dump_json())
+    PRIVATE_FILES.replace_text(AgentCatalog.cache_path(), current.model_dump_json())
 
     def respond(request):
         if request.url.path == "/v1/auth/local-preview":
@@ -753,7 +753,7 @@ def test_exact_read_refusal_invalidates_cache_before_later_outage(advanced_catal
 
 def test_network_cannot_substitute_latest_for_uncached_pin(advanced_catalogs, monkeypatch, capsys):
     old, current, worker_ref, _ = advanced_catalogs
-    CatalogConnection.replace_text(AgentCatalog.cache_path(), current.model_dump_json())
+    PRIVATE_FILES.replace_text(AgentCatalog.cache_path(), current.model_dump_json())
 
     def offline(request):
         raise httpx.ConnectError("fixture outage")

@@ -167,7 +167,7 @@ class ServerToolSettings(ServerPrompts):
                     and cached.generation == generation and cached.session_digest == session_digest
                     and cached.settings.revision > settings.revision):
                 return cached
-            self.connection.replace_text(self.cache_path, snapshot.model_dump_json())
+            PRIVATE_FILES.replace_text(self.cache_path, snapshot.model_dump_json())
         return snapshot
 
     def read(self, *, allow_stale: bool = True) -> ToolSettingsSnapshot:

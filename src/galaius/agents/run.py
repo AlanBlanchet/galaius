@@ -49,6 +49,7 @@ from galaius.model_catalog import live_scores
 from galaius.models import Model, ModelCapability
 from galaius.prompt_projection import coordinator_instructions
 from galaius.windowless import console_python
+from galaius.mcp_announcement import GatewayServed
 
 
 log = logging.getLogger(__name__)
@@ -714,13 +715,14 @@ def already_meshed(provider: str, *, cwd: str | None = None) -> bool:
 LAUNCH_STAMP = "Launch policy: role="
 
 
-def mesh_config(*, run_id: str) -> str:
+def mesh_config(*, run_id: str, role: str | None) -> str:
     """The ``--mcp-config`` payload handed to a spawned agent so it can reach back into galaius.
 
     Makes cross-provider teamwork work with no bespoke protocol: child is an MCP client, galaius
     is an MCP server, so a Claude agent and a Codex agent call the same tools.
     ``GALAIUS_PARENT_RUN_ID`` travels with it so anything the child spawns attributes to it,
-    keeping the team tree connected.
+    keeping the team tree connected; the run's `role` (`GatewayServed.ROLE`) so galaius serves it
+    its own gateway tools, never another role's.
 
     Carries NO credential — the child's own CLI authenticates itself.
     """
@@ -730,7 +732,7 @@ def mesh_config(*, run_id: str) -> str:
             "galaius": {
                 "command": command,
                 "args": args,
-                "env": {"GALAIUS_PARENT_RUN_ID": run_id},
+                "env": GatewayServed.environment({"GALAIUS_PARENT_RUN_ID": run_id}, role),
             }
         }
     })
@@ -811,6 +813,8 @@ class ChildLaunch(AheadLaunch):
     arguments: dict[str, object]
     #: Whether the child gets galaius's MCP server from `mesh_config` (its CLI registers none itself).
     meshed: bool
+    #: The role the child plays (`GatewayServed.ROLE`); None: none, even one its parent's environment holds.
+    role: str | None
 
     #: The run id launches are compared under (`key`).
     _ANY_RUN: ClassVar[str] = str(uuid.UUID(int=0))
@@ -818,11 +822,11 @@ class ChildLaunch(AheadLaunch):
     def env(self, run_id: str) -> dict[str, str]:
         """The environment MINUS any parent tag, set explicitly: a grandchild would otherwise inherit
         its grandparent's id and the tree would be wrong."""
-        return {**self.environment, "GALAIUS_RUN_ID": run_id, "GALAIUS_PARENT_RUN_ID": run_id}
+        return {**GatewayServed.environment(self.environment, self.role), "GALAIUS_RUN_ID": run_id, "GALAIUS_PARENT_RUN_ID": run_id}
 
     def command_arguments(self, run_id: str, session: str) -> dict[str, object]:
         arguments = {**self.arguments, "run_id": session, "environment": self.env(run_id),
-                     "mcp_config": mesh_config(run_id=run_id) if self.meshed else None}
+                     "mcp_config": mesh_config(run_id=run_id, role=self.role) if self.meshed else None}
         if self.provider.reads_mid_turn:
             arguments["inbox_hook"] = agent_queue.inbox_hook(run_id)
         return arguments
@@ -884,12 +888,12 @@ class ResumeLaunch(AheadLaunch):
             reasoning = policy.reasoning_for(run.agent, f"{provider.name}/{model}" if model else None)
         coarse_accepted = policy.accepts_coarse_tool_policy(run.agent, provider.name) if run.agent else False
         provider.validate_tool_policy(policy.tools_for(run.agent), run.denied_tools, coarse_accepted=coarse_accepted)
-        env = {**environment, **routed, "GALAIUS_RUN_ID": run.run_id, "GALAIUS_PARENT_RUN_ID": run.run_id}
+        env = {**GatewayServed.environment(environment, run.agent), **routed, "GALAIUS_RUN_ID": run.run_id, "GALAIUS_PARENT_RUN_ID": run.run_id}
         arguments = dict(
             model=model, permission_mode=run.permission_mode, reasoning=reasoning, agent=run.agent,
             allowed_tools=policy.tools_for(run.agent), denied_tools=run.denied_tools,
             agent_prompt=_role_prompt(catalog, run.agent, provider, env) if catalog is not None else None,
-            mcp_config=mesh_config(run_id=run.run_id) if run.mesh_enabled and not already_meshed(provider.name, cwd=run.cwd) else None,
+            mcp_config=mesh_config(run_id=run.run_id, role=run.agent) if run.mesh_enabled and not already_meshed(provider.name, cwd=run.cwd) else None,
             coarse_accepted=coarse_accepted, base_url=routed.get("OPENAI_BASE_URL"),
             **({"inbox_hook": agent_queue.inbox_hook(run.run_id)} if provider.reads_mid_turn else {}),
         )
@@ -1069,7 +1073,7 @@ def launch_editor_turn(
     the environment exactly `environment` (never this process's)."""
     restore_folder(run, provider, fork_from or run.run_id, environment)
     argv = provider.resume_command(fork_from or run.run_id, message, permission_mode=run.permission_mode, fork_to=run.run_id if fork_from else None)
-    env = {**environment, "GALAIUS_RUN_ID": run.run_id}
+    env = {**GatewayServed.environment(environment, run.agent), "GALAIUS_RUN_ID": run.run_id}
     return _spawn_turn(argv, run, env=env, raw_index=reg.raw_line_count(run.run_id), model=run.model, criterion=None, reasoning=None)
 
 
@@ -1570,7 +1574,7 @@ async def run_agent(
             provider=candidate_provider, cwd=cwd, environment=env, arguments=command_kwargs,
             # Once, never twice: skip the mesh when the provider's own config already registers
             # galaius — else the child would carry two registrations of the same server.
-            meshed=mesh and not already_meshed(candidate_provider.name, cwd=cwd), fence=candidate_fence,
+            meshed=mesh and not already_meshed(candidate_provider.name, cwd=cwd), fence=candidate_fence, role=agent,
         )
         # A child started ahead for this very launch skips its CLI's own startup. Its run id is the
         # vendor session id, so it serves only the first child handed to that vendor.

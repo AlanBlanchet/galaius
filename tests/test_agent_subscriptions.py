@@ -8,7 +8,7 @@ import os
 import subprocess
 import sys
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -22,7 +22,7 @@ from galaius.agents.providers import PROVIDERS, ClaudeCodeProvider
 from galaius.agents import run as run_module
 from galaius.agents.run import run_agent
 from galaius.agents.subscription_watch import SubscriptionWatch
-from galaius.agents.subscriptions import RunSubscription, Subscription, SubscriptionCapped, SubscriptionRefused, UsageLimited
+from galaius.agents.subscriptions import RunSubscription, Subscription, SubscriptionCapped, SubscriptionRefused
 from galaius.fence import FenceBind, FenceSpec
 from galaius.machine_programs import AgentPrograms
 from galaius.machine_agents import MachineAgents
@@ -382,21 +382,21 @@ def test_continuing_on_another_subscription_carries_the_session_never_a_credenti
     rehomed = fence.rehomed(moved.subscription.homes())  # a fenced run moved to B never keeps A's account copy
     assert rehomed.homes["claude"] == b.folder and not (fence.state / "claude" / ".claude.json").exists()
     b.observe((UsageWindow(window="weekly", used_percent=95, observed_at=datetime.now(UTC)),))
-    with pytest.raises(SubscriptionCapped):
-        moved.reopened()
-    reopens = datetime.now(UTC).replace(microsecond=0) + timedelta(hours=2)
-    monkeypatch.setattr(reg, "limit_resume_at", lambda run: reopens.timestamp() + quota.RESET_SLACK)
-    unpinned = moved.model_copy(update={"subscription": None})
-    with pytest.raises(UsageLimited) as limited:
-        unpinned.reopened()
-    assert limited.value.refusal.model_dump(exclude_none=True) == {"reason": "usage_limit", "resets_at": reopens}
+    with pytest.raises(SubscriptionCapped):  # his own cap refuses his press
+        moved.prepare_continue()
     # His editor-launched run's page resumes through `galaius agents resume`: refused the same way, typed on stderr, nothing queued.
-    reg.save_run(unpinned)
-    monkeypatch.setattr(reg, "get_run", lambda run_id: unpinned)
+    reg.save_run(moved)
+    monkeypatch.setattr(reg, "get_run", lambda run_id: moved)
     with pytest.raises(SystemExit) as stopped:
         agents_resume([run_id])
     said = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
-    assert (stopped.value.code, said["subscription_refusal"]["reason"], said["subscription_refusal"]["resets_at"]) == (1, "usage_limit", reopens.isoformat().replace("+00:00", "Z"))
+    assert (stopped.value.code, said["subscription_refusal"]["reason"]) == (1, "capped")
+    # A vendor's usage limit never refuses it (2026-10-13: « resumes at 13:40 » refused while the login answered from 13:10):
+    # what this PC remembers against that login is dropped, the vendor answers the turn.
+    unpinned = moved.model_copy(update={"subscription": None})
+    quota.record_refusal(unpinned.provider, unpinned.model, said="You've hit your session limit · resets 1:40pm (Europe/Paris)")
+    unpinned.prepare_continue()
+    assert quota.blocked_until(unpinned.provider, unpinned.model) is None
 
 
 def test_each_login_here_says_its_own_usage_and_a_subscriptions_never_mixes_with_the_default_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

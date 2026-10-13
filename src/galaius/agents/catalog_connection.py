@@ -13,7 +13,7 @@ import time
 import typing
 import warnings
 from collections.abc import Callable, Iterator
-from contextlib import ExitStack, contextmanager, suppress
+from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 from http.cookiejar import LWPCookieJar, LoadError
 from pathlib import Path
@@ -167,16 +167,6 @@ class CatalogConnection(BaseModel):
             raise CatalogAuthenticationError(_UNLINKED)
         return connection
 
-    @staticmethod
-    def replace_text(path: Path, payload: str) -> None:
-        """Atomically replace one local document, private to this user; a failed write keeps its
-        predecessor. One already holding `payload` is left as it is: each start writes its role's
-        definition and skills again (an fsync each, 0.17 s for 25 files)."""
-        with suppress(OSError, ValueError):
-            if PRIVATE_FILES.read_text(path) == payload:
-                return
-        PRIVATE_FILES.write_text(path, payload)
-
     def save(self, path: Path | None = None) -> None:
         if self.workspace_id is None:
             raise CatalogConnectionError("select a workspace before saving the catalog connection")
@@ -186,7 +176,7 @@ class CatalogConnection(BaseModel):
             if linked is None or linked.workspace_id == self.workspace_id:
                 target.unlink(missing_ok=True)  # the PC link is the connection: no second copy to clobber
                 return
-        self.replace_text(target, self.model_dump_json(indent=2))
+        PRIVATE_FILES.replace_text(target, self.model_dump_json(indent=2))
 
     def connect(self, *, transport: httpx.BaseTransport | None = None) -> httpx.Client:
         headers = {"Origin": self.endpoint.rstrip("/"), "User-Agent": USER_AGENT}
@@ -229,10 +219,10 @@ class CatalogConnection(BaseModel):
                 resolved = self.resolve_workspace(client)
                 payload = _session_payload(client)
                 with self.access_guard(generation):
-                    self.replace_text(self.session_path(), payload)
+                    PRIVATE_FILES.replace_text(self.session_path(), payload)
                     if resolved != self:
                         with resolved.access_guard():
-                            self.replace_text(resolved.session_path(), payload)
+                            PRIVATE_FILES.replace_text(resolved.session_path(), payload)
                 return resolved
         return self.resolve_workspace(client)
 
@@ -290,7 +280,7 @@ class CatalogConnection(BaseModel):
             for connection in connections:
                 locks.enter_context(connection.access_guard())
             for connection in connections:
-                connection.replace_text(connection.session_path().with_suffix(".generation"), str(uuid4()))
+                PRIVATE_FILES.replace_text(connection.session_path().with_suffix(".generation"), str(uuid4()))
                 connection.session_path().unlink(missing_ok=True)
             client.cookies.clear()
 
@@ -374,7 +364,7 @@ class CatalogConnection(BaseModel):
         except (_Refused, CatalogConnectionError):
             return False
         with self.access_guard():
-            self.replace_text(self.session_path(), _session_payload(client))
+            PRIVATE_FILES.replace_text(self.session_path(), _session_payload(client))
         return True
 
     def _request_once(self, client: httpx.Client, method: Literal["GET", "POST"], path: str, *, etag: str | None = None) -> bytes | None:
