@@ -2,7 +2,8 @@
 """Stand-in `claude` / `codex` answering only their usage question the way 2.1.288 / 0.155.1 do (shapes recorded
 2026-10-13): Claude's `get_usage` control request, Codex's `account/rateLimits/read` on its app-server. A login folder
 named by CLAUDE_CONFIG_DIR is a subscription's (80 % of its week); Codex is signed out; a file `silent` in HOME makes
-it end without answering, a file `failing` makes Claude answer its request's error (the vendor unreachable)."""
+it end without answering, a file `failing` makes Claude answer its request's error (the vendor unreachable), a file
+`signed_out` makes it answer as signed out (no plan windows)."""
 
 import json
 import os
@@ -19,6 +20,11 @@ if "app-server" in sys.argv:
         elif line.get("id") == 2:
             print(json.dumps({"id": 2, "error": {"code": -32600, "message": "codex account authentication required to read rate limits"}}), flush=True)
             sys.exit(0)
+if (Path(os.environ["HOME"]) / "signed_out").exists():
+    request = json.loads(sys.stdin.readline())
+    print(json.dumps({"type": "control_response", "response": {"subtype": "success", "request_id": request["request_id"], "response": {
+        "subscription_type": None, "rate_limits_available": False, "rate_limits": None, "behaviors": None}}}), flush=True)
+    sys.exit(0)
 week = 80 if os.environ.get("CLAUDE_CONFIG_DIR") else 36
 request = json.loads(sys.stdin.readline())
 if (Path(os.environ["HOME"]) / "failing").exists():

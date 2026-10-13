@@ -52,8 +52,8 @@ class SubscriptionWatch(BaseModel):
                 with self._lock:
                     self._logins[name] = self._logins.get(name, LoginReading()).model_copy(update={"usage": usage})
         for subscription in await asyncio.to_thread(Subscription.all):
-            if usage := await subscription.program.current_usage({**environment, **subscription.overlay()}):
-                await asyncio.to_thread(subscription.observe, usage)
+            if (usage := await subscription.program.current_usage({**environment, **subscription.overlay()})) is not None:
+                await asyncio.to_thread(subscription.observe, usage, whole=True)
 
     def login_usage(self, provider: AgentProvider) -> tuple[UsageWindow, ...]:
         """`provider`'s default login's last reading here (`ask`)."""

@@ -1875,8 +1875,13 @@ class CodexProvider(AgentProvider):
     def usage_command(self) -> tuple[list[str], tuple[dict, ...]]:
         """`account/rateLimits/read` on its app-server (0.155.1): the login's windows as ChatGPT has them."""
         return (self.app_server_command(),
-                ({"id": 1, "method": "initialize", "params": {"clientInfo": {"name": "galaius", "title": "Galaius", "version": installed_version()}}},
-                 {"method": "initialized", "params": {}}, {"id": 2, "method": "account/rateLimits/read", "params": {}}))
+                ({"id": 1, "method": "initialize", "params": self.initialize_params()}, {"method": "initialized", "params": {}},
+                 {"id": 2, "method": "account/rateLimits/read", "params": {}}))
+
+    @staticmethod
+    def initialize_params() -> dict:
+        """What galaius says of itself opening its app-server (every session, the usage ask)."""
+        return {"clientInfo": {"name": "galaius", "title": "Galaius", "version": installed_version()}, "capabilities": {"experimentalApi": False}}
 
     def usage_answer(self, line: dict) -> tuple[UsageWindow, ...] | None:
         """Its answer to request 2: `result.rateLimits` `primary` / `secondary` {usedPercent, windowDurationMins, resetsAt

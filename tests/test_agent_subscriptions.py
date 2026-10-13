@@ -426,3 +426,7 @@ def test_each_login_here_says_its_own_usage_and_a_subscriptions_never_mixes_with
         (Path.home() / stalled).touch()
         asyncio.run(watch.ask(environment))
         assert [window.used_percent for window in watch.login_usage("claude")] == [13.0, 36.0]
+        (Path.home() / stalled).unlink()
+    (Path.home() / "signed_out").touch()
+    asyncio.run(watch.ask(environment))
+    assert (watch.login_usage("claude"), subscription.usage()) == ((), ())

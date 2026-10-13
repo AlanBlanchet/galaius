@@ -22,7 +22,6 @@ from pydantic import (
 )
 from typing_extensions import TypedDict
 
-from galaius import installed_version
 from galaius.agents.codex_schema import (
     REJECTED_REQUEST_POLICIES,
     encode_supported_response,
@@ -191,14 +190,7 @@ class _CodexTransport(_ConversationTransport):
         return self._process.pid if self._process is not None else None
 
     async def initialize(self) -> bool:
-        await self.request("initialize", {
-            "clientInfo": {
-                "name": "galaius",
-                "title": "Galaius",
-                "version": installed_version(),
-            },
-            "capabilities": {"experimentalApi": False},
-        })
+        await self.request("initialize", self.provider.initialize_params())
         await self.notify("initialized", {})
         account = _ACCOUNT.validate_python(await self.request("account/read", {
             "refreshToken": False,

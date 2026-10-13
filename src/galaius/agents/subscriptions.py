@@ -268,10 +268,11 @@ class Subscription(BaseModel):
     def usage(self) -> tuple[UsageWindow, ...]:
         return self.state().usage
 
-    def observe(self, windows: tuple[UsageWindow, ...]) -> tuple[UsageWindow, ...]:
-        """`windows` (oldest first) replace the readings of the same windows; the usage now."""
+    def observe(self, windows: tuple[UsageWindow, ...], *, whole: bool = False) -> tuple[UsageWindow, ...]:
+        """`windows` (oldest first) replace the readings of the same windows, or, `whole` (its CLI's full answer now, none
+        when signed out), every reading; the usage now."""
         state = self.state()
-        latest = {window.window: window for window in (*state.usage, *windows)}
+        latest = {window.window: window for window in (*(() if whole else state.usage), *windows)}
         usage = tuple(latest.values())
         self._write(state.model_copy(update={"usage": usage}))
         return usage
