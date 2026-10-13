@@ -7,7 +7,7 @@ waits only a moment for its MCP servers finds every galaius tool in its first to
 
 from importlib.metadata import distributions
 from pathlib import Path
-from typing import ClassVar, Self
+from typing import Annotated, ClassVar, Self
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
@@ -15,12 +15,18 @@ from galaius.data import PackageData
 from galaius.private_files import PRIVATE_FILES
 
 
+#: What every gateway tool's name starts with (galaius's MCP server puts `mcp__galaius__` before it on a PC).
+GATEWAY_PREFIX = "ext__"
+#: A gateway tool's name: the prefix, then what providers accept within 64 characters with both prefixes.
+GatewayToolName = Annotated[str, Field(pattern=rf"^{GATEWAY_PREFIX}[A-Za-z0-9_-]{{1,60}}$")]
+
+
 class GatewayToolWire(BaseModel):
     """One gateway tool as galaius's MCP server puts it on the wire (`AgentToolList.wire`)."""
 
     model_config = ConfigDict(extra="allow", frozen=True)
 
-    name: str = Field(pattern=r"^ext__")
+    name: GatewayToolName
     description: str = ""
     inputSchema: dict
 
@@ -80,13 +86,7 @@ class McpAnnouncement(BaseModel):
     def record_gateway(cls, tools: tuple[GatewayToolWire, ...]) -> None:
         """Write the tools the next server start serves (`ToolGateway.current`, each time it answers:
         a re-linked or unlinked PC's file follows it). OSError when it cannot be written."""
-        path, text = cls.gateway_path(), GATEWAY_WIRE.dump_json(tools).decode()
-        try:
-            if PRIVATE_FILES.read_text(path) == text:
-                return
-        except (OSError, ValueError):
-            pass  # absent or unreadable: written below
-        PRIVATE_FILES.write_text(path, text)
+        PRIVATE_FILES.replace_text(cls.gateway_path(), GATEWAY_WIRE.dump_json(tools).decode())
 
     def with_gateway(self, path: Path | None = None) -> Self:
         """The announcement with the PC's gateway tools (`gateway_path`) after galaius's own, as the
@@ -111,4 +111,4 @@ class McpAnnouncement(BaseModel):
         }
 
 
-__all__ = ["McpAnnouncement"]
+__all__ = ["GATEWAY_PREFIX", "GatewayToolName", "GatewayToolWire", "McpAnnouncement"]

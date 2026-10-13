@@ -85,6 +85,16 @@ class PrivateFiles(BaseModel):
         finally:
             temporary.unlink(missing_ok=True)
 
+    def replace_text(self, path: Path, text: str) -> None:
+        """`write_text`, unless the file already holds `text` (read as `read_text` does): each start
+        writes its role definitions, skills and caches again, and an unchanged one costs no fsync."""
+        try:
+            if self.read_text(path) == text:
+                return
+        except (OSError, ValueError):
+            pass  # absent, unreadable or not private: replaced below
+        self.write_text(path, text)
+
     def read_text(self, path: Path) -> str:
         """The file's text, checked on the descriptor it is read through (no link followed);
         ValueError past `limit`."""

@@ -17,6 +17,7 @@ from galaius.agents.catalog_connection import (
     CatalogConnectionError,
 )
 from galaius.criteria import Criteria
+from galaius.private_files import PRIVATE_FILES
 
 
 class AgentInstructionSet(BaseModel):
@@ -225,7 +226,7 @@ class AgentCatalog(BaseModel):
                 raise CatalogConnectionError("invalid server agent catalog; cache was not replaced") from error
             value = cls(connection=resolved, snapshot=snapshot, fetched_at=datetime.now(UTC), access_generation=generation)
             with resolved.access_guard(generation):
-                CatalogConnection.replace_text(target, value.model_dump_json())
+                PRIVATE_FILES.replace_text(target, value.model_dump_json())
                 return value
         except CatalogAuthenticationError:
             cls.discard_invalidated_cache(resolved, target)
@@ -333,12 +334,12 @@ class AgentCatalog(BaseModel):
             self.cache_path().parent / "agent-catalog-skills" / prompt.key.namespace
             / prompt.key.slug / prompt.digest / "SKILL.md"
         )
-        CatalogConnection.replace_text(target, prompt.content)
+        PRIVATE_FILES.replace_text(target, prompt.content)
         return target
 
     def definition_path(self, role: str) -> Path:
         # role() resolves a core-validated kebab-case key before it becomes a filename.
         agent = self.role(role)
         target = self.cache_path().parent / "agent-catalog-definitions" / str(agent.id) / str(agent.revision) / f"{agent.role_key}.md"
-        CatalogConnection.replace_text(target, self.instructions(role))
+        PRIVATE_FILES.replace_text(target, self.instructions(role))
         return target

@@ -27,12 +27,11 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from galaius.agents import registry
 from galaius.agents.catalog_connection import CatalogConnection, CatalogConnectionError
-from galaius.mcp_announcement import GatewayToolWire, McpAnnouncement
+from galaius.mcp_announcement import GATEWAY_PREFIX, GatewayToolName, GatewayToolWire, McpAnnouncement
+from galaius.private_files import PRIVATE_FILES
 
 logger = logging.getLogger(__name__)
 
-#: What every gateway tool's name starts with (the harness puts galaius's `mcp__galaius__` before it).
-GATEWAY_PREFIX = "ext__"
 #: galaius's own tools searching and reading the conversations this PC holds
 #: (`galaius.agents.conversations`): a role with a tool list gets them when it reads files already
 #: (`FILE_READERS`), as it gets its gateway tools; whom each call may read is decided when it is made
@@ -45,7 +44,7 @@ FILE_READERS = frozenset({"Read", "Bash"})
 class GatewayTool(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    name: str = Field(pattern=rf"^{GATEWAY_PREFIX}[A-Za-z0-9_-]{{1,60}}$")
+    name: GatewayToolName
     server_id: str
     tool: str
     description: str = ""
@@ -109,7 +108,10 @@ class ToolGateway(BaseModel):
         at most once per `CatalogConnection.REUSE_SECONDS`), else the cached one; empty when the PC
         is not linked."""
         gateway = cls.linked()
-        listing = AgentToolList() if gateway is None else gateway.connection.recent("agent-tools", lambda _: gateway.refreshed()) if online else gateway.cached()
+        if gateway is None:
+            listing = AgentToolList()
+        else:
+            listing = gateway.connection.recent("agent-tools", lambda _: gateway.refreshed()) if online else gateway.cached()
         try:
             McpAnnouncement.record_gateway(listing.wire())
         except OSError as error:
@@ -148,7 +150,7 @@ class ToolGateway(BaseModel):
             value = AgentToolList.model_validate_json(response.content)
         except ValidationError as error:
             raise CatalogConnectionError("the server's tool list is not one this galaius reads") from error
-        CatalogConnection.replace_text(self.cache_path, value.model_dump_json())
+        PRIVATE_FILES.replace_text(self.cache_path, value.model_dump_json())
         return value
 
     def refreshed(self) -> AgentToolList:

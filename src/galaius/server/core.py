@@ -29,7 +29,8 @@ from mcp.server.fastmcp import FastMCP
 from mcp.shared.version import SUPPORTED_PROTOCOL_VERSIONS
 
 from galaius import __version__
-from galaius.agents.tool_gateway import GATEWAY_PREFIX, ServedGateway
+from galaius.agents.tool_gateway import ServedGateway
+from galaius.mcp_announcement import GATEWAY_PREFIX
 from galaius.browser import SessionRegistry
 from galaius.debug_utils import _CURRENT_INV, Debug, resolve_output_path
 from galaius.mcp_announcement import McpAnnouncement
