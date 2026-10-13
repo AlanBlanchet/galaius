@@ -5,14 +5,27 @@ upgrade relay answers a client's handshake and first listings from its worker's 
 while that worker still starts (`galaius.upgrade.supervisor.McpProtocol`), so an agent CLI that
 waits only a moment for its MCP servers finds every galaius tool in its first tool list."""
 
-import json
 from importlib.metadata import distributions
 from pathlib import Path
 from typing import ClassVar, Self
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from galaius.data import PackageData
+from galaius.private_files import PRIVATE_FILES
+
+
+class GatewayToolWire(BaseModel):
+    """One gateway tool as galaius's MCP server puts it on the wire (`AgentToolList.wire`)."""
+
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+    name: str = Field(pattern=r"^ext__")
+    description: str = ""
+    inputSchema: dict
+
+
+GATEWAY_WIRE = TypeAdapter(tuple[GatewayToolWire, ...])
 
 
 class McpAnnouncement(BaseModel):
@@ -57,24 +70,36 @@ class McpAnnouncement(BaseModel):
     @staticmethod
     def gateway_path() -> Path:
         """The external tools galaius's MCP server on this PC serves beside its own (`ext__…`), as the
-        PC's last gateway listing gave them, in their wire shape (`ToolGateway.serve` writes it): the
-        relay adds them to its first tool list, since an agent CLI fixes its tools before a later
-        `tools/list_changed` could add them. In `UserConfig.PATH`'s folder, named here so the relay
-        never imports the config package (it answers within its first second)."""
+        PC's linked company last gave them, in their wire shape: the relay adds them to its first tool
+        list, since an agent CLI fixes its tools before a later `tools/list_changed` could add them. In
+        `UserConfig.PATH`'s folder, named here so the relay never imports the config package (it
+        answers within its first second)."""
         return Path.home() / ".galaius" / "mcp-gateway-tools.json"
+
+    @classmethod
+    def record_gateway(cls, tools: tuple[GatewayToolWire, ...]) -> None:
+        """Write the tools the next server start serves (`ToolGateway.current`, each time it answers:
+        a re-linked or unlinked PC's file follows it). OSError when it cannot be written."""
+        path, text = cls.gateway_path(), GATEWAY_WIRE.dump_json(tools).decode()
+        try:
+            if PRIVATE_FILES.read_text(path) == text:
+                return
+        except (OSError, ValueError):
+            pass  # absent or unreadable: written below
+        PRIVATE_FILES.write_text(path, text)
 
     def with_gateway(self, path: Path | None = None) -> Self:
         """The announcement with the PC's gateway tools (`gateway_path`) after galaius's own, as the
-        server lists them (`GalaiusMcp.list_tools`); unchanged when the PC never listed any."""
-        path = path or self.gateway_path()
+        server lists them (`GalaiusMcp.list_tools`); unchanged when there are none or the file is not
+        one this galaius wrote (unreadable, not private, another shape)."""
         try:
-            tools = json.loads(path.read_bytes())
+            tools = GATEWAY_WIRE.validate_json(PRIVATE_FILES.read_text(path or self.gateway_path()))
         except (OSError, ValueError):
             return self
         listed = self.lists.get("tools/list")
-        if not tools or not isinstance(tools, list) or listed is None:
+        if not tools or listed is None:
             return self
-        return self.model_copy(update={"lists": {**self.lists, "tools/list": {**listed, "tools": [*listed["tools"], *tools]}}})
+        return self.model_copy(update={"lists": {**self.lists, "tools/list": {**listed, "tools": [*listed["tools"], *GATEWAY_WIRE.dump_python(tools, mode="json")]}}})
 
     def initialize_result(self, requested: str) -> dict:
         """The `initialize` result the server gives a client asking for protocol `requested`."""

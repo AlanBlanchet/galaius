@@ -11,6 +11,7 @@ Regenerate both after changing a tool or the instructions:
 import asyncio
 import json
 from importlib.metadata import version
+from types import SimpleNamespace
 from typing import get_args
 
 import anyio
@@ -51,19 +52,19 @@ def test_the_announcement_snapshot_is_current_and_answers_as_the_server_does(req
     assert announced.lists["tools/list"] == {"tools": wire}
 
 
-def test_the_relay_first_lists_the_gateway_tools_the_server_will_serve(tmp_path, monkeypatch) -> None:
-    """An agent CLI fixes its tools at start: the relay's first `tools/list` already holds the PC's
-    gateway tools, as the server lists them once started (no `list_changed` needed to see them)."""
-    listing = AgentToolList(revision="r", agents={"galaius": ("ext__galaius__list_workflows",)},
-                            tools=(GatewayTool(name="ext__galaius__list_workflows", server_id="s", tool="list_workflows", description="[galaius] List the workflows.",
-                                               input_schema={"type": "object", "properties": {}, "additionalProperties": False}),))
-    monkeypatch.setenv("HOME", str(tmp_path))
-    ToolGateway.serve(listing)
-    served = McpAnnouncement.gateway_path()
-    assert served.is_relative_to(tmp_path)
-    monkeypatch.setattr(core.mcp.gateway, "listing", listing)
-    announced = McpAnnouncement.read(PackageData.path(PackageData.MCP_ANNOUNCEMENT)).with_gateway(served)
-    wire = [tool.model_dump(by_alias=True, mode="json", exclude_none=True) for tool in asyncio.run(core.mcp.list_tools())]
-    assert announced.lists["tools/list"] == {"tools": wire} and wire[-1]["name"] == "ext__galaius__list_workflows"
-    assert McpAnnouncement.read(PackageData.path(PackageData.MCP_ANNOUNCEMENT)).with_gateway(tmp_path / "none.json").lists["tools/list"]["tools"] == wire[:-1]
+def _listing(name: str) -> AgentToolList:
+    return AgentToolList(revision=name, agents={"galaius": (name,)}, tools=(GatewayTool(name=name, server_id="s", tool="list_workflows", description="[galaius] List the workflows.",
+                                                                                      input_schema={"type": "object", "properties": {}, "additionalProperties": False}),))
 
+
+def test_the_relay_first_lists_the_gateway_tools_of_the_company_this_pc_is_linked_to(monkeypatch) -> None:
+    """An agent CLI fixes its tools at start: the relay's first `tools/list` already holds the gateway
+    tools the server will list once started — the linked company's, re-linked or unlinked included."""
+    snapshot = McpAnnouncement.read(PackageData.path(PackageData.MCP_ANNOUNCEMENT))
+    for linked in (_listing("ext__galaius__list_workflows"), _listing("ext__other__search"), None):
+        monkeypatch.setattr(ToolGateway, "linked", classmethod(lambda cls, linked=linked: None if linked is None else SimpleNamespace(cached=lambda: linked)))
+        served = ToolGateway.current(online=False)
+        monkeypatch.setattr(core.mcp.gateway, "listing", served)
+        wire = [tool.model_dump(by_alias=True, mode="json", exclude_none=True) for tool in asyncio.run(core.mcp.list_tools())]
+        assert snapshot.with_gateway().lists["tools/list"] == {"tools": wire}
+        assert [tool["name"] for tool in wire if tool["name"].startswith("ext__")] == ([] if linked is None else [linked.tools[0].name])
