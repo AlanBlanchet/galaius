@@ -28,6 +28,7 @@ from galaius_core import (
     AgentProvider,
     AgentProviderState,
     AgentSignIn,
+    UsageWindow,
 )
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
 
@@ -60,6 +61,8 @@ class AgentPrograms(BaseModel):
     log_path: Path
     #: Whether this provider may run agents here (the owner's switch, `AgentProviderState.active`).
     active: Callable[[str], bool] = Field(default=lambda _name: True)
+    #: Each program's default login's last usage reading here (the runner's `SubscriptionWatch.login_usage`).
+    usage: Callable[[str], tuple[UsageWindow, ...]] = Field(default=lambda _name: ())
     #: How downloads reach the network (a test's own transport; None: the system's).
     transport: httpx.BaseTransport | None = None
     install_seconds: ClassVar[float] = 600
@@ -325,7 +328,7 @@ class AgentPrograms(BaseModel):
         return AgentProviderState(provider=provider.name, active=self.active(provider.name), available=installed,
                                   version=self.version(provider) if installed else "",
                                   subscription_id=subscription.id if subscription is not None else None,
-                                  usage=subscription.usage() if subscription is not None else ())
+                                  usage=subscription.usage() if subscription is not None else self.usage(provider.name))
 
     def _now(self, provider: Program, last: AgentProviderState | None, subscription: Subscription | None = None) -> AgentProviderState:
         """What `provider` is here now; `last`, a finished job's failure, while it is not signed in, and
@@ -337,7 +340,8 @@ class AgentPrograms(BaseModel):
             return last
         step: AgentProgramStep = "missing" if not base.available else "ready" if status.signed_in else "signed_out"
         kept = last.changed_at if last is not None and last.step == step else None
-        return base.model_copy(update={"step": step, "signed_in": status.signed_in, "expired": status.expired, "account": status.account, "login": status.login, "changed_at": kept})
+        return base.model_copy(update={"step": step, "signed_in": status.signed_in, "expired": status.expired, "account": status.account, "login": status.login, "changed_at": kept,
+                                       "usage": base.usage if step == "ready" else ()})
 
     def version(self, provider: Program) -> str:
         try:

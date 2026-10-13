@@ -397,3 +397,31 @@ def test_continuing_on_another_subscription_carries_the_session_never_a_credenti
         agents_resume([run_id])
     said = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
     assert (stopped.value.code, said["subscription_refusal"]["reason"], said["subscription_refusal"]["resets_at"]) == (1, "usage_limit", reopens.isoformat().replace("+00:00", "Z"))
+
+
+def test_each_login_here_says_its_own_usage_and_a_subscriptions_never_mixes_with_the_default_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Owner 2026-10-13 « I still can't see the session usage which I am at currently »: each program's default login
+    (his editor sessions') is asked its usage by its own CLI, a subscription's in its own folder; signed out: none; a CLI
+    that could not answer leaves the last reading; the server hears it once until it moves."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name in ("claude", "codex"):
+        install_fake_cli(bin_dir, name, Path(__file__).parent / "fixtures" / "agents" / "fake_usage_cli.py")
+    environment = {"PATH": os.pathsep.join((str(bin_dir), str(Path(sys.executable).parent))), "HOME": str(Path.home())}
+    monkeypatch.setenv("PATH", environment["PATH"])
+    subscription = Subscription.create(uuid4(), "claude")
+    watch = SubscriptionWatch()
+
+    asyncio.run(watch.ask(environment))
+    assert [(window.window, window.used_percent) for window in watch.login_usage("claude")] == [("five_hour", 13.0), ("weekly", 36.0)]
+    assert [(window.window, window.used_percent) for window in subscription.usage()] == [("five_hour", 13.0), ("weekly", 80.0)]
+    assert watch.login_usage("codex") == ()
+    now = datetime.now(UTC)
+    report = watch.report(now)
+    assert [(login.provider, len(login.windows)) for login in report.logins] == [("claude", 2), ("codex", 0)]  # first report: « none » too
+    assert [usage.subscription_id for usage in report.usage] == [subscription.id]
+    watch.sent(report, now)
+    assert watch.report(now) is None
+    (Path.home() / "silent").touch()
+    asyncio.run(watch.ask(environment))
+    assert [window.used_percent for window in watch.login_usage("claude")] == [13.0, 36.0]

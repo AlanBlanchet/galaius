@@ -36,13 +36,14 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapte
 
 from galaius_core import UsageWindow, UsageWindowName
 
+from galaius import installed_version
 from galaius.agents.catalog import AgentCatalog
 from galaius.agents.events import TOKEN_FIELDS, AgentEvent, TokenUsage, UsageLedger, instant, stream_lines
 from galaius.agents.profiles import overlay_for
 from galaius.agents.vocabulary import ApprovalIntent, TouchScope, ThinkingLevel, vocabulary_for
 from galaius.inbox_hook import NOTE as INBOX_NOTE
 from galaius.models import Model
-from galaius.processes import run_isolated_process
+from galaius.processes import ask_process, run_isolated_process
 
 #: Set (to anything) in the environment of an agent working in a folder whose own agent settings
 #: must not load - a workspace cloned from the web: its hooks and permission rules are code and
@@ -318,6 +319,25 @@ class AgentProvider(ABC):
     def usage(self, line: dict) -> tuple[UsageWindow, ...]:
         """The usage windows one stream line reports (`AgentEvent.usage`); none for a CLI that reports none."""
         return ()
+
+    def usage_command(self) -> tuple[list[str], tuple[dict, ...]] | None:
+        """How this CLI says its own login's usage now (every session of that login counted, the owner's own editor
+        sessions too), asked of its vendor with that login by the CLI itself: galaius never reads the credential.
+        The command and the lines it is sent; None: it has no such way."""
+        return None
+
+    def usage_answer(self, line: dict) -> tuple[UsageWindow, ...] | None:
+        """The usage an output line of `usage_command` answers (no window: none, the login signed out or metered by no
+        plan); None: not its answer."""
+        return None
+
+    async def current_usage(self, env: dict[str, str], *, timeout: float = 30) -> tuple[UsageWindow, ...] | None:
+        """The usage of the login `env` names now, as its CLI says (`usage_command`); None: it could not be asked (no
+        such command, not installed, no answer in time): its last reading stands."""
+        asked = self.usage_command() if self.available() else None
+        if asked is None:
+            return None
+        return await ask_process(asked[0], cwd=Path(env.get("HOME") or Path.home()), env=env, lines=asked[1], answer=self.usage_answer, timeout=timeout)
 
     @classmethod
     def installer(cls) -> ProgramInstaller | None:
@@ -838,6 +858,38 @@ class ClaudeCodeProvider(AgentProvider):
             for key, value in windows.items()
             if key in self.WINDOWS and isinstance(value, dict) and isinstance(value.get("utilization"), (int, float))
         )
+
+    #: The id its usage request answers under (`usage_command`).
+    USAGE_REQUEST: ClassVar[str] = "galaius-usage"
+
+    def usage_command(self) -> tuple[list[str], tuple[dict, ...]]:
+        """Its `get_usage` control request (2.1.288: its SDK's `usage_EXPERIMENTAL…`, the `/usage` screen's data): the
+        plan's windows as claude.ai has them; `skip_behaviors` skips its scan of the local transcripts (1-2 s instead of
+        15). No session kept, no settings, hooks or plugins loaded: no model turn, no transcript written."""
+        return ([self.executable(), "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
+                 "--no-session-persistence", "--setting-sources", ""],
+                ({"type": "control_request", "request_id": self.USAGE_REQUEST, "request": {"subtype": "get_usage", "skip_behaviors": True}},))
+
+    def usage_answer(self, line: dict) -> tuple[UsageWindow, ...] | None:
+        """`response.response.rate_limits`: `five_hour` / `seven_day` {utilization 0-100, resets_at ISO}; null when the
+        login has no plan windows (signed out, an API key: `rate_limits_available` false)."""
+        response = line.get("response") if line.get("type") == "control_response" else None
+        if not isinstance(response, dict) or response.get("request_id") != self.USAGE_REQUEST:
+            return None
+        answer = response.get("response") if response.get("subtype") == "success" else None
+        limits = answer.get("rate_limits") if isinstance(answer, dict) else None
+        if not isinstance(limits, dict):
+            return ()
+        now = datetime.now(UTC)
+        return tuple(UsageWindow(window=self.WINDOWS[key], used_percent=float(value["utilization"]), observed_at=now, resets_at=self._moment(value.get("resets_at")))
+                     for key, value in limits.items() if key in self.WINDOWS and isinstance(value, dict) and isinstance(value.get("utilization"), (int, float)))
+
+    @staticmethod
+    def _moment(value: object) -> datetime | None:
+        try:
+            return datetime.fromisoformat(value) if isinstance(value, str) else None
+        except ValueError:
+            return None
 
     def model_id_for(self, model: Model) -> str:
         """Derive Claude Code's hyphenated version spelling for every future catalog row."""
@@ -1812,6 +1864,24 @@ class CodexProvider(AgentProvider):
     def app_server_command(self) -> list[str]:
         """The installed local-session protocol entry point, resolved before spawning."""
         return [self.executable(), *self.platform_flags(), "app-server", "--listen", "stdio://"]
+
+    def usage_command(self) -> tuple[list[str], tuple[dict, ...]]:
+        """`account/rateLimits/read` on its app-server (0.155.1): the login's windows as ChatGPT has them."""
+        return (self.app_server_command(),
+                ({"id": 1, "method": "initialize", "params": {"clientInfo": {"name": "galaius", "title": "Galaius", "version": installed_version()}}},
+                 {"method": "initialized", "params": {}}, {"id": 2, "method": "account/rateLimits/read", "params": {}}))
+
+    def usage_answer(self, line: dict) -> tuple[UsageWindow, ...] | None:
+        """Its answer to request 2: `result.rateLimits` `primary` / `secondary` {usedPercent, windowDurationMins, resetsAt
+        epoch s}; an error (« codex account authentication required »): none."""
+        if line.get("id") != 2:
+            return None
+        result = line.get("result")
+        limits = result.get("rateLimits") if isinstance(result, dict) else None
+        if not isinstance(limits, dict):
+            return ()
+        return self.usage({"rate_limits": {name: {"used_percent": window.get("usedPercent"), "window_minutes": window.get("windowDurationMins"), "resets_at": window.get("resetsAt")}
+                                           for name in ("primary", "secondary") if isinstance(window := limits.get(name), dict)}})
 
     def auth_command(self) -> list[str]:
         return [self.executable(), "login", "status"]

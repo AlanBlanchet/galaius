@@ -835,6 +835,9 @@ class MachineRunner:
     #: How often the usage lines of runs pinned to a subscription are read (caps applied) and moved
     #: usage goes to the server (`SubscriptionWatch`).
     subscription_seconds = 5
+    #: How often, while connected, each login here is asked its usage by its own CLI (`SubscriptionWatch.ask`: 1-2 s,
+    #: about 1 s of CPU, no model turn each).
+    usage_ask_seconds = 120
     reconnect_seconds = (1, 2, 5, 10, 20)
     #: Failed tries in a row (about 10 s with `reconnect_seconds`) before its page is told why.
     report_after_failures = 3
@@ -882,7 +885,7 @@ class MachineRunner:
         self.followups = FollowUps()
         #: The agent programs the owner installs from the web, and their sign-in (`AgentPrograms`).
         self.programs = AgentPrograms(environment=self._system_environment(), log_path=self.config_path.with_name("agent-programs.log"),
-                                      active=lambda name: load_policy().provider_active(name))
+                                      active=lambda name: load_policy().provider_active(name), usage=self._subscriptions.login_usage)
 
     def _vision_worker(self, config: MachineConfig) -> VisionWorker:
         if self._vision is None or self._vision.keep_warm != config.model_keep_warm_seconds:
@@ -1025,6 +1028,16 @@ class MachineRunner:
                 logger.exception("reading subscription usage failed")
             await asyncio.sleep(self.subscription_seconds)
 
+    async def _ask_usage(self) -> None:
+        """Every `usage_ask_seconds` while connected, each login's usage as its CLI says (`SubscriptionWatch.ask`); a
+        failed pass is tried again next time."""
+        while True:
+            try:
+                await self._subscriptions.ask(self.programs.environment)
+            except Exception:  # never the connection's end: the next pass asks again
+                logger.exception("asking the logins' usage failed")
+            await asyncio.sleep(self.usage_ask_seconds)
+
     async def _report_usage(self, socket) -> None:
         """Every `subscription_seconds` while connected, the subscriptions whose usage moved enough
         (`SubscriptionWatch.report`), marked reported once sent; a pass that fails is tried again next time."""
@@ -1117,6 +1130,7 @@ class MachineRunner:
         worker = asyncio.create_task(self._command_worker(socket, config, commands))
         heartbeat = asyncio.create_task(self._heartbeat(socket, config))
         usage = asyncio.create_task(self._report_usage(socket))
+        asked = asyncio.create_task(self._ask_usage())
         upgrade = asyncio.create_task(self._leave_when_quiet(commands))
         prompts = asyncio.create_task(self._sync_prompts())
         policy = asyncio.create_task(self._renew_policy())
@@ -1129,6 +1143,7 @@ class MachineRunner:
             receiver.cancel()
             heartbeat.cancel()
             usage.cancel()
+            asked.cancel()
             upgrade.cancel()
             prompts.cancel()
             policy.cancel()
@@ -1137,7 +1152,7 @@ class MachineRunner:
             commands.put_nowait(None)
             for query in self._queries:
                 query.cancel()
-            await asyncio.gather(receiver, heartbeat, usage, upgrade, prompts, policy, *self._queries, return_exceptions=True)
+            await asyncio.gather(receiver, heartbeat, usage, asked, upgrade, prompts, policy, *self._queries, return_exceptions=True)
             await asyncio.shield(worker)
 
     async def _command_worker(self, socket, config: MachineConfig, commands: asyncio.Queue[MachineCommand | None]) -> None:

@@ -1,15 +1,18 @@
-"""The PC runner's watch over its subscriptions: the usage lines each running pinned run appends are
-read as they come (caps applied, `registry.subscription_heard`), and each subscription's usage goes
-to the server when it moved enough (`SubscriptionUsageReport`).
+"""The PC runner's watch over its logins' usage: the usage lines each running run pinned to a subscription
+appends are read as they come (caps applied, `registry.subscription_heard`); every login here, each
+program's default one (the owner's own editor sessions') and each subscription's, is asked its usage now
+by its own CLI (`ask`, `AgentProvider.current_usage`); what moved goes to the server (`SubscriptionUsageReport`).
 
 Its own reader, not the registry's event fold: `registry.append_event` folds a CONVERSATION's events
 only, and the incremental stream mirror runs in the MCP server's loop, not in the runner; and Codex
 writes its usage only into its session record inside the subscription folder, never on the stream."""
 
+import asyncio
 from datetime import datetime
 from pathlib import Path
+from typing import get_args
 
-from galaius_core import SubscriptionUsageReport
+from galaius_core import AgentProvider, LoginUsage, SubscriptionUsageReport, UsageWindow
 from pydantic import BaseModel, PrivateAttr
 
 from galaius.agents import registry as reg
@@ -18,11 +21,40 @@ from galaius.agents.providers import PROVIDERS
 from galaius.agents.subscriptions import Subscription
 
 
+class LoginReading(BaseModel):
+    """A program's default login here: its last usage reading, and the one last reported (None: none since this runner
+    started, so the server's, maybe older, is replaced by the first)."""
+
+    usage: tuple[UsageWindow, ...] = ()
+    reported: tuple[UsageWindow, ...] | None = None
+    reported_at: datetime | None = None
+
+
 class SubscriptionWatch(BaseModel):
-    """Byte offsets into each file it reads (a run's raw stream, a Codex session record): a line is read once."""
+    """Byte offsets into each file it reads (a run's raw stream, a Codex session record): a line is read once; each
+    program's default login's reading (`ask`)."""
 
     _offsets: dict[Path, int] = PrivateAttr(default_factory=dict)
     _records: dict[str, Path] = PrivateAttr(default_factory=dict)
+    _logins: dict[AgentProvider, LoginReading] = PrivateAttr(default_factory=dict)
+
+    async def ask(self, environment: dict[str, str]) -> None:
+        """Each program's default login (`environment`: the system variables), then each subscription in its own folder:
+        its usage now as its CLI says, one CLI at a time. Not installed: no reading; a CLI that could not answer leaves
+        the last one. A subscription's reading goes to its folder (`Subscription.observe`, as a run's would)."""
+        for name in get_args(AgentProvider):
+            provider = PROVIDERS[name]
+            usage = await provider.current_usage(environment) if provider.available() else ()
+            if usage is not None:
+                self._logins[name] = self._logins.get(name, LoginReading()).model_copy(update={"usage": usage})
+        for subscription in await asyncio.to_thread(Subscription.all):
+            if usage := await subscription.program.current_usage({**environment, **subscription.overlay()}):
+                await asyncio.to_thread(subscription.observe, usage)
+
+    def login_usage(self, provider: AgentProvider) -> tuple[UsageWindow, ...]:
+        """`provider`'s default login's last reading here (`ask`)."""
+        reading = self._logins.get(provider)
+        return () if reading is None else reading.usage
 
     def heard(self) -> None:
         """Every running run pinned to a subscription: the usage lines appended since the last call."""
@@ -40,12 +72,15 @@ class SubscriptionWatch(BaseModel):
         """What the server should hear now (`Subscription.report_due`); None: nothing. Marked reported
         only once sent (`sent`)."""
         due = tuple(usage for subscription in Subscription.all() if (usage := subscription.report_due(now)) is not None)
-        return SubscriptionUsageReport(usage=due) if due else None
+        logins = tuple(LoginUsage(provider=name, windows=reading.usage) for name, reading in self._logins.items()
+                       if reading.reported is None or SubscriptionUsageReport.due(reading.usage, reading.reported, reading.reported_at, now))
+        return SubscriptionUsageReport(usage=due, logins=logins) if due or logins else None
 
-    @staticmethod
-    def sent(report: SubscriptionUsageReport, now: datetime) -> None:
+    def sent(self, report: SubscriptionUsageReport, now: datetime) -> None:
         for usage in report.usage:
             Subscription.of(usage.subscription_id).reported(usage, now)
+        for login in report.logins:
+            self._logins[login.provider] = self._logins[login.provider].model_copy(update={"reported": login.windows, "reported_at": now})
 
     def _session_record(self, run: reg.AgentRun) -> Path | None:
         """A Codex run's session record in its subscription's folder (`sessions/**/rollout-*-<thread>.jsonl`),

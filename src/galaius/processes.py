@@ -4,15 +4,16 @@ import asyncio
 import ctypes
 import ctypes.util
 import functools
+import json
 import os
 import re
 import shutil
 import signal
 import subprocess
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import ClassVar, Self
+from typing import ClassVar, Self, TypeVar
 
 from pydantic import BaseModel, ConfigDict
 
@@ -20,6 +21,7 @@ if sys.platform == "win32":
     from ctypes import wintypes
 
 _OUTPUT_LIMIT = 2 * 1024 * 1024
+T = TypeVar("T")
 _STDIN_LIMIT = 1024 * 1024
 _TERM_GRACE = 0.75
 _PIPE_GRACE = 0.25
@@ -244,6 +246,37 @@ async def run_isolated_process(
     finally:
         stdout, stderr = await _finish_process_io(stdout_task, stderr_task, stdin_task)
     return process.returncode or 0, stdout, stderr
+
+
+async def ask_process(argv: list[str], *, cwd: Path, env: dict[str, str], lines: Sequence[dict], answer: Callable[[dict], T | None], timeout: float) -> T | None:
+    """Run argv in its own process group, send it `lines` (one JSON object a line) and return the first JSON line of its
+    output `answer` reads (not None); None when it ended, could not start, or `timeout` passed first. Its input stays
+    open until then (a protocol server ends at end of input, answered or not); its process tree is stopped after."""
+    try:
+        process = await asyncio.create_subprocess_exec(*spawnable(argv, env), cwd=cwd, env=env, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+                                                       stderr=asyncio.subprocess.DEVNULL, limit=_OUTPUT_LIMIT, **process_group_options())
+    except OSError:
+        return None
+
+    async def answered() -> T | None:
+        assert process.stdin is not None and process.stdout is not None
+        process.stdin.write(b"".join(json.dumps(line).encode() + b"\n" for line in lines))
+        await process.stdin.drain()
+        while raw := await process.stdout.readline():
+            try:
+                value = json.loads(raw)
+            except ValueError:
+                continue
+            if isinstance(value, dict) and (found := answer(value)) is not None:
+                return found
+        return None
+
+    try:
+        return await asyncio.wait_for(answered(), timeout)
+    except (TimeoutError, OSError, ValueError):  # no answer in time, its input closed early, a line past the limit
+        return None
+    finally:
+        await stop_process_tree(process)
 
 
 def process_started(pid: int) -> int | None:

@@ -282,15 +282,10 @@ class Subscription(BaseModel):
             raise SubscriptionCapped(cap)
 
     def report_due(self, now: datetime) -> SubscriptionUsage | None:
-        """Its usage when the server should hear it now: a window moved `REPORT_POINTS` or more since
-        the last report, or anything changed and `REPORT_SECONDS` passed since it."""
+        """Its usage when the server should hear it now (`SubscriptionUsageReport.due`)."""
         state = self.state()
-        if not state.usage or state.usage == state.reported:
-            return None
-        last = {window.window: window.used_percent for window in state.reported}
-        moved = any(abs(window.used_percent - last.get(window.window, -100.0)) >= SubscriptionUsageReport.REPORT_POINTS for window in state.usage)
-        waited = state.reported_at is None or (now - state.reported_at).total_seconds() >= SubscriptionUsageReport.REPORT_SECONDS
-        return SubscriptionUsage(subscription_id=self.id, windows=state.usage) if moved or waited else None
+        due = state.usage and SubscriptionUsageReport.due(state.usage, state.reported, state.reported_at, now)
+        return SubscriptionUsage(subscription_id=self.id, windows=state.usage) if due else None
 
     def reported(self, usage: SubscriptionUsage, now: datetime) -> None:
         self._write(self.state().model_copy(update={"reported": usage.windows, "reported_at": now}))
