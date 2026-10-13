@@ -64,8 +64,9 @@ class _ConversationTransport(BaseModel, ABC):
     @abstractmethod
     async def cancel_turn(self, *, conversation_id: str, turn_id: str) -> None: ...
 
-    async def compact_conversation(self, *, conversation_id: str) -> None:
-        """Have the provider replace the conversation so far with its summary; a route that cannot refuses."""
+    async def compact_conversation(self, *, conversation_id: str) -> _TurnStart:
+        """Have the provider replace the conversation so far with its summary, a turn of its own (the run's
+        active turn until it ends); a route that cannot refuses."""
         del conversation_id
         raise CompactionUnsupported("this conversation's provider cannot compact it")
 

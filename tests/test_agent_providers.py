@@ -17,6 +17,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from galaius_core import ContextGauge
 
 from galaius.agents.events import TOKEN_FIELDS, AgentEvent, UsageLedger
 from galaius.agents.providers import (
@@ -564,7 +565,7 @@ def test_the_context_gauge_and_a_manual_compaction_read_off_a_real_compacted_ses
     [compacted] = [e for e in events if e.kind == "compacted"]
     assert (compacted.compaction, compacted.compacted_from, compacted.context_tokens) == ("manual", 22560, 1769)
     assert [e.kind for e in events if e.raw_type == "user"] == ["injected"]  # the summary; the replayed stdout is dropped
-    assert StreamDigest.of("", events, viewer="").context == {"context_tokens": 1769, "context_window": 200_000}
+    assert StreamDigest.of("", events, viewer="").context == ContextGauge(context_tokens=1769, context_window=200_000, compactions=1)
     subagent = json.loads(lines[2]) | {"parent_tool_use_id": "toolu_example"}
     assert provider.parse(json.dumps(subagent), UsageLedger()).context_tokens is None
 

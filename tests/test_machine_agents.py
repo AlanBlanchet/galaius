@@ -343,7 +343,7 @@ def test_the_web_reads_a_runs_context_gauge_and_compacts_it_as_a_queued_turn(bas
     assert (listed[run_id].context_tokens, listed[run_id].context_window) == (63_028, 1_000_000)
     request = _request("compact", run_id=run_id)
     assert _answer(agents, request).detail == "compacting"
-    assert [(item.kind, item.message_id) for item in agent_queue.items(run_id)] == [("compact", str(request.id))]
+    assert [(item.turn.kind, item.message_id) for item in agent_queue.items(run_id)] == [("compact", str(request.id))]
     with pytest.raises(RuntimeError, match="cannot compact"):
         _answer(agents, _request("compact", run_id=codex_id))
 

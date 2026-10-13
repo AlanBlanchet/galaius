@@ -18,14 +18,16 @@ import subprocess
 import sys
 import time
 import uuid
+from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from galaius.agents import registry as reg
-from galaius.agents.providers import _safe_process_detail
+from galaius.agents.events import AgentEvent
+from galaius.agents.providers import _CLIP, AgentProvider, _safe_process_detail, provider_for
 from galaius.inbox_hook import HEADING, OPERATOR
 from galaius.processes import process_started
 from galaius.upgrade.store import Runtime, RuntimeStore, active_interpreter
@@ -44,9 +46,84 @@ QueueState = Literal["pending", "running", "replied", "failed", "cancelled", "un
 #: What a queue file holds only while one of its items is still pending (its state, as written).
 PENDING_MARK = '"pending"'
 AttemptState = Literal["replied", "failed", "uncertain"]
-#: What a queued turn does: deliver a message, or compact the conversation (`AgentProvider.compact_prompt`, the
-#: turn's whole prompt: only ever a turn of its own, never handed to a turn already running).
-QueueKind = Literal["message", "compact"]
+
+
+class QueuedTurn(BaseModel, ABC):
+    """What a queued turn does. Each kind owns how it is checked when queued, what its recipient's
+    transcript records, what its turn sends, whether a turn already running may read it, and the event
+    that accepts its attempt."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    #: A turn already running may read it at its next step (the inbox hook), when its CLI reads mid-turn
+    #: and the run is unfenced; otherwise it is a turn of its own, and what was queued after it waits behind it.
+    mid_turn: ClassVar[bool]
+    #: Its attempt's error when its turn ended without an event accepting it (`accepts`).
+    unaccepted: ClassVar[str]
+
+    @abstractmethod
+    def refusal(self, text: str, provider: AgentProvider) -> str | None:
+        """Why it cannot be queued for a run of `provider`; None when it can."""
+
+    @abstractmethod
+    def entry(self, text: str, origin: reg.AgentRun | None) -> str | None:
+        """What its recipient's transcript records as sent to it by `origin` (None: the person); None: nothing."""
+
+    @abstractmethod
+    def prompt(self, run: reg.AgentRun, message_id: str) -> str | None:
+        """What its turn sends to `run`; None when its transcript entry is missing."""
+
+    @abstractmethod
+    def accepts(self, event: AgentEvent) -> bool:
+        """Whether `event`, of its attempt, accepts it."""
+
+
+class MessageTurn(QueuedTurn):
+    """A message: recorded on its recipient's transcript, read by the turn running when its CLI can."""
+
+    kind: Literal["message"] = "message"
+    mid_turn = True
+    unaccepted = "resumed turn completed without a reply; resend explicitly"
+
+    def refusal(self, text: str, provider: AgentProvider) -> str | None:
+        """The same transcript-sized input boundary on every sending surface."""
+        if not text.strip():
+            return "message must contain text."
+        return f"message exceeds the {_CLIP}-character transcript limit." if len(text) > _CLIP else None
+
+    def entry(self, text: str, origin: reg.AgentRun | None) -> str | None:
+        return text if origin is None else origin.handoff_header() + text
+
+    def prompt(self, run: reg.AgentRun, message_id: str) -> str | None:
+        message = reg.message_for(run.run_id, message_id)
+        return None if message is None else message.text
+
+    def accepts(self, event: AgentEvent) -> bool:
+        return (event.kind == "text" or (event.kind == "done" and event.final_text)) and bool(event.text.strip())
+
+
+class CompactionTurn(QueuedTurn):
+    """A compaction: its CLI's own command (`AgentProvider.compact_prompt`) as a turn of its own; nobody wrote
+    it, so nothing is recorded as sent; its `compacted` event accepts it."""
+
+    kind: Literal["compact"] = "compact"
+    mid_turn = False
+    unaccepted = "the provider did not compact the conversation"
+
+    def refusal(self, text: str, provider: AgentProvider) -> str | None:
+        return f"the {provider.name!r} CLI cannot compact its conversation." if provider.compact_prompt is None else None
+
+    def entry(self, text: str, origin: reg.AgentRun | None) -> str | None:
+        return None
+
+    def prompt(self, run: reg.AgentRun, message_id: str) -> str | None:
+        return provider_for(run.provider).compact_prompt
+
+    def accepts(self, event: AgentEvent) -> bool:
+        return event.kind == "compacted"
+
+
+QueuedTurnValue = Annotated[MessageTurn | CompactionTurn, Field(discriminator="kind")]
 
 
 class QueueItem(BaseModel):
@@ -55,7 +132,7 @@ class QueueItem(BaseModel):
     id: str = Field(min_length=1, max_length=80)
     message_id: str = Field(min_length=1, max_length=160)
     sender: str = Field(min_length=1, max_length=160)
-    kind: QueueKind = "message"
+    turn: QueuedTurnValue = MessageTurn()
     state: QueueState = "pending"
     enqueued_at: float
     started_at: float | None = None
@@ -125,7 +202,7 @@ def can_enqueue_locked(run_id: str) -> bool:
     return sum(item.state in {"pending", "running"} for item in _items(state)) < MAX_PENDING
 
 
-def enqueue_locked(run_id: str, *, message_id: str, sender: str, kind: QueueKind = "message") -> QueueItem | None:
+def enqueue_locked(run_id: str, *, message_id: str, sender: str, turn: QueuedTurn = MessageTurn()) -> QueueItem | None:
     """Append one item while the caller owns ``registry.record_lock(run_id)``."""
     state = _state(run_id)
     items = _items(state)
@@ -137,7 +214,7 @@ def enqueue_locked(run_id: str, *, message_id: str, sender: str, kind: QueueKind
         id=uuid.uuid4().hex,
         message_id=message_id,
         sender=sender,
-        kind=kind,
+        turn=turn,
         enqueued_at=time.time(),
     )
     state["version"] = 1
@@ -146,9 +223,9 @@ def enqueue_locked(run_id: str, *, message_id: str, sender: str, kind: QueueKind
     return item
 
 
-def enqueue(run_id: str, *, message_id: str, sender: str, kind: QueueKind = "message") -> QueueItem | None:
+def enqueue(run_id: str, *, message_id: str, sender: str, turn: QueuedTurn = MessageTurn()) -> QueueItem | None:
     with reg.record_lock(run_id):
-        return enqueue_locked(run_id, message_id=message_id, sender=sender, kind=kind)
+        return enqueue_locked(run_id, message_id=message_id, sender=sender, turn=turn)
 
 
 def _replace_item_locked(run_id: str, item_id: str, **updates) -> QueueItem | None:
@@ -343,14 +420,14 @@ def inject(run_id: str) -> list[str]:
         for item in _items(_state(run_id)):
             if item.state != "pending":
                 continue
-            if item.kind == "compact":
+            if not item.turn.mid_turn:
                 break  # a turn of its own once this one ends; what was sent after it waits behind it
-            message = reg.message_for(run_id, item.message_id)
-            if message is None:
+            text = item.turn.prompt(run, item.message_id)
+            if text is None:
                 _replace_item_locked(run_id, item.id, state="failed", finished_at=time.time(), error="message transcript entry is missing")
                 continue
             _replace_item_locked(run_id, item.id, state="running", started_at=time.time(), raw_index=anchor, attempt_token=uuid.uuid4().hex, error="")
-            said.append((item, message.text))
+            said.append((item, text))
     return [f"{HEADING.format(who=item.writer)}\n\n{text}" for item, text in said]
 
 
@@ -375,8 +452,7 @@ def _fresh_policy(run: reg.AgentRun):
 
 
 def _classify_attempt(run_id: str, item: QueueItem) -> tuple[AttemptState, str]:
-    """Classify one persisted provider attempt without treating exit as acceptance: a message is
-    accepted by a reply, a compaction by the provider's `compacted` event."""
+    """Classify one persisted provider attempt without treating exit as acceptance (`QueuedTurn.accepts`)."""
     raw_index = item.raw_index
     if raw_index is None:
         return "uncertain", "resumed turn has no persisted attempt anchor; resend explicitly"
@@ -385,22 +461,15 @@ def _classify_attempt(run_id: str, item: QueueItem) -> tuple[AttemptState, str]:
         event for event in events
         if event.raw_index is not None and event.raw_index >= raw_index
     ]
-    replies = [
-        event for event in attempt_events
-        if (event.kind == "text" or (event.kind == "done" and event.final_text))
-        and event.text.strip()
-    ]
+    accepted = any(item.turn.accepts(event) for event in attempt_events)
     terminal = next(
         (event for event in reversed(attempt_events) if event.kind in {"done", "error"}),
         None,
     )
-    if item.kind == "compact":
-        replies = [event for event in attempt_events if event.kind == "compacted"]
-    if terminal is not None and terminal.kind == "done" and replies:
+    if terminal is not None and terminal.kind == "done" and accepted:
         return "replied", ""
     if terminal is not None:
-        return "failed", ("the provider did not compact the conversation" if item.kind == "compact"
-                          else "resumed turn completed without a reply; resend explicitly")
+        return "failed", item.turn.unaccepted
     return "uncertain", "resumed turn acceptance was not confirmed; resend explicitly"
 
 
@@ -467,8 +536,8 @@ def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
                 else:
                     item = claim_next_locked(run_id)
                     if item is not None:
-                        message = reg.message_for(run_id, item.message_id)
-                        if message is None:
+                        prompt = item.turn.prompt(run, item.message_id)
+                        if prompt is None:
                             _replace_item_locked(
                                 run_id, item.id, state="failed", finished_at=time.time(),
                                 error="message transcript entry is missing",
@@ -481,7 +550,7 @@ def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
                                 from galaius.agents.run import launch_continuation
                                 lifecycle = launch_continuation(
                                     provider, run, run.provider_session_id or run.run_id,
-                                    message.text, model=model, criterion=criterion,
+                                    prompt, model=model, criterion=criterion,
                                     reasoning=reasoning, raw_index=item.raw_index or 0,
                                     record_locked=True,
                                 )

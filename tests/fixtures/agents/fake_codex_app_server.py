@@ -4,6 +4,7 @@
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 
@@ -184,25 +185,31 @@ class _FakeCodexAppServer:
             self._after_turn_start(message["params"]["threadId"], turn_id)
             return
         if method == "thread/compact/start":
-            # codex 0.155.1 (`generate-json-schema`): an empty result, then the compaction runs as a
-            # turn of its own carrying one `contextCompaction` item.
+            # codex 0.155.1, captured live: an empty result, then the compaction as a turn of its own carrying one
+            # `contextCompaction` item; the size it left is reported between the item's start and end (`last`:
+            # `inputTokens` 0, `totalTokens` the new size). A refused compaction: no item end, an `error`, a failed turn.
             thread_id = params["threadId"]
             self.turns += 1
             turn_id = f"turn-{self.turns}"
             turn = {"id": turn_id, "status": "inProgress", "items": [], "error": None}
             self._write({"id": request_id, "result": {}})
+            time.sleep(0.3)  # Codex takes seconds to name its turn: a send meanwhile must find the run busy
             self._write({"method": "turn/started", "params": {"threadId": thread_id, "turn": turn}})
             item = {"type": "contextCompaction", "id": f"compaction-{self.turns}"}
             self._write({"method": "item/started", "params": {"threadId": thread_id, "turnId": turn_id, "item": item, "startedAtMs": self.turns * 1_000}})
-            self._write({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": item, "completedAtMs": self.turns * 1_000}})
-            self._write({"method": "thread/compacted", "params": {"threadId": thread_id, "turnId": turn_id}})
+            if self.config.get("compaction") == "refused":
+                failure = {"message": "Error running remote compact task: refused", "codexErrorInfo": "other"}
+                self._write({"method": "error", "params": {"error": failure, "willRetry": False, "threadId": thread_id, "turnId": turn_id}})
+                self._write({"method": "turn/completed", "params": {"threadId": thread_id, "turn": {**turn, "status": "failed", "error": failure}}})
+                return
             total = {"inputTokens": self.turns * 10, "cachedInputTokens": self.turns * 2, "outputTokens": self.turns * 5,
                      "reasoningOutputTokens": 0, "totalTokens": self.turns * 15, "cacheWriteInputTokens": self.turns}
-            last = {"inputTokens": 3, "cachedInputTokens": 0, "outputTokens": 1, "reasoningOutputTokens": 0, "totalTokens": 4}
+            last = {"inputTokens": 0, "cachedInputTokens": 0, "outputTokens": 0, "reasoningOutputTokens": 0, "totalTokens": 4}
             self._write({"method": "thread/tokenUsage/updated", "params": {
                 "threadId": thread_id, "turnId": turn_id,
                 "tokenUsage": {"total": total, "last": last, "modelContextWindow": 128_000},
             }})
+            self._write({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": item, "completedAtMs": self.turns * 1_000}})
             self._write({"method": "turn/completed", "params": {"threadId": thread_id, "turn": {**turn, "status": "completed"}}})
             return
         if method == "turn/interrupt":

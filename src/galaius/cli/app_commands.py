@@ -20,7 +20,7 @@ from pydantic import ValidationError
 from galaius import feedback, live_sources, model_catalog, ollama
 from galaius_core import AGENT_TOUCH_SCOPES
 
-from galaius.agents import messaging
+from galaius.agents import agent_queue, messaging
 from galaius.agents import quota
 from galaius.agents import providers as agent_providers
 from galaius.agents import registry as reg
@@ -999,7 +999,7 @@ def agents_compact(run_id: str) -> None:
     """Compact an agent's conversation: its CLI replaces what was said so far with its own summary,
     freeing its context. A turn of its own: a run at work compacts once its turn ends."""
 
-    delivery = messaging.deliver_message(run_id, "", kind="compact")
+    delivery = messaging.deliver_message(run_id, "", turn=agent_queue.CompactionTurn())
     if (refused := messaging.wait_for_start(delivery)) is not None:
         print(f"ERROR: the compaction did not start: {refused}")
         raise SystemExit(1)

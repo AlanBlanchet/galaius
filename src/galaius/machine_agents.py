@@ -958,14 +958,14 @@ class MachineAgents(BaseModel):
         return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=delivery.text, reads_at=delivery.reads_at)
 
     async def _compact(self, request: AgentCompactRequest) -> MachineAgentAnswer:
-        """Queued as a turn of its own (`QueueKind` `compact`) under the request's id: its dispatcher starts it once
+        """Queued as a turn of its own (`CompactionTurn`) under the request's id: its dispatcher starts it once
         the run is between turns; a CLI that cannot compact is refused here."""
         run = await asyncio.to_thread(self._require_run, request.run_id)
         if self._kind(request.run_id) == "continued":
             raise PermissionError("a continued editor conversation is compacted in its editor")
         environment = await asyncio.to_thread(self.launcher_environment_in, Path(run.cwd))
         delivery = await asyncio.to_thread(deliver_message, run.run_id, "", sender="operator", environment=environment,
-                                           message_id=str(request.id), kind="compact")
+                                           message_id=str(request.id), turn=agent_queue.CompactionTurn())
         if delivery.state == "error":
             raise RuntimeError(delivery.text.removeprefix("ERROR: ") or "not compacted")
         return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail="compacting", reads_at=delivery.reads_at)

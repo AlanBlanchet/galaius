@@ -22,7 +22,7 @@ from referencing.jsonschema import DRAFT7
 from galaius.agents import registry as reg
 from galaius.agents.assembly import _TransportRegistry
 from galaius.agents.codex_schema import encode_supported_response
-from galaius.agents.codex_transport import _CodexTransport, _RpcMessage
+from galaius.agents.codex_transport import _CodexTransport, _Compaction, _RpcMessage
 from galaius.agents.events import AgentEvent, ConversationInteraction, InteractionField
 from galaius.agents.host import _ConversationHost
 from galaius.agents.protocol import (
@@ -2127,11 +2127,13 @@ async def test_cumulative_usage_survives_console_process_restart(
         await _stop_console(second)
 
 
-async def test_compact_runs_as_a_codex_turn_and_resets_the_context_gauge(console_workspace) -> None:
-    """`compact` asks Codex to compact between turns; its `contextCompaction` item lands as one manual
-    `compacted` event from the size before, and the gauge reads the next call's prompt."""
+@pytest.mark.parametrize("compaction", ["completes", "refused"])
+async def test_compact_runs_as_a_codex_turn_holding_the_conversation(console_workspace, compaction: str) -> None:
+    """`compact` asks Codex to compact between turns: the conversation is busy from the request on (a send
+    before Codex names the compaction's turn is refused), its `contextCompaction` item lands as one manual
+    `compacted` event from the size before to the size it left; a refused one ends its turn and frees it."""
     root, workspace, binary_dir = console_workspace
-    _scenario(binary_dir, mode="fragmented_usage", models=["openai/example-model"])
+    _scenario(binary_dir, mode="fragmented_usage", models=["openai/example-model"], compaction=compaction)
     process = await _open_console(workspace)
     try:
         started = await _exchange(process, {
@@ -2141,16 +2143,62 @@ async def test_compact_runs_as_a_codex_turn_and_resets_the_context_gauge(console
         })
         await _event(process, "done")
         run_id = started["run"]["run_id"]
-        assert (reg.get_run(run_id).context_tokens, reg.get_run(run_id).context_window) == (10, 128_000)
-        compacted = await _exchange(process, {"version": 1, "request_id": "compact", "method": "compact", "run_id": run_id})
-        assert compacted["ok"] is True
-        event = (await _event(process, "compacted"))["event"]
-        assert (event["compaction"], event["compacted_from"]) == ("manual", 10)
-        await _event(process, "done")
-        stored = reg.get_run(run_id)
-        assert (stored.context_tokens, stored.context_window, stored.status) == (3, 128_000, "done")
+        assert (reg.get_run(run_id).context_tokens, reg.get_run(run_id).context_window) == (15, 128_000)
+        assert (await _exchange(process, {"version": 1, "request_id": "compact", "method": "compact", "run_id": run_id}))["ok"] is True
+        raced = await _exchange(process, {"version": 1, "request_id": "raced", "method": "send", "run_id": run_id, "prompt": "too soon"})
+        assert (raced["ok"], raced["error_code"]) == (False, "conflict")
+        if compaction == "refused":
+            await _event(process, "error")
+            stored = reg.get_run(run_id)
+            assert (stored.context_tokens, stored.compactions) == (15, 0)
+        else:
+            event = (await _event(process, "compacted"))["event"]
+            assert (event["compaction"], event["compacted_from"], event["context_tokens"]) == ("manual", 15, 4)
+            await _event(process, "done")
+            stored = reg.get_run(run_id)
+            assert (stored.context_tokens, stored.context_window, stored.compactions, stored.status) == (4, 128_000, 1, "done")
+        after = await _exchange(process, {"version": 1, "request_id": "after", "method": "send", "run_id": run_id, "prompt": "second"})
+        assert after["ok"] is True
     finally:
         await _stop_console(process)
+
+
+def test_codex_compactions_read_off_its_real_frame_order(tmp_path: Path) -> None:
+    """Codex 0.155.1 frames as captured live (ids synthetic): the gauge is `last.totalTokens`; a compaction
+    reports the size it left between its item's start and end (`inputTokens` 0); one refused ends its turn
+    with no item end and leaves nothing behind (the next one, Codex's own, reads `auto`); one whose size
+    is never reported carries None, never the size before it."""
+    transport = _CodexTransport(provider=CodexProvider(), workspace_root=tmp_path)
+    run = reg.AgentRun(run_id="run", provider="codex", name="run", cwd=str(tmp_path), provider_session_id="thread")
+    transport.bind_conversation(run)
+    window = 258_400
+
+    def usage(turn: str, last_input: int, last_total: int) -> dict:
+        total = {"totalTokens": 32_342, "inputTokens": 32_147, "cachedInputTokens": 6_912, "cacheWriteInputTokens": 0, "outputTokens": 195, "reasoningOutputTokens": 69}
+        last = {**total, "inputTokens": last_input, "totalTokens": last_total}
+        return {"method": "thread/tokenUsage/updated", "params": {"threadId": "thread", "turnId": turn, "tokenUsage": {"total": total, "last": last, "modelContextWindow": window}}}
+
+    def compaction(turn: str, stage: str) -> dict:
+        key = "startedAtMs" if stage == "started" else "completedAtMs"
+        return {"method": f"item/{stage}", "params": {"threadId": "thread", "turnId": turn, "item": {"type": "contextCompaction", "id": f"{turn}-c"}, key: 1}}
+
+    def ended(turn: str, status: str) -> dict:
+        return {"method": "turn/completed", "params": {"threadId": "thread", "turn": {"id": turn, "items": [], "status": status, "error": None}}}
+
+    def events(*frames: dict) -> list[AgentEvent]:
+        return [update.event for frame in frames for update in transport._normalize_message(_RpcMessage.model_validate(frame))]
+
+    [said] = events(usage("t1", 32_147, 32_342))
+    assert (said.context_tokens, said.context_window) == (32_342, window)
+    transport._compactions["thread"] = _Compaction(trigger="manual")  # as `compact_conversation` asks it
+    events(compaction("t2", "started"), {"method": "error", "params": {"threadId": "thread", "turnId": "t2", "error": {"message": "refused"}, "willRetry": False}}, ended("t2", "failed"))
+    assert transport._compactions == {}
+    events(usage("t3", 30_000, 30_100))
+    *_, compacted = events(compaction("t3", "started"), usage("t3", 0, 4_825), compaction("t3", "completed"))
+    assert (compacted.kind, compacted.compaction, compacted.compacted_from, compacted.context_tokens, compacted.compactions) == ("compacted", "auto", 30_100, 4_825, 1)
+    [unsized] = events(compaction("t4", "started"), compaction("t4", "completed"))
+    assert (unsized.compacted_from, unsized.context_tokens) == (4_825, None)
+    assert unsized.gauge_onto(reg.AgentRun(run_id="run", provider="codex", name="run", cwd=".", context_tokens=4_825, compactions=1)) == {"context_tokens": None, "compactions": 2}
 
 
 @pytest.mark.parametrize("terminal", ["done", "failed", "cancelled"])

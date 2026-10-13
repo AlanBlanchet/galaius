@@ -298,12 +298,12 @@ class FollowUps(BaseModel):
             item = agent_queue.claim_locked(run_id, delivery.queue_id or "")
             if item is None:
                 return None
-            message = reg.message_for(run_id, item.message_id)
-            current = reg.begin_turn_locked(run_id, pid=pid, model=launch.model, requested_criterion=launch.criterion, reasoning=launch.reasoning) if message is not None else None
-            if message is None or current is None or current.lifecycle_token is None:
+            text = item.turn.prompt(run, item.message_id)
+            current = reg.begin_turn_locked(run_id, pid=pid, model=launch.model, requested_criterion=launch.criterion, reasoning=launch.reasoning) if text is not None else None
+            if text is None or current is None or current.lifecycle_token is None:
                 agent_queue.release_locked(run_id, item.id)  # its dispatcher fails it as it fails any such item
                 return None
-            return Claimed(item=item, text=message.text, lifecycle_token=current.lifecycle_token)
+            return Claimed(item=item, text=text, lifecycle_token=current.lifecycle_token)
 
     @staticmethod
     def _release(run_id: str, item_id: str) -> None:

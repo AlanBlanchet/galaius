@@ -470,8 +470,9 @@ class _ConversationHost(BaseModel):
         )
 
     async def _compact(self, command: CompactCommand) -> ConversationResponseValue:
-        """Compaction runs as the provider's own turn, so only between turns; its `compacted` event
-        reaches the run through the transport consumer like any other."""
+        """Compaction runs as the provider's own turn, so only between turns, and holds the run's turn until
+        it ends (a send meanwhile is refused as one during a turn); its `compacted` event reaches the run
+        through the transport consumer like any other."""
         run = reg.get_run(command.run_id)
         if run is None or run.kind != "conversation" or run.provider_session_id is None:
             return self._error(command.request_id, command.method, "not_found", "Conversation does not exist.")
@@ -486,7 +487,10 @@ class _ConversationHost(BaseModel):
                 )
                 connection.bind_conversation(run)
             self._ensure_transport_consumer(connection)
-            await connection.compact_conversation(conversation_id=run.provider_session_id)
+            # Held as `_begin_turn` holds a turn: its active turn is set before the consumer can project its end.
+            async with self._projection_lock:
+                started = await connection.compact_conversation(conversation_id=run.provider_session_id)
+                self._active_turns[run.run_id] = started.turn_id
         except CompactionUnsupported as refused:
             return self._error(command.request_id, command.method, "incompatible", str(refused))
         except (ConnectionError, ValidationError, ValueError):

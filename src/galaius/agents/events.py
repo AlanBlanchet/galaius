@@ -15,7 +15,7 @@ from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from galaius_core import CompactionTrigger, UsageWindow
+from galaius_core import CompactionTrigger, ContextGauge, UsageWindow
 
 from galaius.models import TokenMix
 
@@ -199,9 +199,8 @@ class TokenUsage(BaseModel):
 #: fold, heal and persisted-field list iterates THIS tuple, so a field cannot be summed on one
 #: path and dropped on another.
 TOKEN_FIELDS: tuple[str, ...] = tuple(TokenUsage.model_fields)
-#: The context gauge shared by :class:`AgentEvent` and the run record: a SNAPSHOT, so every fold
-#: keeps the newest reported value (never a sum, unlike `TOKEN_FIELDS`).
-CONTEXT_FIELDS: tuple[str, ...] = ("context_tokens", "context_window")
+#: The context gauge fields shared by :class:`AgentEvent` and the run record (`AgentEvent.gauge_onto` folds them).
+CONTEXT_FIELDS: tuple[str, ...] = tuple(ContextGauge.model_fields)
 
 
 class _UsageCheckpoint(BaseModel):
@@ -285,7 +284,7 @@ class UsageLedger(BaseModel):
         return delta, cost
 
 
-class AgentEvent(BaseModel):
+class AgentEvent(ContextGauge):
     """A single thing that happened inside an agent run, provider-agnostic."""
 
     kind: EventKind
@@ -340,15 +339,25 @@ class AgentEvent(BaseModel):
     at: float | None = None
     #: A `rate_limit` event's usage windows as the vendor reported them (`AgentProvider.usage`).
     usage: tuple[UsageWindow, ...] = ()
-    #: How full the conversation is: the prompt of the newest main-thread model call (fresh input,
-    #: cache reads and cache writes), never a run total; on a `compacted` event, its size after.
-    #: None when this event reports no call.
-    context_tokens: int | None = None
-    #: The model's context window as the provider reported it; None when it did not (never guessed).
-    context_window: int | None = None
-    #: A `compacted` event's trigger and its context size before (None when the provider does not say).
+    #: A `compacted` event's trigger and its context size before (None when the provider does not say);
+    #: its `context_tokens` is the size it left.
     compaction: CompactionTrigger | None = None
     compacted_from: int | None = None
+
+    @model_validator(mode="after")
+    def _one_compaction(self) -> Self:
+        if self.kind == "compacted":
+            self.compactions = 1
+        return self
+
+    def gauge_onto(self, gauge: ContextGauge) -> dict[str, int | None]:
+        """What this event changes of a run's context `gauge`: the size and window it reports (newest
+        wins), its compactions added; a compaction sets the size it left, None when its CLI did not say
+        (never the stale size from before it)."""
+        updates: dict[str, int | None] = {field: value for field in ("context_tokens", "context_window") if (value := getattr(self, field)) is not None}
+        if self.compactions:
+            updates |= {"context_tokens": self.context_tokens, "compactions": gauge.compactions + self.compactions}
+        return updates
 
     def summary(self, viewer: str | None = None) -> str:
         """One line for a supervisor row — what this agent is doing right now."""

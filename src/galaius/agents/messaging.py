@@ -16,19 +16,10 @@ from galaius_core import ReadsAt
 from galaius.agents import agent_queue
 from galaius.agents import registry as reg
 from galaius.agents.policy import PolicyError
-from galaius.agents.providers import AgentProvider, _CLIP, provider_for
+from galaius.agents.providers import AgentProvider, provider_for
 from galaius.agents.run import ModelUnavailable, load_policy, resolve_continuable_model
 
 DeliveryState = Literal["queued", "replied", "error"]
-
-
-def _validate_message(message: str) -> str | None:
-    """Apply the same transcript-sized input boundary to every sending surface."""
-    if not isinstance(message, str) or not message.strip():
-        return "ERROR: message must contain text."
-    if len(message) > _CLIP:
-        return f"ERROR: message exceeds the {_CLIP}-character transcript limit."
-    return None
 
 
 class Delivery(BaseModel):
@@ -52,7 +43,7 @@ class Delivery(BaseModel):
         inside the fence)."""
         waiting = [other.id for other in agent_queue.items_locked(run.run_id) if other.state in {"pending", "running"}]
         working = item.state == "pending" and ((item.id in waiting and waiting.index(item.id) > 0) or run.working())
-        mid_turn = item.kind == "message" and run.fence is None and provider_for(run.provider).reads_mid_turn
+        mid_turn = item.turn.mid_turn and run.fence is None and provider_for(run.provider).reads_mid_turn
         reads_at: ReadsAt = "now" if not working else "next_step" if mid_turn else "turn_end"
         return cls(state="queued", text=f"Queued for {run.name} ({run.run_id[:8]}), delivery {item.id[:8]}.", run_id=run.run_id,
                    queue_id=item.id, reads_at=reads_at, repeated=repeated)
@@ -144,13 +135,13 @@ def _session_id(run) -> str | None:
 
 def deliver_message(
     run_id: str, message: str, *, sender: str | None = None, environment: Mapping[str, str] | None = None, message_id: str | None = None,
-    kind: agent_queue.QueueKind = "message",
+    turn: agent_queue.QueuedTurn = agent_queue.MessageTurn(),
 ) -> Delivery:
     """Record and enqueue one message (`queue_message`); a detached per-run dispatcher performs the resume.
 
     `environment` is the one the dispatcher and its resumed turn run in, and names the sender
     when `sender` does not (`GALAIUS_RUN_ID`); this process's own when None."""
-    delivery = queue_message(run_id, message, sender=sender, environment=environment, message_id=message_id, kind=kind)
+    delivery = queue_message(run_id, message, sender=sender, environment=environment, message_id=message_id, turn=turn)
     if delivery.state != "queued":
         return delivery
     refused = start_dispatcher(delivery.run_id, os.environ if environment is None else environment)
@@ -172,7 +163,7 @@ def start_dispatcher(run_id: str, environment: Mapping[str, str]) -> str | None:
 
 def queue_message(
     run_id: str, message: str, *, sender: str | None = None, environment: Mapping[str, str] | None = None, message_id: str | None = None,
-    kind: agent_queue.QueueKind = "message",
+    turn: agent_queue.QueuedTurn = agent_queue.MessageTurn(),
 ) -> Delivery:
     """Record one message and enqueue its delivery (`queued`, with its queue id), or say why not;
     whoever called delivers it: the run's dispatcher (`deliver_message`), or a long-lived launcher
@@ -184,18 +175,14 @@ def queue_message(
         with reg.record_lock(recipient := reg.resolve_run_id(run_id) or run_id):
             if (repeat := Delivery.repeat(recipient, message_id)) is not None:
                 return repeat
-    if kind == "message" and (error := _validate_message(message)):
-        return Delivery(state="error", text=error, run_id=run_id)
     speaker = sender or sender_id(environment)
     run, error = check_deliverable(run_id, sender=speaker)
     if error:
         return Delivery(state="error", text=error, run_id=run_id)
     assert run is not None
     provider = provider_for(run.provider)
-    if kind == "compact":
-        if provider.compact_prompt is None:
-            return Delivery(state="error", text=f"ERROR: the {run.provider!r} CLI cannot compact its conversation.", run_id=run.run_id)
-        message = provider.compact_prompt
+    if refused := turn.refusal(message, provider):
+        return Delivery(state="error", text=f"ERROR: {refused}", run_id=run.run_id)
     with ExitStack() as locks:
         for locked_run in sorted({run.run_id, speaker}):
             locks.enter_context(reg.record_lock(locked_run))
@@ -214,14 +201,12 @@ def queue_message(
         if message_id is not None and (repeat := Delivery.repeat(run.run_id, message_id)) is not None:
             return repeat  # queued meanwhile, by another process
         message_id = message_id or secrets.token_hex(16)
-        origin = reg.get_run(speaker)
-        if origin is not None and kind == "message":
-            message = origin.handoff_header() + message
+        entry = turn.entry(message, reg.get_run(speaker))
         try:
             # The queue intent is durable before either transcript append. A crash after this
             # point leaves a recoverable pending item instead of an invisible message.
             item = agent_queue.enqueue_locked(
-                run.run_id, message_id=message_id, sender=speaker, kind=kind,
+                run.run_id, message_id=message_id, sender=speaker, turn=turn,
             )
         except agent_queue.CorruptQueueStateError as queue_error:
             return Delivery(state="error", text=f"ERROR: {queue_error}", run_id=run.run_id)
@@ -230,10 +215,10 @@ def queue_message(
                 state="error", text=f"ERROR: {run.name}'s message queue is full.",
                 run_id=run.run_id,
             )
-        recorded_id = reg.record_message_event_locked(
-            from_run=speaker, to_run=run.run_id, text=message, event_id=message_id,
+        recorded_id = None if entry is None else reg.record_message_event_locked(
+            from_run=speaker, to_run=run.run_id, text=entry, event_id=message_id,
         )
-        if recorded_id is None:
+        if entry is not None and recorded_id is None:
             agent_queue.mark_locked(
                 run.run_id, item.id, "failed", error="message transcript entry was not recorded",
             )

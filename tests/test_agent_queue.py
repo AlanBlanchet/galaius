@@ -439,17 +439,19 @@ def test_a_compaction_waits_for_the_running_turn_and_is_settled_only_by_the_comp
     ))
     provider.reads_mid_turn, provider.compact_prompt = True, "/compact"
     reg.save_run(reg.get_run("r1").model_copy(update={"pid": os.getpid()}))
-    assert messaging.queue_message("r1", "", sender="operator", kind="compact").reads_at == "turn_end"
+    assert messaging.queue_message("r1", "", sender="operator", turn=agent_queue.CompactionTurn()).reads_at == "turn_end"
     messaging.queue_message("r1", "sent after it", sender="operator")
     assert agent_queue.inject("r1") == [] and [item.state for item in agent_queue.items("r1")] == ["pending", "pending"]
 
     reg.save_run(reg.get_run("r1").model_copy(update={"pid": 999999}))
     agent_queue.dispatch("r1")
-    assert provider.messages[0] == "/compact" and agent_queue.items("r1")[0].state == "replied"
-    assert reg.get_run("r1").context_tokens == 1769
+    assert provider.messages == ["/compact", "sent after it"] and agent_queue.items("r1")[0].state == "replied"
+    assert (reg.get_run("r1").context_tokens, reg.get_run("r1").compactions) == (1769, 2)  # this stand-in compacts on each turn
+    # Nobody wrote `/compact`: the transcript records only what the person sent.
+    assert [message.text for message in reg.read_messages("r1")] == ["sent after it"]
 
 
 def test_a_cli_without_compaction_refuses_it_before_queueing(monkeypatch):
     _setup(monkeypatch)
-    refused = messaging.queue_message("r1", "", sender="operator", kind="compact")
+    refused = messaging.queue_message("r1", "", sender="operator", turn=agent_queue.CompactionTurn())
     assert refused.state == "error" and "cannot compact" in refused.text and agent_queue.items("r1") == []

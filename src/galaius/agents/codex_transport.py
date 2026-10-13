@@ -6,6 +6,7 @@ import json
 import os
 import re
 import time
+import uuid
 from collections import deque
 from pathlib import Path
 from typing import Literal, NotRequired, Required
@@ -21,6 +22,8 @@ from pydantic import (
     ValidationError,
 )
 from typing_extensions import TypedDict
+
+from galaius_core import CompactionTrigger, ContextGauge
 
 from galaius.agents.codex_schema import (
     REJECTED_REQUEST_POLICIES,
@@ -147,6 +150,15 @@ class _RpcMessage(BaseModel):
         return self.method is None and self.id is not None
 
 
+class _Compaction(BaseModel):
+    """One compaction under way on a thread: who started it, and the size it started from (None: not reported)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    trigger: CompactionTrigger
+    before: int | None = None
+
+
 class _CodexTransport(_ConversationTransport):
     """One supervised app-server subprocess and its correlation-owned RPC state."""
 
@@ -172,8 +184,9 @@ class _CodexTransport(_ConversationTransport):
     _usage_totals: dict[str, TokenUsage] = PrivateAttr(default_factory=dict)
     #: Each thread's newest context size (`thread/tokenUsage/updated` `last`), the size a compaction starts from.
     _context_tokens: dict[str, int] = PrivateAttr(default_factory=dict)
-    #: Threads whose compaction galaius requested (`compact_conversation`); any other one is Codex's own.
-    _compacting: set[str] = PrivateAttr(default_factory=set)
+    #: Each thread's compaction under way, from its request (`compact_conversation`) or its `contextCompaction`
+    #: item's start to that item's end or its turn's (a failed compaction ends its turn with no item end).
+    _compactions: dict[str, _Compaction] = PrivateAttr(default_factory=dict)
     _delta_items: set[tuple[str, str]] = PrivateAttr(default_factory=set)
     _orphans: dict[str, list[_RpcMessage]] = PrivateAttr(default_factory=dict)
     _runs: dict[str, AgentRun] = PrivateAttr(default_factory=dict)
@@ -314,15 +327,24 @@ class _CodexTransport(_ConversationTransport):
         self._remember_turn(run.run_id, turn_id)
         return _TurnStart(turn_id=turn_id)
 
-    async def compact_conversation(self, *, conversation_id: str) -> None:
-        """`thread/compact/start` (0.155.1): Codex runs the compaction as a turn of its own, reported as a
-        `contextCompaction` item."""
-        self._compacting.add(conversation_id)
+    async def compact_conversation(self, *, conversation_id: str) -> _TurnStart:
+        """`thread/compact/start` (0.155.1): answered `{}`, then Codex runs the compaction as a turn of its own
+        (`turn/started`, a `contextCompaction` item, `turn/completed`). Until that turn names itself, the run's
+        turn is this request's own id, so nothing else starts a turn on it meanwhile."""
+        run = self._runs.get(conversation_id)
+        if run is None:
+            raise ValueError("conversation is not bound to the transport")
+        pending = f"{conversation_id}:compact:{uuid.uuid4().hex[:12]}"
+        self._compactions[conversation_id] = _Compaction(trigger="manual")
+        self._active_turns[run.run_id] = pending
         try:
             await self.request("thread/compact/start", {"threadId": conversation_id})
         except BaseException:
-            self._compacting.discard(conversation_id)
+            self._compactions.pop(conversation_id, None)
+            if self._active_turns.get(run.run_id) == pending:
+                self._active_turns.pop(run.run_id)
             raise
+        return _TurnStart(turn_id=pending)
 
     async def cancel_turn(self, *, conversation_id: str, turn_id: str) -> None:
         await self.request("turn/interrupt", {
@@ -493,6 +515,7 @@ class _CodexTransport(_ConversationTransport):
         self._delta_items = {
             item for item in self._delta_items if item[0] != conversation_id
         }
+        self._compactions.pop(conversation_id, None)
 
     def normalize_usage(
         self, *, run_id: str, thread_id: str, params: dict[str, JsonValue], turn_id: str | None
@@ -516,21 +539,19 @@ class _CodexTransport(_ConversationTransport):
         current = TokenUsage(**counts)
         delta = current.since(self._usage_totals.get(thread_id, TokenUsage()))
         self._usage_totals[thread_id] = current
-        # `last`: the newest model call alone, its `inputTokens` the whole prompt it read (cached included);
+        # `last.totalTokens`: what the thread holds after its newest model call (the prompt it read and what
+        # it wrote); during a compaction, the size it compacted to (`inputTokens` 0; 0.155.1, captured live).
         # `modelContextWindow`: the window Codex sizes this thread to.
         last = token_usage.get("last") if isinstance(token_usage, dict) else None
-        prompt = last.get("inputTokens") if isinstance(last, dict) else None
-        window = token_usage.get("modelContextWindow") if isinstance(token_usage, dict) else None
-        context = prompt if isinstance(prompt, int) and not isinstance(prompt, bool) else None
-        if context is not None:
-            self._context_tokens[thread_id] = context
+        gauge = ContextGauge.reported({"context_tokens": last.get("totalTokens") if isinstance(last, dict) else None,
+                                       "context_window": token_usage.get("modelContextWindow")})
+        if "context_tokens" in gauge:
+            self._context_tokens[thread_id] = gauge["context_tokens"]
         return AgentEvent(
             kind="other",
             event_id=f"{turn_id}:usage:{current.input_tokens}:{current.output_tokens}",
             turn_id=turn_id, agent_run_id=run_id,
-            **delta.model_dump(),
-            context_tokens=context,
-            context_window=window if isinstance(window, int) and not isinstance(window, bool) else None,
+            **delta.model_dump(), **gauge,
             raw_type="thread/tokenUsage/updated", status="running",
         )
 
@@ -701,18 +722,22 @@ class _CodexTransport(_ConversationTransport):
                 )),)
             return ()
         if item_type == "contextCompaction":
+            # The size it starts from is the thread's newest; any size reported while it runs is the one it left
+            # (Codex 0.155.1 reports it between the item's start and end); none reported: its size is unknown.
+            under_way = self._compactions.get(thread_id, _Compaction(trigger="auto"))
             if stage == "started":
+                self._compactions[thread_id] = under_way.model_copy(update={"before": self._context_tokens.pop(thread_id, None)})
                 return ()
-            requested = thread_id in self._compacting
-            self._compacting.discard(thread_id)
+            self._compactions.pop(thread_id, None)
             return (self._update(run.run_id, AgentEvent(
                 kind="compacted",
                 event_id=f"{turn_id}:{item_id}:completed",
                 provider_cursor=item_id,
                 turn_id=turn_id,
                 agent_run_id=run.run_id,
-                compaction="manual" if requested else "auto",
-                compacted_from=self._context_tokens.pop(thread_id, None),
+                compaction=under_way.trigger,
+                compacted_from=under_way.before,
+                context_tokens=self._context_tokens.get(thread_id),
                 status="running",
             )),)
         if item_type in ("commandExecution", "mcpToolCall"):
@@ -876,6 +901,7 @@ class _CodexTransport(_ConversationTransport):
             )))
         self._active_turns.clear()
         self._turn_runs.clear()
+        self._compactions.clear()
         return tuple(updates)
 
     def _remember_turn(self, run_id: str, turn_id: str) -> None:

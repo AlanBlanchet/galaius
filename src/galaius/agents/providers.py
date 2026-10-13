@@ -34,7 +34,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, model_validator
 
-from galaius_core import UsageWindow, UsageWindowName
+from galaius_core import ContextGauge, UsageWindow, UsageWindowName
 
 from galaius import installed_version
 from galaius.agents.catalog import AgentCatalog
@@ -1411,7 +1411,7 @@ class ClaudeCodeProvider(AgentProvider):
             return AgentEvent(kind="compacted", session_id=sid, raw_type=kind,
                               compaction=trigger if trigger in get_args(CompactionTrigger) else None,
                               compacted_from=before if isinstance(before, int) else None,
-                              context_tokens=after if isinstance(after, int) else None)
+                              **ContextGauge.reported({"context_tokens": after}))
 
         if kind == "system" and raw.get("subtype") == "init":
             tools = raw.get("tools") or []
@@ -1515,7 +1515,7 @@ class ClaudeCodeProvider(AgentProvider):
                 text=detail,
                 cost_usd=cost,
                 final_text=has_final,
-                context_window=window if isinstance(window, int) else None,
+                **ContextGauge.reported({"context_window": window}),
                 **({} if settled is None else settled.model_dump()),
             )
 
