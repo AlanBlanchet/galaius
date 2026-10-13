@@ -30,6 +30,7 @@ import fnmatch
 import functools
 import json
 import os
+import platform
 import shutil
 import signal
 import socket
@@ -39,13 +40,16 @@ import subprocess
 import sys
 import tempfile
 import threading
+import tomllib
+from collections.abc import Iterable
 from pathlib import Path
 from typing import ClassVar, Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from galaius_core import PlaceLevel
 
+from galaius.paths import UserPaths
 from galaius.pinned_directory import PinnedDirectory
 from galaius.places import DEPENDENCY_FOLDERS, LEVEL_RANK, NEVER_GRANTABLE, PlaceMap, split
 
@@ -451,15 +455,30 @@ def landlock_abi() -> int:
 def scope_self() -> None:
     """Landlock scopes on this process, inherited by all it starts: no abstract UNIX socket made
     outside, no signal to a process outside."""
+    landlock_self(0, (), _SCOPES)
+
+
+def landlock_self(handled: int, writable: Iterable[Path], scoped: int) -> None:
+    """One Landlock domain on this process and all it starts: the filesystem rights `handled`
+    allowed only beneath `writable` (a file gets its file rights), the scopes `scoped` (ABI 6+)."""
     libc = ctypes.CDLL(None, use_errno=True)
     libc.syscall.restype = ctypes.c_long
-    attributes = struct.pack("QQQ", 0, 0, _SCOPES)  # handled fs, handled net, scoped
-    buffer = ctypes.create_string_buffer(attributes, len(attributes))
-    ruleset = libc.syscall(_CREATE_RULESET, buffer, ctypes.c_size_t(len(attributes)), ctypes.c_uint32(0))
+    attributes = struct.pack("QQQ", handled, 0, scoped) if scoped else struct.pack("Q", handled)
+    ruleset = libc.syscall(_CREATE_RULESET, ctypes.create_string_buffer(attributes, len(attributes)), ctypes.c_size_t(len(attributes)), ctypes.c_uint32(0))
     if ruleset < 0:
         raise OSError(ctypes.get_errno(), "Landlock ruleset refused")
+    for path in writable:
+        try:
+            handle = os.open(path, os.O_PATH | os.O_CLOEXEC)
+        except OSError:
+            continue  # absent here (no /dev/shm): nothing to open
+        rule = struct.pack("=Qi", handled if stat.S_ISDIR(os.fstat(handle).st_mode) else handled & _FILE_WRITES, handle)
+        added = libc.syscall(_ADD_RULE, ctypes.c_int(ruleset), ctypes.c_int(_PATH_BENEATH), ctypes.create_string_buffer(rule, len(rule)), ctypes.c_uint32(0))
+        os.close(handle)
+        if added != 0:
+            raise OSError(ctypes.get_errno(), f"Landlock refused a rule for {path}")
     if libc.prctl(_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 or libc.syscall(_RESTRICT_SELF, ctypes.c_int(ruleset), ctypes.c_uint32(0)) != 0:
-        raise OSError(ctypes.get_errno(), "Landlock scopes could not be applied")
+        raise OSError(ctypes.get_errno(), "Landlock could not be applied")
     os.close(ruleset)
 
 
@@ -526,6 +545,319 @@ def outer(hosts: tuple[str, ...], guard: SteeringGuard, argv: list[str]) -> int:
         return code
 
 
+#: What bubblewrap prints when this system refuses it a user namespace (the lines Codex 0.155.1
+#: checks itself, codex-rs `sandboxing/src/bwrap.rs`).
+USERNS_REFUSED = ("setting up uid map: Permission denied", "loopback: Failed RTM_NEWADDR",
+                  "loopback: Failed RTM_NEWLINK", "No permissions to create a new namespace")
+#: Ubuntu 24.04+: an AppArmor-unconfined process (a systemd service; not a VS Code terminal, whose
+#: profile allows it) gets a user namespace without capabilities, so bubblewrap cannot build one.
+_APPARMOR_USERNS = Path("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+#: The bubblewrap programs a probe found able to build a namespace: a pass holds for the process,
+#: a refusal is probed again (a fix applied as root takes effect without a restart).
+_BWRAP_PASSED: set[str] = set()
+
+
+def userns_fix() -> str:
+    """The one-time root step letting bubblewrap build a namespace on this system."""
+    try:
+        apparmor = _APPARMOR_USERNS.read_text().strip() == "1"
+    except OSError:
+        apparmor = False
+    if apparmor:
+        profile = "/etc/apparmor.d/bwrap-userns-restrict"
+        return ("AppArmor refuses unprivileged user namespaces here (kernel.apparmor_restrict_unprivileged_userns=1). "
+                "Once, as root, load the bubblewrap profile: sudo apt install apparmor-profiles && "
+                f"sudo install -m 0644 /usr/share/apparmor/extra-profiles/bwrap-userns-restrict {profile} && "
+                f"sudo apparmor_parser -r {profile}")
+    return "unprivileged user namespaces are disabled here; once, as root, allow them (sysctl user.max_user_namespaces)"
+
+
+def userns_refusal(bwrap: str) -> str | None:
+    """Why `bwrap` cannot build a user + network namespace on this PC, with the fix; None when it can."""
+    if bwrap in _BWRAP_PASSED:
+        return None
+    try:
+        trial = subprocess.run([bwrap, "--unshare-user", "--unshare-net", "--ro-bind", "/", "/", "true"],
+                               capture_output=True, text=True, timeout=5, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None  # not a namespace refusal: the CLI using it reports its own failure
+    said = trial.stderr.strip()
+    if trial.returncode != 0 and any(line in said for line in USERNS_REFUSED):
+        return f"bubblewrap cannot create its sandbox ({said.splitlines()[-1][:160]}): {userns_fix()}"
+    _BWRAP_PASSED.add(bwrap)
+    return None
+
+
+#: Landlock write rights (ABI 3: REFER since 2, TRUNCATE since 3). Reads stay unhandled: allowed
+#: everywhere. REFER is safe to grant: Landlock refuses a rename or link that would gain rights.
+_WRITE_FILE, _TRUNCATE, _REFER = 1 << 1, 1 << 14, 1 << 13
+_WRITES = _WRITE_FILE | sum(1 << bit for bit in (4, 5, 6, 7, 8, 9, 10, 11, 12)) | _REFER | _TRUNCATE
+_FILE_WRITES = _WRITE_FILE | _TRUNCATE
+_ADD_RULE, _PATH_BENEATH, _CONFINE_ABI = 445, 1, 3
+_SECCOMP_ALLOW, _SECCOMP_DENY = 0x7FFF0000, 0x00050000 | 13  # RET_ALLOW, RET_ERRNO | EACCES
+_SET_SECCOMP, _SECCOMP_FILTER = 22, 2
+
+
+class SyscallTable(BaseModel):
+    """One seccomp audit arch: the syscalls refused outright, those whose AF_UNIX socket() is
+    refused, and where x32 numbers begin (x86_64 only)."""
+    model_config = ConfigDict(frozen=True)
+    arch: int
+    refused: frozenset[int]
+    sockets: frozenset[int]
+    x32: int | None = None
+
+
+#: Per processor (`platform.machine()`), from the kernel's syscall tables (arch/x86/entry/syscalls,
+#: include/uapi/asm-generic/unistd.h, arch/arm/tools/syscall.tbl): socket 41 / 359 / 198 / 281,
+#: socketcall 102, io_uring_setup 425 (io_uring makes sockets past seccomp). Landlock never sees
+#: connect() to a socket file (`/run/user/<uid>/bus` reaches `systemd-run --user`: a command
+#: outside every confinement), so no confined process makes a UNIX socket at all; socketpair()
+#: (pipes between its own processes) stays.
+_SYSCALLS: dict[str, tuple[SyscallTable, ...]] = {
+    "x86_64": (SyscallTable(arch=0xC000003E, refused=frozenset({425}), sockets=frozenset({41}), x32=0x40000000),
+               SyscallTable(arch=0x40000003, refused=frozenset({102, 425}), sockets=frozenset({359}))),
+    "aarch64": (SyscallTable(arch=0xC00000B7, refused=frozenset({425}), sockets=frozenset({198})),
+                SyscallTable(arch=0x40000028, refused=frozenset({102, 425}), sockets=frozenset({281}))),
+}
+#: Inside a confinement: the MCP client end Codex starts, carrying its stdio to the server the
+#: confinement's parent runs outside (`python -I -c RELAY <port>`).
+RELAY = r"""
+import socket, sys, threading
+link = socket.create_connection(("127.0.0.1", int(sys.argv[1])))
+def up():
+    while data := sys.stdin.buffer.read1(65536):
+        link.sendall(data)
+    link.shutdown(socket.SHUT_WR)
+threading.Thread(target=up, daemon=True).start()
+while data := link.recv(65536):
+    sys.stdout.buffer.write(data)
+    sys.stdout.buffer.flush()
+"""
+#: The relay's port in the argv a confinement starts: the one argument starting with `RelayedServer.key` holds it.
+RELAY_PORT = "{relay}"
+
+
+def confinement_refusal() -> str | None:
+    """Why this PC cannot confine a run itself (`Confinement`); None when it can."""
+    if (abi := landlock_abi()) < _CONFINE_ABI:
+        return f"this kernel's Landlock (ABI {abi}) cannot confine writes: Linux 6.2 or later is needed"
+    if platform.machine() not in _SYSCALLS:
+        return f"Galaius has no socket filter for {platform.machine()} processors"
+    return None
+
+
+def seccomp_self() -> None:
+    """This process and all it starts make no UNIX socket and no io_uring (`_SYSCALLS`)."""
+    code: list[tuple[int, str | int, str | int, int]] = []  # (opcode, jump if true, if false, k): a str jump names a label
+    labels: dict[str, int] = {}
+    tables = _SYSCALLS[platform.machine()]
+    for index, table in enumerate(tables):
+        labels[f"arch{index}"] = len(code)
+        code += [(0x20, 0, 0, 4), (0x15, 0, f"arch{index + 1}", table.arch), (0x20, 0, 0, 0)]  # A = arch; else next; A = nr
+        if table.x32 is not None:
+            code.append((0x35, "deny", 0, table.x32))
+        code += [(0x15, "deny", 0, number) for number in sorted(table.refused)]
+        for number in sorted(table.sockets):
+            code += [(0x15, 0, "allow", number), (0x20, 0, 0, 16), (0x15, "deny", "allow", 1)]  # args[0] low word == AF_UNIX
+        code.append((0x06, 0, 0, _SECCOMP_ALLOW))
+    labels[f"arch{len(tables)}"] = labels["allow"] = len(code)
+    code.append((0x06, 0, 0, _SECCOMP_ALLOW))
+    labels["deny"] = len(code)
+    code.append((0x06, 0, 0, _SECCOMP_DENY))
+
+    def jump(target: str | int, at: int) -> int:
+        return labels[target] - at - 1 if isinstance(target, str) else target
+    program = b"".join(struct.pack("HBBI", op, jump(true, at), jump(false, at), k) for at, (op, true, false, k) in enumerate(code))
+    filters = ctypes.create_string_buffer(program, len(program))
+    fprog = struct.pack("HxxxxxxP", len(program) // 8, ctypes.addressof(filters))
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 or libc.prctl(_SET_SECCOMP, _SECCOMP_FILTER, ctypes.create_string_buffer(fprog, len(fprog)), 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), "the socket filter could not be applied")
+
+
+class SignIn(BaseModel):
+    """A CLI's sign-in file among a confinement's copies, and the keys naming its account in it."""
+    model_config = ConfigDict(frozen=True)
+    file: str
+    account: tuple[str, ...]
+
+    def account_of(self, content: bytes) -> str | None:
+        try:
+            value = json.loads(content)
+            for key in self.account:
+                value = value[key]
+        except (ValueError, KeyError, TypeError):
+            return None
+        return value if isinstance(value, str) and value else None
+
+
+class RelayedServer(BaseModel):
+    """The MCP server a confinement runs outside (its argv, the variables it gets on top of the
+    run's), its client end named by the config argument starting with `key` (`RELAY_PORT` in it);
+    `switch`: the TOML table in the CLI's settings whose `enabled = false` means no server at all."""
+    model_config = ConfigDict(frozen=True)
+    argv: tuple[str, ...]
+    env: dict[str, str] = Field(default_factory=dict)
+    key: str
+    switch: tuple[str, ...]
+
+
+class Confinement(BaseModel):
+    """A CLI run on a PC that refuses it a user namespace (no bubblewrap, so its own sandbox cannot
+    start), confined by Galaius instead, without root: the CLI and every command it runs write only
+    in the start folder (`write_start`), the temporary folders and a private home folder for its
+    state; read everywhere; network on; no UNIX socket made (seccomp), no signal or abstract socket
+    reaching a process outside (Landlock scopes, Linux 6.12+). Its MCP server (`relayed`) runs
+    outside, in the confinement's parent, reached through `RELAY` on its first connection only, made
+    within `RELAY_WAIT` (the CLI starts its MCP servers before any command runs).
+
+    The private home (`home_variable`, a folder fresh at each turn): `shared` names of the CLI's
+    login folder read-only, `copied` ones copied in (the sign-in written back after the turn when
+    the CLI refreshed it for the same account and nothing changed it meanwhile), `sessions` the
+    login folder's own (writable: the run's conversation stays where its readers look).
+    Residual, stated: `.git` and editor settings in the start folder stay writable; the login
+    folder's sessions too."""
+
+    model_config = ConfigDict(frozen=True)
+    write_start: bool
+    home_variable: str
+    default_home: str
+    shared: tuple[str, ...] = ()
+    copied: tuple[str, ...] = ()
+    sessions: tuple[str, ...] = ()
+    signin: SignIn | None = None
+    relayed: RelayedServer | None = None
+    #: Folders writable in every confinement besides the start folder (those present).
+    TEMPORARY: ClassVar[tuple[str, ...]] = ("/tmp", "/var/tmp", "/dev/shm")
+    DEVICES: ClassVar[tuple[str, ...]] = ("/dev/null", "/dev/zero", "/dev/full", "/dev/tty", "/dev/ptmx", "/dev/pts")
+    RELAY_WAIT: ClassVar[float] = 30.0
+
+    @model_validator(mode="after")
+    def _signin_is_copied(self) -> Self:
+        if self.signin is not None and self.signin.file not in self.copied:
+            raise ValueError(f"the sign-in file {self.signin.file} must be among the copied ones")
+        return self
+
+    def command(self, argv: list[str]) -> list[str]:
+        """`argv` started inside this confinement."""
+        return [sys.executable, "-m", Fence.MODULE, "confine", self.model_dump_json(), "--", *argv]
+
+    def _home(self, login: Path, private: Path) -> bytes | None:
+        """Fill `private` from `login`; the sign-in file's content as copied (None: none)."""
+        for name in self.shared:
+            if (login / name).exists():
+                (private / name).symlink_to(login / name)
+        for name in self.sessions:
+            (login / name).mkdir(mode=0o700, parents=True, exist_ok=True)
+            (private / name).symlink_to(login / name)
+        signed = None
+        for name in self.copied:
+            if (login / name).is_file():
+                content = (login / name).read_bytes()
+                (private / name).write_bytes(content)
+                (private / name).chmod(0o600)
+                signed = content if self.signin is not None and name == self.signin.file else signed
+        return signed
+
+    def _write_back(self, login: Path, private: Path, before: bytes) -> None:
+        """The sign-in the CLI refreshed inside, back in its login folder: same account, valid, and
+        the login folder's copy untouched meanwhile (another session's refresh is never overwritten)."""
+        try:
+            after, current = (private / self.signin.file).read_bytes(), (login / self.signin.file).read_bytes()
+        except OSError:
+            return
+        account = self.signin.account_of(after)
+        if after == before or current != before or account is None or account != self.signin.account_of(before):
+            return
+        handle, staged = tempfile.mkstemp(prefix=f".{self.signin.file}.", dir=login)
+        with os.fdopen(handle, "wb") as staging:
+            staging.write(after)
+        os.replace(staged, login / self.signin.file)
+
+    def _serves(self, private: Path) -> bool:
+        """Whether the CLI will start the relayed server: not when none is relayed or any of its
+        settings switch it off (its own, a project's `.<home>/config.toml` in the start folder or
+        above): a listener nobody takes would wait for a command inside."""
+        if self.relayed is None:
+            return False
+        folder = Path(self.default_home).name
+        for settings in (private / "config.toml", *(above / folder / "config.toml" for above in (Path.cwd(), *Path.cwd().parents))):
+            try:
+                table = tomllib.loads(settings.read_text(encoding="utf-8")) if settings.is_file() else {}
+            except (OSError, ValueError):
+                continue  # the CLI refuses unreadable settings itself
+            for key in self.relayed.switch:
+                table = table.get(key) if isinstance(table, dict) else None
+            if isinstance(table, dict) and table.get("enabled") is False:
+                return False
+        return True
+
+    def run(self, argv: list[str]) -> int:
+        """Outside: the private home, the relayed MCP server, the confined child (signals passed
+        on), the sign-in written back; the child's exit code."""
+        login = Path(os.environ.get(self.home_variable) or Path.home() / self.default_home)
+        homes = UserPaths.agents() / "confined"
+        homes.mkdir(mode=0o700, parents=True, exist_ok=True)
+        for stale in homes.iterdir():  # a turn killed outright (its run moved to another model) leaves its own
+            if not Path(f"/proc/{stale.name.split('.')[1] if stale.name.count('.') == 2 else 0}").exists():
+                shutil.rmtree(stale, ignore_errors=True)
+        private = Path(tempfile.mkdtemp(prefix=f"{os.environ.get('GALAIUS_RUN_ID', 'run')}.{os.getpid()}.", dir=homes))
+        listener: socket.socket | None = None
+        servers: list[subprocess.Popen] = []
+        try:
+            signed = self._home(login, private)
+            if self._serves(private):
+                listener = socket.create_server(("127.0.0.1", 0))
+                port, key = str(listener.getsockname()[1]), self.relayed.key
+                end = argv.index("--") if "--" in argv else len(argv)
+                argv = [part.replace(RELAY_PORT, port) if at < end and part.startswith(key) else part for at, part in enumerate(argv)]
+            env = {name: value for name, value in os.environ.items() if name not in UNSET}
+            env |= {self.home_variable: str(private), "XDG_CACHE_HOME": str(private / ".cache"), "npm_config_cache": str(private / ".npm")}
+            writable = [Path.cwd()] if self.write_start else []
+            writable += [private, *(login / name for name in self.sessions), *map(Path, self.TEMPORARY), *map(Path, self.DEVICES)]
+            # No thread runs yet: the relay's starts after the child exists.
+            child = subprocess.Popen(argv, env=env, preexec_fn=lambda: _confine_child(writable))
+            for number in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+                signal.signal(number, lambda received, _frame: child.send_signal(received))
+            if listener is not None:
+                threading.Thread(target=self._serve, args=(listener, servers), daemon=True).start()
+            code = child.wait()
+            if signed is not None:
+                self._write_back(login, private, signed)
+            return code
+        finally:
+            if listener is not None:
+                listener.close()
+            for server in servers:
+                server.terminate()
+            shutil.rmtree(private, ignore_errors=True)
+
+    def _serve(self, listener: socket.socket, servers: list[subprocess.Popen]) -> None:
+        """The relayed server on the listener's first connection within `RELAY_WAIT`, then no more:
+        a command inside never reaches it."""
+        listener.settimeout(self.RELAY_WAIT)
+        try:
+            link, _ = listener.accept()
+        except OSError:
+            return
+        finally:
+            listener.close()
+        with link:
+            servers.append(subprocess.Popen(list(self.relayed.argv), stdin=link, stdout=link, stderr=subprocess.DEVNULL, env=os.environ | self.relayed.env))
+
+
+def _confine_child(writable: list[Path]) -> None:
+    """In the confined child, before its exec: Landlock over `writable`, then the socket filter. A
+    refusal is written out whole first (Python reports only that the child's setup failed)."""
+    try:
+        landlock_self(_WRITES, writable, _SCOPES if landlock_abi() >= _SCOPE_ABI else 0)
+        seccomp_self()
+    except OSError as error:
+        os.write(2, f"galaius confinement: {error}\n".encode())
+        raise
+
+
 @functools.cache
 def available() -> tuple[bool, str]:
     """(this PC can build the fence, why not): Linux, bubblewrap installed, Landlock scopes, and
@@ -535,6 +867,8 @@ def available() -> tuple[bool, str]:
     bwrap = shutil.which("bwrap")
     if bwrap is None:
         return False, "bubblewrap (bwrap) is not installed: install it to fence agents"
+    if refusal := userns_refusal(bwrap):
+        return False, refusal
     if (abi := landlock_abi()) < _SCOPE_ABI:
         return False, f"this kernel's Landlock (ABI {abi}) cannot scope sockets and signals: Linux 6.12 or later is needed"
     trial = subprocess.run([sys.executable, "-m", Fence.MODULE, "outer", "", "{}", "--", bwrap, "--unshare-user", "--unshare-pid", "--unshare-net", "--die-with-parent",
@@ -546,6 +880,8 @@ def available() -> tuple[bool, str]:
 
 if __name__ == "__main__":
     mode, *rest = sys.argv[1:]
+    if mode == "confine" and len(rest) >= 3 and rest[1] == "--":
+        raise SystemExit(Confinement.model_validate_json(rest[0]).run(rest[2:]))
     if mode != "outer" or len(rest) < 3 or rest[2] != "--":
-        raise SystemExit("usage: python -m galaius.fence outer <hosts> <guard json> -- <bwrap argv>")
+        raise SystemExit("usage: python -m galaius.fence outer <hosts> <guard json> -- <bwrap argv> | confine <confinement json> -- <argv>")
     raise SystemExit(outer(tuple(host for host in rest[0].split(",") if host), SteeringGuard.model_validate_json(rest[1]), rest[3:]))

@@ -41,6 +41,7 @@ from galaius.agents.catalog import AgentCatalog
 from galaius.agents.events import TOKEN_FIELDS, AgentEvent, CompactionTrigger, TokenUsage, UsageLedger, instant, stream_lines
 from galaius.agents.profiles import overlay_for
 from galaius.agents.vocabulary import ApprovalIntent, TouchScope, ThinkingLevel, vocabulary_for
+from galaius.fence import RELAY, RELAY_PORT, Confinement, RelayedServer, SignIn, confinement_refusal, userns_refusal
 from galaius.inbox_hook import NOTE as INBOX_NOTE
 from galaius.models import Model
 from galaius.processes import ask_process, run_isolated_process
@@ -659,6 +660,13 @@ class AgentProvider(ABC):
         """
         native_mode = self.provider_permission_mode(mode)
         return [self.permission_option, native_mode] if native_mode is not None else []
+
+    def sandbox_refusal(self) -> str | None:
+        """Why this CLI's own OS sandbox cannot start on this PC (cause and fix), or None.
+
+        A CLI whose every command runs in a sandbox that cannot start can do nothing: it is
+        refused before launch, never left to tell the model its tools failed."""
+        return None
 
     def image_attachment_support(self) -> bool:
         """Whether this installed provider can receive image paths on its initial prompt."""
@@ -1574,12 +1582,6 @@ class _CodexMesh(BaseModel):
     servers: dict[Literal["galaius"], _CodexMeshServer] = Field(alias="mcpServers", min_length=1)
 
 
-class _CodexMcpRegistration(BaseModel):
-    model_config = ConfigDict(extra="ignore", strict=True)
-
-    name: str = Field(min_length=1)
-
-
 #: Codex has no per-name flag for a NATIVE tool (its shell/file-edit/web-search/view-image
 #: tools) — only for tools it reaches through an MCP SERVER (`mcp_servers.<id>.enabled_tools` /
 #: `disabled_tools`, hosted config reference, verified 2026-09-21 against codex-rs 0.155.1's
@@ -1838,6 +1840,41 @@ class CodexProvider(AgentProvider):
     #: "unelevated" (a restricted token + folder ACLs) needs no administrator and no prompt.
     WINDOWS_SANDBOX: ClassVar[str] = "unelevated"
 
+    def _bwrap_refusal(self) -> str | None:
+        """On Linux every Codex command (shell, apply_patch, read-only too) runs in bubblewrap: the
+        first `bwrap` on PATH, else the one bundled with the CLI. Its Landlock fallback refuses
+        workspace-write since 0.155 (`.git` / `.codex` / `.agents` stay read-only, which Landlock
+        cannot express), so a refused user namespace leaves it no sandbox at all."""
+        if not sys.platform.startswith("linux") or not self.available():
+            return None
+        bundled = sorted(Path(self.executable()).parent.parent.glob("node_modules/@openai/codex-linux-*/vendor/*/codex-resources/bwrap"))
+        bwrap = shutil.which("bwrap") or (str(bundled[0]) if bundled else None)
+        return None if bwrap is None else userns_refusal(bwrap)
+
+    def sandbox_refusal(self) -> str | None:
+        """Refused only when neither Codex's sandbox nor Galaius's own confinement can start here."""
+        if (refused := self._bwrap_refusal()) is None or (unconfinable := confinement_refusal()) is None:
+            return None
+        return f"{refused}; Galaius cannot confine it itself either: {unconfinable}"
+
+    def _confinement(self, mode: str, mcp_config: str | None) -> Confinement | None:
+        """Where Codex's sandbox cannot start, Galaius's own (`Confinement`) in its place, writing in
+        the start folder only for `workspace-write`; None where Codex's starts or none is asked."""
+        if mode == "danger-full-access" or self._bwrap_refusal() is None or confinement_refusal() is not None:
+            return None
+        server = _CodexMesh.model_validate_json(mcp_config).servers["galaius"] if mcp_config is not None else None
+        return Confinement(
+            write_start=mode == "workspace-write", home_variable="CODEX_HOME", default_home=".codex",
+            shared=("AGENTS.md", "AGENTS.override.md", "prompts", "rules", "skills", "plugins", "hooks.json"),
+            copied=("auth.json", "config.toml", "installation_id"), sessions=("sessions",), signin=SignIn(file="auth.json", account=("tokens", "account_id")),
+            relayed=RelayedServer(argv=(server.command, *server.args), env=dict(server.env), key="mcp_servers.galaius.args=", switch=("mcp_servers", "galaius"))
+            if server is not None else None,
+        )
+
+    def _started(self, argv: list[str], confinement: Confinement | None) -> list[str]:
+        """`argv` as it starts: inside `confinement` (its program by path: the confinement starts it), else unchanged."""
+        return argv if confinement is None else confinement.command([self.executable(), *argv[1:]])
+
     @classmethod
     def platform_flags(cls) -> tuple[str, ...]:
         """What every Codex start on this system adds: on Windows, the sandbox it runs in."""
@@ -1967,27 +2004,10 @@ class CodexProvider(AgentProvider):
         return "\n".join(line.strip() for line in f"{stdout}\n{stderr}".splitlines()
                          if line.strip().lower().startswith("logged in using "))
 
-    def has_mcp_server(self, name: str, *, cwd: str) -> bool:
-        """Ask Codex to resolve all configuration layers; retain registration names only.
-        No Codex CLI installed means no Codex configuration registers anything."""
-        if not self.available():
-            return False
-        try:
-            result = subprocess.run(
-                [self.executable(), "mcp", "list", "--json"],
-                cwd=cwd, capture_output=True, text=True, timeout=10,
-            )
-            if result.returncode:
-                raise ValueError("Codex configuration lookup failed")
-            registrations = TypeAdapter(list[_CodexMcpRegistration]).validate_json(result.stdout)
-        except (OSError, subprocess.SubprocessError, ValueError):
-            # Provider output and validation errors can contain environment/configuration values.
-            raise ValueError("Cannot inspect Codex MCP configuration safely") from None
-        return any(registration.name == name for registration in registrations)
-
     @staticmethod
-    def mesh_arguments(mcp_config: str | None) -> list[str]:
-        """Project the launcher's credential-free stdio mesh without granting access."""
+    def mesh_arguments(mcp_config: str | None, relayed: bool = False) -> list[str]:
+        """Project the launcher's credential-free stdio mesh without granting access. `relayed`: Codex
+        starts `RELAY` instead, to the server its `Confinement` runs outside."""
         if mcp_config is None:
             return []
         try:
@@ -1995,9 +2015,14 @@ class CodexProvider(AgentProvider):
         except ValueError:
             # Validation errors include input values; never echo rejected environment data.
             raise ValueError("Invalid credential-free Codex mesh configuration") from None
+        command, args = (sys.executable, ["-I", "-c", RELAY, RELAY_PORT]) if relayed else (server.command, server.args)
         return [
-            "-c", f"mcp_servers.galaius.command={json.dumps(server.command, ensure_ascii=False)}",
-            "-c", f"mcp_servers.galaius.args={json.dumps(server.args, ensure_ascii=False)}",
+            "-c", f"mcp_servers.galaius.command={json.dumps(command, ensure_ascii=False)}",
+            "-c", f"mcp_servers.galaius.args={json.dumps(args, ensure_ascii=False)}",
+            # Its tools are the role's (enabled_tools / disabled_tools); a run has no one to answer an
+            # approval prompt, and under approval_policy=never Codex 0.155 refuses every tool call
+            # without a read-only annotation instead (codex-rs config/src/mcp_types.rs).
+            "-c", 'mcp_servers.galaius.default_tools_approval_mode="approve"',
             *(item for key, value in sorted(server.env.items()) for item in ("-c", f"mcp_servers.galaius.env.{key}=" + json.dumps(value, ensure_ascii=False))),
         ]
 
@@ -2070,11 +2095,12 @@ class CodexProvider(AgentProvider):
                 base_url: str | None = None, environment: Mapping[str, str] | None = None) -> list[str]:
         self.validate_tool_policy(allowed_tools or [], denied_tools, coarse_accepted=coarse_accepted)
         task = self._inject_definition(agent, task, agent_prompt)
+        sandbox = self._native_sandbox_arguments(allowed_tools or [], denied_tools, permission_mode=permission_mode, coarse_accepted=coarse_accepted)
+        confinement = self._confinement(sandbox[1], mcp_config)
         argv = [self.binary, "exec", "--json", *self.exec_flags, *self.native_delegation_flags, *self.platform_flags(), *self._setting_sources(environment)]
-        argv += self.mesh_arguments(mcp_config)
+        argv += self.mesh_arguments(mcp_config, relayed=confinement is not None)
         argv += self._mcp_tool_scope_arguments(allowed_tools or [], denied_tools)
-        argv += self._native_sandbox_arguments(allowed_tools or [], denied_tools,
-                                               permission_mode=permission_mode, coarse_accepted=coarse_accepted)
+        argv += sandbox if confinement is None else [self.permission_option, "danger-full-access", *sandbox[2:]]
         argv += self._openai_compat_arguments(base_url)
         if model:
             argv += ["--model", model]
@@ -2082,7 +2108,7 @@ class CodexProvider(AgentProvider):
             argv += ["-c", f'model_reasoning_effort="{self.provider_thinking_level(reasoning)}"']
         # The task goes LAST, after "--": one starting with "-" stays the task ("-" alone would
         # otherwise mean "read it from stdin").
-        return [*argv, *self._image_args(image_paths), "--", task]
+        return self._started([*argv, *self._image_args(image_paths), "--", task], confinement)
 
     def image_attachment_support(self) -> bool:
         """Verify ``--image`` against the installed ``codex exec --help`` output."""
@@ -2113,8 +2139,9 @@ class CodexProvider(AgentProvider):
     ) -> list[str]:
         """Resume a stopped session with fresh model and reasoning policy.
 
-        ``exec resume`` has no ``--sandbox`` option. The saved Codex session owns that scope;
-        callers validate the recorded value before reaching this method and do not widen it here.
+        ``exec resume`` has no ``--sandbox`` option: every turn names its scope with ``-c sandbox_mode``,
+        from the same policy as its first turn, never the scope the session saved (a turn begun inside
+        Galaius's confinement saved danger-full-access). Callers validate the recorded permission.
 
         Unlike Claude Code — whose ``--agents`` JSON carries the role definition on a channel
         separate from the resumed message, so it is cheap to resend every turn — Codex has no such
@@ -2130,20 +2157,19 @@ class CodexProvider(AgentProvider):
         self.validate_tool_policy(allowed_tools or [], denied_tools, coarse_accepted=coarse_accepted)
         if agent:
             self.validate_agent_name(agent)
-        argv = [self.binary, "exec", "resume", "--json", *self.exec_flags, *self.native_delegation_flags, *self.platform_flags(), *self._setting_sources()]
-        argv += self.mesh_arguments(mcp_config)
-        argv += self._mcp_tool_scope_arguments(allowed_tools or [], denied_tools)
-        argv += self._openai_compat_arguments(base_url)
-        # `exec resume --help` has no `--sandbox`; the saved codex session owns that scope from
-        # its FIRST turn (`command`, above, now always sets one — never left to codex's own
-        # unset-defaults-to-read-only). An explicit `permission_mode` still widens/narrows it as
-        # the operator's own per-turn choice; the shell/network flags are config, not session
-        # state, so they are resent every turn from the SAME policy, never widened here.
         mapping = _widen_for_coarse_acceptance(
             _classify_native_tools(*_native_tool_sets(allowed_tools or [], denied_tools)), coarse_accepted,
         )
+        native = self.provider_permission_mode(permission_mode) if permission_mode is not None else None
+        confinement = self._confinement(native if native is not None else mapping.sandbox_mode, mcp_config)
+        argv = [self.binary, "exec", "resume", "--json", *self.exec_flags, *self.native_delegation_flags, *self.platform_flags(), *self._setting_sources()]
+        argv += self.mesh_arguments(mcp_config, relayed=confinement is not None)
+        argv += self._mcp_tool_scope_arguments(allowed_tools or [], denied_tools)
+        argv += self._openai_compat_arguments(base_url)
+        # An explicit `permission_mode` is the operator's own per-turn choice; the shell/network
+        # flags are config, not session state, resent every turn from the SAME policy, never widened.
+        argv += ["-c", f'sandbox_mode="{"danger-full-access" if confinement is not None else native or mapping.sandbox_mode}"']
         if permission_mode is not None:
-            argv += ["-c", f'sandbox_mode="{self.provider_permission_mode(permission_mode)}"']
             approval = self.provider_approval_mode(permission_mode)
             if approval is not None:
                 if approval == "approve-for-me":
@@ -2158,7 +2184,7 @@ class CodexProvider(AgentProvider):
             argv += ["--model", model]
         if reasoning is not None:
             argv += ["-c", f'model_reasoning_effort="{self.provider_thinking_level(reasoning)}"']
-        return [*argv, "--", session_id, message]
+        return self._started([*argv, "--", session_id, message], confinement)
 
     def user_instructions(self, environment: Mapping[str, str]) -> Path | None:
         home = self.auth_home(environment)

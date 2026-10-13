@@ -194,10 +194,12 @@ def test_codex_projects_mesh_without_changing_permissions(resume):
         argv = provider.command("read", cwd=".", model=None, mcp_config=config, run_id="fixture-run", **kwargs)
     overrides = [argv[i + 1] for i, value in enumerate(argv) if value == "-c"]
     data = tomllib.loads("\n".join(overrides))
-    assert data["mcp_servers"]["galaius"] == json.loads(config)["mcpServers"]["galaius"]
+    assert data["mcp_servers"]["galaius"] == {**json.loads(config)["mcpServers"]["galaius"], "default_tools_approval_mode": "approve"}
     # Beside the mesh only the system's own table (Windows: the sandbox Codex runs in).
     platform = tomllib.loads("\n".join(CodexProvider.platform_flags()[1::2]))
-    assert set(data) == {"features", "mcp_servers", *platform}
+    # A resumed turn names its scope again, from the same policy (read-only for this role), never the saved one.
+    assert set(data) == {"features", "mcp_servers", *platform, *(("sandbox_mode",) if resume else ())}
+    assert data.get("sandbox_mode", "read-only") == "read-only"
 
 
 # --- Mapping a role's NATIVE tool policy onto codex's OWN mechanisms -------------------------
@@ -298,55 +300,6 @@ def test_codex_mixed_native_and_mcp_tools_needs_acceptance_but_still_enforces_th
         argv = provider.command("read", cwd=".", model=None, mcp_config=None,
                                 run_id="fixture-run", coarse_accepted=True, **kwargs)
     assert 'mcp_servers.galaius.enabled_tools=["screenshot"]' in " ".join(argv)
-
-
-@pytest.mark.parametrize("rows,expected", [
-    ([{"name": "galaius", "enabled": True, "transport": {"command": "system-wrapper"}}], True),
-    ([{"name": "galaius", "enabled": False, "transport": {"url": "https://example.invalid/mcp"}}], True),
-    ([{"name": "another-server"}], False),
-    ([], False),
-])
-def test_codex_registration_uses_provider_effective_configuration(tmp_path, monkeypatch, rows, expected):
-    provider = CodexProvider()
-    monkeypatch.setattr(provider, "available", lambda: True)
-    monkeypatch.setattr(provider, "executable", lambda: "fixture-codex")
-    calls = []
-
-    def configured(argv, **kwargs):
-        calls.append((argv, kwargs))
-        return subprocess.CompletedProcess(argv, 0, json.dumps(rows), "")
-
-    monkeypatch.setattr(subprocess, "run", configured)
-    assert provider.has_mcp_server("galaius", cwd=str(tmp_path)) is expected
-    assert calls == [(["fixture-codex", "mcp", "list", "--json"], {
-        "cwd": str(tmp_path), "capture_output": True, "text": True, "timeout": 10,
-    })]
-
-
-def test_no_codex_installed_registers_nothing_without_asking_it(tmp_path, monkeypatch):
-    provider = CodexProvider()
-    monkeypatch.setattr(provider, "available", lambda: False)
-    monkeypatch.setattr(subprocess, "run", lambda *_, **__: pytest.fail("no Codex to ask"))
-    assert provider.has_mcp_server("galaius", cwd=str(tmp_path)) is False
-
-
-@pytest.mark.parametrize("failure", ["timeout", "os-error", "exit", "json", "shape"])
-def test_codex_registration_discovery_fails_closed_without_echoing_output(tmp_path, monkeypatch, failure):
-    provider = CodexProvider()
-    monkeypatch.setattr(provider, "available", lambda: True)
-    monkeypatch.setattr(provider, "executable", lambda: "fixture-codex")
-
-    def failed(argv, **kwargs):
-        if failure == "timeout":
-            raise subprocess.TimeoutExpired(argv, 10, output="leak")
-        if failure == "os-error":
-            raise OSError("leak")
-        output = '[{"missing_name":"leak"}]' if failure == "shape" else "leak"
-        return subprocess.CompletedProcess(argv, 1 if failure == "exit" else 0, output, "leak")
-
-    monkeypatch.setattr(subprocess, "run", failed)
-    with pytest.raises(ValueError, match="^Cannot inspect Codex MCP configuration safely$"):
-        provider.has_mcp_server("galaius", cwd=str(tmp_path))
 
 
 @pytest.mark.parametrize("field,value", [

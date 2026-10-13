@@ -208,31 +208,15 @@ def test_the_mesh_config_carries_no_credential():
 
 
 @pytest.fixture
-def codex_configuration(monkeypatch):
-    """Provider-resolved entries, with no duplicate interpretation of config layers."""
-    # Codex installed, for every CodexProvider (the launcher builds its own to read registrations).
+def codex_installed(monkeypatch):
+    """Codex installed, for every CodexProvider the launcher builds."""
     monkeypatch.setattr(CodexProvider, "located", lambda self: sys.executable)
-
-    def configure(entry):
-        rows = [] if entry is None else [entry]
-        monkeypatch.setattr(subprocess, "run", lambda argv, **kwargs: subprocess.CompletedProcess(
-            argv, 0, json.dumps(rows), "",
-        ))
-
-    return configure
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mesh,entry", [
-    (True, None), (False, None),
-    (True, {"name": "galaius", "enabled": True, "transport": {"command": "system-wrapper"}}),
-    (True, {"name": "galaius", "enabled": False, "transport": {"command": "system-wrapper"}}),
-    (True, {"name": "galaius", "transport": {"url": "https://example.invalid/mcp"}}),
-])
-async def test_codex_launcher_mesh_reaches_spawn_boundary_without_overriding_opt_out(
-    tmp_path, monkeypatch, codex_configuration, mesh, entry
-):
-    codex_configuration(entry)
+@pytest.mark.parametrize("mesh", [True, False])
+async def test_codex_launcher_mesh_reaches_spawn_boundary_without_overriding_permissions(tmp_path, monkeypatch, codex_installed, mesh):
+    """Codex is meshed whenever the mesh is on, whatever its own settings register: `-c` values lay over its entry."""
     provider = CodexProvider()
     monkeypatch.setattr(provider, "_inject_definition", lambda agent, task, agent_prompt=None: task)
     monkeypatch.setattr(run_module, "resolve_model", lambda *args, **kwargs: ({}, "fixture-model"))
@@ -248,18 +232,12 @@ async def test_codex_launcher_mesh_reaches_spawn_boundary_without_overriding_opt
         await run_agent(provider, "read", agent="tester", cwd=str(tmp_path), mesh=mesh)
     overrides = [captured[i + 1] for i, value in enumerate(captured) if value == "-c"]
     data = tomllib.loads("\n".join(overrides))
-    assert ("mcp_servers" in data) == (mesh and entry is None)
+    assert ("mcp_servers" in data) == mesh
     assert "approval_policy" not in data and "sandbox_mode" not in data
 
 
-@pytest.mark.parametrize("mesh,entry", [
-    (True, None), (False, None), (None, None),
-    (True, {"name": "galaius", "enabled": True, "transport": {"command": "system-wrapper"}}),
-    (True, {"name": "galaius", "enabled": False, "transport": {"command": "system-wrapper"}}),
-    (True, {"name": "galaius", "transport": {"url": "https://example.invalid/mcp"}}),
-])
-def test_codex_resume_replays_only_recorded_mesh_opt_in(tmp_path, monkeypatch, codex_configuration, mesh, entry):
-    codex_configuration(entry)
+@pytest.mark.parametrize("mesh", [True, False, None])
+def test_codex_resume_replays_only_recorded_mesh_opt_in(tmp_path, monkeypatch, codex_installed, mesh):
     kwargs = {} if mesh is None else {"mesh_enabled": mesh}
     run = reg.register(run_id="fixture-run", pid=None, provider="codex", name="tester",
                        agent="tester", cwd=str(tmp_path), session_id="fixture-owner", **kwargs)
@@ -278,10 +256,11 @@ def test_codex_resume_replays_only_recorded_mesh_opt_in(tmp_path, monkeypatch, c
                                        model="fixture-model", criterion=None, reasoning="medium", raw_index=0)
     overrides = [captured[i + 1] for i, value in enumerate(captured) if value == "-c"]
     data = tomllib.loads("\n".join(overrides))
-    assert ("mcp_servers" in data) == (mesh is True and entry is None)
-    if mesh is True and entry is None:
+    assert ("mcp_servers" in data) == (mesh is True)
+    if mesh is True:
         assert data["mcp_servers"]["galaius"]["env"] == {"GALAIUS_PARENT_RUN_ID": run.run_id, GatewayServed.ROLE: "tester"}
-    assert "approval_policy" not in data and "sandbox_mode" not in data
+    # Each turn names its scope from the role's policy, never the one the session saved.
+    assert "approval_policy" not in data and data["sandbox_mode"] in {"read-only", "workspace-write"}
     assert reg.get_run(run.run_id).session_id == "fixture-owner"
 
 

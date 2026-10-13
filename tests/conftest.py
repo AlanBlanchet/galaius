@@ -126,6 +126,13 @@ def _isolate_unit_configuration(
 
 
 @pytest.fixture(autouse=True)
+def _codex_sandbox_starts(monkeypatch):
+    """Codex's argv never depends on whether this host refuses bubblewrap a user namespace (a systemd
+    service on Ubuntu 24.04 does): a test that means it probes on purpose."""
+    monkeypatch.setattr("galaius.agents.providers.userns_refusal", lambda bwrap: None)
+
+
+@pytest.fixture(autouse=True)
 def _default_unit_media_to_mocked_api(monkeypatch):
     """Re-apply after every live-config refresh, which intentionally clears file-absent env keys."""
     monkeypatch.setenv("GALAIUS_MEDIA_BACKEND", "api")

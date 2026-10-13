@@ -5,8 +5,10 @@ through the runner's egress proxy, and cannot leave anything that runs later out
 read again at each turn. Live checks run where this PC can build the fence (Linux with
 bubblewrap and Landlock scopes); elsewhere the fence says why it is unavailable."""
 
+import errno
 import json
 import os
+import signal
 import socket
 import subprocess
 import sys
@@ -15,7 +17,9 @@ from pathlib import Path
 
 import pytest
 
-from galaius.fence import EgressProxy, FenceSpec, available
+from galaius.agents import providers
+from galaius.agents.providers import CodexProvider
+from galaius.fence import Confinement, EgressProxy, FenceSpec, available, confinement_refusal, userns_refusal
 
 AGENT_HOSTS = ("api.anthropic.com",)
 
@@ -278,3 +282,74 @@ async def test_a_fenced_launch_starts_inside_the_fence_and_its_run_keeps_the_spe
     await asyncio.wait_for(run.wait(), timeout=30)
     assert started[0][:4] == [sys.executable, "-m", "galaius.fence", "outer"]
     assert reg.get_run(run.run_id).fence == spec
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="bubblewrap is Linux only")
+@pytest.mark.parametrize("stderr,code,landlock,mode,started", [
+    ("", 0, None, "workspace-write", "codex"),  # its own sandbox starts: Codex as before
+    ("bwrap: setting up uid map: Permission denied", 1, None, "workspace-write", "confined"),  # AppArmor-unconfined service, Ubuntu 24.04
+    ("bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted", 1, None, "read-only", "confined"),
+    ("bwrap: setting up uid map: Permission denied", 1, "this kernel's Landlock (ABI 0) cannot confine writes", "workspace-write", "refused"),
+    ("bwrap: Can't find source path /nope: No such file or directory", 1, None, "workspace-write", "codex"),  # not a namespace refusal
+])
+def test_codex_runs_in_galaius_confinement_where_its_own_sandbox_cannot_start(tmp_path, monkeypatch, stderr, code, landlock, mode, started):
+    """A refused user namespace starts Codex with no sandbox of its own inside Galaius's confinement (writing
+    in the start folder only for workspace-write), its galaius server relayed and pre-approved; refused only
+    where Landlock cannot confine either."""
+    bwrap = tmp_path / "bwrap"
+    bwrap.write_text(f"#!/bin/sh\necho '{stderr}' >&2\nexit {code}\n")
+    bwrap.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr(providers, "userns_refusal", userns_refusal)
+    monkeypatch.setattr(providers, "confinement_refusal", lambda: landlock)
+    provider = CodexProvider()
+    monkeypatch.setattr(provider, "available", lambda: True)
+    monkeypatch.setattr(provider, "executable", lambda: "/opt/codex/bin/codex")
+    mesh = json.dumps({"mcpServers": {"galaius": {"command": "galaius", "args": ["mcp"], "env": {"GALAIUS_PARENT_RUN_ID": "r1"}}}})
+    permission = {"workspace-write": "workspace_write", "read-only": "read_only"}[mode]
+    argv = provider.command("task", cwd=str(tmp_path), model=None, mcp_config=mesh, run_id="r1", permission_mode=permission)
+    resumed = provider.resume_command("thread", "next", permission_mode=permission, mcp_config=mesh)
+    assert (provider.sandbox_refusal() is not None) is (started == "refused")
+    assert 'mcp_servers.galaius.default_tools_approval_mode="approve"' in argv
+    if started != "confined":
+        assert argv[0] == "codex" and argv[argv.index("--sandbox") + 1] == mode and 'mcp_servers.galaius.args=["mcp"]' in argv
+        assert f'sandbox_mode="{mode}"' in resumed  # never the danger-full-access a confined first turn saved
+        return
+    for started_argv, inner_mode in ((argv, ["--sandbox", "danger-full-access"]), (resumed, ["-c", 'sandbox_mode="danger-full-access"'])):
+        assert started_argv[:4] == [sys.executable, "-m", "galaius.fence", "confine"] and started_argv[5:7] == ["--", "/opt/codex/bin/codex"]
+        confinement = Confinement.model_validate_json(started_argv[4])
+        assert confinement.write_start is (mode == "workspace-write") and confinement.relayed.argv == ("galaius", "mcp")
+        inner = started_argv[6:]
+        assert " ".join(inner_mode) in " ".join(inner) and "{relay}" in next(part for part in inner if part.startswith("mcp_servers.galaius.args="))
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux") or confinement_refusal() is not None, reason="needs Landlock ABI 3 and a known processor")
+def test_a_confined_child_writes_only_in_its_folder_and_makes_no_unix_socket(tmp_path, monkeypatch, capfd):
+    """The kernel enforces it: a write beside the start folder and a UNIX socket (the session bus reaches
+    `systemd-run --user`, outside every confinement) are refused; the start folder and the network are not."""
+    class Narrow(Confinement):
+        TEMPORARY = ()  # pytest's folders are temporary ones
+    (tmp_path / "work").mkdir()
+    (tmp_path / "outside").mkdir()
+    monkeypatch.chdir(tmp_path / "work")
+    monkeypatch.setenv("GALAIUS_AGENTS_DIR", str(tmp_path / "agents"))
+    probe = """
+import json, os, socket
+def attempt(action):
+    try:
+        action()
+        return "ok"
+    except OSError as error:
+        return error.errno
+print(json.dumps({"start": attempt(lambda: open("in.txt", "w").write("x")), "outside": attempt(lambda: open("../outside/x", "w")),
+                  "unix": attempt(lambda: socket.socket(socket.AF_UNIX)), "inet": attempt(lambda: socket.socket(socket.AF_INET).close())}))
+"""
+    handlers = {number: signal.getsignal(number) for number in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)}
+    try:
+        code = Narrow(write_start=True, home_variable="FIXTURE_HOME", default_home=".fixture").run([sys.executable, "-I", "-c", probe])
+    finally:
+        for number, handler in handlers.items():
+            signal.signal(number, handler)
+    assert code == 0
+    assert json.loads(capfd.readouterr().out.strip().splitlines()[-1]) == {"start": "ok", "outside": errno.EACCES, "unix": errno.EACCES, "inet": "ok"}
+    assert not (tmp_path / "outside" / "x").exists() and not list((tmp_path / "agents" / "confined").iterdir())

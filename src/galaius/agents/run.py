@@ -39,7 +39,7 @@ from galaius.fence import FenceSpec, fenced
 from galaius.processes import process_group_options, spawnable
 from galaius.agents.policy import Policy, policy_path
 from galaius.agents.profiles import overlay_for, profiles_from
-from galaius.agents.providers import PROVIDERS, AgentProvider, CodexProvider, UnsupportedToolPolicy, validate_denied_tools, _safe_process_detail
+from galaius.agents.providers import PROVIDERS, AgentProvider, UnsupportedToolPolicy, validate_denied_tools, _safe_process_detail
 from galaius.agents.vocabulary import TouchScope
 from galaius.agents.subscriptions import RunSubscription, Subscription, SubscriptionCapped, SubscriptionRefused
 from galaius.agents.warm import WarmStart
@@ -392,6 +392,11 @@ async def _unavailable(
             f"tool intent: {provider.name} cannot enforce this role's tool restrictions; {error}. "
             "Choose another provider or explicitly accept its documented coarse policy.",
         )
+    if refusal := provider.sandbox_refusal():
+        return _skip(
+            "sandbox_unavailable",
+            f"sandbox intent: {provider.name} cannot run any command on this PC because {refusal}.",
+        )
     key = (provider.name, route_key)
     if key not in auth_cache:
         checked = provider.subscription_env(env)
@@ -680,7 +685,7 @@ def _galaius_command() -> tuple[str, list[str]]:
     return console_python(), ["-m", "galaius", "mcp"]
 
 
-def already_meshed(provider: str, *, cwd: str | None = None) -> bool:
+def already_meshed(provider: str) -> bool:
     """Whether this provider's OWN configuration already registers galaius as an MCP server.
 
     "activate the agents for the provider, but once (and not twice)... no conflicts." `galaius
@@ -690,11 +695,12 @@ def already_meshed(provider: str, *, cwd: str | None = None) -> bool:
     flows — GALAIUS_PARENT_RUN_ID rides the child's process env, the globally-configured server
     inherits it.
 
-    Reads only. Codex configuration errors fail closed: an unreadable entry may disable
-    the server, so injecting a replacement must not override that operator decision.
+    Never for Codex: its mesh is `-c mcp_servers.galaius.*` values laid over its own entry (one
+    server, the owner's `enabled` kept), and only they carry the tool approval a run needs and the
+    relay its `Confinement` serves the server through.
     """
     if provider == "codex":
-        return CodexProvider().has_mcp_server("galaius", cwd=cwd or str(Path.cwd()))
+        return False
     checks = {
         "claude": Path.home() / ".claude.json",
         "cursor": Path.home() / ".cursor" / "mcp.json",
@@ -901,12 +907,14 @@ class ResumeLaunch(AheadLaunch):
             reasoning = policy.reasoning_for(run.agent, f"{provider.name}/{model}" if model else None)
         coarse_accepted = policy.accepts_coarse_tool_policy(run.agent, provider.name) if run.agent else False
         provider.validate_tool_policy(policy.tools_for(run.agent), run.denied_tools, coarse_accepted=coarse_accepted)
+        if refusal := provider.sandbox_refusal():
+            raise ModelUnavailable(f"{provider.name} cannot continue this run on this PC: {refusal}")
         env = {**GatewayServed.environment(environment, run.agent), **routed, "GALAIUS_RUN_ID": run.run_id, "GALAIUS_PARENT_RUN_ID": run.run_id}
         arguments = dict(
             model=model, permission_mode=run.permission_mode, reasoning=reasoning, agent=run.agent,
             allowed_tools=policy.tools_for(run.agent), denied_tools=run.denied_tools,
             agent_prompt=_role_prompt(catalog, run.agent, provider, env) if catalog is not None else None,
-            mcp_config=mesh_config(run_id=run.run_id, role=run.agent) if run.mesh_enabled and not already_meshed(provider.name, cwd=run.cwd) else None,
+            mcp_config=mesh_config(run_id=run.run_id, role=run.agent) if run.mesh_enabled and not already_meshed(provider.name) else None,
             coarse_accepted=coarse_accepted, base_url=routed.get("OPENAI_BASE_URL"),
             **({"inbox_hook": agent_queue.inbox_hook(run.run_id)} if provider.reads_mid_turn else {}),
         )
@@ -1592,7 +1600,7 @@ async def run_agent(
             provider=candidate_provider, cwd=cwd, environment=env, arguments=command_kwargs,
             # Once, never twice: skip the mesh when the provider's own config already registers
             # galaius — else the child would carry two registrations of the same server.
-            meshed=mesh and not already_meshed(candidate_provider.name, cwd=cwd), fence=candidate_fence, role=agent,
+            meshed=mesh and not already_meshed(candidate_provider.name), fence=candidate_fence, role=agent,
         )
         # A child started ahead for this very launch skips its CLI's own startup. Its run id is the
         # vendor session id, so it serves only the first child handed to that vendor.

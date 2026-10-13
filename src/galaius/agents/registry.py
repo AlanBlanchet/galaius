@@ -88,7 +88,7 @@ _CALLER_ENVIRONMENT: ContextVar[Mapping[str, str] | None] = ContextVar("agent_ca
 #: through too, never relaxing the criterion (#181).
 SkipReason = Literal[
     "cli_missing", "provider_off", "unauthenticated", "auth_check_failed", "permission_mode_unsupported",
-    "images_unsupported", "tool_policy_unsupported", "model_capability_unsupported",
+    "images_unsupported", "tool_policy_unsupported", "sandbox_unavailable", "model_capability_unsupported",
     "quota_exceeded", "subscription_capped", "subscription_missing",
 ]
 
