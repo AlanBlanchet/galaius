@@ -97,7 +97,7 @@ def stand_in_claude(tmp_path: Path, *, opens: bool, prints: bool) -> Path:
     browser, then « Paste code here if prompted > » (no newline) and one line read: `CODE` signs in, anything else fails
     (« Login failed: Request failed with status code 400 », exit 1)."""
     claude = tmp_path / "claude"
-    claude.write_text('#!/bin/sh\n[ "$1" = auth ] || exit 0\n' + ('"$BROWSER" "' + CLAUDE_SIGN_IN + '"\n' if opens else "")
+    claude.write_text('#!/bin/sh\n[ "$1" = auth ] || exit 0\n[ "$2" = logout ] && exit 0\n' + ('"$BROWSER" "' + CLAUDE_SIGN_IN + '"\n' if opens else "")
                       + ("echo 'Opening browser to sign in…'\necho \"If the browser didn't open, visit: " + CLAUDE_PASTE + "\"\n"
                          + "printf 'Paste code here if prompted > '\nread code\n"
                          + f'[ "$code" = "{CODE}" ] && {{ touch "$0.in"; echo "Login successful."; sleep 30; }}\n'
@@ -187,6 +187,25 @@ def test_claude_signs_in_from_any_browser_with_the_code_its_page_shows(tmp_path:
     for secret in ("43117", "Zq81vB", "WrongCode"):
         assert secret not in caplog.text
         assert not jobs.log_path.exists() or secret not in jobs.log_path.read_text()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="its stand-in program is a POSIX shell script")
+def test_signing_a_subscription_out_ends_its_sign_in_under_way(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A subscription removed while its sign-in waits for his code (he never pasted it): the sign-in is ended, then
+    signed out and its folder removed, at once, never « sign out once it ended » for the sign-in's 15 minutes."""
+    claude = stand_in_claude(tmp_path, opens=False, prints=True)
+    monkeypatch.setattr(AgentPrograms, "_status", lambda self, provider, environment: LoginStatus(signed_in=False))
+    monkeypatch.setattr(AgentPrograms, "poll_seconds", 0.1)
+    monkeypatch.setattr(type(PROVIDERS["claude"]), "available", lambda self: True)
+    monkeypatch.setattr(type(PROVIDERS["claude"]), "executable", lambda self: str(claude))
+    jobs = AgentPrograms(environment={"PATH": "/usr/bin:/bin"}, log_path=tmp_path / "agent-programs.log")
+    subscription = UUID(int=42)
+    assert jobs.install("claude", subscription).step == "signing_in"
+    signing(jobs, lambda state: any(item.subscription_id == subscription and item.sign_in is not None and item.sign_in.paste is not None for item in jobs.states()))
+    started = time.monotonic()
+    assert jobs.sign_out("claude", subscription).step == "signed_out"
+    assert time.monotonic() - started < 10
+    assert not any(item.subscription_id == subscription for item in jobs.states())  # its folder is gone
 
 
 #: Claude Code 2.1.288 with its claude.ai login expired and not refreshable: the JSON status still says

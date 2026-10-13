@@ -170,14 +170,26 @@ class AgentPrograms(BaseModel):
         return job
 
     def sign_out(self, name: AgentProvider, subscription_id: UUID) -> AgentProviderState:
-        """`subscription_id` signed out: its program's own sign-out inside its folder, then the folder
-        removed with whatever credential it kept. The default login is never touched. Its state after."""
+        """`subscription_id` signed out: a sign-in of it under way ended first, then its program's own sign-out inside its
+        folder, then the folder removed with whatever credential it kept. The default login is never touched. Its state after."""
         subscription = Subscription.of(subscription_id)
         if subscription.provider != name:
             raise PermissionError(f"subscription {subscription_id} is a {subscription.provider} login, not {name}")
+        key = self._key(subscription.program, subscription)
         with self._lock:
-            if (job := self._jobs.get(self._key(subscription.program, subscription))) is not None and job.step in self.RUNNING:
-                raise PermissionError("its sign-in is under way; sign out once it ended")
+            job = self._jobs.get(key)
+            if job is not None and job.step == "installing":
+                raise PermissionError(f"{name} is installing here; sign out once it is installed")
+            login = self._logins.get(key, (None, None, None))[0] if job is not None and job.step == "signing_in" else None
+            if job is not None and job.step == "signing_in" and login is None:
+                raise PermissionError(f"its {name} sign-in is starting; sign out again in a few seconds")
+        if login is not None:  # a sign-in under way in its folder: ended first, it is what he undoes
+            end_process_tree(login.pid)
+            deadline = time.monotonic() + 2 * self.poll_seconds + 10
+            while (job := self._jobs.get(key)) is not None and job.step in self.RUNNING:
+                if time.monotonic() > deadline:
+                    raise PermissionError(f"its {name} sign-in did not stop; sign out again")
+                time.sleep(0.05)
         state = self._base(subscription.program, subscription)
         self._logout(subscription)
         with self._lock:
