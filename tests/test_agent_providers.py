@@ -24,7 +24,7 @@ from galaius.agents.providers import (
     PROVIDERS, ClaudeCodeProvider, CodexProvider, UnsupportedToolPolicy, provider_for,
 )
 from galaius.models import Model
-from galaius.agents.registry import participant_environment
+from galaius.agents.registry import StreamDigest, participant_environment
 from galaius.processes import NpmShim, spawnable
 
 
@@ -550,6 +550,24 @@ def _events() -> list[AgentEvent]:
 
 
 # ── parsing a real stream ────────────────────────────────────────────────────────────────────
+
+
+def test_the_context_gauge_and_a_manual_compaction_read_off_a_real_compacted_session():
+    """Claude Code 2.1.288 headless: a one-word turn, then `/compact` as a resumed turn (captured, local
+    paths removed). The gauge is the newest main-thread call's whole prompt, the window the result's
+    own `contextWindow`, and the compaction one `compacted` event carrying both sizes."""
+    provider, ledger = ClaudeCodeProvider(), UsageLedger()
+    lines = (Path(__file__).parent / "fixtures" / "agents" / "claude_compact_stream.jsonl").read_text().splitlines()
+    events = [event for line in lines if (event := provider.parse(line, ledger)) is not None]
+    assert {e.context_tokens for e in events if e.kind in ("text", "thinking")} == {10 + 13803 + 8587}
+    assert [e.context_window for e in events if e.kind == "done"] == [200_000, 200_000]
+    [compacted] = [e for e in events if e.kind == "compacted"]
+    assert (compacted.compaction, compacted.compacted_from, compacted.context_tokens) == ("manual", 22560, 1769)
+    assert [e.kind for e in events if e.raw_type == "user"] == ["injected"]  # the summary; the replayed stdout is dropped
+    assert StreamDigest.of("", events, viewer="").context == {"context_tokens": 1769, "context_window": 200_000}
+    subagent = json.loads(lines[2]) | {"parent_tool_use_id": "toolu_example"}
+    assert provider.parse(json.dumps(subagent), UsageLedger()).context_tokens is None
+
 
 
 def test_the_real_stream_parses_end_to_end():

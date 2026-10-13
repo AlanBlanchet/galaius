@@ -2127,6 +2127,32 @@ async def test_cumulative_usage_survives_console_process_restart(
         await _stop_console(second)
 
 
+async def test_compact_runs_as_a_codex_turn_and_resets_the_context_gauge(console_workspace) -> None:
+    """`compact` asks Codex to compact between turns; its `contextCompaction` item lands as one manual
+    `compacted` event from the size before, and the gauge reads the next call's prompt."""
+    root, workspace, binary_dir = console_workspace
+    _scenario(binary_dir, mode="fragmented_usage", models=["openai/example-model"])
+    process = await _open_console(workspace)
+    try:
+        started = await _exchange(process, {
+            "version": 1, "request_id": "start", "method": "start",
+            "request": {"route_id": "codex:local_session", "prompt": "first",
+                        "selection": {"model": "openai/example-model"}, "workspace_root": str(workspace)},
+        })
+        await _event(process, "done")
+        run_id = started["run"]["run_id"]
+        assert (reg.get_run(run_id).context_tokens, reg.get_run(run_id).context_window) == (10, 128_000)
+        compacted = await _exchange(process, {"version": 1, "request_id": "compact", "method": "compact", "run_id": run_id})
+        assert compacted["ok"] is True
+        event = (await _event(process, "compacted"))["event"]
+        assert (event["compaction"], event["compacted_from"]) == ("manual", 10)
+        await _event(process, "done")
+        stored = reg.get_run(run_id)
+        assert (stored.context_tokens, stored.context_window, stored.status) == (3, 128_000, "done")
+    finally:
+        await _stop_console(process)
+
+
 @pytest.mark.parametrize("terminal", ["done", "failed", "cancelled"])
 @pytest.mark.parametrize("kind", ["conversation", "provider_child"])
 def test_terminal_runs_ignore_late_same_turn_frames(

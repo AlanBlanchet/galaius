@@ -24,6 +24,7 @@ from galaius.agents.protocol import (
     CancelCommand,
     CatalogCommand,
     CatalogResponse,
+    CompactCommand,
     ConversationCatalog,
     ConversationCommand,
     ConversationErrorCode,
@@ -41,7 +42,7 @@ from galaius.agents.protocol import (
     SendCommand,
     StartCommand,
 )
-from galaius.agents.transport import _ConversationTransport
+from galaius.agents.transport import CompactionUnsupported, _ConversationTransport
 from galaius.criteria import Variables
 from galaius.config import Config
 from galaius.prompt_cache import _PromptCache
@@ -53,7 +54,7 @@ _INPUT_LIMIT = 128 * 1024
 _ENTITY_ID = re.compile(r"^[A-Za-z0-9._:@+-]{1,160}$")
 _REQUEST_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 _METHODS: list[ConversationMethod] = [
-    "initialize", "catalog", "start", "send", "cancel", "interaction",
+    "initialize", "catalog", "start", "send", "cancel", "compact", "interaction",
 ]
 class _ConversationHost(BaseModel):
     """Private owner of one console, its provider process, and all active turns."""
@@ -181,6 +182,8 @@ class _ConversationHost(BaseModel):
             return await self._send(command)
         if isinstance(command, CancelCommand):
             return await self._cancel(command)
+        if isinstance(command, CompactCommand):
+            return await self._compact(command)
         return await self._interaction(cast(InteractionCommand, command))
 
     async def catalog(self) -> ConversationCatalog:
@@ -466,6 +469,31 @@ class _ConversationHost(BaseModel):
             ok=True, run=reg.get_run(run.run_id) or run,
         )
 
+    async def _compact(self, command: CompactCommand) -> ConversationResponseValue:
+        """Compaction runs as the provider's own turn, so only between turns; its `compacted` event
+        reaches the run through the transport consumer like any other."""
+        run = reg.get_run(command.run_id)
+        if run is None or run.kind != "conversation" or run.provider_session_id is None:
+            return self._error(command.request_id, command.method, "not_found", "Conversation does not exist.")
+        if run.run_id in self._active_turns:
+            return self._error(command.request_id, command.method, "conflict", "Conversation already has an active turn.")
+        try:
+            connection = await self.transport_registry.for_run(run)
+            if not connection.has_conversation(run.provider_session_id):
+                await connection.resume_conversation(
+                    conversation_id=run.provider_session_id, model=(await self._resolve_continuation_model(run)).id,
+                    workspace=self._workspace(run.cwd),
+                )
+                connection.bind_conversation(run)
+            self._ensure_transport_consumer(connection)
+            await connection.compact_conversation(conversation_id=run.provider_session_id)
+        except CompactionUnsupported as refused:
+            return self._error(command.request_id, command.method, "incompatible", str(refused))
+        except (ConnectionError, ValidationError, ValueError):
+            return self._error(command.request_id, command.method, "provider_failed", "Provider could not compact this conversation.")
+        return RunResponse(version=1, type="response", method="compact", request_id=command.request_id,
+                           ok=True, run=reg.get_run(run.run_id) or run)
+
     async def _interaction(self, command: InteractionCommand) -> ConversationResponseValue:
         run = reg.get_run(command.run_id)
         interaction_id = command.submission.interaction_id
@@ -685,6 +713,9 @@ class ConversationHost:
 
     async def cancel(self, run_id: str) -> reg.AgentRun:
         return await self._run(CancelCommand(version=1, request_id=self._request_id(), method="cancel", run_id=run_id))
+
+    async def compact(self, run_id: str) -> reg.AgentRun:
+        return await self._run(CompactCommand(version=1, request_id=self._request_id(), method="compact", run_id=run_id))
 
     async def answer(self, run_id: str, interaction_id: str, values: dict[str, str | bool]) -> reg.AgentRun:
         return await self._run(InteractionCommand.model_validate({"version": 1, "request_id": self._request_id(), "method": "interaction", "run_id": run_id,

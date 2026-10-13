@@ -9,6 +9,10 @@ from galaius.agents.events import AgentEvent
 from galaius.agents.registry import AgentRun
 
 
+class CompactionUnsupported(ValueError):
+    """The conversation's provider has no way to compact it."""
+
+
 class _ConversationStart(BaseModel):
     conversation_id: str
     model: str
@@ -60,6 +64,11 @@ class _ConversationTransport(BaseModel, ABC):
     @abstractmethod
     async def cancel_turn(self, *, conversation_id: str, turn_id: str) -> None: ...
 
+    async def compact_conversation(self, *, conversation_id: str) -> None:
+        """Have the provider replace the conversation so far with its summary; a route that cannot refuses."""
+        del conversation_id
+        raise CompactionUnsupported("this conversation's provider cannot compact it")
+
     @abstractmethod
     async def submit_interaction(
         self, *, run_id: str, interaction_id: str, values: dict[str, str | bool]
@@ -72,4 +81,4 @@ class _ConversationTransport(BaseModel, ABC):
     async def close(self) -> None: ...
 
 
-__all__: list[str] = []
+__all__: list[str] = ["CompactionUnsupported"]

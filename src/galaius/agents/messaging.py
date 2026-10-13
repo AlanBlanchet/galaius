@@ -52,7 +52,8 @@ class Delivery(BaseModel):
         inside the fence)."""
         waiting = [other.id for other in agent_queue.items_locked(run.run_id) if other.state in {"pending", "running"}]
         working = item.state == "pending" and ((item.id in waiting and waiting.index(item.id) > 0) or run.working())
-        reads_at: ReadsAt = "now" if not working else "next_step" if run.fence is None and provider_for(run.provider).reads_mid_turn else "turn_end"
+        mid_turn = item.kind == "message" and run.fence is None and provider_for(run.provider).reads_mid_turn
+        reads_at: ReadsAt = "now" if not working else "next_step" if mid_turn else "turn_end"
         return cls(state="queued", text=f"Queued for {run.name} ({run.run_id[:8]}), delivery {item.id[:8]}.", run_id=run.run_id,
                    queue_id=item.id, reads_at=reads_at, repeated=repeated)
 
@@ -143,12 +144,13 @@ def _session_id(run) -> str | None:
 
 def deliver_message(
     run_id: str, message: str, *, sender: str | None = None, environment: Mapping[str, str] | None = None, message_id: str | None = None,
+    kind: agent_queue.QueueKind = "message",
 ) -> Delivery:
     """Record and enqueue one message (`queue_message`); a detached per-run dispatcher performs the resume.
 
     `environment` is the one the dispatcher and its resumed turn run in, and names the sender
     when `sender` does not (`GALAIUS_RUN_ID`); this process's own when None."""
-    delivery = queue_message(run_id, message, sender=sender, environment=environment, message_id=message_id)
+    delivery = queue_message(run_id, message, sender=sender, environment=environment, message_id=message_id, kind=kind)
     if delivery.state != "queued":
         return delivery
     refused = start_dispatcher(delivery.run_id, os.environ if environment is None else environment)
@@ -170,6 +172,7 @@ def start_dispatcher(run_id: str, environment: Mapping[str, str]) -> str | None:
 
 def queue_message(
     run_id: str, message: str, *, sender: str | None = None, environment: Mapping[str, str] | None = None, message_id: str | None = None,
+    kind: agent_queue.QueueKind = "message",
 ) -> Delivery:
     """Record one message and enqueue its delivery (`queued`, with its queue id), or say why not;
     whoever called delivers it: the run's dispatcher (`deliver_message`), or a long-lived launcher
@@ -181,7 +184,7 @@ def queue_message(
         with reg.record_lock(recipient := reg.resolve_run_id(run_id) or run_id):
             if (repeat := Delivery.repeat(recipient, message_id)) is not None:
                 return repeat
-    if error := _validate_message(message):
+    if kind == "message" and (error := _validate_message(message)):
         return Delivery(state="error", text=error, run_id=run_id)
     speaker = sender or sender_id(environment)
     run, error = check_deliverable(run_id, sender=speaker)
@@ -189,6 +192,10 @@ def queue_message(
         return Delivery(state="error", text=error, run_id=run_id)
     assert run is not None
     provider = provider_for(run.provider)
+    if kind == "compact":
+        if provider.compact_prompt is None:
+            return Delivery(state="error", text=f"ERROR: the {run.provider!r} CLI cannot compact its conversation.", run_id=run.run_id)
+        message = provider.compact_prompt
     with ExitStack() as locks:
         for locked_run in sorted({run.run_id, speaker}):
             locks.enter_context(reg.record_lock(locked_run))
@@ -208,13 +215,13 @@ def queue_message(
             return repeat  # queued meanwhile, by another process
         message_id = message_id or secrets.token_hex(16)
         origin = reg.get_run(speaker)
-        if origin is not None:
+        if origin is not None and kind == "message":
             message = origin.handoff_header() + message
         try:
             # The queue intent is durable before either transcript append. A crash after this
             # point leaves a recoverable pending item instead of an invisible message.
             item = agent_queue.enqueue_locked(
-                run.run_id, message_id=message_id, sender=speaker,
+                run.run_id, message_id=message_id, sender=speaker, kind=kind,
             )
         except agent_queue.CorruptQueueStateError as queue_error:
             return Delivery(state="error", text=f"ERROR: {queue_error}", run_id=run.run_id)

@@ -183,6 +183,28 @@ class _FakeCodexAppServer:
             }})
             self._after_turn_start(message["params"]["threadId"], turn_id)
             return
+        if method == "thread/compact/start":
+            # codex 0.155.1 (`generate-json-schema`): an empty result, then the compaction runs as a
+            # turn of its own carrying one `contextCompaction` item.
+            thread_id = params["threadId"]
+            self.turns += 1
+            turn_id = f"turn-{self.turns}"
+            turn = {"id": turn_id, "status": "inProgress", "items": [], "error": None}
+            self._write({"id": request_id, "result": {}})
+            self._write({"method": "turn/started", "params": {"threadId": thread_id, "turn": turn}})
+            item = {"type": "contextCompaction", "id": f"compaction-{self.turns}"}
+            self._write({"method": "item/started", "params": {"threadId": thread_id, "turnId": turn_id, "item": item, "startedAtMs": self.turns * 1_000}})
+            self._write({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": item, "completedAtMs": self.turns * 1_000}})
+            self._write({"method": "thread/compacted", "params": {"threadId": thread_id, "turnId": turn_id}})
+            total = {"inputTokens": self.turns * 10, "cachedInputTokens": self.turns * 2, "outputTokens": self.turns * 5,
+                     "reasoningOutputTokens": 0, "totalTokens": self.turns * 15, "cacheWriteInputTokens": self.turns}
+            last = {"inputTokens": 3, "cachedInputTokens": 0, "outputTokens": 1, "reasoningOutputTokens": 0, "totalTokens": 4}
+            self._write({"method": "thread/tokenUsage/updated", "params": {
+                "threadId": thread_id, "turnId": turn_id,
+                "tokenUsage": {"total": total, "last": last, "modelContextWindow": 128_000},
+            }})
+            self._write({"method": "turn/completed", "params": {"threadId": thread_id, "turn": {**turn, "status": "completed"}}})
+            return
         if method == "turn/interrupt":
             if self.config.get("mode") == "captured_schema_invalid":
                 self._write({
@@ -260,6 +282,8 @@ class _FakeCodexAppServer:
                 and input_items[0].get("type") == "text"
                 and isinstance(input_items[0].get("text"), str)
             )
+        if method == "thread/compact/start":
+            return set(params) == {"threadId"} and isinstance(params["threadId"], str)
         if method == "turn/interrupt":
             return bool(
                 isinstance(params.get("threadId"), str)

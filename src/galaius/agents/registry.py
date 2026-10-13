@@ -36,7 +36,7 @@ from pydantic import BaseModel, Field, PrivateAttr, field_validator
 from galaius.agents import quota
 from galaius_core import AgentRevisionRef, PromptExecutionRef
 
-from galaius.agents.events import TOKEN_FIELDS, AgentEvent, TokenUsage, UsageLedger, stream_lines
+from galaius.agents.events import CONTEXT_FIELDS, TOKEN_FIELDS, AgentEvent, TokenUsage, UsageLedger, stream_lines
 from galaius.agents.catalog_connection import CatalogConnection
 from galaius.agents.ceiling import end_run_scope
 from galaius.agents.providers import PROVIDERS, AgentProvider, DeniedTool
@@ -218,6 +218,8 @@ class StreamDigest(BaseModel):
     ending_text: str = ""
     cost_usd: float | None = None
     tokens: dict[str, int] = Field(default_factory=dict)
+    #: The newest value of each `CONTEXT_FIELDS` gauge the stream reported.
+    context: dict[str, int] = Field(default_factory=dict)
     #: Newest non-empty event summary; None when no event summarises to anything.
     last: str | None = None
 
@@ -230,8 +232,12 @@ class StreamDigest(BaseModel):
             used = [getattr(e, field) for e in events if getattr(e, field) is not None]
             if used:
                 tokens[field] = sum(used)
+        context = {
+            field: reported for field in CONTEXT_FIELDS
+            if (reported := next((value for e in reversed(events) if (value := getattr(e, field)) is not None), None)) is not None
+        }
         return cls(
-            source=source, events=bool(events),
+            source=source, events=bool(events), context=context,
             ending=ending.kind if ending is not None else None,
             ending_text=(ending.text or "") if ending is not None else "",
             cost_usd=sum(costs) if costs else None, tokens=tokens,
@@ -370,6 +376,9 @@ class AgentRun(BaseModel):
     output_tokens: int | None = None
     cached_input_tokens: int | None = None
     cache_write_input_tokens: int | None = None
+    #: The context gauge (`AgentEvent.context_tokens` / `context_window`): its newest reported value.
+    context_tokens: int | None = None
+    context_window: int | None = None
     last: str = ""
     stream_digest: StreamDigest | None = None
 
@@ -1302,6 +1311,7 @@ def append_event(run_id: str, event: AgentEvent) -> None:
             used = getattr(event, field)
             if used is not None:
                 updates[field] = (getattr(stored, field) or 0) + used
+        updates.update({field: reported for field in CONTEXT_FIELDS if (reported := getattr(event, field)) is not None})
         summary = event.summary(viewer=run_id)
         if summary:  # system/hook events summarise to nothing; they must not blank the row
             updates["last"] = summary
@@ -1960,14 +1970,14 @@ def _derive(run: AgentRun) -> AgentRun:
     if digest.events:
         # Tokens beside cost: cost alone hides how much CONTEXT a run consumed, and two models at
         # the same price consume very differently.
-        for field, used in digest.tokens.items():
+        for field, used in (digest.tokens | digest.context).items():
             setattr(run, field, used)
         run.cost_usd, run.last = digest.cost_usd, digest.last if digest.last is not None else run.last
     run.stream_digest = digest
     # Persist whatever we healed — status included. The panel reads these files directly and does
     # its own (downgrade-only) liveness check, so a status left stale on disk reappears there as
     # "interrupted" no matter what Python worked out in memory.
-    owned = {"project", "status", "finished_at", "cost_usd", *TOKEN_FIELDS, "last", "unit", "interruption",
+    owned = {"project", "status", "finished_at", "cost_usd", *TOKEN_FIELDS, *CONTEXT_FIELDS, "last", "unit", "interruption",
              "stream_digest"}
     healed = run.model_dump(mode="json", include=owned)
     updates = {field: value for field, value in healed.items() if value != original.get(field)}

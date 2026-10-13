@@ -994,6 +994,20 @@ def agents_send(run_id: str, message: str) -> None:
         raise SystemExit(1)
 
 
+@agents_app.command(name="compact")
+def agents_compact(run_id: str) -> None:
+    """Compact an agent's conversation: its CLI replaces what was said so far with its own summary,
+    freeing its context. A turn of its own: a run at work compacts once its turn ends."""
+
+    delivery = messaging.deliver_message(run_id, "", kind="compact")
+    if (refused := messaging.wait_for_start(delivery)) is not None:
+        print(f"ERROR: the compaction did not start: {refused}")
+        raise SystemExit(1)
+    print(delivery.text)
+    if delivery.state == "error":
+        raise SystemExit(1)
+
+
 @agents_app.command(name="resume")
 def agents_resume(
     run_id: list[str] | None = None, *, all_cut: bool = False, hours: float = 24.0,

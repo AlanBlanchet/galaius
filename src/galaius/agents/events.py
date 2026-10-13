@@ -36,6 +36,7 @@ EventKind = Literal[
     "interaction", # a provider needs typed human input
     "interaction_resolved", # typed human input was returned to the provider
     "cancelled",   # a turn was interrupted and acknowledged
+    "compacted",   # the provider replaced the conversation so far with a summary of it
     "other",       # recognised as valid, not specially handled — never silently dropped
 ]
 
@@ -66,6 +67,9 @@ def stream_lines(text: str) -> list[str]:
         lines.pop()
     return [line.removesuffix("\r") for line in lines]
 
+
+#: Who started a compaction: the provider on its own as the context filled (`auto`), or a request (`manual`).
+CompactionTrigger = Literal["auto", "manual"]
 
 InteractionKind = Literal[
     "command_approval", "file_change_approval", "user_input", "permission_approval"
@@ -198,6 +202,9 @@ class TokenUsage(BaseModel):
 #: fold, heal and persisted-field list iterates THIS tuple, so a field cannot be summed on one
 #: path and dropped on another.
 TOKEN_FIELDS: tuple[str, ...] = tuple(TokenUsage.model_fields)
+#: The context gauge shared by :class:`AgentEvent` and the run record: a SNAPSHOT, so every fold
+#: keeps the newest reported value (never a sum, unlike `TOKEN_FIELDS`).
+CONTEXT_FIELDS: tuple[str, ...] = ("context_tokens", "context_window")
 
 
 class _UsageCheckpoint(BaseModel):
@@ -336,6 +343,15 @@ class AgentEvent(BaseModel):
     at: float | None = None
     #: A `rate_limit` event's usage windows as the vendor reported them (`AgentProvider.usage`).
     usage: tuple[UsageWindow, ...] = ()
+    #: How full the conversation is: the prompt of the newest main-thread model call (fresh input,
+    #: cache reads and cache writes), never a run total; on a `compacted` event, its size after.
+    #: None when this event reports no call.
+    context_tokens: int | None = None
+    #: The model's context window as the provider reported it; None when it did not (never guessed).
+    context_window: int | None = None
+    #: A `compacted` event's trigger and its context size before (None when the provider does not say).
+    compaction: CompactionTrigger | None = None
+    compacted_from: int | None = None
 
     def summary(self, viewer: str | None = None) -> str:
         """One line for a supervisor row — what this agent is doing right now."""
@@ -351,6 +367,8 @@ class AgentEvent(BaseModel):
             return "input answered"
         if self.kind == "cancelled":
             return "cancelled"
+        if self.kind == "compacted":
+            return "context compacted"
         if self.kind == "done":
             return "done"
         if self.kind == "check":

@@ -44,6 +44,9 @@ QueueState = Literal["pending", "running", "replied", "failed", "cancelled", "un
 #: What a queue file holds only while one of its items is still pending (its state, as written).
 PENDING_MARK = '"pending"'
 AttemptState = Literal["replied", "failed", "uncertain"]
+#: What a queued turn does: deliver a message, or compact the conversation (`AgentProvider.compact_prompt`, the
+#: turn's whole prompt: only ever a turn of its own, never handed to a turn already running).
+QueueKind = Literal["message", "compact"]
 
 
 class QueueItem(BaseModel):
@@ -52,6 +55,7 @@ class QueueItem(BaseModel):
     id: str = Field(min_length=1, max_length=80)
     message_id: str = Field(min_length=1, max_length=160)
     sender: str = Field(min_length=1, max_length=160)
+    kind: QueueKind = "message"
     state: QueueState = "pending"
     enqueued_at: float
     started_at: float | None = None
@@ -121,7 +125,7 @@ def can_enqueue_locked(run_id: str) -> bool:
     return sum(item.state in {"pending", "running"} for item in _items(state)) < MAX_PENDING
 
 
-def enqueue_locked(run_id: str, *, message_id: str, sender: str) -> QueueItem | None:
+def enqueue_locked(run_id: str, *, message_id: str, sender: str, kind: QueueKind = "message") -> QueueItem | None:
     """Append one item while the caller owns ``registry.record_lock(run_id)``."""
     state = _state(run_id)
     items = _items(state)
@@ -133,6 +137,7 @@ def enqueue_locked(run_id: str, *, message_id: str, sender: str) -> QueueItem | 
         id=uuid.uuid4().hex,
         message_id=message_id,
         sender=sender,
+        kind=kind,
         enqueued_at=time.time(),
     )
     state["version"] = 1
@@ -141,9 +146,9 @@ def enqueue_locked(run_id: str, *, message_id: str, sender: str) -> QueueItem | 
     return item
 
 
-def enqueue(run_id: str, *, message_id: str, sender: str) -> QueueItem | None:
+def enqueue(run_id: str, *, message_id: str, sender: str, kind: QueueKind = "message") -> QueueItem | None:
     with reg.record_lock(run_id):
-        return enqueue_locked(run_id, message_id=message_id, sender=sender)
+        return enqueue_locked(run_id, message_id=message_id, sender=sender, kind=kind)
 
 
 def _replace_item_locked(run_id: str, item_id: str, **updates) -> QueueItem | None:
@@ -338,6 +343,8 @@ def inject(run_id: str) -> list[str]:
         for item in _items(_state(run_id)):
             if item.state != "pending":
                 continue
+            if item.kind == "compact":
+                break  # a turn of its own once this one ends; what was sent after it waits behind it
             message = reg.message_for(run_id, item.message_id)
             if message is None:
                 _replace_item_locked(run_id, item.id, state="failed", finished_at=time.time(), error="message transcript entry is missing")
@@ -367,8 +374,10 @@ def _fresh_policy(run: reg.AgentRun):
     return provider, criterion, model, reasoning
 
 
-def _classify_attempt(run_id: str, raw_index: int | None) -> tuple[AttemptState, str]:
-    """Classify one persisted provider attempt without treating exit as acceptance."""
+def _classify_attempt(run_id: str, item: QueueItem) -> tuple[AttemptState, str]:
+    """Classify one persisted provider attempt without treating exit as acceptance: a message is
+    accepted by a reply, a compaction by the provider's `compacted` event."""
+    raw_index = item.raw_index
     if raw_index is None:
         return "uncertain", "resumed turn has no persisted attempt anchor; resend explicitly"
     events = reg.read_events(run_id)
@@ -385,10 +394,13 @@ def _classify_attempt(run_id: str, raw_index: int | None) -> tuple[AttemptState,
         (event for event in reversed(attempt_events) if event.kind in {"done", "error"}),
         None,
     )
+    if item.kind == "compact":
+        replies = [event for event in attempt_events if event.kind == "compacted"]
     if terminal is not None and terminal.kind == "done" and replies:
         return "replied", ""
     if terminal is not None:
-        return "failed", "resumed turn completed without a reply; resend explicitly"
+        return "failed", ("the provider did not compact the conversation" if item.kind == "compact"
+                          else "resumed turn completed without a reply; resend explicitly")
     return "uncertain", "resumed turn acceptance was not confirmed; resend explicitly"
 
 
@@ -414,7 +426,7 @@ def settle(run_id: str, item: QueueItem, code: int) -> None:
             if not stopped and (said is None or said.kind != "error" or not said.text.strip()):
                 reg.fail_turn_locked(run_id, error, exit_code=code)
     else:
-        attempt_state, attempt_error = _classify_attempt(run_id, item.raw_index)
+        attempt_state, attempt_error = _classify_attempt(run_id, item)
         with reg.record_lock(run_id):
             current = item_locked(run_id, item.id)
             if current is not None and current.state == "running":
@@ -486,9 +498,7 @@ def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
                                 item = None
             if recover is not None:
                 recovered_item, _ = recover
-                attempt_state, attempt_error = _classify_attempt(
-                    run_id, recovered_item.raw_index,
-                )
+                attempt_state, attempt_error = _classify_attempt(run_id, recovered_item)
                 with reg.record_lock(run_id):
                     current = item_locked(run_id, recovered_item.id)
                     if current is not None and current.state == "running":

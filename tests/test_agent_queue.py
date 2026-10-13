@@ -425,3 +425,31 @@ def test_a_message_to_a_working_run_is_read_after_its_next_own_tool_call_and_set
 
     assert [item.state for item in agent_queue.items("r2")] == ["replied"] and provider.messages == []
     assert not (tmp_path / "shadowed").exists()
+
+
+def test_a_compaction_waits_for_the_running_turn_and_is_settled_only_by_the_compaction(monkeypatch):
+    """`compact_prompt` is a turn's WHOLE prompt (`/compact` read as text mid-turn compacts nothing): never
+    handed to the turn at work, nor the message sent after it; once that turn ends it runs as a turn
+    of its own, accepted by the provider's `compacted` event, not by a reply."""
+    provider = _setup(monkeypatch, _Provider(
+        "import json; "
+        "print(json.dumps({'type':'system','subtype':'compact_boundary','session_id':'vendor',"
+        "'compact_metadata':{'trigger':'manual','pre_tokens':22560,'post_tokens':1769}})); "
+        "print(json.dumps({'type':'result','is_error':False,'result':'','session_id':'vendor'}))"
+    ))
+    provider.reads_mid_turn, provider.compact_prompt = True, "/compact"
+    reg.save_run(reg.get_run("r1").model_copy(update={"pid": os.getpid()}))
+    assert messaging.queue_message("r1", "", sender="operator", kind="compact").reads_at == "turn_end"
+    messaging.queue_message("r1", "sent after it", sender="operator")
+    assert agent_queue.inject("r1") == [] and [item.state for item in agent_queue.items("r1")] == ["pending", "pending"]
+
+    reg.save_run(reg.get_run("r1").model_copy(update={"pid": 999999}))
+    agent_queue.dispatch("r1")
+    assert provider.messages[0] == "/compact" and agent_queue.items("r1")[0].state == "replied"
+    assert reg.get_run("r1").context_tokens == 1769
+
+
+def test_a_cli_without_compaction_refuses_it_before_queueing(monkeypatch):
+    _setup(monkeypatch)
+    refused = messaging.queue_message("r1", "", sender="operator", kind="compact")
+    assert refused.state == "error" and "cannot compact" in refused.text and agent_queue.items("r1") == []

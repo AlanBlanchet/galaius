@@ -52,7 +52,7 @@ RouteAvailability = Literal[
 ]
 _ENTITY_ID = r"^[A-Za-z0-9._:@+-]+$"
 _MODEL_ID = r"^[A-Za-z0-9._:/@+-]+$"
-ConversationMethod = Literal["initialize", "catalog", "start", "send", "cancel", "interaction"]
+ConversationMethod = Literal["initialize", "catalog", "start", "send", "cancel", "compact", "interaction"]
 ConversationErrorCode = Literal[
     "invalid_request",
     "unsupported_version",
@@ -223,6 +223,13 @@ class CancelCommand(ConversationCommandBase):
     run_id: str = Field(min_length=1, max_length=160, pattern=_ENTITY_ID)
 
 
+class CompactCommand(ConversationCommandBase):
+    """Have the provider replace the conversation so far with its summary, between turns."""
+
+    method: Literal["compact"]
+    run_id: str = Field(min_length=1, max_length=160, pattern=_ENTITY_ID)
+
+
 class InteractionSubmission(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -238,7 +245,7 @@ class InteractionCommand(ConversationCommandBase):
 
 ConversationCommandValue = Annotated[
     InitializeCommand | CatalogCommand | StartCommand | SendCommand
-    | CancelCommand | InteractionCommand,
+    | CancelCommand | CompactCommand | InteractionCommand,
     Field(discriminator="method"),
 ]
 
@@ -268,7 +275,7 @@ class CatalogResponse(BaseModel):
 class RunResponse(BaseModel):
     version: Literal[1]
     type: Literal["response"]
-    method: Literal["start", "send", "cancel", "interaction"]
+    method: Literal["start", "send", "cancel", "compact", "interaction"]
     request_id: str
     ok: Literal[True]
     run: AgentRun
@@ -303,6 +310,7 @@ __all__ = [
     "CatalogCommand",
     "CatalogResponse",
     "ChargePath",
+    "CompactCommand",
     "ConnectionMode",
     "ConversationCapability",
     "ConversationCatalog",

@@ -29,7 +29,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from collections.abc import Mapping
-from typing import Annotated, ClassVar, Literal, Protocol
+from typing import Annotated, ClassVar, Literal, Protocol, get_args
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, model_validator
@@ -38,7 +38,7 @@ from galaius_core import UsageWindow, UsageWindowName
 
 from galaius import installed_version
 from galaius.agents.catalog import AgentCatalog
-from galaius.agents.events import TOKEN_FIELDS, AgentEvent, TokenUsage, UsageLedger, instant, stream_lines
+from galaius.agents.events import TOKEN_FIELDS, AgentEvent, CompactionTrigger, TokenUsage, UsageLedger, instant, stream_lines
 from galaius.agents.profiles import overlay_for
 from galaius.agents.vocabulary import ApprovalIntent, TouchScope, ThinkingLevel, vocabulary_for
 from galaius.inbox_hook import NOTE as INBOX_NOTE
@@ -269,6 +269,9 @@ class AgentProvider(ABC):
     #: (`ahead_command`, `task_message`, `startup_files`): its own startup is then paid while
     #: nobody waits (`galaius.agents.warm.WarmStart`).
     starts_ahead: ClassVar[bool] = False
+    #: The turn that makes this CLI compact its conversation (replace it with its own summary), sent
+    #: as a resumed turn's whole prompt; None: it has none, a compaction is refused (`compact_turn`).
+    compact_prompt: ClassVar[str | None] = None
 
     def session_files(self, home: Path, cwd: Path, session: str) -> tuple[Path, ...]:
         """The files holding session `session` (started in `cwd`) inside login folder `home`, the ones its resume reads:
@@ -817,6 +820,9 @@ class ClaudeCodeProvider(AgentProvider):
     folder_settings_off = ("--setting-sources", "user")
     reads_mid_turn = True
     starts_ahead = True
+    # 2.1.288, headless stream-json: a resumed turn or a stdin turn of exactly this text compacts
+    # (`compact_boundary`, trigger `manual`).
+    compact_prompt = "/compact"
     native_providers = frozenset({"anthropic"})
     media_model_field = "claude_media_criteria"
     auth_home_env = ("CLAUDE_CONFIG_DIR",)
@@ -1399,6 +1405,14 @@ class ClaudeCodeProvider(AgentProvider):
             return AgentEvent(kind="spawn", session_id=sid, raw_type=kind,
                               text=str(raw.get("description") or raw.get("agent_type") or "subagent"))
 
+        if kind == "system" and raw.get("subtype") == "compact_boundary":
+            facts = raw.get("compact_metadata") or {}
+            trigger, before, after = (facts.get(key) for key in ("trigger", "pre_tokens", "post_tokens"))
+            return AgentEvent(kind="compacted", session_id=sid, raw_type=kind,
+                              compaction=trigger if trigger in get_args(CompactionTrigger) else None,
+                              compacted_from=before if isinstance(before, int) else None,
+                              context_tokens=after if isinstance(after, int) else None)
+
         if kind == "system" and raw.get("subtype") == "init":
             tools = raw.get("tools") or []
             if isinstance(raw.get("model"), str):
@@ -1428,6 +1442,8 @@ class ClaudeCodeProvider(AgentProvider):
                 usage.model_copy(update={"output_tokens": 0}),
             )
             live = {} if observed is None else observed.model_dump(exclude={"output_tokens"})
+            if usage is not None and raw.get("parent_tool_use_id") is None:
+                live["context_tokens"] = usage.input_tokens  # a subagent's call says nothing of this conversation
             if tool:
                 return AgentEvent(kind="tool", tool=tool, tool_input=tool_input, tool_id=tool_id,
                                   session_id=sid, raw_type=kind, **live)
@@ -1490,12 +1506,16 @@ class ClaudeCodeProvider(AgentProvider):
             detail = json.dumps(structured) if structured is not None else str(
                 raw.get("result") or raw.get("stop_reason") or raw.get("subtype") or ""
             )
+            # Its main model's window as the CLI sized it (1M or 200k for one model id, by account and flags).
+            main = (raw.get("modelUsage") or {}).get(ledger.primary)
+            window = main.get("contextWindow") if isinstance(main, dict) else None
             return AgentEvent(
                 kind="error" if failed else "done",
                 session_id=sid, raw_type=kind,
                 text=detail,
                 cost_usd=cost,
                 final_text=has_final,
+                context_window=window if isinstance(window, int) else None,
                 **({} if settled is None else settled.model_dump()),
             )
 
