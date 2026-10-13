@@ -31,7 +31,7 @@ import httpx
 import websockets
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, ValidationError, field_validator, model_validator
 
-from galaius_core import MACHINE_AGENT_REQUESTS, SUBSCRIPTIONS_FEATURE, WEB_LIMIT_FEATURE, AgentMoveRequest, AgentSendRequest, AgentSignInCodeRequest, MACHINE_MODELS, MachineProblem, MachineProblemCode, MachineAgentSettings, MachineAgentSettingsState, MachineAgentSettingsUpdate, PlacePath, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, MachineAgentAnswer, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachineRuntime, MachineTokenSwap, PlaceLevel, ScriptFile, ScriptLanguage, UserModelOrigin
+from galaius_core import MACHINE_AGENT_REQUESTS, SUBSCRIPTIONS_FEATURE, WEB_LIMIT_FEATURE, AgentCompactRequest, AgentMoveRequest, AgentSendRequest, AgentSignInCodeRequest, MACHINE_MODELS, MachineProblem, MachineProblemCode, MachineAgentSettings, MachineAgentSettingsState, MachineAgentSettingsUpdate, PlacePath, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, MachineAgentAnswer, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachineRuntime, MachineTokenSwap, PlaceLevel, ScriptFile, ScriptLanguage, UserModelOrigin
 from galaius import USER_AGENT
 from galaius import prompt_mirror, prompt_projection
 from galaius.agents.subscription_watch import SubscriptionWatch
@@ -1238,7 +1238,7 @@ class MachineRunner:
     #: `WEB_LIMIT_FEATURE`: a start, a continued conversation and the runs list honour the web's `WebLimited.web_limit`.
     FEATURES: ClassVar[tuple[str, ...]] = ("file_query", "script_file", "file_read", "agent_control", "agent_settings", "web_settings", "workspaces", "start_permission", "project_secrets", "places", "agent_media", "tool_gateway", "token_swap",
                                            "workspace_copy", "places_direct", "agent_programs", SUBSCRIPTIONS_FEATURE, AgentMoveRequest.feature, str(AgentSendRequest.idempotent_feature), WEB_LIMIT_FEATURE,
-                                           AgentSignInCodeRequest.feature)
+                                           AgentSignInCodeRequest.feature, AgentCompactRequest.feature)
 
     @classmethod
     def features(cls) -> list[str]:

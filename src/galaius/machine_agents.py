@@ -34,7 +34,7 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 from galaius_core import (
-    AGENT_TOUCH_SCOPES, MACHINE_AGENT_MEDIA, MACHINE_AGENT_READ, MACHINE_AGENT_TAIL, AgentAnswerRequest, AgentMedia, AgentMediaRequest, image_type, AgentContinueRequest, AgentFoldersRequest, AgentInteraction, AgentLogsRequest, AgentOptionsRequest,
+    AGENT_TOUCH_SCOPES, AgentCompactRequest, MACHINE_AGENT_MEDIA, MACHINE_AGENT_READ, MACHINE_AGENT_TAIL, AgentAnswerRequest, AgentMedia, AgentMediaRequest, image_type, AgentContinueRequest, AgentFoldersRequest, AgentInteraction, AgentLogsRequest, AgentOptionsRequest,
     AgentAllowanceRequest, AgentMoveRequest, AgentProgramInstallRequest, AgentProgramsRequest, AgentProviderState, AgentSignInCodeRequest, AgentSignOutRequest, SubscriptionAllowance, Lent, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
     MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, PassedOverCandidate, ReadsAt, AgentRefusalCode, WebLimited, WebLoad, media_key, media_paths, MachineAgentSession, MachineFileEntry, WorkspaceCreateRequest, WorkspacePack, WorkspacePackRequest, WorkspacePrepareRequest, WorkspaceRefresh, WorkspacesRequest,
 )
@@ -462,8 +462,10 @@ class MachineAgents(BaseModel):
                 return await self._start_session(request)
             case AgentStartRequest():
                 return await self._start(request)
-            case AgentSendRequest() | AgentStopRequest() | AgentAnswerRequest() if self._kind(request.run_id) == "session":
+            case AgentSendRequest() | AgentStopRequest() | AgentAnswerRequest() | AgentCompactRequest() if self._kind(request.run_id) == "session":
                 return await self._session_action(request)
+            case AgentCompactRequest():
+                return await self._compact(request)
             case AgentSendRequest():
                 return await self._send(request)
             case AgentStopRequest():
@@ -616,7 +618,7 @@ class MachineAgents(BaseModel):
                 fenced=bool({run.run_id, run.root_run_id, run.parent_run_id} & fenced),
                 passed_over=tuple(PassedOverCandidate(provider=item.candidate.provider, model=item.candidate.model[:120], reason=item.reason, until=item.until)
                                   for item in run.skipped[:16]),
-                subscription=run.subscription,
+                subscription=run.subscription, context_tokens=run.context_tokens, context_window=run.context_window,
             ))
         return MachineAgentAnswer(request_id=request.id, runs=tuple(found), web=self.runs.load(request))
 
@@ -955,6 +957,19 @@ class MachineAgents(BaseModel):
             raise RuntimeError(delivery.text.removeprefix("ERROR: ") or "not delivered")
         return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=delivery.text, reads_at=delivery.reads_at)
 
+    async def _compact(self, request: AgentCompactRequest) -> MachineAgentAnswer:
+        """Queued as a turn of its own (`QueueKind` `compact`) under the request's id: its dispatcher starts it once
+        the run is between turns; a CLI that cannot compact is refused here."""
+        run = await asyncio.to_thread(self._require_run, request.run_id)
+        if self._kind(request.run_id) == "continued":
+            raise PermissionError("a continued editor conversation is compacted in its editor")
+        environment = await asyncio.to_thread(self.launcher_environment_in, Path(run.cwd))
+        delivery = await asyncio.to_thread(deliver_message, run.run_id, "", sender="operator", environment=environment,
+                                           message_id=str(request.id), kind="compact")
+        if delivery.state == "error":
+            raise RuntimeError(delivery.text.removeprefix("ERROR: ") or "not compacted")
+        return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail="compacting", reads_at=delivery.reads_at)
+
     def _pinned_run(self, request: AgentSendRequest) -> reg.AgentRun:
         """The run a message goes to, on the subscription it is pinned to: a message naming another
         is refused; one naming its own brings that subscription's caps as the server has them now."""
@@ -1208,7 +1223,7 @@ class MachineAgents(BaseModel):
         await asyncio.to_thread(self.runs.add, WebRun(run_id=UUID(run.run_id), root=request.root, path=request.path, kind="session"))
         return MachineAgentAnswer(request_id=request.id, run_id=UUID(run.run_id), refresh=refresh)
 
-    async def _session_action(self, request: AgentSendRequest | AgentStopRequest | AgentAnswerRequest) -> MachineAgentAnswer:
+    async def _session_action(self, request: AgentSendRequest | AgentStopRequest | AgentAnswerRequest | AgentCompactRequest) -> MachineAgentAnswer:
         assert self.sessions is not None
         run = await asyncio.to_thread(self._require_run, request.run_id)
         host = await self.sessions.host()
@@ -1223,6 +1238,9 @@ class MachineAgents(BaseModel):
                 case AgentStopRequest():
                     await host.cancel(run.run_id)
                     detail = "stopped"
+                case AgentCompactRequest():
+                    await host.compact(run.run_id)  # refused while its turn runs: a session compacts between turns
+                    detail, reads_at = "compacting", "now"
                 case AgentAnswerRequest():
                     if not self.answer_approvals:
                         raise PermissionError("answering a session's approvals from the web is off on this computer")

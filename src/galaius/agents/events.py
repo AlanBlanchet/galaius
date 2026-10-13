@@ -15,7 +15,7 @@ from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from galaius_core import UsageWindow
+from galaius_core import CompactionTrigger, UsageWindow
 
 from galaius.models import TokenMix
 
@@ -67,9 +67,6 @@ def stream_lines(text: str) -> list[str]:
         lines.pop()
     return [line.removesuffix("\r") for line in lines]
 
-
-#: Who started a compaction: the provider on its own as the context filled (`auto`), or a request (`manual`).
-CompactionTrigger = Literal["auto", "manual"]
 
 InteractionKind = Literal[
     "command_approval", "file_change_approval", "user_input", "permission_approval"

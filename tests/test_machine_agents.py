@@ -326,6 +326,28 @@ def test_a_message_is_answered_once_durably_queued_and_its_dispatcher_gets_the_m
         _answer(agents, request)
 
 
+def test_the_web_reads_a_runs_context_gauge_and_compacts_it_as_a_queued_turn(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The runs list carries the gauge as the run's record has it; a compaction is answered once queued, as a turn
+    of its own under the request's id, and refused for a CLI that has none."""
+    agents = _agents(base, tmp_path)
+    run_id, codex_id = str(uuid4()), str(uuid4())
+    reg.save_run(reg.AgentRun(run_id=run_id, provider="claude", agent="tester", name="r", cwd=str(base / "project"), started_at=1.0, exit_code=0,
+                              provider_session_id=run_id, context_tokens=63_028, context_window=1_000_000))
+    reg.save_run(reg.AgentRun(run_id=codex_id, provider="codex", agent="tester", name="c", cwd=str(base / "project"), started_at=1.0, exit_code=0,
+                              provider_session_id="thread"))
+    for identity in (run_id, codex_id):
+        agents.runs.add(WebRun(run_id=identity, root="project"))
+    monkeypatch.setattr(messaging, "policy_for_continuation", lambda run, provider, environment: (None, "criterion", "model", "high"))
+    monkeypatch.setattr(agent_queue, "ensure_dispatcher_locked", lambda *args, **kwargs: 1)
+    listed = {str(run.run_id): run for run in _answer(agents, _request("runs")).runs}
+    assert (listed[run_id].context_tokens, listed[run_id].context_window) == (63_028, 1_000_000)
+    request = _request("compact", run_id=run_id)
+    assert _answer(agents, request).detail == "compacting"
+    assert [(item.kind, item.message_id) for item in agent_queue.items(run_id)] == [("compact", str(request.id))]
+    with pytest.raises(RuntimeError, match="cannot compact"):
+        _answer(agents, _request("compact", run_id=codex_id))
+
+
 def _signed(config: MachineConfig, request: MachineAgentRequest) -> dict:
     unsigned = request.model_dump(mode="json", exclude={"signature"})
     key = hashlib.sha256(config.token.get_secret_value().encode()).digest()
