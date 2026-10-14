@@ -42,7 +42,7 @@ from galaius.agents.events import TOKEN_FIELDS, AgentEvent, CompactionTrigger, T
 from galaius.agents.profiles import overlay_for
 from galaius.agents.vocabulary import ApprovalIntent, TouchScope, ThinkingLevel, vocabulary_for
 from galaius.brief_hook import NOTE as BRIEF_NOTE
-from galaius.fence import RELAY, RELAY_PORT, Confinement, RelayedServer, SignIn, confinement_refusal, userns_refusal
+from galaius.fence import KEYS, RELAY, RELAY_PORT, Confinement, RelayedServer, SignIn, confinement_refusal, userns_refusal
 from galaius.inbox_hook import NOTE as INBOX_NOTE
 from galaius.models import Model
 from galaius.processes import ask_process, run_isolated_process
@@ -234,6 +234,15 @@ class LoginStatus(BaseModel):
     expired: bool = False
 
 
+#: A pay-per-use model API key by its variable's name, `<PROVIDER>_API_KEY` (`OPENAI_API_KEY`,
+#: `GEMINI_API_KEY`: the naming `UserConfig` and `list_providers` read keys by; a tool's own token
+#: under another name stays): an agent never holds one but its own CLI's login key
+#: (`AgentProvider.child_environment`) — a model or image call it needs goes through the Galaius
+#: platform, with the company's connection, charged and counted (owner 2026-10-14: « credits are being
+#: spent … by using gpt image 2 … But they are not referenced »).
+MODEL_API_KEY = re.compile(r"[A-Za-z0-9_]+_API_KEY")
+
+
 class AgentProvider(ABC):
     """How to launch one vendor's agent CLI and read what it emits."""
 
@@ -323,6 +332,16 @@ class AgentProvider(ABC):
     #: What a whole code its page shows looks like: anything else is refused before it reaches the program (which may keep
     #: waiting on a code it cannot use).
     paste_code: ClassVar[re.Pattern[str] | None] = None
+
+    def login_keys(self, environment: Mapping[str, str]) -> frozenset[str]:
+        """The key variables this CLI's own login reads in `environment` (`fence.KEYS`)."""
+        return frozenset(KEYS.get(self.name, ()))
+
+    def child_environment(self, environment: Mapping[str, str]) -> dict[str, str]:
+        """`environment` as this CLI's agent runs with it: every model API key gone but its own login's
+        (`MODEL_API_KEY`). galaius's own commands it runs read theirs from this computer's settings."""
+        own = self.login_keys(environment)
+        return {name: value for name, value in environment.items() if name in own or not MODEL_API_KEY.fullmatch(name)}
 
     def auth_home(self, environment: Mapping[str, str]) -> Path:
         """The folder this CLI keeps its login in, in `environment`: its `auth_home_env` value
@@ -1768,6 +1787,15 @@ class CodexProvider(AgentProvider):
     transcript_glob = "sessions/**/rollout-*.jsonl"
     #: Text Codex itself puts in a user turn (its environment and instructions), never the person's.
     _HARNESS_TURN = ("<", "# AGENTS.md instructions")
+
+    def login_keys(self, environment: Mapping[str, str]) -> frozenset[str]:
+        """Its API-key variables only while its login runs on a key: signed in with ChatGPT
+        (`auth.json` `auth_mode` chatgpt) it reads none of them."""
+        try:
+            mode = json.loads((self.auth_home(environment) / "auth.json").read_text()).get("auth_mode")
+        except (OSError, ValueError, AttributeError):
+            mode = None
+        return frozenset() if mode == "chatgpt" else super().login_keys(environment)
 
     def transcript_id(self, path: Path) -> str:
         """`rollout-<started>-<thread id>.jsonl`: the thread id is its last 36 characters."""

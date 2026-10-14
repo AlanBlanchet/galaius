@@ -93,6 +93,10 @@ app.command(
     help="Run a server workflow from this machine.",
 )
 app.command(
+    "galaius.cli.images_command:images_app", name="images",
+    help="Draw images on the Galaius platform, charged to you.",
+)
+app.command(
     "galaius.cli.prompts:prompts_app", name="prompts",
     help="Author and synchronize prompts through a local Git worktree.",
 )

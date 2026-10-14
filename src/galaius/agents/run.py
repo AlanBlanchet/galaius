@@ -797,7 +797,7 @@ class AheadLaunch(BaseModel):
         a coroutine tied events to the caller's event loop, and a caller that spawned and returned
         lost every event. At OS level the stream survives the caller, or galaius, dying. `ahead`: it
         reads what it is to do from its stdin, written later (`hand`)."""
-        later, env = stderr is not None, reg.participant_environment(env)
+        later, env = stderr is not None, self.provider.child_environment(reg.participant_environment(env))
         sink = reg.open_raw_events(run_id, append=later)
         stderr = stderr if later else reg.open_stderr(run_id, append=False)
         try:
@@ -1091,7 +1091,7 @@ def launch_continuation(
     """Spawn one resumed turn and start its reaper before returning to a caller."""
     restore_folder(run, provider, session_id, {**os.environ, **(run.subscription.overlay() if run.subscription is not None else {})}, record_locked=record_locked)
     launch = ResumeLaunch.of(provider, run, session_id, model=model, criterion=criterion, reasoning=reasoning)
-    return _spawn_turn(launch.command(message), run, env=launch.env, raw_index=raw_index, model=launch.model, criterion=launch.criterion,
+    return _spawn_turn(provider, launch.command(message), run, env=launch.env, raw_index=raw_index, model=launch.model, criterion=launch.criterion,
                        reasoning=launch.reasoning, record_locked=record_locked)
 
 
@@ -1106,15 +1106,15 @@ def launch_editor_turn(
     restore_folder(run, provider, fork_from or run.run_id, environment)
     argv = provider.resume_command(fork_from or run.run_id, message, permission_mode=run.permission_mode, fork_to=run.run_id if fork_from else None)
     env = {**GatewayServed.environment(environment, run.agent), "GALAIUS_RUN_ID": run.run_id}
-    return _spawn_turn(argv, run, env=env, raw_index=reg.raw_line_count(run.run_id), model=run.model, criterion=None, reasoning=None)
+    return _spawn_turn(provider, argv, run, env=env, raw_index=reg.raw_line_count(run.run_id), model=run.model, criterion=None, reasoning=None)
 
 
 def _spawn_turn(
-    argv: list[str], run: reg.AgentRun, *, env: Mapping[str, str], raw_index: int,
+    provider: AgentProvider, argv: list[str], run: reg.AgentRun, *, env: Mapping[str, str], raw_index: int,
     model: str | None, criterion: str | None, reasoning: str | None, record_locked: bool = False,
 ) -> ContinuationHandle:
     """Start one resumed turn of `run` from `argv` and its reaper, before returning."""
-    env = reg.participant_environment(env)
+    env = provider.child_environment(reg.participant_environment(env))
     sink = reg.open_raw_events(run.run_id, append=True)
     stderr_file = tempfile.TemporaryFile()
     try:

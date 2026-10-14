@@ -10,7 +10,7 @@ from urllib.parse import quote, urlencode
 from uuid import UUID, uuid4
 
 import httpx
-from galaius_core import AgentGraph, AgentGraphUpdate, AgentRevision, AgentRevisionRef, AgentStartSpec, AgentTouchScope, ArtifactRef, CompanyProfile, ConfiguredModelRef, MachineRunEvents, MachineSummary, ReasoningLevel, ReleaseInfo, TriggerInvocation, WorkflowEvent, WorkflowRevision, WorkflowRevisionRef, WorkflowRun
+from galaius_core import AgentGraph, AgentGraphUpdate, ImageAnswer, ImageRequest, AgentRevision, AgentRevisionRef, AgentStartSpec, AgentTouchScope, ArtifactRef, CompanyProfile, ConfiguredModelRef, MachineRunEvents, MachineSummary, ReasoningLevel, ReleaseInfo, TriggerInvocation, WorkflowEvent, WorkflowRevision, WorkflowRevisionRef, WorkflowRun
 from galaius_core.accounts import Bootstrap
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
@@ -30,6 +30,14 @@ class WorkflowConflictError(CatalogConnectionError):
 
 class WorkflowRunRejected(CatalogConnectionError):
     """This attempt was rejected before dispatch; prior attempts remain independent."""
+
+
+class ImagesRefused(CatalogConnectionError):
+    """The platform drew no image: a ceiling, paid use of the provider off, the request, the provider."""
+
+
+#: Seconds one image may take to draw, the provider's slowest included.
+IMAGE_SECONDS = 240.0
 
 
 class WorkflowRunUncertain(CatalogConnectionError):
@@ -226,6 +234,30 @@ class ServerWorkspace(ServerPrompts):
         finally:
             partial.unlink(missing_ok=True)
         return target
+
+    def draw_images(self, request: ImageRequest, idempotency_key: str, *, transport=None) -> ImageAnswer:
+        """Images drawn by the platform with the company's provider connection, each charged to the
+        person this connection acts for (`POST /images`). A refusal (a ceiling, paid use off, the
+        provider) raises `ImagesRefused` with the server's own sentence; a dropped answer is retried
+        once with the same key, which never pays twice."""
+        with self.session(transport=transport) as client:
+            headers = {"Content-Type": "application/json", "Idempotency-Key": idempotency_key, **self.execute_headers(client)}
+            for attempt in range(2):
+                try:
+                    response = client.post(f"{self.workspace_endpoint}/images", content=request.model_dump_json(), headers=headers, timeout=IMAGE_SECONDS * request.n)
+                    break
+                except (httpx.TimeoutException, httpx.TransportError):
+                    if attempt:
+                        raise
+            if response.status_code == 401:
+                raise CatalogAuthenticationError("Image request refused (HTTP 401): this computer is no longer linked; run galaius login.")
+            if not response.is_success:
+                try:
+                    said = response.json()
+                except ValueError:
+                    said = {}
+                raise ImagesRefused(f"{said.get('message') or said.get('detail') or said.get('code') or 'refused'} (HTTP {response.status_code})")
+            return ImageAnswer.model_validate_json(response.content)
 
     def run_workflow(self, request: WorkflowRunRequest, *, transport=None):
         """Start only the displayed revision and answer once the server accepted it (the run goes

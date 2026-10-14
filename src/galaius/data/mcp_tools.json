@@ -33,7 +33,7 @@
   "server": "galaius",
   "name": "agent_stop",
   "category": "agents",
-  "description": "Stop a running agent (and the tool processes it spawned)."
+  "description": "Stop a running agent (and the tool processes it spawned), or take one not started yet out of the line."
  },
  {
   "server": "galaius",
@@ -58,6 +58,12 @@
   "name": "download_asset",
   "category": "browser",
   "description": "Download a URL to a local file. Uses the browser session's cookies for authenticated downloads."
+ },
+ {
+  "server": "galaius",
+  "name": "generate_image",
+  "category": "media",
+  "description": "Draw an image (up to 4) with your company's image model on the Galaius platform and save it here."
  },
  {
   "server": "galaius",
