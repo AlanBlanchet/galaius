@@ -23,7 +23,7 @@ _MAX_CATALOG_ENTRIES = 4096
 
 _GRANT_REFUSALS = {
     "pc_grant_expired": "this PC's window to edit these prompts is over; renew it on the platform (Library, Your PCs)",
-    "pc_grant_shared": "another member reads this prompt: edit it from the platform, not from a PC",
+    "pc_grant_shared": "another member reads this prompt; an Owner's switch on the platform (Library, Your PCs) lets this PC change it",
     "pc_grant_rate": "this PC wrote too many prompts this hour; try again later",
     "not_found": "this PC may not edit these prompts; allow it on the platform (Library, Your PCs)",
 }
@@ -168,7 +168,7 @@ class ServerPrompts(BaseModel):
             "POST" if creating else "PUT", endpoint, content=payload,
             headers=headers,
         ) as response:
-            refusal = _GRANT_REFUSALS.get(self._code(response)) if self.connection.auth_mode == "machine" and response.status_code in {403, 404, 429} else None
+            refusal = self._refusal(response) if self.connection.auth_mode == "machine" and response.status_code in {403, 404, 429} else None
             if refusal is not None:  # this PC's grant said no; its read access stands
                 raise CatalogConnectionError(f"{refusal}; preserve the editor buffer")
             if response.status_code in {401, 403}:
@@ -195,7 +195,7 @@ class ServerPrompts(BaseModel):
         with self.session(transport=transport) as client:
             response = client.put(f"/v1/workspaces/{self.connection.workspace_id}/agent-prompt-refs", json={"agents": agents},
                                   headers={"Content-Type": "application/json"})
-            refusal = _GRANT_REFUSALS.get(self._code(response)) if response.status_code in {403, 404, 429} else None
+            refusal = self._refusal(response) if response.status_code in {403, 404, 429} else None
             if refusal is not None:
                 raise CatalogConnectionError(refusal)
             if response.status_code == 409:
@@ -208,18 +208,22 @@ class ServerPrompts(BaseModel):
                 raise CatalogConnectionError("invalid agent re-pin response") from error
 
     @staticmethod
-    def _code(response: httpx.Response) -> str | None:
-        """The refusal code of a small JSON error body, None otherwise."""
+    def _refusal(response: httpx.Response) -> str | None:
+        """This PC's grant refusal in words, from a small JSON error body: the server's `detail` when
+        it gives one (it says where the fix is), else the code's own words; None for any other answer."""
         body = bytearray()
         for chunk in response.iter_bytes():
             body.extend(chunk)
             if len(body) > 4096:
                 return None
         try:
-            code = json.loads(body).get("code")
-        except (ValueError, AttributeError):
+            error = json.loads(body)
+        except ValueError:
             return None
-        return code if isinstance(code, str) else None
+        if not isinstance(error, dict) or error.get("code") not in _GRANT_REFUSALS:
+            return None
+        detail = error.get("detail")
+        return detail if isinstance(detail, str) and detail else _GRANT_REFUSALS[error["code"]]
 
     def status(self, *, transport: httpx.BaseTransport | None = None) -> PromptSyncStatus:
         with self.session(transport=transport) as client:
