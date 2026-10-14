@@ -957,7 +957,7 @@ def agents_stop(run_id: str) -> None:
         cancelled = SpawnLine.here().cancel(run_id)
         print(f"Taken out of the line: {cancelled[:8]} never started." if cancelled else f"No agent run {run_id!r}.")
         return
-    print(f"Stopped {resolved[:8]}." if reg.stop(resolved) else f"No agent run {run_id!r}.")
+    print(f"Stopped {resolved[:8]}." if reg.stop(resolved, by=reg.caller_stop_actor(os.environ)) else f"No agent run {run_id!r}.")
 
 
 def refresh_live_data() -> None:

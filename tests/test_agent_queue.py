@@ -97,7 +97,7 @@ def test_stop_cancels_queued_work_before_any_resume(monkeypatch):
     provider = _setup(monkeypatch)
     messaging.deliver_message("r1", "do not start", sender="operator")
 
-    assert reg.stop("r1") is True
+    assert reg.stop("r1", by=None) is True
     agent_queue.dispatch("r1")
 
     assert provider.messages == []

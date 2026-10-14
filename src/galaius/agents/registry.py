@@ -34,7 +34,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, PrivateAttr, ValidationInfo, field_validator
 from galaius.agents import quota
-from galaius_core import AgentRevisionRef, ContextGauge, PromptExecutionRef
+from galaius_core import AgentRevisionRef, ContextGauge, PromptExecutionRef, StopActor
 
 from galaius.agents.events import CONTEXT_FIELDS, TOKEN_FIELDS, AgentEvent, TokenUsage, UsageLedger, stream_lines
 from galaius.agents.catalog_connection import CatalogConnection
@@ -342,6 +342,9 @@ class AgentRun(ContextGauge):
     #: The subscription every turn and child of this run runs on (`galaius.agents.subscriptions`);
     #: None: this PC's default login.
     subscription: RunSubscription | None = None
+    #: Who stopped it (`stop`): the person on the web, an agent, this PC's terminal, its agents switched off, a folder
+    #: narrowed under it; None when nothing did, or its own subscription cap cut it. Cleared as a new turn begins.
+    stopped_by: StopActor | None = None
 
     status: RunStatus = "running"
 
@@ -1089,8 +1092,29 @@ def fail_turn(run_id: str, reason: str, *, exit_code: int = 1, now: float | None
         return fail_turn_locked(run_id, reason, exit_code=exit_code, now=now)
 
 
-def stop(run_id: str, *, expected_lifecycle_token: str | None = None) -> bool:
-    """Ask a run to stop. Returns False for an unknown run rather than raising."""
+#: Who a command stops a run for, said by the caller acting for them (`StopActor` JSON): the server's mirror running
+#: `galaius agents stop` for the person who pressed stop on the web.
+STOP_BY_ENV = "GALAIUS_STOP_BY"
+
+
+def caller_stop_actor(environment: Mapping[str, str]) -> StopActor:
+    """Who asks this PC to stop a run from `environment` (a command's, an agent tool call's): the one a caller acting for
+    someone names (`STOP_BY_ENV`), else the galaius run whose agent asks (its launch sets `GALAIUS_PARENT_RUN_ID`), else
+    an agent session galaius did not start (its CLI's thread variable), else the person at this PC's terminal."""
+    if said := environment.get(STOP_BY_ENV):
+        return StopActor.model_validate_json(said)
+    asking = environment.get("GALAIUS_PARENT_RUN_ID")
+    run = _read_record(asking) if asking else None
+    if run is not None:
+        return StopActor(kind="agent", name=(run.agent or run.name)[:120], run_id=run.run_id)
+    if any(environment.get(name) for name in CALLER_THREAD_ENV):
+        return StopActor(kind="agent", name=(environment.get("GALAIUS_RUN_ROLE") or None))
+    return StopActor(kind="terminal")
+
+
+def stop(run_id: str, *, by: StopActor | None, expected_lifecycle_token: str | None = None) -> bool:
+    """Ask a run to stop, recording who did (`by`; None: no one, its own subscription cap cut it). Returns False for an
+    unknown run rather than raising."""
     with record_lock(run_id):
         stored = _read_record(run_id)
         if stored is None:
@@ -1116,6 +1140,7 @@ def stop(run_id: str, *, expected_lifecycle_token: str | None = None) -> bool:
             "finished_at": time.time(),
             "exit_code": -signal.SIGTERM,
             "status": "stopped",
+            "stopped_by": None if by is None else by.model_dump(mode="json"),
         })
         return updated is not None
 
@@ -1200,7 +1225,7 @@ def subscription_heard(run: AgentRun, events: list[AgentEvent]) -> None:
         return
     merge_subscription(run.run_id, capped=cap)
     if cap.at_cap == "cut" and run.status in {"running", "waiting"}:
-        stop(run.run_id)
+        stop(run.run_id, by=None)  # its own cause: the record's `capped`
 
 
 def _merge_record_locked(run_id: str, updates: dict) -> AgentRun | None:
@@ -1270,7 +1295,7 @@ def begin_turn(
     """Move one stopped run back to active state for a newly spawned provider turn."""
     updates = {
         **_process_identity(pid, run_id), "lifecycle_token": secrets.token_hex(16),
-        "exit_code": None, "finished_at": None, "status": "running",
+        "exit_code": None, "finished_at": None, "status": "running", "stopped_by": None,
         "pending_model": None, "pending_criterion": None, "pending_reasoning": None,
     }
     if model is not None:
@@ -1289,7 +1314,7 @@ def begin_turn_locked(
     """Same transition for a caller already holding ``record_lock(run_id)``."""
     updates = {
         **_process_identity(pid, run_id), "lifecycle_token": secrets.token_hex(16),
-        "exit_code": None, "finished_at": None, "status": "running",
+        "exit_code": None, "finished_at": None, "status": "running", "stopped_by": None,
         "pending_model": None, "pending_criterion": None, "pending_reasoning": None,
     }
     if model is not None:

@@ -36,7 +36,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from galaius_core import (
     PROJECTS_ROOT, AGENT_TOUCH_SCOPES, AgentCompactRequest, ContextGauge, MACHINE_AGENT_MEDIA, MACHINE_AGENT_READ, MACHINE_AGENT_TAIL, AgentAnswerRequest, AgentMedia, AgentMediaRequest, image_type, AgentContinueRequest, AgentFoldersRequest, AgentInteraction, AgentLogsRequest, AgentOptionsRequest,
     AgentAllowanceRequest, AgentMoveRequest, AgentProgramInstallRequest, AgentProgramsRequest, AgentProviderState, AgentSignInCodeRequest, AgentSignOutRequest, SubscriptionAllowance, Lent, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
-    MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, PassedOverCandidate, ReadsAt, AgentRefusalCode, WebLimited, WebLoad, media_key, media_paths, MachineAgentSession, MachineFileEntry, WorkspaceCreateRequest, WorkspacePack, WorkspacePackRequest, WorkspacePrepareRequest, WorkspaceRefresh, WorkspacesRequest,
+    MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, PassedOverCandidate, ReadsAt, AgentRefusalCode, WebLimited, WebLoad, media_key, media_paths, MachineAgentSession, MachineFileEntry, StopActor, WorkspaceCreateRequest, WorkspacePack, WorkspacePackRequest, WorkspacePrepareRequest, WorkspaceRefresh, WorkspacesRequest,
 )
 from galaius.agents import agent_queue
 from galaius.agents import registry as reg
@@ -235,7 +235,7 @@ class WebRuns(BaseModel):
             if run.status not in {"running", "waiting"}:
                 continue
             try:
-                stopped += bool(reg.stop(run.run_id))
+                stopped += bool(reg.stop(run.run_id, by=StopActor(kind="pc_switch")))
             except (OSError, RuntimeError, ValueError) as error:
                 failed += 1
                 logger.warning("could not stop run %s: %s", run.run_id[:8], error)
@@ -624,7 +624,8 @@ class MachineAgents(BaseModel):
                 fenced=bool({run.run_id, run.root_run_id, run.parent_run_id} & fenced), compacts=self.compact_refusal(run, kind) is None,
                 passed_over=tuple(PassedOverCandidate(provider=item.candidate.provider, model=item.candidate.model[:120], reason=item.reason, until=item.until)
                                   for item in run.skipped[:16]),
-                subscription=run.subscription, **{field: getattr(run, field) for field in ContextGauge.model_fields},
+                subscription=run.subscription, stopped_by=run.stopped_by if run.status == "stopped" else None,
+                **{field: getattr(run, field) for field in ContextGauge.model_fields},
             ))
         return MachineAgentAnswer(request_id=request.id, runs=tuple(found), web=self.runs.load(request))
 
@@ -1130,7 +1131,7 @@ class MachineAgents(BaseModel):
         run = self._require_run(request.run_id)
         if run.status not in {"running", "waiting"}:
             return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail="already ended")
-        if not reg.stop(str(request.run_id)):
+        if not reg.stop(str(request.run_id), by=request.by):
             raise RuntimeError("the run could not be stopped")
         return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail="stopped")
 

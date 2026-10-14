@@ -502,7 +502,7 @@ def test_a_stopped_run_stays_stopped_when_its_process_exits(base: Path, exit_cod
     """Stop records "stopped"; the killed turn's reaper then reports its exit (143 through a shell)."""
     run_id = str(uuid4())
     reg.save_run(reg.AgentRun(run_id=run_id, provider="claude", name="r", cwd=str(base / "project"), started_at=1.0, pid=None, lifecycle_token="t" * 32))
-    assert reg.stop(run_id)
+    assert reg.stop(run_id, by=None)
     reg.finish(run_id, exit_code=exit_code, expected_lifecycle_token="t" * 32)
     assert reg.get_run(run_id).status == "stopped"
 

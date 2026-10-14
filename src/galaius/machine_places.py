@@ -19,7 +19,7 @@ from uuid import UUID, uuid4
 
 from galaius_core import (
     MachineAgentAnswer, MachineAgentRequest, MachineFence, MachinePlaceReview, MachinePlacesView, PlaceBrowseRequest, PlaceCancelRequest,
-    PlaceDiscardRequest, PlaceLevel, PlaceLevelRequest, PlaceReviewRequest, PlaceReviewsRequest, PlacesRequest,
+    PlaceDiscardRequest, PlaceLevel, PlaceLevelRequest, PlaceReviewRequest, PlaceReviewsRequest, PlacesRequest, StopActor,
 )
 
 from galaius.agents import registry as reg
@@ -80,7 +80,7 @@ class PlaceDesk:
     def _stop_fenced(self) -> None:
         """After a narrowing: every fenced agent turn running now stops (a turn keeps the view it
         started with); its next turn is built from the narrowed levels."""
-        stopped = [run.run_id for run in reg.running_runs() if run.fence is not None and reg.stop(run.run_id)]
+        stopped = [run.run_id for run in reg.running_runs() if run.fence is not None and reg.stop(run.run_id, by=StopActor(kind="place_removed"))]
         if stopped:
             self._log("stopped", runs=stopped, reason="a folder level was narrowed")
 

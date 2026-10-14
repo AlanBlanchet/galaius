@@ -663,7 +663,7 @@ def test_stop_rejects_a_stale_lifecycle_token():
     current = reg.get_run("r1")
     assert current is not None and current.lifecycle_token != first.lifecycle_token
 
-    assert reg.stop("r1", expected_lifecycle_token=first.lifecycle_token) is False
+    assert reg.stop("r1", by=None, expected_lifecycle_token=first.lifecycle_token) is False
     assert reg.get_run("r1").status == "running"
 
 
@@ -678,7 +678,7 @@ def test_stop_fails_closed_when_queue_cancellation_cannot_persist(monkeypatch):
     terminated = []
     monkeypatch.setattr(reg, "_terminate", lambda pid: terminated.append(pid))
 
-    assert reg.stop("r1") is False
+    assert reg.stop("r1", by=None) is False
     assert terminated == []
     assert reg.get_run("r1").status == "running"
 
@@ -797,19 +797,29 @@ def test_foreign_runs_are_excluded_by_default(monkeypatch):
     assert reg.list_runs() == []
 
 
-def test_stopping_records_the_outcome(monkeypatch):
+@pytest.mark.parametrize(("environment", "expected"), [
+    ({"GALAIUS_PARENT_RUN_ID": "boss"}, {"kind": "agent", "name": "main", "run_id": "boss", "account_id": None}),
+    ({"CLAUDE_CODE_SESSION_ID": "s1", "GALAIUS_RUN_ROLE": "main"}, {"kind": "agent", "name": "main", "run_id": None, "account_id": None}),
+    ({}, {"kind": "terminal", "name": None, "run_id": None, "account_id": None}),
+    ({reg.STOP_BY_ENV: '{"kind": "person", "name": "Alan", "account_id": "1ec9ef8b-4e07-4f90-9e87-5e07384c635b"}', "GALAIUS_PARENT_RUN_ID": "boss"},
+     {"kind": "person", "name": "Alan", "run_id": None, "account_id": "1ec9ef8b-4e07-4f90-9e87-5e07384c635b"}),
+])
+def test_stopping_records_who_stopped_it_until_its_next_turn(monkeypatch, environment, expected):
     register_run()
+    register_run("boss", pid=2, agent="main")
     killed = []
     monkeypatch.setattr(reg, "_terminate", lambda pid: killed.append(pid) or True)
     monkeypatch.setattr(reg, "_alive", lambda pid: True)
-    assert reg.stop("r1") is True
+    assert reg.stop("r1", by=reg.caller_stop_actor(environment)) is True
     monkeypatch.setattr(reg, "_alive", lambda pid: False)
-    assert reg.list_runs()[0].status == "stopped"
-    assert killed == [1]
+    stopped = reg.get_run("r1")
+    assert (stopped.status, killed) == ("stopped", [1])
+    assert json.loads(reg._record_path("r1").read_text())["stopped_by"] == expected
+    assert reg.begin_turn("r1", pid=os.getpid()).stopped_by is None
 
 
 def test_stopping_an_unknown_run_is_false_not_an_exception():
-    assert reg.stop("nope") is False
+    assert reg.stop("nope", by=None) is False
 
 
 def test_a_corrupt_record_does_not_break_the_listing():
@@ -1677,7 +1687,7 @@ def test_a_pid_given_to_another_process_is_neither_the_run_nor_stopped_with_it()
         register_run("own", pid=own.pid)
 
         assert {run.run_id: run.status for run in reg.list_runs()} == {"reused": "interrupted", "own": "running"}
-        assert reg.stop("reused") and reg.stop("own")
+        assert reg.stop("reused", by=None) and reg.stop("own", by=None)
         assert own.wait(timeout=10) is not None
         assert stranger.poll() is None
     finally:

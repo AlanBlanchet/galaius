@@ -164,7 +164,7 @@ async def test_the_run_appears_in_the_registry_while_still_alive(tmp_path):
         listed = [r for r in reg.list_runs() if r.run_id == run.run_id]
         assert listed and listed[0].status == "running"
     finally:
-        reg.stop(run.run_id)
+        reg.stop(run.run_id, by=None)
 
 
 @pytest.mark.asyncio

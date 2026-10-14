@@ -242,7 +242,7 @@ async def agent_events(run_id: str, limit: int = 20) -> str:
 @instrumented
 async def agent_stop(run_id: str) -> str:
     """Stop a running agent (and the tool processes it spawned), or take one not started yet out of the line."""
-    if reg.stop(run_id):
+    if reg.stop(run_id, by=reg.caller_stop_actor(os.environ)):
         return f"Stopped {run_id[:8]}."
     try:
         fenced = _fenced_team()
