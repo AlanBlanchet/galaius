@@ -170,14 +170,14 @@ class ServerPrompts(BaseModel):
         ) as response:
             refusal = self._refusal(response) if self.connection.auth_mode == "machine" and response.status_code in {403, 404, 429} else None
             if refusal is not None:  # this PC's grant said no; its read access stands
-                raise CatalogConnectionError(f"{refusal}; preserve the editor buffer")
+                raise CatalogConnectionError(refusal)
             if response.status_code in {401, 403}:
                 self.connection.invalidate_access(client)
-                raise CatalogAuthenticationError(f"prompt save refused (HTTP {response.status_code}); preserve the editor buffer")
+                raise CatalogAuthenticationError(f"prompt save refused (HTTP {response.status_code})")
             if response.status_code == 409:
                 raise PromptConflictError("server prompt already exists or changed; preserve the editor buffer and reload")
             if not 200 <= response.status_code < 300:
-                raise CatalogConnectionError(f"prompt save failed (HTTP {response.status_code}); preserve the editor buffer")
+                raise CatalogConnectionError(f"prompt save failed (HTTP {response.status_code})")
             result = bytearray()
             for chunk in response.iter_bytes():
                 result.extend(chunk)
@@ -185,7 +185,7 @@ class ServerPrompts(BaseModel):
                     raise CatalogConnectionError("server prompt response exceeds its size limit")
         saved = self.validate_revision(bytes(result), key)
         if saved.content != proposed.content or saved.name != proposed.name:
-            raise CatalogConnectionError("server save response does not match submitted revision; preserve the editor buffer and reload")
+            raise CatalogConnectionError("server save response does not match submitted revision; reload")
         return saved
 
     def repin(self, agents: list[dict], *, transport: httpx.BaseTransport | None = None) -> tuple[str, ...]:
