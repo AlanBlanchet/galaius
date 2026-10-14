@@ -4,7 +4,7 @@ import errno
 import hashlib
 import json
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePath, PurePosixPath
 import shutil
 import stat
 import subprocess
@@ -18,7 +18,7 @@ import yaml
 from galaius_core import PromptExecutionRef, PromptKey
 
 from galaius.agents.subscriptions import Subscription
-from galaius.agents.catalog import AgentCatalog, AgentInstructionSet
+from galaius.agents.catalog import AgentCatalog, AgentInstructionSet, CatalogSnapshot, skill_file
 from galaius.agents.catalog_connection import CatalogConnection
 from galaius.agents.policy import TOOL_PREFIX
 from galaius.agents.tool_gateway import AgentToolList, ToolGateway
@@ -69,7 +69,7 @@ class ConsumerHomes(BaseModel):
     def _adopted(relative: Path) -> bool:
         return relative.parts[0] == "hooks" or str(relative) in {"CLAUDE.md", "AGENTS.md", "settings.json", "hooks.json"}
 _OUTPUT_ROOTS = ("agents", "skills", "rules", "scopes", "references")
-_OUTPUT_FILES = ("AGENTS.md", "instructions.md", "org.json")
+_OUTPUT_FILES = ("AGENTS.md", "instructions.md", "vscode-instructions.md", "org.json")
 _PASSTHROUGH_ROOTS = ("hooks",)
 
 
@@ -184,6 +184,62 @@ def _listable_tools(role: str, tools) -> list[str]:
     return names
 
 
+class InstructionsConsumer(BaseModel):
+    """One provider instructions file composed from the main agent's revision."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    output: str
+    provider: str
+    lists_agents: bool = False
+    """The CLI's own agent tool lists every installed core agent with its description (Claude
+    Code), so delegate lines there name the role only instead of repeating it on every call."""
+
+    def described_roles(self, snapshot: CatalogSnapshot) -> frozenset[str]:
+        if not self.lists_agents:
+            return frozenset()
+        main = snapshot.root_agent
+        return frozenset(agent.role_key or f"agent-{agent.id}" for agent in snapshot.agents
+                         if agent.scope == "core" and agent.description and (main is None or agent.id != main.id))
+
+
+INSTRUCTIONS_CONSUMERS = {consumer.output: consumer for consumer in (
+    InstructionsConsumer(output="AGENTS.md", provider="openai"),
+    InstructionsConsumer(output="instructions.md", provider="anthropic", lists_agents=True),
+    InstructionsConsumer(output="vscode-instructions.md", provider="anthropic"),
+)}
+
+
+def main_instructions(snapshot: CatalogSnapshot, consumer: InstructionsConsumer, projection: PurePath) -> str:
+    """The main agent's instructions file for `consumer`: its definition with the provider paradigm
+    swapped in, then the core rule files (both under `projection`'s references)."""
+    if snapshot.root_agent is None:
+        raise NoMainAgent("choose the workspace's main agent before installing its instructions")
+    main = snapshot.revision(snapshot.root_agent)
+    heads = {reference.key: snapshot.prompt(reference) for reference in snapshot.prompt_heads}
+    provider_prompt = heads.get(PromptKey(namespace="paradigms", slug=f"provider-{consumer.provider}"))
+    if provider_prompt is None:
+        raise ValueError(f"server catalog lacks provider-{consumer.provider} instructions")
+    provider_ref = PromptExecutionRef(key=provider_prompt.key, channel="stable",
+                                      digest=provider_prompt.digest, revision=provider_prompt.revision)
+    paradigms = tuple(ref for ref in main.paradigms if not (
+        ref.key.namespace == "paradigms" and ref.key.slug.startswith("provider-")
+    )) + (provider_ref,)
+    source = AgentInstructionSet(agent=main.model_copy(update={"paradigms": paradigms}), prompts=snapshot.paradigms)
+    body = snapshot.definition(main.role_key or f"agent-{main.id}", projection / "references", instructions=source,
+                               described_roles=consumer.described_roles(snapshot))
+    references = []
+    for prompt in heads.values():
+        if _projection_metadata(prompt.content).get("galaius", {}).get("projection") != "rule":
+            continue
+        routing = ProjectionMetadata.from_content(prompt.content).galaius
+        if routing.scope == "core":
+            condition = f"Read when working on files matching {', '.join(routing.paths)}" if routing.paths else "Read when relevant to the current task"
+            references.append(f"- {condition}: {projection / 'references' / prompt.key.namespace / prompt.key.slug / prompt.digest / 'RULE.md'}")
+    if references:
+        body += "\n\nRule reference files (respect each path condition):\n" + "\n".join(sorted(references))
+    return "<!-- Derived from server agent revisions; edit through Galaius. -->\n\n" + body + "\n"
+
+
 def _server_outputs(catalog: AgentCatalog, home: Path, projection: Path, gateway: AgentToolList = AgentToolList()) -> dict[str, str]:
     snapshot = catalog.snapshot
     roles = sorted(snapshot.agents, key=lambda agent: agent.role_key or str(agent.id))
@@ -195,7 +251,6 @@ def _server_outputs(catalog: AgentCatalog, home: Path, projection: Path, gateway
         raise ValueError("server catalog lacks authoritative prompt heads; upgrade the server first")
     heads = {reference.key: snapshot.prompt(reference) for reference in snapshot.prompt_heads}
     outputs: dict[str, str] = {}
-    skill_paths = {}
     skill_discovery = {}
     for agent in roles:
         for reference in agent.skill_paradigms:
@@ -204,9 +259,7 @@ def _server_outputs(catalog: AgentCatalog, home: Path, projection: Path, gateway
             if not isinstance(metadata.get("description"), str) or not metadata["description"].strip():
                 raise ValueError(f"server skill {prompt.key.namespace}/{prompt.key.slug} lacks routing metadata")
             ProjectionMetadata.from_content(prompt.content)
-            relative = f"references/{prompt.key.namespace}/{prompt.key.slug}/{prompt.digest}/SKILL.md"
-            outputs[relative] = prompt.content
-            skill_paths[reference] = projection / relative
+            outputs[f"references/{skill_file(prompt)}"] = prompt.content
             head = heads.get(prompt.key)
             if head is None:
                 raise ValueError("server skill has no authoritative head")
@@ -226,11 +279,10 @@ def _server_outputs(catalog: AgentCatalog, home: Path, projection: Path, gateway
         key = identifiers[agent.id]
         header = {"name": key, "description": agent.description or agent.name,
                   "tools": _listable_tools(key, gateway.granted(key, agent.harness_tools, TOOL_PREFIX))}
-        body = snapshot.definition(key, skill_paths, instructions=AgentInstructionSet(agent=agent, prompts=snapshot.paradigms))
+        body = snapshot.definition(key, projection / "references", instructions=AgentInstructionSet(agent=agent, prompts=snapshot.paradigms))
         outputs[_projection_relative("agents", f"{key}.md", agent.scope)] = (
             "---\n" + yaml.safe_dump(header, sort_keys=False, allow_unicode=True) + "---\n\n" + body + "\n"
         )
-    rule_references = []
     for prompt in snapshot.paradigms:
         metadata = _projection_metadata(prompt.content)
         if metadata.get("galaius", {}).get("projection") == "rule":
@@ -248,26 +300,8 @@ def _server_outputs(catalog: AgentCatalog, home: Path, projection: Path, gateway
         if routing.paths:
             header["paths"] = list(routing.paths)
         outputs[relative] = "---\n" + yaml.safe_dump(header, sort_keys=False, allow_unicode=True) + "---\n\n" + AgentInstructionSet.instruction_body(prompt) + "\n"
-        if routing.scope == "core":
-            reference = projection / f"references/{prompt.key.namespace}/{prompt.key.slug}/{prompt.digest}/RULE.md"
-            condition = f"Read when working on files matching {', '.join(routing.paths)}" if routing.paths else "Read when relevant to the current task"
-            rule_references.append(f"- {condition}: {reference}")
-    for filename, provider, consumer in (("AGENTS.md", "openai", ".codex"),
-                                         ("instructions.md", "anthropic", ".claude")):
-        provider_prompt = heads.get(PromptKey(namespace="paradigms", slug=f"provider-{provider}"))
-        if provider_prompt is None:
-            raise ValueError(f"server catalog lacks provider-{provider} instructions")
-        provider_ref = PromptExecutionRef(key=provider_prompt.key, channel="stable",
-                                         digest=provider_prompt.digest, revision=provider_prompt.revision)
-        paradigms = tuple(ref for ref in main.paradigms if not (
-            ref.key.namespace == "paradigms" and ref.key.slug.startswith("provider-")
-        )) + (provider_ref,)
-        source = AgentInstructionSet(agent=main.model_copy(update={"paradigms": paradigms}),
-                                     prompts=snapshot.paradigms)
-        body = snapshot.definition(identifiers[main.id], skill_paths, instructions=source)
-        if rule_references:
-            body += "\n\nRule reference files (respect each path condition):\n" + "\n".join(sorted(rule_references))
-        outputs[filename] = "<!-- Derived from server agent revisions; edit through Galaius. -->\n\n" + body + "\n"
+    for consumer in INSTRUCTIONS_CONSUMERS.values():
+        outputs[consumer.output] = main_instructions(snapshot, consumer, projection)
     providers = {name: {"label": label, "binary": name, "env": shutil.which(name) is not None}
                  for name, label in (("claude", "Claude Code"), ("codex", "Codex"))}
     outputs["org.json"] = json.dumps({
@@ -807,9 +841,9 @@ def _consumer_payloads(
         elif relative == "instructions.md":
             # Only the user-level file: a copy at ~/CLAUDE.md was loaded a SECOND
             # time as an ancestor project file by every project under $HOME.
-            destinations = (
-                claude / "CLAUDE.md", vscode_root / "alan.instructions.md",
-            )
+            destinations = (claude / "CLAUDE.md",)
+        elif relative == "vscode-instructions.md":
+            destinations = (vscode_root / "alan.instructions.md",)
         elif relative == "org.json":
             destinations = (claude / "org.json",)
         elif len(path.parts) == 2 and path.parts[0] == "agents":
@@ -1121,7 +1155,9 @@ def _consumer_kinds(relative: str) -> tuple[str, ...]:
     if relative == "AGENTS.md":
         return ("home-agents", "codex-agents")
     if relative == "instructions.md":
-        return ("claude-claude", "vscode-instructions")
+        return ("claude-claude",)
+    if relative == "vscode-instructions.md":
+        return ("vscode-instructions",)
     if relative == "org.json":
         return ("claude-org",)
     if len(path.parts) == 2 and path.parts[0] == "agents":

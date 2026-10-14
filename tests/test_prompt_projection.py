@@ -47,7 +47,7 @@ def _extract(repository: Path, commit: str, destination: Path) -> None:
 
 
 def _outputs(root: Path) -> dict[str, tuple[int, int, bytes]]:
-    paths = [root / name for name in ("AGENTS.md", "instructions.md", "org.json")]
+    paths = [root / name for name in ("AGENTS.md", "instructions.md", "vscode-instructions.md", "org.json")]
     paths += sorted((root / "agents").glob("*.md"))
     paths += sorted((root / "skills").glob("*/SKILL.md"))
     paths += sorted((root / "rules").glob("*.md"))
@@ -92,6 +92,7 @@ def _fixture_repository(tmp_path: Path, generator: str = "") -> Path:
         " p=Path(name); p.parent.mkdir(parents=True,exist_ok=True); p.write_text(name+'\\n')\n"
         "Path('AGENTS.md').write_text('agents\\n')\n"
         "Path('instructions.md').write_text('instructions\\n')\n"
+        "Path('vscode-instructions.md').write_text('instructions\\n')\n"
         "Path('org.json').write_text('{}\\n')\n"
     ))
     (repository / "paradigms.yaml").write_text("paradigms: {}\n")

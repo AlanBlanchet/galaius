@@ -131,10 +131,10 @@ def test_server_revisions_replace_prompt_policy_skills_and_team(catalog_home):
     assert policy.weights_for("fixture-worker") == "gui.screenspot=1"
     text = after.definition("fixture-worker", "bounded task")
     assert text.index("primary instruction") < text.index("first instruction") < text.index("second instruction")
-    assert "Skill: fixture/skill" in text and "skill instruction revision 2" not in text
+    assert "\n- fixture/skill/" in text and "skill instruction revision 2" not in text
     assert after.skill_path(after.snapshot.role("fixture-worker").skill_paradigms[0]).read_text().strip() == "skill instruction revision 2"
     assert "Reports to: Fixture lead (role: fixture-lead)" in text
-    assert "Delegate capability ask_worker: Fixture worker (role: fixture-worker)" in after.definition("fixture-lead", "task")
+    assert "- ask_worker: Fixture worker (role: fixture-worker). Ask the fixture worker" in after.definition("fixture-lead", "task")
     with pytest.raises(CatalogConnectionError, match="absent"):
         policy.criterion_for("unknown")
 
@@ -536,7 +536,7 @@ def test_native_hook_composes_server_role_without_local_authoring(catalog_home, 
     updated = output["hookSpecificOutput"]["updatedInput"]
     assert updated["reasoning_effort"] == "low"
     assert "primary instruction revision 2" in updated["message"]
-    assert "Skill: fixture/skill" in updated["message"]
+    assert "\n- fixture/skill/" in updated["message"]
     assert "Perform the bounded task" in updated["message"]
     assert "Catalog cursor:" in codex_policy_hook.handle({"hook_event_name": "SessionStart"})["hookSpecificOutput"]["additionalContext"]
 
@@ -568,7 +568,8 @@ def test_launch_uses_body_only_and_skill_paths_keep_pinned_content(catalog_home)
     assert "first instruction revision 1" in launch and "second instruction revision 1" in launch
     assert "skill instruction revision 1" not in launch
     path = catalog.skill_path(catalog.snapshot.role("fixture-worker").skill_paradigms[0])
-    assert str(path) in launch
+    root = path.parents[3]  # the skill root stated once, each line the path below it
+    assert f"read {root}/<skill path>" in launch and f"\n- {path.relative_to(root)}" in launch
     skill_content = path.read_bytes()
     assert b"skill instruction revision 1" in skill_content
     assert hashlib.sha256(skill_content).hexdigest() == catalog.snapshot.role("fixture-worker").skill_paradigms[0].digest
@@ -586,14 +587,16 @@ def test_team_context_keeps_pinned_delegate_revision_when_head_advances(catalog_
     worker = next(value for value in initial.agents if value.role_key == "fixture-worker")
     revised_worker = worker.model_copy(update={"revision": uuid4(), "parent_revision": worker.revision})
     value = CatalogSnapshot.model_validate_json(AgentCatalogSnapshot.create((lead, revised_worker), initial.paradigms).model_dump_json())
-    text = value.definition("fixture-lead", {})
-    assert f"Server capability revision: {worker.revision}" in text
-    assert str(revised_worker.revision) not in text
+    text = value.definition("fixture-lead", None)
+    # The pin lives in the record agent_spawn resolves the name against, never in re-read text.
     assert value.role("fixture-lead").capabilities[0].agent.revision == worker.revision
+    assert str(worker.revision) not in text and str(revised_worker.revision) not in text
+    assert "- ask_worker: Fixture worker (role: fixture-worker). Ask the fixture worker" in text
+    listed = value.definition("fixture-lead", None, described_roles=frozenset({"fixture-worker"}))
+    assert "- ask_worker: Fixture worker (role: fixture-worker)\n" in listed + "\n" and "Ask the fixture worker" not in listed
     historical_only = CatalogSnapshot.model_validate_json(AgentCatalogSnapshot.create((lead,), initial.paradigms).model_dump_json())
-    unavailable = historical_only.definition("fixture-lead", {})
-    assert str(worker.id) in unavailable and str(worker.revision) in unavailable
-    assert "active role unavailable" in unavailable
+    unavailable = historical_only.definition("fixture-lead", None, described_roles=frozenset({"fixture-worker"}))
+    assert "- ask_worker: active role unavailable. Ask the fixture worker" in unavailable
     with pytest.raises(CatalogConnectionError, match="absent"):
         historical_only.role("fixture-worker")
 

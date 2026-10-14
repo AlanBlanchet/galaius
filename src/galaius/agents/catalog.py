@@ -3,7 +3,7 @@
 import re
 import sys
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePath, PurePosixPath
 from typing import Self
 from uuid import UUID
 
@@ -18,6 +18,12 @@ from galaius.agents.catalog_connection import (
 )
 from galaius.criteria import Criteria
 from galaius.private_files import PRIVATE_FILES
+
+
+def skill_file(prompt: PromptRevision) -> PurePosixPath:
+    """Where a skill revision lives below any skill root. PromptKey and digest are core-validated
+    path components; the digest keeps earlier launches' references intact when a new catalog lands."""
+    return PurePosixPath(prompt.key.namespace, prompt.key.slug, prompt.digest, "SKILL.md")
 
 
 class AgentInstructionSet(BaseModel):
@@ -89,36 +95,41 @@ class CatalogSnapshot(AgentCatalogSnapshot):
     def prompt(self, reference: PromptExecutionRef) -> PromptRevision:
         return AgentInstructionSet.find_prompt(self.paradigms, reference)
 
-    def definition(self, key: str, skill_paths: dict[PromptExecutionRef, Path],
-                   instructions: AgentInstructionSet | None = None) -> str:
+    def definition(self, key: str, skill_root: PurePath | None,
+                   instructions: AgentInstructionSet | None = None, *,
+                   described_roles: frozenset[str] = frozenset()) -> str:
+        """Role instructions as the model reads them on every call: no identifier it never passes.
+
+        `skill_root`: the folder holding each skill at `skill_file(prompt)` (None: no skill is listed).
+        `described_roles`: roles the consumer's own agent list already describes (Claude Code's
+        Agent tool lists every installed agent); their delegate lines name the role only."""
         source = instructions or AgentInstructionSet(agent=self.role(key), prompts=self.paradigms)
         agent = source.agent
         fragments = [source.instruction_body(source.prompt(reference)) for reference in (agent.prompt, *agent.paradigms)]
-        if agent.skill_paradigms:
-            fragments.append("Available skills (read the referenced file only when its skill is needed):")
-            for reference in agent.skill_paradigms:
-                value = source.prompt(reference)
-                fragments.append(f"- Skill: {value.key.namespace}/{value.key.slug}; file: {skill_paths[reference]}")
+        if agent.skill_paradigms and skill_root is not None:
+            fragments.append("\n".join((f"Available skills (read {skill_root}/<skill path> only when its skill is needed):",
+                                         *(f"- {skill_file(source.prompt(reference))}" for reference in agent.skill_paradigms))))
         peers = {value.id: value for value in self.agents}
         team = [f"Role: {key}; name: {agent.name}; department: {agent.department or 'unassigned'}; scope: {agent.scope}"]
         if agent.reports_to is not None:
             lead = peers.get(agent.reports_to)
             label = f"{lead.name} (role: {lead.role_key or 'unassigned'})" if lead else f"{agent.reports_to} (active role unavailable)"
             team.append(f"Reports to: {label}")
+        delegates = [capability for capability in agent.capabilities if capability.kind == "delegate"]
+        if delegates:
+            # The parent run's recorded revision resolves each name to its exact pin (agent_spawn):
+            # the identity and revision ids never need to be in the text the model re-reads.
+            team.append("Delegates (agent_spawn delegate=<name> launches that role at its pinned revision):")
+        for capability in delegates:
+            target = peers.get(capability.agent.id)
+            label = (
+                f"{target.name} (role: {target.role_key or 'unassigned'})"
+                if target is not None else "active role unavailable"
+            )
+            described = target is not None and target.role_key in described_roles
+            team.append(f"- {capability.name}: {label}" + ("" if described else f". {capability.description}"))
         for capability in agent.capabilities:
-            if capability.kind == "delegate":
-                target = peers.get(capability.agent.id)
-                label = (
-                    f"{target.name} (role: {target.role_key or 'unassigned'})"
-                    if target is not None else "active role unavailable"
-                )
-                team.append(
-                    f"Delegate capability {capability.name}: {label}. {capability.description} "
-                    f"Server agent identity: {capability.agent.id}. "
-                    f"Server capability revision: {capability.agent.revision}. "
-                    f"Invoke agent_spawn with delegate set to {capability.name} to use this pin."
-                )
-            else:
+            if capability.kind != "delegate":
                 team.append(f"Server capability {capability.name} ({capability.kind}): {capability.description}")
         fragments.append("Team and capabilities:\n" + "\n".join(team))
         return "\n\n".join(fragments)
@@ -323,17 +334,16 @@ class AgentCatalog(BaseModel):
     def instructions(self, role: str) -> str:
         agent = self.role(role)
         source = self.selection or AgentInstructionSet(agent=agent, prompts=self.snapshot.paradigms)
-        skill_paths = {reference: self.skill_path(reference) for reference in agent.skill_paradigms}
-        return self.snapshot.definition(role, skill_paths, instructions=source)
+        for reference in agent.skill_paradigms:
+            self.skill_path(reference)
+        return self.snapshot.definition(role, self.skill_root(), instructions=source)
+
+    def skill_root(self) -> Path:
+        return self.cache_path().parent / "agent-catalog-skills"
 
     def skill_path(self, reference: PromptExecutionRef) -> Path:
         prompt = self.prompt(reference)
-        # PromptKey and digest are core-validated filesystem components. Digest paths keep
-        # earlier launches' lazy references intact when a new catalog becomes active.
-        target = (
-            self.cache_path().parent / "agent-catalog-skills" / prompt.key.namespace
-            / prompt.key.slug / prompt.digest / "SKILL.md"
-        )
+        target = self.skill_root() / skill_file(prompt)
         PRIVATE_FILES.replace_text(target, prompt.content)
         return target
 

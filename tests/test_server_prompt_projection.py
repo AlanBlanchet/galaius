@@ -86,11 +86,39 @@ def test_provider_context_scope_and_immutable_skill_references(tmp_path):
     worker = outputs['scopes/domain/agents/worker.md']
     assert 'Pinned skill body.' not in worker
     reference = next(name for name in outputs if name.startswith('references/'))
-    assert str(tmp_path / 'projection' / reference) in worker
+    root = tmp_path / 'projection' / 'references'
+    assert f"read {root}/<skill path>" in worker and f"\n- {Path(reference).relative_to('references')}" in worker
     assert f"{os.sep}RULE.md" in outputs['AGENTS.md']
     org = json.loads(outputs['org.json'])
     assert org['agents'][0]['reports_to'] == 'main'
     assert org['agents'][0]['def'] == str(tmp_path / 'home/.claude/scopes/domain/agents/worker.md')
+
+
+def delegating_catalog():
+    """Main delegating to a described core role, an undescribed core role and a domain-scoped role."""
+    base = catalog_fixture()
+    main, worker = base.snapshot.role('main'), base.snapshot.role('worker')
+    core = worker.model_copy(update={'id': uuid4(), 'revision': uuid4(), 'role_key': 'reviewer', 'scope': 'core', 'description': 'Use when: reviewing.'})
+    bare = worker.model_copy(update={'id': uuid4(), 'revision': uuid4(), 'role_key': 'bare', 'scope': 'core', 'description': ''})
+    delegate = lambda agent: {'kind': 'delegate', 'name': f'ask_{agent.role_key}', 'description': f'{agent.role_key} capability text',  # noqa: E731
+                              'agent': {'id': agent.id, 'revision': agent.revision}, 'input_schema': {'properties': {}, 'required': ()}}
+    main = AgentRevision.model_validate({**main.model_dump(exclude_none=True), 'capabilities': tuple(delegate(agent) for agent in (core, bare, worker))})
+    snapshot = AgentCatalogSnapshot.create((main, worker, core, bare), base.snapshot.paradigms,
+                                           AgentRevisionRef(id=main.id, revision=main.revision), base.snapshot.prompt_heads)
+    return base.model_copy(update={'snapshot': CatalogSnapshot.model_validate(snapshot.model_dump())})
+
+
+@pytest.mark.parametrize('output,role,described', [
+    ('instructions.md', 'reviewer', False),  # Claude Code's Agent tool already lists it
+    ('instructions.md', 'bare', True),  # listed with its name only: the capability text is all there is
+    ('instructions.md', 'worker', True),  # domain-scoped: absent from every global agent list
+    ('vscode-instructions.md', 'reviewer', True),
+    ('AGENTS.md', 'reviewer', True),
+])
+def test_delegate_description_appears_once_per_consumer(tmp_path, output, role, described):
+    text = _server_outputs(delegating_catalog(), tmp_path / 'home', tmp_path / 'projection')[output]
+    assert f'- ask_{role}: ' in text
+    assert (f'{role} capability text' in text) is described
 
 
 def test_missing_skill_metadata_refuses_projection(tmp_path):
@@ -465,7 +493,7 @@ def test_install_rejects_paths_outside_consumer_roots(tmp_path, unsafe):
     outside.mkdir()
     protected = outside / "CLAUDE.md"
     protected.write_text("operator content")
-    stage({"instructions.md": "new instructions"}, projection)
+    stage({"instructions.md": "new instructions", "vscode-instructions.md": "new instructions"}, projection)
     if unsafe == "consumer_parent":
         home.mkdir()
         (home / ".claude").symlink_to(outside, target_is_directory=True)
