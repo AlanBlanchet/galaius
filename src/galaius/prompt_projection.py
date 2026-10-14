@@ -18,7 +18,7 @@ import yaml
 from galaius_core import PromptExecutionRef, PromptKey
 
 from galaius.agents.subscriptions import Subscription
-from galaius.agents.catalog import AgentCatalog, AgentInstructionSet, CatalogSnapshot, skill_file
+from galaius.agents.catalog import AgentCatalog, AgentInstructionSet, CatalogSnapshot, role_identifier, skill_file
 from galaius.agents.catalog_connection import CatalogConnection
 from galaius.agents.policy import TOOL_PREFIX
 from galaius.agents.tool_gateway import AgentToolList, ToolGateway
@@ -198,7 +198,7 @@ class InstructionsConsumer(BaseModel):
         if not self.lists_agents:
             return frozenset()
         main = snapshot.root_agent
-        return frozenset(agent.role_key or f"agent-{agent.id}" for agent in snapshot.agents
+        return frozenset(role_identifier(agent) for agent in snapshot.agents
                          if agent.scope == "core" and agent.description and (main is None or agent.id != main.id))
 
 
@@ -225,7 +225,7 @@ def main_instructions(snapshot: CatalogSnapshot, consumer: InstructionsConsumer,
         ref.key.namespace == "paradigms" and ref.key.slug.startswith("provider-")
     )) + (provider_ref,)
     source = AgentInstructionSet(agent=main.model_copy(update={"paradigms": paradigms}), prompts=snapshot.paradigms)
-    body = snapshot.definition(main.role_key or f"agent-{main.id}", projection / "references", instructions=source,
+    body = snapshot.definition(role_identifier(main), projection / "references", instructions=source,
                                described_roles=consumer.described_roles(snapshot))
     references = []
     for prompt in heads.values():
@@ -243,7 +243,7 @@ def main_instructions(snapshot: CatalogSnapshot, consumer: InstructionsConsumer,
 def _server_outputs(catalog: AgentCatalog, home: Path, projection: Path, gateway: AgentToolList = AgentToolList()) -> dict[str, str]:
     snapshot = catalog.snapshot
     roles = sorted(snapshot.agents, key=lambda agent: agent.role_key or str(agent.id))
-    identifiers = {agent.id: agent.role_key or f"agent-{agent.id}" for agent in roles}
+    identifiers = {agent.id: role_identifier(agent) for agent in roles}
     if snapshot.root_agent is None:
         raise NoMainAgent("choose the workspace's main agent before installing its instructions")
     main = snapshot.revision(snapshot.root_agent)

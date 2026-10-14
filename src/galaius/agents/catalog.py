@@ -20,6 +20,11 @@ from galaius.criteria import Criteria
 from galaius.private_files import PRIVATE_FILES
 
 
+def role_identifier(agent: AgentRevision) -> str:
+    """The name a consumer knows a role by (agent file, delegate label): its role key, else its id."""
+    return agent.role_key or f"agent-{agent.id}"
+
+
 def skill_file(prompt: PromptRevision) -> PurePosixPath:
     """Where a skill revision lives below any skill root. PromptKey and digest are core-validated
     path components; the digest keeps earlier launches' references intact when a new catalog lands."""
@@ -126,7 +131,7 @@ class CatalogSnapshot(AgentCatalogSnapshot):
                 f"{target.name} (role: {target.role_key or 'unassigned'})"
                 if target is not None else "active role unavailable"
             )
-            described = target is not None and target.role_key in described_roles
+            described = target is not None and role_identifier(target) in described_roles
             team.append(f"- {capability.name}: {label}" + ("" if described else f". {capability.description}"))
         for capability in agent.capabilities:
             if capability.kind != "delegate":
