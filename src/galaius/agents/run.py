@@ -39,7 +39,7 @@ from galaius.fence import FenceSpec, fenced
 from galaius.processes import process_group_options, spawnable
 from galaius.agents.policy import Policy, policy_path
 from galaius.agents.profiles import overlay_for, profiles_from
-from galaius.agents.providers import PROVIDERS, AgentProvider, UnsupportedToolPolicy, validate_denied_tools, _safe_process_detail
+from galaius.agents.providers import PROVIDERS, AgentProvider, ClaudeTurnSettings, UnsupportedToolPolicy, validate_denied_tools, _safe_process_detail
 from galaius.agents.vocabulary import TouchScope
 from galaius.agents.subscriptions import RunSubscription, Subscription, SubscriptionCapped, SubscriptionRefused
 from galaius.agents.warm import WarmStart
@@ -48,6 +48,7 @@ from galaius.criteria import Criteria, CriteriaError, Dropped, Variables
 from galaius.model_catalog import live_scores
 from galaius.models import Model, ModelCapability
 from galaius.prompt_projection import coordinator_instructions
+from galaius.runtime import config
 from galaius.windowless import console_python
 from galaius.mcp_announcement import GatewayServed
 
@@ -765,6 +766,18 @@ class AheadLaunch(BaseModel):
     cwd: str
     fence: FenceSpec | None = None
 
+    @staticmethod
+    def turn_arguments(provider: AgentProvider, run_id: str, fence: FenceSpec | None) -> dict[str, ClaudeTurnSettings]:
+        """What each turn of agent run `run_id` runs under where `provider` takes it (`takes_turn_settings`): the
+        configured compaction window and Bash output; the messages sent to it while it works where it reads them
+        (`agent_queue.inbox_hook`); its launch task once a compaction replaced its conversation (`reg.brief_hook`),
+        except inside a `fence`, where the run's record and galaius's interpreter are out of reach (its home is empty)."""
+        if not provider.takes_turn_settings:
+            return {}
+        return {"turn": ClaudeTurnSettings(compact_window=config.claude_compact_window, bash_output_chars=config.claude_bash_output_chars,
+                                     inbox_hook=agent_queue.inbox_hook(run_id) if provider.reads_mid_turn else None,
+                                     brief_hook=None if fence else reg.brief_hook(run_id))}
+
     def digest(self, environment: Mapping[str, str], *parts: str) -> str:
         """`parts`, today's date (the one a prompt states), which folder it is (`_folder_identity`) and
         the content of each file the CLI reads at its start here (a rewrite with unchanged content keeps the same digest)."""
@@ -833,9 +846,7 @@ class ChildLaunch(AheadLaunch):
     def command_arguments(self, run_id: str, session: str) -> dict[str, object]:
         arguments = {**self.arguments, "run_id": session, "environment": self.env(run_id),
                      "mcp_config": mesh_config(run_id=run_id, role=self.role) if self.meshed else None}
-        if self.provider.reads_mid_turn:
-            arguments["inbox_hook"] = agent_queue.inbox_hook(run_id)
-        return arguments
+        return arguments | self.turn_arguments(self.provider, run_id, self.fence)
 
     async def launch(self, run_id: str, session: str, task: str) -> asyncio.subprocess.Process:
         """Run `run_id`'s child doing `task` (as vendor session `session`): handed on its stdin as to a child started
@@ -916,7 +927,7 @@ class ResumeLaunch(AheadLaunch):
             agent_prompt=_role_prompt(catalog, run.agent, provider, env) if catalog is not None else None,
             mcp_config=mesh_config(run_id=run.run_id, role=run.agent) if run.mesh_enabled and not already_meshed(provider.name) else None,
             coarse_accepted=coarse_accepted, base_url=routed.get("OPENAI_BASE_URL"),
-            **({"inbox_hook": agent_queue.inbox_hook(run.run_id)} if provider.reads_mid_turn else {}),
+            **AheadLaunch.turn_arguments(provider, run.run_id, run.fence),
         )
         if provider.name == "claude" and reasoning is not None:
             env["CLAUDE_CODE_EFFORT_LEVEL"] = reasoning

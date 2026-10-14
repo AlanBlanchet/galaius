@@ -129,6 +129,15 @@ class Config(BaseSettings):
     prompt_token_file: Path | None = None
     prompt_cache: Path = Path.home() / ".galaius" / "prompts.sqlite3"
     claude_media_criteria: str = ""
+    # Every Claude Code agent turn galaius launches (its first and each resumed one; never the owner's own
+    # editor conversation) gets these as `--settings`, which win over the user's own settings files: each
+    # call re-reads the whole conversation, so a 1M-token window left to fill bills ever-larger re-reads
+    # before it compacts. Window: the size it compacts below (the CLI's bounds, 2.1.288; 1000000 leaves a
+    # 1M-token model its whole window). Bash output: characters a command's output may put in the
+    # conversation; the rest goes to a file the agent is pointed at. Override:
+    # GALAIUS_CLAUDE_COMPACT_WINDOW, GALAIUS_CLAUDE_BASH_OUTPUT_CHARS.
+    claude_compact_window: Annotated[int, Field(ge=100_000, le=1_000_000)] = 200_000
+    claude_bash_output_chars: Annotated[int, Field(gt=0)] = 15_000
     # Sovereign-tier requirement (see QUALITY_TIERS); empty → cheapest VLM (self-hosted models
     # sort first on price with no key needed). Override: GALAIUS_TIER_SOVEREIGN_CRITERIA.
     tier_sovereign_criteria: str = ""

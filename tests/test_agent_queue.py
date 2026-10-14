@@ -5,16 +5,17 @@ import json
 import os
 import subprocess
 import sys
-
 import uuid
 
 import pytest
 
-from galaius import inbox_hook
+from galaius import brief_hook, inbox_hook
 from galaius.agents import agent_queue, messaging
+from galaius.agents import run as agent_run
 from galaius.agents import registry as reg
 from galaius.agents.policy import Policy
-from galaius.agents.providers import ClaudeCodeProvider
+from galaius.agents.providers import ClaudeCodeProvider, ClaudeTurnSettings
+from galaius.config import Config
 from galaius.fence import FenceSpec
 from tests.support.agents import ScriptedProvider, install_provider, use_policy
 
@@ -363,7 +364,7 @@ def test_reused_dispatcher_pid_does_not_stall_on_unrelated_process(monkeypatch):
             started["argv"] = argv
             return _Started()
 
-        monkeypatch.setattr(agent_queue.subprocess, "Popen", fake_popen)
+        monkeypatch.setattr(subprocess, "Popen", fake_popen)
         assert agent_queue.ensure_dispatcher_locked("r1") == 424242
         assert started["argv"][-1] != "queue-token"
         assert agent_queue._state("r1")["dispatcher_pid"] == 424242
@@ -392,11 +393,45 @@ def test_a_dispatcher_is_trusted_only_while_the_recorded_process_lives():
     assert not agent_queue._dispatcher_matches(recorded)
 
 
+def test_every_agent_turn_runs_under_galaius_settings_and_gets_its_task_back_after_a_compaction(monkeypatch, tmp_path):
+    """First turn and resumed turn alike: the configured compaction window and Bash output as `--settings` (which beat
+    the user's own on 2.1.288), and a `SessionStart` hook that hands a compacted conversation its recorded task back
+    (cut, saying so, past `LIMIT`) with the launch note saying what it is; a session that merely starts or resumes gets nothing. An editor conversation's
+    turn carries none of it: the owner's own settings apply. A fenced run gets no brief: its record is out of reach there;
+    an unreadable record says so and fails the hook, which the CLI records and goes past."""
+    monkeypatch.setattr(reg, "active_interpreter", lambda: sys.executable)
+    monkeypatch.setattr(agent_run, "config", Config(claude_compact_window=300_000))
+    task = "- fix the footer"
+    reg.register(run_id="r3", pid=os.getpid(), provider="claude", name="worker", task=task, agent="tester")
+    provider = ClaudeCodeProvider()
+    turn = agent_run.AheadLaunch.turn_arguments(provider, "r3", None)
+    first = provider.command("t", cwd=str(tmp_path), model=None, mcp_config=None, run_id="r3", **turn)
+    resumed = provider.resume_command("r3", "go on", **turn)
+    settings = [json.loads(argv[argv.index("--settings") + 1]) for argv in (first, resumed)]
+    assert settings[0] == settings[1] and (settings[0]["autoCompactWindow"], settings[0]["bashOutputMaxChars"]) == (300_000, 15_000)
+    assert f"\n{brief_hook.HEADING}\n" in first[first.index("--append-system-prompt") + 1]
+    [[hook]] = [entry["hooks"] for entry in settings[0]["hooks"]["SessionStart"] if entry["matcher"] == "compact"]
+
+    def session_start(source: str, check: bool = True) -> subprocess.CompletedProcess:
+        return subprocess.run(hook["command"], shell=True, input=json.dumps({"hook_event_name": "SessionStart", "source": source}),
+                              capture_output=True, text=True, check=check, cwd=tmp_path)
+
+    said = json.loads(session_start("compact").stdout)["hookSpecificOutput"]
+    assert (said["hookEventName"], said["additionalContext"]) == ("SessionStart", f"{brief_hook.HEADING}\n\n{task}")
+    assert brief_hook.brief("x" * (brief_hook.LIMIT + 5)).endswith(f"after {brief_hook.LIMIT} of its {brief_hook.LIMIT + 5} characters.]")
+    assert session_start("resume").stdout == session_start("startup").stdout == ""
+    reg._record_path("r3").unlink()
+    lost = session_start("compact", check=False)
+    assert (lost.returncode, lost.stdout) == (1, "") and "unreadable" in lost.stderr
+    fence = FenceSpec(working_directory=tmp_path, levels={"work": "write"}, start=tmp_path, state=tmp_path / "state")
+    assert agent_run.AheadLaunch.turn_arguments(provider, "r3", fence)["turn"].brief_hook is None
+
+
 def test_a_message_to_a_working_run_is_read_after_its_next_own_tool_call_and_settled_by_that_turn(monkeypatch, tmp_path):
     """As in the editor: typed while the agent works, read after its next tool call (never a
     sub-agent's), never replayed as a turn of its own; the turn's reply settles it."""
     provider = _setup(monkeypatch)
-    monkeypatch.setattr(agent_queue, "active_interpreter", lambda: sys.executable)
+    monkeypatch.setattr(reg, "active_interpreter", lambda: sys.executable)
     run = reg.register(run_id="r2", pid=os.getpid(), provider=provider.name, name="worker", task="t", agent="tester", provider_session_id="vendor")
     # The hook runs in the agent's folder: a cloned repository's own json.py must never run.
     (tmp_path / "json.py").write_text(f"open({str(tmp_path / 'shadowed')!r}, 'w')\n")
@@ -414,7 +449,7 @@ def test_a_message_to_a_working_run_is_read_after_its_next_own_tool_call_and_set
     # Opened by who wrote it, in the exact line the agent was told at launch is the person's own.
     heading = inbox_hook.HEADING.format(who=inbox_hook.OPERATOR)
     assert said["hookEventName"] == "PostToolUse" and said["additionalContext"] == f"{heading}\n\nalso check the footer"
-    assert f"\n{heading}\n" in ClaudeCodeProvider.inbox_arguments(hook)[-1] == inbox_hook.NOTE
+    assert f"\n{heading}\n" in ClaudeTurnSettings(compact_window=200_000, bash_output_chars=15_000, inbox_hook=hook).arguments()[-1] == inbox_hook.NOTE
     assert tool_call() == "" and [item.state for item in agent_queue.items("r2")] == ["running"] and agent_queue.read_ids("r2") == [sent]
 
     with reg.open_raw_events("r2", append=True) as stream:

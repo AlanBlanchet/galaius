@@ -41,6 +41,7 @@ from galaius.agents.catalog import AgentCatalog
 from galaius.agents.events import TOKEN_FIELDS, AgentEvent, CompactionTrigger, TokenUsage, UsageLedger, instant, stream_lines
 from galaius.agents.profiles import overlay_for
 from galaius.agents.vocabulary import ApprovalIntent, TouchScope, ThinkingLevel, vocabulary_for
+from galaius.brief_hook import NOTE as BRIEF_NOTE
 from galaius.fence import RELAY, RELAY_PORT, Confinement, RelayedServer, SignIn, confinement_refusal, userns_refusal
 from galaius.inbox_hook import NOTE as INBOX_NOTE
 from galaius.models import Model
@@ -259,8 +260,10 @@ class AgentProvider(ABC):
     #: None: it cannot be, so it never starts or resumes where they must not load.
     folder_settings_off: ClassVar[tuple[str, ...] | None] = None
     #: Whether a turn of this CLI reads a message sent while it works after its current tool call
-    #: (`command` / `resume_command` take `inbox_hook`); otherwise the message waits for the turn's end.
+    #: (`ClaudeTurnSettings.inbox_hook`); otherwise the message waits for the turn's end.
     reads_mid_turn: ClassVar[bool] = False
+    #: Whether its `command` and `resume_command` take `turn` (`ClaudeTurnSettings`): what galaius sets in each agent turn.
+    takes_turn_settings: ClassVar[bool] = False
     #: Seconds a confirmed login is believed before `authenticated` asks the CLI again: its status
     #: command is a CLI start of its own (`claude auth status`: 0.6 s), paid by every start before.
     #: A login lost within it fails that run at its start instead of passing to the next candidate.
@@ -818,6 +821,35 @@ _HARNESS_BOOKKEEPING = frozenset({"thinking_tokens", "hook_started", "hook_respo
 #: How Claude Code opens the `isSynthetic` user turn carrying a Stop hook's block.
 _STOP_HOOK_FEEDBACK = "Stop hook feedback:"
 
+class ClaudeTurnSettings(BaseModel):
+    """What galaius sets in each agent turn of Claude Code it launches, as `--settings`: on 2.1.288 they win over the
+    user's own settings files, whatever `--setting-sources` loads. Values: `Config.claude_compact_window`,
+    `claude_bash_output_chars`."""
+
+    model_config = ConfigDict(frozen=True)
+
+    #: The size it compacts the conversation below (`autoCompactWindow`).
+    compact_window: int
+    #: The characters of a Bash command's output kept in the conversation (`bashOutputMaxChars`); the rest goes to a
+    #: file the agent is pointed at.
+    bash_output_chars: int
+    #: Run after each of the turn's own tool calls (`PostToolUse`; what it prints as `additionalContext` the model reads
+    #: before its next step), with the note telling the agent which of that context is the person's (`galaius.inbox_hook.NOTE`).
+    inbox_hook: str | None = None
+    #: Run once a compaction replaced the conversation (`SessionStart`, source `compact`: `galaius.brief_hook`), with the
+    #: note telling the agent what that context is (`galaius.brief_hook.NOTE`).
+    brief_hook: str | None = None
+
+    def arguments(self) -> list[str]:
+        hooks = {
+            **({"PostToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": self.inbox_hook}]}]} if self.inbox_hook else {}),
+            **({"SessionStart": [{"matcher": "compact", "hooks": [{"type": "command", "command": self.brief_hook}]}]} if self.brief_hook else {}),
+        }
+        settings = {"autoCompactWindow": self.compact_window, "bashOutputMaxChars": self.bash_output_chars, **({"hooks": hooks} if hooks else {})}
+        notes = [note for hook, note in ((self.inbox_hook, INBOX_NOTE), (self.brief_hook, BRIEF_NOTE)) if hook]
+        return ["--settings", json.dumps(settings)] + (["--append-system-prompt", "\n\n".join(notes)] if notes else [])
+
+
 class ClaudeCodeProvider(AgentProvider):
     """Claude Code, driven through its documented headless mode.
 
@@ -828,6 +860,7 @@ class ClaudeCodeProvider(AgentProvider):
     name = "claude"
     folder_settings_off = ("--setting-sources", "user")
     reads_mid_turn = True
+    takes_turn_settings = True
     starts_ahead = True
     # 2.1.288, headless stream-json: a resumed turn or a stdin turn of exactly this text compacts
     # (`compact_boundary`, trigger `manual`).
@@ -1170,7 +1203,7 @@ class ClaudeCodeProvider(AgentProvider):
                 agent_prompt: str | None = None, denied_tools: tuple[str, ...] = (),
                 image_paths: tuple[Path, ...] = (), coarse_accepted: bool = False,
                 base_url: str | None = None, environment: Mapping[str, str] | None = None,
-                inbox_hook: str | None = None) -> list[str]:
+                turn: ClaudeTurnSettings | None = None) -> list[str]:
         # `base_url` is unused here: Claude Code only ever speaks the Anthropic wire protocol
         # (ANTHROPIC_BASE_URL, read from its own process env, set by resolve_model's overlay) —
         # never OpenAI's, so a routed hf/vllm endpoint is never handed to this binary at all
@@ -1190,7 +1223,7 @@ class ClaudeCodeProvider(AgentProvider):
         argv += self.role_arguments(agent, agent_prompt, allowed_tools, denied_tools)
         if mcp_config:
             argv += ["--mcp-config", mcp_config]
-        argv += self._permission_flag(permission_mode) + self._setting_sources(environment) + self.inbox_arguments(inbox_hook)
+        argv += self._permission_flag(permission_mode) + self._setting_sources(environment) + (turn.arguments() if turn else [])
         if reasoning is not None:
             argv += ["--effort", self.provider_thinking_level(reasoning)]
         return argv
@@ -1286,11 +1319,11 @@ class ClaudeCodeProvider(AgentProvider):
         agent_prompt: str | None = None, allowed_tools: list[str] | None = None,
         denied_tools: tuple[str, ...] = (), mcp_config: str | None = None,
         coarse_accepted: bool = False, base_url: str | None = None, fork_to: str | None = None,
-        inbox_hook: str | None = None,
+        turn: ClaudeTurnSettings | None = None,
     ) -> list[str]:
         """Continue an existing session using its provider session id (`fork_to`: as a copy)."""
         return [*self._resume_options(session_id, model=model, permission_mode=permission_mode, agent=agent, agent_prompt=agent_prompt, allowed_tools=allowed_tools,
-                                      denied_tools=denied_tools, mcp_config=mcp_config, fork_to=fork_to, inbox_hook=inbox_hook), "--", message]
+                                      denied_tools=denied_tools, mcp_config=mcp_config, fork_to=fork_to, turn=turn), "--", message]
 
     def resume_ahead_command(self, session_id: str, **arguments) -> list[str]:
         """`resume_command`'s options, the message read as stream-json input: the CLI loads the
@@ -1312,7 +1345,8 @@ class ClaudeCodeProvider(AgentProvider):
     def _resume_options(
         self, session_id: str, *, model: str | None = None, permission_mode: str | None = None, reasoning: str | None = None,
         agent: str | None = None, agent_prompt: str | None = None, allowed_tools: list[str] | None = None, denied_tools: tuple[str, ...] = (),
-        mcp_config: str | None = None, coarse_accepted: bool = False, base_url: str | None = None, fork_to: str | None = None, inbox_hook: str | None = None,
+        mcp_config: str | None = None, coarse_accepted: bool = False, base_url: str | None = None, fork_to: str | None = None,
+        turn: ClaudeTurnSettings | None = None,
     ) -> list[str]:
         # base_url unused — see command()'s docstring note; reasoning travels as CLAUDE_CODE_EFFORT_LEVEL.
         return [
@@ -1321,18 +1355,7 @@ class ClaudeCodeProvider(AgentProvider):
             *(["--fork-session", "--session-id", fork_to] if fork_to else []),
             "--output-format", "stream-json",
             "--verbose",
-        ] + (["--model", model] if model else []) + self._permission_flag(permission_mode) + self._setting_sources() + self.inbox_arguments(inbox_hook) + self.role_arguments(agent, agent_prompt, allowed_tools, denied_tools) + (["--mcp-config", mcp_config] if mcp_config else [])
-
-    @staticmethod
-    def inbox_arguments(hook: str | None) -> list[str]:
-        """`hook` run after each of the turn's own tool calls (`PostToolUse`; what it prints as
-        `additionalContext` the model reads before its next step), and the note telling the agent
-        which of that context is the person's (`galaius.inbox_hook.NOTE`). Settings given on the command
-        line load whatever `--setting-sources` says, so a cloned workspace keeps it too."""
-        if hook is None:
-            return []
-        return ["--settings", json.dumps({"hooks": {"PostToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": hook}]}]}}),
-                "--append-system-prompt", INBOX_NOTE]
+        ] + (["--model", model] if model else []) + self._permission_flag(permission_mode) + self._setting_sources() + (turn.arguments() if turn else []) + self.role_arguments(agent, agent_prompt, allowed_tools, denied_tools) + (["--mcp-config", mcp_config] if mcp_config else [])
 
     #: Claude's two usage dialects: ``message.usage`` / ``result.usage`` (snake) and
     #: ``result.modelUsage[model]`` (camel). Each reports the UNCACHED prompt remainder, cache
@@ -1441,6 +1464,8 @@ class ClaudeCodeProvider(AgentProvider):
 
         if kind == "control_response":
             answer = self._answer(raw, self.CONTEXT_REQUEST) or {}
+            if isinstance(answer.get("maxTokens"), int):
+                ledger.window = answer["maxTokens"]
             return AgentEvent(kind="other", session_id=sid, raw_type=kind, **ContextGauge.reported({"context_window": answer.get("maxTokens")}))
 
         if kind == "system" and raw.get("subtype") == "init":
@@ -1536,9 +1561,10 @@ class ClaudeCodeProvider(AgentProvider):
             detail = json.dumps(structured) if structured is not None else str(
                 raw.get("result") or raw.get("stop_reason") or raw.get("subtype") or ""
             )
-            # Its main model's window as the CLI sized it (1M or 200k for one model id, by account and flags).
+            # The window the CLI sized the conversation to when it said so in this stream (`control_response`): 2.1.288
+            # reports the model's own here (1M or 200k for one model id, by account), never `autoCompactWindow`.
             main = (raw.get("modelUsage") or {}).get(ledger.primary)
-            window = main.get("contextWindow") if isinstance(main, dict) else None
+            window = ledger.window or (main.get("contextWindow") if isinstance(main, dict) else None)
             return AgentEvent(
                 kind="error" if failed else "done",
                 session_id=sid, raw_type=kind,

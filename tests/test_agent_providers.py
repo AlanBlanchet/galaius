@@ -536,6 +536,12 @@ def test_a_claude_run_knows_its_window_before_its_first_turn_ends():
     stream = [lines[0], *(Path(__file__).parent / "fixtures" / "agents" / "claude_compact_stream.jsonl").read_text().splitlines()[:3]]
     assert StreamDigest.of("", [e for line in stream if (e := provider.parse(line)) is not None], viewer="").context == ContextGauge(
         context_tokens=10 + 13803 + 8587, context_window=200_000)
+    # Under `autoCompactWindow` the request says the compaction window, the turn's result still the model's own: the gauge keeps the first.
+    sized, ledger = json.loads(lines[1]), UsageLedger()
+    sized["response"]["response"]["maxTokens"] = 200_000
+    compacted = (Path(__file__).parent / "fixtures" / "agents" / "claude_compact_stream.jsonl").read_text().splitlines()
+    result = json.loads(compacted[3].replace('"contextWindow":200000', '"contextWindow":1000000'))
+    assert [provider.parse(json.dumps(line), ledger).context_window for line in (sized, json.loads(stream[1]), result)] == [200_000, None, 200_000]
     other = json.loads(lines[1])
     for answer in ({"request_id": provider.USAGE_REQUEST}, {"subtype": "error", "error": "unsupported"}):
         assert provider.parse(json.dumps(other | {"response": other["response"] | answer})).context_window is None

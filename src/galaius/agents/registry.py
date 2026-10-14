@@ -18,6 +18,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import signal
 import stat
@@ -519,14 +520,20 @@ def participant_environment(environment: Mapping[str, str]) -> dict[str, str]:
     return {**found, UserPaths.AGENTS_OVERRIDE: str(agents_dir())} if override else found
 
 
+def participant_argv(module: str, *arguments: str) -> list[str]:
+    """`python -m <module> <arguments>` on the ACTIVE runtime's interpreter, never this process's: one that outlives an
+    upgrade would otherwise keep the build that started it alive. -P: it runs in a run's folder, whose modules (a cloned
+    repository's json.py) must never shadow galaius's own."""
+    return [active_interpreter(), "-P", "-m", module, *arguments]
+
+
 def start_participant(module: str, *arguments: str, cwd: str, environment: Mapping[str, str] | None = None,
                       contain: bool = False, stderr: int | BinaryIO = subprocess.DEVNULL) -> subprocess.Popen:
     """Start `python -m <module> <arguments>` detached to work on runs here (a dispatcher, a spawn's waiter), in
-    `environment` (`participant_environment` of this process's own when None), in `cwd` when it is a folder. On the
-    ACTIVE runtime's interpreter, never this process's: one that outlives an upgrade would otherwise keep the build
-    that started it alive. -P: it runs in a run's folder, whose modules must never shadow galaius's own. `contain`:
+    `environment` (`participant_environment` of this process's own when None), in `cwd` when it is a folder
+    (`participant_argv`). `contain`:
     in a scope of its own in the agents' slice (`ceiling.contained`), so stopping its starter's scope never ends it."""
-    argv = [active_interpreter(), "-P", "-m", module, *arguments]
+    argv = participant_argv(module, *arguments)
     return subprocess.Popen(
         contained(argv) if contain else argv, cwd=cwd if cwd and Path(cwd).is_dir() else ".",
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=stderr,
@@ -760,6 +767,18 @@ def _safe_run_id(run_id: str) -> str:
 
 def _record_path(run_id: str) -> Path:
     return agents_dir() / f"{_safe_run_id(run_id)}.json"
+
+
+def hook_command(module: str, *arguments: str) -> str:
+    """The shell command an agent CLI's hook runs: `participant_argv`, quoted for this system's shell."""
+    argv = participant_argv(module, *arguments)
+    return subprocess.list2cmdline(argv) if sys.platform == "win32" else shlex.join(argv)
+
+
+def brief_hook(run_id: str) -> str:
+    """The command a turn of `run_id` runs once its conversation was compacted (`galaius.brief_hook`):
+    it hands the agent back the task recorded here."""
+    return hook_command("galaius.brief_hook", str(_record_path(run_id)))
 
 
 def messages_path(run_id: str) -> Path:

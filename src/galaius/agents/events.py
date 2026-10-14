@@ -234,6 +234,9 @@ class UsageLedger(BaseModel):
 
     #: Checkpoint key the invocation-local figure belongs to — the session's main model.
     primary: str | None = None
+    #: The window the CLI said it sizes the conversation to, once it said so (Claude's context request): what its
+    #: later reports of the model's own window (`result.modelUsage`) never replace.
+    window: int | None = None
     seen: set[str] = Field(default_factory=set)
     live: TokenUsage = TokenUsage()
     checkpoints: list[_UsageCheckpoint] = Field(default_factory=list)

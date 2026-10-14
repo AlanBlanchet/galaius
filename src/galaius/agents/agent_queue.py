@@ -14,7 +14,6 @@ import json
 import os
 import shlex
 import signal
-import subprocess
 import sys
 import time
 import uuid
@@ -29,7 +28,7 @@ from galaius.agents.events import AgentEvent
 from galaius.agents.providers import _CLIP, AgentProvider, _safe_process_detail, provider_for
 from galaius.inbox_hook import HEADING, OPERATOR
 from galaius.processes import process_started
-from galaius.upgrade.store import Runtime, RuntimeStore, active_interpreter
+from galaius.upgrade.store import Runtime, RuntimeStore
 
 MAX_PENDING = 128
 _POLL_SECONDS = 0.1
@@ -392,12 +391,10 @@ def inbox_hook(run_id: str) -> str:
     hands the turn every message sent to it meanwhile (`inject`). It runs after EVERY tool call, so
     where a POSIX shell runs it, the shell itself looks for a pending item in the queue file and
     starts Python only when there is one: nothing waiting costs a `grep`, never an interpreter."""
-    # -P: the hook runs in the agent's folder, whose modules (a cloned repository's json.py) must
-    # never shadow the interpreter's own.
-    argv = [active_interpreter(), "-P", "-m", "galaius.inbox_hook", run_id, str(path(run_id))]
+    command = reg.hook_command("galaius.inbox_hook", run_id, str(path(run_id)))
     if sys.platform == "win32":
-        return subprocess.list2cmdline(argv)
-    return f"if grep -qs {shlex.quote(PENDING_MARK)} {shlex.quote(str(path(run_id)))}; then exec {shlex.join(argv)}; fi"
+        return command
+    return f"if grep -qs {shlex.quote(PENDING_MARK)} {shlex.quote(str(path(run_id)))}; then exec {command}; fi"
 
 
 def inject(run_id: str) -> list[str]:
