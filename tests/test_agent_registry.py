@@ -945,6 +945,14 @@ def test_a_new_turn_forgets_how_the_previous_one_ended():
     resumed = reg.begin_turn("r1", pid=os.getpid())
     assert (resumed.status, resumed.interruption, resumed.exit_code, resumed.finished_at) == ("running", None, None, None)
     assert json.loads(reg._record_path("r1").read_text())["interruption"] is None
+    # And a record an older release resumed WITHOUT clearing it: the next listing drops it, so a
+    # run working right now stops being described by a cut that happened before it.
+    reg._update_fields("r1", {
+        "interruption": reg.Interruption(cause="process_gone", at=100.0, source="journal").model_dump(mode="json"),
+    })
+    listed = reg.list_runs()[0]
+    assert (listed.status, listed.interruption) == ("running", None)
+    assert json.loads(reg._record_path("r1").read_text())["interruption"] is None
 
 
 def test_a_healed_status_is_written_back_to_disk(monkeypatch):

@@ -2070,9 +2070,6 @@ def _derive(run: AgentRun) -> AgentRun:
             else "done" if ending == "done"
             else "failed"
         )
-        # Its own stream says how this turn ended, so nothing cut it off: a cause left from an
-        # earlier one would otherwise describe this ending, and date it to that earlier day.
-        run.interruption = None
     # A process that dies never calls finish(), so an ended run routinely has no end TIME — and a
     # timeline cannot draw an interval without one. The last byte the child wrote is an OBSERVED
     # end: not when it died, but the last moment we know it was alive, which is honest and
@@ -2084,6 +2081,11 @@ def _derive(run: AgentRun) -> AgentRun:
         raw = raw_events_path(run.run_id)
         run.interruption = Interruption.observe(run.unit, now=time.time(), since=raw.stat().st_mtime if raw.exists() else 0.0)
         end_run_scope(run.unit, run.run_id)
+    # A cause and hour describe the one status they were written for. A run in any other state now
+    # — its own stream said how it ended, or it started another turn — must not keep them: read as
+    # the current ending, they dated it to the day of that earlier cut.
+    if run.status != "interrupted":
+        run.interruption = None
     # A run whose own scope is not on record yet (launched moments before `systemd-run` moved it) learns it while it runs.
     if run.status == "running" and run.unit is None and run.pid:
         run.unit = _run_unit(run.pid, run.run_id)
