@@ -802,6 +802,40 @@ def test_a_start_asks_less_never_more_and_a_cloned_workspace_loads_no_project_se
         assert launched["session"] == "web-test" and launched["quota_window"] == 4.0
 
 
+@pytest.mark.parametrize("cut", ["joined", "cancelled", "restarted"])
+def test_a_start_asked_again_under_its_id_is_never_a_second_agent(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cut: str) -> None:
+    """visual-critic launch r1: the line cut while a start was on its way (its PC frozen 30 s), the server asked again, and
+    one press made two runs. Asked again under the same id (`agent_start_once`) while the first still launches (`joined`),
+    after the request that carried it was cancelled with its line (`cancelled`), or after this runner restarted
+    (`restarted`: a new answerer, the runs file kept): the one run that id started, its agent launched once."""
+    seen: list[str] = []
+    run_id = uuid4()
+
+    async def launch(provider, task, **options):
+        seen.append(task)
+        await asyncio.sleep(0.3)
+        return SimpleNamespace(run_id=str(run_id))
+
+    monkeypatch.setattr("galaius.machine_agents.run_agent", launch)
+    request = _request("start", root="project", role="main", text="the footer")
+
+    async def asked() -> tuple[MachineAgentAnswer, ...]:
+        first = asyncio.ensure_future(_agents(base, tmp_path).answer(request))
+        await asyncio.sleep(0.1)
+        if cut == "cancelled":
+            first.cancel()
+            return (await _agents(base, tmp_path).answer(request),)
+        if cut == "joined":
+            return tuple(await asyncio.gather(first, _agents(base, tmp_path).answer(request)))
+        return (await first,)
+
+    answers = asyncio.run(asked())
+    if cut == "restarted":
+        answers = (*answers, _answer(_agents(base, tmp_path), request))
+    assert seen == ["the footer"] and {answer.run_id for answer in answers} == {run_id} and all(answer.error is None for answer in answers)
+    assert [run.run_id for run in WebRuns(path=tmp_path / "web-runs.json").read()] == [run_id]
+
+
 def test_a_cloned_workspace_start_tells_the_agent_cli_to_load_no_folder_settings() -> None:
     """The switch travels in the run's own environment, not this process's: a runner launching
     in-process for an untrusted clone still starts its CLI with the folder's settings off."""

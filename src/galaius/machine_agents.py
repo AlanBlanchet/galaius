@@ -157,6 +157,15 @@ class WebRun(BaseModel):
     source: UUID | None = None
     #: Started inside the machine's OS fence (`galaius.fence`).
     fenced: bool = False
+    #: The start request that launched it (`AgentStartRequest.idempotent_feature`): asked again, it answers this run.
+    request_id: UUID | None = None
+
+
+class UnderWay(RuntimeError):
+    """A request asked again under its id while its first delivery still works here: typed (`under_way`), so the
+    server asks once more later and gets that one act's answer."""
+
+    code: AgentRefusalCode = "under_way"
 
 
 class WebFull(PermissionError):
@@ -188,6 +197,10 @@ class WebRuns(BaseModel):
         except FileNotFoundError:
             return ()
         return tuple(WebRun.model_validate(item) for item in raw)
+
+    def started_by(self, request_id: UUID) -> WebRun | None:
+        """The run start request `request_id` launched here, if any."""
+        return next((run for run in self.read() if run.request_id == request_id), None)
 
     def add(self, run: WebRun) -> None:
         descriptor = os.open(self.path.with_suffix(".lock"), os.O_RDWR | os.O_CREAT, 0o600)
@@ -392,6 +405,8 @@ class MachineAgents(BaseModel):
     session: str
     #: How a web launcher session's id starts.
     web_prefix: ClassVar[str] = "web-"
+    #: The starts launching in this process now, by request id (`_start`): a repeat joins its first, whichever answerer it reaches.
+    _starting: ClassVar[dict[UUID, asyncio.Future[MachineAgentAnswer]]] = {}
 
     @classmethod
     def web_session(cls, machine_id: str) -> str:
@@ -865,6 +880,22 @@ class MachineAgents(BaseModel):
         return RunSubscription(lent=True)
 
     async def _start(self, request: AgentStartRequest) -> MachineAgentAnswer:
+        """A start asked again under its id (`AgentStartRequest.idempotent_feature`: its answer lost with the line, a
+        restart between) answers the run that id launched, or joins its start still under way — the request carrying it
+        cancelled or not: never a second agent."""
+        if (known := await asyncio.to_thread(self.runs.started_by, request.id)) is not None:
+            return await self._answered(request, known.run_id, known.fenced)
+        if (starting := self._starting.get(request.id)) is None:
+            starting = self._starting[request.id] = asyncio.ensure_future(self._start_once(request))
+            starting.add_done_callback(lambda done, key=request.id: (self._starting.pop(key, None), done.cancelled() or done.exception()))
+        return await asyncio.shield(starting)
+
+    async def _answered(self, request: AgentStartRequest, run_id: UUID, fenced: bool, refresh: WorkspaceRefresh | None = None, written: int = 0) -> MachineAgentAnswer:
+        started = await asyncio.to_thread(reg.get_run, str(run_id))
+        return MachineAgentAnswer(request_id=request.id, run_id=run_id, fenced=fenced, refresh=refresh, detail=f"{written} project secrets written to .env" if written else "",
+                                  subscription_id=started.subscription_id if started is not None else None)
+
+    async def _start_once(self, request: AgentStartRequest) -> MachineAgentAnswer:
         pinned = await asyncio.to_thread(self.pinned, request)
         folder, written, fence, review = await asyncio.to_thread(self._prepare_start, request, pinned)
         refresh = await asyncio.to_thread(self._refresh, folder)
@@ -891,20 +922,18 @@ class MachineAgents(BaseModel):
                 self.followups.follow(handle.run_id, handle.process, environment=environment)
             if review is not None:
                 self.reviews.attach(review, run_id)
-            self.runs.add(WebRun(run_id=run_id, root=request.root, path=request.path, fenced=fence is not None))
+            self.runs.add(WebRun(run_id=run_id, root=request.root, path=request.path, fenced=fence is not None, request_id=request.id))
             return run_id
 
         try:
             run_id = await asyncio.wait_for(asyncio.shield(AgentSpawns.run(launch)), START_SECONDS)
         except TimeoutError:
-            raise RuntimeError(f"the agent is still starting after {START_SECONDS:.0f} s; it appears in the list once it runs") from None
+            raise UnderWay(f"the agent is still starting after {START_SECONDS:.0f} s; it appears in the list once it runs") from None
         except (ValueError, RuntimeError) as error:
             if request.lent:
                 raise SubscriptionRefused("lent", LENT_REFUSAL) from error
             raise RuntimeError(self._said(str(error)) or "the agent did not start") from error
-        started = await asyncio.to_thread(reg.get_run, str(run_id))
-        return MachineAgentAnswer(request_id=request.id, run_id=run_id, fenced=fence is not None, refresh=refresh, detail=f"{written} project secrets written to .env" if written else "",
-                                  subscription_id=started.subscription_id if started is not None else None)
+        return await self._answered(request, run_id, fence is not None, refresh, written)
 
     def _prepare_start(self, request: AgentStartRequest, pinned: RunSubscription | None) -> tuple[Path, int, FenceSpec | None, UUID | None]:
         """What a start is checked and prepared with before anything runs: its folder, how many

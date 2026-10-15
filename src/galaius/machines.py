@@ -31,7 +31,7 @@ import httpx
 import websockets
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, ValidationError, field_validator, model_validator
 
-from galaius_core import AGENT_IMAGES_FEATURE, AGENT_IMAGES_WIRE, MACHINE_AGENT_REQUESTS, PROJECTS_DIR, PROJECTS_ROOT, PROJECTS_ROOT_FEATURE, SUBSCRIPTIONS_FEATURE, WEB_LIMIT_FEATURE, AgentCompactRequest, AgentMoveRequest, AgentSendRequest, AgentSignInCodeRequest, MACHINE_MODELS, MachineProblem, MachineProblemCode, MachineAgentSettings, MachineAgentSettingsState, MachineAgentSettingsUpdate, PlacePath, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, MachineAgentAnswer, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachineRuntime, MachineTokenSwap, PlaceLevel, ScriptFile, ScriptLanguage, UserModelOrigin
+from galaius_core import AGENT_IMAGES_FEATURE, AGENT_IMAGES_WIRE, MACHINE_AGENT_REQUESTS, PROJECTS_DIR, PROJECTS_ROOT, PROJECTS_ROOT_FEATURE, SUBSCRIPTIONS_FEATURE, WEB_LIMIT_FEATURE, AgentCompactRequest, AgentMoveRequest, AgentSendRequest, AgentSignInCodeRequest, AgentStartRequest, MACHINE_MODELS, MachineProblem, MachineProblemCode, MachineAgentSettings, MachineAgentSettingsState, MachineAgentSettingsUpdate, PlacePath, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, MachineAgentAnswer, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachineRuntime, MachineTokenSwap, PlaceLevel, ScriptFile, ScriptLanguage, UserModelOrigin
 from galaius import USER_AGENT
 from galaius import prompt_mirror, prompt_projection
 from galaius.agents.subscription_watch import SubscriptionWatch
@@ -45,7 +45,7 @@ from galaius.private_files import PRIVATE_FILES
 from galaius.server_tls import server_tls
 from galaius.error_reports import MachineErrorReports
 from galaius.machine_places import PlaceDesk
-from galaius.machine_agents import AgentSpawns, LogRing, MachineAgents, MachineSessions, WebFull, WebRuns, redact, secret_values
+from galaius.machine_agents import AgentSpawns, LogRing, MachineAgents, MachineSessions, UnderWay, WebFull, WebRuns, redact, secret_values
 from galaius.machine_programs import AgentPrograms
 from galaius.machine_workspaces import MachineWorkspaces, WorkspaceJobs
 from galaius_core.sealing import SecretsSeal
@@ -1282,12 +1282,13 @@ class MachineRunner:
     #: folder, names a folder's repository, and says why a project folder failed as a code.
     #: `places_direct`: a level from the web applies at once; folder names in the home folder are
     #: listed without the PC's own browse switch (`galaius_core.PlaceLevel`).
-    #: `AgentSendRequest.idempotent_feature`: a message asked again under the same id is never queued twice.
+    #: `AgentSendRequest.idempotent_feature`: a message asked again under the same id is never queued twice;
+    #: `AgentStartRequest.idempotent_feature`: a start asked again under its id answers its one run (`MachineAgents._start`).
     #: `WEB_LIMIT_FEATURE`: a start, a continued conversation and the runs list honour the web's `WebLimited.web_limit`.
     #: `PROJECTS_ROOT_FEATURE`: `PROJECTS_ROOT` names the projects folder (`MachineConfig.projects_root`); kept ahead of the
     #: `script:*` entries, past which a server keeps no more.
     FEATURES: ClassVar[tuple[str, ...]] = ("file_query", "script_file", "file_read", "agent_control", "agent_settings", "web_settings", "workspaces", "start_permission", "project_secrets", "places", "agent_media", "tool_gateway", "token_swap",
-                                           "workspace_copy", "places_direct", "agent_programs", SUBSCRIPTIONS_FEATURE, AgentMoveRequest.feature, str(AgentSendRequest.idempotent_feature), WEB_LIMIT_FEATURE,
+                                           "workspace_copy", "places_direct", "agent_programs", SUBSCRIPTIONS_FEATURE, AgentMoveRequest.feature, str(AgentSendRequest.idempotent_feature), str(AgentStartRequest.idempotent_feature), WEB_LIMIT_FEATURE,
                                            AgentSignInCodeRequest.feature, AgentCompactRequest.feature, PROJECTS_ROOT_FEATURE, AGENT_IMAGES_FEATURE)
 
     @classmethod
@@ -1420,13 +1421,17 @@ class MachineRunner:
                     try:
                         answer = await asyncio.wait_for(asyncio.shield(first), request.seconds)
                     except TimeoutError:
-                        raise RuntimeError("its first delivery is still under way on this computer") from None
+                        raise UnderWay("its first delivery is still under way on this computer") from None
                     except asyncio.CancelledError:
                         if not first.cancelled() or ((task := asyncio.current_task()) is not None and task.cancelling()):
                             raise
                     else:
-                        await socket.send(json.dumps({"type": "agent_answer", "result": answer.model_dump(mode="json")}))
-                        return
+                        if answer.code != "under_way":
+                            await socket.send(json.dumps({"type": "agent_answer", "result": answer.model_dump(mode="json")}))
+                            return
+                        # The first answered while its act still worked here: this one delivers it again, which answers that act.
+                        self._agent_answers.pop(request.id, None)
+                        self._agent_requests.pop(request.id, None)
                     # The first stopped unanswered (`_release`): this one delivers it; whatever it had queued is found, never queued again.
                 if request.id in self._agent_requests:
                     raise PermissionError("agent request was already used")
@@ -1453,7 +1458,7 @@ class MachineRunner:
                                                                  ("answer", answer.detail if request.op in {"answer", "send", "provider"} else None)) if value)
             logger.log(logging.INFO if request.action else logging.DEBUG, "agent %s %s", request.op, said)
         except (PermissionError, OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
-            answer = MachineAgentAnswer(request_id=request.id, error=fitted(MachineAgentAnswer, "error", said_of(error)), code=error.code if isinstance(error, (WorkspaceRefused, WebFull)) else None,
+            answer = MachineAgentAnswer(request_id=request.id, error=fitted(MachineAgentAnswer, "error", said_of(error)), code=error.code if isinstance(error, (WorkspaceRefused, WebFull, UnderWay)) else None,
                                         subscription_refusal=error.refusal if isinstance(error, SubscriptionRefused) else None)
             logger.warning("agent %s refused: %s", request.op, answer.error)
         if request.action:
