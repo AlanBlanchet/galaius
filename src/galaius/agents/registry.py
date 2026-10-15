@@ -2026,6 +2026,10 @@ def _status_for(run: AgentRun, *, depth: int = 0) -> RunStatus:
     if run.exit_code is not None:
         return ("stopped" if run.exit_code == -signal.SIGTERM
                 else "done" if run.exit_code == 0 else "failed")
+    if run.status in TERMINAL_STATUSES and run.pid_started is None:
+        # Ended, and no start time to tell its process from a later one given the same pid: the pid
+        # alone revived ended runs for weeks, each holding an agent place on this PC (2026-10-15).
+        return run.status
     if run.process_running():
         return "running"
     # It never recorded an ending and its process is gone — cut off mid-work, as far as the pid

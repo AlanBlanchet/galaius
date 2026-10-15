@@ -529,6 +529,22 @@ def test_one_status_rule_answers_every_surface(monkeypatch, alive, reused, termi
     assert json.loads((reg.agents_dir() / "r1.json").read_text())["status"] == expected_status
 
 
+@pytest.mark.parametrize("recorded, expected", [
+    pytest.param("done", "done", id="ended-run-whose-bare-pid-was-reused"),
+    pytest.param("failed", "failed", id="failed-run-whose-bare-pid-was-reused"),
+    pytest.param("running", "running", id="running-record-with-live-bare-pid"),
+])
+def test_an_ended_run_with_no_process_identity_is_never_revived_by_a_reused_pid(monkeypatch, recorded, expected):
+    """2026-10-15: a critic done for 22 days (its pid since given to a Chrome thread) and a researcher failed
+    on quota (its pid now a Bun worker) read « running », so each held one of this PC's agent places for good
+    and queued spawns waited hours. With no `pid_started` the pid alone cannot say it is still that process."""
+    register_run(pid=4242)
+    reg._update_fields("r1", {"status": recorded, "pid_started": None})
+    monkeypatch.setattr(reg, "_alive", lambda pid: True)
+    assert [run.status for run in reg.running_runs()] == (["running"] if expected == "running" else [])
+    assert reg.get_run("r1").status == expected
+
+
 linux_only = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
 
 
@@ -1767,7 +1783,9 @@ def test_a_listing_rereads_a_transcript_only_when_it_changed(monkeypatch, ended,
     the whole stream answers."""
     alive = {"value": True}
     monkeypatch.setattr(reg, "_alive", lambda pid: alive["value"])
+    monkeypatch.setattr(reg, "process_started", lambda pid: 111)
     register_run(pid=999999)
+    reg._update_fields("r1", {"pid_started": 111})  # its process, told from a later one given its pid
     register_run("r0", pid=None)
     reg.raw_events_path("r1").write_text(_said("working") + (_ENDED if ended else ""))
     reg.list_runs()
