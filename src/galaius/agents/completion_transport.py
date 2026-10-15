@@ -198,8 +198,13 @@ class _CompletionTransport(_ConversationTransport):
             # The exception's raw text is used ONLY for that match — the displayed event stays
             # the existing generic message; dumping a raw vendor exception body into the chat
             # panel would be its own regression, not part of this fix.
-            if quota.REFUSAL.search(str(exc)):
-                quota.record_refusal(self.provider, model, said=str(exc))
+            # Read by the same classifier as a CLI child's stream (`quota.classify`), so a model
+            # this credential cannot run — `model_not_found`, an account without access — is
+            # remembered as that and not forgotten for want of a quota line. This route carries an
+            # API credential, not a named login, so it is remembered under the no-login key the
+            # launch walk reads when the CLI tells none apart.
+            if (kind := quota.classify(str(exc))) is not None:
+                quota.remember(kind, self.provider, model, said=str(exc), login="")
             return (AgentEvent(
                 kind="error", event_id=f"{turn_id}:error", turn_id=turn_id,
                 agent_run_id=run_id, text="Explicit API request failed.",

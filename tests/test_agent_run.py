@@ -575,9 +575,9 @@ async def test_a_model_under_a_quota_note_runs_last_and_a_model_refused_for_the_
         reg.LaunchCandidate(provider="unsupported", model="fixture-model", rank=0),))
     with pytest.raises(run_module.ModelUnavailable, match="passed over for the next ranked model"):
         await run_agent(None, "do a thing", agent="tester", cwd=str(tmp_path), quota_window=0.5)
-    assert run_module._startup_refusal("The 'gpt-6-astra' model is not supported when using Codex with a ChatGPT account.") == "model_capability_unsupported"
-    assert run_module._startup_refusal("You have reached your weekly limit") == "quota_exceeded"
-    assert run_module._startup_refusal("Selected model is at capacity") is None
+    assert quota.classify("The 'gpt-6-astra' model is not supported when using Codex with a ChatGPT account.") == "model_capability_unsupported"
+    assert quota.classify("You have reached your weekly limit") == "quota_exceeded"
+    assert quota.classify("Selected model is at capacity") is None
 
 
 async def _held(warm: WarmStart) -> str:

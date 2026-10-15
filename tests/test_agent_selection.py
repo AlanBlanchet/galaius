@@ -26,7 +26,6 @@ from galaius.agents.run import (
     _child_output,
     _quota_message,
     _answered_at_startup,
-    _startup_refusal,
     rank,
     rank_candidates,
     run_agent,
@@ -404,7 +403,7 @@ def test_the_startup_probe_reads_only_what_the_vendor_says(tmp_path, monkeypatch
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(json.dumps(line, ensure_ascii=False) + "\n"
                             for line in [{"type": "system", "subtype": "init"}, *lines]))
-    assert _startup_refusal(_child_output("probe")) == verdict
+    assert quota.classify(_child_output("probe")) == verdict
     assert _answered_at_startup("probe") is answered
 
 

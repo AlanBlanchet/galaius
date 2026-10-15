@@ -196,24 +196,27 @@ class Policy:
                 raise PolicyError("Choose a named agent role; anonymous delegation bypasses role criteria")
             return self, role
         selected = reference
-        if capability is not None and parent is None:
-            raise PolicyError("A delegate capability requires a parent run with a recorded server revision")
+        matches: list[AgentRevisionRef] = []
         if parent is not None:
             parent_agent = self.catalog.at_revision(parent).revision(parent)
             delegates = [value for value in parent_agent.capabilities if value.kind == "delegate"]
             if capability is not None:
                 matches = [value.agent for value in delegates if value.name == capability]
-                if not matches:
-                    raise PolicyError(f"Parent revision has no delegate capability {capability!r}")
             else:
                 identity = reference.id if reference is not None else self.catalog.snapshot.role(role).id if role else None
                 matches = list({value.agent for value in delegates if value.agent.id == identity})
-            if len(matches) > 1:
-                raise PolicyError("Parent has multiple revisions for this child; select a delegate capability")
-            if matches:
-                if reference is not None and reference != matches[0]:
-                    raise PolicyError("Requested agent revision conflicts with the parent's delegation pin")
-                selected = matches[0]
+        if capability is not None and not matches:
+            # The parent's own revision declares no capability of that name: only a lead's does
+            # (`reports_to`). The catalog's own declaration is the pin then (`delegated`), so a
+            # builder can commission its critic and a run this computer holds no record of can
+            # still delegate — the parent's pin, when there is one, still wins.
+            matches = [self.catalog.snapshot.delegated(capability)]
+        if len(matches) > 1:
+            raise PolicyError("Parent has multiple revisions for this child; select a delegate capability")
+        if matches:
+            if reference is not None and reference != matches[0]:
+                raise PolicyError("Requested agent revision conflicts with the parent's delegation pin")
+            selected = matches[0]
         if selected is not None:
             catalog = self.catalog.at_revision(selected)
             agent = catalog.revision(selected)

@@ -1604,6 +1604,33 @@ def test_a_late_refusal_ending_a_fresh_run_records_a_cooldown():
         "the late refusal in this run's own event stream never cooled its model down"
 
 
+def test_a_late_model_refusal_is_remembered_against_the_login_that_heard_it():
+    """2026-10-15: a `--provider codex` launch picked `gpt-6-astra`, the ChatGPT account answered
+    « The 'gpt-6-astra' model is not supported when using Codex with a ChatGPT account. » past the
+    launch's own probe window, nothing was recorded, and every next launch spent another child on
+    the same model the account cannot run. A LATE refusal of the model to this login is remembered
+    here exactly as a late quota refusal is — against the login (`record_unsupported`), never as a
+    quota block."""
+    from galaius.agents import quota
+
+    reg.register(run_id="late-unsupported", pid=555, provider="codex", name="w",
+                agent="app-engineer", model="gpt-6-astra", login="chatgpt-account")
+    reg.raw_events_path("late-unsupported").parent.mkdir(parents=True, exist_ok=True)
+    reg.raw_events_path("late-unsupported").write_text(json.dumps({
+        "type": "error",
+        "message": '{"type":"error","status":400,"error":{"type":"invalid_request_error","message":'
+                   '"The \'gpt-6-astra\' model is not supported when using Codex with a ChatGPT account."}}',
+    }) + "\n")
+
+    token = reg.get_run("late-unsupported").lifecycle_token
+    assert reg.finish("late-unsupported", exit_code=1, expected_pid=555, expected_lifecycle_token=token) is True
+
+    assert quota.unsupported_until("codex", "gpt-6-astra", login="chatgpt-account") is not None, \
+        "the login the vendor refused the model to never remembered it; the next launch offers it again"
+    assert quota.unsupported_until("codex", "gpt-6-astra", login="another login") is None
+    assert quota.blocked_until("codex", "gpt-6-astra") is None, "a model refused to a login is no quota block"
+
+
 def test_a_late_refusal_ending_a_RESUMED_run_records_a_cooldown():
     """A resumed turn re-registers a fresh pid/lifecycle via `begin_turn` (what
     `launch_continuation` does before spawning) and appends to the SAME raw stream — the shape

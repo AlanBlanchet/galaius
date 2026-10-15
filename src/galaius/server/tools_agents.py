@@ -89,8 +89,10 @@ async def agent_spawn(
         must meet cap.vlm; paths are bounded and validated before spawn.
     agent_ref: exact server agent identity and revision. Both prompt and model policy come from
         this revision, never the current head. Conflicts with a parent's capability pin fail.
-    delegate: name of a delegate capability on the parent run's recorded revision. Its exact
-        agent reference is resolved automatically. Named-role delegation also honours parent pins.
+    delegate: name of a delegate capability. Its exact agent reference is resolved from the parent
+        run's recorded revision when that revision declares the name, else from the catalog's own
+        declaration of it — so a run whose revision carries no delegates (only a lead's does) still
+        commissions one. Named-role delegation also honours parent pins.
     denied_tools: exact built-in or qualified MCP tool names to remove for this run and its
         continuations. Only narrows the role tool set; never changes permissions or user config.
     fresh: start a new run even when an agent of the same role already in this conversation sits

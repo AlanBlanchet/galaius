@@ -798,15 +798,52 @@ def test_head_instruction_validation_precedes_lazy_file_exports(catalog_home):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("recorded", [False, True])
-async def test_missing_parent_revision_cannot_silently_use_latest_policy(advanced_catalogs, catalog_home, monkeypatch, recorded):
+@pytest.mark.parametrize("recorded, said", [
+    (False, "is not among this computer's run records"),
+    (True, "ran without a server revision"),
+])
+async def test_missing_parent_revision_cannot_silently_use_latest_policy(advanced_catalogs, catalog_home, monkeypatch, recorded, said):
+    """A role launch still needs the parent's pin — and says WHICH of the two facts is missing:
+    its record is not in this computer's run folder (another `GALAIUS_AGENTS_DIR`, a pruned
+    record), or the record is here and its run ran under no catalog. One sentence for both sent
+    every reader looking for the wrong thing (2026-10-10, 2026-10-15)."""
     _, current, _, _ = advanced_catalogs
     monkeypatch.setattr("galaius.agents.run.load_policy", lambda: Policy.from_catalog(current))
     monkeypatch.setattr(CodexProvider, "available", lambda self: True)
     if recorded:
         reg.register(run_id="fixture-parent", pid=None, provider="codex", name="Fixture parent", cwd=str(catalog_home))
-    with pytest.raises(ModelUnavailable, match="Parent run has no recorded server revision"):
+    with pytest.raises(ModelUnavailable, match=said):
         await run_agent(CodexProvider(), "Bounded task", agent="fixture-worker", parent_run_id="fixture-parent", cwd=str(catalog_home))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("parent", ["pins nobody", "not recorded here"])
+async def test_a_child_delegates_through_the_capability_its_catalog_declares(advanced_catalogs, historical_http, catalog_home, monkeypatch, parent):
+    """A delegate capability is generated from `reports_to`, so only a LEAD revision carries one:
+    every builder run asking `delegate=ask_<role>` was refused, and a CLI-spawned child could not
+    commission its critic at all (2026-10-15). The capability is resolved where the catalog
+    declares it — the pinned revision, never a role name guessed from the tool's — so a run whose
+    own revision pins nobody, or whose record this computer does not hold, still delegates."""
+    _, current, _, _ = advanced_catalogs
+    monkeypatch.setattr("galaius.agents.run.load_policy", lambda: Policy.from_catalog(current))
+    pinned = current.snapshot.role("fixture-lead").capabilities[0].agent
+    parent_id = str(uuid4())
+    if parent == "pins nobody":
+        reg.register(run_id=parent_id, pid=None, provider="codex", name="Fixture worker",
+                     agent="fixture-worker", agent_ref=pinned, cwd=str(catalog_home))
+    monkeypatch.setattr(ClaudeCodeProvider, "available", lambda self: True)
+    monkeypatch.setattr(ClaudeCodeProvider, "command", lambda self, task, **kwargs: [sys.executable, "-c", "pass"])
+    monkeypatch.setattr("galaius.agents.run.resolve_model", lambda rule, env, **kwargs: ({}, "fixture-model"))
+    monkeypatch.setattr("galaius.agents.run.rank_candidates", lambda rule, env, *, providers, weights="", role=None: (
+        reg.LaunchCandidate(provider=providers[0].name, model=rule, rank=0),))
+    handle = await run_agent(ClaudeCodeProvider(), "Judge the pixels", delegate="ask_worker",
+                             parent_run_id=parent_id, cwd=str(catalog_home), mesh=False)
+    await asyncio.wait_for(handle.wait(), 10)
+    saved = reg.get_run(handle.run_id)
+    assert (saved.agent, saved.agent_ref, saved.parent_run_id) == ("fixture-worker", pinned, parent_id)
+    with pytest.raises((ModelUnavailable, ValueError), match="no delegate capability 'ask_nobody'"):
+        await run_agent(ClaudeCodeProvider(), "Judge the pixels", delegate="ask_nobody",
+                        parent_run_id=parent_id, cwd=str(catalog_home), mesh=False)
 
 
 @pytest.mark.asyncio

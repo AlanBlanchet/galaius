@@ -524,12 +524,12 @@ def _answered_at_startup(run_id: str) -> bool:
 
 async def _quota_probe(run_id: str, process: "asyncio.subprocess.Process", *,
                         window: float = 4.0, interval: float = 0.2,
-                        grace: float = 1.5) -> reg.SkipReason | None:
+                        grace: float = 1.5) -> quota.RefusalKind | None:
     """Give a just-spawned child a short window to refuse for quota/rate-limit before this run
     commits to it. Such a refusal prints in the child's own stream and it exits almost
     immediately — the run "dies at $0.00" (#181) — while a genuinely working agent is still
-    writing its first turn well past this window. Returns ``"quota_exceeded"`` when the refusal
-    is seen, else ``None``.
+    writing its first turn well past this window. Returns what those words refuse
+    (`quota.classify`) when the refusal is seen, else ``None``.
 
     ``window`` is what a LIVE child gets, and it is short on purpose: `run_agent` returns a
     handle to a running child, so every second here is spawn latency for every healthy agent. A
@@ -545,30 +545,19 @@ async def _quota_probe(run_id: str, process: "asyncio.subprocess.Process", *,
     deadline = loop.time() + window
     while process.returncode is None and loop.time() < deadline:
         await asyncio.sleep(interval)
-        if (reason := _startup_refusal(_child_output(run_id))) is not None:
+        if (reason := quota.classify(_child_output(run_id))) is not None:
             return reason
         if _answered_at_startup(run_id):
             return None
-    if (reason := _startup_refusal(_child_output(run_id))) is not None:
+    if (reason := quota.classify(_child_output(run_id))) is not None:
         return reason
     if process.returncode is None:
         return None
     grace_deadline = loop.time() + grace
     while loop.time() < grace_deadline:
         await asyncio.sleep(interval)
-        if (reason := _startup_refusal(_child_output(run_id))) is not None:
+        if (reason := quota.classify(_child_output(run_id))) is not None:
             return reason
-    return None
-
-
-def _startup_refusal(said: str) -> reg.SkipReason | None:
-    """What a child's first words refuse, if anything: its quota (`quota_exceeded`) or this model for
-    this login (`model_capability_unsupported`, `quota.UNSUPPORTED`). Both fall through to the next
-    ranked candidate; they differ in how long the model is remembered as unusable."""
-    if quota.REFUSAL.search(said):
-        return "quota_exceeded"
-    if quota.UNSUPPORTED.search(said):
-        return "model_capability_unsupported"
     return None
 
 
@@ -1294,11 +1283,17 @@ def effective_permission_mode(asked: str | None, provider_modes: Mapping[str, st
 def resolve_role(policy: Policy, agent: str | None, *, reference: AgentRevisionRef | None, parent: str | None,
                  delegate: str | None) -> tuple[Policy, str, AgentRevisionRef | None]:
     """The policy, role and catalog revision a launch runs as (`Policy.for_launch`), its parent the run
-    `parent`. Refuses a child whose parent carries no recorded revision when a catalog is read, and a
-    launch naming no role."""
+    `parent`. A ROLE launch under a catalog needs the parent's recorded revision, and says which of the
+    two facts is missing; a launch naming a `delegate` capability resolves it from the catalog itself
+    (`CatalogSnapshot.delegated`), so an unreadable parent record never costs a run its critic."""
     parent_run = reg.get_run(parent) if parent is not None else None
-    if policy.catalog is not None and parent is not None and (parent_run is None or parent_run.agent_ref is None):
-        raise ModelUnavailable("Parent run has no recorded server revision; start the parent again")
+    if policy.catalog is not None and parent is not None and delegate is None:
+        if parent_run is None:
+            raise ModelUnavailable(
+                f"Parent run {parent} is not among this computer's run records ({reg.agents_dir()}); "
+                "name the delegate capability to launch, or start the parent again")
+        if parent_run.agent_ref is None:
+            raise ModelUnavailable(f"Parent run {parent} ran without a server revision; start the parent again")
     policy, role = policy.for_launch(agent, reference=reference, parent=parent_run.agent_ref if parent_run is not None else None,
                                      capability=delegate)
     if not role:
@@ -1662,6 +1657,7 @@ async def run_agent(
             candidates=candidates, skipped=tuple(skipped), denied_tools=denied_tools,
             provider_session_id=vendor_session if candidate_provider.name == "claude" else None,
             agent_ref=selected_ref, definition_path=definition_path, fence=candidate_fence, subscription=candidate_pin, media=shown,
+            login=login,
         )
         # A model coming off a block is the re-check: it gets long enough to say "still refused"
         # that the answer falls through to the next candidate instead of killing this run.
@@ -1682,12 +1678,11 @@ async def run_agent(
             # how long this candidate is passed over. A model the vendor refuses for this login is
             # remembered against that login: nothing about it clears in minutes.
             said = _child_output(run_id)
-            if quota_reason == "quota_exceeded":
-                until = quota.record_refusal(candidate.provider, candidate.model, said=said, subscription=candidate_pin_id)
-                message = _quota_message(candidate.provider, candidate.model, said, until)
-            else:
-                until = quota.record_unsupported(candidate.provider, candidate.model, login=login)
-                message = _unsupported_message(candidate, f"{_vendor_words(said)}; passed over for the next ranked model")
+            until = quota.remember(quota_reason, candidate.provider, candidate.model, said=said,
+                                   subscription=candidate_pin_id, login=login)
+            message = _quota_message(candidate.provider, candidate.model, said, until) \
+                if quota_reason == "quota_exceeded" \
+                else _unsupported_message(candidate, f"{_vendor_words(said)}; passed over for the next ranked model")
             skipped.append(_skip_record(candidate, _skip(quota_reason, message), until=until))
             continue
         chosen = candidate

@@ -346,6 +346,11 @@ class AgentRun(ContextGauge):
     #: The subscription every turn and child of this run runs on (`galaius.agents.subscriptions`);
     #: None: this PC's default login.
     subscription: RunSubscription | None = None
+    #: The vendor login this run's provider authenticated as, as the launch read it (`run.py`'s auth
+    #: cache); "" when that CLI tells none apart. Recorded because a model the vendor refuses is a fact
+    #: about the LOGIN, and a refusal heard after the launch (`_remember_vendor_refusal`) has nothing
+    #: else left to key it on.
+    login: str = ""
     #: Who stopped it (`stop`): the person on the web, an agent, this PC's terminal, its agents switched off, a folder
     #: narrowed under it; None when nothing did, or its own subscription cap cut it. Cleared as a new turn begins.
     stopped_by: StopActor | None = None
@@ -1005,7 +1010,8 @@ def register(*, run_id: str, pid: int | None, provider: str, name: str, task: st
              candidates: tuple[LaunchCandidate, ...] = (),
              skipped: tuple[SkippedCandidate, ...] = (),
              denied_tools: tuple[DeniedTool, ...] = (), fence: FenceSpec | None = None,
-             subscription: RunSubscription | None = None, media: tuple[str, ...] = ()) -> AgentRun:
+             subscription: RunSubscription | None = None, media: tuple[str, ...] = (),
+             login: str = "") -> AgentRun:
     provider_impl = PROVIDERS.get(provider)
     definition = definition_path
     if definition is None and agent_ref is None:
@@ -1018,7 +1024,7 @@ def register(*, run_id: str, pid: int | None, provider: str, name: str, task: st
                    mesh_enabled=mesh_enabled,
                    reasoning=reasoning,
                    candidates=candidates, skipped=skipped, denied_tools=denied_tools, fence=fence,
-                   provider_session_id=provider_session_id, subscription=subscription,
+                   provider_session_id=provider_session_id, subscription=subscription, login=login,
                    lifecycle_token=secrets.token_hex(16),
                    started_at=time.time())
     _write(run)
@@ -1031,6 +1037,20 @@ def register(*, run_id: str, pid: int | None, provider: str, name: str, task: st
     else:
         os.close(descriptor)
     return run
+
+
+def _remember_vendor_refusal(run: AgentRun, said: str, *, now: float | None = None) -> None:
+    """A refusal heard PAST the launch's own probe window, remembered against what it is a fact about.
+
+    A quota or rate limit is a fact about the SUBSCRIPTION and cools down in minutes to hours
+    (`quota.record_refusal`); a model the vendor will not serve this account is a fact about the LOGIN
+    (`quota.UNSUPPORTED`, `record_unsupported`) and no cooldown length can fix it. Only the first was
+    ever recorded here, so « The 'gpt-6-astra' model is not supported when using Codex with a ChatGPT
+    account. », answered minutes into a run, was forgotten and every next launch offered that model
+    again (2026-10-15)."""
+    if (kind := quota.classify(said)) is not None:
+        quota.remember(kind, run.provider, run.model, said=said, subscription=run.subscription_id,
+                       login=run.login, now=now)
 
 
 def finish(
@@ -1069,9 +1089,8 @@ def finish(
         if (expected_lifecycle_token is not None
                 and stored.lifecycle_token != expected_lifecycle_token):
             return False
-        if (terminal is not None and terminal.kind == "error" and terminal.text
-                and quota.REFUSAL.search(terminal.text)):
-            quota.record_refusal(stored.provider, stored.model, said=terminal.text, subscription=stored.subscription_id)
+        if terminal is not None and terminal.kind == "error" and terminal.text:
+            _remember_vendor_refusal(stored, terminal.text)
         finished_at = time.time()
         # A stop is the owner's decision and stays the ending: the killed process then exits with
         # SIGTERM's code (-15, or 143 through a shell) and its reaper must not turn it "failed".
@@ -1397,8 +1416,7 @@ def append_event(run_id: str, event: AgentEvent) -> None:
         stored = _read_record(run_id)
         if stored is None:
             return
-        if event.kind in ("error", "rate_limit") and event.text \
-                and quota.REFUSAL.search(event.text):
+        if event.kind in ("error", "rate_limit") and event.text:
             # The vendor can take longer to answer "you've reached your limit" than the launch
             # waits, so this is where a late refusal is heard at all. Remembering it here is what
             # stops the NEXT launch spending a child on the same dead model.
@@ -1408,7 +1426,7 @@ def append_event(run_id: str, event: AgentEvent) -> None:
             # the error that follows it a moment later says only "switch to another model". The
             # error can no longer shorten what the rate-limit line already wrote (`record_refusal`
             # never lowers a live block), so hearing both is strictly better than hearing one.
-            quota.record_refusal(stored.provider, stored.model, said=event.text, subscription=stored.subscription_id)
+            _remember_vendor_refusal(stored, event.text)
         elif event.kind in ("text", "tool", "thinking") and (event.input_tokens or 0) > 0:
             # The MODEL answering — a turn that read tokens; the CLI's own notice reads none:
             # whatever an earlier refusal left against it is over, whatever reset it named. An
@@ -2141,9 +2159,8 @@ def _derive(run: AgentRun) -> AgentRun:
             # a reader change re-derives every record, and a day-old refusal timed now benches a serving
             # model for an hour (2026-10-10).
             if (ending == "error" and digest.ending_text
-                    and original.get("status") != "failed" and run.status == "failed"
-                    and quota.REFUSAL.search(digest.ending_text)):
-                quota.record_refusal(run.provider, run.model, said=digest.ending_text, subscription=run.subscription_id, now=_vendor_said_at(run))
+                    and original.get("status") != "failed" and run.status == "failed"):
+                _remember_vendor_refusal(run, digest.ending_text, now=_vendor_said_at(run))
             # The other way round: a run nobody reaped (`agents spawn` detaches) that ended on its
             # model's answer proves the model serves — as `finish` says for a reaped one — but only
             # against what was heard before that answer.

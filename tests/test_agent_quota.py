@@ -133,6 +133,17 @@ def test_one_refusal_blocks_an_hour_at_most_and_sooner_if_the_vendor_says_so(sai
     assert quota.record_refusal("claude", "m", said=said, now=NOW) == pytest.approx(NOW + blocked_for)
 
 
+def test_a_model_this_login_cannot_run_is_never_unblocked_early_by_a_later_reader():
+    """The 24 h the vendor's « not supported … with a ChatGPT account. » earns is written by whoever
+    hears it first — the launch probe. A later reader of the same run (`registry._derive` times a
+    refusal when the vendor WROTE it, which can be hours earlier) must not shorten it, exactly as a
+    quota block is never lowered; otherwise the next launch spends another child on that model."""
+    now = time.time()
+    first = quota.record_unsupported("codex", "gpt-6-astra", login="chatgpt-account", now=now)
+    assert quota.record_unsupported("codex", "gpt-6-astra", login="chatgpt-account", now=now - 7200) == first
+    assert quota.unsupported_until("codex", "gpt-6-astra", login="chatgpt-account", now=now) == first
+
+
 def test_refusals_in_a_row_double_the_block_and_a_quiet_spell_resets_it():
     """Refused again at the re-check, the window really is still shut: twice as long each time,
     never past what the vendor named. Refused again much later, it is a new story."""

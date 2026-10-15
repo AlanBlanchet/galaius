@@ -1579,7 +1579,8 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
     panel needs the id NOW to show the agent working. Nothing is lost by letting go: the child
     leads its own session and writes its own stream, so it outlives this process.
 
-    --delegate selects the parent run's named capability and its pinned revision.
+    --delegate selects that capability's pinned revision: the parent run's own when its revision
+    declares the name, else the catalog's declaration of it.
     --agent-id plus --agent-revision selects an exact server revision directly.
     --parent-run-id defaults to the calling agent's recorded run from its environment.
     --session-id records the owning conversation, otherwise inherited from the parent,
@@ -1662,7 +1663,8 @@ def agents_run(task: str, provider: str | None = None, agent: str | None = None,
     ``--agent`` selects a server role when a catalog is configured, otherwise an installed
     local definition. Prompt and model policy come from the same selected revision.
 
-    --delegate selects the parent run's pinned capability. --agent-id together with
+    --delegate selects that capability's pin — the parent run's own when its revision declares the
+    name, else the catalog's declaration of it. --agent-id together with
     --agent-revision selects an exact server revision; --parent-run-id selects its parent run.
     --session-id records the owning caller conversation, shared with `agents list`.
     """

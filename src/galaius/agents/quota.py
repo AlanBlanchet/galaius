@@ -29,7 +29,7 @@ import time
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, Literal, Self
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -138,6 +138,10 @@ MAX_COOLDOWN = max(WINDOWS.values())
 #: the vendor opens the model to that plan — which a login that reads the same across plans (Codex says
 #: only « Logged in using ChatGPT ») cannot show — so the question is asked again daily.
 UNSUPPORTED_RECHECK = 86400.0
+
+#: What a vendor refusal IS, as `classify` reads it: a fact about the account's quota, or about this
+#: login's access to that model. Each is recorded in its own place and for its own length.
+RefusalKind = Literal["quota_exceeded", "model_capability_unsupported"]
 
 #: Every key any of these vendors uses to say WHEN the exhausted period reopens, as an absolute
 #: instant. Verified against primary sources 2026-09-22 (`.github/research/
@@ -501,10 +505,37 @@ def record_unsupported(provider: str, model: str | None, *, login: str, now: flo
     login to tell apart); returns when one launch under that login asks again (`UNSUPPORTED_RECHECK`)."""
     moment = time.time() if now is None else now
     entries = _read(moment)
-    until = moment + UNSUPPORTED_RECHECK
-    entries[_login_key(provider, model, login)] = Block(until=until, count=1, at=moment)
+    key = _login_key(provider, model, login)
+    previous = entries.get(key)
+    # A later reader hearing the same refusal with an EARLIER instant (`_derive` times it when the
+    # vendor wrote it) never shortens what is already remembered, as a quota block is never lowered.
+    until = max(moment + UNSUPPORTED_RECHECK, previous.until if previous is not None else 0.0)
+    entries[key] = Block(until=until, count=1, at=max(moment, previous.at) if previous is not None else moment)
     _write(entries)
     return until
+
+
+def classify(said: str) -> RefusalKind | None:
+    """What a vendor's words refuse, if anything, read in one place: this model for this LOGIN
+    (`UNSUPPORTED`, checked first — it is the narrower fact, and no cooldown length answers it), else
+    this account's quota or rate limit (`REFUSAL`). Every caller — the launch probe, the three late
+    sites a run's own stream reaches (`registry`) — asks here, so one vendor line can never be a
+    different refusal depending on who heard it."""
+    if UNSUPPORTED.search(said):
+        return "model_capability_unsupported"
+    if REFUSAL.search(said):
+        return "quota_exceeded"
+    return None
+
+
+def remember(kind: RefusalKind, provider: str, model: str | None, *, login: str, said: str = "",
+             subscription: UUID | None = None, now: float | None = None) -> float:
+    """Record what `classify` read against what it is a fact about, and return when this model may be
+    asked again: the subscription for a quota (`record_refusal`), the login for a model it cannot run
+    (`record_unsupported`)."""
+    if kind == "model_capability_unsupported":
+        return record_unsupported(provider, model, login=login, now=now)
+    return record_refusal(provider, model, said=said, subscription=subscription, now=now)
 
 
 def unsupported_until(provider: str, model: str | None, *, login: str, now: float | None = None) -> float | None:

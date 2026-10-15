@@ -97,6 +97,27 @@ class CatalogSnapshot(AgentCatalogSnapshot):
                 return agent
         raise CatalogConnectionError("pinned agent revision is absent from this catalog")
 
+    def delegated(self, name: str) -> AgentRevisionRef:
+        """The revision a delegate capability of this name launches, wherever this catalog declares it.
+
+        Capabilities are generated from `reports_to`, so only a LEAD revision carries any: a builder
+        commissioning its critic (`delegate=ask_visual_critic`) has none of its own and was refused
+        outright, as was every child whose own record this computer cannot read (2026-10-15). The name
+        resolves to the PIN the catalog declares for it, never to a role name read out of the tool's
+        own name — that would launch a revision nobody pinned."""
+        pins = {capability.agent for agent in self.agents for capability in agent.capabilities
+                if capability.kind == "delegate" and capability.name == name}
+        if not pins:
+            raise CatalogConnectionError(f"the active server catalog declares no delegate capability {name!r}")
+        if len(pins) == 1:
+            return next(iter(pins))
+        held = [pin for pin in pins if any(agent.id == pin.id and agent.revision == pin.revision for agent in self.agents)]
+        if len(held) != 1:
+            raise CatalogConnectionError(
+                f"delegate capability {name!r} is declared at {len(pins)} revisions in this catalog; "
+                "launch that agent by its exact revision")
+        return held[0]
+
     def prompt(self, reference: PromptExecutionRef) -> PromptRevision:
         return AgentInstructionSet.find_prompt(self.paradigms, reference)
 
