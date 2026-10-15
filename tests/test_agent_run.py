@@ -64,8 +64,8 @@ class _AheadProvider(_FakeProvider):
                 'print(json.dumps({"type":"assistant","message":{"content":[{"type":"text","text":said}]}}), flush=True)\n'
                 'print(json.dumps({"type":"result","subtype":"success","is_error":False,"usage":{"output_tokens":1},"session_id":"SID"}), flush=True)\n']
 
-    def task_message(self, task):
-        return ClaudeCodeProvider().task_message(task)
+    def task_message(self, task, images=()):
+        return ClaudeCodeProvider().task_message(task, images)
 
 
 class _UnsupportedModelProvider(_FakeProvider):

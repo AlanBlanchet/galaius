@@ -8,6 +8,7 @@ import sys
 import uuid
 
 import pytest
+from galaius_core import AgentMedia
 
 from galaius import brief_hook, inbox_hook
 from galaius.agents import agent_queue, messaging
@@ -91,6 +92,26 @@ def test_ordered_items_run_once_in_real_subprocesses(monkeypatch):
     assert provider.messages == ["one", "two"]
     # A turn that started (here: already replied) is no refusal for the sender to report.
     assert messaging.wait_for_start(first, timeout=1) is None
+
+
+def test_a_message_showing_an_image_keeps_it_records_it_and_hands_it_over(monkeypatch):
+    provider = _setup(monkeypatch)
+    png = AgentMedia.of(b"\x89PNG\r\n\x1a\n" + b"\0" * 16)
+    names = reg.RunMedia.keep("r1", (png,))
+    kept = reg.RunMedia.path("r1", png.name)
+
+    messaging.deliver_message("r1", "", sender="operator", turn=agent_queue.MessageTurn(media=names))
+    agent_queue.dispatch("r1")
+
+    # His words exactly (none here) and the image's name on the run's transcript; its bytes in the run's media.
+    assert [(event.text, event.media) for event in reg.read_messages("r1")] == [("", (png.name,))] and kept.read_bytes() == png.content
+    # A turn started from its command line names the file; one read from stdin carries the image itself.
+    assert provider.messages == [f"[Image jointe : {kept}]"]
+    # Its stdin message: the context probe, then the user message whose blocks carry the image itself.
+    said = [json.loads(line) for line in ClaudeCodeProvider().task_message("look", (kept,)).splitlines()]
+    assert [line["type"] for line in said] == ["control_request", "user"]
+    blocks = said[-1]["message"]["content"]
+    assert blocks == [{"type": "text", "text": "look"}, {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": png.data}}]
 
 
 def test_stop_cancels_queued_work_before_any_resume(monkeypatch):

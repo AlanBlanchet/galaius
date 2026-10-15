@@ -12,7 +12,7 @@ from pydantic import (
     StrictStr,
     model_validator,
 )
-from galaius_core import PromptSelection
+from galaius_core import AGENT_IMAGES_MAX, PromptSelection
 
 from galaius.agents import quota
 from galaius.agents.events import (
@@ -92,14 +92,16 @@ class ConversationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     route_id: str = Field(min_length=1, max_length=160, pattern=_ENTITY_ID)
-    prompt: str = Field(min_length=1, max_length=32_768)
+    prompt: str = Field(default="", max_length=32_768)
+    #: The image files the turn shows (absolute paths), kept as the conversation's own (`RunMedia`).
+    media: tuple[str, ...] = Field(default=(), max_length=AGENT_IMAGES_MAX)
     prompt_selection: PromptSelection | None = None
     selection: ModelSelection = Field(default_factory=ModelSelection)
     workspace_root: str | None = Field(default=None, max_length=4096)
 
     @model_validator(mode="after")
     def meaningful_prompt(self) -> Self:
-        if not self.prompt.strip():
+        if not self.prompt.strip() and not self.media:
             raise ValueError("prompt must not be blank")
         return self
 
@@ -209,11 +211,13 @@ class StartCommand(ConversationCommandBase):
 class SendCommand(ConversationCommandBase):
     method: Literal["send"]
     run_id: str = Field(min_length=1, max_length=160, pattern=_ENTITY_ID)
-    prompt: str = Field(min_length=1, max_length=32_768)
+    prompt: str = Field(default="", max_length=32_768)
+    #: As `ConversationRequest.media`.
+    media: tuple[str, ...] = Field(default=(), max_length=AGENT_IMAGES_MAX)
 
     @model_validator(mode="after")
     def meaningful_prompt(self) -> Self:
-        if not self.prompt.strip():
+        if not self.prompt.strip() and not self.media:
             raise ValueError("prompt must not be blank")
         return self
 

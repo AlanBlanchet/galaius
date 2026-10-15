@@ -25,7 +25,7 @@ import stat
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import ExitStack, contextmanager, suppress
 from contextvars import ContextVar
 from pathlib import Path
@@ -34,7 +34,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, PrivateAttr, ValidationInfo, field_validator
 from galaius.agents import quota
-from galaius_core import AgentRevisionRef, ContextGauge, PromptExecutionRef, StopActor
+from galaius_core import MEDIA_KEY, AgentMedia, AgentRevisionRef, ContextGauge, PromptExecutionRef, StopActor
 
 from galaius.agents.events import CONTEXT_FIELDS, TOKEN_FIELDS, AgentEvent, TokenUsage, UsageLedger, stream_lines
 from galaius.agents.catalog_connection import CatalogConnection
@@ -257,6 +257,8 @@ class AgentRun(ContextGauge):
     provider: str
     name: str
     task: str = ""
+    #: The images its brief showed, by their name among its media (`RunMedia`).
+    media: tuple[str, ...] = ()
     cwd: str = ""
     #: The repo/package the run belongs to — the grouping unit, derived from `cwd` at registration
     #: so it survives even if the directory is later moved or deleted.
@@ -783,6 +785,39 @@ def brief_hook(run_id: str) -> str:
     it hands the agent back the task recorded here."""
     return hook_command("galaius.brief_hook", str(_record_path(run_id)))
 
+class RunMedia:
+    """The images a run was shown (attached to its brief, pasted in a message), each kept beside the run's other files
+    under its name (`AgentMedia.name`, the hash of its bytes): what its agent opens, what the web shows back."""
+
+    #: How a message names an image to an agent reading it from disk (no native image input, or a message read mid-turn).
+    MENTION: ClassVar[str] = "[Image jointe : {path}]"
+
+    @staticmethod
+    def path(run_id: str, name: str) -> Path:
+        if not re.fullmatch(MEDIA_KEY, name):
+            raise ValueError("not an image name")
+        return agents_dir() / f"{_safe_run_id(run_id)}.media.{name}"
+
+    @classmethod
+    def keep(cls, run_id: str, images: Iterable[AgentMedia]) -> tuple[str, ...]:
+        """Each image kept for run `run_id` (one it holds already is left as it is), by name, in order, each once."""
+        names: list[str] = []
+        for image in images:
+            if not cls.path(run_id, image.name).is_file():
+                _replace_private(cls.path(run_id, image.name), image.content)
+            names.append(image.name)
+        return tuple(dict.fromkeys(names))
+
+    @classmethod
+    def keep_files(cls, run_id: str, paths: Iterable[Path]) -> tuple[str, ...]:
+        """`keep` of the image files at `paths` (ValueError: one is no image)."""
+        return cls.keep(run_id, (AgentMedia.of(path.read_bytes()) for path in paths))
+
+    @classmethod
+    def mentioned(cls, text: str, paths: Iterable[Path]) -> str:
+        """`text`, then one line naming each image's file, for an agent that opens it itself."""
+        return "\n".join([*([text] if text.strip() else []), *(cls.MENTION.format(path=path) for path in paths)])
+
 
 def messages_path(run_id: str) -> Path:
     """Messages live BESIDE the vendor stream, never inside it. The stream is the vendor's own
@@ -968,12 +1003,12 @@ def register(*, run_id: str, pid: int | None, provider: str, name: str, task: st
              candidates: tuple[LaunchCandidate, ...] = (),
              skipped: tuple[SkippedCandidate, ...] = (),
              denied_tools: tuple[DeniedTool, ...] = (), fence: FenceSpec | None = None,
-             subscription: RunSubscription | None = None) -> AgentRun:
+             subscription: RunSubscription | None = None, media: tuple[str, ...] = ()) -> AgentRun:
     provider_impl = PROVIDERS.get(provider)
     definition = definition_path
     if definition is None and agent_ref is None:
         definition = provider_impl.definition_path(agent) if (provider_impl and agent) else None
-    run = AgentRun(run_id=run_id, **_process_identity(pid, run_id), provider=provider, name=name, task=task, cwd=cwd,
+    run = AgentRun(run_id=run_id, **_process_identity(pid, run_id), provider=provider, name=name, task=task, media=media, cwd=cwd,
                    project=project_for(cwd), model=model, parent_run_id=parent_run_id,
                    session_id=resolve_session_id(session_id, parent_run_id=parent_run_id),
                    agent=agent, agent_ref=agent_ref, definition_path=str(definition) if definition else None,
@@ -1556,7 +1591,7 @@ def upsert_provider_child(
 
 
 def _record_message_event_locked(
-    *, from_run: str, to_run: str, text: str, event_id: str | None = None,
+    *, from_run: str, to_run: str, text: str, event_id: str | None = None, media: tuple[str, ...] = (),
 ) -> str | None:
     if _read_record(to_run) is None:
         return None
@@ -1564,7 +1599,7 @@ def _record_message_event_locked(
     for side in (from_run, to_run):
         if side in SYSTEM_SENDERS:
             continue
-        event = AgentEvent(kind="message", event_id=message_id, text=text,
+        event = AgentEvent(kind="message", event_id=message_id, text=text, media=media,
                            from_run=from_run, to_run=to_run, at=time.time(),
                            raw_index=raw_line_count(side))
         _append_private(messages_path(side), (event.model_dump_json() + "\n").encode())
@@ -1574,23 +1609,23 @@ def _record_message_event_locked(
 
 
 def record_message_event(
-    *, from_run: str, to_run: str, text: str, event_id: str | None = None,
+    *, from_run: str, to_run: str, text: str, event_id: str | None = None, media: tuple[str, ...] = (),
 ) -> str | None:
     """Record one exchange and return its stable id for delivery metadata."""
     with ExitStack() as stack:
         for side in sorted({from_run, to_run}):
             stack.enter_context(record_lock(side))
         return _record_message_event_locked(
-            from_run=from_run, to_run=to_run, text=text, event_id=event_id,
+            from_run=from_run, to_run=to_run, text=text, event_id=event_id, media=media,
         )
 
 
 def record_message_event_locked(
-    *, from_run: str, to_run: str, text: str, event_id: str | None = None,
+    *, from_run: str, to_run: str, text: str, event_id: str | None = None, media: tuple[str, ...] = (),
 ) -> str | None:
     """Record an exchange while the caller owns every needed run lock."""
     return _record_message_event_locked(
-        from_run=from_run, to_run=to_run, text=text, event_id=event_id,
+        from_run=from_run, to_run=to_run, text=text, event_id=event_id, media=media,
     )
 
 

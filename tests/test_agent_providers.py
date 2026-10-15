@@ -340,10 +340,13 @@ def test_codex_command_emits_one_image_flag_per_attachment(monkeypatch, tmp_path
     assert command[-5:] == ["--image", str(first), str(second), "--", "Inspect"]
 
 
-def test_unsupported_provider_refuses_image_attachments(tmp_path):
+def test_a_stdin_image_provider_refuses_images_on_its_command_line(tmp_path):
+    # Claude Code takes a shown image in its stdin message (`task_message`); asked for one on its command
+    # line it refuses, so a launch that cannot carry the image never starts without it.
     image = tmp_path / "screen.png"
     image.write_bytes(b"png")
-    with pytest.raises(ValueError, match="does not support image attachments"):
+    assert ClaudeCodeProvider().image_attachment_support() is True
+    with pytest.raises(ValueError, match="not on its command line"):
         ClaudeCodeProvider().command(
             "Inspect", cwd="/tmp", model="fixture-model", mcp_config=None,
             run_id="fixture-run", image_paths=(image,),

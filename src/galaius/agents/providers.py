@@ -34,7 +34,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, model_validator
 
-from galaius_core import ContextGauge, UsageWindow, UsageWindowName
+from galaius_core import AgentMedia, ContextGauge, UsageWindow, UsageWindowName
 
 from galaius import installed_version
 from galaius.agents.catalog import AgentCatalog
@@ -296,8 +296,8 @@ class AgentProvider(ABC):
         """`command`'s child with no task: it starts now and reads the task `task_message` writes."""
         raise UnsupportedToolPolicy(f"{self.name} cannot start before its task")
 
-    def task_message(self, task: str) -> bytes:
-        """`task` as the first message an `ahead_command` child reads on its stdin."""
+    def task_message(self, task: str, images: tuple[Path, ...] = ()) -> bytes:
+        """`task`, and the images at `images` (`stdin_images`), as the first message an `ahead_command` child reads on its stdin."""
         raise UnsupportedToolPolicy(f"{self.name} cannot start before its task")
 
     def startup_files(self, cwd: Path, environment: Mapping[str, str]) -> tuple[Path, ...]:
@@ -320,6 +320,9 @@ class AgentProvider(ABC):
     #: Provider advertises whether its initial-prompt CLI has a native image attachment flag.
     #: The concrete provider still verifies the installed binary before using it.
     can_attach_images: ClassVar[bool] = False
+    #: Whether the message a child started ahead reads on its stdin (`task_message`) carries images itself: a turn
+    #: started that way is handed them whole, never their paths.
+    stdin_images: ClassVar[bool] = False
 
     #: Its vendor's install script, per kind of system (`windows`, `posix`); none: galaius does not install it.
     installers: ClassVar[dict[Literal["windows", "posix"], ProgramInstaller]] = {}
@@ -691,8 +694,8 @@ class AgentProvider(ABC):
         return None
 
     def image_attachment_support(self) -> bool:
-        """Whether this installed provider can receive image paths on its initial prompt."""
-        return self.can_attach_images
+        """Whether this installed provider can receive images with its initial prompt (a flag, or its stdin message)."""
+        return self.can_attach_images or self.stdin_images
 
     def _image_args(self, image_paths: tuple[Path, ...]) -> list[str]:
         if not image_paths:
@@ -881,6 +884,7 @@ class ClaudeCodeProvider(AgentProvider):
     reads_mid_turn = True
     takes_turn_settings = True
     starts_ahead = True
+    stdin_images = True
     # 2.1.288, headless stream-json: a resumed turn or a stdin turn of exactly this text compacts
     # (`compact_boundary`, trigger `manual`).
     compact_prompt = "/compact"
@@ -1228,7 +1232,9 @@ class ClaudeCodeProvider(AgentProvider):
         # never OpenAI's, so a routed hf/vllm endpoint is never handed to this binary at all
         # (see CodexProvider.can_run / ClaudeCodeProvider.can_run's ANTHROPIC_BASE_URL check).
         if image_paths:
-            self._image_args(image_paths)
+            # Its command line carries no image: a shown image reaches this CLI inside its stdin message
+            # (`stdin_images`, `task_message`). Refused here rather than dropped on the way in.
+            raise ValueError(f"{self.name} provider takes image attachments in its stdin message, not on its command line")
         argv = [
             self.binary, "-p",
             "--output-format", "stream-json",
@@ -1255,14 +1261,18 @@ class ClaudeCodeProvider(AgentProvider):
     #: The id its context request answers under (`task_message`).
     CONTEXT_REQUEST: ClassVar[str] = "galaius-context"
 
-    def task_message(self, task: str) -> bytes:
-        """`task` after a `get_context_usage` control request (2.1.288, its SDK's `getContextUsage`), answered before
-        the turn starts: `maxTokens` is the window this CLI sizes the conversation to (by model, account and flags: 200k
-        or 1M for one model id), so a run's gauge has it from its start, not only from the turn's `result`. Probed
-        2026-10-13: answered before `init`, 0 tokens; the same window as `result.modelUsage` (haiku-5-5 200k, opus-5-5,
-        opus-5-5[1m], sonnet-5 1M)."""
+    def task_message(self, task: str, images: tuple[Path, ...] = ()) -> bytes:
+        """Its stream-json user message — `task` alone, or a text block (when `task` says something) then one base64
+        image block per image — after a `get_context_usage` control request (2.1.288, its SDK's `getContextUsage`),
+        answered before the turn starts: `maxTokens` is the window this CLI sizes the conversation to (by model,
+        account and flags: 200k or 1M for one model id), so a run's gauge has it from its start, not only from the
+        turn's `result`. Probed 2026-10-13: answered before `init`, 0 tokens; the same window as `result.modelUsage`
+        (haiku-5-5 200k, opus-5-5, opus-5-5[1m], sonnet-5 1M)."""
+        shown = tuple(AgentMedia.of(path.read_bytes()) for path in images)
+        content = task if not shown else [*([{"type": "text", "text": task}] if task.strip() else []),
+                                          *({"type": "image", "source": {"type": "base64", "media_type": image.content_type, "data": image.data}} for image in shown)]
         lines = ({"type": "control_request", "request_id": self.CONTEXT_REQUEST, "request": {"subtype": "get_context_usage", "detail": "summary"}},
-                 {"type": "user", "message": {"role": "user", "content": task}})
+                 {"type": "user", "message": {"role": "user", "content": content}})
         return "".join(json.dumps(line) + "\n" for line in lines).encode()
 
     #: What Claude Code reads under the user's folder and under each enclosing folder's `.claude`.

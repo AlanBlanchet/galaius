@@ -25,7 +25,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 from typing import BinaryIO, ClassVar, Mapping, Sequence
-from galaius_core import AgentRevisionRef, SubscriptionCap, SubscriptionChoices
+from galaius_core import IMAGE_TYPES, AgentRevisionRef, SubscriptionCap, SubscriptionChoices
 from pydantic import BaseModel, ConfigDict
 
 from galaius.agents import agent_queue
@@ -572,7 +572,7 @@ def _startup_refusal(said: str) -> reg.SkipReason | None:
     return None
 
 
-_IMAGE_EXTENSIONS = frozenset({".jpeg", ".jpg", ".png", ".webp"})
+_IMAGE_EXTENSIONS = frozenset(suffix for suffixes, _, _ in IMAGE_TYPES for suffix in suffixes)
 _MAX_IMAGE_ATTACHMENTS = 8
 _MAX_IMAGE_BYTES = 20 * 1024 * 1024
 
@@ -814,9 +814,10 @@ class AheadLaunch(BaseModel):
             if not later:
                 stderr.close()
 
-    async def hand(self, process: asyncio.subprocess.Process, text: str) -> None:
-        """Give a child started ahead what it is to do: its first and only stdin message."""
-        process.stdin.write(self.provider.task_message(text))
+    async def hand(self, process: asyncio.subprocess.Process, text: str, images: tuple[Path, ...] = ()) -> None:
+        """Give a child started ahead what it is to do: its first and only stdin message (with `images`, for a CLI
+        whose stdin message carries them: `AgentProvider.stdin_images`)."""
+        process.stdin.write(self.provider.task_message(text, images))
         await process.stdin.drain()
         process.stdin.close()
 
@@ -875,9 +876,10 @@ class ChildLaunch(AheadLaunch):
         start holds the same content, and the date its prompt states is still today's."""
         return self.digest(self.environment, self.slot())
 
-    async def start_ahead(self, run_id: str) -> asyncio.subprocess.Process:
-        """A child started as run `run_id` before its task, reading it from its stdin."""
-        return await self._ahead(run_id, run_id)
+    async def start_ahead(self, run_id: str, session: str | None = None) -> asyncio.subprocess.Process:
+        """A child started as run `run_id` (its vendor session `session`, the run id when None) before its
+        task, reading it from its stdin."""
+        return await self._ahead(run_id, session or run_id)
 
 
 class ResumeLaunch(AheadLaunch):
@@ -1416,6 +1418,9 @@ async def run_agent(
         raise ModelUnavailable("Choose a named agent role; anonymous delegation bypasses role criteria")
     named = run_id is not None
     run_id = run_id or str(uuid.uuid4())
+    # The brief's images are the run's own from here (`RunMedia`): what its agent is handed, what its record names.
+    shown = reg.RunMedia.keep_files(run_id, validated_images)
+    kept = tuple(reg.RunMedia.path(run_id, name) for name in shown)
     selected_ref = None
     definition_path = None
     if policy.catalog is not None:
@@ -1605,8 +1610,10 @@ async def run_agent(
             command_kwargs["agent_prompt"] = _role_prompt(policy.catalog, agent, candidate_provider, env)
         if denied_tools:
             command_kwargs["denied_tools"] = denied_tools
-        if validated_images:
-            command_kwargs["image_paths"] = validated_images
+        # A CLI whose stdin message carries images starts reading it (`ahead_command`) and is handed them whole.
+        stdin_images = bool(kept) and candidate_provider.stdin_images
+        if kept and not stdin_images:
+            command_kwargs["image_paths"] = kept
         launch = ChildLaunch(
             provider=candidate_provider, cwd=cwd, environment=env, arguments=command_kwargs,
             # Once, never twice: skip the mesh when the provider's own config already registers
@@ -1627,6 +1634,9 @@ async def run_agent(
             else:
                 run_id = vendor_session = held.run_id
                 candidate_process = held.process
+        if candidate_process is None and stdin_images:
+            candidate_process = await launch.start_ahead(run_id, vendor_session)
+            await launch.hand(candidate_process, brief, kept)
         if candidate_process is None:
             candidate_process = await launch.launch(run_id, vendor_session, brief)
         # The child resolves its owning conversation from this run's record, so the record must
@@ -1640,7 +1650,7 @@ async def run_agent(
             mesh_enabled=mesh, reasoning=candidate_effort,
             candidates=candidates, skipped=tuple(skipped), denied_tools=denied_tools,
             provider_session_id=vendor_session if candidate_provider.name == "claude" else None,
-            agent_ref=selected_ref, definition_path=definition_path, fence=candidate_fence, subscription=candidate_pin,
+            agent_ref=selected_ref, definition_path=definition_path, fence=candidate_fence, subscription=candidate_pin, media=shown,
         )
         # A model coming off a block is the re-check: it gets long enough to say "still refused"
         # that the answer falls through to the next candidate instead of killing this run.
@@ -1710,7 +1720,7 @@ async def run_agent(
         reasoning=effort,
         candidates=candidates, skipped=tuple(skipped), denied_tools=denied_tools,
         provider_session_id=run_id if provider.name == "claude" else None,
-        agent_ref=selected_ref, definition_path=definition_path, fence=fence, subscription=pinned,
+        agent_ref=selected_ref, definition_path=definition_path, fence=fence, subscription=pinned, media=shown,
     )
     pump = asyncio.create_task(_reap(run_id, process, registered.lifecycle_token))
     # Keep the panel's copy of the stream current WHILE it works: a running agent can be watched,

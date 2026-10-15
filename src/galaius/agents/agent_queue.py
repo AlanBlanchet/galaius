@@ -19,8 +19,10 @@ import time
 import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Annotated, ClassVar, Literal
 
+from galaius_core import AGENT_IMAGES_MAX, MEDIA_KEY
 from pydantic import BaseModel, ConfigDict, Field
 
 from galaius.agents import registry as reg
@@ -67,8 +69,13 @@ class QueuedTurn(BaseModel, ABC):
         """What its recipient's transcript records as sent to it by `origin` (None: the person); None: nothing."""
 
     @abstractmethod
-    def prompt(self, run: reg.AgentRun, message_id: str) -> str | None:
-        """What its turn sends to `run`; None when its transcript entry is missing."""
+    def prompt(self, run: reg.AgentRun, message_id: str, *, native_images: bool = False) -> str | None:
+        """What its turn sends to `run`; None when its transcript entry is missing. The images it shows are named there
+        as their files (`RunMedia.mentioned`) unless the turn carries them itself (`native_images`: `shown`)."""
+
+    def shown(self, run: reg.AgentRun) -> tuple[Path, ...]:
+        """The files of the images it shows, in order."""
+        return ()
 
     @abstractmethod
     def accepts(self, event: AgentEvent) -> bool:
@@ -79,21 +86,28 @@ class MessageTurn(QueuedTurn):
     """A message: recorded on its recipient's transcript, read by the turn running when its CLI can."""
 
     kind: Literal["message"] = "message"
+    #: The images it shows, by their name among its run's media (`RunMedia`): its transcript entry names them too.
+    media: tuple[Annotated[str, Field(pattern=MEDIA_KEY)], ...] = Field(default=(), max_length=AGENT_IMAGES_MAX)
     mid_turn = True
     unaccepted = "resumed turn completed without a reply; resend explicitly"
 
     def refusal(self, text: str, provider: AgentProvider) -> str | None:
         """The same transcript-sized input boundary on every sending surface."""
-        if not text.strip():
-            return "message must contain text."
+        if not text.strip() and not self.media:
+            return "message must contain text or an image."
         return f"message exceeds the {_CLIP}-character transcript limit." if len(text) > _CLIP else None
 
     def entry(self, text: str, origin: reg.AgentRun | None) -> str | None:
         return text if origin is None else origin.handoff_header() + text
 
-    def prompt(self, run: reg.AgentRun, message_id: str) -> str | None:
+    def prompt(self, run: reg.AgentRun, message_id: str, *, native_images: bool = False) -> str | None:
         message = reg.message_for(run.run_id, message_id)
-        return None if message is None else message.text
+        if message is None:
+            return None
+        return message.text if native_images else reg.RunMedia.mentioned(message.text, self.shown(run))
+
+    def shown(self, run: reg.AgentRun) -> tuple[Path, ...]:
+        return tuple(reg.RunMedia.path(run.run_id, name) for name in self.media)
 
     def accepts(self, event: AgentEvent) -> bool:
         return (event.kind == "text" or (event.kind == "done" and event.final_text)) and bool(event.text.strip())
@@ -123,7 +137,7 @@ class CompactionTurn(QueuedTurn):
     def entry(self, text: str, origin: reg.AgentRun | None) -> str | None:
         return None
 
-    def prompt(self, run: reg.AgentRun, message_id: str) -> str | None:
+    def prompt(self, run: reg.AgentRun, message_id: str, *, native_images: bool = False) -> str | None:
         return provider_for(run.provider).compact_prompt
 
     def accepts(self, event: AgentEvent) -> bool:

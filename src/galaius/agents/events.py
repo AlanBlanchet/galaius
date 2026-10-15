@@ -315,6 +315,8 @@ class AgentEvent(ContextGauge):
     #: exchange, so a sequence view can draw the arrow from either transcript.
     from_run: str | None = None
     to_run: str | None = None
+    #: For a "prompt" or a "message": the images it showed, by their name among its run's media (`RunMedia`).
+    media: tuple[str, ...] = ()
     #: Where this sits in the vendor's raw stream — for a MESSAGE, how many raw lines existed
     #: when sent. Vendor writes no timestamps, so this lets a message show where it actually
     #: happened, not dumped after every reply it caused.

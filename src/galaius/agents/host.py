@@ -288,7 +288,7 @@ class _ConversationHost(BaseModel):
         self.transport_registry.bind(route, run)
         self._ensure_transport_consumer(connection)
         try:
-            await self._begin_turn(connection, run, command.request.prompt)
+            await self._begin_turn(connection, run, command.request.prompt, command.request.media)
         except (ConnectionError, ValidationError, ValueError):
             await self._record_event(run_id, AgentEvent(
                 kind="error",
@@ -394,7 +394,7 @@ class _ConversationHost(BaseModel):
                 run.model = model.id
                 reg.save_run(run)
             self._ensure_transport_consumer(connection)
-            await self._begin_turn(connection, run, command.prompt)
+            await self._begin_turn(connection, run, command.prompt, command.media)
         except (ConnectionError, ValidationError, ValueError):
             await self._record_event(run.run_id, AgentEvent(
                 kind="error",
@@ -413,18 +413,22 @@ class _ConversationHost(BaseModel):
         )
 
     async def _begin_turn(
-        self, connection: _ConversationTransport, run: reg.AgentRun, prompt: str
+        self, connection: _ConversationTransport, run: reg.AgentRun, prompt: str, media: tuple[str, ...] = ()
     ) -> None:
+        """A turn opened on `prompt`, the images at `media` kept as the conversation's own and named to it by their
+        files (`RunMedia.mentioned`); its prompt event records `prompt` as written and the images' names."""
         if run.provider_session_id is None:
             raise ConnectionError("provider session is unavailable")
+        names = await asyncio.to_thread(reg.RunMedia.keep_files, run.run_id, (Path(path) for path in media))
         async with self._projection_lock:
             started = await connection.start_turn(
-                conversation_id=run.provider_session_id, prompt=prompt
+                conversation_id=run.provider_session_id,
+                prompt=reg.RunMedia.mentioned(prompt, (reg.RunMedia.path(run.run_id, name) for name in names)),
             )
             turn_id = started.turn_id
             await self._record_event(run.run_id, AgentEvent(
                 kind="prompt", event_id=f"{turn_id}:prompt",
-                turn_id=turn_id, agent_run_id=run.run_id, text=prompt, status="running",
+                turn_id=turn_id, agent_run_id=run.run_id, text=prompt, media=names, status="running",
             ))
             self._active_turns[run.run_id] = turn_id
 
@@ -693,12 +697,12 @@ class ConversationHost:
     async def catalog(self) -> ConversationCatalog:
         return await self._host.catalog()
 
-    async def start(self, prompt: str, workspace: Path, *, route_id: str, model: str | None) -> reg.AgentRun:
-        request = {"route_id": route_id, "prompt": prompt, "workspace_root": str(workspace), "selection": ModelSelection(model=model).model_dump()}
+    async def start(self, prompt: str, workspace: Path, *, route_id: str, model: str | None, media: tuple[Path, ...] = ()) -> reg.AgentRun:
+        request = {"route_id": route_id, "prompt": prompt, "media": [str(path) for path in media], "workspace_root": str(workspace), "selection": ModelSelection(model=model).model_dump()}
         return await self._run(StartCommand.model_validate({"version": 1, "request_id": self._request_id(), "method": "start", "request": request}))
 
-    async def fork(self, thread_id: str, prompt: str, workspace: Path, *, route_id: str, model: str | None) -> reg.AgentRun:
-        request = {"route_id": route_id, "prompt": prompt, "workspace_root": str(workspace), "selection": ModelSelection(model=model).model_dump()}
+    async def fork(self, thread_id: str, prompt: str, workspace: Path, *, route_id: str, model: str | None, media: tuple[Path, ...] = ()) -> reg.AgentRun:
+        request = {"route_id": route_id, "prompt": prompt, "media": [str(path) for path in media], "workspace_root": str(workspace), "selection": ModelSelection(model=model).model_dump()}
         answer = await self._host.fork(StartCommand.model_validate({"version": 1, "request_id": self._request_id(), "method": "start", "request": request}), thread_id)
         if isinstance(answer, ErrorResponse):
             raise ConversationRefused(answer.error_code, answer.error)
@@ -712,8 +716,8 @@ class ConversationHost:
             raise ConversationRefused("unavailable", route.reason if route else "Selected route does not exist.")
         return await self._host.transport_registry.require(route).list_threads()
 
-    async def send(self, run_id: str, prompt: str) -> reg.AgentRun:
-        return await self._run(SendCommand(version=1, request_id=self._request_id(), method="send", run_id=run_id, prompt=prompt))
+    async def send(self, run_id: str, prompt: str, media: tuple[Path, ...] = ()) -> reg.AgentRun:
+        return await self._run(SendCommand(version=1, request_id=self._request_id(), method="send", run_id=run_id, prompt=prompt, media=tuple(str(path) for path in media)))
 
     async def cancel(self, run_id: str) -> reg.AgentRun:
         return await self._run(CancelCommand(version=1, request_id=self._request_id(), method="cancel", run_id=run_id))

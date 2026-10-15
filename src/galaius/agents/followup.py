@@ -18,6 +18,7 @@ import logging
 import tempfile
 import time
 from collections.abc import Iterable, Mapping
+from pathlib import Path
 from typing import BinaryIO
 from weakref import WeakKeyDictionary
 
@@ -61,6 +62,8 @@ class Claimed(BaseModel):
 
     item: agent_queue.QueueItem
     text: str
+    #: The files of the images it shows, handed with `text` to a CLI whose stdin message carries them (else named in `text`).
+    images: tuple[Path, ...] = ()
     lifecycle_token: str
 
 
@@ -76,7 +79,8 @@ class FollowUps(BaseModel):
     #: Each child's error output, kept (redacted) only when its turn fails; gone with the child.
     _stderr: WeakKeyDictionary[asyncio.subprocess.Process, BinaryIO] = PrivateAttr(default_factory=WeakKeyDictionary)
 
-    async def send(self, run_id: str, text: str, *, environment: Mapping[str, str], message_id: str | None = None) -> Delivery:
+    async def send(self, run_id: str, text: str, *, environment: Mapping[str, str], message_id: str | None = None,
+                   turn: agent_queue.MessageTurn = agent_queue.MessageTurn()) -> Delivery:
         """`text` from the person to run `run_id`, queued durably, then started here when the run
         is between turns, else by its dispatcher; the delivery says which queue item carries it.
         The turn's child is claimed (or started) while the message is being queued, and once it is
@@ -85,7 +89,7 @@ class FollowUps(BaseModel):
         run = await asyncio.to_thread(reg.get_run, run_id)
         readying = asyncio.create_task(self._child(run, environment)) if run is not None and self._resumable(run) and not run.process_running() else None
         try:
-            delivery = await asyncio.to_thread(queue_message, run_id, text, sender="operator", environment=environment, message_id=message_id)
+            delivery = await asyncio.to_thread(queue_message, run_id, text, sender="operator", environment=environment, message_id=message_id, turn=turn)
         except BaseException:
             if (child := await self._ready(readying)) is not None:
                 end_waiting(child.process)
@@ -253,7 +257,7 @@ class FollowUps(BaseModel):
             end_waiting(process)
             return False
         try:
-            await launch.hand(process, claimed.text)
+            await launch.hand(process, claimed.text, claimed.images)
         except BaseException:  # it never got the message whole: ended, and the message back in the queue
             end_waiting(process)
             await asyncio.to_thread(self._release, run_id, claimed.item.id)
@@ -298,12 +302,13 @@ class FollowUps(BaseModel):
             item = agent_queue.claim_locked(run_id, delivery.queue_id or "")
             if item is None:
                 return None
-            text = item.turn.prompt(run, item.message_id)
+            native = launch.provider.stdin_images
+            text = item.turn.prompt(run, item.message_id, native_images=native)
             current = reg.begin_turn_locked(run_id, pid=pid, model=launch.model, requested_criterion=launch.criterion, reasoning=launch.reasoning) if text is not None else None
             if text is None or current is None or current.lifecycle_token is None:
                 agent_queue.release_locked(run_id, item.id)  # its dispatcher fails it as it fails any such item
                 return None
-            return Claimed(item=item, text=text, lifecycle_token=current.lifecycle_token)
+            return Claimed(item=item, text=text, images=item.turn.shown(run) if native else (), lifecycle_token=current.lifecycle_token)
 
     @staticmethod
     def _release(run_id: str, item_id: str) -> None:

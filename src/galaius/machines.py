@@ -31,7 +31,7 @@ import httpx
 import websockets
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, ValidationError, field_validator, model_validator
 
-from galaius_core import MACHINE_AGENT_REQUESTS, PROJECTS_DIR, PROJECTS_ROOT, PROJECTS_ROOT_FEATURE, SUBSCRIPTIONS_FEATURE, WEB_LIMIT_FEATURE, AgentCompactRequest, AgentMoveRequest, AgentSendRequest, AgentSignInCodeRequest, MACHINE_MODELS, MachineProblem, MachineProblemCode, MachineAgentSettings, MachineAgentSettingsState, MachineAgentSettingsUpdate, PlacePath, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, MachineAgentAnswer, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachineRuntime, MachineTokenSwap, PlaceLevel, ScriptFile, ScriptLanguage, UserModelOrigin
+from galaius_core import AGENT_IMAGES_FEATURE, AGENT_IMAGES_WIRE, MACHINE_AGENT_REQUESTS, PROJECTS_DIR, PROJECTS_ROOT, PROJECTS_ROOT_FEATURE, SUBSCRIPTIONS_FEATURE, WEB_LIMIT_FEATURE, AgentCompactRequest, AgentMoveRequest, AgentSendRequest, AgentSignInCodeRequest, MACHINE_MODELS, MachineProblem, MachineProblemCode, MachineAgentSettings, MachineAgentSettingsState, MachineAgentSettingsUpdate, PlacePath, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, MachineAgentAnswer, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachineRuntime, MachineTokenSwap, PlaceLevel, ScriptFile, ScriptLanguage, UserModelOrigin
 from galaius import USER_AGENT
 from galaius import prompt_mirror, prompt_projection
 from galaius.agents.subscription_watch import SubscriptionWatch
@@ -1096,7 +1096,8 @@ class MachineRunner:
                     open_timeout=10,
                     close_timeout=3,
                     ping_interval=15,
-                    max_size=1024 * 1024,
+                    # A message to an agent may show images (`AGENT_IMAGES_FEATURE`): the largest request carrying them.
+                    max_size=AGENT_IMAGES_WIRE,
                 ) as socket:
                     delay_index = 0
                     self._reported_crash = ""  # in again: a later crash, even the same one, is news to its page
@@ -1259,7 +1260,7 @@ class MachineRunner:
     #: `script:*` entries, past which a server keeps no more.
     FEATURES: ClassVar[tuple[str, ...]] = ("file_query", "script_file", "file_read", "agent_control", "agent_settings", "web_settings", "workspaces", "start_permission", "project_secrets", "places", "agent_media", "tool_gateway", "token_swap",
                                            "workspace_copy", "places_direct", "agent_programs", SUBSCRIPTIONS_FEATURE, AgentMoveRequest.feature, str(AgentSendRequest.idempotent_feature), WEB_LIMIT_FEATURE,
-                                           AgentSignInCodeRequest.feature, AgentCompactRequest.feature, PROJECTS_ROOT_FEATURE)
+                                           AgentSignInCodeRequest.feature, AgentCompactRequest.feature, PROJECTS_ROOT_FEATURE, AGENT_IMAGES_FEATURE)
 
     @classmethod
     def features(cls) -> list[str]:
