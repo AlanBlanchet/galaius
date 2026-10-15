@@ -459,6 +459,13 @@ def test_a_report_is_masked_and_its_question_asked_until_the_server_takes_it(tmp
     MachineRunner.report_problem(config, "service_stopped", "my-script: customer list exported to /srv/clients.csv", ("17:44:05 error galaius.machines: service stopped",))
     question = json.loads(posts[-2].content)
     assert question["message"] == "17:44:05 error galaius.machines: service stopped" and "clients.csv" not in posts[-2].content.decode()
+    # A service log's end is this program's own text as often as a sentence: only what a person can read travels
+    # (its page shows it as « the PC's own words »); the rest stays in this computer's log and in the report's
+    # lines, which go nowhere before its owner says so (visual-critic 2026-10-15: a page read « KeyError: 'token' »).
+    MachineRunner.report_problem(config, "channel_unreachable", "signing in again: KeyError: 'token'", ("17:44:06 error galaius.machines: KeyError: 'token'",))
+    told = json.loads(next(post for post in reversed(posts) if post.url.path.endswith("/machine/problem")).content)
+    assert told["detail"] == "signing in again"
+
     # A problem told with a tab (an OSError's words) is still one valid line: kept, asked, never blocking the others.
     tabbed = reports.prepare(config, "crashed", "OSError:\tdenied\nsecond line", ())
     assert tabbed is not None and tabbed.question.message == "OSError: denied second line" and reports.deliver(config) == 0

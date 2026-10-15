@@ -49,7 +49,7 @@ from galaius.machine_agents import AgentSpawns, LogRing, MachineAgents, MachineS
 from galaius.machine_programs import AgentPrograms
 from galaius.machine_workspaces import MachineWorkspaces, WorkspaceJobs
 from galaius_core.sealing import SecretsSeal
-from galaius_core.wire import fitted, internals
+from galaius_core.wire import fitted, internals, readable
 from galaius.agents.events import AgentEvent
 from galaius.agents.run import load_policy, run_agent
 from galaius.agents.followup import FollowUps
@@ -2138,7 +2138,11 @@ class MachineRunner:
         effort, credentials masked: False when the server did not take it. The same problem also
         prepares an error report from `lines` (what led to it) and asks its owner on that page
         whether to send it (`error_reports`): nothing of the lines leaves before his yes."""
-        problem = MachineProblem(code=code, detail=redact(detail, (config.token.get_secret_value(),)).strip()[-500:])
+        # What a person can read of `detail` and no more: a service log's end is this program's own text as
+        # often as a sentence (« KeyError: 'token' »), and its page shows these words as this computer's own
+        # (visual-critic 2026-10-15). The whole text stays in this computer's log and in `lines`, which goes
+        # nowhere before its owner says so.
+        problem = MachineProblem(code=code, detail=readable(redact(detail, (config.token.get_secret_value(),)).strip())[-500:])
         # The question's line is galaius's own last line, never `detail`: on an install it is the service
         # log's raw end, which a program the PC ran may have written (threat model S1). Never raises.
         cls.error_reports().prepare(config, code, lines[-1] if lines else code, lines, secrets)
