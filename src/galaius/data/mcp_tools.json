@@ -27,7 +27,7 @@
   "server": "galaius",
   "name": "agent_spawn",
   "category": "agents",
-  "description": "Start another agent to work alongside you, and return its run id immediately."
+  "description": "Start an agent to work alongside you, or hand the task to the idle one of that role already in this conversation (`fresh` to always start one), and return its run id immediately."
  },
  {
   "server": "galaius",

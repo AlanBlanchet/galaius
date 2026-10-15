@@ -16,7 +16,7 @@ from galaius.agents import messaging, registry as reg
 from galaius.agents.conversations import ConversationAnswers, ConversationScope
 from galaius.agents.providers import PROVIDERS, available_providers, provider_caveat_note, provider_for
 from galaius.agents.run import run_agent
-from galaius.agents.spawn_line import Spawn, SpawnLine
+from galaius.agents.spawn_line import Continued, Spawn, SpawnLine, StartNew
 from galaius.server.core import instrumented, mcp
 
 
@@ -47,8 +47,10 @@ async def agent_spawn(
     delegate: str | None = None,
     session_id: str | None = None,
     denied_tools: list[str] | None = None,
+    fresh: bool = False,
 ) -> str:
-    """Start another agent to work alongside you, and return its run id immediately.
+    """Start an agent to work alongside you, or hand the task to the idle one of that role already in
+    this conversation (`fresh` to always start one), and return its run id immediately.
 
     Runs as its own process on this machine, using the vendor CLI's own login — you never handle
     a credential. Given galaius as an MCP server, so it can call these same tools: it can spawn
@@ -91,6 +93,9 @@ async def agent_spawn(
         agent reference is resolved automatically. Named-role delegation also honours parent pins.
     denied_tools: exact built-in or qualified MCP tool names to remove for this run and its
         continuations. Only narrows the role tool set; never changes permissions or user config.
+    fresh: start a new run even when an agent of the same role already in this conversation sits
+        between turns. Without it that agent takes the task as its next turn, its context intact,
+        and its run id comes back; a new one starts only when every such agent is busy or unfit.
     """
     try:
         prov = provider_for(provider) if provider is not None else None
@@ -135,10 +140,13 @@ async def agent_spawn(
                 image_paths=tuple(Path(path) for path in (image_paths or ())), denied_tools=tuple(denied_tools or ()),
                 session_id=owner,
             )
+            handover = StartNew() if fresh else await asyncio.to_thread(spawn.hand_over)
+            if isinstance(handover, Continued):
+                return handover.sentence()
             line = SpawnLine.here()
             admission = line.enter(spawn)
             if admission.ahead is not None:
-                return (f"Queued [{label}] — run_id={admission.run_id}, {admission.sentence()}.\n"
+                return (f"Queued [{label}] — run_id={admission.run_id}, {admission.sentence()}.{handover.note()}\n"
                         f"It starts by itself once a place frees; agent_events(run_id=\"{admission.run_id}\") says where it stands, "
                         "agent_stop takes it out of the line.")
             try:
@@ -165,7 +173,7 @@ async def agent_spawn(
             f"Task: {' '.join(task.split())[:180]}\n"
             f"Launch policy: model={getattr(handle, 'model', None)}; "
             f"reasoning={getattr(handle, 'reasoning', None)}; "
-            f"criterion={getattr(handle, 'criterion', None)}{walked}\n"
+            f"criterion={getattr(handle, 'criterion', None)}{walked}{handover.note()}\n"
             f"Watch it with agent_list, or agent_events(run_id=\"{handle.run_id}\").{caveat}")
 
 

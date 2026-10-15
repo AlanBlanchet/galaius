@@ -38,7 +38,7 @@ from galaius.agents.providers import (
     provider_for,
 )
 from galaius.agents.run import ModelUnavailable, is_criterion, Ranking, rank, resolve_model, run_agent
-from galaius.agents.spawn_line import Spawn, SpawnLine
+from galaius.agents.spawn_line import Continued, Spawn, SpawnLine, StartNew
 from galaius.cli.clients import ClientTarget, MCPServer, Scope
 from galaius.cli.command_bootstrap import Config, UserConfig
 from galaius.cli.render import CliRenderer
@@ -1566,7 +1566,8 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
                  provider_modes: Annotated[list[str] | None, Parameter(name="--provider-mode")] = None,
                  quota_window: Annotated[float, Parameter(name="--quota-window")] = CLI_QUOTA_WINDOW,
                  machine: str | None = None, folder: str | None = None,
-                 fence: Annotated[Path | None, Parameter(name="--fence")] = None) -> None:
+                 fence: Annotated[Path | None, Parameter(name="--fence")] = None,
+                 fresh: bool = False) -> None:
     """Start an agent and return its id immediately, without waiting for it to finish.
 
     --machine <name or id> starts it on another of your computers instead, through the server, in
@@ -1592,6 +1593,8 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
     supervisor that shows the run at once passes a short one.
     --fence names a file holding what the run's OS fence is built from (`galaius.fence.FenceSpec`
     JSON); every turn builds it again from the machine's levels. The machine runner writes it.
+    An agent of the same role already in this conversation, between turns, takes the task as its
+    next turn (its context intact) and its id is printed; --fresh starts a new one regardless.
     """
 
 
@@ -1617,6 +1620,13 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
                 quota_window=quota_window,
                 fence=FenceSpec.model_validate_json(fence.read_text()) if fence is not None else None,
             )
+            handover = StartNew() if fresh else spawn.hand_over()
+            if isinstance(handover, Continued):
+                print(handover.sentence(), file=sys.stderr)
+                print(handover.run.run_id)
+                return
+            if handover.why:
+                print(handover.why, file=sys.stderr)
             line = SpawnLine.here()
             admission = line.enter(spawn)
             if admission.ahead is not None:

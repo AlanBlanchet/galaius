@@ -229,6 +229,33 @@ def test_delivery_queues_against_vendor_session_not_galaius_id(monkeypatch):
     assert agent_queue.items("galaius-run")[0].message_id
 
 
+def test_a_message_its_dispatcher_refused_is_cancelled_never_left_to_run_later(monkeypatch):
+    """The caller is told it failed: a pending item would still run once any dispatcher starts (a spawn
+    falling through to a new run would then do the task twice)."""
+    from galaius.agents import agent_queue
+    _continuation_policy(monkeypatch)
+    register_run("galaius-run", name="reviewer", provider="fake", task="t", pid=1234, agent="tester", provider_session_id="vendor-thread")
+    monkeypatch.setattr(agent_queue, "ensure_dispatcher_locked", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("no scope")))
+
+    delivery = messaging.deliver_message("galaius-run", "ping", sender="operator")
+
+    assert delivery.state == "error" and "no scope" in delivery.text
+    assert [item.state for item in agent_queue.items("galaius-run")] == ["cancelled"]
+
+
+def test_a_message_only_for_an_idle_run_is_refused_when_one_waits_already(monkeypatch):
+    from galaius.agents import agent_queue
+    _continuation_policy(monkeypatch)
+    register_run("galaius-run", name="reviewer", provider="fake", task="t", pid=1234, agent="tester", provider_session_id="vendor-thread")
+    monkeypatch.setattr(agent_queue, "ensure_dispatcher_locked", lambda *args, **kwargs: 1)
+    assert messaging.deliver_message("galaius-run", "first", sender="operator").state == "queued"
+
+    delivery = messaging.deliver_message("galaius-run", "second", sender="operator", only_if_idle=True)
+
+    assert delivery.state == "error" and "busy" in delivery.text
+    assert len(agent_queue.items("galaius-run")) == 1
+
+
 def test_peer_message_carries_registry_model_context_without_inventing_capability(monkeypatch):
     _continuation_policy(monkeypatch)
     register_run("recipient", name="reviewer", provider="fake", task="t", pid=1234, agent="tester", provider_session_id="vendor-thread")

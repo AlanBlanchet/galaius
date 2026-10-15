@@ -32,9 +32,11 @@ from typing import Literal
 from galaius_core import AgentRevisionRef
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from galaius.agents import agent_queue, messaging
 from galaius.agents import registry as reg
+from galaius.agents.policy import Policy, PolicyError
 from galaius.agents.providers import provider_for
-from galaius.agents.run import RunHandle, run_agent
+from galaius.agents.run import ModelUnavailable, RunHandle, effective_permission_mode, load_policy, resolve_role, run_agent
 from galaius.config import Config
 from galaius.fence import FenceSpec
 from galaius.machine_agents import WebRuns
@@ -90,6 +92,91 @@ class Spawn(BaseModel):
             handle = await (runner or run_agent)(provider_for(self.provider) if self.provider is not None else None, self.task, run_id=run_id, **arguments)
         await asyncio.sleep(0.2)
         return handle
+
+    def _role(self) -> tuple[Policy, str, AgentRevisionRef | None] | None:
+        """The policy, role and revision it would run as (`run.resolve_role`, as its start resolves them); None
+        when it names no role or cannot be resolved (its start then refuses it itself)."""
+        if self.agent is None and self.agent_ref is None and self.delegate is None:
+            return None
+        try:
+            return resolve_role(load_policy(), self.agent, reference=self.agent_ref, parent=self.parent_run_id, delegate=self.delegate)
+        except (ModelUnavailable, PolicyError, ValueError):
+            return None
+
+    def _misfit(self, run: reg.AgentRun, policy: Policy, revision: AgentRevisionRef | None) -> str | None:
+        """Why `run` (same conversation, same role) cannot take this spawn's task as its next turn; None when it can.
+        Its `name` and `model` are not compared: a label (the continued run keeps its own) and a request the role's
+        policy overrides, at a start as at a continuation. `queue_message(only_if_idle=True)` re-reads "is working"
+        under the run's lock."""
+        if run.working() or run.status not in REUSABLE or any(item.state in {"pending", "running"} for item in agent_queue.items(run.run_id)):
+            return "is working"
+        if revision is not None and run.agent_ref != revision:
+            return "runs another revision of the role"
+        if Path(run.cwd or ".").resolve() != Path(self.cwd).resolve():
+            return "works in another folder"
+        if self.provider is not None and run.provider != self.provider:
+            return f"runs on {run.provider}"
+        # The run records the permission it got: never a wider run than this spawn would get, e.g. one a person started unrestricted.
+        if run.permission_mode != effective_permission_mode(self.permission_mode, self.provider_modes, policy, run.provider):
+            return f"was given {run.permission_mode or 'the default'} permissions"
+        if set(self.denied_tools) != set(run.denied_tools or ()) or self.image_paths or self.profile or self.fence is not None:
+            return "was started with other tools, images, profile or fence"
+        return messaging.check_deliverable(run.run_id)[1]
+
+    def hand_over(self) -> Continued | StartNew:
+        """Give the task to the agent of its conversation already holding its role, between turns, as its next turn
+        (`messaging.deliver_message`: its own session, everything it did still in context) instead of starting
+        another (owner 2026-10-15: no « backend engineer three » while engineer one sits idle in the conversation).
+        Its caller's own child first, then the latest to finish; one whose turn would not start is passed over unless
+        its agent may have read the task (then kept, the doubt said: never run twice). Every same-role run busy or
+        unfit: start new, and why. Blocks up to `messaging.wait_for_start`'s timeout per run tried."""
+        if self.session_id is None or (resolved := self._role()) is None:
+            return StartNew()
+        policy, role, revision = resolved
+        peers = [run for run in reg.list_runs(session_id=self.session_id) if run.agent == role]
+        misfits = {run.run_id: self._misfit(run, policy, revision) for run in peers}
+        why = [f"{run_id[:8]} {said}" for run_id, said in misfits.items() if said]
+        fit = [run for run in peers if misfits[run.run_id] is None]
+        for run in sorted(fit, key=lambda run: (run.parent_run_id == self.parent_run_id, run.finished_at or run.started_at), reverse=True):
+            delivery = messaging.deliver_message(run.run_id, self.task, only_if_idle=True)
+            refused = delivery.text if delivery.state == "error" else messaging.wait_for_start(delivery)
+            if refused is None or messaging.read_by_agent(delivery):
+                return Continued(run=run, delivery=delivery, doubt=refused or "")
+            why.append(f"{run.run_id[:8]} {refused}")
+        return StartNew(why=f"{role} already here, not continued: {'; '.join(why)}" if peers else "")
+
+
+#: Ended runs whose session can take a next turn: every ending but a run cancelled before it started.
+REUSABLE: frozenset[str] = reg.TERMINAL_STATUSES - {"cancelled"}
+
+
+class Continued(BaseModel):
+    """A spawn's task given to the agent of its conversation already holding the role (`Spawn.hand_over`)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    run: reg.AgentRun
+    delivery: messaging.Delivery
+    #: Its turn did not start cleanly, yet its agent may have read the task (`messaging.read_by_agent`): said, never run twice.
+    doubt: str = ""
+
+    def sentence(self) -> str:
+        doubt = f" Its turn may not have gone through: {self.doubt}; agent_events tells, resend to it if not." if self.doubt else ""
+        return (f"Continued [{self.run.name}] — run_id={self.run.run_id}: the {self.run.agent} already in this conversation takes "
+                f"the task as its next turn, with everything it did still in context ({self.delivery.text}).{doubt} "
+                "Pass fresh to start a new one instead.")
+
+
+class StartNew(BaseModel):
+    """A spawn no agent of its conversation took (`Spawn.hand_over`): `why`, "" when none of its role was here."""
+
+    model_config = ConfigDict(frozen=True)
+
+    why: str = ""
+
+    def note(self) -> str:
+        """Said after the new run's own message: why the agents of its role here did not take it."""
+        return f"\n{self.why}" if self.why else ""
 
 
 class Place(BaseModel):

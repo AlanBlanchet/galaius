@@ -135,17 +135,24 @@ def _session_id(run) -> str | None:
 
 def deliver_message(
     run_id: str, message: str, *, sender: str | None = None, environment: Mapping[str, str] | None = None, message_id: str | None = None,
-    turn: agent_queue.QueuedTurn = agent_queue.MessageTurn(),
+    turn: agent_queue.QueuedTurn = agent_queue.MessageTurn(), only_if_idle: bool = False,
 ) -> Delivery:
     """Record and enqueue one message (`queue_message`); a detached per-run dispatcher performs the resume.
+    A message its dispatcher could not start for is cancelled: its caller is told it failed, so it never
+    runs later behind that caller's back.
 
     `environment` is the one the dispatcher and its resumed turn run in, and names the sender
     when `sender` does not (`GALAIUS_RUN_ID`); this process's own when None."""
-    delivery = queue_message(run_id, message, sender=sender, environment=environment, message_id=message_id, turn=turn)
+    delivery = queue_message(run_id, message, sender=sender, environment=environment, message_id=message_id, turn=turn,
+                             only_if_idle=only_if_idle)
     if delivery.state != "queued":
         return delivery
     refused = start_dispatcher(delivery.run_id, os.environ if environment is None else environment)
-    return delivery if refused is None else Delivery(state="error", text=f"ERROR: {refused}", run_id=delivery.run_id)
+    if refused is None:
+        return delivery
+    if delivery.queue_id is not None and not delivery.repeated:
+        agent_queue.mark(delivery.run_id, delivery.queue_id, "cancelled", error=refused)
+    return Delivery(state="error", text=f"ERROR: {refused}", run_id=delivery.run_id)
 
 
 def start_dispatcher(run_id: str, environment: Mapping[str, str]) -> str | None:
@@ -163,13 +170,15 @@ def start_dispatcher(run_id: str, environment: Mapping[str, str]) -> str | None:
 
 def queue_message(
     run_id: str, message: str, *, sender: str | None = None, environment: Mapping[str, str] | None = None, message_id: str | None = None,
-    turn: agent_queue.QueuedTurn = agent_queue.MessageTurn(),
+    turn: agent_queue.QueuedTurn = agent_queue.MessageTurn(), only_if_idle: bool = False,
 ) -> Delivery:
     """Record one message and enqueue its delivery (`queued`, with its queue id), or say why not;
     whoever called delivers it: the run's dispatcher (`deliver_message`), or a long-lived launcher
     holding the run's next child (`galaius.agents.followup`). `environment` as `deliver_message`'s.
     `message_id`: the id its sender gave it (a request id from the web), kept by its queue item and
-    its transcript entry; a message already queued under it is never queued again (`repeated`)."""
+    its transcript entry; a message already queued under it is never queued again (`repeated`).
+    `only_if_idle`: refused when the run is at work or has a message waiting, read under its lock (a
+    spawn handing its task over, `spawn_line.Spawn.hand_over`, starts a new run instead)."""
     environment = dict(os.environ if environment is None else environment)
     if message_id is not None:
         with reg.record_lock(recipient := reg.resolve_run_id(run_id) or run_id):
@@ -189,6 +198,8 @@ def queue_message(
         run = reg.get_run(run.run_id)
         if run is None:
             return Delivery(state="error", text=f"ERROR: no agent run {run_id!r}.", run_id=run_id)
+        if only_if_idle and (run.working() or any(item.state in {"pending", "running"} for item in agent_queue.items_locked(run.run_id))):
+            return Delivery(state="error", text=f"ERROR: {run.name} is busy.", run_id=run.run_id)
         try:
             _, criterion, model, reasoning = policy_for_continuation(run, provider, environment)
         except ModelUnavailable as policy_error:
@@ -272,6 +283,13 @@ def wait_for_start(delivery: Delivery, *, timeout: float = 10.0, interval: float
         if time.monotonic() >= deadline:
             return None
         time.sleep(interval)
+
+
+def read_by_agent(delivery: Delivery) -> bool:
+    """Whether its run's agent may have read it (`agent_queue.READ`): a turn that did not start cleanly may
+    still be acting on it, so it is never handed to another run."""
+    item = next((item for item in agent_queue.items(delivery.run_id) if item.id == delivery.queue_id), None)
+    return item is not None and item.state in agent_queue.READ
 
 
 async def wait_for_reply(delivery: Delivery) -> str:

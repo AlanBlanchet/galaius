@@ -1284,6 +1284,31 @@ def _require_known_intent(mode: str | None) -> None:
         )
         raise ValueError(f"{mode!r} is not a permission intent any registered CLI accepts (known: {known})")
 
+
+def effective_permission_mode(asked: str | None, provider_modes: Mapping[str, str] | None, policy: Policy, provider: str) -> str | None:
+    """The permission a run on `provider` gets, and records: the one asked, else the workspace's for that
+    provider, else the policy's default."""
+    return asked or (provider_modes or {}).get(provider) or policy.default_touch_intent()
+
+
+def resolve_role(policy: Policy, agent: str | None, *, reference: AgentRevisionRef | None, parent: str | None,
+                 delegate: str | None) -> tuple[Policy, str, AgentRevisionRef | None]:
+    """The policy, role and catalog revision a launch runs as (`Policy.for_launch`), its parent the run
+    `parent`. Refuses a child whose parent carries no recorded revision when a catalog is read, and a
+    launch naming no role."""
+    parent_run = reg.get_run(parent) if parent is not None else None
+    if policy.catalog is not None and parent is not None and (parent_run is None or parent_run.agent_ref is None):
+        raise ModelUnavailable("Parent run has no recorded server revision; start the parent again")
+    policy, role = policy.for_launch(agent, reference=reference, parent=parent_run.agent_ref if parent_run is not None else None,
+                                     capability=delegate)
+    if not role:
+        raise ModelUnavailable("Choose a named agent role; anonymous delegation bypasses role criteria")
+    if policy.catalog is None:
+        return policy, role, None
+    selected = policy.catalog.role(role)
+    return policy, role, AgentRevisionRef(id=selected.id, revision=selected.revision)
+
+
 async def run_agent(
     provider: AgentProvider | None,
     task: str,
@@ -1393,9 +1418,7 @@ async def run_agent(
     if provider is None and permission_mode is None:
         _require_known_intent(default_permission_mode)
     if provider is not None:
-        provider.validate_permission_mode(
-            permission_mode or (provider_modes or {}).get(provider.name) or default_permission_mode
-        )
+        provider.validate_permission_mode(effective_permission_mode(permission_mode, provider_modes, policy, provider.name))
         if not provider.available():
             raise RuntimeError(
                 f"the {provider.name!r} CLI is not installed (looked for {provider.binary!r} on PATH). "
@@ -1406,27 +1429,15 @@ async def run_agent(
             raise RuntimeError(
                 f"the {provider.name!r} provider does not support image attachments"
             )
-    if policy.catalog is not None and parent is not None and (parent_run is None or parent_run.agent_ref is None):
-        raise ModelUnavailable("Parent run has no recorded server revision; start the parent again")
-    policy, agent = policy.for_launch(
-        agent, reference=agent_ref,
-        parent=parent_run.agent_ref if parent_run is not None else None, capability=delegate,
-    )
+    policy, agent, selected_ref = resolve_role(policy, agent, reference=agent_ref, parent=parent, delegate=delegate)
     if provider is not None and not policy.provider_active(provider.name):
         raise ModelUnavailable(f"Agent provider {provider.name!r} is disabled by policy")
-    if not agent:
-        raise ModelUnavailable("Choose a named agent role; anonymous delegation bypasses role criteria")
     named = run_id is not None
     run_id = run_id or str(uuid.uuid4())
     # The brief's images are the run's own from here (`RunMedia`): what its agent is handed, what its record names.
     shown = reg.RunMedia.keep_files(run_id, validated_images)
     kept = tuple(reg.RunMedia.path(run_id, name) for name in shown)
-    selected_ref = None
-    definition_path = None
-    if policy.catalog is not None:
-        selected = policy.catalog.role(agent)
-        selected_ref = AgentRevisionRef(id=selected.id, revision=selected.revision)
-        definition_path = policy.catalog.definition_path(agent)
+    definition_path = policy.catalog.definition_path(agent) if policy.catalog is not None else None
     # Policy speaks for an agent with no own model: a profile is written once, worn by many —
     # the reason it exists.
     required_model = policy.criterion_for(agent)
@@ -1521,7 +1532,7 @@ async def run_agent(
         )
         reason = await _unavailable(
             candidate_provider, policy,
-            permission_mode=permission_mode or (provider_modes or {}).get(candidate.provider) or default_permission_mode,
+            permission_mode=effective_permission_mode(permission_mode, provider_modes, policy, candidate.provider),
             images=bool(validated_images), allowed_tools=allowed_tools, denied_tools=denied_tools,
             env={**candidate_env, **routed}, auth_cache=auth_cache, route_key=route_key,
             coarse_accepted=candidate_coarse_accepted,
@@ -1553,7 +1564,7 @@ async def run_agent(
         # run commits to this candidate. A refusal here falls through to the next ranked
         # candidate under the SAME criterion, same as any other skip; anything else the child
         # does past this point is that run's outcome, never replayed on another candidate.
-        candidate_permission_mode = permission_mode or (provider_modes or {}).get(candidate_provider.name) or default_permission_mode
+        candidate_permission_mode = effective_permission_mode(permission_mode, provider_modes, policy, candidate_provider.name)
         # A run named after its agent DEFINITION ("visual-critic") self-describes in the panel;
         # falling back to the provider ("claude") says nothing about what it's for.
         label = name or agent or candidate_provider.name

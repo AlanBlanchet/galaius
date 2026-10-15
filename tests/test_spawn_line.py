@@ -145,3 +145,68 @@ def test_a_start_cut_off_or_an_unreadable_entry_reads_failed_and_never_refuses(a
 def test_every_kept_argument_of_a_spawn_is_one_run_agent_takes():
     """A waiter starts it long after it was asked: an argument `run_agent` renamed fails there, out of sight."""
     assert set(Spawn.model_fields) - {"task", "provider", "session_id"} <= set(inspect.signature(run_agent).parameters)
+
+
+def _ended(run_id: str, **rest) -> None:
+    run = register_run(run_id=run_id, **rest)
+    reg.finish(run_id, exit_code=0, expected_pid=run.pid, expected_lifecycle_token=run.lifecycle_token)
+
+
+@pytest.mark.parametrize("peers, asked, continued, why", [
+    pytest.param([("eng1", {})], {}, "eng1", "", id="idle-same-role-continued"),
+    pytest.param([("eng1", {"parent_run_id": "lead"}), ("eng2", {"parent_run_id": "other"})], {}, "eng1", "", id="own-child-first"),
+    pytest.param([("eng1", {"busy": True})], {}, None, "eng1 is working", id="busy-starts-new"),
+    pytest.param([("eng1", {"cwd": "/elsewhere"})], {}, None, "eng1 works in another folder", id="other-folder"),
+    pytest.param([("eng1", {"permission_mode": "read_only"})], {}, "eng1", "", id="recorded-default-permission-continued"),
+    pytest.param([("eng1", {"permission_mode": "danger_full_access"})], {}, None, "eng1 was given danger_full_access permissions",
+                 id="wider-permissions-never-reused"),
+    pytest.param([("eng1", {"agent_ref": {"id": str(uuid.UUID(int=1)), "revision": str(uuid.UUID(int=2))}})], {}, None,
+                 "eng1 runs another revision of the role", id="other-revision"),
+    pytest.param([("eng1", {})], {"model": "other-model", "name": "eng-3"}, "eng1", "", id="asked-model-and-name-ignored"),
+    pytest.param([("eng1", {"refuses": True}), ("eng2", {"parent_run_id": "other"})], {}, "eng2", "", id="refused-start-falls-through"),
+    pytest.param([("eng1", {"refuses": True, "read": True}), ("eng2", {"parent_run_id": "other"})], {}, "eng1", "",
+                 id="uncertain-start-never-run-twice"),
+    pytest.param([("eng1", {"agent": "code-reviewer"})], {}, None, "", id="other-role"),
+    pytest.param([("eng1", {"session_id": "s2"})], {}, None, "", id="other-conversation"),
+])
+def test_a_spawn_continues_its_conversations_idle_agent_of_that_role(at_work, monkeypatch, tmp_path, peers, asked, continued, why):
+    """Owner 2026-10-15: no « backend engineer three » while engineer one sits idle in the conversation."""
+    from galaius_core import AgentRevisionRef
+
+    from galaius.agents.policy import Policy
+
+    monkeypatch.setattr(spawn_line, "load_policy",
+                        lambda: Policy(agents={"backend-engineer": "m"}, providers={"claude": True}, defaults={"touch": "read_only"}))
+    current = AgentRevisionRef(id=uuid.UUID(int=1), revision=uuid.UUID(int=3))
+    monkeypatch.setattr(spawn_line, "resolve_role", lambda policy, agent, **_: (policy, agent, current))
+    refusing: set[str] = set()
+    read: set[str] = set()
+    sent: list[str] = []
+
+    def deliver(run_id, task, *, only_if_idle):
+        assert only_if_idle
+        sent.append(run_id)
+        return spawn_line.messaging.Delivery(state="queued", text="Queued.", run_id=run_id, queue_id="q")
+
+    monkeypatch.setattr(spawn_line.messaging, "deliver_message", deliver)
+    monkeypatch.setattr(spawn_line.messaging, "wait_for_start", lambda delivery: "it died at once" if delivery.run_id in refusing else None)
+    monkeypatch.setattr(spawn_line.messaging, "read_by_agent", lambda delivery: delivery.run_id in read)
+    for run_id, rest in peers:
+        fields = {"agent": "backend-engineer", "session_id": "s1", "parent_run_id": "lead", "cwd": str(tmp_path), "model": "m",
+                  "agent_ref": current, "permission_mode": "read_only"} | rest
+        fields["cwd"] = fields["cwd"] if fields["cwd"] == str(tmp_path) else str(tmp_path / "elsewhere")
+        if fields.pop("refuses", False):
+            refusing.add(run_id)
+        if fields.pop("read", False):
+            read.add(run_id)
+        if fields.pop("busy", False):
+            at_work(run_id, **fields)
+        else:
+            _ended(run_id, **fields)
+    spawn = Spawn(task="add the endpoint", cwd=str(tmp_path), agent="backend-engineer", parent_run_id="lead", session_id="s1") \
+        .model_copy(update=asked)
+    handover = spawn.hand_over()
+    assert (handover.run.run_id if isinstance(handover, spawn_line.Continued) else None) == continued
+    assert sent[-1:] == ([continued] if continued else [])
+    if not continued:
+        assert handover.why == (f"backend-engineer already here, not continued: {why}" if why else "")
