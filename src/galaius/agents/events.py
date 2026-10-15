@@ -40,6 +40,10 @@ EventKind = Literal[
     "other",       # recognised as valid, not specially handled — never silently dropped
 ]
 
+#: Kinds that say nothing about what the AGENT did — the harness's own bookkeeping, kept in the
+#: transcript (a reader wants to see it) but never read as the run's own last word.
+NOT_ITS_WORK: frozenset[str] = frozenset({"other"})
+
 
 def instant(value: Any) -> float | None:
     """An absolute epoch second, from a number or an ISO-8601 string; None for anything else.
@@ -406,6 +410,17 @@ class AgentEvent(ContextGauge):
         if viewer and self.from_run == viewer:
             return f"→ {_who(self.to_run)}: {body}"
         return f"{_who(self.from_run)} → {_who(self.to_run)}: {body}"
+
+
+def ending_of(events: list[AgentEvent]) -> AgentEvent | None:
+    """The run's own ending — its newest event about its own work, when that event is terminal.
+
+    Trailing harness bookkeeping (`NOT_ITS_WORK`) is stepped over: a vendor writing a background
+    task change or a notification AFTER its result line left a turn that ended cleanly looking
+    cut off, and the panel said it was interrupted.
+    """
+    said = next((event for event in reversed(events) if event.kind not in NOT_ITS_WORK), None)
+    return said if said is not None and said.kind in ("done", "error") else None
 
 
 def _who(run_id: str | None) -> str:

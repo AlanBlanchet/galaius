@@ -36,7 +36,9 @@ from pydantic import BaseModel, Field, PrivateAttr, ValidationInfo, field_valida
 from galaius.agents import quota
 from galaius_core import MEDIA_KEY, AgentMedia, AgentRevisionRef, ContextGauge, PromptExecutionRef, StopActor
 
-from galaius.agents.events import CONTEXT_FIELDS, TOKEN_FIELDS, AgentEvent, TokenUsage, UsageLedger, stream_lines
+from galaius.agents.events import (
+    CONTEXT_FIELDS, TOKEN_FIELDS, AgentEvent, TokenUsage, UsageLedger, ending_of, stream_lines,
+)
 from galaius.agents.catalog_connection import CatalogConnection
 from galaius.agents.ceiling import contained, end_run_scope, is_run_scope
 from galaius.agents.providers import PROVIDERS, AgentProvider, DeniedTool
@@ -214,7 +216,7 @@ class StreamDigest(BaseModel):
 
     source: str
     events: bool = False
-    #: The stream's last event when it is an ending; None while the stream is mid-work.
+    #: The stream's own ending (`ending_of`); None while the stream is mid-work.
     ending: Literal["done", "error"] | None = None
     ending_text: str = ""
     cost_usd: float | None = None
@@ -226,7 +228,7 @@ class StreamDigest(BaseModel):
 
     @classmethod
     def of(cls, source: str, events: list[AgentEvent], viewer: str) -> Self:
-        ending = events[-1] if events and events[-1].kind in ("done", "error") else None
+        ending = ending_of(events)
         costs = [e.cost_usd for e in events if e.cost_usd is not None]
         tokens = {}
         for field in TOKEN_FIELDS:
@@ -1323,6 +1325,12 @@ def save_run(run: AgentRun) -> None:
     _write(run)
 
 
+#: Record fields that describe how the run's PREVIOUS turn ended, cleared when it starts another
+#: one: a cause and hour kept from an earlier cut were read as this turn's, so a run cut off today
+#: was shown as cut off yesterday, and the one that ended cleanly after it inherited that cause.
+PREVIOUS_ENDING: dict[str, None] = dict.fromkeys(("exit_code", "finished_at", "stopped_by", "interruption"))
+
+
 def begin_turn(
     run_id: str, *, pid: int, model: str | None = None,
     requested_criterion: str | None = None, reasoning: str | None = None,
@@ -1330,7 +1338,7 @@ def begin_turn(
     """Move one stopped run back to active state for a newly spawned provider turn."""
     updates = {
         **_process_identity(pid, run_id), "lifecycle_token": secrets.token_hex(16),
-        "exit_code": None, "finished_at": None, "status": "running", "stopped_by": None,
+        "status": "running", **PREVIOUS_ENDING,
         "pending_model": None, "pending_criterion": None, "pending_reasoning": None,
     }
     if model is not None:
@@ -1349,7 +1357,7 @@ def begin_turn_locked(
     """Same transition for a caller already holding ``record_lock(run_id)``."""
     updates = {
         **_process_identity(pid, run_id), "lifecycle_token": secrets.token_hex(16),
-        "exit_code": None, "finished_at": None, "status": "running", "stopped_by": None,
+        "status": "running", **PREVIOUS_ENDING,
         "pending_model": None, "pending_criterion": None, "pending_reasoning": None,
     }
     if model is not None:
@@ -2051,9 +2059,10 @@ def _derive(run: AgentRun) -> AgentRun:
     digest = run.stream_digest
     if digest is None or digest.source != source:
         digest = StreamDigest.of(source, read_events(run.run_id), viewer=run.run_id)
-    # The child's OWN stream is the authority on how it ended. If its LAST event is an ending, the
-    # run finished — even if nothing was watching to record an exit code. Without this, a run
-    # whose supervisor died reports "interrupted" while its transcript plainly says it completed.
+    # The child's OWN stream is the authority on how it ended. If its last event about its own
+    # work is an ending, the run finished — even if nothing was watching to record an exit code.
+    # Without this, a run whose supervisor died reports "interrupted" while its transcript
+    # plainly says it completed.
     ending = digest.ending if run.exit_code is None else None
     if ending is not None:
         run.status = (
@@ -2061,6 +2070,9 @@ def _derive(run: AgentRun) -> AgentRun:
             else "done" if ending == "done"
             else "failed"
         )
+        # Its own stream says how this turn ended, so nothing cut it off: a cause left from an
+        # earlier one would otherwise describe this ending, and date it to that earlier day.
+        run.interruption = None
     # A process that dies never calls finish(), so an ended run routinely has no end TIME — and a
     # timeline cannot draw an interval without one. The last byte the child wrote is an OBSERVED
     # end: not when it died, but the last moment we know it was alive, which is honest and

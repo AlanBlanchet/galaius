@@ -908,6 +908,45 @@ def test_status_is_derived_from_the_last_stream_event_when_the_pid_is_gone(
     assert reg.list_runs()[0].status == expected_status
 
 
+def test_bookkeeping_written_after_the_result_does_not_erase_a_clean_ending(monkeypatch):
+    """A harness keeps writing after its result line — a background task list changing, a task
+    killed, a notification about it. None of that says anything about what the AGENT did, so the
+    run ended: reading the stream's literal last line made a turn that finished cleanly read as
+    interrupted, and the panel offered to continue it."""
+    register_run(pid=999999)
+    reg.raw_events_path("r1").write_text("".join(json.dumps(line) + "\n" for line in (
+        {"type": "result", "subtype": "success", "is_error": False, "stop_reason": "end_turn",
+         "total_cost_usd": 0.4, "usage": {}, "session_id": "s"},
+        {"type": "system", "subtype": "background_tasks_changed", "session_id": "s",
+         "tasks": [{"task_id": "t1", "task_type": "local_bash", "description": "wait for a build"}]},
+        {"type": "system", "subtype": "task_updated", "task_id": "t1", "session_id": "s",
+         "patch": {"status": "killed", "end_time": 1792069264727}},
+        {"type": "system", "subtype": "task_notification", "task_id": "t1", "status": "stopped",
+         "summary": "wait for a build", "session_id": "s"},
+    )))
+    reg._update_fields("r1", {
+        "interruption": reg.Interruption(cause="process_gone", at=100.0, source="journal").model_dump(mode="json"),
+    })
+    monkeypatch.setattr(reg, "_alive", lambda pid: False)
+    listed = reg.list_runs()[0]
+    assert (listed.status, listed.stream_digest.ending, listed.interruption) == ("done", "done", None)
+    # Not read as the ending, and still in the transcript: a reader keeps seeing those lines.
+    assert [event.kind for event in reg.read_events("r1")] == ["done", "other", "other", "other"]
+
+
+def test_a_new_turn_forgets_how_the_previous_one_ended():
+    """A cause and hour belong to the turn they ended. Kept on the record they were read as the
+    current turn's, so a run cut off today was said to have gone away the day before."""
+    register_run(pid=999999)
+    reg._update_fields("r1", {
+        "status": "interrupted", "exit_code": -9, "finished_at": 100.0,
+        "interruption": reg.Interruption(cause="process_gone", at=100.0, source="journal").model_dump(mode="json"),
+    })
+    resumed = reg.begin_turn("r1", pid=os.getpid())
+    assert (resumed.status, resumed.interruption, resumed.exit_code, resumed.finished_at) == ("running", None, None, None)
+    assert json.loads(reg._record_path("r1").read_text())["interruption"] is None
+
+
 def test_a_healed_status_is_written_back_to_disk(monkeypatch):
     """The panel reads the file, not Python's in-memory view, and only ever downgrades. A status
     healed in memory but left stale on disk shows up there as 'interrupted' regardless."""
