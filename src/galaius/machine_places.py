@@ -22,6 +22,8 @@ from galaius_core import (
     PlaceDiscardRequest, PlaceLevel, PlaceLevelRequest, PlaceReviewRequest, PlaceReviewsRequest, PlacesRequest, StopActor,
 )
 
+from galaius_core.wire import fitted
+
 from galaius.agents import registry as reg
 from galaius.fence import available
 from galaius.places import SUGGESTED_SANDBOX, split
@@ -50,7 +52,9 @@ class PlaceDesk:
     def view(self, config: "MachineConfig") -> MachinePlacesView:
         fence, reason = available()
         return MachinePlacesView(places=config.place_map().entries(), browse=config.browse,
-                                 fence=MachineFence(platform=sys.platform, available=fence, on=config.fence_agents, reason=reason),
+                                 # The web's field bounds what this PC may say about its fence: cut here, never refused
+                                 # (2026-10-15: a long AppArmor recipe raised, and the Data page showed the dump).
+                                 fence=MachineFence(platform=sys.platform, available=fence, on=config.fence_agents, reason=fitted(MachineFence, "reason", reason)),
                                  suggested_sandbox="" if SUGGESTED_SANDBOX in config.places else SUGGESTED_SANDBOX)
 
     def request(self, path: str, level: PlaceLevel, initiator: UUID | None) -> str:

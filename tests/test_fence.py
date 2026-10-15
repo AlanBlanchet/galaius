@@ -19,6 +19,10 @@ import pytest
 
 from galaius.agents import providers
 from galaius.agents.providers import CodexProvider
+from galaius_core import MachineFence
+from galaius_core.wire import fitted
+
+from galaius import fence
 from galaius.fence import Confinement, EgressProxy, FenceSpec, available, confinement_refusal, userns_refusal
 
 AGENT_HOSTS = ("api.anthropic.com",)
@@ -353,3 +357,21 @@ print(json.dumps({"start": attempt(lambda: open("in.txt", "w").write("x")), "out
     assert code == 0
     assert json.loads(capfd.readouterr().out.strip().splitlines()[-1]) == {"start": "ok", "outside": errno.EACCES, "unix": errno.EACCES, "inet": "ok"}
     assert not (tmp_path / "outside" / "x").exists() and not list((tmp_path / "agents" / "confined").iterdir())
+
+
+def test_the_longest_fence_reason_keeps_its_root_command_in_the_field_the_web_shows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The AppArmor refusal is the longest thing this PC says about its fence, and the contract
+    bounds the field the web shows it in (`MachineFence.reason`). What the cut drops is bubblewrap's
+    own line, never the one-time root command — and the view itself never raises (2026-10-15: it
+    did, and the Data page showed « 1 validation error for MachineFence … »)."""
+    restricted = tmp_path / "apparmor_restrict_unprivileged_userns"
+    restricted.write_text("1\n")
+    monkeypatch.setattr(fence, "_APPARMOR_USERNS", restricted)
+    monkeypatch.setattr(fence, "_BWRAP_PASSED", set())
+    monkeypatch.setattr(fence.subprocess, "run", lambda *_args, **_options: subprocess.CompletedProcess(
+        [], 1, "", "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted\nbwrap: setting up uid map: Permission denied\n"))
+    refusal = fence.userns_refusal("bwrap")
+    assert refusal is not None
+    shown = fitted(MachineFence, "reason", refusal)
+    assert "sudo apt install apparmor-profiles" in shown and "sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict" in shown
+    assert MachineFence(platform="linux", available=False, on=False, reason=shown).reason == shown

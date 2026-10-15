@@ -566,14 +566,18 @@ def userns_fix() -> str:
     if apparmor:
         profile = "/etc/apparmor.d/bwrap-userns-restrict"
         return ("AppArmor refuses unprivileged user namespaces here (kernel.apparmor_restrict_unprivileged_userns=1). "
-                "Once, as root, load the bubblewrap profile: sudo apt install apparmor-profiles && "
-                f"sudo install -m 0644 /usr/share/apparmor/extra-profiles/bwrap-userns-restrict {profile} && "
+                "Once, as root: sudo apt install apparmor-profiles && "
+                "sudo install -m 0644 /usr/share/apparmor/extra-profiles/bwrap-userns-restrict /etc/apparmor.d/ && "
                 f"sudo apparmor_parser -r {profile}")
     return "unprivileged user namespaces are disabled here; once, as root, allow them (sysctl user.max_user_namespaces)"
 
 
 def userns_refusal(bwrap: str) -> str | None:
-    """Why `bwrap` cannot build a user + network namespace on this PC, with the fix; None when it can."""
+    """Why `bwrap` cannot build a user + network namespace on this PC, with the fix; None when it can.
+
+    The fix comes FIRST and what bubblewrap said last: the web shows this reason in a field the
+    contract bounds (`MachineFence.reason`, cut by `galaius_core.wire.fitted`), so the one-time root
+    command must be the part that always survives."""
     if bwrap in _BWRAP_PASSED:
         return None
     try:
@@ -583,7 +587,7 @@ def userns_refusal(bwrap: str) -> str | None:
         return None  # not a namespace refusal: the CLI using it reports its own failure
     said = trial.stderr.strip()
     if trial.returncode != 0 and any(line in said for line in USERNS_REFUSED):
-        return f"bubblewrap cannot create its sandbox ({said.splitlines()[-1][:160]}): {userns_fix()}"
+        return f"bubblewrap cannot build its sandbox here. {userns_fix()} (it said: {said.splitlines()[-1]})"
     _BWRAP_PASSED.add(bwrap)
     return None
 

@@ -8,6 +8,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
@@ -15,8 +16,9 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from galaius_core import MACHINE_AGENT_REQUESTS
-from galaius.machines import MachineConfig, MachineRunner
+from galaius_core import MACHINE_AGENT_REQUESTS, MachineFence
+from galaius_core.wire import internals
+from galaius.machines import OWN_FAULT, MachineConfig, MachineRunner, said_of
 from galaius.place_reviews import PlaceReviews
 
 pytestmark = pytest.mark.usefixtures("directory_backend")
@@ -138,3 +140,17 @@ def test_a_narrowing_stops_every_fenced_agent_turn_running_now(runner: MachineRu
     assert stopped == []
     _ask(runner, "place_level", path="docs", level="read")
     assert stopped == ["fenced"] and logged[-1]["op"] == "stopped" and logged[-1]["runs"] == ["fenced"]
+
+
+def test_a_fault_of_this_pcs_own_making_never_travels_to_the_web() -> None:
+    """Whatever breaks here, the web is told plain words. A contract fault's text names fields and
+    types (« 1 validation error for MachineFence … », which the Data page showed on 2026-10-15); a
+    refusal raised here is already written for a reader and travels as it is."""
+    try:
+        MachineFence(platform="linux", available=False, on=False, reason="x" * 401)
+    except ValidationError as error:
+        assert said_of(error) == OWN_FAULT and not internals(said_of(error))
+    assert said_of(PermissionError("file query targets another machine")) == "file query targets another machine"
+    assert said_of(FileNotFoundError(2, "No such file or directory"), "docs/report.md") == "docs/report.md: No such file or directory"
+    timed_out = said_of(subprocess.TimeoutExpired(["bwrap", "--ro-bind", "/srv/private-folder"], 5.0))
+    assert timed_out == "a program this computer ran took longer than 5s" and "private-folder" not in timed_out

@@ -49,6 +49,7 @@ from galaius.machine_agents import AgentSpawns, LogRing, MachineAgents, MachineS
 from galaius.machine_programs import AgentPrograms
 from galaius.machine_workspaces import MachineWorkspaces, WorkspaceJobs
 from galaius_core.sealing import SecretsSeal
+from galaius_core.wire import fitted, internals
 from galaius.agents.events import AgentEvent
 from galaius.agents.run import load_policy, run_agent
 from galaius.agents.followup import FollowUps
@@ -290,6 +291,33 @@ class MachineConfig(MachineAgentSettings):
 
 
 logger = logging.getLogger(__name__)
+
+#: What the web is told when this computer's own code failed rather than the request: such a text
+#: names fields, classes and files nobody reading a screen wrote, so the whole of it stays in this
+#: PC's log, where its owner reads it. The server words this sentence (`machines/refusals.py`).
+OWN_FAULT = "this computer could not build its answer: its own log says why"
+
+
+def said_of(error: BaseException, about: str = "") -> str:
+    """What this PC answers the web when it could not do what was asked.
+
+    A refusal's own sentence (every `PermissionError`, `ValueError` and `RuntimeError` raised here
+    is written for a reader) travels as it is; an OS fault says what it could not do `about` the
+    path it touched; a program that ran too long says so without its argv. A fault of this PC's own
+    making — a contract `ValidationError` above all — travels as `OWN_FAULT`: its text is logged
+    here and never relayed (2026-10-15: a 464-character fence reason reached the web as
+    « 1 validation error for MachineFence … » and the Data page showed it).
+    """
+    words = str(error).strip()
+    if isinstance(error, ValidationError) or internals(words):
+        logger.warning("this computer could not build its answer", exc_info=error)
+        return OWN_FAULT
+    if isinstance(error, subprocess.TimeoutExpired):
+        return f"a program this computer ran took longer than {error.timeout:.0f}s"
+    if isinstance(error, OSError) and not isinstance(error, PermissionError):
+        return ": ".join(part for part in (about, error.strerror or words) if part) or OWN_FAULT
+    return words or OWN_FAULT
+
 PLACE_PATH: TypeAdapter[str] = TypeAdapter(PlacePath)
 
 
@@ -1310,8 +1338,7 @@ class MachineRunner:
             logger.info("file query %s: %s", query.path or "(roots)", listing.kind)
             answer = MachineFileQueryResult(query_id=query.id, listing=listing)
         except (PermissionError, OSError, ValueError) as error:
-            reason = str(error) if isinstance(error, (PermissionError, ValueError)) else f"{query.path}: {error.strerror or type(error).__name__}"
-            answer = MachineFileQueryResult(query_id=query.id, error=reason[:400] or type(error).__name__)
+            answer = MachineFileQueryResult(query_id=query.id, error=fitted(MachineFileQueryResult, "error", said_of(error, query.path)))
         await socket.send(json.dumps({"type": "file_listing", "result": answer.model_dump(mode="json")}))
 
     async def _answer_data_request(self, socket, config: MachineConfig, payload: object) -> None:
@@ -1329,8 +1356,7 @@ class MachineRunner:
             answer = await asyncio.to_thread(MachineDataFiles(config=self._current_config(config)).answer, request)
             logger.info("data %s %s/%s", request.op, request.root or "(roots)", request.path)
         except (PermissionError, OSError, ValueError) as error:
-            reason = str(error) if isinstance(error, (PermissionError, ValueError)) else f"{request.path}: {error.strerror or type(error).__name__}"
-            answer = MachineDataAnswer(request_id=request.id, error=reason[:400] or type(error).__name__)
+            answer = MachineDataAnswer(request_id=request.id, error=fitted(MachineDataAnswer, "error", said_of(error, request.path)))
         await socket.send(json.dumps({"type": "data_answer", "result": answer.model_dump(mode="json")}))
 
     async def _apply_web_settings(self, socket, config: MachineConfig, payload: object) -> None:
@@ -1427,8 +1453,7 @@ class MachineRunner:
                                                                  ("answer", answer.detail if request.op in {"answer", "send", "provider"} else None)) if value)
             logger.log(logging.INFO if request.action else logging.DEBUG, "agent %s %s", request.op, said)
         except (PermissionError, OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
-            reason = str(error) if isinstance(error, (PermissionError, ValueError, RuntimeError)) else f"{type(error).__name__}: {error}"
-            answer = MachineAgentAnswer(request_id=request.id, error=reason[:400] or type(error).__name__, code=error.code if isinstance(error, (WorkspaceRefused, WebFull)) else None,
+            answer = MachineAgentAnswer(request_id=request.id, error=fitted(MachineAgentAnswer, "error", said_of(error)), code=error.code if isinstance(error, (WorkspaceRefused, WebFull)) else None,
                                         subscription_refusal=error.refusal if isinstance(error, SubscriptionRefused) else None)
             logger.warning("agent %s refused: %s", request.op, answer.error)
         if request.action:
@@ -1551,7 +1576,7 @@ class MachineRunner:
                 result = MachineCommandResult(command_id=command.id, nonce=command.nonce, status="succeeded", result=output[:256 * 1024])
             except Exception as error:
                 logger.error("%s step failed", command.impl.kind, exc_info=error, extra=bound)
-                result = MachineCommandResult(command_id=command.id, nonce=command.nonce, status="failed", error=str(error)[:400] or type(error).__name__)
+                result = MachineCommandResult(command_id=command.id, nonce=command.nonce, status="failed", error=fitted(MachineCommandResult, "error", said_of(error)))
         finally:
             # Threat #1c: a pooled tenant's VRAM must be scrubbed whether its run succeeded,
             # failed, or crashed — never conditioned on the run's own outcome.
