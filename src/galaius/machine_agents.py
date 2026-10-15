@@ -882,13 +882,18 @@ class MachineAgents(BaseModel):
     async def _start(self, request: AgentStartRequest) -> MachineAgentAnswer:
         """A start asked again under its id (`AgentStartRequest.idempotent_feature`: its answer lost with the line, a
         restart between) answers the run that id launched, or joins its start still under way — the request carrying it
-        cancelled or not: never a second agent."""
+        cancelled or past its bound: never a second agent. The bound is this asker's (`START_SECONDS`, `UnderWay`), never
+        the start's: the start stays keyed until its agent is recorded, so one asked again after a PC frozen past the bound
+        joins it (visual-critic launch r2: frozen 170 s, the first start unkeyed at its bound while its agent still came up)."""
         if (known := await asyncio.to_thread(self.runs.started_by, request.id)) is not None:
             return await self._answered(request, known.run_id, known.fenced)
         if (starting := self._starting.get(request.id)) is None:
             starting = self._starting[request.id] = asyncio.ensure_future(self._start_once(request))
             starting.add_done_callback(lambda done, key=request.id: (self._starting.pop(key, None), done.cancelled() or done.exception()))
-        return await asyncio.shield(starting)
+        try:
+            return await asyncio.wait_for(asyncio.shield(starting), START_SECONDS)
+        except TimeoutError:
+            raise UnderWay(f"the agent is still starting after {START_SECONDS:.0f} s; it appears in the list once it runs") from None
 
     async def _answered(self, request: AgentStartRequest, run_id: UUID, fenced: bool, refresh: WorkspaceRefresh | None = None, written: int = 0) -> MachineAgentAnswer:
         started = await asyncio.to_thread(reg.get_run, str(run_id))
@@ -926,9 +931,7 @@ class MachineAgents(BaseModel):
             return run_id
 
         try:
-            run_id = await asyncio.wait_for(asyncio.shield(AgentSpawns.run(launch)), START_SECONDS)
-        except TimeoutError:
-            raise UnderWay(f"the agent is still starting after {START_SECONDS:.0f} s; it appears in the list once it runs") from None
+            run_id = await asyncio.shield(AgentSpawns.run(launch))
         except (ValueError, RuntimeError) as error:
             if request.lent:
                 raise SubscriptionRefused("lent", LENT_REFUSAL) from error

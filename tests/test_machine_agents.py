@@ -24,7 +24,7 @@ from galaius.agents import agent_queue, messaging
 from galaius.agents import registry as reg
 from galaius.agents.host import ConversationRefused
 from galaius.agents.subscriptions import RunSubscription, Subscription, SubscriptionRefused
-from galaius.machine_agents import LogRing, MachineAgents, MachineSessions, WebFull, WebRun, WebRuns, interaction_digest, redact
+from galaius.machine_agents import LogRing, MachineAgents, MachineSessions, UnderWay, WebFull, WebRun, WebRuns, interaction_digest, redact
 from galaius.fence import FenceSpec
 from galaius.config import UserConfig
 from galaius.machines import MachineConfig, MachineRunner
@@ -802,12 +802,16 @@ def test_a_start_asks_less_never_more_and_a_cloned_workspace_loads_no_project_se
         assert launched["session"] == "web-test" and launched["quota_window"] == 4.0
 
 
-@pytest.mark.parametrize("cut", ["joined", "cancelled", "restarted"])
+@pytest.mark.parametrize("cut", ["joined", "cancelled", "restarted", "outlived"])
 def test_a_start_asked_again_under_its_id_is_never_a_second_agent(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cut: str) -> None:
     """visual-critic launch r1: the line cut while a start was on its way (its PC frozen 30 s), the server asked again, and
     one press made two runs. Asked again under the same id (`agent_start_once`) while the first still launches (`joined`),
     after the request that carried it was cancelled with its line (`cancelled`), or after this runner restarted
-    (`restarted`: a new answerer, the runs file kept): the one run that id started, its agent launched once."""
+    (`restarted`: a new answerer, the runs file kept), or after the first asker gave up waiting while the agent still
+    launched (`outlived`, visual-critic launch r2: the PC frozen 170 s, past `START_SECONDS`): the one run that id started,
+    its agent launched once."""
+    if cut == "outlived":
+        monkeypatch.setattr("galaius.machine_agents.START_SECONDS", 0.05)
     seen: list[str] = []
     run_id = uuid4()
 
@@ -824,6 +828,11 @@ def test_a_start_asked_again_under_its_id_is_never_a_second_agent(base: Path, tm
         await asyncio.sleep(0.1)
         if cut == "cancelled":
             first.cancel()
+            return (await _agents(base, tmp_path).answer(request),)
+        if cut == "outlived":
+            with pytest.raises(UnderWay):
+                await first
+            monkeypatch.setattr("galaius.machine_agents.START_SECONDS", 5.0)  # asked again while its agent still launches
             return (await _agents(base, tmp_path).answer(request),)
         if cut == "joined":
             return tuple(await asyncio.gather(first, _agents(base, tmp_path).answer(request)))
