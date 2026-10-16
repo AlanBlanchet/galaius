@@ -1194,11 +1194,12 @@ def test_the_live_mirror_built_from_appended_lines_equals_a_whole_rebuild():
     assert reg.get_run("inc").provider_session_id == reg.get_run("full").provider_session_id == "s"
 
 
-def test_a_thinking_run_shows_its_thinking_growing_throttled_then_settled_per_turn(monkeypatch):
+@pytest.mark.parametrize("watcher", ["mirror", "whole_read"])
+def test_a_thinking_run_shows_its_thinking_growing_throttled_then_settled_per_turn(monkeypatch, watcher):
     """Owner 2026-10-16 « show thinking tokens being accumulated ? (without saturating the network) »: the record
     carries the turn's live estimate (Claude's `thinking_tokens` lines, never a transcript entry), written at most
     every `THINKING_EVERY` s while only it grows, then each turn's own count summed once it ends, as a whole read
-    derives it."""
+    derives it. The same from the computer's runner re-reading it whole, when another process holds the mirror."""
     register_run(run_id="think", name="think", provider="claude", task="t")
     clock = [0.0]
     monkeypatch.setattr(reg.time, "monotonic", lambda: clock[0])
@@ -1217,9 +1218,9 @@ def test_a_thinking_run_shows_its_thinking_growing_throttled_then_settled_per_tu
     for clock[0], lines, (live, settled) in steps:
         with reg.raw_events_path("think").open("ab") as raw:
             raw.write(("\n".join(lines) + "\n").encode())
-        mirror.refresh()
+        mirror.refresh() if watcher == "mirror" else reg.read_events("think")
         run = reg.get_run("think")
-        assert (run.thinking_live, run.thinking_tokens) == (live, settled), lines
+        assert (run.thinking_live, run.thinking_tokens if watcher == "mirror" else settled) == (live, settled), lines  # a whole read leaves the totals to the run's end
     assert reg.StreamDigest.of("", reg.read_events("think"), viewer="").context.thinking_tokens == 704
     assert [event.get("thinking_tokens") for event in _mirrored_events("think") if event["kind"] == "done"] == [604, 100]
     assert not any("thinking_live" in event or ("thinking_tokens" in event and event["kind"] != "done") for event in _mirrored_events("think"))

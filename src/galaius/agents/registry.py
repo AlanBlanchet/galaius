@@ -15,6 +15,7 @@ import functools
 import hashlib
 import inspect
 import json
+import math
 import os
 import re
 import secrets
@@ -1857,6 +1858,26 @@ def messages() -> list[AgentEvent]:
     return out
 
 
+#: Least seconds between two record writes that only move a run's live thinking estimate (Claude says one every
+#: ~150-250 tokens): every surface reading the record (a run list, the server's mirror of it) sees it grow at most
+#: this often. A settled turn, or any other field moving with it, is written at once.
+THINKING_EVERY = 1.5
+_thought_at: dict[str, float] = {}  # run id -> when this process last wrote its live estimate (`time.monotonic`)
+
+
+def _thinking_update(stored: AgentRun, estimate: int, *, urgent: bool) -> dict[str, int | None]:
+    """The record's `thinking_live` move, when due: the turn's thinking as it thinks (a ledger's estimate, never an
+    event's), held back while only it grows faster than `THINKING_EVERY`; `urgent` = another field is written now."""
+    live, now = estimate or None, time.monotonic()
+    if stored.thinking_live == live or not (urgent or live is None or now - _thought_at.get(stored.run_id, -math.inf) >= THINKING_EVERY):
+        return {}
+    if live is None:
+        _thought_at.pop(stored.run_id, None)
+    else:
+        _thought_at[stored.run_id] = now
+    return {"thinking_live": live}
+
+
 def read_events(run_id: str) -> list[AgentEvent]:
     """Every event of a run, normalised.
 
@@ -1887,19 +1908,15 @@ def read_events(run_id: str) -> list[AgentEvent]:
         if stored is not None:
             session_id = next((event.session_id for event in parsed if event.session_id), None)
             turn_id = next((event.turn_id for event in reversed(parsed) if event.turn_id), None)
-            changed = False
+            updates = {}
             if session_id and stored.provider_session_id != session_id:
-                stored.provider_session_id = session_id
-                changed = True
+                updates["provider_session_id"] = session_id
             if turn_id and stored.provider_turn_id != turn_id:
-                stored.provider_turn_id = turn_id
-                changed = True
-            if changed:
-                updates = {}
-                if session_id:
-                    updates["provider_session_id"] = session_id
-                if turn_id:
-                    updates["provider_turn_id"] = turn_id
+                updates["provider_turn_id"] = turn_id
+            # The process watching a run re-reads it whole (a computer's runner every 0.3 s), and may not be the one
+            # holding `#run-mirror.lock`: its live thinking is published from here too.
+            updates |= _thinking_update(stored, ledger.thinking, urgent=bool(updates))
+            if updates:
                 current = _update_fields(run_id, updates)
                 if current is not None:
                     stored = current
@@ -1989,14 +2006,8 @@ class StreamMirror:
     paid on every append of every live run. The mirror is appended to only while it still holds what
     this object last wrote and the new events extend it; anything else rewrites it as `read_events`."""
 
-    #: Least seconds between two record writes that only move its live thinking estimate (Claude says one every
-    #: ~150-250 tokens): every surface reading the record (a run list, the server's mirror of it) sees it grow at
-    #: most this often. A settled turn, or any other field moving with it, is written at once.
-    THINKING_EVERY = 1.5
-
     def __init__(self, run_id: str) -> None:
         self.run_id = run_id
-        self.thought_at = 0.0  # when its live thinking estimate was last written (`time.monotonic`)
         self._reset()
 
     def _reset(self) -> None:
@@ -2060,10 +2071,7 @@ class StreamMirror:
                 updates["provider_session_id"] = session_id
             if turn_id and stored.provider_turn_id != turn_id:
                 updates["provider_turn_id"] = turn_id
-            # Its turn's thinking as it thinks (the ledger's estimate, never an event's): throttled while only it grows.
-            live, now = self.ledger.thinking or None, time.monotonic()
-            if stored.thinking_live != live and (updates or live is None or now - self.thought_at >= self.THINKING_EVERY):
-                updates["thinking_live"], self.thought_at = live, now
+            updates |= _thinking_update(stored, self.ledger.thinking, urgent=bool(updates))
             if updates:
                 _update_fields(self.run_id, updates)
         merged = _interleave(parsed, read_messages(self.run_id), self.lines + len(stream_lines(tail)))
