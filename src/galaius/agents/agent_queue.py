@@ -248,6 +248,7 @@ def enqueue_locked(run_id: str, *, message_id: str, sender: str, turn: QueuedTur
     state["version"] = 1
     state["items"] = [*state.get("items", []), item.model_dump()]
     _write_state(run_id, state)
+    reg.note_asker_locked(run_id, sender)
     return item
 
 

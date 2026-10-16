@@ -18,7 +18,7 @@ from cyclopts import App, Parameter
 from pydantic import ValidationError
 
 from galaius import feedback, live_sources, model_catalog, ollama
-from galaius_core import AGENT_TOUCH_SCOPES
+from galaius_core import AGENT_TOUCH_SCOPES, ASKED_BY_MAX
 
 from galaius.agents import agent_queue, handback, messaging
 from galaius.agents import providers as agent_providers
@@ -1021,6 +1021,26 @@ def agents_send(run_id: str, message: str) -> None:
     print(f"{delivery.text} Its turn: {waiting}" if waiting else delivery.text)
     if delivery.state == "error":
         raise SystemExit(1)
+
+
+@agents_app.command(name="work-for")
+def agents_work_for(run_id: str) -> None:
+    """Say the agent running this command works for run RUN_ID: its record lists RUN_ID among the runs that asked it
+    (`asked_by`), as a message RUN_ID sent it would. Only an agent's own record: run from inside an agent run."""
+    caller, asker = os.environ.get("GALAIUS_RUN_ID") or "", reg.resolve_run_id(run_id)
+    if reg.get_run(caller) is None:
+        print("ERROR: work-for names who the running agent works for; run it from inside an agent run (GALAIUS_RUN_ID).")
+        raise SystemExit(1)
+    if asker is None:
+        print(f"ERROR: no agent run {run_id!r}.")
+        raise SystemExit(1)
+    with reg.record_lock(caller):
+        reg.note_asker_locked(caller, asker)
+        run = reg.get_run(caller)
+    if run is None or asker not in {*run.asked_by, run.parent_run_id}:
+        print(f"ERROR: {caller[:8]} does not list {asker[:8]}: it is itself, a run that works for it, or it lists {ASKED_BY_MAX} runs already.")
+        raise SystemExit(1)
+    print(f"{caller[:8]} works for {asker[:8]}.")
 
 
 @agents_app.command(name="compact")

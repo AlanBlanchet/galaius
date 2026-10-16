@@ -35,7 +35,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, PrivateAttr, ValidationInfo, field_validator
 from galaius.agents import quota
-from galaius_core import MEDIA_KEY, MODEL_ID_MAX, AgentMedia, AgentRevisionRef, ContextGauge, PromptExecutionRef, RunReplacement, StopActor
+from galaius_core import ASKED_BY_MAX, MEDIA_KEY, MODEL_ID_MAX, AgentMedia, AgentRevisionRef, ContextGauge, PromptExecutionRef, RunReplacement, StopActor
 
 from galaius.agents.events import (
     CONTEXT_FIELDS, TOKEN_FIELDS, AgentEvent, TokenUsage, UsageLedger, answered_line, ending_of, model_spoke, stream_lines,
@@ -364,6 +364,9 @@ class AgentRun(ContextGauge):
     #: The run that took its task after it ended before its first turn (`take_over_refused`): no stop to continue, a
     #: launch that moved on. Cleared as a new turn begins: whatever ends a resumed turn is its own ending.
     replaced_by: RunReplacement | None = None
+    #: The other runs it works for, first asker first (`note_asker_locked`): each run that sent it work, and each run it
+    #: said it works for (`galaius agents work-for`). Never itself nor its parent; kept across turns.
+    asked_by: tuple[str, ...] = ()
 
     status: RunStatus = "running"
 
@@ -389,6 +392,15 @@ class AgentRun(ContextGauge):
         """Only the run's own scope (`ceiling.is_run_scope`): a launcher's unit, as records written before this
         check hold, tells how the launcher ended, never this run."""
         return unit if is_run_scope(unit, info.data.get("run_id", "")) else None
+
+    @field_validator("asked_by", mode="before")
+    @classmethod
+    def run_ids(cls, value: object) -> object:
+        """Only run ids, the first `ASKED_BY_MAX`: a record edited by hand never breaks the PC's run list
+        (`MachineAgentRun.asked_by` reads them as UUIDs, bounded)."""
+        if not isinstance(value, list | tuple):
+            return value
+        return tuple(asker for asker in value if isinstance(asker, str) and _is_run_id(asker))[:ASKED_BY_MAX]
 
     @field_validator("status", mode="before")
     @classmethod
@@ -1381,6 +1393,27 @@ def _merge_record_locked(run_id: str, updates: dict) -> AgentRun | None:
         return None
     _replace_private(_record_path(run_id), json.dumps(merged, ensure_ascii=False).encode())
     return validated
+
+
+def _is_run_id(value: str) -> bool:
+    try:
+        UUID(value)
+    except ValueError:
+        return False
+    return True
+
+
+def note_asker_locked(run_id: str, asker: str) -> AgentRun | None:
+    """Add run `asker` to run `run_id`'s `asked_by` while the caller holds `record_lock(run_id)`; the record when it
+    changed. Only another run of this PC counts (a UUID with a record): never the person (« operator »), an automatic
+    resume, the run itself or its parent, a run already listed or past `ASKED_BY_MAX`, nor an answer going back up: a
+    child handing back to its parent, or a run replying to one it works for."""
+    run = get_run(run_id)
+    sender = get_run(asker) if _is_run_id(asker) else None
+    if (run is None or sender is None or asker in {run.run_id, run.parent_run_id, *run.asked_by}
+            or len(run.asked_by) >= ASKED_BY_MAX or run_id in {sender.parent_run_id, *sender.asked_by}):
+        return None
+    return _merge_record_locked(run_id, {"asked_by": [*run.asked_by, asker]})
 
 
 def _update_fields(

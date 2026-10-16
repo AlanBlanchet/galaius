@@ -8,7 +8,7 @@ import sys
 import uuid
 
 import pytest
-from galaius_core import AgentMedia
+from galaius_core import ASKED_BY_MAX, AgentMedia
 
 from galaius import brief_hook, inbox_hook
 from galaius.agents import agent_queue, messaging
@@ -16,6 +16,7 @@ from galaius.agents import run as agent_run
 from galaius.agents import registry as reg
 from galaius.agents.policy import Policy
 from galaius.agents.providers import ClaudeCodeProvider, ClaudeTurnSettings
+from galaius.cli.app_commands import agents_work_for
 from galaius.config import Config
 from galaius.fence import FenceSpec
 from tests.support.agents import ScriptedProvider, install_provider, use_policy
@@ -511,3 +512,31 @@ def test_a_cli_without_compaction_refuses_it_before_queueing(monkeypatch):
     _setup(monkeypatch)
     refused = messaging.queue_message("r1", "", sender="operator", turn=agent_queue.CompactionTurn())
     assert refused.state == "error" and "cannot compact" in refused.text and agent_queue.items("r1") == []
+
+
+def test_a_run_lists_the_runs_that_sent_it_work_and_the_runs_it_says_it_works_for(monkeypatch, capsys):
+    """2026-10-16: a run another conversation's run sent work to showed no link to it; its record now names each asker,
+    first first, never the person, an automatic resume, its own parent or itself, nor a run it answers back to."""
+    provider = _setup(monkeypatch)
+    parent, worker, first, second, third = (str(uuid.uuid4()) for _ in range(5))
+    for run_id, name in ((parent, "lead"), (first, "a"), (second, "b"), (third, "c")):
+        reg.register(run_id=run_id, pid=999999, provider=provider.name, name=name, task="t", agent="tester", provider_session_id="vendor")
+    reg.register(run_id=worker, pid=999999, provider=provider.name, name="deployer", task="t", agent="tester",
+                 provider_session_id="vendor", parent_run_id=parent)
+    for sender in ("operator", reg.LIMIT_RESUME_SENDER, parent, first, first, second):
+        assert messaging.queue_message(worker, "work", sender=sender).state == "queued", sender
+    assert reg.get_run(worker).asked_by == (first, second)
+    for recipient in (parent, first):                               # a hand-back to its parent, a reply to its asker
+        assert messaging.queue_message(recipient, "done", sender=worker).state == "queued"
+        assert reg.get_run(recipient).asked_by == ()
+
+    monkeypatch.setenv("GALAIUS_RUN_ID", worker)
+    agents_work_for(third[:8])
+    assert reg.get_run(worker).asked_by == (first, second, third) and "works for" in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        agents_work_for(worker)
+    monkeypatch.delenv("GALAIUS_RUN_ID")
+    with pytest.raises(SystemExit):
+        agents_work_for(third)
+    edited = reg.get_run(worker).model_dump(mode="json") | {"asked_by": ["not-a-run", first, 3, *(str(uuid.uuid4()) for _ in range(40))]}
+    assert reg.AgentRun.model_validate(edited).asked_by[:1] == (first,) and len(reg.AgentRun.model_validate(edited).asked_by) == ASKED_BY_MAX
