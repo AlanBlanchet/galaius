@@ -205,7 +205,7 @@ class _ResumeProvider(_DeliveryProvider):
 def _continuation_policy(monkeypatch):
     provider = _DeliveryProvider()
     provider.calls = []
-    monkeypatch.setattr(messaging, "provider_for", lambda name: provider)
+    install_provider(monkeypatch, provider)
     use_policy(monkeypatch, messaging, agents={"tester": "fresh-model"},
                reasoning={"tester": "high"}, providers={"fake": True})
     return provider
@@ -565,8 +565,7 @@ def test_record_and_delivery_share_the_transcript_message_limit(monkeypatch):
 
 def test_queue_preserves_effective_policy_and_records_fresh_policy_separately(monkeypatch):
     from galaius.agents import agent_queue
-    provider = _DeliveryProvider()
-    monkeypatch.setattr(messaging, "provider_for", lambda _: provider)
+    install_provider(monkeypatch, _DeliveryProvider())
     use_policy(monkeypatch, messaging, agents={"tester": "fresh-model"},
                reasoning={"tester": "high"}, providers={"fake": True})
     register_run("r1", name="reviewer", provider="fake", task="t", pid=1234, agent="tester", provider_session_id="vendor-thread")

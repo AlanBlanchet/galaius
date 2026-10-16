@@ -378,14 +378,17 @@ def test_a_message_is_answered_once_durably_queued_and_its_dispatcher_gets_the_m
             started.update(options, argv=argv)
             self.pid = os.getpid()
 
-    monkeypatch.setattr(agent_queue.subprocess, "Popen", Dispatcher)
+    monkeypatch.setattr(reg.subprocess, "Popen", Dispatcher)
     request = _request("send", run_id=run_id, text="- and one more thing")
     # The server sends it again when the first answer never came (a frozen PC, a runner restart):
     # the same request id is the same message, queued once.
     answer, again = _answer(agents, request), _answer(agents, request)
     assert answer.detail.startswith("Queued for r") and again.detail == answer.detail
-    # The runner's environment is scrubbed: the dispatcher still reads the runner's own registry.
-    assert started["env"] == {**agents.environment, "GALAIUS_AGENTS_DIR": str(reg.agents_dir())}
+    # The runner's environment is scrubbed: the dispatcher still reads the runner's own registry, its PATH extended to
+    # every agent program's folder (`participant_environment`).
+    env, path = dict(started["env"]), started["env"]["PATH"]
+    assert {**env, "PATH": None} == {**agents.environment, "GALAIUS_AGENTS_DIR": str(reg.agents_dir()), "PATH": None}
+    assert path.startswith(agents.environment["PATH"])
     assert started["argv"][-3:-1] == ["--dispatch", run_id] and started["start_new_session"]
     assert [(item.state, item.message_id) for item in agent_queue.items(run_id)] == [("pending", str(request.id))]
     assert [event.text for event in reg.read_messages(run_id)] == ["- and one more thing"]
@@ -591,7 +594,7 @@ def test_a_message_to_a_session_on_its_turn_waits_for_the_turn_to_end(tmp_path: 
     delivered, busy = [], [True, True, False]
 
     class Host:
-        async def send(self, run_id, text):
+        async def send(self, run_id, text, media=()):
             if busy and busy.pop(0):
                 raise ConversationRefused("conflict", "Conversation already has an active turn.")
             await asyncio.sleep(0.05)
@@ -674,7 +677,7 @@ def test_codex_conversations_of_the_owner_continue_as_a_session_copy(base: Path,
                     {"id": ours, "preview": "Run ls", "cwd": str(base / "project"), "originator": "galaius", "updatedAt": 200},
                     {"id": str(uuid4()), "preview": "elsewhere", "cwd": str(base / "other"), "originator": "codex_cli_rs", "updatedAt": 300}]
 
-        async def fork(self, thread_id, prompt, workspace, *, route_id, model):
+        async def fork(self, thread_id, prompt, workspace, *, route_id, model, media=()):
             forked.append((thread_id, prompt, workspace))
             return reg.AgentRun(run_id=str(uuid4()), provider="codex", name="copy", cwd=str(workspace))
 
