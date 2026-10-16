@@ -29,7 +29,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import ExitStack, contextmanager, suppress
 from contextvars import ContextVar
 from pathlib import Path
-from typing import BinaryIO, ClassVar, Literal, Self
+from typing import TYPE_CHECKING, BinaryIO, ClassVar, Literal, Self
 from uuid import UUID
 
 from pydantic import BaseModel, Field, PrivateAttr, ValidationInfo, field_validator
@@ -37,7 +37,7 @@ from galaius.agents import quota
 from galaius_core import MEDIA_KEY, AgentMedia, AgentRevisionRef, ContextGauge, PromptExecutionRef, StopActor
 
 from galaius.agents.events import (
-    CONTEXT_FIELDS, TOKEN_FIELDS, AgentEvent, TokenUsage, UsageLedger, ending_of, stream_lines,
+    CONTEXT_FIELDS, TOKEN_FIELDS, AgentEvent, TokenUsage, UsageLedger, answered_line, ending_of, stream_lines,
 )
 from galaius.agents.catalog_connection import CatalogConnection
 from galaius.agents.ceiling import contained, end_run_scope, is_run_scope
@@ -55,6 +55,9 @@ from galaius.upgrade.store import active_interpreter
 from galaius.server_registry import (
     _alive,  # generic pid liveness (Windows-safe, no signal sent)
 )
+
+if TYPE_CHECKING:
+    from galaius.agents.agent_queue import QueueItem  # imports this module at run time
 
 RunStatus = Literal[
     "starting", "running", "waiting", "done", "failed", "cancelled", "interrupted", "stopped",
@@ -219,6 +222,8 @@ class StreamDigest(BaseModel):
     #: The stream's own ending (`ending_of`); None while the stream is mid-work.
     ending: Literal["done", "error"] | None = None
     ending_text: str = ""
+    #: The raw stream line its newest turn's answer sits on (`answered_line`); None mid-work.
+    answered: int | None = None
     cost_usd: float | None = None
     tokens: dict[str, int] = Field(default_factory=dict)
     #: The context gauge its events fold to (`AgentEvent.gauge_onto`).
@@ -242,6 +247,7 @@ class StreamDigest(BaseModel):
             source=source, events=bool(events), context=context,
             ending=ending.kind if ending is not None else None,
             ending_text=(ending.text or "") if ending is not None else "",
+            answered=answered_line(events, viewer),
             cost_usd=sum(costs) if costs else None, tokens=tokens,
             last=next((said for e in reversed(events) if (said := e.summary(viewer=viewer))), None),
         )
@@ -1076,6 +1082,7 @@ def finish(
     """
     events = read_events(run_id)
     terminal = events[-1] if events else None
+    answered = answered_line(events, run_id)
     with record_lock(run_id):
         stored = _read_record(run_id)
         if stored is None:
@@ -1096,6 +1103,12 @@ def finish(
         # SIGTERM's code (-15, or 143 through a shell) and its reaper must not turn it "failed".
         if stored.status == "stopped":
             exit_code = stored.exit_code
+        from galaius.agents import agent_queue  # imports this module: a top-level import would be circular
+        # Ended by SIGTERM after its answer (a parent's stop, its unit stopped): it had finished, a clean end.
+        idle = (stored.status != "stopped" and exit_code in (-signal.SIGTERM, 128 + signal.SIGTERM)
+                and _cuts_nothing(answered, agent_queue.items_locked(run_id)))
+        if idle:
+            exit_code = 0
         status = (
             "stopped" if exit_code in (-signal.SIGTERM, 128 + signal.SIGTERM)
             else "done" if exit_code == 0
@@ -1105,7 +1118,7 @@ def finish(
         if status == "done" and (stored.output_tokens or 0) > 0:
             quota.served(stored.provider, stored.model, subscription=stored.subscription_id)  # it answered: nothing holds against it
         finished = _merge_record_locked(run_id, {
-            "finished_at": stored.finished_at if stored.status == "stopped" and stored.finished_at else finished_at,
+            "finished_at": stored.finished_at if (stored.status == "stopped" or idle) and stored.finished_at else finished_at,
             "exit_code": exit_code,
             "status": status,
         })
@@ -1168,9 +1181,22 @@ def caller_stop_actor(environment: Mapping[str, str]) -> StopActor:
     return StopActor(kind="terminal")
 
 
+def _cuts_nothing(answered: int | None, items: Iterable["QueueItem"]) -> bool:
+    """A stop or SIGTERM after the run's answer (raw stream line `answered`, `answered_line`), no message turn claimed
+    past it (a claimed queue item's `raw_index`: the stream length at claim), cuts nothing: the run is done. Only a run
+    cut mid-work reads stopped and offers Continue (owner 2026-10-16: « Why are things always stopping... »: parents
+    stopping their finished children). A position unknown on either side cuts."""
+    return answered is not None and not any(
+        item.started_at is not None and (item.raw_index is None or item.raw_index > answered) for item in items)
+
+
 def stop(run_id: str, *, by: StopActor | None, expected_lifecycle_token: str | None = None) -> bool:
     """Ask a run to stop, recording who did (`by`; None: no one, its own subscription cap cut it). Returns False for an
-    unknown run rather than raising."""
+    unknown run rather than raising. A run that had given its answer, no turn since, is ended and stays done
+    (`_cuts_nothing`)."""
+    # Read before the lock: `read_events` takes `record_lock` itself.
+    known = _read_record(run_id)
+    answered = None if known is None else _digest(known).answered
     with record_lock(run_id):
         stored = _read_record(run_id)
         if stored is None:
@@ -1187,16 +1213,17 @@ def stop(run_id: str, *, by: StopActor | None, expected_lifecycle_token: str | N
         # Cancel first. A failed queue write must not leave a stopped run resumable with old work.
         try:
             from galaius.agents import agent_queue
+            idle = _cuts_nothing(answered, agent_queue.items_locked(run_id))
             agent_queue.cancel_pending_locked(run_id)
         except (ImportError, OSError, ValueError, RuntimeError):
             return False
         if stored.process_running():
             _terminate(stored.pid)
         updated = _merge_record_locked(run_id, {
-            "finished_at": time.time(),
-            "exit_code": -signal.SIGTERM,
-            "status": "stopped",
-            "stopped_by": None if by is None else by.model_dump(mode="json"),
+            "finished_at": stored.finished_at if idle and stored.finished_at else time.time(),
+            "exit_code": 0 if idle else -signal.SIGTERM,
+            "status": "done" if idle else "stopped",
+            "stopped_by": None if idle or by is None else by.model_dump(mode="json"),
         })
         return updated is not None
 
@@ -2064,6 +2091,15 @@ def _vendor_said_at(run: AgentRun) -> float | None:
         return run.finished_at
 
 
+def _digest(run: AgentRun) -> StreamDigest:
+    """Its stream's digest: the one on its record while the stream is unchanged, else read afresh."""
+    # Stat before reading: a line appended meanwhile leaves the digest older than the stream,
+    # so the next listing re-reads it rather than trusting a digest that never saw that line.
+    source = _stream_source(run.run_id)
+    digest = run.stream_digest
+    return digest if digest is not None and digest.source == source else StreamDigest.of(source, read_events(run.run_id), viewer=run.run_id)
+
+
 def _derive(run: AgentRun) -> AgentRun:
     original = run.model_dump(mode="json")
     if not run.project and run.cwd:
@@ -2075,12 +2111,7 @@ def _derive(run: AgentRun) -> AgentRun:
     whose supervising process died still reports what it actually did, instead of looking healthy
     and empty."""
     run.status = _status_for(run)
-    # Stat before reading: a line appended meanwhile leaves the digest older than the stream,
-    # so the next listing re-reads it rather than trusting a digest that never saw that line.
-    source = _stream_source(run.run_id)
-    digest = run.stream_digest
-    if digest is None or digest.source != source:
-        digest = StreamDigest.of(source, read_events(run.run_id), viewer=run.run_id)
+    digest = _digest(run)
     # The child's OWN stream is the authority on how it ended. If its last event about its own
     # work is an ending, the run finished — even if nothing was watching to record an exit code.
     # Without this, a run whose supervisor died reports "interrupted" while its transcript

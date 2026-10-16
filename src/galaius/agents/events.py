@@ -423,6 +423,14 @@ def ending_of(events: list[AgentEvent]) -> AgentEvent | None:
     return said if said is not None and said.kind in ("done", "error") else None
 
 
+def answered_line(events: list[AgentEvent], run_id: str) -> int | None:
+    """The raw stream line of its newest turn's answer: `ending_of` when it is "done", stepping over the messages sent to
+    it since (a message starts no turn until that turn's own events follow it). None mid-work, on an error, or for an
+    ending read from no raw stream."""
+    ending = ending_of([event for event in events if not (event.kind == "message" and event.to_run == run_id)])
+    return ending.raw_index if ending is not None and ending.kind == "done" else None
+
+
 def _who(run_id: str | None) -> str:
     """A run's name, for a reader. "operator" is a person, not a run; an id we can't resolve
     falls back to its short form, not a bare empty string.

@@ -834,6 +834,57 @@ def test_stopping_records_who_stopped_it_until_its_next_turn(monkeypatch, enviro
     assert reg.begin_turn("r1", pid=os.getpid()).stopped_by is None
 
 
+def _said(text: str) -> dict:
+    return {"type": "assistant", "session_id": "s", "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}}
+
+
+_INIT = {"type": "system", "subtype": "init", "session_id": "s"}
+_ANSWERED = [_INIT, _said("Verdict: PASS."), {"type": "result", "subtype": "success", "is_error": False, "session_id": "s",
+                                               "stop_reason": "end_turn", "result": "Verdict: PASS."}]
+_WORKING = {"type": "assistant", "session_id": "s", "message": {"role": "assistant", "content": [
+    {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}}]}}
+
+
+@pytest.mark.parametrize(("lines", "turn", "alive", "exit_code", "expected"), [
+    # Its answer given, then stopped by its parent (owner 2026-10-16: « Why are things always stopping... »).
+    (_ANSWERED, None, False, -15, "done"),
+    # Its process still up a few seconds after its answer: the stop ends it, the run had finished; reaped through a shell.
+    (_ANSWERED, None, True, 143, "done"),
+    # A message to it waited, never started: nothing it was doing is cut.
+    (_ANSWERED, "pending", False, -15, "done"),
+    # That message's turn claimed, its first line not written yet: cut mid-work.
+    (_ANSWERED, "running", True, -15, "stopped"),
+    # Its next turn under way.
+    ([*_ANSWERED, _WORKING], None, True, -15, "stopped"),
+    # Never answered.
+    ([_INIT, _WORKING], None, True, 143, "stopped"),
+])
+def test_a_stop_after_its_answer_leaves_the_run_finished(monkeypatch, lines, turn, alive, exit_code, expected):
+    """A run whose own stream ended on its answer, no turn claimed since, is done whoever stops it after; only a run cut
+    mid-work reads stopped (and offers Continue)."""
+    from galaius.agents import agent_queue
+
+    reg.register(run_id="r1", name="tester", provider="claude", task="t", pid=1)
+    register_run("boss", pid=2, agent="main")
+    reg.raw_events_path("r1").write_text("".join(json.dumps(line) + "\n" for line in lines))
+    if turn is not None:
+        agent_queue.enqueue("r1", message_id="m1", sender="boss")
+        if turn == "running":
+            with reg.record_lock("r1"):
+                agent_queue.claim_next_locked("r1")
+    killed = []
+    monkeypatch.setattr(reg, "_terminate", lambda pid: killed.append(pid) or True)
+    monkeypatch.setattr(reg, "_alive", lambda pid: alive)
+    assert reg.stop("r1", by=reg.caller_stop_actor({"GALAIUS_PARENT_RUN_ID": "boss"})) is True
+    assert killed == ([1] if alive else [])
+    reg.finish("r1", exit_code=exit_code)  # its process, ended by that stop, reaped with SIGTERM's code
+    monkeypatch.setattr(reg, "_alive", lambda pid: False)
+    stopped = expected == "stopped"
+    for run in (reg.get_run("r1"), next(run for run in reg.list_runs() if run.run_id == "r1")):
+        assert (run.status, run.stopped_by is not None, run.exit_code == 0) == (expected, stopped, not stopped)
+    assert all(item.state == "cancelled" for item in agent_queue.items("r1"))
+
+
 def test_stopping_an_unknown_run_is_false_not_an_exception():
     assert reg.stop("nope", by=None) is False
 
