@@ -257,6 +257,32 @@ class UsageLedger(BaseModel):
     seen: set[str] = Field(default_factory=set)
     live: TokenUsage = TokenUsage()
     checkpoints: list[_UsageCheckpoint] = Field(default_factory=list)
+    #: Thinking tokens its CLI estimated for the turn in progress (Claude's `thinking_tokens` lines, their deltas
+    #: summed: each thinking stretch restarts its own running total); the turn's end settles them (`settle_thinking`).
+    thinking: int = 0
+    #: The thread's reasoning counter as last reported (Codex `reasoning_output_tokens`, cumulative per thread).
+    reasoning: int = 0
+
+    def think(self, delta: object) -> None:
+        """One live thinking estimate's growth; a figure that is no count is not one."""
+        if isinstance(delta, int) and not isinstance(delta, bool) and delta > 0:
+            self.thinking += delta
+
+    def settle_thinking(self, turn: object) -> int | None:
+        """The thinking a turn's end settles: its CLI's own count for the turn, else what was estimated while it
+        ran; None when neither was reported. The estimate is spent either way."""
+        estimated, self.thinking = self.thinking, 0
+        if isinstance(turn, int) and not isinstance(turn, bool) and turn >= 0:
+            return turn
+        return estimated or None
+
+    def reasoned(self, cumulative: object) -> int | None:
+        """What a cumulative reasoning counter grew since its last report (one that went backwards restarted)."""
+        if not isinstance(cumulative, int) or isinstance(cumulative, bool) or cumulative < 0:
+            return None
+        grown = cumulative - self.reasoning if cumulative >= self.reasoning else cumulative
+        self.reasoning = cumulative
+        return grown
 
     def observe(self, key: str | None, usage: TokenUsage) -> TokenUsage | None:
         """A live figure, or None when this message's usage was already counted."""
@@ -374,11 +400,13 @@ class AgentEvent(ContextGauge):
 
     def gauge_onto(self, gauge: ContextGauge) -> dict[str, int | None]:
         """What this event changes of a run's context `gauge`: the size and window it reports (newest
-        wins), its compactions added; a compaction sets the size it left, None when its CLI did not say
-        (never the stale size from before it)."""
+        wins), its compactions and settled thinking added; a compaction sets the size it left, None when its CLI
+        did not say (never the stale size from before it)."""
         updates: dict[str, int | None] = {field: value for field in ("context_tokens", "context_window") if (value := getattr(self, field)) is not None}
         if self.compactions:
             updates |= {"context_tokens": self.context_tokens, "compactions": gauge.compactions + self.compactions}
+        if self.thinking_tokens is not None:
+            updates["thinking_tokens"] = (gauge.thinking_tokens or 0) + self.thinking_tokens
         return updates
 
     def summary(self, viewer: str | None = None) -> str:

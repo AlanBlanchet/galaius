@@ -1989,8 +1989,14 @@ class StreamMirror:
     paid on every append of every live run. The mirror is appended to only while it still holds what
     this object last wrote and the new events extend it; anything else rewrites it as `read_events`."""
 
+    #: Least seconds between two record writes that only move its live thinking estimate (Claude says one every
+    #: ~150-250 tokens): every surface reading the record (a run list, the server's mirror of it) sees it grow at
+    #: most this often. A settled turn, or any other field moving with it, is written at once.
+    THINKING_EVERY = 1.5
+
     def __init__(self, run_id: str) -> None:
         self.run_id = run_id
+        self.thought_at = 0.0  # when its live thinking estimate was last written (`time.monotonic`)
         self._reset()
 
     def _reset(self) -> None:
@@ -2054,6 +2060,10 @@ class StreamMirror:
                 updates["provider_session_id"] = session_id
             if turn_id and stored.provider_turn_id != turn_id:
                 updates["provider_turn_id"] = turn_id
+            # Its turn's thinking as it thinks (the ledger's estimate, never an event's): throttled while only it grows.
+            live, now = self.ledger.thinking or None, time.monotonic()
+            if stored.thinking_live != live and (updates or live is None or now - self.thought_at >= self.THINKING_EVERY):
+                updates["thinking_live"], self.thought_at = live, now
             if updates:
                 _update_fields(self.run_id, updates)
         merged = _interleave(parsed, read_messages(self.run_id), self.lines + len(stream_lines(tail)))

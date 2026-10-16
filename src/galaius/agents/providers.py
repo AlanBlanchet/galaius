@@ -846,7 +846,7 @@ def provider_caveat_note(provider: "AgentProvider") -> str:
 #: lifecycle. They outnumbered the real steps in the activity view, burying the transparency the
 #: panel exists for. Only known noise is dropped; an unrecognised subtype still comes through as
 #: `other`, so a vendor adding an event cannot vanish silently.
-_HARNESS_BOOKKEEPING = frozenset({"thinking_tokens", "hook_started", "hook_response"})
+_HARNESS_BOOKKEEPING = frozenset({"hook_started", "hook_response"})
 
 #: How Claude Code opens the `isSynthetic` user turn carrying a Stop hook's block.
 _STOP_HOOK_FEEDBACK = "Stop hook feedback:"
@@ -1487,6 +1487,12 @@ class ClaudeCodeProvider(AgentProvider):
         if kind == "system" and raw.get("subtype") in _HARNESS_BOOKKEEPING:
             return None  # about the harness's own machinery, not about what the agent did
 
+        if kind == "system" and raw.get("subtype") == "thinking_tokens":
+            # Its live estimate while the model thinks (2.1.288: one line per ~150-250 tokens): counted for the run's gauge
+            # (`StreamMirror`), never a transcript entry; the turn's result settles it.
+            ledger.think(raw.get("estimated_tokens_delta"))
+            return None
+
         if kind == "system" and raw.get("subtype") == "task_started":
             return AgentEvent(kind="spawn", session_id=sid, raw_type=kind,
                               text=str(raw.get("description") or raw.get("agent_type") or "subagent"))
@@ -1602,13 +1608,16 @@ class ClaudeCodeProvider(AgentProvider):
             # reports the model's own here (1M or 200k for one model id, by account), never `autoCompactWindow`.
             main = (raw.get("modelUsage") or {}).get(ledger.primary)
             window = ledger.window or (main.get("contextWindow") if isinstance(main, dict) else None)
+            # The turn's own thinking (`usage.output_tokens_details`: this turn, main thread; `modelUsage` is cumulative).
+            details = (raw.get("usage") or {}).get("output_tokens_details") or {}
+            thought = ledger.settle_thinking(details.get("thinking_tokens") if isinstance(details, dict) else None)
             return AgentEvent(
                 kind="error" if failed else "done",
                 session_id=sid, raw_type=kind,
                 text=detail,
                 cost_usd=cost,
                 final_text=has_final,
-                **ContextGauge.reported({"context_window": window}),
+                **ContextGauge.reported({"context_window": window, "thinking_tokens": thought}),
                 **({} if settled is None else settled.model_dump()),
             )
 
@@ -2373,6 +2382,7 @@ class CodexProvider(AgentProvider):
                 kind="done",
                 session_id=session_id, turn_id=turn_id,
                 raw_type=kind,
+                **ContextGauge.reported({"thinking_tokens": ledger.reasoned(usage.get("reasoning_output_tokens")) if isinstance(usage, dict) else None}),
                 **({} if settled is None else settled.model_dump()),
             )
         return AgentEvent(kind="other", raw_type=kind, text=_clip(line, 200))

@@ -1194,6 +1194,37 @@ def test_the_live_mirror_built_from_appended_lines_equals_a_whole_rebuild():
     assert reg.get_run("inc").provider_session_id == reg.get_run("full").provider_session_id == "s"
 
 
+def test_a_thinking_run_shows_its_thinking_growing_throttled_then_settled_per_turn(monkeypatch):
+    """Owner 2026-10-16 « show thinking tokens being accumulated ? (without saturating the network) »: the record
+    carries the turn's live estimate (Claude's `thinking_tokens` lines, never a transcript entry), written at most
+    every `THINKING_EVERY` s while only it grows, then each turn's own count summed once it ends, as a whole read
+    derives it."""
+    register_run(run_id="think", name="think", provider="claude", task="t")
+    clock = [0.0]
+    monkeypatch.setattr(reg.time, "monotonic", lambda: clock[0])
+    mirror = reg.StreamMirror("think")
+    tick = lambda delta: f'{{"type":"system","subtype":"thinking_tokens","estimated_tokens":{delta},"estimated_tokens_delta":{delta},"session_id":"s"}}'
+    result = lambda thought: '{"type":"result","subtype":"success","is_error":false,"result":"ok","usage":{"output_tokens_details":{"thinking_tokens":%d}},"session_id":"s"}' % thought
+    answer = '{"type":"assistant","message":{"id":"m%d","content":[{"type":"text","text":"ok"}]},"session_id":"s"}'
+    steps = [  # when, lines appended, then (thinking_live, thinking_tokens) on the record
+        (10.0, [_CLAUDE_LINES[0], tick(50), tick(150)], (200, None)),
+        (10.5, [tick(100)], (200, None)),  # 0.5 s after its last write: held back
+        (12.0, [tick(50)], (350, None)),
+        (12.1, [answer % 1, result(604)], (None, 604)),  # settled at once, the estimate replaced by the turn's own count
+        (14.0, [tick(80)], (80, 604)),
+        (14.1, [answer % 2, result(100)], (None, 704)),
+    ]
+    for clock[0], lines, (live, settled) in steps:
+        with reg.raw_events_path("think").open("ab") as raw:
+            raw.write(("\n".join(lines) + "\n").encode())
+        mirror.refresh()
+        run = reg.get_run("think")
+        assert (run.thinking_live, run.thinking_tokens) == (live, settled), lines
+    assert reg.StreamDigest.of("", reg.read_events("think"), viewer="").context.thinking_tokens == 704
+    assert [event.get("thinking_tokens") for event in _mirrored_events("think") if event["kind"] == "done"] == [604, 100]
+    assert not any("thinking_live" in event or ("thinking_tokens" in event and event["kind"] != "done") for event in _mirrored_events("think"))
+
+
 # ── the observed-at stamp: when galaius first SAW an event, not when the vendor sent it ────────
 # The vendor writes no timestamps, so idleness used to be derived from the run's start time — an
 # agent working for two minutes was stamped HELD and drawn asleep, the harder it worked the deader

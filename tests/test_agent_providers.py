@@ -521,7 +521,8 @@ def test_the_context_gauge_and_a_manual_compaction_read_off_a_real_compacted_ses
     [compacted] = [e for e in events if e.kind == "compacted"]
     assert (compacted.compaction, compacted.compacted_from, compacted.context_tokens) == ("manual", 22560, 1769)
     assert [e.kind for e in events if e.raw_type == "user"] == ["injected"]  # the summary; the replayed stdout is dropped
-    assert StreamDigest.of("", events, viewer="").context == ContextGauge(context_tokens=1769, context_window=200_000, compactions=1)
+    # Each turn's own thinking (its result's `output_tokens_details`), summed: 153 then 0 for the compaction.
+    assert StreamDigest.of("", events, viewer="").context == ContextGauge(context_tokens=1769, context_window=200_000, compactions=1, thinking_tokens=153)
     subagent = json.loads(lines[2]) | {"parent_tool_use_id": "toolu_example"}
     assert provider.parse(json.dumps(subagent), UsageLedger()).context_tokens is None
 
@@ -884,6 +885,16 @@ def _codex_turn(input_tokens: int, cached: int, write: int, output: int) -> dict
         "input_tokens": input_tokens, "cached_input_tokens": cached,
         "cache_write_input_tokens": write, "output_tokens": output,
         "reasoning_output_tokens": 348}}
+
+
+def test_codex_turns_settle_the_reasoning_their_cumulative_counter_grew():
+    from galaius.agents.events import UsageLedger
+    from galaius.agents.providers import PROVIDERS
+
+    ledger, turn = UsageLedger(), _codex_turn(1000, 0, 0, 400)
+    thought = [PROVIDERS["codex"].parse(json.dumps({**turn, "usage": {**turn["usage"], "reasoning_output_tokens": n}}), ledger).thinking_tokens
+               for n in (300, 500, 120)]
+    assert thought == [300, 200, 120]  # a counter that went backwards restarted from zero
 
 
 @pytest.mark.parametrize(("provider", "stream", "truth"), [
