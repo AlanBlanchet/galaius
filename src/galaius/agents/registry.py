@@ -234,7 +234,7 @@ class StreamDigest(BaseModel):
 
     @classmethod
     def of(cls, source: str, events: list[AgentEvent], viewer: str) -> Self:
-        ending = ending_of(events)
+        ending = ending_of(events, viewer)
         costs = [e.cost_usd for e in events if e.cost_usd is not None]
         tokens = {}
         for field in TOKEN_FIELDS:

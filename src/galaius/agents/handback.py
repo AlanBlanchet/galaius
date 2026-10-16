@@ -36,7 +36,7 @@ class Report(BaseModel):
     def of(cls, run: reg.AgentRun) -> "Report":
         if _pending(run):
             return cls(run_id=run.run_id, agent=run.agent, status=run.status, pending=True, text="")
-        ending = ending_of(events := reg.read_events(run.run_id))
+        ending = ending_of(events := reg.read_events(run.run_id), run.run_id)
         said = ending.text if ending is not None else next((event.text for event in reversed(events) if event.kind == "text"), "")
         return cls(run_id=run.run_id, agent=run.agent, status=run.status, pending=False, text=(said or "").strip())
 

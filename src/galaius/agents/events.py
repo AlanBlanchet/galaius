@@ -453,14 +453,17 @@ class AgentEvent(ContextGauge):
         return f"{_who(self.from_run)} → {_who(self.to_run)}: {body}"
 
 
-def ending_of(events: list[AgentEvent]) -> AgentEvent | None:
-    """The run's own ending — its newest event about its own work, when that event is terminal.
+def ending_of(events: list[AgentEvent], run_id: str) -> AgentEvent | None:
+    """Run `run_id`'s own ending — its newest event about its own work, when that event is terminal.
 
     Trailing harness bookkeeping (`NOT_ITS_WORK`) is stepped over: a vendor writing a background
     task change or a notification AFTER its result line left a turn that ended cleanly looking
-    cut off, and the panel said it was interrupted.
-    """
-    said = next((event for event in reversed(events) if event.kind not in NOT_ITS_WORK), None)
+    cut off, and the panel said it was interrupted. So is a message it sent once that line was
+    written: no turn of its model writes after its result, so it is its report carried to its
+    parent (the hand-back), and read as work it left every answered child « lost » (2026-10-16).
+    A message sent mid-turn is followed by that turn's own events, never by its result line."""
+    said = next((event for event in reversed(events)
+                 if event.kind not in NOT_ITS_WORK and not (event.kind == "message" and event.from_run == run_id)), None)
     return said if said is not None and said.kind in ("done", "error") else None
 
 
@@ -468,7 +471,7 @@ def answered_line(events: list[AgentEvent], run_id: str) -> int | None:
     """The raw stream line of its newest turn's answer: `ending_of` when it is "done", stepping over the messages sent to
     it since (a message starts no turn until that turn's own events follow it). None mid-work, on an error, or for an
     ending read from no raw stream."""
-    ending = ending_of([event for event in events if not (event.kind == "message" and event.to_run == run_id)])
+    ending = ending_of([event for event in events if not (event.kind == "message" and event.to_run == run_id)], run_id)
     return ending.raw_index if ending is not None and ending.kind == "done" else None
 
 

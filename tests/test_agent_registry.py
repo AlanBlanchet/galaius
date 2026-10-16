@@ -503,11 +503,23 @@ def test_status_is_derived_from_pid_liveness_and_recorded_exit(
 @pytest.mark.parametrize(
     "alive, reused, terminal, expected_status, ended",
     [
-        pytest.param(True, False, None, "running", False, id="live_pid"),
-        pytest.param(False, False, reg.AgentEvent(kind="done", cost_usd=0.4), "done", True, id="dead_pid_final_event"),
-        pytest.param(False, False, reg.AgentEvent(kind="error", text="blew up"), "failed", True, id="dead_pid_error_event"),
-        pytest.param(False, False, None, "interrupted", True, id="dead_pid_no_final_event"),
-        pytest.param(True, True, None, "interrupted", True, id="pid_reused_by_another_process"),
+        pytest.param(True, False, (), "running", False, id="live_pid"),
+        pytest.param(False, False, (reg.AgentEvent(kind="done", cost_usd=0.4),), "done", True, id="dead_pid_final_event"),
+        pytest.param(False, False, (reg.AgentEvent(kind="error", text="blew up"),), "failed", True, id="dead_pid_error_event"),
+        pytest.param(False, False, (), "interrupted", True, id="dead_pid_no_final_event"),
+        pytest.param(True, True, (), "interrupted", True, id="pid_reused_by_another_process"),
+        # 2026-10-16: a tester answered « CHILD-DONE-7Q », then its report went to its parent as its own message (the
+        # hand-back); that message after its result line read as unfinished work, and every page listed it « lost ».
+        pytest.param(False, False, (reg.AgentEvent(kind="done", text="CHILD-DONE-7Q"),
+                                    reg.AgentEvent(kind="message", text="## tester r1 — done\nCHILD-DONE-7Q", from_run="r1", to_run="lead")),
+                     "done", True, id="dead_pid_answer_then_its_hand_back"),
+        # A message it sent mid-turn is its work: the turn after it never ended.
+        pytest.param(False, False, (reg.AgentEvent(kind="message", text="started on it", from_run="r1", to_run="lead"),),
+                     "interrupted", True, id="dead_pid_mid_turn_message"),
+        # A message sent TO it after its answer asked for another turn that never ran: still cut.
+        pytest.param(False, False, (reg.AgentEvent(kind="done", text="first answer"),
+                                    reg.AgentEvent(kind="message", text="one more thing", from_run="lead", to_run="r1")),
+                     "interrupted", True, id="dead_pid_answer_then_a_message_to_it"),
     ],
 )
 def test_one_status_rule_answers_every_surface(monkeypatch, alive, reused, terminal, expected_status, ended):
@@ -516,8 +528,8 @@ def test_one_status_rule_answers_every_surface(monkeypatch, alive, reused, termi
     register_run(pid=4242)
     reg._update_fields("r1", {"pid_started": 111})
     reg.append_event("r1", reg.AgentEvent(kind="tool", tool="Bash"))
-    if terminal is not None:
-        reg.append_event("r1", terminal)
+    for event in terminal:
+        reg.append_event("r1", event)
     monkeypatch.setattr(reg, "_alive", lambda pid: alive)
     monkeypatch.setattr(reg, "process_started", lambda pid: 222 if reused else 111)
     run = reg.list_runs()[0]
