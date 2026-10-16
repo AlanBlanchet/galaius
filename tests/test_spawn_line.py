@@ -2,6 +2,7 @@
 (`galaius.agents.spawn_line`). 2026-10-13: three conversations ran 20+ runs at once and the agents'
 memory cap killed builds, browsers and whole runs."""
 
+import asyncio
 import inspect
 import json
 import os
@@ -142,9 +143,21 @@ def test_a_start_cut_off_or_an_unreadable_entry_reads_failed_and_never_refuses(a
     assert [path.name.startswith("#spawn-line.state.unreadable-") for path in reg.agents_dir().iterdir()].count(True) == 1
 
 
+def test_a_new_run_started_for_a_run_lists_it_among_its_askers():
+    """A job queue's wake starting a new worker (`spawn --for` the run that queued the job): that run is its first asker."""
+    maker, started = str(uuid.uuid4()), str(uuid.uuid4())
+    reg.register(run_id=maker, pid=999999, provider="claude", name="maker", task="t", agent="tester")
+
+    async def runner(provider, task, *, run_id, **rest):
+        reg.register(run_id=run_id, pid=999999, provider="claude", name="deployer", task=task, agent="infra-engineer")
+
+    asyncio.run(Spawn(task="ship it", cwd=".", agent="infra-engineer", for_run=maker).start(started, runner))
+    assert reg.get_run(started).asked_by == (maker,)
+
+
 def test_every_kept_argument_of_a_spawn_is_one_run_agent_takes():
     """A waiter starts it long after it was asked: an argument `run_agent` renamed fails there, out of sight."""
-    assert set(Spawn.model_fields) - {"task", "provider", "session_id"} <= set(inspect.signature(run_agent).parameters)
+    assert set(Spawn.model_fields) - Spawn.NOT_RUN_ARGUMENTS <= set(inspect.signature(run_agent).parameters)
 
 
 def _ended(run_id: str, **rest) -> None:
@@ -199,7 +212,7 @@ def test_a_spawn_continues_its_conversations_idle_agent_of_that_role(at_work, mo
     _ended("lead", agent="main", session_id="s1", parent_run_id=None)
     _ended("mid", agent="tech-lead", session_id="s1", parent_run_id="lead")
 
-    def deliver(run_id, task, *, only_if_idle, turn):
+    def deliver(run_id, task, *, only_if_idle, turn, for_run):
         assert only_if_idle and turn.refusal(task, None) is None
         sent.append(run_id)
         texts.append(task)

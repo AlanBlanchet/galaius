@@ -540,3 +540,17 @@ def test_a_run_lists_the_runs_that_sent_it_work_and_the_runs_it_says_it_works_fo
         agents_work_for(third)
     edited = reg.get_run(worker).model_dump(mode="json") | {"asked_by": ["not-a-run", first, 3, *(str(uuid.uuid4()) for _ in range(40))]}
     assert reg.AgentRun.model_validate(edited).asked_by[:1] == (first,) and len(reg.AgentRun.model_validate(edited).asked_by) == ASKED_BY_MAX
+
+
+def test_an_operator_message_sent_for_a_run_names_it_on_its_entry_and_in_the_recipients_askers(monkeypatch):
+    """2026-10-16: each job-queue wake of its worker came from « operator » alone; a message sent for a run
+    (`spawn --for`: the run that queued the job) keeps that run on its transcript entry and lists it among the recipient's askers."""
+    provider = _setup(monkeypatch)
+    deployer, maker, other = (str(uuid.uuid4()) for _ in range(3))
+    for run_id in (deployer, maker, other):
+        reg.register(run_id=run_id, pid=999999, provider=provider.name, name=run_id[:4], task="t", agent="tester", provider_session_id="vendor")
+    for wake in (maker, other, maker, None):
+        assert messaging.queue_message(deployer, "wake", sender="operator", for_run=wake).state == "queued"
+    assert [message.for_run for message in reg.read_messages(deployer)] == [maker, other, maker, None]
+    assert reg.get_run(deployer).asked_by == (maker, other)
+    assert '"for_run"' not in reg.messages_path(deployer).read_text().splitlines()[-1]   # left out when none

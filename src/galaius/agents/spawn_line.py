@@ -27,7 +27,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Literal
+from typing import ClassVar, Literal
 
 from galaius_core import AgentRevisionRef
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -78,6 +78,11 @@ class Spawn(BaseModel):
     provider_modes: dict[str, str] = Field(default_factory=dict)
     quota_window: float | None = None
     fence: FenceSpec | None = None
+    #: The run this spawn is for (`galaius agents spawn --for`): on the message handing it over, and in the
+    #: `asked_by` of the run taking it, continued or new.
+    for_run: str | None = None
+    #: Its fields `start` passes to `run_agent` other than by their own names.
+    NOT_RUN_ARGUMENTS: ClassVar[frozenset[str]] = frozenset({"task", "provider", "session_id", "for_run"})
 
     @classmethod
     def asked(cls, *, parent_run_id: str | None = None, **fields) -> Spawn:
@@ -87,10 +92,13 @@ class Spawn(BaseModel):
     async def start(self, run_id: str, runner: Callable[..., Awaitable[RunHandle]] | None = None) -> RunHandle:
         """Start it as run `run_id` (the id its caller was given) through `runner` (`run_agent` when None), and give
         the child a moment to be alive before a caller about to exit lets go of it."""
-        arguments = {name: getattr(self, name) for name in type(self).model_fields if name not in {"task", "provider", "session_id"}}
+        arguments = {name: getattr(self, name) for name in type(self).model_fields if name not in self.NOT_RUN_ARGUMENTS}
         arguments |= {"name": self.name or self.agent, "provider_modes": self.provider_modes or None}
         with reg.session_context(self.session_id, parent_run_id=self.parent_run_id):
             handle = await (runner or run_agent)(provider_for(self.provider) if self.provider is not None else None, self.task, run_id=run_id, **arguments)
+        if self.for_run is not None:
+            with reg.record_lock(run_id):
+                reg.note_asker_locked(run_id, self.for_run)
         await asyncio.sleep(0.2)
         return handle
 
@@ -161,7 +169,8 @@ class Spawn(BaseModel):
         why = [f"{run_id[:8]} {said}" for run_id, said in misfits.items() if said]
         fit = [run for run in peers if misfits[run.run_id] is None]
         for run in sorted(fit, key=lambda run: (run.parent_run_id == self.parent_run_id, run.finished_at or run.started_at), reverse=True):
-            delivery = messaging.deliver_message(run.run_id, self._brief(run), only_if_idle=True, turn=agent_queue.MessageTurn(limit=agent_queue.BRIEF_MAX))
+            delivery = messaging.deliver_message(run.run_id, self._brief(run), only_if_idle=True, turn=agent_queue.MessageTurn(limit=agent_queue.BRIEF_MAX),
+                                                 for_run=self.for_run)
             refused = delivery.text if delivery.state == "error" else messaging.wait_for_start(delivery)
             if refused is None or messaging.read_by_agent(delivery):
                 reg.take_over_refused(run, parent=self.parent_run_id, at=time.time())  # the launch of its role refused before it

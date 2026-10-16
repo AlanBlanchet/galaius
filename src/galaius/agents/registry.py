@@ -1732,7 +1732,7 @@ def upsert_provider_child(
 
 
 def _record_message_event_locked(
-    *, from_run: str, to_run: str, text: str, event_id: str | None = None, media: tuple[str, ...] = (),
+    *, from_run: str, to_run: str, text: str, event_id: str | None = None, media: tuple[str, ...] = (), for_run: str | None = None,
 ) -> str | None:
     if _read_record(to_run) is None:
         return None
@@ -1741,7 +1741,7 @@ def _record_message_event_locked(
         if side in SYSTEM_SENDERS:
             continue
         event = AgentEvent(kind="message", event_id=message_id, text=text, media=media,
-                           from_run=from_run, to_run=to_run, at=time.time(),
+                           from_run=from_run, to_run=to_run, for_run=for_run, at=time.time(),
                            raw_index=raw_line_count(side))
         _append_private(messages_path(side), (event.model_dump_json() + "\n").encode())
         if _read_record(side) is not None:
@@ -1762,11 +1762,11 @@ def record_message_event(
 
 
 def record_message_event_locked(
-    *, from_run: str, to_run: str, text: str, event_id: str | None = None, media: tuple[str, ...] = (),
+    *, from_run: str, to_run: str, text: str, event_id: str | None = None, media: tuple[str, ...] = (), for_run: str | None = None,
 ) -> str | None:
     """Record an exchange while the caller owns every needed run lock."""
     return _record_message_event_locked(
-        from_run=from_run, to_run=to_run, text=text, event_id=event_id, media=media,
+        from_run=from_run, to_run=to_run, text=text, event_id=event_id, media=media, for_run=for_run,
     )
 
 
