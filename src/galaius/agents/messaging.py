@@ -54,6 +54,9 @@ class Delivery(BaseModel):
         was queued, or why it was not delivered; None when there is none."""
         run = reg.get_run(run_id)
         item = next((item for item in agent_queue.items_locked(run_id) if item.message_id == message_id), None) if run is not None else None
+        if run is not None and item is None and agent_queue.holds_unreadable_locked(run_id, message_id):
+            return cls(state="queued", repeated=True, run_id=run_id,
+                       text=f"Already queued for {run.name} ({run_id[:8]}), as an item this galaius cannot read: the galaius that wrote it delivers it.")
         if run is None or item is None:
             return None
         if item.state in {"failed", "cancelled"}:

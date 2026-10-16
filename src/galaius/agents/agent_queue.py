@@ -10,7 +10,9 @@ each queued turn finishes, or the long-lived launcher holding the run's next chi
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
+import logging
 import os
 import shlex
 import signal
@@ -18,7 +20,7 @@ import sys
 import time
 import uuid
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Annotated, ClassVar, Literal
 
@@ -36,13 +38,19 @@ MAX_PENDING = 128
 _POLL_SECONDS = 0.1
 _DISPATCHER_RECOVERY_TIMEOUT = 30.0
 
+log = logging.getLogger(__name__)
+
 
 class CorruptQueueStateError(RuntimeError):
     """The durable queue cannot be trusted and was left untouched."""
 
 
 QueueState = Literal["pending", "running", "replied", "failed", "cancelled", "uncertain"]
-#: What a queue file holds only while one of its items is still pending (its state, as written).
+#: The states of an item waiting or being delivered.
+ACTIVE: frozenset[QueueState] = frozenset({"pending", "running"})
+#: What a queue file holds only while one of its items is still pending (its state, as written): one this galaius
+#: cannot read (`_entries`) included, so until the galaius that wrote it delivers it, the inbox hook starts Python
+#: after each tool call to find nothing it reads.
 PENDING_MARK = '"pending"'
 AttemptState = Literal["replied", "failed", "uncertain"]
 
@@ -197,10 +205,9 @@ def _state(run_id: str) -> dict:
         raise CorruptQueueStateError("durable agent queue has an unsupported state")
     if not isinstance(state.get("items", []), list):
         raise CorruptQueueStateError("durable agent queue items are corrupt")
-    try:
-        _items(state)
-    except CorruptQueueStateError:
-        raise
+    for raw, read in _entries(state):
+        if read is None:
+            _report_unreadable(run_id, str(raw.get("id")) if isinstance(raw, dict) else repr(raw)[:80])
     pid = state.get("dispatcher_pid")
     token = state.get("dispatcher_token")
     if pid is not None and (type(pid) is not int or pid <= 0):
@@ -217,26 +224,73 @@ def _write_state(run_id: str, state: dict) -> None:
     reg._replace_private(path(run_id), json.dumps(state, ensure_ascii=False).encode())
 
 
+def _entries(state: dict) -> list[tuple[object, QueueItem | None]]:
+    """Each item of `state` as written, beside the item this galaius reads from it; None when it cannot: written
+    by a newer galaius (a field or turn kind this one does not know yet) or damaged. Such an item stays in the
+    file as written, never claimed, changed or dropped here (`_rewrite_locked`): the galaius that wrote it still
+    delivers it, and the rest of the queue still works."""
+    entries: list[tuple[object, QueueItem | None]] = []
+    for raw in state.get("items", []):
+        try:
+            entries.append((raw, QueueItem.model_validate(raw)))
+        except (TypeError, ValueError):
+            entries.append((raw, None))
+    return entries
+
+
+@functools.cache
+def _report_unreadable(run_id: str, item_id: str) -> None:
+    """Say once per process that item `item_id` of run `run_id`'s queue is one this galaius cannot read (`_entries`)."""
+    log.warning("agent queue %s: item %s is left as written: this galaius cannot read it (written by a newer one, or damaged)",
+                path(run_id), item_id)
+
+
 def _items(state: dict) -> list[QueueItem]:
-    try:
-        return [QueueItem.model_validate(raw) for raw in state.get("items", [])]
-    except (TypeError, ValueError) as error:
-        raise CorruptQueueStateError("durable agent queue item is corrupt") from error
+    return [item for _, item in _entries(state) if item is not None]
+
+
+def _waiting(state: dict) -> int:
+    """How many items wait or are being delivered (`ACTIVE`, their state as written): those this galaius cannot read too."""
+    return sum(isinstance(raw, dict) and raw.get("state") in ACTIVE for raw in state.get("items", []))
+
+
+def holds_unreadable_locked(run_id: str, message_id: str) -> bool:
+    """Whether `message_id` is queued for the run as an item this galaius cannot read (`_entries`), while the
+    caller owns the run lock: queued already, by the galaius that wrote it, never to be queued again."""
+    return any(item is None and isinstance(raw, dict) and raw.get("message_id") == message_id
+               for raw, item in _entries(_state(run_id)))
+
+
+def _rewrite_locked(run_id: str, state: dict, change: Callable[[QueueItem], QueueItem | None]) -> list[QueueItem]:
+    """Apply `change` to each item this galaius reads (None: left as is) and write the queue back when one
+    changed; every other item stays exactly as written. The changed items, in queue order."""
+    changed: list[QueueItem] = []
+    rendered = []
+    for raw, item in _entries(state):
+        new = None if item is None else change(item)
+        if new is not None:
+            changed.append(new)
+        rendered.append(raw if new is None else new.model_dump())
+    if changed:
+        state["items"] = rendered
+        _write_state(run_id, state)
+    return changed
 
 
 def can_enqueue_locked(run_id: str) -> bool:
     """Check capacity while the recipient lock is held, before writing its transcript."""
-    state = _state(run_id)
-    return sum(item.state in {"pending", "running"} for item in _items(state)) < MAX_PENDING
+    return _waiting(_state(run_id)) < MAX_PENDING
 
 
 def enqueue_locked(run_id: str, *, message_id: str, sender: str, turn: QueuedTurn = MessageTurn()) -> QueueItem | None:
-    """Append one item while the caller owns ``registry.record_lock(run_id)``."""
+    """Append one item while the caller owns ``registry.record_lock(run_id)``; the item already queued under
+    `message_id` when there is one (one this galaius cannot read is the caller's to look for first:
+    `holds_unreadable_locked`); None when the queue is full."""
     state = _state(run_id)
     items = _items(state)
     if any(item.message_id == message_id for item in items):
         return next(item for item in items if item.message_id == message_id)
-    if sum(item.state in {"pending", "running"} for item in items) >= MAX_PENDING:
+    if _waiting(state) >= MAX_PENDING:
         return None
     item = QueueItem(
         id=uuid.uuid4().hex,
@@ -258,20 +312,8 @@ def enqueue(run_id: str, *, message_id: str, sender: str, turn: QueuedTurn = Mes
 
 
 def _replace_item_locked(run_id: str, item_id: str, **updates) -> QueueItem | None:
-    state = _state(run_id)
-    items = _items(state)
-    selected: QueueItem | None = None
-    rendered = []
-    for item in items:
-        if item.id == item_id:
-            item = item.model_copy(update=updates)
-            selected = item
-        rendered.append(item.model_dump())
-    if selected is None:
-        return None
-    state["items"] = rendered
-    _write_state(run_id, state)
-    return selected
+    changed = _rewrite_locked(run_id, _state(run_id), lambda item: item.model_copy(update=updates) if item.id == item_id else None)
+    return changed[0] if changed else None
 
 
 def claim_next_locked(run_id: str) -> QueueItem | None:
@@ -288,7 +330,7 @@ def claim_next_locked(run_id: str) -> QueueItem | None:
 
 def first_active_locked(run_id: str) -> QueueItem | None:
     """The run's first item waiting or being delivered, while the caller owns the run lock."""
-    return next((item for item in _items(_state(run_id)) if item.state in {"pending", "running"}), None)
+    return next((item for item in _items(_state(run_id)) if item.state in ACTIVE), None)
 
 
 def claim_locked(run_id: str, item_id: str) -> QueueItem | None:
@@ -322,18 +364,9 @@ def mark(run_id: str, item_id: str, state: QueueState, *, error: str = "") -> Qu
 
 def cancel_pending_locked(run_id: str) -> None:
     """Cancel all unstarted work. Called by ``registry.stop`` under the run lock."""
-    state = _state(run_id)
     now = time.time()
-    changed = False
-    rendered = []
-    for item in _items(state):
-        if item.state in {"pending", "running"}:
-            item = item.model_copy(update={"state": "cancelled", "finished_at": now})
-            changed = True
-        rendered.append(item.model_dump())
-    if changed:
-        state["items"] = rendered
-        _write_state(run_id, state)
+    _rewrite_locked(run_id, _state(run_id), lambda item: item.model_copy(update={"state": "cancelled", "finished_at": now})
+                    if item.state in ACTIVE else None)
 
 
 def reads_next_step(run: reg.AgentRun) -> bool:

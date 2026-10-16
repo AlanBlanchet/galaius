@@ -364,6 +364,34 @@ def test_corrupt_queue_bytes_are_reported_and_preserved(monkeypatch):
     assert queue_path.read_bytes() == b"{not-json"
 
 
+#: Items this galaius cannot read: written by a newer one (a field or kind it does not know yet: an older client met
+#: `MessageTurn.limit` so), or damaged. Each stays in the file as written; the rest of the queue still works.
+UNREADABLE = {
+    "newer turn field": {"kind": "message", "media": [], "added_later": 64000},
+    "newer turn kind": {"kind": "added-later"},
+    "damaged turn": "message",
+}
+
+
+@pytest.mark.parametrize("turn", UNREADABLE.values(), ids=UNREADABLE.keys())
+def test_an_item_this_galaius_cannot_read_stays_as_written_and_the_rest_is_delivered(monkeypatch, turn):
+    provider = _setup(monkeypatch)
+    unreadable = {"id": "newer", "message_id": "handback-1.000000", "sender": "operator", "turn": turn, "state": "pending", "enqueued_at": 1.0}
+    agent_queue.path("r1").write_text(json.dumps({"version": 1, "items": [unreadable], "dispatcher_pid": None}))
+
+    sent = messaging.deliver_message("r1", "still delivered", sender="operator")
+    agent_queue.dispatch("r1")
+    repeat = messaging.deliver_message("r1", "never twice", sender="operator", message_id="handback-1.000000")
+
+    assert reg.stop("r1", by=None) is True
+
+    assert sent.state == "queued" and provider.messages == ["still delivered"]
+    assert [item.state for item in agent_queue.items("r1")] == ["replied"]
+    # Queued once, by the galaius that wrote it: never twice, never an error.
+    assert (repeat.state, repeat.queue_id, repeat.repeated) == ("queued", None, True)
+    assert json.loads(agent_queue.path("r1").read_text())["items"][0] == unreadable
+
+
 def test_reused_dispatcher_pid_does_not_stall_on_unrelated_process(monkeypatch):
     reg.register(
         run_id="r1", pid=None, provider="claude", name="worker", task="t",
