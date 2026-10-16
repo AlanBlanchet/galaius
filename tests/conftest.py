@@ -54,6 +54,13 @@ PLAYWRIGHT_BROWSERS = os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or str(
 UserConfig.PATH = Path(__file__).resolve().parents[1] / "out" / "tests" / "no-user-config" / "config.env"
 
 
+@pytest.fixture(autouse=True)
+def _addressed_per_test(monkeypatch):
+    """What a test hands its process (`Addressed`) is its own: never what an earlier test was handed."""
+    from galaius.upgrade.store import Addressed
+    monkeypatch.setattr(Addressed, "taken", {})
+
+
 @pytest.fixture
 def media_output_root() -> Path:
     """Unique private media output outside global /tmp, including repeated/concurrent runs."""

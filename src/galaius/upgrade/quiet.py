@@ -13,7 +13,7 @@ from collections.abc import Callable
 from pydantic import BaseModel, ConfigDict
 
 from galaius.private_files import PRIVATE_FILES
-from galaius.upgrade.store import RuntimeStore
+from galaius.upgrade.store import Addressed, RuntimeStore
 from galaius.upgrade.supervisor import Supervision, WorkerState
 
 
@@ -32,7 +32,7 @@ class QuietPoint(BaseModel):
         """None when this process is not a supervised worker, or cannot read its supervisor's
         contract (recorded: it then keeps running and upgrades only when restarted)."""
         supervision = Supervision.current()
-        if supervision is None and Supervision.variable in os.environ:
+        if supervision is None and Addressed.get(Supervision.variable) is not None:
             RuntimeStore.default().record("failed", f"a worker (pid {os.getpid()}) cannot read its supervisor's {Supervision.variable}: it upgrades only when restarted")
         return None if supervision is None else cls(supervision=supervision, store=RuntimeStore.default())
 

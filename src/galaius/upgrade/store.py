@@ -39,6 +39,33 @@ EXIT_UPGRADE = 75
 EXIT_HANDOVER = 76
 
 
+class Addressed:
+    """Variables a process sets for the ONE process it starts, each declared where its contract lives
+    (`name`). The addressee moves them out of its environment (`take` at the CLI's start, or the first
+    `get`), so nothing it starts later inherits them: an agent's shell running `galaius` is no worker,
+    no waited-for child, and hands off to the active runtime like any other command."""
+
+    names: ClassVar[list[str]] = []
+    taken: ClassVar[dict[str, str]] = {}
+
+    @classmethod
+    def name(cls, variable: str) -> str:
+        cls.names.append(variable)
+        return variable
+
+    @classmethod
+    def take(cls) -> None:
+        for name in cls.names:
+            cls.get(name)
+
+    @classmethod
+    def get(cls, name: str) -> str | None:
+        """What this process was handed under `name`."""
+        if (value := os.environ.pop(name, None)) is not None:
+            cls.taken[name] = value
+        return cls.taken.get(name)
+
+
 class Runtime(BaseModel):
     """One installed environment: `path` is its virtual-environment root."""
 

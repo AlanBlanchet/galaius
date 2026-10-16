@@ -18,7 +18,7 @@ from typing import ClassVar, NoReturn
 from pydantic import BaseModel, ConfigDict, TypeAdapter
 
 from galaius.private_files import PRIVATE_FILES
-from galaius.upgrade.store import EXIT_HANDOVER, Runtime, RuntimeStore
+from galaius.upgrade.store import EXIT_HANDOVER, Addressed, Runtime, RuntimeStore
 
 if sys.platform == "win32":
     import win32api
@@ -60,7 +60,7 @@ class Handoff(BaseModel):
     #: Set in the child a Windows parent runs, to that parent's pid: it already is the active
     #: runtime's, and knows which process waits for it (a venv's python.exe is a launcher that runs
     #: the interpreter as ITS child, so the interpreter's own parent pid is the launcher's).
-    child: ClassVar[str] = "GALAIUS_HANDED_OFF"
+    child: ClassVar[str] = Addressed.name("GALAIUS_HANDED_OFF")
     #: Commands that always run the code they were started with.
     own_code: ClassVar[frozenset[str]] = frozenset({"upgrade"})
     #: The variables a Windows child hands its successor (`replace`), as written.
@@ -69,7 +69,7 @@ class Handoff(BaseModel):
     def target(self, command: tuple[str, ...], long_lived: bool) -> Runtime | None:
         """Where this command line continues, or None to run it here. A supervisor handover that
         never started is rolled back first (said on stderr)."""
-        if (command[:1] and command[0] in self.own_code) or os.environ.get(self.child):
+        if (command[:1] and command[0] in self.own_code) or Addressed.get(self.child):
             return None
         if (back := self.store.failed_handover()) is not None:
             print(f"galaius: the newest runtime never started as a supervisor; back on {back.label()}", file=sys.stderr)
@@ -123,5 +123,7 @@ class Handoff(BaseModel):
         if sys.platform != "win32":
             os.environ.update(carried or {})
             os.execv(runtime.python, runtime.command(command))
-        PRIVATE_FILES.write_text(self.carried_path(int(os.environ[self.child])), json.dumps(carried or {}))
+        if (parent := Addressed.get(self.child)) is None:
+            raise RuntimeError("a Windows supervisor hands over only through the parent waiting for it")
+        PRIVATE_FILES.write_text(self.carried_path(int(parent)), json.dumps(carried or {}))
         os._exit(EXIT_HANDOVER)

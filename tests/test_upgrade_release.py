@@ -19,7 +19,7 @@ from galaius.config.settings import Config
 from galaius.upgrade.check import UpgradeCheck
 from galaius.upgrade.release import BuildIdentity, Release, ReleaseFile, ReleaseRefused
 from galaius.upgrade.source import ReleaseKeys, ReleaseSigner, ReleaseSource
-from galaius.upgrade.store import Runtime, RuntimeReceipt, RuntimeStore, Uv
+from galaius.upgrade.store import Addressed, Runtime, RuntimeReceipt, RuntimeStore, Uv
 from galaius.upgrade.supervisor import Supervision, Supervisor
 
 WHEEL = b"not really a wheel"
@@ -216,6 +216,22 @@ def test_a_worker_that_cannot_read_its_contract_never_becomes_a_supervisor_itsel
     monkeypatch.setenv("GALAIUS_SUPERVISE", "1")
     monkeypatch.setenv(Supervision.variable, '{"version": 2, "something": "newer"}')
     assert Supervision.current() is None and not Supervisor.eligible()
+
+
+@pytest.mark.parametrize("name", Addressed.names)
+def test_what_a_process_is_handed_for_itself_never_reaches_what_it_starts(monkeypatch, name: str) -> None:
+    """2026-10-16: an agent run's shell inherited its supervisor's `GALAIUS_SUPERVISED`, so the `galaius`
+    it ran believed itself a worker, never handed off, and ran the stale bootstrap install's code."""
+    contract = Supervision(runtime=Path("/r/0.44.2-x"), mode="exit").model_dump_json()
+    monkeypatch.setenv(name, contract)
+    monkeypatch.setenv("GALAIUS_SUPERVISE", "1")
+    Addressed.take()
+    assert name not in os.environ and Addressed.get(name) == contract
+    if name == Supervision.variable:
+        assert Supervision.current() == Supervision.model_validate_json(contract) and not Supervisor.eligible()
+    child = subprocess.run([sys.executable, "-c", "import os; from galaius.upgrade.supervisor import Supervisor; "
+                            f"print({name!r} in os.environ, Supervisor.eligible())"], capture_output=True, text=True, check=True)
+    assert child.stdout.split() == ["False", "True"]
 
 
 def test_a_bootstrap_install_built_as_the_offered_release_is_up_to_date(tmp_path, signer, published, monkeypatch) -> None:

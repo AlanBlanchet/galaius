@@ -38,7 +38,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from galaius.mcp_announcement import McpAnnouncement
 from galaius.upgrade.handoff import Children, Handoff
 from galaius.private_files import PRIVATE_FILES
-from galaius.upgrade.store import EXIT_UPGRADE, Runtime, RuntimeStore
+from galaius.upgrade.store import EXIT_UPGRADE, Addressed, Runtime, RuntimeStore
 
 class SupervisorSettings(BaseModel):
     """How a supervisor waits and behaves; `GALAIUS_SUPERVISOR_<FIELD>` overrides one (tests)."""
@@ -81,11 +81,11 @@ class Supervision(BaseModel):
     runtime: Path
     mode: Literal["report", "exit"]
     state: Path | None = None
-    variable: ClassVar[str] = "GALAIUS_SUPERVISED"
+    variable: ClassVar[str] = Addressed.name("GALAIUS_SUPERVISED")
 
     @classmethod
     def current(cls) -> "Supervision | None":
-        raw = os.environ.get(cls.variable)
+        raw = Addressed.get(cls.variable)
         if not raw:
             return None
         try:
@@ -207,7 +207,7 @@ class Supervisor(BaseModel):
         supervisor's contract: never a supervisor inside a supervisor), not `GALAIUS_SUPERVISE=0`,
         not a development checkout unless `GALAIUS_SUPERVISE=1`."""
         wanted = os.environ.get("GALAIUS_SUPERVISE", "")
-        return Supervision.variable not in os.environ and wanted != "0" and (wanted == "1" or not cls.development())
+        return Addressed.get(Supervision.variable) is None and wanted != "0" and (wanted == "1" or not cls.development())
 
     @staticmethod
     def member(command: tuple[str, ...]) -> "Callable[..., Supervisor] | None":
@@ -301,7 +301,7 @@ class Passthrough(Supervisor):
                 if code == EXIT_UPGRADE:
                     target = self.store.active()
                     self.say(f"switching to {target.label()}")
-                    if self.settings.replace_itself and target.path != Runtime.own().path and (sys.platform != "win32" or os.environ.get(Handoff.child)):
+                    if self.settings.replace_itself and target.path != Runtime.own().path and (sys.platform != "win32" or Addressed.get(Handoff.child)):
                         if checker is not None:
                             checker.wait(30)
                         signal.signal(signal.SIGINT, previous_interrupt)
@@ -515,7 +515,7 @@ class RelayHandover(BaseModel):
     `initialize` no worker ever saw."""
 
     model_config = ConfigDict(frozen=True)
-    variable: ClassVar[str] = "GALAIUS_RELAY_HANDOVER"
+    variable: ClassVar[str] = Addressed.name("GALAIUS_RELAY_HANDOVER")
     initialize: str
     initialized: str | None
     client_initialized: bool
@@ -525,7 +525,7 @@ class RelayHandover(BaseModel):
     @classmethod
     def taken(cls) -> "RelayHandover | None":
         """The handover this supervisor was started with, read once and removed."""
-        path = os.environ.pop(cls.variable, "")
+        path = Addressed.get(cls.variable)
         if not path:
             return None
         try:
@@ -769,7 +769,7 @@ class _Relay:
             target = self.owner.store.active()
             # Nothing is in flight and the client's messages are held: the ONE moment this supervisor
             # can become the new runtime's too, so no galaius process is left running the old code.
-            if self.owner.settings.replace_itself and target.path != Runtime.own().path and (sys.platform != "win32" or os.environ.get(Handoff.child)):
+            if self.owner.settings.replace_itself and target.path != Runtime.own().path and (sys.platform != "win32" or Addressed.get(Handoff.child)):
                 self.handing_over(target)
             self.start(target, probation=True)
             return None
