@@ -35,6 +35,7 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 from galaius_core import (
+    MODEL_ID_MAX,
     PROJECTS_ROOT, AGENT_TOUCH_SCOPES, AgentCompactRequest, ContextGauge, MACHINE_AGENT_MEDIA, MACHINE_AGENT_READ, MACHINE_AGENT_TAIL, AgentAnswerRequest, AgentMedia, AgentMediaRequest, image_type, AgentContinueRequest, AgentFoldersRequest, AgentInteraction, AgentLogsRequest, AgentOptionsRequest,
     AgentAllowanceRequest, AgentMoveRequest, AgentProgramInstallRequest, AgentProgramsRequest, AgentProviderState, AgentSignInCodeRequest, AgentSignOutRequest, SubscriptionAllowance, Lent, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
     MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, PassedOverCandidate, ReadsAt, AgentRefusalCode, WebLimited, WebLoad, media_key, media_paths, MachineAgentSession, MachineFileEntry, StopActor, WorkspaceCreateRequest, WorkspacePack, WorkspacePackRequest, WorkspacePrepareRequest, WorkspaceRefresh, WorkspacesRequest,
@@ -633,14 +634,14 @@ class MachineAgents(BaseModel):
             kind = placed.kind if placed else "agent"
             found.append(MachineAgentRun(
                 run_id=UUID(run.run_id), name=run.name[:120], role=(run.agent or None) and run.agent[:80], provider=run.provider[:40],
-                model=run.model and run.model[:120], reasoning=run.reasoning, status=run.status, root=root[:240], path=path[:1024], task=run.task[:8000], media=run.media,
+                model=run.model and run.model[:MODEL_ID_MAX], reasoning=run.reasoning, status=run.status, root=root[:240], path=path[:1024], task=run.task[:8000], media=run.media,
                 last=redact(run.last, secrets)[:400], started_at=run.started_at, finished_at=run.finished_at, cost_usd=run.cost_usd,
                 parent_run_id=UUID(run.parent_run_id) if run.parent_run_id and run.run_id not in started else None,
                 kind=kind, pending=self.pending(run.run_id) if kind == "session" and run.status == "waiting" else (),
                 fenced=bool({run.run_id, run.root_run_id, run.parent_run_id} & fenced), compacts=self.compact_refusal(run, kind) is None,
-                passed_over=tuple(PassedOverCandidate(provider=item.candidate.provider, model=item.candidate.model[:120], reason=item.reason, until=item.until)
+                passed_over=tuple(PassedOverCandidate(provider=item.candidate.provider, model=item.candidate.model[:MODEL_ID_MAX], reason=item.reason, until=item.until)
                                   for item in run.skipped[:16]),
-                subscription=run.subscription, stopped_by=run.stopped_by if run.status == "stopped" else None,
+                subscription=run.subscription, stopped_by=run.stopped_by if run.status == "stopped" else None, replaced_by=run.replaced_by,
                 **{field: getattr(run, field) for field in ContextGauge.model_fields},
             ))
         return MachineAgentAnswer(request_id=request.id, runs=tuple(found), web=self.runs.load(request))

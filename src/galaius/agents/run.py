@@ -34,7 +34,7 @@ from galaius.agents import quota
 from galaius.agents import run_folder
 from galaius.agents.catalog import AgentCatalog
 from galaius.agents.ceiling import contained
-from galaius.agents.events import stream_lines
+from galaius.agents.events import model_spoke, stream_lines
 from galaius.fence import FenceSpec, fenced
 from galaius.processes import process_group_options, spawnable
 from galaius.agents.policy import Policy, policy_path
@@ -506,20 +506,8 @@ def _child_output(run_id: str) -> str:
 
 
 def _answered_at_startup(run_id: str) -> bool:
-    """The MODEL has answered — a turn it wrote (Claude: an assistant line not written by the CLI;
-    Codex: an item or a finished turn). An `allowed` rate-limit line is no such proof: Claude Code
-    opens with one for the five-hour pool and refuses on the very next line (22 of 54 recorded
-    startup refusals)."""
-    for line in _raw_tail(run_id):
-        kind = line.get("type")
-        item = line.get("item")
-        if kind == "turn.completed" or (kind in ("item.started", "item.completed") and isinstance(item, dict)
-                                        and item.get("type") != "error"):  # an error item is the CLI's warning
-            return True
-        message = line.get("message")
-        if kind == "assistant" and isinstance(message, dict) and message.get("model") not in (None, "<synthetic>"):
-            return True
-    return False
+    """The MODEL has answered (`model_spoke`) in the stream's last lines."""
+    return any(model_spoke(line) for line in _raw_tail(run_id))
 
 
 async def _quota_probe(run_id: str, process: "asyncio.subprocess.Process", *,
@@ -1466,6 +1454,7 @@ async def run_agent(
     chosen: reg.LaunchCandidate | None = None
     chosen_ahead: ChildLaunch | None = None
     chosen_provider: AgentProvider | None = None
+    chosen_login = ""
     process: "asyncio.subprocess.Process | None" = None
     model: str | None = None
     effort = policy.reasoning_for(agent)
@@ -1688,6 +1677,7 @@ async def run_agent(
         chosen = candidate
         chosen_index = index
         chosen_provider = candidate_provider
+        chosen_login = login
         pinned, fence = candidate_pin, candidate_fence
         chosen_ahead = launch if ahead else None
         process = candidate_process
@@ -1727,7 +1717,10 @@ async def run_agent(
         candidates=candidates, skipped=tuple(skipped), denied_tools=denied_tools,
         provider_session_id=run_id if provider.name == "claude" else None,
         agent_ref=selected_ref, definition_path=definition_path, fence=fence, subscription=pinned, media=shown,
+        login=chosen_login,
     )
+    # This launch takes over its role's earlier ones under the same launcher that its vendor refused before a turn.
+    reg.take_over_refused(registered)
     pump = asyncio.create_task(_reap(run_id, process, registered.lifecycle_token))
     # Keep the panel's copy of the stream current WHILE it works: a running agent can be watched,
     # not only read afterwards.

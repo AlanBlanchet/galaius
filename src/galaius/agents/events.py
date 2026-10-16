@@ -72,6 +72,19 @@ def stream_lines(text: str) -> list[str]:
     return [line.removesuffix("\r") for line in lines]
 
 
+def model_spoke(line: dict) -> bool:
+    """A raw stream line the MODEL wrote — Claude: an assistant line the CLI did not write itself (`<synthetic>`); Codex: an
+    item or a finished turn. A Codex error item is the CLI's own warning, and an `allowed` rate-limit line no proof either:
+    Claude Code opens with one for the five-hour pool and refuses on the very next line."""
+    kind = line.get("type")
+    item = line.get("item")
+    if kind == "turn.completed" or (kind in ("item.started", "item.completed") and isinstance(item, dict)
+                                    and item.get("type") != "error"):
+        return True
+    message = line.get("message")
+    return kind == "assistant" and isinstance(message, dict) and message.get("model") not in (None, "<synthetic>")
+
+
 InteractionKind = Literal[
     "command_approval", "file_change_approval", "user_input", "permission_approval"
 ]

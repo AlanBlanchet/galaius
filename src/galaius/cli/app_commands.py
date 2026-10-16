@@ -20,7 +20,7 @@ from pydantic import ValidationError
 from galaius import feedback, live_sources, model_catalog, ollama
 from galaius_core import AGENT_TOUCH_SCOPES
 
-from galaius.agents import agent_queue, messaging
+from galaius.agents import agent_queue, handback, messaging
 from galaius.agents import providers as agent_providers
 from galaius.agents import registry as reg
 from galaius.agents.conversations import ConversationAnswers
@@ -931,6 +931,21 @@ def agents_events(run_id: str, limit: int = 30, machine: str | None = None) -> N
         print(f"  {event.kind:11} {event.summary(viewer=resolved)}")
 
 
+@agents_app.command(name="wait")
+def agents_wait(run_ids: list[str], timeout: float = 600.0) -> None:
+    """Wait until every named run has ended (or --timeout seconds), then print each one's final report. Exit 1 when one
+    is still at work at the timeout (its id said), 2 for an id naming no run."""
+    try:
+        reports = handback.wait(run_ids, timeout=timeout)
+    except LookupError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        raise SystemExit(2) from None
+    print("\n\n".join(report.section(limit=None) for report in reports if not report.pending))
+    if pending := [report.run_id for report in reports if report.pending]:
+        print(f"Still at work after {timeout:g} s: {', '.join(pending)}")
+        raise SystemExit(1)
+
+
 @agents_app.command(name="search")
 def agents_search(query: str, limit: int = 20, project: str | None = None, since: str | None = None, every_project: bool = False) -> None:
     """Search the conversations this computer holds (galaius's runs and each agent CLI's saved
@@ -1622,17 +1637,19 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
                 fence=FenceSpec.model_validate_json(fence.read_text()) if fence is not None else None,
             )
             handover = StartNew() if fresh else spawn.hand_over()
+            # The hand-over's sentence on stdout too: a caller capturing only stdout sees why it was (not) continued; the run id
+            # stays the last line.
             if isinstance(handover, Continued):
-                print(handover.sentence(), file=sys.stderr)
+                print(handover.sentence())
                 print(handover.run.run_id)
                 return
             if handover.why:
-                print(handover.why, file=sys.stderr)
+                print(handover.why)
             line = SpawnLine.here()
             admission = line.enter(spawn)
             if admission.ahead is not None:
-                # Before the id: a caller reading the last line (`2>&1 | tail -1`) still gets the id.
-                print(admission.sentence(), file=sys.stderr)
+                # Before the id: the run id stays the last stdout line.
+                print(admission.sentence())
                 print(admission.run_id)
                 return
             try:

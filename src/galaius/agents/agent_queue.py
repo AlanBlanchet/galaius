@@ -82,12 +82,19 @@ class QueuedTurn(BaseModel, ABC):
         """Whether `event`, of its attempt, accepts it."""
 
 
+#: The longest task a spawn hands to an agent already in its conversation: a coordinator's brief, never clipped.
+BRIEF_MAX = 64_000
+
+
 class MessageTurn(QueuedTurn):
     """A message: recorded on its recipient's transcript, read by the turn running when its CLI can."""
 
     kind: Literal["message"] = "message"
     #: The images it shows, by their name among its run's media (`RunMedia`): its transcript entry names them too.
     media: tuple[Annotated[str, Field(pattern=MEDIA_KEY)], ...] = Field(default=(), max_length=AGENT_IMAGES_MAX)
+    #: The longest text it takes: a follow-up is transcript-sized; a spawn's task handed to an agent already here
+    #: (`spawn_line.Spawn.hand_over`) or a parent's agents' reports (`handback`) up to `BRIEF_MAX`.
+    limit: int = Field(default=_CLIP, gt=0, le=BRIEF_MAX, exclude_if=lambda value: value == _CLIP)
     mid_turn = True
     unaccepted = "resumed turn completed without a reply; resend explicitly"
 
@@ -95,7 +102,7 @@ class MessageTurn(QueuedTurn):
         """The same transcript-sized input boundary on every sending surface."""
         if not text.strip() and not self.media:
             return "message must contain text or an image."
-        return f"message exceeds the {_CLIP}-character transcript limit." if len(text) > _CLIP else None
+        return f"message exceeds the {self.limit}-character limit." if len(text) > self.limit else None
 
     def entry(self, text: str, origin: reg.AgentRun | None) -> str | None:
         return text if origin is None else origin.handoff_header() + text

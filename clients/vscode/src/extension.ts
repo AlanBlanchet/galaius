@@ -872,8 +872,8 @@ export async function activate(
         void vscode.window.showErrorMessage(cliFailure(`start ${picked.label}`));
         return;
       }
-      const runId = result.stdout.trim().split(/\s+/)
-        .find((word) => /^[A-Za-z0-9._:@+-]{8,160}$/.test(word));
+      // The run id is the last line; a hand-over or queue sentence may precede it.
+      const runId = result.stdout.trim().split(/\s+/).at(-1)?.match(/^[A-Za-z0-9._:@+-]{8,160}$/)?.[0];
       void vscode.window.showInformationMessage(
         `${picked.label} is working${runId ? ` (${runId.slice(0, 8)})` : ""}.`,
       );

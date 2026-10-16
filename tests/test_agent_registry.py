@@ -885,6 +885,88 @@ def test_a_stop_after_its_answer_leaves_the_run_finished(monkeypatch, lines, tur
     assert all(item.state == "cancelled" for item in agent_queue.items("r1"))
 
 
+_REFUSAL = '{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The \'gpt-6-astra\' model is not supported when using Codex with a ChatGPT account."}}'
+#: Codex's own lines for a launch its vendor refused (run a33587ba, 2026-10-16): a warning item, a turn that failed.
+_CODEX_REFUSED = [{"type": "thread.started", "thread_id": "th"},
+                  {"type": "item.completed", "item": {"id": "item_0", "type": "error", "message": "Model metadata for `gpt-6-astra` not found."}},
+                  {"type": "turn.started"}, {"type": "error", "message": _REFUSAL}, {"type": "turn.failed", "error": {"message": _REFUSAL}}]
+#: Claude Code's own notice wears an assistant turn the CLI wrote, never the model.
+_CLAUDE_LIMIT = [_INIT, {"type": "assistant", "session_id": "s", "message": {"model": "<synthetic>", "role": "assistant",
+                 "content": [{"type": "text", "text": "You've hit your session limit · resets 1:40pm"}]}},
+                 {"type": "result", "subtype": "success", "is_error": True, "session_id": "s", "result": "You've hit your session limit"}]
+
+
+@pytest.mark.parametrize(("lines", "provider", "role", "parent", "session", "replaced"), [
+    # Refused by its vendor, relaunched by its parent on another model (owner 2026-10-16: « I hate seeing this message »).
+    (_CODEX_REFUSED, "codex", "backend-engineer", "boss", None, True),
+    # Claude's own limit notice before any turn of the model: refused too.
+    (_CLAUDE_LIMIT, "claude", "backend-engineer", "boss", None, True),
+    # A conversation's own run (no parent) refused, its conversation relaunching it.
+    # No parent: its session id is a whole PC's web conversations, so no later root run takes it over.
+    (_CODEX_REFUSED, "codex", "backend-engineer", None, "web-1", False),
+    # It answered before it failed: a cut mid-work, still to continue.
+    ([_INIT, {"type": "assistant", "session_id": "s", "message": {"model": "claude-opus-5-5", "role": "assistant", "content": [
+        {"type": "text", "text": "Reading the routes."}]}}, {"type": "result", "subtype": "error_during_execution", "is_error": True,
+        "session_id": "s"}], "claude", "backend-engineer", "boss", None, False),
+    # Another role took no task of it.
+    (_CODEX_REFUSED, "codex", "app-engineer", "boss", None, False),
+    # Another launcher's run of the same role took no task of it.
+    (_CODEX_REFUSED, "codex", "backend-engineer", "other", None, False),
+    (_CODEX_REFUSED, "codex", "backend-engineer", None, "web-2", False),
+])
+def test_a_launch_refused_before_its_first_turn_is_replaced_by_its_relaunch(lines, provider, role, parent, session, replaced):
+    """A run that ended before the model wrote anything is taken over by the next run of its role under the same launcher
+    (same parent run, else same conversation): it is recorded `replaced_by` that run, never left as a stop to continue."""
+    for boss in ("boss", "other"):
+        register_run(boss, pid=2, agent="main", session_id="web-1")
+    reg.register(run_id="r1", name="refused", provider=provider, task="t", pid=1, agent=role, parent_run_id=parent, session_id=session)
+    reg.raw_events_path("r1").write_text("".join(json.dumps(line) + "\n" for line in lines))
+    reg.finish("r1", exit_code=1)
+    relaunch = reg.register(run_id="r2", name="relaunch", provider="claude", model="claude-opus-5-5", task="t", pid=3,
+                            agent="backend-engineer", parent_run_id="boss" if parent else None, session_id=None if parent else "web-1")
+    assert reg.take_over_refused(relaunch) == ("r1" if replaced else None)
+    taken = reg.get_run("r1").replaced_by
+    assert (taken.run_id, taken.provider, taken.model) == ("r2", "claude", "claude-opus-5-5") if replaced else taken is None
+    assert reg.take_over_refused(relaunch) is None  # a run taken over once stays taken by its first relaunch
+    if replaced:
+        # Resumed since, then ended again: its own ending, « Continuer » offered again.
+        reg.begin_turn("r1", pid=4)
+        reg.finish("r1", exit_code=1)
+        assert reg.get_run("r1").replaced_by is None
+
+
+def test_a_run_continued_with_the_task_takes_over_the_launch_refused_before_it():
+    """The relaunch can be handed to an idle agent of the role (`Spawn.hand_over`): that run takes the refused one over
+    as it is handed the task, from the spawn's parent, though it started long before."""
+    register_run("boss", pid=2, agent="main", session_id="web-1")
+    idle = reg.register(run_id="idle", name="idle", provider="claude", task="t", pid=3, agent="backend-engineer", parent_run_id="other")
+    reg._merge_record_locked("idle", {"started_at": time.time() - 2 * reg.TAKEOVER_WINDOW})
+    reg.register(run_id="r1", name="refused", provider="codex", task="t", pid=1, agent="backend-engineer", parent_run_id="boss")
+    reg.raw_events_path("r1").write_text("".join(json.dumps(line) + "\n" for line in _CODEX_REFUSED))
+    reg.finish("r1", exit_code=1)
+
+    assert reg.take_over_refused(reg.get_run("idle")) is None  # by its own parent and start: not its launch
+    assert reg.take_over_refused(reg.get_run("idle"), parent="boss", at=time.time()) == "r1"
+    assert reg.get_run("r1").replaced_by.run_id == "idle"
+
+
+def test_a_relaunch_takes_over_only_its_newest_refused_launch_within_the_window():
+    """A later launch of the role is no replacement of a refusal from hours before (another task, a long conversation),
+    and takes over one refused launch, its newest: an older one was taken by the relaunch after it."""
+    register_run("boss", pid=2, agent="main", session_id="web-1")
+    for run_id, started_at in (("old", 1000.0), ("new", 1100.0), ("later", 1100.0 + reg.TAKEOVER_WINDOW + 500.0)):
+        reg.register(run_id=run_id, name=run_id, provider="codex", task="t", pid=1, agent="backend-engineer", parent_run_id="boss")
+        with reg.record_lock(run_id):
+            reg._merge_record_locked(run_id, {"started_at": started_at})
+        if run_id != "later":
+            reg.raw_events_path(run_id).write_text(json.dumps(_CODEX_REFUSED[-1]) + "\n")
+            reg.finish(run_id, exit_code=1)
+    later = reg.get_run("later")
+    assert reg.take_over_refused(later) is None  # 500 s past the window of "new"
+    assert reg.take_over_refused(later, window=reg.TAKEOVER_WINDOW * 2) == "new"
+    assert reg.get_run("old").replaced_by is None
+
+
 def test_stopping_an_unknown_run_is_false_not_an_exception():
     assert reg.stop("nope", by=None) is False
 

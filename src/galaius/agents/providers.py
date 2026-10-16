@@ -642,6 +642,14 @@ class AgentProvider(ABC):
             f"{intent!r} is not a permission intent {self.name!r} accepts (known: {known})"
         )
 
+    def touch_of(self, intent: str | None) -> TouchScope | None:
+        """Where a run given `intent` may change files (a shared touch intent, or one of this CLI's modes); None when
+        unknown."""
+        try:
+            return TouchScope(intent) if intent is not None else None
+        except ValueError:
+            return next((mode.touch for mode in self.permission_modes() if mode.id == intent), None)
+
     def permission_intent(self, intent: str | None) -> PermissionMode | None:
         if intent is None:
             return None

@@ -34,10 +34,10 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, PrivateAttr, ValidationInfo, field_validator
 from galaius.agents import quota
-from galaius_core import MEDIA_KEY, AgentMedia, AgentRevisionRef, ContextGauge, PromptExecutionRef, StopActor
+from galaius_core import MEDIA_KEY, MODEL_ID_MAX, AgentMedia, AgentRevisionRef, ContextGauge, PromptExecutionRef, RunReplacement, StopActor
 
 from galaius.agents.events import (
-    CONTEXT_FIELDS, TOKEN_FIELDS, AgentEvent, TokenUsage, UsageLedger, answered_line, ending_of, stream_lines,
+    CONTEXT_FIELDS, TOKEN_FIELDS, AgentEvent, TokenUsage, UsageLedger, answered_line, ending_of, model_spoke, stream_lines,
 )
 from galaius.agents.catalog_connection import CatalogConnection
 from galaius.agents.ceiling import contained, end_run_scope, is_run_scope
@@ -360,6 +360,9 @@ class AgentRun(ContextGauge):
     #: Who stopped it (`stop`): the person on the web, an agent, this PC's terminal, its agents switched off, a folder
     #: narrowed under it; None when nothing did, or its own subscription cap cut it. Cleared as a new turn begins.
     stopped_by: StopActor | None = None
+    #: The run that took its task after it ended before its first turn (`take_over_refused`): no stop to continue, a
+    #: launch that moved on. Cleared as a new turn begins: whatever ends a resumed turn is its own ending.
+    replaced_by: RunReplacement | None = None
 
     status: RunStatus = "running"
 
@@ -1045,6 +1048,57 @@ def register(*, run_id: str, pid: int | None, provider: str, name: str, task: st
     return run
 
 
+#: How long after a refused launch its relaunch still takes its task: a parent notices its child failed within its own
+#: next poll (the 2026-10-16 relaunches came 14 and 22 min after), never days later on an unrelated task.
+TAKEOVER_WINDOW = 3600.0
+#: Endings a launch refused before its first turn can carry: every one but a clean finish.
+_REFUSABLE_ENDINGS = TERMINAL_STATUSES - {"done"}
+
+
+def take_over_refused(run: AgentRun, *, parent: str | None = None, at: float | None = None,
+                      window: float = TAKEOVER_WINDOW) -> str | None:
+    """Record `run` as the replacement of its role's newest earlier launch under `parent` (its own parent run when None),
+    started at most `window` seconds before `at` (its own start when None: a run continued with a task takes it over as
+    it is handed it, from the spawn's parent), that ended before the model said a word (`model_spoke_in`): a vendor's refusal its parent relaunched elsewhere
+    (« The 'gpt-6-astra' model is not supported when using Codex with a ChatGPT account. », 2026-10-16) read as a cut run
+    to continue on every surface. A run with no parent takes over nothing: the session id it shares is a whole PC's web
+    conversations. Returns the run id it took over."""
+    if run.agent is None or (launcher := parent or run.parent_run_id) is None:
+        return None
+    since = run.started_at if at is None else at
+    candidates = sorted((stored for stored in _stored_records()
+                         if stored.run_id != run.run_id and stored.agent == run.agent and stored.replaced_by is None
+                         and since - window <= stored.started_at < since
+                         and stored.status in _REFUSABLE_ENDINGS and stored.parent_run_id == launcher),
+                        key=lambda stored: stored.started_at, reverse=True)
+    for stored in candidates:
+        if model_spoke_in(stored.run_id):
+            continue
+        with record_lock(stored.run_id):
+            current = _read_record(stored.run_id)
+            if current is None or current.replaced_by is not None or current.status not in _REFUSABLE_ENDINGS:
+                continue
+            replacement = RunReplacement(run_id=run.run_id, provider=run.provider, model=run.model[:MODEL_ID_MAX] if run.model else None)
+            _merge_record_locked(stored.run_id, {"replaced_by": replacement.model_dump(mode="json")})
+        return stored.run_id
+    return None
+
+
+def model_spoke_in(run_id: str) -> bool:
+    """Its model wrote a line anywhere in its own stream (`model_spoke`), read line by line up to the first. A missing
+    stream counts as spoken: it is no evidence of a refusal, and a run wrongly read as replaced hides a real cut."""
+    try:
+        descriptor = _open_private(raw_events_path(run_id), os.O_RDONLY, create=False)
+    except OSError:
+        return True
+    with os.fdopen(descriptor, "rb") as stream:
+        for raw in stream:
+            with suppress(ValueError):
+                if isinstance(line := json.loads(raw), dict) and model_spoke(line):
+                    return True
+    return False
+
+
 def _remember_vendor_refusal(run: AgentRun, said: str, *, now: float | None = None) -> None:
     """A refusal heard PAST the launch's own probe window, remembered against what it is a fact about.
 
@@ -1374,7 +1428,7 @@ def save_run(run: AgentRun) -> None:
 #: Record fields that describe how the run's PREVIOUS turn ended, cleared when it starts another
 #: one: a cause and hour kept from an earlier cut were read as this turn's, so a run cut off today
 #: was shown as cut off yesterday, and the one that ended cleanly after it inherited that cause.
-PREVIOUS_ENDING: dict[str, None] = dict.fromkeys(("exit_code", "finished_at", "stopped_by", "interruption"))
+PREVIOUS_ENDING: dict[str, None] = dict.fromkeys(("exit_code", "finished_at", "stopped_by", "replaced_by", "interruption"))
 
 
 def begin_turn(
@@ -2454,6 +2508,21 @@ def forest(root_run_ids: frozenset[str]) -> dict[str, list[AgentRun]]:
     for run in sorted((current(run) for run in records if run.run_id in tree_of), key=lambda run: run.started_at, reverse=True):
         grouped[tree_of[run.run_id]].append(run)
     return grouped
+
+
+def ancestors(run_id: str) -> list[str]:
+    """`run_id` and every run above it, nearest first (`parent_run_id`, else `root_run_id`): its conversation is the
+    last."""
+    by_id = {run.run_id: run for run in _stored_records()}
+    chain = [run_id]
+    while (run := by_id.get(chain[-1])) is not None and (up := run.parent_run_id or run.root_run_id) and up not in chain:
+        chain.append(up)
+    return chain
+
+
+def conversation_of(run_id: str) -> str:
+    """The run at the top of `run_id`'s launch tree: its conversation."""
+    return ancestors(run_id)[-1]
 
 
 def trees(root_run_ids: frozenset[str]) -> list[AgentRun]:

@@ -560,7 +560,7 @@ def test_record_and_delivery_share_the_transcript_message_limit(monkeypatch):
 
     delivery = messaging.deliver_message("r1", oversized, sender="operator")
 
-    assert delivery.state == "error" and "transcript limit" in delivery.text
+    assert delivery.state == "error" and "2000-character limit" in delivery.text
 
 
 def test_queue_preserves_effective_policy_and_records_fresh_policy_separately(monkeypatch):

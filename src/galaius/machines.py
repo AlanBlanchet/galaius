@@ -51,6 +51,7 @@ from galaius.machine_workspaces import MachineWorkspaces, WorkspaceJobs
 from galaius_core.sealing import SecretsSeal
 from galaius_core.wire import fitted, internals, readable
 from galaius.agents.events import AgentEvent
+from galaius.agents.handback import EndWatch
 from galaius.agents.run import load_policy, run_agent
 from galaius.agents.followup import FollowUps
 from galaius.agents.warm import WarmStart
@@ -1002,6 +1003,7 @@ class MachineRunner:
         self._workspace_jobs.settle_interrupted()
         # Local and independent of the server: a run killed while the PC is offline is settled too.
         settler = asyncio.create_task(self._settle_runs())
+        handing = asyncio.create_task(self._hand_back())
         reports = asyncio.create_task(self._deliver_reports(config))
         followed = asyncio.create_task(self._follow_up(config))
         resumed = asyncio.create_task(self._resume_paused(config))
@@ -1027,7 +1029,8 @@ class MachineRunner:
             followed.cancel()
             resumed.cancel()
             watched.cancel()
-            await asyncio.gather(settler, reports, followed, resumed, watched, return_exceptions=True)
+            handing.cancel()
+            await asyncio.gather(settler, handing, reports, followed, resumed, watched, return_exceptions=True)
             for ahead in (self.warm, self.followups):  # a child started ahead never outlives its runner; ended on the loop it lives on
                 AgentSpawns.loop().call_soon_threadsafe(ahead.close)
         if swapped:
@@ -1109,6 +1112,17 @@ class MachineRunner:
             except Exception:  # one unreadable record never stops the sweep
                 logger.exception("settling run records failed")
             await asyncio.sleep(self.settle_seconds)
+
+    async def _hand_back(self) -> None:
+        """Every `settle_seconds`, resume each parent whose last pending agent ended since (`handback.EndWatch`)."""
+        watch = await asyncio.to_thread(EndWatch)
+        while True:
+            await asyncio.sleep(self.settle_seconds)
+            try:
+                for delivery in await asyncio.to_thread(watch.tick):
+                    logger.info("run %s handed its agents' reports back: %s", delivery.run_id[:8], delivery.state)
+            except Exception:  # one unreadable record never stops the watch
+                logger.exception("handing agents' reports back failed")
 
     async def _connect(self, config: MachineConfig) -> None:
         delay_index = 0

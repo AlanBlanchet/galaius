@@ -36,6 +36,7 @@ from galaius.agents import agent_queue, messaging
 from galaius.agents import registry as reg
 from galaius.agents.policy import Policy, PolicyError
 from galaius.agents.providers import provider_for
+from galaius.agents.vocabulary import TouchScope
 from galaius.agents.run import ModelUnavailable, RunHandle, effective_permission_mode, load_policy, resolve_role, run_agent
 from galaius.config import Config
 from galaius.fence import FenceSpec
@@ -110,18 +111,40 @@ class Spawn(BaseModel):
         under the run's lock."""
         if run.working() or run.status not in REUSABLE or any(item.state in {"pending", "running"} for item in agent_queue.items(run.run_id)):
             return "is working"
+        if run.replaced_by is not None:
+            return f"was refused at launch, relaunched as {run.replaced_by.run_id[:8]}"
+        if not reg.model_spoke_in(run.run_id):
+            return "never got a first turn"
         if revision is not None and run.agent_ref != revision:
             return "runs another revision of the role"
-        if Path(run.cwd or ".").resolve() != Path(self.cwd).resolve():
-            return "works in another folder"
         if self.provider is not None and run.provider != self.provider:
             return f"runs on {run.provider}"
         # The run records the permission it got: never a wider run than this spawn would get, e.g. one a person started unrestricted.
         if run.permission_mode != effective_permission_mode(self.permission_mode, self.provider_modes, policy, run.provider):
             return f"was given {run.permission_mode or 'the default'} permissions"
+        # Its session stays in its own folder: another one it reads, and writes there only when its permission reaches it.
+        if not self._within(run) and provider_for(run.provider).touch_of(run.permission_mode) not in (TouchScope.READ_ONLY, TouchScope.FULL_ACCESS):
+            return "works in another folder it may not write in"
         if set(self.denied_tools) != set(run.denied_tools or ()) or self.image_paths or self.profile or self.fence is not None:
             return "was started with other tools, images, profile or fence"
         return messaging.check_deliverable(run.run_id)[1]
+
+    def _within(self, run: reg.AgentRun) -> bool:
+        """Whether this spawn's folder is `run`'s own or inside it."""
+        return Path(self.cwd).resolve().is_relative_to(Path(run.cwd or ".").resolve())
+
+    def _conversation(self) -> list[reg.AgentRun]:
+        """The runs of this spawn's conversation: its caller's launch tree (`reg.conversation_of`) — a PC's web
+        conversations share one session id —, else its session's; never its caller or a run above it."""
+        if self.parent_run_id is None:
+            return reg.list_runs(session_id=self.session_id) if self.session_id is not None else []
+        above = reg.ancestors(self.parent_run_id)
+        return [run for run in reg.trees(frozenset({above[-1]})) if run.run_id not in above]
+
+    def _brief(self, run: reg.AgentRun) -> str:
+        """The task as `run` takes it: a run of another folder is told this task's."""
+        return self.task if Path(run.cwd or ".").resolve() == Path(self.cwd).resolve() else \
+            f"Work in {self.cwd} for this task (your session started in {run.cwd}).\n\n{self.task}"
 
     def hand_over(self) -> Continued | StartNew:
         """Give the task to the agent of its conversation already holding its role, between turns, as its next turn
@@ -130,17 +153,18 @@ class Spawn(BaseModel):
         Its caller's own child first, then the latest to finish; one whose turn would not start is passed over unless
         its agent may have read the task (then kept, the doubt said: never run twice). Every same-role run busy or
         unfit: start new, and why. Blocks up to `messaging.wait_for_start`'s timeout per run tried."""
-        if self.session_id is None or (resolved := self._role()) is None:
+        if (resolved := self._role()) is None:
             return StartNew()
         policy, role, revision = resolved
-        peers = [run for run in reg.list_runs(session_id=self.session_id) if run.agent == role]
+        peers = [run for run in self._conversation() if run.agent == role]
         misfits = {run.run_id: self._misfit(run, policy, revision) for run in peers}
         why = [f"{run_id[:8]} {said}" for run_id, said in misfits.items() if said]
         fit = [run for run in peers if misfits[run.run_id] is None]
         for run in sorted(fit, key=lambda run: (run.parent_run_id == self.parent_run_id, run.finished_at or run.started_at), reverse=True):
-            delivery = messaging.deliver_message(run.run_id, self.task, only_if_idle=True)
+            delivery = messaging.deliver_message(run.run_id, self._brief(run), only_if_idle=True, turn=agent_queue.MessageTurn(limit=agent_queue.BRIEF_MAX))
             refused = delivery.text if delivery.state == "error" else messaging.wait_for_start(delivery)
             if refused is None or messaging.read_by_agent(delivery):
+                reg.take_over_refused(run, parent=self.parent_run_id, at=time.time())  # the launch of its role refused before it
                 return Continued(run=run, delivery=delivery, doubt=refused or "")
             why.append(f"{run.run_id[:8]} {refused}")
         return StartNew(why=f"{role} already here, not continued: {'; '.join(why)}" if peers else "")

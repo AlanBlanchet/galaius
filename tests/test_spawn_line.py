@@ -154,20 +154,33 @@ def _ended(run_id: str, **rest) -> None:
 
 @pytest.mark.parametrize("peers, asked, continued, why", [
     pytest.param([("eng1", {})], {}, "eng1", "", id="idle-same-role-continued"),
-    pytest.param([("eng1", {"parent_run_id": "lead"}), ("eng2", {"parent_run_id": "other"})], {}, "eng1", "", id="own-child-first"),
+    pytest.param([("eng1", {"parent_run_id": "lead"}), ("eng2", {"parent_run_id": "mid"})], {}, "eng1", "", id="own-child-first"),
     pytest.param([("eng1", {"busy": True})], {}, None, "eng1 is working", id="busy-starts-new"),
-    pytest.param([("eng1", {"cwd": "/elsewhere"})], {}, None, "eng1 works in another folder", id="other-folder"),
+    # 2026-10-16: the coordinator's shell sat in the workspace, its engineers in a checkout below: every spawn started anew.
+    pytest.param([("eng1", {"cwd": "/elsewhere"})], {}, "eng1", "", id="other-folder-read-only-continued"),
+    pytest.param([("eng1", {"cwd": "/elsewhere", "permission_mode": "full_access"})], {"permission_mode": "full_access"}, "eng1", "",
+                 id="other-folder-full-access-continued"),
+    pytest.param([("eng1", {"cwd": "/elsewhere", "permission_mode": "workspace_write"})], {"permission_mode": "workspace_write"}, None,
+                 "eng1 works in another folder it may not write in", id="other-folder-may-not-write"),
     pytest.param([("eng1", {"permission_mode": "read_only"})], {}, "eng1", "", id="recorded-default-permission-continued"),
     pytest.param([("eng1", {"permission_mode": "danger_full_access"})], {}, None, "eng1 was given danger_full_access permissions",
                  id="wider-permissions-never-reused"),
     pytest.param([("eng1", {"agent_ref": {"id": str(uuid.UUID(int=1)), "revision": str(uuid.UUID(int=2))}})], {}, None,
                  "eng1 runs another revision of the role", id="other-revision"),
     pytest.param([("eng1", {})], {"model": "other-model", "name": "eng-3"}, "eng1", "", id="asked-model-and-name-ignored"),
-    pytest.param([("eng1", {"refuses": True}), ("eng2", {"parent_run_id": "other"})], {}, "eng2", "", id="refused-start-falls-through"),
-    pytest.param([("eng1", {"refuses": True, "read": True}), ("eng2", {"parent_run_id": "other"})], {}, "eng1", "",
+    pytest.param([("eng1", {"refuses": True}), ("eng2", {"parent_run_id": "mid"})], {}, "eng2", "", id="refused-start-falls-through"),
+    pytest.param([("eng1", {"refuses": True, "read": True}), ("eng2", {"parent_run_id": "mid"})], {}, "eng1", "",
                  id="uncertain-start-never-run-twice"),
+    pytest.param([("eng1", {"replaced_by": {"run_id": "eng9-relaunch", "provider": "claude"}})], {}, None,
+                 "eng1 was refused at launch, relaunched as eng9-rel", id="taken-over-launch-never-resumed"),
+    pytest.param([("eng1", {"stream": [{"type": "turn.failed", "error": {"message": "not supported"}}]})], {}, None,
+                 "eng1 never got a first turn", id="never-spoke-not-resumed"),
     pytest.param([("eng1", {"agent": "code-reviewer"})], {}, None, "", id="other-role"),
-    pytest.param([("eng1", {"session_id": "s2"})], {}, None, "", id="other-conversation"),
+    # 2026-10-16: every web conversation of a PC shares its session id; a conversation is its launch tree.
+    pytest.param([("eng1", {"parent_run_id": "other-lead"})], {}, None, "", id="other-conversation-same-session"),
+    pytest.param([("eng1", {"session_id": "s2", "parent_run_id": None})], {"parent_run_id": None}, None, "", id="no-parent-other-session"),
+    pytest.param([("eng1", {"parent_run_id": None})], {"parent_run_id": None}, "eng1", "", id="no-parent-same-session-continued"),
+    pytest.param([("eng1", {})], {"task": "x" * 5000}, "eng1", "", id="long-brief-continued"),
 ])
 def test_a_spawn_continues_its_conversations_idle_agent_of_that_role(at_work, monkeypatch, tmp_path, peers, asked, continued, why):
     """Owner 2026-10-15: no « backend engineer three » while engineer one sits idle in the conversation."""
@@ -182,10 +195,14 @@ def test_a_spawn_continues_its_conversations_idle_agent_of_that_role(at_work, mo
     refusing: set[str] = set()
     read: set[str] = set()
     sent: list[str] = []
+    texts: list[str] = []
+    _ended("lead", agent="main", session_id="s1", parent_run_id=None)
+    _ended("mid", agent="tech-lead", session_id="s1", parent_run_id="lead")
 
-    def deliver(run_id, task, *, only_if_idle):
-        assert only_if_idle
+    def deliver(run_id, task, *, only_if_idle, turn):
+        assert only_if_idle and turn.refusal(task, None) is None
         sent.append(run_id)
+        texts.append(task)
         return spawn_line.messaging.Delivery(state="queued", text="Queued.", run_id=run_id, queue_id="q")
 
     monkeypatch.setattr(spawn_line.messaging, "deliver_message", deliver)
@@ -199,14 +216,23 @@ def test_a_spawn_continues_its_conversations_idle_agent_of_that_role(at_work, mo
             refusing.add(run_id)
         if fields.pop("read", False):
             read.add(run_id)
+        replaced_by, stream = fields.pop("replaced_by", None), fields.pop("stream", None)
         if fields.pop("busy", False):
             at_work(run_id, **fields)
         else:
             _ended(run_id, **fields)
+        if replaced_by is not None:
+            reg._merge_record_locked(run_id, {"replaced_by": replaced_by})
+        if stream is not None:
+            reg.raw_events_path(run_id).write_text("".join(json.dumps(line) + "\n" for line in stream))
     spawn = Spawn(task="add the endpoint", cwd=str(tmp_path), agent="backend-engineer", parent_run_id="lead", session_id="s1") \
         .model_copy(update=asked)
     handover = spawn.hand_over()
     assert (handover.run.run_id if isinstance(handover, spawn_line.Continued) else None) == continued
     assert sent[-1:] == ([continued] if continued else [])
+    if continued:
+        # A run of another folder is told the task's: its session still starts in its own.
+        elsewhere = reg.get_run(continued).cwd != spawn.cwd
+        assert texts[-1].endswith(spawn.task) and (str(tmp_path) in texts[-1].removesuffix(spawn.task)) == elsewhere
     if not continued:
         assert handover.why == (f"backend-engineer already here, not continued: {why}" if why else "")
