@@ -18,6 +18,8 @@ from galaius.agents.spawn_line import SpawnLine
 
 #: Each report's share of the hand-back message (`agent_queue.BRIEF_MAX` in all); the full one is `galaius agents events`.
 REPORT_MAX = 12_000
+#: A run at work that wrote nothing for this long is named silent to the run waiting on it (`Waited.still_at_work`).
+SILENT_SECONDS = 600.0
 #: The statuses of a parent whose turn ended on its own (a conversation's done turn reads "waiting"); a person's stop or a
 #: failure is never resumed behind them.
 _ENDED_ITS_TURN = frozenset({"done", "waiting"})
@@ -31,11 +33,15 @@ class Report(BaseModel):
     status: str
     pending: bool
     text: str
+    #: Seconds since its vendor last wrote, for a run still at work; None for an ended one or one with nothing written.
+    silent_for: float | None = None
 
     @classmethod
     def of(cls, run: reg.AgentRun) -> "Report":
         if _pending(run):
-            return cls(run_id=run.run_id, agent=run.agent, status=run.status, pending=True, text="")
+            said = reg.vendor_said_at(run) if run.process_running() else None  # a queued item alone: no turn to be silent
+            return cls(run_id=run.run_id, agent=run.agent, status=run.status, pending=True, text="",
+                       silent_for=None if said is None else max(0.0, time.time() - said))
         ending = ending_of(events := reg.read_events(run.run_id), run.run_id)
         said = ending.text if ending is not None else next((event.text for event in reversed(events) if event.kind == "text"), "")
         return cls(run_id=run.run_id, agent=run.agent, status=run.status, pending=False, text=(said or "").strip())
@@ -97,10 +103,26 @@ class EndWatch(BaseModel):
         return [delivery for run_id in self.ended() if (delivery := hand_back(run_id)) is not None]
 
 
-def wait(run_ids: Sequence[str], *, timeout: float, interval: float = 2.0) -> list[Report]:
+class Waited(BaseModel):
+    """What `wait` saw: each run's report, and the message that cut the wait short (None: all ended, or the timeout)."""
+
+    reports: list[Report]
+    message: agent_queue.QueueItem | None = None
+
+    def still_at_work(self) -> list[str]:
+        """Each pending run's id, with how long it has written nothing once that passes `SILENT_SECONDS`."""
+        return [report.run_id + (f" (silent {report.silent_for / 60:.0f} min)" if (report.silent_for or 0) >= SILENT_SECONDS else "")
+                for report in self.reports if report.pending]
+
+
+def wait(run_ids: Sequence[str], *, timeout: float, interval: float = 2.0, asker: str | None = None) -> Waited:
     """Each run's report once none of them is pending, or at `timeout` with the pending ones marked. A short id is resolved;
-    a run still waiting in this computer's line (`SpawnLine`) is pending; an id naming no run is refused (`LookupError`)."""
+    a run still waiting in this computer's line (`SpawnLine`) is pending; an id naming no run is refused (`LookupError`).
+    A message `asker` (the run waiting, `GALAIUS_RUN_ID`) reads at its next step (`agent_queue.next_step_read`) ends the
+    wait at once, never after a 10-minute wait (2026-10-16: the owner's words reached the coordinator 9.4 min late); one
+    it reads only once its turn ends leaves the wait running."""
     line = SpawnLine.here()
+    waiting = reg.get_run(asker) if asker is not None else None
     deadline = time.monotonic() + timeout
     while True:
         reports: list[Report] = []
@@ -112,5 +134,7 @@ def wait(run_ids: Sequence[str], *, timeout: float, interval: float = 2.0) -> li
             else:
                 raise LookupError(f"no agent run {asked!r}")
         if not any(report.pending for report in reports) or time.monotonic() >= deadline:
-            return reports
+            return Waited(reports=reports)
+        if waiting is not None and (message := agent_queue.next_step_read(waiting)) is not None:
+            return Waited(reports=reports, message=message)
         time.sleep(interval)

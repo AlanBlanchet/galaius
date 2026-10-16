@@ -934,14 +934,19 @@ def agents_events(run_id: str, limit: int = 30, machine: str | None = None) -> N
 @agents_app.command(name="wait")
 def agents_wait(run_ids: list[str], timeout: float = 600.0) -> None:
     """Wait until every named run has ended (or --timeout seconds), then print each one's final report. Exit 1 when one
-    is still at work at the timeout (its id said), 2 for an id naming no run."""
+    is still at work at the timeout (its id said, and how long it has been silent), 2 for an id naming no run, 3 when a
+    message for the run waiting (`GALAIUS_RUN_ID`) arrived first: it reaches that run at its next step."""
     try:
-        reports = handback.wait(run_ids, timeout=timeout)
+        waited = handback.wait(run_ids, timeout=timeout, asker=os.environ.get("GALAIUS_RUN_ID"))
     except LookupError as error:
         print(f"ERROR: {error}", file=sys.stderr)
         raise SystemExit(2) from None
-    print("\n\n".join(report.section(limit=None) for report in reports if not report.pending))
-    if pending := [report.run_id for report in reports if report.pending]:
+    print("\n\n".join(report.section(limit=None) for report in waited.reports if not report.pending))
+    pending = waited.still_at_work()
+    if waited.message is not None:
+        print(f"A message for you arrived from {waited.message.writer}: wait cut short. Still at work: {', '.join(pending)}")
+        raise SystemExit(3)
+    if pending:
         print(f"Still at work after {timeout:g} s: {', '.join(pending)}")
         raise SystemExit(1)
 

@@ -2154,7 +2154,7 @@ def _status_for(run: AgentRun, *, depth: int = 0) -> RunStatus:
     return "interrupted"
 
 
-def _vendor_said_at(run: AgentRun) -> float | None:
+def vendor_said_at(run: AgentRun) -> float | None:
     """When the run's vendor last wrote: its raw stream's last write, never a copy derived from it
     later (a reader change rewrites those); its end time when it kept no raw stream."""
     try:
@@ -2263,12 +2263,12 @@ def _derive(run: AgentRun) -> AgentRun:
             # model for an hour (2026-10-10).
             if (ending == "error" and digest.ending_text
                     and original.get("status") != "failed" and run.status == "failed"):
-                _remember_vendor_refusal(run, digest.ending_text, now=_vendor_said_at(run))
+                _remember_vendor_refusal(run, digest.ending_text, now=vendor_said_at(run))
             # The other way round: a run nobody reaped (`agents spawn` detaches) that ended on its
             # model's answer proves the model serves — as `finish` says for a reaped one — but only
             # against what was heard before that answer.
             elif (ending == "done" and original.get("status") not in ("done", "waiting")
-                    and (run.output_tokens or 0) > 0 and (answered := _vendor_said_at(run)) is not None):
+                    and (run.output_tokens or 0) > 0 and (answered := vendor_said_at(run)) is not None):
                 quota.served(run.provider, run.model, subscription=run.subscription_id, at=answered)
     return run
 

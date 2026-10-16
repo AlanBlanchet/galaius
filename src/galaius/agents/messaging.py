@@ -43,7 +43,7 @@ class Delivery(BaseModel):
         inside the fence)."""
         waiting = [other.id for other in agent_queue.items_locked(run.run_id) if other.state in {"pending", "running"}]
         working = item.state == "pending" and ((item.id in waiting and waiting.index(item.id) > 0) or run.working())
-        mid_turn = item.turn.mid_turn and run.fence is None and provider_for(run.provider).reads_mid_turn
+        mid_turn = item.turn.mid_turn and agent_queue.reads_next_step(run)
         reads_at: ReadsAt = "now" if not working else "next_step" if mid_turn else "turn_end"
         return cls(state="queued", text=f"Queued for {run.name} ({run.run_id[:8]}), delivery {item.id[:8]}.", run_id=run.run_id,
                    queue_id=item.id, reads_at=reads_at, repeated=repeated)

@@ -3,10 +3,11 @@
 report saying "DONE" forthe tasks... »."""
 
 import json
+import time
 
 import pytest
 
-from galaius.agents import handback
+from galaius.agents import agent_queue, handback
 from galaius.agents import registry as reg
 from tests.support import register_run
 
@@ -76,16 +77,40 @@ def test_wait_returns_each_runs_final_report_once_all_ended(at_work):
     _answered("eng", "DONE: endpoint shipped.")
     worker = at_work("rev", agent="code-reviewer")
 
-    pending = handback.wait(["eng", "rev"], timeout=0.2, interval=0.05)
+    pending = handback.wait(["eng", "rev"], timeout=0.2, interval=0.05).reports
     assert [report.run_id for report in pending if report.pending] == ["rev"]
 
     worker.kill()
     worker.wait()
     reg._merge_record_locked("rev", {"status": "done", "finished_at": 300.0})
     _answered("rev", "Verdict: PASS.")
-    reports = handback.wait(["eng", "rev"], timeout=5, interval=0.05)
+    reports = handback.wait(["eng", "rev"], timeout=5, interval=0.05).reports
     assert [(report.run_id, report.pending, report.text) for report in reports] == [
         ("eng", False, "DONE: endpoint shipped."), ("rev", False, "Verdict: PASS.")]
+
+
+def test_a_message_for_the_waiting_run_cuts_its_wait_short(at_work, monkeypatch):
+    """2026-10-16: the owner wrote to the coordinator while it sat in `galaius agents wait --timeout 580`; his words
+    reached it 9.4 min later, when the wait timed out (« I find Claude to be pretty slow today »). A message queued for
+    the run that waits ends the wait at once, so it reaches that run at its next step."""
+    register_run("lead", agent="main")
+    at_work("rev", agent="code-reviewer", parent_run_id="lead")
+    monkeypatch.setattr(reg, "vendor_said_at", lambda run: time.time() - 900)
+
+    quiet = handback.wait(["rev"], timeout=0.2, interval=0.05, asker="lead")
+    assert quiet.message is None and [report.silent_for // 60 for report in quiet.reports] == [15]
+
+    agent_queue.enqueue("lead", message_id="c1", sender="operator", turn=agent_queue.CompactionTurn())
+    behind = handback.wait(["rev"], timeout=0.3, interval=0.05, asker="lead")  # read only once its turn ends: no cut
+    assert behind.message is None and [report.pending for report in behind.reports] == [True]
+    with reg.record_lock("lead"):
+        agent_queue.cancel_pending_locked("lead")
+
+    item = agent_queue.enqueue("lead", message_id="m1", sender="operator")
+    started = time.monotonic()
+    waited = handback.wait(["rev"], timeout=30, interval=0.05, asker="lead")
+    assert time.monotonic() - started < 5
+    assert waited.message is not None and waited.message.id == item.id and [report.pending for report in waited.reports] == [True]
 
 
 @pytest.fixture

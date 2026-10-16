@@ -335,6 +335,19 @@ def cancel_pending_locked(run_id: str) -> None:
         _write_state(run_id, state)
 
 
+def reads_next_step(run: reg.AgentRun) -> bool:
+    """Whether a turn running on `run` reads a mid-turn message at its next step (`inject`, through the inbox hook): its
+    CLI reads mid-turn and the run is unfenced (the hook cannot claim a message from inside the fence)."""
+    return run.fence is None and provider_for(run.provider).reads_mid_turn
+
+
+def next_step_read(run: reg.AgentRun) -> QueueItem | None:
+    """The message the turn running on `run` reads at its next step, in `inject`'s order: its first pending item, when
+    that is a mid-turn kind and `reads_next_step`; None when what waits for it is read only once that turn ends."""
+    first = next((item for item in items(run.run_id) if item.state == "pending"), None)
+    return first if first is not None and first.turn.mid_turn and reads_next_step(run) else None
+
+
 def items(run_id: str) -> list[QueueItem]:
     with reg.record_lock(run_id):
         return items_locked(run_id)
