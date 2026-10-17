@@ -1638,16 +1638,20 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
     JSON); every turn builds it again from the machine's levels. The machine runner writes it.
     An agent of the same role already in this conversation, between turns, takes the task as its
     next turn (its context intact) and its id is printed; --fresh starts a new one regardless.
-    --for names the run of this computer (full id) the task is asked for (an operator passing on its ask: the
+    --for names the run of this computer (full or short id) the task is asked for (an operator passing on its ask: the
     job queue waking its worker for the run that queued the job): the message handing it over records it, and the
     run taking it lists it among the runs it works for (`asked_by`).
     """
 
 
-    # Its full id, read as one record: a stored run of this computer is the only one a run can list as its asker.
-    if for_run is not None and (machine is not None or reg.get_run(for_run) is None):
-        print(f"ERROR: --for names an agent run of this computer by its full id: {for_run!r} is none", file=sys.stderr)
-        raise SystemExit(2)
+    # Resolved to its full id: a stored run of this computer is the only one a run can list as its asker, and the
+    # short id `agents list` prints names it as everywhere else (`reg.resolve_run_id`).
+    if for_run is not None:
+        asker = None if machine is not None else reg.resolve_run_id(for_run)
+        if asker is None or reg.get_run(asker) is None:
+            print(f"ERROR: --for names an agent run of this computer (full or unambiguous short id): {for_run!r} is none", file=sys.stderr)
+            raise SystemExit(2)
+        for_run = asker
     if machine is not None:
         _spawn_on_machine(machine, folder, task, agent=agent, provider=provider, model=model, permission=permission_mode)
         return

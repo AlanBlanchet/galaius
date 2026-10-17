@@ -18,6 +18,7 @@ from galaius.agents import registry as reg
 from galaius.agents import spawn_line
 from galaius.agents.run import run_agent
 from galaius.agents.spawn_line import STUCK, Admission, Load, Spawn, SpawnLine
+from galaius.cli.app_commands import agents_spawn
 from galaius.machine_agents import WebRun, WebRuns
 from galaius.paths import UserPaths
 from tests.support import register_run
@@ -236,6 +237,29 @@ def test_a_new_run_started_for_a_run_lists_it_among_its_askers():
 
     asyncio.run(Spawn(task="ship it", cwd=".", agent="infra-engineer", for_run=maker).start(started, runner))
     assert reg.get_run(started).asked_by == (maker,)
+
+
+class _Asked(Exception):
+    """Raised by a stub `Spawn.asked`: the spawn stops once its arguments are resolved."""
+
+
+@pytest.mark.parametrize(("given", "resolved"), [("full", True), ("short", True), ("unknown", False)])
+def test_spawn_for_takes_the_short_id_agents_list_prints(monkeypatch, given, resolved):
+    """A job queue's wake passes the asker as its operator typed it, often the 8-character id `agents list`
+    prints: refusing it started the worker for nobody."""
+    maker = str(uuid.uuid4())
+    reg.register(run_id=maker, pid=999999, provider="claude", name="maker", task="t", agent="tester")
+    asked = {}
+
+    def stop(**arguments):
+        asked.update(arguments)
+        raise _Asked
+
+    monkeypatch.setattr(Spawn, "asked", stop)
+    named = {"full": maker, "short": maker[:8], "unknown": str(uuid.uuid4())[:8]}[given]
+    with pytest.raises(_Asked if resolved else SystemExit):
+        agents_spawn("ship it", agent="infra-engineer", for_run=named)
+    assert asked.get("for_run") == (maker if resolved else None)
 
 
 def test_every_kept_argument_of_a_spawn_is_one_run_agent_takes():
