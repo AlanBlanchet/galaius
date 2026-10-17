@@ -24,9 +24,10 @@ QUOTE_MAX = 100
 _CHAIN_MAX = 32
 #: The line a turn card (`card`) opens with.
 CARD_HEADING = "[Galaius: where you stand, from the run records]"
-#: A line opening on a failed verdict, bare or after a short label (« Verdict: FAIL », « STATE: BLOCKED »): a report whose
-#: first or last line (its closing stamp) is one still needs its reader (`needs_answer`).
-_FAILED = re.compile(r"^\W*(?:\w+(?: \w+)?\W*:\W*)?(?:BLOCKED|FAIL(?:-AT-CAP)?|REJECTED)\b")
+#: A line opening on a failed verdict, bare or after a label of up to four words ending on a colon or a dash (« Verdict:
+#: FAIL », « Review round 2 — FAIL », « STATE: BLOCKED »): a report whose first or last line (its closing stamp) is one
+#: still needs its reader (`needs_answer`). « C2 PASS (was FAIL) » is none.
+_FAILED = re.compile(r"^\W*(?:[\w#.-]+(?:\s+[\w#.-]+){0,3}\s*[:—–-]\s*)?\W*(?:BLOCKED|FAIL(?:-AT-CAP)?|REJECTED)\b")
 #: Where an agent's own words start in a message it sent (`registry.AgentRun.handoff_header`).
 _CONTENT = "\n[Agent content]\n"
 #: What a run at work is doing, as its record says (a queued message alone is not work a card names).
@@ -75,11 +76,17 @@ def succeed(predecessor_id: str, successor_id: str) -> bool:
 def boss(run: reg.AgentRun) -> str | None:
     """The run `run` works for first: its parent at the end of its chain (`live`); for a run its own parent handed its
     work to (`--continues` itself), that parent's own; None for a run the person launched."""
-    parent, seen = run.parent_run_id, {run.run_id}
-    while parent and parent not in seen and live(parent) == run.run_id:
+    return _working_for(run)[0]
+
+
+def _working_for(run: reg.AgentRun) -> tuple[str | None, reg.AgentRun]:
+    """`boss`, and the run of `run`'s chain that boss asked: `run` itself, or the run that handed its own work to it."""
+    asked, seen = run, {run.run_id}
+    while (parent := asked.parent_run_id) and parent not in seen and live(parent) == run.run_id and (above := reg.get_run(parent)):
         seen.add(parent)
-        parent = above.parent_run_id if (above := reg.get_run(parent)) is not None else None
-    return live(parent) if parent and parent not in seen else None
+        asked = above
+    parent = asked.parent_run_id
+    return (live(parent) if parent and parent not in seen else None), asked
 
 
 def content(text: str) -> str:
@@ -129,7 +136,10 @@ def owed(run: reg.AgentRun) -> tuple[str, ...]:
 
 
 def open_asks(run: reg.AgentRun) -> dict[str, float | None]:
-    """Each ask `owed` counts, with its time: never one of a run `run` took over itself (a hand-off to itself)."""
+    """Each ask `owed` counts, with its time: none once another run took over (they moved to it, `inherited`), never one
+    of a run `run` took over itself (a hand-off to itself)."""
+    if run.successor is not None:
+        return {}
     return {asker: at for asker, at in _asks(run).items()
             if live(asker) != run.run_id and (at is None or not _reported(run.run_id, to=asker, since=at))}
 
@@ -201,8 +211,8 @@ def report_to(run: reg.AgentRun) -> str:
 def card(run: reg.AgentRun) -> str:
     """Where `run` stands as a turn of it starts: whom it works for and on what, its agents and the conversation's still at
     work, the idle ones of a role it can hand a task to, and where its final message goes."""
-    first = boss(run)
-    works_for = OPERATOR if first is None else f"{tag(first)} — « {_last_ask(run, run.parent_run_id or first)} »"
+    first, asked = _working_for(run)
+    works_for = OPERATOR if first is None else f"{tag(first)} — « {_last_ask(asked, asked.parent_run_id or first)} »"
     lines = [f"{CARD_HEADING}\nYou are {_tag(run)}. You work for: {works_for}."]
     also = [asker for asker in owed(run) if asker != run.parent_run_id and live(asker) != first]
     if also:

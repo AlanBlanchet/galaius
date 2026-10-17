@@ -142,6 +142,7 @@ def test_a_successor_owes_only_what_its_predecessor_still_owed_and_reads_what_is
     new = reg.get_run(IDS["new"])
     assert relations.live(IDS["old"]) == IDS["new"] and not relations.succeed(IDS["old"], IDS["eng"])
     assert relations.owed(new) == (IDS["lead"], IDS["coordinator"])  # never the stranger, answered before
+    assert relations.owed(reg.get_run(IDS["old"])) == ()  # its asks moved: each asker hears once
     assert relations.report_to(reg.get_run(IDS["helper"])) == _tag("new")
     assert relations.relation(reg.get_run(IDS["helper"]), new, "DONE") is Relation.REPORT
     assert f"Your agents still at work: {_tag('helper')}." in relations.card(new)
@@ -159,9 +160,10 @@ def test_a_run_handing_off_its_own_work_leaves_its_successor_working_for_its_own
     new = reg.get_run(IDS["new"])
     boss = _tag("lead") if parent else "the person who launched you"
     card = relations.card(new).splitlines()
-    assert card[1] == f"You are {_tag('new')}. You work for: {boss}{' — « new task »' if parent else ''}."
+    assert card[1] == f"You are {_tag('new')}. You work for: {boss}{' — « old task »' if parent else ''}."  # what the boss asked
     assert card[-1].startswith(f"When this turn ends your final message goes to {', '.join(filter(None, (parent and _tag('lead'), _tag('coordinator'))))} by itself")
     assert IDS["new"] not in {relations.live(asker) for asker in relations.owed(new)}
+    assert relations.owed(reg.get_run(IDS["old"])) == ()  # the boss hears from the successor only
 
 
 def test_a_critic_spawned_for_a_maker_starts_knowing_and_owing_both(team):
@@ -173,6 +175,8 @@ def test_a_critic_spawned_for_a_maker_starts_knowing_and_owing_both(team):
     assert f"Also asked by: {_tag('eng')} — « rev task »." in relations.card(rev)
     assert relations.relation(rev, team["eng"], "Verdict: FAIL\nrow 2") is Relation.REPORT_ASKING
     assert relations.relation(rev, team["eng"], "C1 FAIL fixed\nC2 PASS (was FAIL)") is Relation.REPORT
+    for verdict in ("Review round 2 — FAIL", "Round 2 verdict: FAIL", "Verdict for be866616: FAIL"):
+        assert relations.relation(rev, team["eng"], f"{verdict}\nrow 2") is Relation.REPORT_ASKING, verdict
 
 
 @pytest.mark.parametrize("named, refused", [

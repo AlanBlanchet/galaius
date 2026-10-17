@@ -138,7 +138,7 @@ class Spawn(BaseModel):
         here = {run.run_id for run in reg.stored_tree(reg.conversation_of(caller.run_id))}
         if self.continues is not None and self.continues != caller.run_id:
             predecessor = reg.get_run(self.continues)
-            role = resolved[1] if (resolved := self._role()) is not None else self.agent
+            role = self._role_name()
             if predecessor is None or predecessor.run_id not in here or predecessor.agent != role or self._busy(predecessor):
                 return f"continues names {self.continues[:8]}: only your own run, or an ended {role or 'agent'} of your conversation, is yours to hand off"
         if self.for_run is not None and self.for_run not in here:
@@ -150,10 +150,14 @@ class Spawn(BaseModel):
     def _outgrown(self) -> reg.AgentRun | None:
         """The newest run of its role under its parent whose context filled (`relations.context_full`), not at work and
         not taken over yet: the one it takes over from."""
-        role = resolved[1] if (resolved := self._role()) is not None else self.agent
+        role = self._role_name()
         return next((peer for peer in self._conversation()
                      if role and peer.agent == role and peer.parent_run_id == self.parent_run_id
                      and peer.successor is None and relations.context_full(peer) and not self._busy(peer)), None)
+
+    def _role_name(self) -> str | None:
+        """The role it would run as (`_role`), else the agent it names."""
+        return resolved[1] if (resolved := self._role()) is not None else self.agent
 
     def _role(self) -> tuple[Policy, str, AgentRevisionRef | None] | None:
         """The policy, role and revision it would run as (`run.resolve_role`, as its start resolves them); None

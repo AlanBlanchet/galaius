@@ -415,12 +415,13 @@ class AgentRun(ContextGauge):
 
     @field_validator("inherited_asks", mode="before")
     @classmethod
-    def asks_of_run_ids(cls, value: object) -> object:
-        """Only run ids with a time, the first `ASKED_BY_MAX`: a record edited by hand never breaks a reader."""
+    def asks_of_run_ids(cls, value: object, info: ValidationInfo) -> object:
+        """Only runs of its `asked_by` (run ids, at most `ASKED_BY_MAX`) with a time: a record edited by hand never breaks
+        a reader."""
         if not isinstance(value, dict):
             return {}
-        asks = {asker: at for asker, at in value.items() if isinstance(asker, str) and _is_run_id(asker) and isinstance(at, int | float)}
-        return dict(list(asks.items())[:ASKED_BY_MAX])
+        listed = set(info.data.get("asked_by", ()))  # an ask of a run it does not work for would be read by nothing
+        return {asker: at for asker, at in value.items() if asker in listed and isinstance(at, int | float)}
 
     @field_validator("successor", mode="before")
     @classmethod
