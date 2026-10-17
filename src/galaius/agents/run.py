@@ -1585,7 +1585,9 @@ async def run_agent(
             f"First progress message: [{agent}] followed by your concrete task; then start immediately.\n"
             "You run headless: ending your turn ends this run, and a background job's completion notice never "
             "reaches it. Wait for a job you started (tests, deploy, generation) with a bounded foreground poll "
-            "loop of at most 10 minutes per call; end your turn only when your own work is finished.\n\n"
+            "loop of at most 10 minutes per call. Waiting on another agent: send your request and end your turn; "
+            "its reply or final report resumes this run (`handback`), so never poll another agent's run. End your "
+            "turn when your own work is finished or handed to an agent.\n\n"
             f"{task}"
         )
         # argv built AFTER the model is decided: used to build first with raw text, so a criterion,
