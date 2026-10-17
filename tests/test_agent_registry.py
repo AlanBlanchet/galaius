@@ -2186,3 +2186,16 @@ def test_a_resumed_turn_refused_again_right_away_is_left_to_reprendre(monkeypatc
     monkeypatch.setattr(reg.time, "time", lambda: claimed.resumed_at + 10)
     assert reg.finish("lim-again", exit_code=1, expected_pid=405, expected_lifecycle_token=resumed.lifecycle_token)
     assert reg.schedule_limit_resumes() == [] and reg.get_run("lim-again").resume_at is None
+
+
+def test_a_run_keeps_the_size_its_last_compaction_left_once_its_context_grows_back():
+    """`relations.outgrown` reads the size a compaction left, never the context grown back since: both the live record
+    and its re-derivation from the stream keep it (2026-10-17: every compacted run read near full again later)."""
+    register_run()
+    for event in (AgentEvent(kind="text", text="a", context_tokens=195_000, context_window=200_000),
+                  AgentEvent(kind="compacted", context_tokens=170_000, compacted_from=195_000),
+                  AgentEvent(kind="compacted", context_tokens=15_000, compacted_from=190_000),
+                  AgentEvent(kind="text", text="b", context_tokens=180_000)):
+        reg.append_event("r1", event)
+    assert (reg.get_run("r1").compacted_to, reg.get_run("r1").context_tokens) == (15_000, 180_000)
+    assert reg.StreamDigest.of("events", reg.read_events("r1"), "r1").compacted_to == 15_000

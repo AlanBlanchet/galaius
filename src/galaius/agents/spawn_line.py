@@ -183,7 +183,8 @@ class Spawn(BaseModel):
 
     def _outgrown(self) -> reg.AgentRun | None:
         """The newest run of its role under its parent that outgrew its context (`relations.outgrown`), not at work and
-        not taken over yet: the one it takes over from."""
+        not taken over yet: the one it takes over from. One merely full is not handed the task (`_misfit`) yet keeps its
+        asks: its CLI compacts it on its next turn."""
         role = self._role_name()
         return next((peer for peer in self._conversation()
                      if role and peer.agent == role and peer.parent_run_id == self.parent_run_id

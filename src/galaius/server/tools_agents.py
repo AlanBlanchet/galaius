@@ -179,7 +179,7 @@ async def agent_spawn(
                 line.leave(admission.run_id)
             takeover = await asyncio.to_thread(spawn.takeover_sentence, predecessor, handle.run_id)
             takeover = f"{takeover}\n" if takeover else ""
-    except ValueError as e:  # an unknown permission mode, refused before it reaches a shell
+    except ValueError as e:  # an unknown permission mode, or a spawn leaving its caller's tree (`Spawn.asked`)
         return f"ERROR: {e}"
     except (OSError, RuntimeError) as e:
         return f"ERROR: could not start the {provider or 'ranked'} agent — {e}"
@@ -337,7 +337,7 @@ async def agent_send(run_id: str, message: str, wait: bool = False, fyi: bool = 
     if delivery.state == "error" or not wait:
         return said
     reply = await messaging.wait_for_reply(delivery)
-    if (answered := await asyncio.to_thread(reg.get_run, delivery.run_id)) is not None:
+    if delivery.state == "replied" and (answered := await asyncio.to_thread(reg.get_run, delivery.run_id)) is not None:
         await asyncio.to_thread(handback.collected, messaging.sender_id(), [handback.Report.of(answered)])
     return f"{said}\n{reply}" if waiting else reply
 

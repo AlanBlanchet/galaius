@@ -229,6 +229,8 @@ class StreamDigest(BaseModel):
     tokens: dict[str, int] = Field(default_factory=dict)
     #: The context gauge its events fold to (`AgentEvent.gauge_onto`).
     context: ContextGauge = ContextGauge()
+    #: `AgentRun.compacted_to` as its events say it.
+    compacted_to: int | None = None
     #: Newest non-empty event summary; None when no event summarises to anything.
     last: str | None = None
 
@@ -251,6 +253,7 @@ class StreamDigest(BaseModel):
             answered=answered_line(events, viewer),
             cost_usd=sum(costs) if costs else None, tokens=tokens,
             last=next((said for e in reversed(events) if (said := e.summary(viewer=viewer))), None),
+            compacted_to=next((e.context_tokens for e in reversed(events) if e.kind == "compacted"), None),
         )
 
 
@@ -370,6 +373,9 @@ class AgentRun(ContextGauge):
     #: The run that took over from it (`relations.succeed`: a hand-off, its context full): what is handed back or sent
     #: to it reaches that run instead (`relations.live`), never resuming this one.
     successor: str | None = None
+    #: The size its last compaction left, as its CLI said (None: never compacted, or not said): near full, the compaction
+    #: freed too little and its work goes to a new run (`relations.outgrown`).
+    compacted_to: int | None = None
     #: When each run of its `asked_by` that it took over from a predecessor (`relations.succeed`) asked that predecessor
     #: what is still owed: the report reaches it until one answers that ask, never again for an ask answered before.
     inherited_asks: dict[str, float] = Field(default_factory=dict, exclude_if=lambda value: not value)
@@ -1605,6 +1611,8 @@ def append_event(run_id: str, event: AgentEvent) -> None:
             if used is not None:
                 updates[field] = (getattr(stored, field) or 0) + used
         updates.update(event.gauge_onto(stored))
+        if event.kind == "compacted":
+            updates["compacted_to"] = event.context_tokens
         summary = event.summary(viewer=run_id)
         if summary:  # system/hook events summarise to nothing; they must not blank the row
             updates["last"] = summary
@@ -2297,6 +2305,7 @@ def _derive(run: AgentRun) -> AgentRun:
         for field, used in (digest.tokens | digest.context.model_dump()).items():
             setattr(run, field, used)
         run.cost_usd, run.last = digest.cost_usd, digest.last if digest.last is not None else run.last
+        run.compacted_to = digest.compacted_to
     run.stream_digest = digest
     # Persist whatever we healed — status included. The panel reads these files directly and does
     # its own (downgrade-only) liveness check, so a status left stale on disk reappears there as

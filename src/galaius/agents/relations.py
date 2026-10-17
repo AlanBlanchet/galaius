@@ -15,7 +15,7 @@ from galaius.agents import registry as reg
 from galaius.agents.events import AgentEvent, Relation, ending_of
 from galaius.inbox_hook import HEADING, OPERATOR
 
-#: Share of its context window past which a run is not handed a new task (`spawn_line.Spawn._misfit`), and, held after a
+#: Share of its context window past which a run is not handed a new task (`spawn_line.Spawn._misfit`), and, left by a
 #: compaction, past which it hands its work to the first run of its role it spawns (`outgrown`).
 CONTEXT_NEAR_FULL = 0.8
 #: The other runs at work a card names, newest first.
@@ -69,9 +69,9 @@ def _get(run_id: str) -> reg.AgentRun | None:
 
 
 def outgrown(run: reg.AgentRun) -> bool:
-    """Its context is still near full (`context_full`) after its last compaction (a compaction sets the size it left): its
-    work goes to a new run. A count of compactions says nothing of how full it is now."""
-    return run.compactions > 0 and context_full(run)
+    """Its last compaction left its context near full (`CONTEXT_NEAR_FULL`, `AgentRun.compacted_to`): compacting frees too
+    little, its work goes to a new run. Neither a count of compactions nor a context grown back after one says so."""
+    return run.compacted_to is not None and bool(run.context_window) and run.compacted_to >= CONTEXT_NEAR_FULL * (run.context_window or 0)
 
 
 @one_read()
