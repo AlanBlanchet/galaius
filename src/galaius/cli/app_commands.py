@@ -878,7 +878,7 @@ def agents_list(foreign: bool = False, session_id: str | None = None, all_sessio
     places, aside = line.session(None if all_sessions else identity), line.set_aside()
     for place, said in places:
         state = "failed" if place.state == "failed" else "queued"
-        print(f"  {state:8} {place.run_id[:8]}  {'-':7} {place.label():16} {'—':>10}  {said}")
+        print(f"  {state:8} {reg.short_id(place.run_id)}  {'-':7} {place.label():16} {'—':>10}  {said}")
     if not runs and not places:
         names = ", ".join(p.name for p in available_providers()) or "none installed"
         print(f"No agent runs. Providers available here: {names}.")
@@ -887,7 +887,7 @@ def agents_list(foreign: bool = False, session_id: str | None = None, all_sessio
         cost = f"~${run.cost_usd:.4f}" if run.cost_usd is not None else "—"
         mark = "*" if run.foreign else " "
         said = run.interruption.describe() if run.interruption else ASIDE if run.run_id in aside else run.last
-        print(f"{mark} {run.status:8} {run.run_id[:8]}  {run.provider:7} {run.name:16} "
+        print(f"{mark} {run.status:8} {reg.short_id(run.run_id)}  {run.provider:7} {run.name:16} "
               f"{cost:>10}  {said[:60]}")
     if any(r.foreign for r in runs):
         print("\n* not started by galaius")

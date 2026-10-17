@@ -2735,6 +2735,11 @@ def clear_finished() -> list[str]:
     return [r.run_id for r in list_runs() if not r.foreign and forget(r.run_id)]
 
 
+def short_id(run_id: str) -> str:
+    """The id `galaius agents list` prints for `run_id`, and the tail of its Claude session's peer name (`AheadLaunch.turn_arguments`)."""
+    return run_id[:8]
+
+
 def resolve_run_id(prefix: str) -> str | None:
     """The full run id a prefix names, or None if it names none or more than one.
 

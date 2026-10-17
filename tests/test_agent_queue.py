@@ -454,7 +454,7 @@ def test_every_agent_turn_runs_under_galaius_settings_and_gets_its_task_back_aft
     task = "- fix the footer"
     reg.register(run_id="r3", pid=os.getpid(), provider="claude", name="worker", task=task, agent="tester")
     provider = ClaudeCodeProvider()
-    turn = agent_run.AheadLaunch.turn_arguments(provider, "r3", None)
+    turn = agent_run.AheadLaunch.turn_arguments(provider, "r3", None, role="tester")
     first = provider.command("t", cwd=str(tmp_path), model=None, mcp_config=None, run_id="r3", **turn)
     resumed = provider.resume_command("r3", "go on", **turn)
     settings = [json.loads(argv[argv.index("--settings") + 1]) for argv in (first, resumed)]
@@ -474,7 +474,19 @@ def test_every_agent_turn_runs_under_galaius_settings_and_gets_its_task_back_aft
     lost = session_start("compact", check=False)
     assert (lost.returncode, lost.stdout) == (1, "") and "unreadable" in lost.stderr
     fence = FenceSpec(working_directory=tmp_path, levels={"work": "write"}, start=tmp_path, state=tmp_path / "state")
-    assert agent_run.AheadLaunch.turn_arguments(provider, "r3", fence)["turn"].brief_hook is None
+    assert agent_run.AheadLaunch.turn_arguments(provider, "r3", fence, role="tester")["turn"].brief_hook is None
+
+
+@pytest.mark.parametrize(("role", "name"), [("app-engineer", "app-engineer-0f9576d3"), (None, "agent-0f9576d3")])
+def test_every_agent_turn_is_named_for_peers_by_its_role_and_run(role, name, tmp_path):
+    """Claude Code names an unnamed session after its folder (`<folder>-<2 hex>`), so a peer's SendMessage to
+    'app-engineer' found no session: first and resumed turn alike carry `-n` (a resume without it drops the name)."""
+    run_id = "0f9576d3-ac91-5243-a254-c2acf1aad6e6"
+    provider = ClaudeCodeProvider()
+    turn = agent_run.AheadLaunch.turn_arguments(provider, run_id, None, role=role)
+    first = provider.command("t", cwd=str(tmp_path), model=None, mcp_config=None, run_id=run_id, **turn)
+    resumed = provider.resume_command(run_id, "go on", **turn)
+    assert [argv[argv.index("-n") + 1] for argv in (first, resumed)] == [name, name]
 
 
 def test_a_message_to_a_working_run_is_read_after_its_next_own_tool_call_and_settled_by_that_turn(monkeypatch, tmp_path):
@@ -499,7 +511,7 @@ def test_a_message_to_a_working_run_is_read_after_its_next_own_tool_call_and_set
     # Opened by who wrote it, in the exact line the agent was told at launch is the person's own.
     heading = inbox_hook.HEADING.format(who=inbox_hook.OPERATOR)
     assert said["hookEventName"] == "PostToolUse" and said["additionalContext"] == f"{heading}\n\nalso check the footer"
-    assert f"\n{heading}\n" in ClaudeTurnSettings(compact_window=200_000, bash_output_chars=15_000, inbox_hook=hook).arguments()[-1] == inbox_hook.NOTE
+    assert f"\n{heading}\n" in ClaudeTurnSettings(compact_window=200_000, bash_output_chars=15_000, inbox_hook=hook, name="tester-r2").arguments()[-1] == inbox_hook.NOTE
     assert tool_call() == "" and [item.state for item in agent_queue.items("r2")] == ["running"] and agent_queue.read_ids("r2") == [sent]
 
     with reg.open_raw_events("r2", append=True) as stream:

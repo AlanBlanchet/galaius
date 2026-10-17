@@ -744,16 +744,17 @@ class AheadLaunch(BaseModel):
     fence: FenceSpec | None = None
 
     @staticmethod
-    def turn_arguments(provider: AgentProvider, run_id: str, fence: FenceSpec | None) -> dict[str, ClaudeTurnSettings]:
-        """What each turn of agent run `run_id` runs under where `provider` takes it (`takes_turn_settings`): the
-        configured compaction window and Bash output; the messages sent to it while it works where it reads them
+    def turn_arguments(provider: AgentProvider, run_id: str, fence: FenceSpec | None, *, role: str | None) -> dict[str, ClaudeTurnSettings]:
+        """What each turn of agent run `run_id` playing `role` runs under where `provider` takes it (`takes_turn_settings`): the
+        name peers message it by, its role then the id `galaius agents list` prints (`app-engineer-0f9576d3`: unique on the
+        machine; a peer naming only the role gets each running one back to pick from); the configured compaction window and Bash output; the messages sent to it while it works where it reads them
         (`agent_queue.inbox_hook`); its launch task once a compaction replaced its conversation (`reg.brief_hook`),
         except inside a `fence`, where the run's record and galaius's interpreter are out of reach (its home is empty)."""
         if not provider.takes_turn_settings:
             return {}
         return {"turn": ClaudeTurnSettings(compact_window=config.claude_compact_window, bash_output_chars=config.claude_bash_output_chars,
                                      inbox_hook=agent_queue.inbox_hook(run_id) if provider.reads_mid_turn else None,
-                                     brief_hook=None if fence else reg.brief_hook(run_id))}
+                                     brief_hook=None if fence else reg.brief_hook(run_id), name=f"{role or 'agent'}-{reg.short_id(run_id)}")}
 
     def digest(self, environment: Mapping[str, str], *parts: str) -> str:
         """`parts`, today's date (the one a prompt states), which folder it is (`_folder_identity`) and
@@ -824,7 +825,7 @@ class ChildLaunch(AheadLaunch):
     def command_arguments(self, run_id: str, session: str) -> dict[str, object]:
         arguments = {**self.arguments, "run_id": session, "environment": self.env(run_id),
                      "mcp_config": mesh_config(run_id=run_id, role=self.role) if self.meshed else None}
-        return arguments | self.turn_arguments(self.provider, run_id, self.fence)
+        return arguments | self.turn_arguments(self.provider, run_id, self.fence, role=self.role)
 
     async def launch(self, run_id: str, session: str, task: str) -> asyncio.subprocess.Process:
         """Run `run_id`'s child doing `task` (as vendor session `session`): handed on its stdin as to a child started
@@ -906,7 +907,7 @@ class ResumeLaunch(AheadLaunch):
             agent_prompt=_role_prompt(catalog, run.agent, provider, env) if catalog is not None else None,
             mcp_config=mesh_config(run_id=run.run_id, role=run.agent) if run.mesh_enabled and not already_meshed(provider.name) else None,
             coarse_accepted=coarse_accepted, base_url=routed.get("OPENAI_BASE_URL"),
-            **AheadLaunch.turn_arguments(provider, run.run_id, run.fence),
+            **AheadLaunch.turn_arguments(provider, run.run_id, run.fence, role=run.agent),
         )
         if provider.name == "claude" and reasoning is not None:
             env["CLAUDE_CODE_EFFORT_LEVEL"] = reasoning
@@ -1079,7 +1080,7 @@ def launch_editor_turn(
 ) -> ContinuationHandle:
     """One turn of a conversation the owner began in his editor, continued elsewhere (the machine
     serving the web): its FIRST turn copies the editor's session `fork_from` into this run's own id
-    (the editor's session is never written), later turns resume the copy. No role: the session
+    (the editor's session is never written), later turns resume the copy. No role, so no peer name (`AheadLaunch.turn_arguments`): the session
     keeps the model and instructions it was begun with; the permission is the run's recorded one,
     the environment exactly `environment` (never this process's)."""
     restore_folder(run, provider, fork_from or run.run_id, environment)

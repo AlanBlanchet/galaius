@@ -869,6 +869,9 @@ class ClaudeTurnSettings(BaseModel):
     #: Run once a compaction replaced the conversation (`SessionStart`, source `compact`: `galaius.brief_hook`), with the
     #: note telling the agent what that context is (`galaius.brief_hook.NOTE`).
     brief_hook: str | None = None
+    #: The name a peer session's SendMessage addresses it by (`-n`): `<role>-<short run id>`. Unnamed, the CLI names a session
+    #: after its folder (`<folder>-<2 hex>`) and a resume without `-n` drops the name: no peer finds a run by its role.
+    name: str
 
     def arguments(self) -> list[str]:
         hooks = {
@@ -877,7 +880,7 @@ class ClaudeTurnSettings(BaseModel):
         }
         settings = {"autoCompactWindow": self.compact_window, "bashOutputMaxChars": self.bash_output_chars, **({"hooks": hooks} if hooks else {})}
         notes = [note for hook, note in ((self.inbox_hook, INBOX_NOTE), (self.brief_hook, BRIEF_NOTE)) if hook]
-        return ["--settings", json.dumps(settings)] + (["--append-system-prompt", "\n\n".join(notes)] if notes else [])
+        return ["-n", self.name, "--settings", json.dumps(settings)] + (["--append-system-prompt", "\n\n".join(notes)] if notes else [])
 
 
 class ClaudeCodeProvider(AgentProvider):
