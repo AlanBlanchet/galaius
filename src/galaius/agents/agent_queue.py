@@ -24,7 +24,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Annotated, ClassVar, Literal
 
-from galaius_core import AGENT_IMAGES_MAX, MEDIA_KEY
+from galaius_core import AGENT_IMAGES_MAX, MEDIA_KEY, AgentRevisionRef
 from pydantic import BaseModel, ConfigDict, Field
 
 from galaius.agents import registry as reg
@@ -85,6 +85,10 @@ class QueuedTurn(BaseModel, ABC):
         """The files of the images it shows, in order."""
         return ()
 
+    def begin_locked(self, run: reg.AgentRun) -> reg.AgentRun:
+        """`run` as a turn of its own starts on it, while the caller holds `record_lock`."""
+        return run
+
     @abstractmethod
     def accepts(self, event: AgentEvent) -> bool:
         """Whether `event`, of its attempt, accepts it."""
@@ -103,6 +107,10 @@ class MessageTurn(QueuedTurn):
     #: The longest text it takes: a follow-up is transcript-sized; a spawn's task handed to an agent already here
     #: (`spawn_line.Spawn.hand_over`) or a parent's agents' reports (`handback`) up to `BRIEF_MAX`.
     limit: int = Field(default=_CLIP, gt=0, le=BRIEF_MAX, exclude_if=lambda value: value == _CLIP)
+    #: The revision of its run's role the turn it starts runs on (`begin_locked`): a spawn's task handed to an agent of the
+    #: role started on another one (`spawn_line.Spawn.hand_over`). None: the run's own. Read by a turn already running
+    #: (`inject`), it changes nothing: that turn keeps the prompt it started with.
+    agent_ref: AgentRevisionRef | None = Field(default=None, exclude_if=lambda value: value is None)
     mid_turn = True
     unaccepted = "resumed turn completed without a reply; resend explicitly"
 
@@ -126,6 +134,11 @@ class MessageTurn(QueuedTurn):
 
     def accepts(self, event: AgentEvent) -> bool:
         return (event.kind == "text" or (event.kind == "done" and event.final_text)) and bool(event.text.strip())
+
+    def begin_locked(self, run: reg.AgentRun) -> reg.AgentRun:
+        if self.agent_ref is None or self.agent_ref == run.agent_ref:
+            return run
+        return reg.pin_revision_locked(run.run_id, self.agent_ref) or run
 
 
 class CompactionTurn(QueuedTurn):
@@ -270,7 +283,7 @@ def _rewrite_locked(run_id: str, state: dict, change: Callable[[QueueItem], Queu
         new = None if item is None else change(item)
         if new is not None:
             changed.append(new)
-        rendered.append(raw if new is None else new.model_dump())
+        rendered.append(raw if new is None else new.model_dump(mode="json"))
     if changed:
         state["items"] = rendered
         _write_state(run_id, state)
@@ -300,7 +313,7 @@ def enqueue_locked(run_id: str, *, message_id: str, sender: str, turn: QueuedTur
         enqueued_at=time.time(),
     )
     state["version"] = 1
-    state["items"] = [*state.get("items", []), item.model_dump()]
+    state["items"] = [*state.get("items", []), item.model_dump(mode="json")]
     _write_state(run_id, state)
     reg.note_asker_locked(run_id, sender)
     return item
@@ -613,6 +626,7 @@ def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
                                 item = None
                             else:
                                 try:
+                                    run = item.turn.begin_locked(run)
                                     provider, criterion, model, reasoning = _fresh_policy(run)
                                     # Circular layers: run imports this module (its turns' inbox hook).
                                     from galaius.agents.run import launch_continuation

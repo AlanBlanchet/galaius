@@ -299,6 +299,10 @@ def _ended(run_id: str, **rest) -> None:
     reg.finish(run_id, exit_code=0, expected_pid=run.pid, expected_lifecycle_token=run.lifecycle_token)
 
 
+#: Another revision of the role's prompt (the spawn resolves revision 3 of agent 1).
+OLDER = {"id": str(uuid.UUID(int=1)), "revision": str(uuid.UUID(int=2))}
+
+
 @pytest.mark.parametrize("peers, asked, continued, why", [
     pytest.param([("eng1", {})], {}, "eng1", "", id="idle-same-role-continued"),
     pytest.param([("eng1", {"parent_run_id": "lead"}), ("eng2", {"parent_run_id": "mid"})], {}, "eng1", "", id="own-child-first"),
@@ -312,8 +316,10 @@ def _ended(run_id: str, **rest) -> None:
     pytest.param([("eng1", {"permission_mode": "read_only"})], {}, "eng1", "", id="recorded-default-permission-continued"),
     pytest.param([("eng1", {"permission_mode": "danger_full_access"})], {}, None, "eng1 was given danger_full_access permissions",
                  id="wider-permissions-never-reused"),
-    pytest.param([("eng1", {"agent_ref": {"id": str(uuid.UUID(int=1)), "revision": str(uuid.UUID(int=2))}})], {}, None,
-                 "eng1 runs another revision of the role", id="other-revision"),
+    # 2026-10-17: 10 of 63 extra runs of one conversation were started beside an idle peer on the role's previous prompt revision.
+    pytest.param([("eng1", {"agent_ref": OLDER})], {}, "eng1", "", id="older-revision-continued-on-the-new-one"),
+    pytest.param([("eng1", {"agent_ref": {"id": str(uuid.UUID(int=9)), "revision": str(uuid.UUID(int=2))}})], {}, None,
+                 "eng1 runs another agent of that name", id="other-agent-same-name"),
     pytest.param([("eng1", {})], {"model": "other-model", "name": "eng-3"}, "eng1", "", id="asked-model-and-name-ignored"),
     pytest.param([("eng1", {"refuses": True}), ("eng2", {"parent_run_id": "mid"})], {}, "eng2", "", id="refused-start-falls-through"),
     pytest.param([("eng1", {"refuses": True, "read": True}), ("eng2", {"parent_run_id": "mid"})], {}, "eng1", "",
@@ -332,11 +338,8 @@ def _ended(run_id: str, **rest) -> None:
     pytest.param([("eng1", {"context": (90_000, 200_000)})], {}, "eng1", "", id="context-with-room-continued"),
     # Owner 2026-10-17: « it should be 1 person for this project to be able to deploy, not 8 ».
     pytest.param([("eng1", {"busy": True}), ("eng2", {})], {"single": True}, "eng1", "", id="single-queues-the-one-at-work"),
-    pytest.param([("eng1", {"agent_ref": {"id": str(uuid.UUID(int=1)), "revision": str(uuid.UUID(int=2))}})], {"single": True}, None,
-                 "eng1 runs another revision of the role", id="single-other-revision-starts-new"),
-    # One at a time: a busy one of another revision or a full context still takes it behind its turn, never one beside it.
-    pytest.param([("eng1", {"busy": True, "agent_ref": {"id": str(uuid.UUID(int=1)), "revision": str(uuid.UUID(int=2))}})], {"single": True},
-                 "eng1", "", id="single-busy-other-revision-queued"),
+    # One at a time: a busy one of another revision, agent or a full context still takes it behind its turn, never one beside it.
+    pytest.param([("eng1", {"busy": True, "agent_ref": OLDER})], {"single": True}, "eng1", "", id="single-busy-other-revision-queued"),
     pytest.param([("eng1", {"busy": True, "context": (170_000, 200_000)})], {"single": True}, "eng1", "", id="single-busy-context-near-full-queued"),
     pytest.param([("eng1", {"busy": True, "replaced_by": {"run_id": "eng9-relaunch", "provider": "claude"}})], {"single": True}, None,
                  "eng1 was refused at launch, relaunched as eng9-rel", id="single-busy-taken-over-starts-new"),
@@ -356,6 +359,7 @@ def test_a_spawn_continues_its_conversations_idle_agent_of_that_role(at_work, mo
     read: set[str] = set()
     sent: list[str] = []
     texts: list[str] = []
+    revisions: list[AgentRevisionRef | None] = []
     _ended("lead", agent="main", session_id="s1", parent_run_id=None)
     _ended("mid", agent="tech-lead", session_id="s1", parent_run_id="lead")
 
@@ -363,6 +367,7 @@ def test_a_spawn_continues_its_conversations_idle_agent_of_that_role(at_work, mo
         assert only_if_idle != reg.get_run(run_id).working() and turn.refusal(task, None) is None
         sent.append(run_id)
         texts.append(task)
+        revisions.append(turn.agent_ref)
         return spawn_line.messaging.Delivery(state="queued", text="Queued.", run_id=run_id, queue_id="q")
 
     monkeypatch.setattr(spawn_line.messaging, "deliver_message", deliver)
@@ -391,6 +396,8 @@ def test_a_spawn_continues_its_conversations_idle_agent_of_that_role(at_work, mo
         .model_copy(update=asked)
     handover = spawn.hand_over()
     assert (handover.run.run_id if isinstance(handover, spawn_line.Continued) else None) == continued
+    # The turn handed over runs on the revision the spawn resolved (`MessageTurn.begin_locked`, as it starts).
+    assert revisions[-1:] == ([current] if continued else [])
     assert sent[-1:] == ([continued] if continued else [])
     if continued:
         # A run of another folder is told the task's: its session still starts in its own.

@@ -141,6 +141,29 @@ def test_policy_is_resolved_again_when_dispatch_starts(monkeypatch):
     assert run is not None and run.model == "started-model"
 
 
+def test_a_turn_handed_over_on_another_revision_starts_on_it_and_the_run_stays_there(monkeypatch):
+    """A spawn's task handed to an agent of the role started on another revision (`Spawn.hand_over`): the run is moved to
+    the spawn's revision as that turn starts, under the run's lock, never before (another spawn's refused delivery
+    cannot put it back meanwhile)."""
+    from galaius_core import AgentRevisionRef
+
+    _setup(monkeypatch)
+    revision = AgentRevisionRef(id=uuid.UUID(int=1), revision=uuid.UUID(int=3))
+    resolved = []
+
+    def fresh_policy(run):
+        resolved.append(run.agent_ref)
+        raise ValueError("stop at the launch")
+
+    monkeypatch.setattr(agent_queue, "_fresh_policy", fresh_policy)
+    messaging.deliver_message("r1", "the task", sender="operator", turn=agent_queue.MessageTurn(agent_ref=revision))
+    assert reg.get_run("r1").agent_ref is None and agent_queue.items("r1")[0].turn.agent_ref == revision
+
+    agent_queue.dispatch("r1")
+
+    assert resolved == [revision] and reg.get_run("r1").agent_ref == revision
+
+
 def test_failed_resume_records_bounded_redacted_stderr(monkeypatch):
     provider = _Provider(
         "import sys; sys.stderr.write('api_key=test-secret-value\\n'); sys.exit(7)"

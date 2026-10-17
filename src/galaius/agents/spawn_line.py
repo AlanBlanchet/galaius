@@ -136,8 +136,9 @@ class Spawn(BaseModel):
         Busy (`_busy`) fits only a `single` spawn, queued behind its turn whatever its revision or context: one agent of
         the role at a time; the wake finding it idle and unfit starts a fresh one and forgets it.
         Its `name` and `model` are not compared: a label (the continued run keeps its own) and a request the role's
-        policy overrides, at a start as at a continuation. `queue_message(only_if_idle=True)` re-reads "is working"
-        under the run's lock."""
+        policy overrides, at a start as at a continuation. Nor its role's revision: the turn handed to it runs on the
+        spawn's (`agent_queue.MessageTurn.agent_ref`), within the permissions the run was started with.
+        `queue_message(only_if_idle=True)` re-reads "is working" under the run's lock."""
         busy = self._busy(run)
         if busy and not self.single or not busy and run.status not in REUSABLE:
             return "is working"
@@ -145,8 +146,8 @@ class Spawn(BaseModel):
             return f"was refused at launch, relaunched as {run.replaced_by.run_id[:8]}"
         if not busy and not reg.model_spoke_in(run.run_id):
             return "never got a first turn"
-        if not busy and revision is not None and run.agent_ref != revision:
-            return "runs another revision of the role"
+        if not busy and revision is not None and (run.agent_ref is None or run.agent_ref.id != revision.id):
+            return "runs another agent of that name"
         if not busy and run.context_window and (run.context_tokens or 0) >= CONTEXT_NEAR_FULL * run.context_window:
             return f"has its context near full ({run.context_tokens}/{run.context_window})"
         if self.provider is not None and run.provider != self.provider:
@@ -198,7 +199,8 @@ class Spawn(BaseModel):
         another (owner 2026-10-15: no « backend engineer three » while engineer one sits idle in the conversation).
         Its caller's own child first, then the latest to finish; one whose turn would not start is passed over unless
         its agent may have read the task (then kept, the doubt said: never run twice). `single`: one at work first, the
-        task queued behind its turn. Every same-role run busy or unfit: start new, and why. Blocks up to `messaging.wait_for_start`'s timeout per run tried."""
+        task queued behind its turn. A run started on another revision of the role takes it on the spawn's revision.
+        Every same-role run busy or unfit: start new, and why. Blocks up to `messaging.wait_for_start`'s timeout per run tried."""
         if (resolved := self._role()) is None:
             return StartNew()
         policy, role, revision = resolved
@@ -206,16 +208,17 @@ class Spawn(BaseModel):
         misfits = {run.run_id: self._misfit(run, policy, revision) for run in peers}
         why = [f"{run_id[:8]} {said}" for run_id, said in misfits.items() if said]
         fit = [run for run in peers if misfits[run.run_id] is None]
+        turn = agent_queue.MessageTurn(limit=agent_queue.BRIEF_MAX, agent_ref=revision)
         # `single`: a fit one at work takes it as its next turn, never another started beside it.
         for run in sorted((run for run in fit if self._busy(run)), key=lambda run: run.started_at or 0, reverse=True):
-            delivery = messaging.deliver_message(run.run_id, self._brief(run), only_if_idle=False, turn=agent_queue.MessageTurn(limit=agent_queue.BRIEF_MAX),
+            delivery = messaging.deliver_message(run.run_id, self._brief(run), only_if_idle=False, turn=turn,
                                                  for_run=self.for_run)
             if delivery.state != "error":
                 return Continued(run=run, delivery=delivery)
             why.append(f"{run.run_id[:8]} {delivery.text}")
         fit = [run for run in fit if not self._busy(run)]
         for run in sorted(fit, key=lambda run: (run.parent_run_id == self.parent_run_id, run.finished_at or run.started_at), reverse=True):
-            delivery = messaging.deliver_message(run.run_id, self._brief(run), only_if_idle=True, turn=agent_queue.MessageTurn(limit=agent_queue.BRIEF_MAX),
+            delivery = messaging.deliver_message(run.run_id, self._brief(run), only_if_idle=True, turn=turn,
                                                  for_run=self.for_run)
             refused = delivery.text if delivery.state == "error" else messaging.wait_for_start(delivery)
             if refused is None or messaging.read_by_agent(delivery):

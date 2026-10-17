@@ -1408,6 +1408,12 @@ def _is_run_id(value: str) -> bool:
     return True
 
 
+def pin_revision_locked(run_id: str, ref: AgentRevisionRef) -> AgentRun | None:
+    """Run `run_id`'s turns on prompt revision `ref` of its role from now on, while the caller holds `record_lock(run_id)`:
+    `ResumeLaunch.of` resolves its prompt and policy from `agent_ref` at each turn (`agent_queue.MessageTurn.begin_locked`)."""
+    return _merge_record_locked(run_id, {"agent_ref": ref.model_dump(mode="json")})
+
+
 def note_asker_locked(run_id: str, asker: str) -> AgentRun | None:
     """Add run `asker` to run `run_id`'s `asked_by` while the caller holds `record_lock(run_id)`; the record when it
     changed. Only another run of this PC counts (a UUID with a record): never the person (« operator »), an automatic
