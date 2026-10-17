@@ -1688,6 +1688,9 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
                 fence=FenceSpec.model_validate_json(fence.read_text()) if fence is not None else None,
                 for_run=for_run, single=single, continues=continues,
             )
+            if (refused := spawn.naming_refusal()) is not None:
+                print(f"ERROR: {refused}", file=sys.stderr)
+                raise SystemExit(2)
             handover = StartNew() if fresh or continues else spawn.hand_over()
 
             def forget_others(keep: str) -> None:

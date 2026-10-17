@@ -2,13 +2,15 @@
 (`galaius.agents.relations`). Owner 2026-10-17: « Even with your changes, it seems that everything is not clear enough
 for the agents »: a report read as an order to acknowledge, a third party's note read as the boss's."""
 
+import asyncio
 import os
 import uuid
 
 import pytest
 
+from galaius.agents import messaging, relations
 from galaius.agents import registry as reg
-from galaius.agents import relations
+from galaius.agents.spawn_line import Spawn
 from galaius.agents.events import AgentEvent, Relation
 from galaius.inbox_hook import HEADING, OPERATOR
 from tests.support import register_run
@@ -114,26 +116,78 @@ def test_a_card_lists_the_conversations_other_runs_at_work_and_a_top_run_reports
     assert card[-1].startswith("When this turn ends your final message goes to the person who launched you by itself")
 
 
-def test_a_successor_takes_the_hand_off_its_askers_and_what_is_sent_to_the_old_run(team):
+def _spawned(name: str, *, parent: str | None, **spawn) -> dict:
+    """Start run `name` as `Spawn.start` does, its runner recording what it was handed; what that was."""
+    handed = {}
+
+    async def runner(provider, task, *, run_id, **rest):
+        handed.update(rest)
+        register_run(run_id, agent=ROLES[name], name=ROLES[name], task=task, parent_run_id=parent, pid=os.getpid(),
+                     asked_by=rest["asked_by"], inherited_asks=rest["inherited_asks"])
+
+    asyncio.run(Spawn(task=f"{name} task", cwd=".", agent=ROLES[name], parent_run_id=parent, **spawn).start(IDS[name], runner))
+    return handed
+
+
+def test_a_successor_owes_only_what_its_predecessor_still_owed_and_reads_what_is_sent_to_it(team):
     _run("old", parent="lead")
     reg._merge_record_locked(IDS["old"], {"context_tokens": 190_000, "context_window": 200_000})
     _asked("old", "coordinator", "fix rule 4")
-    _run("new", parent="lead", working=True)
-    _run("helper", parent="old")
+    _asked("old", "stranger", "fix rule 5")
+    reg.record_message_event(from_run=IDS["old"], to_run=IDS["stranger"], text="Rule 5 fixed.", reports=(IDS["old"],))
+    _run("helper", parent="old", working=True)
 
-    assert relations.succeed(IDS["old"], IDS["new"]) and not relations.succeed(IDS["old"], IDS["eng"])
-    assert relations.live(IDS["old"]) == IDS["new"] and reg.get_run(IDS["old"]).successor == IDS["new"]
+    _spawned("new", parent=IDS["lead"])  # its context full, the old librarian is taken over without --continues
+
     new = reg.get_run(IDS["new"])
-    assert IDS["coordinator"] in new.askers and set(relations.owed(new)) == {IDS["lead"], IDS["coordinator"]}
-    assert relations.report_to(reg.get_run(IDS["helper"])) == _tag("new")  # its parent's successor hears it
+    assert relations.live(IDS["old"]) == IDS["new"] and not relations.succeed(IDS["old"], IDS["eng"])
+    assert relations.owed(new) == (IDS["lead"], IDS["coordinator"])  # never the stranger, answered before
+    assert relations.report_to(reg.get_run(IDS["helper"])) == _tag("new")
     assert relations.relation(reg.get_run(IDS["helper"]), new, "DONE") is Relation.REPORT
+    assert f"Your agents still at work: {_tag('helper')}." in relations.card(new)
     assert _tag("old") not in relations.card(reg.get_run(IDS["eng"]))  # a run taken over is never offered for reuse
+    assert messaging.queue_message(IDS["old"], "note to self", sender=IDS["new"]).state == "error"
 
 
-def test_a_critic_spawned_for_a_maker_owes_its_verdict_to_the_maker_and_its_commissioner(team):
-    _run("rev", parent="lead", working=True)
-    with reg.record_lock(IDS["rev"]):
-        reg.note_asker_locked(IDS["rev"], IDS["eng"])  # `galaius agents spawn --for eng`
+@pytest.mark.parametrize("parent", ["lead", None], ids=["child-of-lead", "launched-by-the-person"])
+def test_a_run_handing_off_its_own_work_leaves_its_successor_working_for_its_own_boss(team, parent):
+    _run("old", parent=parent, working=True)
+    _asked("old", "coordinator", "fix rule 4")
+
+    _spawned("new", parent=IDS["old"], continues=IDS["old"])
+
+    new = reg.get_run(IDS["new"])
+    boss = _tag("lead") if parent else "the person who launched you"
+    card = relations.card(new).splitlines()
+    assert card[1] == f"You are {_tag('new')}. You work for: {boss}{' — « new task »' if parent else ''}."
+    assert card[-1].startswith(f"When this turn ends your final message goes to {', '.join(filter(None, (parent and _tag('lead'), _tag('coordinator'))))} by itself")
+    assert IDS["new"] not in {relations.live(asker) for asker in relations.owed(new)}
+
+
+def test_a_critic_spawned_for_a_maker_starts_knowing_and_owing_both(team):
+    handed = _spawned("rev", parent=IDS["lead"], for_run=IDS["eng"])  # `galaius agents spawn --for eng`
+
     rev = reg.get_run(IDS["rev"])
-    assert set(relations.owed(rev)) == {IDS["lead"], IDS["eng"]}
+    assert handed["asked_by"] == (IDS["eng"],)  # recorded as it starts: the card its brief carries names the maker
+    assert relations.owed(rev) == (IDS["lead"], IDS["eng"])
+    assert f"Also asked by: {_tag('eng')} — « rev task »." in relations.card(rev)
     assert relations.relation(rev, team["eng"], "Verdict: FAIL\nrow 2") is Relation.REPORT_ASKING
+    assert relations.relation(rev, team["eng"], "C1 FAIL fixed\nC2 PASS (was FAIL)") is Relation.REPORT
+
+
+@pytest.mark.parametrize("named, refused", [
+    pytest.param({"continues": "caller"}, False, id="its-own-work"),
+    pytest.param({"continues": "idle-peer"}, False, id="an-ended-run-of-its-role-in-its-conversation"),
+    pytest.param({"continues": "coordinator"}, True, id="another-conversations-run"),
+    pytest.param({"for_run": "eng"}, False, id="for-a-run-of-its-conversation"),
+    pytest.param({"for_run": "coordinator"}, False, id="for-a-run-that-asked-it"),
+    pytest.param({"for_run": "stranger"}, True, id="for-a-stranger"),
+])
+def test_a_run_names_only_runs_that_are_its_own_to_route(team, named, refused):
+    """An agent steered by injected text must not reroute another conversation's reports (2026-10-17 review)."""
+    _run("old", parent="lead")  # an ended librarian of lead's conversation
+    with reg.record_lock(IDS["lead"]):
+        reg.note_asker_locked(IDS["lead"], IDS["coordinator"])
+    ids = IDS | {"caller": IDS["lead"], "idle-peer": IDS["old"]}
+    spawn = Spawn(task="t", cwd=".", agent="librarian", parent_run_id=IDS["lead"], **{key: ids[value] for key, value in named.items()})
+    assert (spawn.naming_refusal() is not None) is refused

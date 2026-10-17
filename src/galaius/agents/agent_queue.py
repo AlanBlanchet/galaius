@@ -31,7 +31,7 @@ from galaius.agents import registry as reg
 from galaius.agents.events import AgentEvent, MessageFields
 from galaius.agents.providers import _CLIP, AgentProvider, _safe_process_detail, provider_for
 from galaius.agents.relations import card, heading
-from galaius.inbox_hook import OPERATOR
+from galaius.inbox_hook import HEADING, OPERATOR
 from galaius.processes import process_started
 from galaius.upgrade.store import Runtime, RuntimeStore
 
@@ -538,8 +538,10 @@ def inject(run_id: str) -> list[str]:
                 continue
             _replace_item_locked(run_id, item.id, state="running", started_at=time.time(), raw_index=anchor, attempt_token=uuid.uuid4().hex, error="")
             said.append((item, text))
-    # Where it stands last: hook context opening with the person's own heading is theirs (`inbox_hook.NOTE`).
-    return [*(text for _, text in said), card(run)] if said else []
+    # The person's words first and where it stands last: hook context opening with the person's own heading is theirs
+    # (`inbox_hook.NOTE`), and the agents' messages after it keep the order they came in.
+    persons = HEADING.format(who=OPERATOR)
+    return [*sorted((text for _, text in said), key=lambda text: not text.startswith(persons)), card(run)] if said else []
 
 
 #: What a turn has read of the messages sent to it: handed to that turn, or a turn opened on it.

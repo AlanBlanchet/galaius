@@ -113,22 +113,46 @@ class Spawn(BaseModel):
         """Start it as run `run_id` (the id its caller was given) through `runner` (`run_agent` when None), and give
         the child a moment to be alive before a caller about to exit lets go of it."""
         arguments = {name: getattr(self, name) for name in type(self).model_fields if name not in self.NOT_RUN_ARGUMENTS}
-        arguments |= {"name": self.name or self.agent, "provider_modes": self.provider_modes or None}
+        predecessor = reg.get_run(self.continues) if self.continues is not None else self._outgrown()
+        inherited = relations.inherited(predecessor, parent=self.parent_run_id) if predecessor is not None else {}
+        # Recorded as it starts, so the card it starts on names whom it works for (`run.run_agent`).
+        asked_by = tuple(dict.fromkeys(asker for asker in (self.for_run, *inherited) if asker and asker != self.parent_run_id))
+        arguments |= {"name": self.name or self.agent, "provider_modes": self.provider_modes or None,
+                      "asked_by": asked_by, "inherited_asks": inherited}
         with reg.session_context(self.session_id, parent_run_id=self.parent_run_id):
             handle = await (runner or run_agent)(provider_for(self.provider) if self.provider is not None else None, self.task, run_id=run_id, **arguments)
-        if self.for_run is not None:
-            with reg.record_lock(run_id):
-                reg.note_asker_locked(run_id, self.for_run)
-        if (started := reg.get_run(run_id)) is not None and (predecessor := self.continues or self._outgrown(started)):
-            relations.succeed(predecessor, started.run_id)
+        if predecessor is not None:
+            relations.succeed(predecessor.run_id, run_id)
         await asyncio.sleep(0.2)
         return handle
 
-    def _outgrown(self, run: reg.AgentRun) -> str | None:
-        """The newest run of `run`'s role under its parent whose context filled (`relations.context_full`), not at work and
-        not taken over yet: the one `run` takes over from."""
-        return next((peer.run_id for peer in self._conversation()
-                     if run.agent and peer.agent == run.agent and peer.run_id != run.run_id and peer.parent_run_id == run.parent_run_id
+    def naming_refusal(self) -> str | None:
+        """Why a run it names (`continues`, `for_run`) is not its caller's to name; None when each is. A run asking
+        (`parent_run_id`) hands off only its own work or that of an ended run of the role in its conversation, and spawns
+        for a run of its conversation, one it works for or one working for it: an agent steered by a page or a file it
+        read never routes another conversation's reports to a run of its choosing. The person at a terminal names any."""
+        if self.parent_run_id is None:
+            return None
+        if (caller := reg.get_run(self.parent_run_id)) is None:
+            return f"the run asking ({self.parent_run_id}) has no record on this computer" if self.continues or self.for_run else None
+        here = {run.run_id for run in reg.stored_tree(reg.conversation_of(caller.run_id))}
+        if self.continues is not None and self.continues != caller.run_id:
+            predecessor = reg.get_run(self.continues)
+            role = resolved[1] if (resolved := self._role()) is not None else self.agent
+            if predecessor is None or predecessor.run_id not in here or predecessor.agent != role or self._busy(predecessor):
+                return f"continues names {self.continues[:8]}: only your own run, or an ended {role or 'agent'} of your conversation, is yours to hand off"
+        if self.for_run is not None and self.for_run not in here:
+            target = reg.get_run(self.for_run)
+            if target is None or (target.run_id not in caller.askers and caller.run_id not in target.askers):
+                return f"for_run names {self.for_run[:8]}: outside your conversation, it neither asked you nor works for you"
+        return None
+
+    def _outgrown(self) -> reg.AgentRun | None:
+        """The newest run of its role under its parent whose context filled (`relations.context_full`), not at work and
+        not taken over yet: the one it takes over from."""
+        role = resolved[1] if (resolved := self._role()) is not None else self.agent
+        return next((peer for peer in self._conversation()
+                     if role and peer.agent == role and peer.parent_run_id == self.parent_run_id
                      and peer.successor is None and relations.context_full(peer) and not self._busy(peer)), None)
 
     def _role(self) -> tuple[Policy, str, AgentRevisionRef | None] | None:
@@ -150,7 +174,7 @@ class Spawn(BaseModel):
         spawn's (`agent_queue.MessageTurn.agent_ref`), within the permissions the run was started with.
         `queue_message(only_if_idle=True)` re-reads "is working" under the run's lock."""
         busy = self._busy(run)
-        if busy and not self.single or not busy and run.status not in REUSABLE:
+        if busy and not self.single or not busy and run.status not in relations.REUSABLE:
             return "is working"
         if run.replaced_by is not None:
             return f"was refused at launch, relaunched as {run.replaced_by.run_id[:8]}"
@@ -239,9 +263,6 @@ class Spawn(BaseModel):
             why.append(f"{run.run_id[:8]} {refused}")
         return StartNew(why=f"{role} already here, not continued: {'; '.join(why)}" if peers else "")
 
-
-#: Ended runs whose session can take a next turn: every ending but a run cancelled before it started.
-REUSABLE: frozenset[str] = reg.TERMINAL_STATUSES - {"cancelled"}
 
 
 class Continued(BaseModel):

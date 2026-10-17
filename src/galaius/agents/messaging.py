@@ -192,7 +192,10 @@ def queue_message(
                 return repeat
     speaker = sender or sender_id(environment)
     if reg.get_run(speaker) is not None:
-        run_id = relations.live(reg.resolve_run_id(run_id) or run_id)  # a run handed off: its successor reads it
+        named = reg.resolve_run_id(run_id) or run_id
+        run_id = relations.live(named)  # a run handed off: its successor reads it
+        if run_id == speaker != named:
+            return Delivery(state="error", text=f"ERROR: {named[:8]} handed its work to you: you are the run it would reach.", run_id=named)
     run, error = check_deliverable(run_id, sender=speaker)
     if error:
         return Delivery(state="error", text=error, run_id=run_id)

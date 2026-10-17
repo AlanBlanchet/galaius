@@ -260,7 +260,8 @@ def test_a_new_run_started_for_a_run_lists_it_among_its_askers():
     reg.register(run_id=maker, pid=999999, provider="claude", name="maker", task="t", agent="tester")
 
     async def runner(provider, task, *, run_id, **rest):
-        reg.register(run_id=run_id, pid=999999, provider="claude", name="deployer", task=task, agent="infra-engineer")
+        reg.register(run_id=run_id, pid=999999, provider="claude", name="deployer", task=task, agent="infra-engineer",
+                     asked_by=rest["asked_by"], inherited_asks=rest["inherited_asks"])
 
     asyncio.run(Spawn(task="ship it", cwd=".", agent="infra-engineer", for_run=maker).start(started, runner))
     assert reg.get_run(started).asked_by == (maker,)

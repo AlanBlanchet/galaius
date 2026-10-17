@@ -370,6 +370,9 @@ class AgentRun(ContextGauge):
     #: The run that took over from it (`relations.succeed`: a hand-off, its context full): what is handed back or sent
     #: to it reaches that run instead (`relations.live`), never resuming this one.
     successor: str | None = None
+    #: When each run of its `asked_by` that it took over from a predecessor (`relations.succeed`) asked that predecessor
+    #: what is still owed: the report reaches it until one answers that ask, never again for an ask answered before.
+    inherited_asks: dict[str, float] = Field(default_factory=dict, exclude_if=lambda value: not value)
 
     status: RunStatus = "running"
 
@@ -409,6 +412,15 @@ class AgentRun(ContextGauge):
         if not isinstance(value, list | tuple):
             return value
         return tuple(asker for asker in value if isinstance(asker, str) and _is_run_id(asker))[:ASKED_BY_MAX]
+
+    @field_validator("inherited_asks", mode="before")
+    @classmethod
+    def asks_of_run_ids(cls, value: object) -> object:
+        """Only run ids with a time, the first `ASKED_BY_MAX`: a record edited by hand never breaks a reader."""
+        if not isinstance(value, dict):
+            return {}
+        asks = {asker: at for asker, at in value.items() if isinstance(asker, str) and _is_run_id(asker) and isinstance(at, int | float)}
+        return dict(list(asks.items())[:ASKED_BY_MAX])
 
     @field_validator("successor", mode="before")
     @classmethod
@@ -1047,7 +1059,8 @@ def register(*, run_id: str, pid: int | None, provider: str, name: str, task: st
              skipped: tuple[SkippedCandidate, ...] = (),
              denied_tools: tuple[DeniedTool, ...] = (), fence: FenceSpec | None = None,
              subscription: RunSubscription | None = None, media: tuple[str, ...] = (),
-             login: str = "") -> AgentRun:
+             login: str = "", asked_by: tuple[str, ...] = (),
+             inherited_asks: Mapping[str, float] | None = None) -> AgentRun:
     provider_impl = PROVIDERS.get(provider)
     definition = definition_path
     if definition is None and agent_ref is None:
@@ -1061,6 +1074,7 @@ def register(*, run_id: str, pid: int | None, provider: str, name: str, task: st
                    reasoning=reasoning,
                    candidates=candidates, skipped=skipped, denied_tools=denied_tools, fence=fence,
                    provider_session_id=provider_session_id, subscription=subscription, login=login,
+                   asked_by=asked_by, inherited_asks=dict(inherited_asks or {}),
                    lifecycle_token=secrets.token_hex(16),
                    started_at=time.time())
     _write(run)

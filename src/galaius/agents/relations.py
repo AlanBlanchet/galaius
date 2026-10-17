@@ -24,18 +24,16 @@ QUOTE_MAX = 100
 _CHAIN_MAX = 32
 #: The line a turn card (`card`) opens with.
 CARD_HEADING = "[Galaius: where you stand, from the run records]"
-#: A report still needing its reader (`needs_answer`): its first line opens on a failed verdict (« Verdict: FAIL » counts),
-#: or its last line (the closing stamp) names one or asks.
-_FAILED_VERDICT = re.compile(r"^\W*(?:\w+(?: \w+)?\W*:\W*)?(?:BLOCKED|FAIL(?:-AT-CAP)?|REJECTED)\b")
-_FAILED_STAMP = re.compile(r"\b(?:BLOCKED|FAIL(?:-AT-CAP)?|REJECTED)\b")
+#: A line opening on a failed verdict, bare or after a short label (« Verdict: FAIL », « STATE: BLOCKED »): a report whose
+#: first or last line (its closing stamp) is one still needs its reader (`needs_answer`).
+_FAILED = re.compile(r"^\W*(?:\w+(?: \w+)?\W*:\W*)?(?:BLOCKED|FAIL(?:-AT-CAP)?|REJECTED)\b")
 #: Where an agent's own words start in a message it sent (`registry.AgentRun.handoff_header`).
 _CONTENT = "\n[Agent content]\n"
-#: The run a run with no parent works for, as a card and a heading name it.
-_PERSON = "the person who launched you"
 #: What a run at work is doing, as its record says (a queued message alone is not work a card names).
 _AT_WORK = frozenset({"starting", "running", "waiting"})
-#: Ended runs whose session can take a next turn (`spawn_line.REUSABLE`).
-_IDLE = reg.TERMINAL_STATUSES - {"cancelled"}
+#: Ended runs whose session can take a next turn (every ending but a run cancelled before it started): a spawn of its
+#: role hands it the task (`spawn_line.Spawn._misfit`).
+REUSABLE: frozenset[str] = reg.TERMINAL_STATUSES - {"cancelled"}
 
 
 def chain(run_id: str) -> tuple[str, ...]:
@@ -51,10 +49,19 @@ def live(run_id: str) -> str:
     return chain(run_id)[-1]
 
 
+def inherited(predecessor: reg.AgentRun, *, parent: str | None) -> dict[str, float]:
+    """What a run started under `parent` to take over from `predecessor` owes from its start (`AgentRun.inherited_asks`):
+    each ask the predecessor still owed (`open_asks`), at its own time. Never one its new parent asks anyway (the task it
+    starts on), nor the predecessor itself (a run handing off its own work: `boss`)."""
+    return {asker: at or predecessor.started_at or 0.0 for asker, at in open_asks(predecessor).items()
+            if asker not in (parent, predecessor.run_id)}
+
+
 def succeed(predecessor_id: str, successor_id: str) -> bool:
-    """Record run `successor_id` as taking over from run `predecessor_id` (a hand-off, a run whose context filled):
-    every run the predecessor answered is answered by the successor (`askers`), what they hand back reaches it
-    (`live`), and the predecessor is never resumed again. False when it had a successor already, or is the same run."""
+    """Record run `successor_id` as taking over from run `predecessor_id` (a hand-off, a run whose context filled), the
+    successor started owing what it inherited (`inherited`): what is handed back or sent to the predecessor reaches the
+    successor (`live`), and the predecessor is never resumed again. False when it had a successor already, or is the
+    same run."""
     if predecessor_id == successor_id:
         return False
     with reg.record_lock(predecessor_id):
@@ -62,10 +69,17 @@ def succeed(predecessor_id: str, successor_id: str) -> bool:
         if predecessor is None or predecessor.successor is not None:
             return False
         reg._merge_record_locked(predecessor_id, {"successor": successor_id})
-    with reg.record_lock(successor_id):
-        for asker in sorted(predecessor.askers):
-            reg.note_asker_locked(successor_id, asker)
     return True
+
+
+def boss(run: reg.AgentRun) -> str | None:
+    """The run `run` works for first: its parent at the end of its chain (`live`); for a run its own parent handed its
+    work to (`--continues` itself), that parent's own; None for a run the person launched."""
+    parent, seen = run.parent_run_id, {run.run_id}
+    while parent and parent not in seen and live(parent) == run.run_id:
+        seen.add(parent)
+        parent = above.parent_run_id if (above := reg.get_run(parent)) is not None else None
+    return live(parent) if parent and parent not in seen else None
 
 
 def content(text: str) -> str:
@@ -76,7 +90,7 @@ def content(text: str) -> str:
 def needs_answer(text: str) -> bool:
     """A report still needing its reader: it opens on a failed verdict, or its closing line names one or asks."""
     lines = [line.strip() for line in content(text).splitlines() if line.strip()]
-    return bool(lines) and (bool(_FAILED_VERDICT.match(lines[0])) or bool(_FAILED_STAMP.search(lines[-1])) or lines[-1].endswith("?"))
+    return bool(lines) and (bool(_FAILED.match(lines[0])) or bool(_FAILED.match(lines[-1])) or lines[-1].endswith("?"))
 
 
 def answers(sender: reg.AgentRun, recipient: reg.AgentRun) -> bool:
@@ -111,14 +125,22 @@ def owed(run: reg.AgentRun) -> tuple[str, ...]:
     ask. An ask with no time stays owed. 2026-10-17: a report sent to a third run made it an asker for good, each later turn of the
     reporter woke it with an empty report (one coordinator: 9 such runs; a librarian: 4 empty turns; four runs looping
     every 3 min); a reused instance's every turn also woke the run that had spawned it for an earlier job."""
-    return tuple(asker for asker, at in _asks(run).items() if at is None or not _reported(run.run_id, to=asker, since=at))
+    return tuple(open_asks(run))
+
+
+def open_asks(run: reg.AgentRun) -> dict[str, float | None]:
+    """Each ask `owed` counts, with its time: never one of a run `run` took over itself (a hand-off to itself)."""
+    return {asker: at for asker, at in _asks(run).items()
+            if live(asker) != run.run_id and (at is None or not _reported(run.run_id, to=asker, since=at))}
 
 
 def _asks(run: reg.AgentRun) -> dict[str, float | None]:
     """Each run it answers that asked it something, with when it last did (`owed`)."""
-    # Each run it works for asked it from its start (a spawn `--for` a maker, a hand-off's askers: `succeed`); a message
-    # it sent later moves that to the message.
-    asked: dict[str, float | None] = dict.fromkeys((asker for asker in (run.parent_run_id, *run.asked_by) if asker), run.started_at or None)
+    # Each run it works for asked it from its start (a spawn `--for` a maker), or when it asked the run this one took over
+    # from (`inherited`); a message it sent later moves that to the message.
+    start = run.started_at or None
+    asked: dict[str, float | None] = {run.parent_run_id: start} if run.parent_run_id else {}
+    asked |= {asker: run.inherited_asks.get(asker, start) for asker in run.asked_by}
     for event in reg.read_messages(run.run_id):
         if event.to_run != run.run_id or event.fyi or event.reports:
             continue
@@ -137,10 +159,11 @@ def _reported(run_id: str, *, to: str, since: float) -> bool:
 
 
 def _last_ask(run: reg.AgentRun, asker: str) -> str:
-    """The first line of what `asker` last asked `run` (its task, for its parent with nothing asked since)."""
+    """The first line of what `asker` last asked `run`: its task when `asker` sent it nothing (its parent, a run it was
+    spawned for or took over the asks of)."""
     said = next((event.text for event in reversed(reg.read_messages(run.run_id))
                  if event.to_run == run.run_id and not event.fyi and not event.reports and (event.for_run or event.from_run) == asker), None)
-    return _first_line(content(said) if said is not None else run.task if asker == run.parent_run_id else "")
+    return _first_line(content(said) if said is not None else run.task)
 
 
 def _first_line(text: str) -> str:
@@ -172,20 +195,20 @@ def report_to(run: reg.AgentRun) -> str:
     person for a run nobody launched; "" when every ask was answered."""
     if (due := owed(run)):
         return ", ".join(dict.fromkeys(tag(live(asker)) for asker in due))
-    return "" if run.parent_run_id else _PERSON
+    return "" if boss(run) else OPERATOR
 
 
 def card(run: reg.AgentRun) -> str:
     """Where `run` stands as a turn of it starts: whom it works for and on what, its agents and the conversation's still at
     work, the idle ones of a role it can hand a task to, and where its final message goes."""
-    boss = live(run.parent_run_id) if run.parent_run_id else None
-    works_for = _PERSON if boss is None else f"{tag(boss)} — « {_last_ask(run, run.parent_run_id or boss)} »"
+    first = boss(run)
+    works_for = OPERATOR if first is None else f"{tag(first)} — « {_last_ask(run, run.parent_run_id or first)} »"
     lines = [f"{CARD_HEADING}\nYou are {_tag(run)}. You work for: {works_for}."]
-    also = [asker for asker in owed(run) if asker != run.parent_run_id]
+    also = [asker for asker in owed(run) if asker != run.parent_run_id and live(asker) != first]
     if also:
         lines.append("Also asked by: " + "; ".join(f"{tag(live(asker))} — « {_last_ask(run, asker)} »" for asker in also) + ".")
-    conversation = [other for other in reg.stored_tree(reg.conversation_of(boss or run.run_id)) if other.run_id != run.run_id]
-    mine = [other for other in conversation if _working(other) and (other.parent_run_id == run.run_id or run.run_id in other.asked_by)]
+    conversation = [other for other in reg.stored_tree(reg.conversation_of(run.parent_run_id or run.run_id)) if other.run_id != run.run_id]
+    mine = [other for other in conversation if _working(other) and (live(other.parent_run_id or '') == run.run_id or run.run_id in {live(asker) for asker in other.asked_by})]
     lines.append("Your agents still at work: " + (", ".join(_tag(other) for other in mine) or "none") + ".")
     others = [other for other in conversation if _working(other) and other not in mine and other.run_id not in run.askers][:CARD_RUNS_MAX]
     if others:
@@ -205,8 +228,10 @@ def context_full(run: reg.AgentRun) -> bool:
 
 
 def _reusable(run: reg.AgentRun) -> bool:
-    """An ended run a spawn of its role would hand its task to (`spawn_line.Spawn._misfit`, the record-only checks)."""
-    return run.status in _IDLE and run.successor is None and run.replaced_by is None and not context_full(run) and not _working(run)
+    """An ended run a spawn of its role would hand its task to (`spawn_line.Spawn._misfit`, all but its checks against the
+    spawn's own revision, provider and permissions)."""
+    return (run.status in REUSABLE and run.successor is None and run.replaced_by is None and not context_full(run)
+            and not _working(run) and reg.model_spoke_in(run.run_id))
 
 
 def heading(event: AgentEvent, run: reg.AgentRun, *, mid_turn: bool) -> str | None:
@@ -228,4 +253,4 @@ def heading(event: AgentEvent, run: reg.AgentRun, *, mid_turn: bool) -> str | No
     if kind is Relation.ASKER:
         return f"[Galaius: message from {_signature(origin)}, who you work for. Answer it in this turn.]"
     return (f"[Galaius: message from {_signature(origin)}. You don't work for it: reply only if it asks a question; "
-            f"your report still goes to {report_to(run) or tag(live(run.parent_run_id or ''))}.]")
+            f"your report still goes to {report_to(run) or (tag(first) if (first := boss(run)) else OPERATOR)}.]")

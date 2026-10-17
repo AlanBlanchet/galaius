@@ -158,6 +158,8 @@ async def agent_spawn(
                 image_paths=tuple(Path(path) for path in (image_paths or ())), denied_tools=tuple(denied_tools or ()),
                 session_id=owner, continues=continues, for_run=for_run,
             )
+            if (refused := spawn.naming_refusal()) is not None:
+                return f"ERROR: {refused}."
             handover = StartNew() if fresh or continues else await asyncio.to_thread(spawn.hand_over)
             if isinstance(handover, Continued):
                 return handover.sentence()

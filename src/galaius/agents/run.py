@@ -1317,6 +1317,8 @@ async def run_agent(
     subscription: RunSubscription | None = None,
     choices: SubscriptionChoices | None = None,
     run_id: str | None = None,
+    asked_by: tuple[str, ...] = (),
+    inherited_asks: Mapping[str, float] | None = None,
 ) -> RunHandle:
     """Spawn an agent run and register it, returning as soon as it is alive.
 
@@ -1338,6 +1340,9 @@ async def run_agent(
     ``environment`` is the one the run's CLI starts in and its candidates are judged against
     (credentials, the folder-settings switch, a parent run's tag); this process's own when None.
     A long-lived caller serving others (the machine runner) passes the scrubbed one it owns.
+
+    ``asked_by`` and ``inherited_asks`` are recorded as it starts (`AgentRun`): the card its brief carries
+    (`relations.card`) names every run it works for, a maker a critic is spawned for and a hand-off's askers included.
 
     ``fence`` starts every turn of the run inside the OS fence that spec builds (:mod:`galaius.fence`),
     recorded on the run and built again at each turn from the machine's levels as they are then.
@@ -1594,7 +1599,8 @@ async def run_agent(
             """The brief run `child_id` starts on: where it stands (`relations.card`) ahead of its task. A child started
             ahead (`warm`) is handed it under its own id."""
             child = reg.AgentRun(run_id=child_id, provider=candidate_provider.name, name=label, agent=agent, task=task,
-                                 parent_run_id=parent, started_at=time.time())
+                                 parent_run_id=parent, asked_by=asked_by, inherited_asks=dict(inherited_asks or {}),
+                                 started_at=time.time())
             return f"{brief}{relations.card(child)}\n\n{task}"
         # argv built AFTER the model is decided: used to build first with raw text, so a criterion,
         # a `@profile` or a routed `ollama/x` id reached the binary unresolved while the resolved
@@ -1655,7 +1661,7 @@ async def run_agent(
             candidates=candidates, skipped=tuple(skipped), denied_tools=denied_tools,
             provider_session_id=vendor_session if candidate_provider.name == "claude" else None,
             agent_ref=selected_ref, definition_path=definition_path, fence=candidate_fence, subscription=candidate_pin, media=shown,
-            login=login,
+            login=login, asked_by=asked_by, inherited_asks=inherited_asks,
         )
         # A model coming off a block is the re-check: it gets long enough to say "still refused"
         # that the answer falls through to the next candidate instead of killing this run.
@@ -1726,7 +1732,7 @@ async def run_agent(
         candidates=candidates, skipped=tuple(skipped), denied_tools=denied_tools,
         provider_session_id=run_id if provider.name == "claude" else None,
         agent_ref=selected_ref, definition_path=definition_path, fence=fence, subscription=pinned, media=shown,
-        login=chosen_login,
+        login=chosen_login, asked_by=asked_by, inherited_asks=inherited_asks,
     )
     # This launch takes over its role's earlier ones under the same launcher that its vendor refused before a turn.
     reg.take_over_refused(registered)
