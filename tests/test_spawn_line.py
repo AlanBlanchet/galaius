@@ -334,10 +334,12 @@ def _ended(run_id: str, **rest) -> None:
     pytest.param([("eng1", {"busy": True}), ("eng2", {})], {"single": True}, "eng1", "", id="single-queues-the-one-at-work"),
     pytest.param([("eng1", {"agent_ref": {"id": str(uuid.UUID(int=1)), "revision": str(uuid.UUID(int=2))}})], {"single": True}, None,
                  "eng1 runs another revision of the role", id="single-other-revision-starts-new"),
+    # One at a time: a busy one of another revision or a full context still takes it behind its turn, never one beside it.
     pytest.param([("eng1", {"busy": True, "agent_ref": {"id": str(uuid.UUID(int=1)), "revision": str(uuid.UUID(int=2))}})], {"single": True},
-                 None, "eng1 runs another revision of the role", id="single-busy-other-revision-starts-new"),
-    pytest.param([("eng1", {"busy": True, "context": (170_000, 200_000)})], {"single": True}, None,
-                 "eng1 has its context near full (170000/200000)", id="single-busy-context-near-full-starts-new"),
+                 "eng1", "", id="single-busy-other-revision-queued"),
+    pytest.param([("eng1", {"busy": True, "context": (170_000, 200_000)})], {"single": True}, "eng1", "", id="single-busy-context-near-full-queued"),
+    pytest.param([("eng1", {"busy": True, "replaced_by": {"run_id": "eng9-relaunch", "provider": "claude"}})], {"single": True}, None,
+                 "eng1 was refused at launch, relaunched as eng9-rel", id="single-busy-taken-over-starts-new"),
     pytest.param([("eng1", {"busy": True})], {}, None, "eng1 is working", id="busy-not-single-starts-new"),
 ])
 def test_a_spawn_continues_its_conversations_idle_agent_of_that_role(at_work, monkeypatch, tmp_path, peers, asked, continued, why):

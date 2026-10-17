@@ -133,7 +133,8 @@ class Spawn(BaseModel):
 
     def _misfit(self, run: reg.AgentRun, policy: Policy, revision: AgentRevisionRef | None) -> str | None:
         """Why `run` (same conversation, same role) cannot take this spawn's task as its next turn; None when it can.
-        Busy (`_busy`) fits only a `single` spawn (queued behind its turn; its first turn may still be on its way).
+        Busy (`_busy`) fits only a `single` spawn, queued behind its turn whatever its revision or context: one agent of
+        the role at a time; the wake finding it idle and unfit starts a fresh one and forgets it.
         Its `name` and `model` are not compared: a label (the continued run keeps its own) and a request the role's
         policy overrides, at a start as at a continuation. `queue_message(only_if_idle=True)` re-reads "is working"
         under the run's lock."""
@@ -144,9 +145,9 @@ class Spawn(BaseModel):
             return f"was refused at launch, relaunched as {run.replaced_by.run_id[:8]}"
         if not busy and not reg.model_spoke_in(run.run_id):
             return "never got a first turn"
-        if revision is not None and run.agent_ref != revision:
+        if not busy and revision is not None and run.agent_ref != revision:
             return "runs another revision of the role"
-        if run.context_window and (run.context_tokens or 0) >= CONTEXT_NEAR_FULL * run.context_window:
+        if not busy and run.context_window and (run.context_tokens or 0) >= CONTEXT_NEAR_FULL * run.context_window:
             return f"has its context near full ({run.context_tokens}/{run.context_window})"
         if self.provider is not None and run.provider != self.provider:
             return f"runs on {run.provider}"
