@@ -27,7 +27,10 @@ CARD_HEADING = "[Galaius: where you stand, from the run records]"
 #: A line opening on a failed verdict, bare or after a label of up to four words ending on a colon or a dash (« Verdict:
 #: FAIL », « Review round 2 — FAIL », « STATE: BLOCKED »): a report whose first or last line (its closing stamp) is one
 #: still needs its reader (`needs_answer`). « C2 PASS (was FAIL) » is none.
-_FAILED = re.compile(r"^\W*(?:[\w#.-]+(?:\s+[\w#.-]+){0,3}\s*[:—–-]\s*)?\W*(?:BLOCKED|FAIL(?:-AT-CAP)?|REJECTED)\b")
+#: Linear on any line: a label word opens on a letter or digit and holds a dash only between word characters, so no
+#: run of dashes splits several ways (2026-10-17 review: « "-" * 2000 » took 24 s on a wider pattern).
+_LABEL_WORD = r"\w[\w#.]*(?:-[\w#.]+)*"
+_FAILED = re.compile(rf"\W*(?:{_LABEL_WORD}(?:\s+{_LABEL_WORD}){{0,3}}\s*[:—–-])?[\s*_]*(?:BLOCKED|FAIL(?:-AT-CAP)?|REJECTED)\b")
 #: Where an agent's own words start in a message it sent (`registry.AgentRun.handoff_header`).
 _CONTENT = "\n[Agent content]\n"
 #: What a run at work is doing, as its record says (a queued message alone is not work a card names).
@@ -97,7 +100,12 @@ def content(text: str) -> str:
 def needs_answer(text: str) -> bool:
     """A report still needing its reader: it opens on a failed verdict, or its closing line names one or asks."""
     lines = [line.strip() for line in content(text).splitlines() if line.strip()]
-    return bool(lines) and (bool(_FAILED.match(lines[0])) or bool(_FAILED.match(lines[-1])) or lines[-1].endswith("?"))
+    return bool(lines) and (_failed(lines[0]) or _failed(lines[-1]) or lines[-1].endswith("?"))
+
+
+def _failed(line: str) -> bool:
+    """Whether `line` opens on a failed verdict (`_FAILED`); a verdict opens its line, so only its start is read."""
+    return _FAILED.match(line[:QUOTE_MAX]) is not None
 
 
 def answers(sender: reg.AgentRun, recipient: reg.AgentRun) -> bool:

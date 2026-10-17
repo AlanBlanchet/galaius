@@ -4,6 +4,7 @@ for the agents »: a report read as an order to acknowledge, a third party's not
 
 import asyncio
 import os
+import time
 import uuid
 
 import pytest
@@ -175,8 +176,6 @@ def test_a_critic_spawned_for_a_maker_starts_knowing_and_owing_both(team):
     assert f"Also asked by: {_tag('eng')} — « rev task »." in relations.card(rev)
     assert relations.relation(rev, team["eng"], "Verdict: FAIL\nrow 2") is Relation.REPORT_ASKING
     assert relations.relation(rev, team["eng"], "C1 FAIL fixed\nC2 PASS (was FAIL)") is Relation.REPORT
-    for verdict in ("Review round 2 — FAIL", "Round 2 verdict: FAIL", "Verdict for be866616: FAIL"):
-        assert relations.relation(rev, team["eng"], f"{verdict}\nrow 2") is Relation.REPORT_ASKING, verdict
 
 
 @pytest.mark.parametrize("named, refused", [
@@ -195,3 +194,14 @@ def test_a_run_names_only_runs_that_are_its_own_to_route(team, named, refused):
     ids = IDS | {"caller": IDS["lead"], "idle-peer": IDS["old"]}
     spawn = Spawn(task="t", cwd=".", agent="librarian", parent_run_id=IDS["lead"], **{key: ids[value] for key, value in named.items()})
     assert (spawn.naming_refusal() is not None) is refused
+
+
+@pytest.mark.parametrize("line, failed", [
+    *((verdict, True) for verdict in ("BLOCKED: credential", "**Verdict: FAIL**", "Review round 2 — FAIL", "Round 2 verdict: FAIL",
+                                      "Verdict for be866616: FAIL", "code-reviewer verdict: REJECTED", "STATE: FAIL-AT-CAP")),
+    *((other, False) for other in ("C2 PASS (was FAIL)", "Verdict: PASS", "Fixed the FAIL rows", "-" * 5000, "#." * 5000, "—" * 5000)),
+])
+def test_a_report_needs_an_answer_when_a_line_opens_on_a_failed_verdict_read_in_linear_time(line, failed):
+    started = time.perf_counter()
+    assert relations.needs_answer(f"Done.\n{line}") is failed
+    assert time.perf_counter() - started < 0.1  # a run of dashes once held the recipient's queue lock for seconds
