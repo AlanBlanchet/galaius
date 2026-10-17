@@ -19,7 +19,8 @@ from galaius.agents.providers import ClaudeCodeProvider, ClaudeTurnSettings
 from galaius.cli.app_commands import agents_work_for
 from galaius.config import Config
 from galaius.fence import FenceSpec
-from tests.support.agents import ScriptedProvider, install_provider, use_policy
+from galaius.agents.relations import CARD_HEADING
+from tests.support.agents import ScriptedProvider, install_provider, said, use_policy
 
 
 class _Provider(ScriptedProvider):
@@ -39,7 +40,7 @@ class _Provider(ScriptedProvider):
         return [sys.executable, "-c", "pass"]
 
     def resume_command(self, session_id, message, **kwargs):
-        self.messages.append(message)
+        self.messages.append(said(message))
         return [sys.executable, "-c", self.script]
 
     def valid_definition(self, agent):
@@ -548,7 +549,9 @@ def test_a_message_to_a_working_run_is_read_after_its_next_own_tool_call_and_set
     said = json.loads(tool_call())["hookSpecificOutput"]
     # Opened by who wrote it, in the exact line the agent was told at launch is the person's own.
     heading = inbox_hook.HEADING.format(who=inbox_hook.OPERATOR)
-    assert said["hookEventName"] == "PostToolUse" and said["additionalContext"] == f"{heading}\n\nalso check the footer"
+    # The person's heading opens the context (the trust anchor); where the run stands follows the messages.
+    message, card = said["additionalContext"].split("\n\n---\n\n")
+    assert said["hookEventName"] == "PostToolUse" and message == f"{heading}\n\nalso check the footer" and card.startswith(CARD_HEADING)
     assert f"\n{heading}\n" in ClaudeTurnSettings(compact_window=200_000, bash_output_chars=15_000, inbox_hook=hook, name="tester-r2").arguments()[-1] == inbox_hook.NOTE
     assert tool_call() == "" and [item.state for item in agent_queue.items("r2")] == ["running"] and agent_queue.read_ids("r2") == [sent]
 

@@ -11,7 +11,8 @@ must never make a run look idle.
 from collections.abc import Mapping
 from contextlib import suppress
 from datetime import UTC, datetime
-from typing import Any, Literal, Self
+from enum import StrEnum
+from typing import Any, Literal, Self, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -334,6 +335,29 @@ class UsageLedger(BaseModel):
         return delta, cost
 
 
+class Relation(StrEnum):
+    """What a message's sender is to the run reading it (`relations.relation`), recorded on the message."""
+
+    #: It answers what the reader asked it (the reader is its parent, or asked it): read, never answered.
+    REPORT = "report"
+    #: A report that still needs the reader (`relations.needs_answer`): answered in the reader's turn.
+    REPORT_ASKING = "report_asking"
+    #: The reader works for it: its parent, or a run that asked it.
+    ASKER = "asker"
+    #: Neither: the reader's report still goes to whoever it works for.
+    OTHER = "other"
+
+
+class MessageFields(TypedDict, total=False):
+    """What a message's transcript entry records beside its text and its two ends (`AgentEvent`'s fields of the name)."""
+
+    media: tuple[str, ...]
+    for_run: str | None
+    fyi: bool
+    reports: tuple[str, ...]
+    relation: Relation | None
+
+
 class AgentEvent(ContextGauge):
     """A single thing that happened inside an agent run, provider-agnostic."""
 
@@ -366,11 +390,14 @@ class AgentEvent(ContextGauge):
     #: --for`: a job queue waking its worker for the run that queued the job). Left out when None.
     for_run: str | None = Field(default=None, exclude_if=lambda value: value is None)
     #: For a "message": a one-way note (`agent_queue.MessageTurn.fyi`), never an ask its recipient's turns answer
-    #: (`handback.owed`). Left out when False.
+    #: (`relations.owed`). Left out when False.
     fyi: bool = Field(default=False, exclude_if=lambda value: not value)
     #: For a "message": the runs whose reports it hands back (`handback._resume`); each such run's latest ask from its
-    #: recipient is answered by it (`handback.owed`). Left out when empty.
+    #: recipient is answered by it (`relations.owed`). Left out when empty.
     reports: tuple[str, ...] = Field(default=(), exclude_if=lambda value: not value)
+    #: For a "message": what its sender was to its recipient when sent (`relations.relation`), the line its recipient
+    #: reads it under (`relations.heading`). Left out when None (the person, the launcher).
+    relation: Relation | None = Field(default=None, exclude_if=lambda value: value is None)
     #: For a "prompt" or a "message": the images it showed, by their name among its run's media (`RunMedia`).
     media: tuple[str, ...] = ()
     #: Where this sits in the vendor's raw stream — for a MESSAGE, how many raw lines existed

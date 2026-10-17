@@ -1611,7 +1611,7 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
                  machine: str | None = None, folder: str | None = None,
                  fence: Annotated[Path | None, Parameter(name="--fence")] = None,
                  for_run: Annotated[str | None, Parameter(name="--for")] = None,
-                 fresh: bool = False, single: bool = False) -> None:
+                 continues: str | None = None, fresh: bool = False, single: bool = False) -> None:
     """Start an agent and return its id immediately, without waiting for it to finish.
 
     --machine <name or id> starts it on another of your computers instead, through the server, in
@@ -1646,6 +1646,9 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
     --for names the run of this computer (full or short id) the task is asked for (an operator passing on its ask: the
     job queue waking its worker for the run that queued the job): the message handing it over records it, and the
     run taking it lists it among the runs it works for (`asked_by`).
+    --continues names the run of this computer the new one takes over from (a hand-off): what that run owed, what is
+    handed back or sent to it from then on, reaches the new one; it is never resumed again. A run of the same role under
+    the same parent whose context filled is taken over without it.
     """
 
 
@@ -1657,6 +1660,11 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
             print(f"ERROR: --for names an agent run of this computer (full or unambiguous short id): {for_run!r} is none", file=sys.stderr)
             raise SystemExit(2)
         for_run = asker
+    if continues is not None:
+        if (predecessor := reg.resolve_run_id(continues)) is None or reg.get_run(predecessor) is None:
+            print(f"ERROR: --continues names an agent run of this computer (full or unambiguous short id): {continues!r} is none", file=sys.stderr)
+            raise SystemExit(2)
+        continues = predecessor
     if machine is not None:
         _spawn_on_machine(machine, folder, task, agent=agent, provider=provider, model=model, permission=permission_mode)
         return
@@ -1678,9 +1686,9 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
                 denied_tools=tuple(denied_tools or ()), provider_modes=_provider_modes(provider_modes),
                 quota_window=quota_window,
                 fence=FenceSpec.model_validate_json(fence.read_text()) if fence is not None else None,
-                for_run=for_run, single=single,
+                for_run=for_run, single=single, continues=continues,
             )
-            handover = StartNew() if fresh else spawn.hand_over()
+            handover = StartNew() if fresh or continues else spawn.hand_over()
 
             def forget_others(keep: str) -> None:
                 if forgotten := spawn.forget_peers(keep):

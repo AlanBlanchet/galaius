@@ -13,8 +13,9 @@ from pydantic import BaseModel, ConfigDict
 
 from galaius_core import ReadsAt
 
-from galaius.agents import agent_queue
+from galaius.agents import agent_queue, relations
 from galaius.agents import registry as reg
+from galaius.agents.events import Relation
 from galaius.agents.policy import PolicyError
 from galaius.agents.providers import AgentProvider, provider_for
 from galaius.agents.run import ModelUnavailable, load_policy, resolve_continuable_model
@@ -190,6 +191,8 @@ def queue_message(
             if (repeat := Delivery.repeat(recipient, message_id)) is not None:
                 return repeat
     speaker = sender or sender_id(environment)
+    if reg.get_run(speaker) is not None:
+        run_id = relations.live(reg.resolve_run_id(run_id) or run_id)  # a run handed off: its successor reads it
     run, error = check_deliverable(run_id, sender=speaker)
     if error:
         return Delivery(state="error", text=error, run_id=run_id)
@@ -217,7 +220,11 @@ def queue_message(
         if message_id is not None and (repeat := Delivery.repeat(run.run_id, message_id)) is not None:
             return repeat  # queued meanwhile, by another process
         message_id = message_id or secrets.token_hex(16)
-        entry = turn.entry(message, reg.get_run(speaker))
+        origin = reg.get_run(speaker)
+        entry = turn.entry(message, origin)
+        kind = None if origin is None or entry is None else relations.relation(origin, run, message, reports=turn.event_fields().get("reports", ()))
+        if kind is Relation.REPORT:
+            turn = turn.as_report()  # answering an ask: never an ask itself, whatever its sender chose
         try:
             # The queue intent is durable before either transcript append. A crash after this
             # point leaves a recoverable pending item instead of an invisible message.
@@ -233,8 +240,10 @@ def queue_message(
             )
         if for_run is not None:
             reg.note_asker_locked(run.run_id, for_run)
+        if kind is Relation.OTHER and speaker in (reg.get_run(run.run_id) or run).askers:
+            kind = Relation.ASKER  # its message asks (`enqueue_locked`): the run now works for it
         recorded_id = None if entry is None else reg.record_message_event_locked(
-            from_run=speaker, to_run=run.run_id, text=entry, event_id=message_id, for_run=for_run, **turn.event_fields(),
+            from_run=speaker, to_run=run.run_id, text=entry, event_id=message_id, for_run=for_run, relation=kind, **turn.event_fields(),
         )
         if entry is not None and recorded_id is None:
             agent_queue.mark_locked(

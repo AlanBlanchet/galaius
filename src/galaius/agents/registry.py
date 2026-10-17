@@ -26,11 +26,11 @@ import stat
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager, suppress
 from contextvars import ContextVar
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO, ClassVar, Literal, Self
+from typing import TYPE_CHECKING, BinaryIO, ClassVar, Literal, Self, Unpack
 from uuid import UUID
 
 from pydantic import BaseModel, Field, PrivateAttr, ValidationInfo, field_validator
@@ -38,7 +38,7 @@ from galaius.agents import quota
 from galaius_core import ASKED_BY_MAX, MEDIA_KEY, MODEL_ID_MAX, AgentMedia, AgentRevisionRef, ContextGauge, PromptExecutionRef, RunReplacement, StopActor
 
 from galaius.agents.events import (
-    CONTEXT_FIELDS, PERSON_SENDER, TOKEN_FIELDS, AgentEvent, TokenUsage, UsageLedger, answered_line, ending_of, model_spoke, stream_lines,
+    CONTEXT_FIELDS, PERSON_SENDER, TOKEN_FIELDS, AgentEvent, MessageFields, TokenUsage, UsageLedger, answered_line, ending_of, model_spoke, stream_lines,
 )
 from galaius.agents.catalog_connection import CatalogConnection
 from galaius.agents.ceiling import contained, end_run_scope, is_run_scope
@@ -367,6 +367,9 @@ class AgentRun(ContextGauge):
     #: The other runs it works for, first asker first (`note_asker_locked`): each run that sent it work, and each run it
     #: said it works for (`galaius agents work-for`). Never itself nor its parent; kept across turns.
     asked_by: tuple[str, ...] = ()
+    #: The run that took over from it (`relations.succeed`: a hand-off, its context full): what is handed back or sent
+    #: to it reaches that run instead (`relations.live`), never resuming this one.
+    successor: str | None = None
 
     status: RunStatus = "running"
 
@@ -406,6 +409,12 @@ class AgentRun(ContextGauge):
         if not isinstance(value, list | tuple):
             return value
         return tuple(asker for asker in value if isinstance(asker, str) and _is_run_id(asker))[:ASKED_BY_MAX]
+
+    @field_validator("successor", mode="before")
+    @classmethod
+    def run_id_only(cls, value: object) -> object:
+        """A run id or nothing: a record edited by hand never names a successor nothing can resolve."""
+        return value if isinstance(value, str) and _is_run_id(value) else None
 
     @field_validator("status", mode="before")
     @classmethod
@@ -1743,8 +1752,7 @@ def upsert_provider_child(
 
 
 def _record_message_event_locked(
-    *, from_run: str, to_run: str, text: str, event_id: str | None = None, media: tuple[str, ...] = (), for_run: str | None = None,
-    fyi: bool = False, reports: tuple[str, ...] = (),
+    *, from_run: str, to_run: str, text: str, event_id: str | None = None, **fields: Unpack[MessageFields],
 ) -> str | None:
     if _read_record(to_run) is None:
         return None
@@ -1752,9 +1760,8 @@ def _record_message_event_locked(
     for side in (from_run, to_run):
         if side in SYSTEM_SENDERS:
             continue
-        event = AgentEvent(kind="message", event_id=message_id, text=text, media=media,
-                           from_run=from_run, to_run=to_run, for_run=for_run, fyi=fyi, reports=reports, at=time.time(),
-                           raw_index=raw_line_count(side))
+        event = AgentEvent(kind="message", event_id=message_id, text=text, from_run=from_run, to_run=to_run, at=time.time(),
+                           raw_index=raw_line_count(side), **fields)
         _append_private(messages_path(side), (event.model_dump_json() + "\n").encode())
         if _read_record(side) is not None:
             _merge_record_locked(side, {"last": event.summary(viewer=side)})
@@ -1762,26 +1769,20 @@ def _record_message_event_locked(
 
 
 def record_message_event(
-    *, from_run: str, to_run: str, text: str, event_id: str | None = None, media: tuple[str, ...] = (), fyi: bool = False,
-    reports: tuple[str, ...] = (),
+    *, from_run: str, to_run: str, text: str, event_id: str | None = None, **fields: Unpack[MessageFields],
 ) -> str | None:
     """Record one exchange and return its stable id for delivery metadata."""
     with ExitStack() as stack:
         for side in sorted({from_run, to_run}):
             stack.enter_context(record_lock(side))
-        return _record_message_event_locked(
-            from_run=from_run, to_run=to_run, text=text, event_id=event_id, media=media, fyi=fyi, reports=reports,
-        )
+        return _record_message_event_locked(from_run=from_run, to_run=to_run, text=text, event_id=event_id, **fields)
 
 
 def record_message_event_locked(
-    *, from_run: str, to_run: str, text: str, event_id: str | None = None, media: tuple[str, ...] = (), for_run: str | None = None,
-    fyi: bool = False, reports: tuple[str, ...] = (),
+    *, from_run: str, to_run: str, text: str, event_id: str | None = None, **fields: Unpack[MessageFields],
 ) -> str | None:
     """Record an exchange while the caller owns every needed run lock."""
-    return _record_message_event_locked(
-        from_run=from_run, to_run=to_run, text=text, event_id=event_id, media=media, for_run=for_run, fyi=fyi, reports=reports,
-    )
+    return _record_message_event_locked(from_run=from_run, to_run=to_run, text=text, event_id=event_id, **fields)
 
 
 def record_message(*, from_run: str, to_run: str, text: str) -> bool:
@@ -2549,13 +2550,9 @@ def claim_login_resume(run_id: str, *, now: float | None = None) -> AgentRun | N
     return _claim(run_id, lambda stored: login_lost(stored, now=moment), {"resumed_at": moment})
 
 
-def forest(root_run_ids: frozenset[str]) -> dict[str, list[AgentRun]]:
-    """Each of `root_run_ids` with every run it launched, at any depth (parent links, or a provider child's
-    recorded root), newest first, status re-checked from the record and pid alone (never the stream): a
-    poller watching a few trees pays one `stat()` per record."""
-    if not root_run_ids:
-        return {}
-    records = _stored_records()
+def _tree_of(records: Sequence[AgentRun], root_run_ids: frozenset[str]) -> dict[str, str]:
+    """Each run of `records` under one of `root_run_ids` (parent links, or a provider child's recorded root),
+    mapped to that root."""
     tree_of, grew = {run_id: run_id for run_id in root_run_ids}, True
     while grew:
         grew = False
@@ -2563,6 +2560,25 @@ def forest(root_run_ids: frozenset[str]) -> dict[str, list[AgentRun]]:
             if run.run_id not in tree_of and (top := tree_of.get(run.parent_run_id or "") or tree_of.get(run.root_run_id or "")) is not None:
                 tree_of[run.run_id] = top
                 grew = True
+    return tree_of
+
+
+def stored_tree(root_run_id: str) -> list[AgentRun]:
+    """`root_run_id` and every run it launched, as stored, newest first: never writes, so a caller holding a record
+    lock may read it (`forest` re-derives a stale status, which takes the lock)."""
+    records = _stored_records()
+    tree_of = _tree_of(records, frozenset({root_run_id}))
+    return sorted((run for run in records if run.run_id in tree_of), key=lambda run: run.started_at, reverse=True)
+
+
+def forest(root_run_ids: frozenset[str]) -> dict[str, list[AgentRun]]:
+    """Each of `root_run_ids` with every run it launched, at any depth (parent links, or a provider child's
+    recorded root), newest first, status re-checked from the record and pid alone (never the stream): a
+    poller watching a few trees pays one `stat()` per record."""
+    if not root_run_ids:
+        return {}
+    records = _stored_records()
+    tree_of = _tree_of(records, root_run_ids)
     def current(run: AgentRun) -> AgentRun:
         status = _status_for(run)
         # A process gone with no ending recorded is healed from its own stream (it may have

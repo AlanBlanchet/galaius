@@ -63,7 +63,7 @@ _MASK_PAST_CUT = 256
 #: Blocks a harness writes into a turn (reminders, hook context): never the person's or the agent's words.
 _HARNESS_BLOCK = re.compile(r"<(system-reminder|hook-context)>[\s\S]*?(?:</\1>|\Z)")
 #: Lines that read as a trusted instruction where they first appeared; quoted back, they are only quoted.
-_TRUSTED_LOOKING = re.compile(r"(?m)^(?=\s*(?:\[Galaius: message from|Launch policy:|<system-reminder>|\[Interact agent provenance\]))")
+_TRUSTED_LOOKING = re.compile(r"(?m)^(?=\s*(?:\[Galaius: |Launch policy:|<system-reminder>|\[Interact agent provenance\]))")
 #: The leading `key=value` of a summarised tool input (`_summarise_input` puts the telling one first).
 _LEAD = re.compile(r"""^\w+=(?:'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|\S+)""")
 #: A tool call that searches or reads conversations: the MCP tools under any server prefix, or a

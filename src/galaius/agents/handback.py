@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 from galaius.agents import agent_queue, messaging
 from galaius.agents import registry as reg
-from galaius.agents.events import AgentEvent, ending_of
+from galaius.agents.relations import final_words, live, owed
 from galaius.agents.spawn_line import SpawnLine
 
 #: Each report's share of the hand-back message (`agent_queue.BRIEF_MAX` in all); the full one is `galaius agents events`.
@@ -44,9 +44,7 @@ class Report(BaseModel):
             said = reg.vendor_said_at(run) if run.process_running() else None  # a queued item alone: no turn to be silent
             return cls(run_id=run.run_id, agent=run.agent, status=run.status, pending=True, text="",
                        silent_for=None if said is None else max(0.0, time.time() - said))
-        ending = ending_of(events := reg.read_events(run.run_id), run.run_id)
-        said = ending.text if ending is not None else next((event.text for event in reversed(events) if event.kind == "text"), "")
-        return cls(run_id=run.run_id, agent=run.agent, status=run.status, pending=False, text=(said or "").strip())
+        return cls(run_id=run.run_id, agent=run.agent, status=run.status, pending=False, text=final_words(run.run_id))
 
     def section(self, limit: int | None = REPORT_MAX) -> str:
         text = self.text if limit is None or len(self.text) <= limit else f"{self.text[:limit]}\n… (clipped; `galaius agents events {self.run_id}`)"
@@ -59,49 +57,26 @@ def _pending(run: reg.AgentRun) -> bool:
         or any(item.state in {"pending", "running"} for item in agent_queue.items(run.run_id))
 
 
-def owed(run: reg.AgentRun) -> tuple[str, ...]:
-    """The runs its ended turn reports to: each run it answers (`askers`) whose latest ask no hand-back has carried its
-    report on yet (`_reported`). Its parent asked its task when it started, and asks again with each message it or the
-    person sends; a run of its `asked_by` asks with each message it sends (or a spawn sent for it, `for_run`). An
-    automatic resume, the person's « Continuer », any hand-back (`reports`) or a one-way note (`fyi`) is no ask. An ask
-    with no time stays owed. 2026-10-17: a report sent to a third run made it an asker for good, each later turn of the
-    reporter woke it with an empty report (one coordinator: 9 such runs; a librarian: 4 empty turns; four runs looping
-    every 3 min); a reused instance's every turn also woke the run that had spawned it for an earlier job."""
-    asked: dict[str, float | None] = {run.parent_run_id: run.started_at or None} if run.parent_run_id else {}
-    for event in reg.read_messages(run.run_id):
-        if event.to_run != run.run_id or event.fyi or event.reports:
-            continue
-        said_by = event.for_run or event.from_run
-        if said_by == reg.PERSON_SENDER and event.text != reg.RESUME_BRIEF and run.parent_run_id:
-            said_by = run.parent_run_id  # the person's words to it: its parent hears the outcome
-        if said_by in run.askers:
-            asked[said_by] = event.at
-    return tuple(asker for asker, at in asked.items() if at is None or not _reported(run.run_id, to=asker, since=at))
-
-
-def _reported(run_id: str, *, to: str, since: float) -> bool:
-    """A hand-back to run `to` carried `run_id`'s report (`_resume`) at or after `since`."""
-    return any(event.to_run == to and run_id in event.reports and (event.at or 0.0) >= since for event in reg.read_messages(to))
-
-
 def hand_back(run_id: str) -> list[messaging.Delivery]:
-    """Resume each run `run_id` owes its report (`owed`) with the reports of the agents it waited on, when `run_id` ended
-    the last of them. 2026-10-17: a continued instance's reports reached its parent, never the coordinator that had
-    asked it the work."""
+    """Resume each run `run_id` owes its report (`owed`; the run that took over from it, `live`) with the reports of the
+    agents it waited on, when `run_id` ended the last of them. 2026-10-17: a continued instance's reports reached its
+    parent, never the coordinator that had asked it the work."""
     child = reg.get_run(run_id)
     if child is None:
         return []
-    return [delivery for asker in owed(child) if (delivery := _resume(asker, child)) is not None]
+    return [delivery for asker in dict.fromkeys(live(asker) for asker in owed(child)) if (delivery := _resume(asker, child)) is not None]
 
 
 def _agents_answering(asker_id: str, records: Sequence[reg.AgentRun]) -> list[reg.AgentRun]:
-    """The runs among `records` that owe run `asker_id` their report (`owed`)."""
-    return [run for stored in records if asker_id in stored.askers
-            and (run := reg.get_run(stored.run_id)) is not None and asker_id in owed(run)]
+    """The runs among `records` that owe run `asker_id`, or a run it took over from (`live`), their report (`owed`)."""
+    aliases = {asker_id} | {stored.run_id for stored in records if stored.successor and live(stored.run_id) == asker_id}
+    return [run for stored in records if aliases & stored.askers
+            and (run := reg.get_run(stored.run_id)) is not None and aliases.intersection(owed(run))]
 
 
 def _resume(asker_id: str, child: reg.AgentRun) -> messaging.Delivery | None:
-    """Resume run `asker_id` with the reports of every agent that owes it one (`owed`) once none is pending.
+    """Resume run `asker_id` with the reports of every agent that owes it one (`owed`) once none is pending: the reports
+    alone, its turn opening on where it stands (`relations.card`) and on whose reports they are (`relations.heading`).
 
     Only a run whose own turn ended (`_ENDED_ITS_TURN`) before those agents did; one message per ended turn (its
     `message_id` names that turn), so every reader of the same ending queues it once. An agent still waiting on agents
@@ -118,11 +93,9 @@ def _resume(asker_id: str, child: reg.AgentRun) -> messaging.Delivery | None:
     if not since:
         return None
     reports = [Report.of(run) for run in sorted(since, key=lambda run: run.finished_at or 0.0)]
-    message = (f"The agents you started or asked ended after your turn did; their final reports follow. Report the outcome "
-               f"to whoever asked you (the result of each ask, from these reports), or continue the work.\n\n"
-               + "\n\n".join(report.section() for report in reports))
     return messaging.deliver_message(
-        asker.run_id, message, sender=child.run_id, message_id=f"handback-{asker.finished_at:.6f}", only_if_idle=True,
+        asker.run_id, "\n\n".join(report.section() for report in reports), sender=child.run_id,
+        message_id=f"handback-{asker.finished_at:.6f}", only_if_idle=True,
         turn=agent_queue.MessageTurn(limit=agent_queue.BRIEF_MAX, reports=tuple(report.run_id for report in reports)),
     )
 

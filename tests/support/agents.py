@@ -17,6 +17,12 @@ from galaius.agents import registry as reg
 from galaius.agents import run as _run_module
 from galaius.agents.policy import Policy
 from galaius.agents.providers import AgentProvider, ClaudeCodeProvider
+from galaius.agents.relations import CARD_HEADING
+
+def said(prompt: str) -> str:
+    """What a turn's prompt says past the turn card (`relations.card`) it opens with, for a test judging the message."""
+    return prompt.split("\n\n", 1)[1] if prompt.startswith(CARD_HEADING) else prompt
+
 
 #: A real init+result stream, the shape every scripted provider below emits. A subclass with its
 #: own payload (cost, extra fields) sets its own `script`; this is just the common default.

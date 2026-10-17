@@ -30,7 +30,7 @@ from pydantic import BaseModel, ConfigDict
 
 from galaius.agents import agent_queue
 from galaius.agents import registry as reg
-from galaius.agents import quota
+from galaius.agents import quota, relations
 from galaius.agents import run_folder
 from galaius.agents.catalog import AgentCatalog
 from galaius.agents.ceiling import contained
@@ -1588,8 +1588,14 @@ async def run_agent(
             "loop of at most 10 minutes per call. Waiting on another agent: send your request and end your turn; "
             "its reply or final report resumes this run (`handback`), so never poll another agent's run. End your "
             "turn when your own work is finished or handed to an agent.\n\n"
-            f"{task}"
         )
+
+        def brief_as(child_id: str) -> str:
+            """The brief run `child_id` starts on: where it stands (`relations.card`) ahead of its task. A child started
+            ahead (`warm`) is handed it under its own id."""
+            child = reg.AgentRun(run_id=child_id, provider=candidate_provider.name, name=label, agent=agent, task=task,
+                                 parent_run_id=parent, started_at=time.time())
+            return f"{brief}{relations.card(child)}\n\n{task}"
         # argv built AFTER the model is decided: used to build first with raw text, so a criterion,
         # a `@profile` or a routed `ollama/x` id reached the binary unresolved while the resolved
         # name went only into the env and run record.
@@ -1626,7 +1632,7 @@ async def run_agent(
         candidate_process = None
         if held is not None:
             try:
-                await launch.hand(held.process, brief)
+                await launch.hand(held.process, brief_as(held.run_id))
             except (BrokenPipeError, ConnectionResetError):
                 held.end()
             else:
@@ -1634,9 +1640,9 @@ async def run_agent(
                 candidate_process = held.process
         if candidate_process is None and stdin_images:
             candidate_process = await launch.start_ahead(run_id, vendor_session)
-            await launch.hand(candidate_process, brief, kept)
+            await launch.hand(candidate_process, brief_as(run_id), kept)
         if candidate_process is None:
-            candidate_process = await launch.launch(run_id, vendor_session, brief)
+            candidate_process = await launch.launch(run_id, vendor_session, brief_as(run_id))
         # The child resolves its owning conversation from this run's record, so the record must
         # exist before it can ask — the probe otherwise sits between spawn and register and the
         # child reads a stale owner. Registering here also means a candidate skipped for quota

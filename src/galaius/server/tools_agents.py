@@ -49,6 +49,8 @@ async def agent_spawn(
     session_id: str | None = None,
     denied_tools: list[str] | None = None,
     fresh: bool = False,
+    continues: str | None = None,
+    for_run: str | None = None,
 ) -> str:
     """Start an agent to work alongside you, or hand the task to the idle one of that role already in
     this conversation (`fresh` to always start one), and return its run id immediately.
@@ -99,6 +101,11 @@ async def agent_spawn(
     fresh: start a new run even when an agent of the same role already in this conversation sits
         between turns. Without it that agent takes the task as its next turn, its context intact,
         and its run id comes back; a new one starts only when every such agent is busy or unfit.
+    continues: the run (full or short id) the new one takes over from — a hand-off from a run whose context filled:
+        what that run owed, and what is handed back or sent to it from then on, reaches the new one; it is never resumed
+        again. A run of the same role under the same parent whose context filled is taken over without it.
+    for_run: the run (full or short id) the task is for besides you — e.g. the maker whose work a critic judges: its final
+        report reaches that run as well as you.
     """
     try:
         prov = provider_for(provider) if provider is not None else None
@@ -134,6 +141,14 @@ async def agent_spawn(
                 f"from a tool call. Choose one of: {allowed}. To run an agent unrestricted, start "
                 f"it yourself — `galaius agents spawn ... --permission-mode {permission_mode}` — "
                 "so the choice has a person behind it.")
+    if continues is not None:
+        if (predecessor := reg.resolve_run_id(continues)) is None or reg.get_run(predecessor) is None:
+            return f"ERROR: continues names no agent run of this computer (full or unambiguous short id): {continues!r}."
+        continues = predecessor
+    if for_run is not None:
+        if (asker := reg.resolve_run_id(for_run)) is None or reg.get_run(asker) is None:
+            return f"ERROR: for_run names no agent run of this computer (full or unambiguous short id): {for_run!r}."
+        for_run = asker
     label = name or agent or (prov.name if prov else "agent")
     try:
         with reg.session_context(session_id) as owner:
@@ -141,9 +156,9 @@ async def agent_spawn(
                 task=task, cwd=cwd or os.getcwd(), provider=provider, agent=agent, name=name, model=model,
                 permission_mode=permission_mode, profile=profile, agent_ref=agent_ref, delegate=delegate,
                 image_paths=tuple(Path(path) for path in (image_paths or ())), denied_tools=tuple(denied_tools or ()),
-                session_id=owner,
+                session_id=owner, continues=continues, for_run=for_run,
             )
-            handover = StartNew() if fresh else await asyncio.to_thread(spawn.hand_over)
+            handover = StartNew() if fresh or continues else await asyncio.to_thread(spawn.hand_over)
             if isinstance(handover, Continued):
                 return handover.sentence()
             line = SpawnLine.here()

@@ -16,7 +16,7 @@ from galaius.agents import run as run_module
 from galaius.agents.followup import FollowUps
 from galaius.agents.warm import WarmStart
 from galaius.agents.providers import ClaudeCodeProvider
-from tests.support.agents import ScriptedProvider, install_provider, use_policy
+from tests.support.agents import ScriptedProvider, install_provider, said, use_policy
 
 #: The next turn's child: waits for its message, says it read it (as `--replay-user-messages` does), answers it.
 READER = (
@@ -37,6 +37,7 @@ class _Provider(ScriptedProvider):
         self.resumed: list[str] = []
 
     def resume_command(self, session_id, message, **kwargs):
+        message = said(message)
         self.resumed.append(message)  # the dispatcher's own resume: the message on its command line, no echo
         script = READER.replace("next(m for line in sys.stdin if (m := json.loads(line))['type'] == 'user')['message']['content']", repr(message))
         return [sys.executable, "-c", "\n".join(line for line in script.splitlines() if "isReplay" not in line)]
@@ -44,8 +45,8 @@ class _Provider(ScriptedProvider):
     def resume_ahead_command(self, session_id, **kwargs):
         return [sys.executable, "-c", READER]
 
-    def task_message(self, task):
-        return ClaudeCodeProvider().task_message(task)
+    def task_message(self, task, images=()):
+        return ClaudeCodeProvider().task_message(said(task), images)
 
     def took_message(self, line):
         return ClaudeCodeProvider().took_message(line)

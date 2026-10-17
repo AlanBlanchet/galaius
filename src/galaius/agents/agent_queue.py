@@ -22,15 +22,16 @@ import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Annotated, ClassVar, Literal, TypedDict
+from typing import Annotated, ClassVar, Literal, Self
 
 from galaius_core import AGENT_IMAGES_MAX, MEDIA_KEY, AgentRevisionRef
 from pydantic import BaseModel, ConfigDict, Field
 
 from galaius.agents import registry as reg
-from galaius.agents.events import AgentEvent
+from galaius.agents.events import AgentEvent, MessageFields
 from galaius.agents.providers import _CLIP, AgentProvider, _safe_process_detail, provider_for
-from galaius.inbox_hook import HEADING, OPERATOR
+from galaius.agents.relations import card, heading
+from galaius.inbox_hook import OPERATOR
 from galaius.processes import process_started
 from galaius.upgrade.store import Runtime, RuntimeStore
 
@@ -55,14 +56,6 @@ PENDING_MARK = '"pending"'
 AttemptState = Literal["replied", "failed", "uncertain"]
 
 
-class EventFields(TypedDict, total=False):
-    """What a queued turn's transcript entry records beside its text (`registry.record_message_event_locked`)."""
-
-    media: tuple[str, ...]
-    fyi: bool
-    reports: tuple[str, ...]
-
-
 class QueuedTurn(BaseModel, ABC):
     """What a queued turn does. Each kind owns how it is checked when queued, what its recipient's
     transcript records, what its turn sends, whether a turn already running may read it, and the event
@@ -85,9 +78,10 @@ class QueuedTurn(BaseModel, ABC):
         """What its recipient's transcript records as sent to it by `origin` (None: the person); None: nothing."""
 
     @abstractmethod
-    def prompt(self, run: reg.AgentRun, message_id: str, *, native_images: bool = False) -> str | None:
-        """What its turn sends to `run`; None when its transcript entry is missing. The images it shows are named there
-        as their files (`RunMedia.mentioned`) unless the turn carries them itself (`native_images`: `shown`)."""
+    def prompt(self, run: reg.AgentRun, message_id: str, *, native_images: bool = False, mid_turn: bool = False) -> str | None:
+        """What its turn sends to `run` (`mid_turn`: what a turn already running reads of it, `inject`); None when its
+        transcript entry is missing. The images it shows are named there as their files (`RunMedia.mentioned`) unless the
+        turn carries them itself (`native_images`: `shown`)."""
 
     def shown(self, run: reg.AgentRun) -> tuple[Path, ...]:
         """The files of the images it shows, in order."""
@@ -101,9 +95,13 @@ class QueuedTurn(BaseModel, ABC):
         """Whether its sender becomes a run its recipient works for (`registry.note_asker_locked`), its report owed."""
         return True
 
-    def event_fields(self) -> EventFields:
+    def event_fields(self) -> MessageFields:
         """What its recipient's transcript entry records beside the text."""
         return {}
+
+    def as_report(self) -> Self:
+        """It sent as answering an ask of its recipient (`relations.Relation.REPORT`): never an ask itself (`asks`)."""
+        return self
 
     @abstractmethod
     def accepts(self, event: AgentEvent) -> bool:
@@ -149,11 +147,14 @@ class MessageTurn(QueuedTurn):
     def entry(self, text: str, origin: reg.AgentRun | None) -> str | None:
         return text if origin is None else origin.handoff_header() + text
 
-    def prompt(self, run: reg.AgentRun, message_id: str, *, native_images: bool = False) -> str | None:
+    def prompt(self, run: reg.AgentRun, message_id: str, *, native_images: bool = False, mid_turn: bool = False) -> str | None:
+        """Opened by who wrote it and what that writer is to `run` (`relations.heading`); a turn it starts, by where `run`
+        stands first (`relations.card`; mid-turn, `inject` adds it after every message it hands over)."""
         message = reg.message_for(run.run_id, message_id)
         if message is None:
             return None
-        return message.text if native_images else reg.RunMedia.mentioned(message.text, self.shown(run))
+        text = message.text if native_images else reg.RunMedia.mentioned(message.text, self.shown(run))
+        return "\n\n".join(part for part in (None if mid_turn else card(run), heading(message, run, mid_turn=mid_turn), text) if part)
 
     def shown(self, run: reg.AgentRun) -> tuple[Path, ...]:
         return tuple(reg.RunMedia.path(run.run_id, name) for name in self.media)
@@ -164,7 +165,10 @@ class MessageTurn(QueuedTurn):
     def asks(self) -> bool:
         return not (self.fyi or self.reports)
 
-    def event_fields(self) -> EventFields:
+    def as_report(self) -> Self:
+        return self if self.reports else self.model_copy(update={"fyi": True})
+
+    def event_fields(self) -> MessageFields:
         return {"media": self.media, "fyi": self.fyi, "reports": self.reports}
 
     def begin_locked(self, run: reg.AgentRun) -> reg.AgentRun:
@@ -197,7 +201,7 @@ class CompactionTurn(QueuedTurn):
     def entry(self, text: str, origin: reg.AgentRun | None) -> str | None:
         return None
 
-    def prompt(self, run: reg.AgentRun, message_id: str, *, native_images: bool = False) -> str | None:
+    def prompt(self, run: reg.AgentRun, message_id: str, *, native_images: bool = False, mid_turn: bool = False) -> str | None:
         return provider_for(run.provider).compact_prompt
 
     def accepts(self, event: AgentEvent) -> bool:
@@ -513,7 +517,7 @@ def inbox_hook(run_id: str) -> str:
 
 def inject(run_id: str) -> list[str]:
     """Every message still pending for `run_id`, handed to the turn running now, each opening with
-    who wrote it (`galaius.inbox_hook.HEADING`): each claimed as an attempt of that turn, anchored here, so
+    who wrote it (`relations.heading`), then where the run stands (`relations.card`): each claimed as an attempt of that turn, anchored here, so
     the turn's own reply settles it (`dispatch` classifies it once the turn ends, as it does an
     attempt whose dispatcher died). What it says is never sent a second time; a message whose
     transcript entry is missing fails as `dispatch` fails it."""
@@ -528,13 +532,14 @@ def inject(run_id: str) -> list[str]:
                 continue
             if not item.turn.mid_turn:
                 break  # a turn of its own once this one ends; what was sent after it waits behind it
-            text = item.turn.prompt(run, item.message_id)
+            text = item.turn.prompt(run, item.message_id, mid_turn=True)
             if text is None:
                 _replace_item_locked(run_id, item.id, state="failed", finished_at=time.time(), error="message transcript entry is missing")
                 continue
             _replace_item_locked(run_id, item.id, state="running", started_at=time.time(), raw_index=anchor, attempt_token=uuid.uuid4().hex, error="")
             said.append((item, text))
-    return [f"{HEADING.format(who=item.writer)}\n\n{text}" for item, text in said]
+    # Where it stands last: hook context opening with the person's own heading is theirs (`inbox_hook.NOTE`).
+    return [*(text for _, text in said), card(run)] if said else []
 
 
 #: What a turn has read of the messages sent to it: handed to that turn, or a turn opened on it.

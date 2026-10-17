@@ -38,7 +38,7 @@ from typing import ClassVar, Literal, Self, TypeVar
 from galaius_core import AgentRevisionRef
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from galaius.agents import agent_queue, messaging
+from galaius.agents import agent_queue, messaging, relations
 from galaius.agents import registry as reg
 from galaius.agents.policy import Policy, PolicyError
 from galaius.agents.providers import provider_for
@@ -65,8 +65,6 @@ ASIDE = f"attend {ITS_AGENTS}, place rendue"
 ASIDE_GRACE_SECONDS = 15.0
 #: How long a spawn that could not start stays readable (`agents list`, `agents events`) before it is forgotten.
 FAILED_KEPT_SECONDS = 24 * 3600.0
-#: Share of its context window past which a run is not handed a new task (`Spawn._misfit`): a fresh one starts instead.
-CONTEXT_NEAR_FULL = 0.8
 
 logger = logging.getLogger(__name__)
 
@@ -97,11 +95,14 @@ class Spawn(BaseModel):
     #: The run this spawn is for (`galaius agents spawn --for`): on the message handing it over, and in the
     #: `asked_by` of the run taking it, continued or new.
     for_run: str | None = None
+    #: The run it takes over from (`galaius agents spawn --continues`: a hand-off), else the run of its role under its parent
+    #: whose context filled (`_outgrown`): `relations.succeed`.
+    continues: str | None = None
     #: One agent of its role in its conversation (`galaius agents spawn --single`): one at work is queued the task behind
     #: its turn rather than another started beside it, and every other one of the role is forgotten (`forget_peers`).
     single: bool = False
     #: Its fields `start` passes to `run_agent` other than by their own names.
-    NOT_RUN_ARGUMENTS: ClassVar[frozenset[str]] = frozenset({"task", "provider", "session_id", "for_run", "single"})
+    NOT_RUN_ARGUMENTS: ClassVar[frozenset[str]] = frozenset({"task", "provider", "session_id", "for_run", "single", "continues"})
 
     @classmethod
     def asked(cls, *, parent_run_id: str | None = None, **fields) -> Spawn:
@@ -118,8 +119,17 @@ class Spawn(BaseModel):
         if self.for_run is not None:
             with reg.record_lock(run_id):
                 reg.note_asker_locked(run_id, self.for_run)
+        if (started := reg.get_run(run_id)) is not None and (predecessor := self.continues or self._outgrown(started)):
+            relations.succeed(predecessor, started.run_id)
         await asyncio.sleep(0.2)
         return handle
+
+    def _outgrown(self, run: reg.AgentRun) -> str | None:
+        """The newest run of `run`'s role under its parent whose context filled (`relations.context_full`), not at work and
+        not taken over yet: the one `run` takes over from."""
+        return next((peer.run_id for peer in self._conversation()
+                     if run.agent and peer.agent == run.agent and peer.run_id != run.run_id and peer.parent_run_id == run.parent_run_id
+                     and peer.successor is None and relations.context_full(peer) and not self._busy(peer)), None)
 
     def _role(self) -> tuple[Policy, str, AgentRevisionRef | None] | None:
         """The policy, role and revision it would run as (`run.resolve_role`, as its start resolves them); None
@@ -144,11 +154,13 @@ class Spawn(BaseModel):
             return "is working"
         if run.replaced_by is not None:
             return f"was refused at launch, relaunched as {run.replaced_by.run_id[:8]}"
+        if run.successor is not None:
+            return f"was taken over by {run.successor[:8]}"
         if not busy and not reg.model_spoke_in(run.run_id):
             return "never got a first turn"
         if not busy and revision is not None and (run.agent_ref is None or run.agent_ref.id != revision.id):
             return "runs another agent of that name"
-        if not busy and run.context_window and (run.context_tokens or 0) >= CONTEXT_NEAR_FULL * run.context_window:
+        if not busy and relations.context_full(run):
             return f"has its context near full ({run.context_tokens}/{run.context_window})"
         if self.provider is not None and run.provider != self.provider:
             return f"runs on {run.provider}"
