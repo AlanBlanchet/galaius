@@ -243,7 +243,7 @@ def queue_message(
             )
         if for_run is not None:
             reg.note_asker_locked(run.run_id, for_run)
-        if kind is Relation.OTHER and speaker in (reg.get_run(run.run_id) or run).askers:
+        if kind is Relation.OTHER and speaker in relations.works_for(reg.get_run(run.run_id) or run):
             kind = Relation.ASKER  # its message asks (`enqueue_locked`): the run now works for it
         recorded_id = None if entry is None else reg.record_message_event_locked(
             from_run=speaker, to_run=run.run_id, text=entry, event_id=message_id, for_run=for_run, relation=kind, **turn.event_fields(),

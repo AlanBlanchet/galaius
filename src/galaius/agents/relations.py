@@ -7,7 +7,10 @@ good, reports read as asks and acknowledged (each acknowledgement a turn), verdi
 run unknown to the runs still writing to the old one."""
 
 import re
-from collections.abc import Sequence
+import time
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 from galaius.agents import registry as reg
 from galaius.agents.events import AgentEvent, Relation, ending_of
@@ -16,6 +19,9 @@ from galaius.inbox_hook import HEADING, OPERATOR
 #: Share of its context window past which a run is not handed a new task (`spawn_line.Spawn._misfit`): a new run of its
 #: role started under its parent takes over from it (`succeed`).
 CONTEXT_NEAR_FULL = 0.8
+#: Compactions after which a run hands its work to a fresh run of its role: a run of its role it spawns from then on
+#: continues it (`continues`), whatever client spawned it.
+HANDOFF_COMPACTIONS = 2
 #: The other runs at work a card names, newest first.
 CARD_RUNS_MAX = 8
 #: The longest first line a card quotes.
@@ -40,14 +46,86 @@ _AT_WORK = frozenset({"starting", "running", "waiting"})
 REUSABLE: frozenset[str] = reg.TERMINAL_STATUSES - {"cancelled"}
 
 
+#: The records one decision read (`one_read`), by run id.
+_READ: ContextVar[dict[str, reg.AgentRun | None] | None] = ContextVar("relations_read", default=None)
+
+
+@contextmanager
+def one_read() -> Iterator[None]:
+    """Read each run record once for what runs inside (a decision, a card): one run's relations climb the same records
+    hundreds of times (2026-10-17: 656 reads for one card)."""
+    if _READ.get() is not None:
+        yield
+        return
+    token = _READ.set({})
+    try:
+        yield
+    finally:
+        _READ.reset(token)
+
+
+def _get(run_id: str) -> reg.AgentRun | None:
+    read = _READ.get()
+    if read is None:
+        return reg.get_run(run_id)
+    if run_id not in read:
+        read[run_id] = reg.get_run(run_id)
+    return read[run_id]
+
+
+def outgrown(run: reg.AgentRun) -> bool:
+    """It compacted `HANDOFF_COMPACTIONS` times, or its context is near full (`context_full`): its work goes to a new run."""
+    return run.compactions >= HANDOFF_COMPACTIONS or context_full(run)
+
+
+@one_read()
+def continues(run: reg.AgentRun) -> bool:
+    """Whether `run` continues its parent's work: its parent handed it over (`succeed`), or `run` is of its parent's role
+    and its parent had outgrown its context (`outgrown`) — how a compacted run hands off, `--continues` named or not.
+    2026-10-17: such hand-offs went unrecorded; each continuation's boss read as its own predecessor."""
+    parent = _get(run.parent_run_id) if run.parent_run_id else None
+    return parent is not None and (parent.successor == run.run_id
+                                   or (parent.successor is None and parent.agent == run.agent and outgrown(parent)))
+
+
+def _successor(run: reg.AgentRun) -> str | None:
+    """The run that took over from `run`: the one recorded (`succeed`), else, once `run` ended outgrown, the one run of its
+    role it spawned (`continues`); None when it split its work over several."""
+    if run.successor or not outgrown(run) or _working(run):
+        return run.successor
+    heirs = _heirs(run)
+    return heirs[0] if len(heirs) == 1 else None
+
+
+#: (agents folder, when read, each parent's children as stored then).
+_CHILDREN: tuple[str, float, dict[str, list[reg.AgentRun]]] | None = None
+#: How long after a run's end the record of a run it spawned may still land.
+_SPAWN_LAG = 2.0
+
+
+def _heirs(run: reg.AgentRun) -> list[str]:
+    """The runs of its role that ended run `run` spawned. The children index is read again only when older than `run`'s
+    end: a run spawns nothing once ended (a resumed run is at work, `_successor` reads its record alone)."""
+    global _CHILDREN
+    folder = str(reg.agents_dir())
+    if _CHILDREN is None or _CHILDREN[0] != folder or _CHILDREN[1] <= (run.finished_at or time.time()) + _SPAWN_LAG:
+        index: dict[str, list[reg.AgentRun]] = {}
+        for stored in reg._stored_records():
+            if stored.parent_run_id:
+                index.setdefault(stored.parent_run_id, []).append(stored)
+        _CHILDREN = (folder, time.time(), index)
+    return [child.run_id for child in _CHILDREN[2].get(run.run_id, []) if child.agent == run.agent]
+
+
 def chain(run_id: str) -> tuple[str, ...]:
-    """`run_id` and each run that took over from the one before it (`AgentRun.successor`), oldest first."""
+    """`run_id` and each run that took over from the one before it (`_successor`), oldest first."""
     ids = [run_id]
-    while len(ids) < _CHAIN_MAX and (run := reg.get_run(ids[-1])) is not None and run.successor and run.successor not in ids:
-        ids.append(run.successor)
+    while len(ids) < _CHAIN_MAX and (run := _get(ids[-1])) is not None and (heir := _successor(run)) and heir not in ids:
+        ids.append(heir)
     return tuple(ids)
 
 
+@one_read()
 def live(run_id: str) -> str:
     """The run at the end of `run_id`'s chain (`chain`): the one a report, a hand-back or a message for it reaches."""
     return chain(run_id)[-1]
@@ -57,7 +135,7 @@ def inherited(predecessor: reg.AgentRun, *, parent: str | None) -> dict[str, flo
     """What a run started under `parent` to take over from `predecessor` owes from its start (`AgentRun.inherited_asks`):
     each ask the predecessor still owed (`open_asks`), at its own time. Never one its new parent asks anyway (the task it
     starts on), nor the predecessor itself (a run handing off its own work: `boss`)."""
-    return {asker: at or predecessor.started_at or 0.0 for asker, at in open_asks(predecessor).items()
+    return {asker: at or predecessor.started_at or 0.0 for asker, at in _open(predecessor).items()
             if asker not in (parent, predecessor.run_id)}
 
 
@@ -76,20 +154,46 @@ def succeed(predecessor_id: str, successor_id: str) -> bool:
     return True
 
 
+@one_read()
 def boss(run: reg.AgentRun) -> str | None:
-    """The run `run` works for first: its parent at the end of its chain (`live`); for a run its own parent handed its
-    work to (`--continues` itself), that parent's own; None for a run the person launched."""
+    """The run `run` works for first: the parent of the first run of its lineage (`lineage`) at the end of its chain
+    (`live`); None for a run the person launched."""
     return _working_for(run)[0]
 
 
 def _working_for(run: reg.AgentRun) -> tuple[str | None, reg.AgentRun]:
-    """`boss`, and the run of `run`'s chain that boss asked: `run` itself, or the run that handed its own work to it."""
-    asked, seen = run, {run.run_id}
-    while (parent := asked.parent_run_id) and parent not in seen and live(parent) == run.run_id and (above := reg.get_run(parent)):
-        seen.add(parent)
-        asked = above
-    parent = asked.parent_run_id
-    return (live(parent) if parent and parent not in seen else None), asked
+    """`boss`, and the run of `run`'s lineage that boss asked: `run` itself, or the first run whose work it continues."""
+    first, line = _climb(run)
+    return first, line[-1]
+
+
+@one_read()
+def lineage(run: reg.AgentRun) -> tuple[reg.AgentRun, ...]:
+    """`run` and each run whose work it continues (`continues`), nearest first."""
+    return _climb(run)[1]
+
+
+def _climb(run: reg.AgentRun) -> tuple[str | None, tuple[reg.AgentRun, ...]]:
+    line = [run]
+    while len(line) < _CHAIN_MAX and continues(line[-1]) and (above := _get(line[-1].parent_run_id or "")) is not None \
+            and above.run_id not in {link.run_id for link in line}:
+        line.append(above)
+    parent = line[-1].parent_run_id
+    return (live(parent) if parent and parent not in {link.run_id for link in line} else None), tuple(line)
+
+
+def _commands(run_id: str, other: reg.AgentRun) -> bool:
+    """Whether run `run_id` is `other`'s boss or above it (`boss`): the launch tree outranks who wrote first. 2026-10-17:
+    a continuation's status note made it its coordinator's asker; the coordinator's next order then read as a report and
+    its every hand-back waited on the coordinator, never ending."""
+    seen = {other.run_id}
+    while (up := boss(other)) is not None and up not in seen and len(seen) < _CHAIN_MAX:
+        if up == run_id:
+            return True
+        seen.add(up)
+        if (other := _get(up)) is None:
+            return False
+    return False
 
 
 def content(text: str) -> str:
@@ -108,21 +212,28 @@ def _failed(line: str) -> bool:
     return _FAILED.match(line[:QUOTE_MAX]) is not None
 
 
+@one_read()
+def works_for(run: reg.AgentRun) -> frozenset[str]:
+    """The runs `run` answers, at the end of their chains (`live`): its boss and every other run that asked it (`_asks`)."""
+    return frozenset(live(asker) for asker in _asks(run)) - {run.run_id}
+
+
 def answers(sender: reg.AgentRun, recipient: reg.AgentRun) -> bool:
-    """Whether a message from `sender` answers what `recipient` asked it: `recipient` is a run it works for (or took over
-    from one, `live`), and when each asked the other, `recipient`'s ask is the one still owed (`owed`)."""
-    if recipient.run_id not in {live(asker) for asker in sender.askers}:
+    """Whether a message from `sender` answers what `recipient` asked it: `sender` works for `recipient` (`works_for`),
+    and when each works for the other, `recipient`'s ask is the one still owed (`owed`)."""
+    if recipient.run_id not in works_for(sender):
         return False
-    return sender.run_id not in recipient.askers or recipient.run_id in {live(asker) for asker in owed(sender)}
+    return sender.run_id not in works_for(recipient) or recipient.run_id in {live(asker) for asker in owed(sender)}
 
 
+@one_read()
 def relation(sender: reg.AgentRun, recipient: reg.AgentRun, text: str, *, reports: Sequence[str] = ()) -> Relation:
     """What `sender` is to `recipient` for a message saying `text` (a hand-back: carrying the final words of `reports`),
     from their records as they are now."""
     if answers(sender, recipient):
         asking = any(needs_answer(final_words(run_id)) for run_id in reports) if reports else needs_answer(text)
         return Relation.REPORT_ASKING if asking else Relation.REPORT
-    return Relation.ASKER if sender.run_id in recipient.askers else Relation.OTHER
+    return Relation.ASKER if sender.run_id in works_for(recipient) else Relation.OTHER
 
 
 def final_words(run_id: str) -> str:
@@ -132,6 +243,7 @@ def final_words(run_id: str) -> str:
     return (said or "").strip()
 
 
+@one_read()
 def owed(run: reg.AgentRun) -> tuple[str, ...]:
     """The runs its ended turn reports to: each run it answers (`askers`) whose latest ask no hand-back has carried its
     report on yet (`_reported`). Its parent asked its task when it started, and asks again with each message it or the
@@ -143,31 +255,40 @@ def owed(run: reg.AgentRun) -> tuple[str, ...]:
     return tuple(open_asks(run))
 
 
+@one_read()
 def open_asks(run: reg.AgentRun) -> dict[str, float | None]:
-    """Each ask `owed` counts, with its time: none once another run took over (they moved to it, `inherited`), never one
-    of a run `run` took over itself (a hand-off to itself)."""
-    if run.successor is not None:
-        return {}
+    """Each ask `owed` counts, with its time: none once another run took over (they moved to it, `inherited`)."""
+    return {} if live(run.run_id) != run.run_id else _open(run)
+
+
+def _open(run: reg.AgentRun) -> dict[str, float | None]:
+    """Each ask of `run` no report has answered yet (`_reported`); never one of a run `run` took over itself."""
     return {asker: at for asker, at in _asks(run).items()
             if live(asker) != run.run_id and (at is None or not _reported(run.run_id, to=asker, since=at))}
 
 
 def _asks(run: reg.AgentRun) -> dict[str, float | None]:
-    """Each run it answers that asked it something, with when it last did (`owed`)."""
+    """Each run it answers that asked it something, with when it last did (`owed`): first its boss (`boss`, for a run
+    continuing its parent's work the boss of its lineage); never a run of its own lineage (`lineage`), nor one it is the
+    boss of (`_commands`)."""
     # Each run it works for asked it from its start (a spawn `--for` a maker), or when it asked the run this one took over
     # from (`inherited`); a message it sent later moves that to the message.
     start = run.started_at or None
-    asked: dict[str, float | None] = {run.parent_run_id: start} if run.parent_run_id else {}
-    asked |= {asker: run.inherited_asks.get(asker, start) for asker in run.asked_by}
+    top = _working_for(run)[1].parent_run_id
+    asked: dict[str, float | None] = {top: start} if top else {}
+    asked |= {asker: run.inherited_asks.get(asker, start) for asker in run.asked_by if asker not in asked}
+    reached = {live(asker): asker for asker in asked}
     for event in reg.read_messages(run.run_id):
         if event.to_run != run.run_id or event.fyi or event.reports:
             continue
         said_by = event.for_run or event.from_run
-        if said_by == reg.PERSON_SENDER and event.text != reg.RESUME_BRIEF and run.parent_run_id:
-            said_by = run.parent_run_id  # the person's words to it: its parent hears the outcome
-        if said_by in run.askers:
-            asked[said_by] = event.at
-    return asked
+        if said_by == reg.PERSON_SENDER and event.text != reg.RESUME_BRIEF:
+            said_by = boss(run)  # the person's words to it: its boss hears the outcome
+        if (asker := said_by if said_by in asked else reached.get(live(said_by or ""))) is not None:
+            asked[asker] = event.at
+    own = {link.run_id for link in lineage(run)}
+    return {asker: at for asker, at in asked.items()
+            if asker not in own and ((other := _get(asker)) is None or not _commands(run.run_id, other))}
 
 
 def _reported(run_id: str, *, to: str, since: float) -> bool:
@@ -191,7 +312,7 @@ def _first_line(text: str) -> str:
 
 def tag(run_id: str) -> str:
     """A run as a card names it: `<role>-<run8>`, its id alone when it has no record."""
-    run = reg.get_run(run_id)
+    run = _get(run_id)
     return run_id[:8] if run is None else _tag(run)
 
 
@@ -208,6 +329,7 @@ def _working(run: reg.AgentRun) -> bool:
     return run.status in _AT_WORK and run.process_running()
 
 
+@one_read()
 def report_to(run: reg.AgentRun) -> str:
     """Whom `run`'s final message reaches by itself: each run it owes its report (`owed`, at the end of its chain), the
     person for a run nobody launched; "" when every ask was answered."""
@@ -216,6 +338,7 @@ def report_to(run: reg.AgentRun) -> str:
     return "" if boss(run) else OPERATOR
 
 
+@one_read()
 def card(run: reg.AgentRun) -> str:
     """Where `run` stands as a turn of it starts: whom it works for and on what, its agents and the conversation's still at
     work, the idle ones of a role it can hand a task to, and where its final message goes."""
@@ -248,20 +371,21 @@ def context_full(run: reg.AgentRun) -> bool:
 def _reusable(run: reg.AgentRun) -> bool:
     """An ended run a spawn of its role would hand its task to (`spawn_line.Spawn._misfit`, all but its checks against the
     spawn's own revision, provider and permissions)."""
-    return (run.status in REUSABLE and run.successor is None and run.replaced_by is None and not context_full(run)
+    return (run.status in REUSABLE and live(run.run_id) == run.run_id and run.replaced_by is None and not context_full(run)
             and not _working(run) and reg.model_spoke_in(run.run_id))
 
 
+@one_read()
 def heading(event: AgentEvent, run: reg.AgentRun, *, mid_turn: bool) -> str | None:
     """The line a message to `run` opens with: who wrote it and what that writer is to `run` (`relation`). The person's
     words and the launcher's own open a turn bare (they ARE its prompt) and carry `inbox_hook.HEADING` mid-turn."""
-    origin = reg.get_run(event.from_run) if event.from_run and event.from_run != reg.PERSON_SENDER else None
+    origin = _get(event.from_run) if event.from_run and event.from_run != reg.PERSON_SENDER else None
     if origin is None:
         who = OPERATOR if event.from_run in (None, reg.PERSON_SENDER) else f"Galaius on this computer ({event.from_run})"
         return HEADING.format(who=who) if mid_turn else None
     kind = event.relation or relation(origin, run, event.text, reports=event.reports)
     if kind in (Relation.REPORT, Relation.REPORT_ASKING):
-        reporters = [reporter for reporter in (reg.get_run(run_id) for run_id in event.reports) if reporter is not None] or [origin]
+        reporters = [reporter for reporter in (_get(run_id) for run_id in event.reports) if reporter is not None] or [origin]
         names = ", ".join(_signature(reporter) for reporter in reporters)
         one = len(reporters) == 1
         said = f"report from {names} on what you asked it" if one else f"reports from {names} on what you asked them"

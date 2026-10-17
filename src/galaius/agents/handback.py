@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 from galaius.agents import agent_queue, messaging
 from galaius.agents import registry as reg
-from galaius.agents.relations import final_words, live, owed
+from galaius.agents.relations import continues, final_words, live, one_read, outgrown, owed
 from galaius.agents.spawn_line import SpawnLine
 
 #: Each report's share of the hand-back message (`agent_queue.BRIEF_MAX` in all); the full one is `galaius agents events`.
@@ -68,10 +68,19 @@ def hand_back(run_id: str) -> list[messaging.Delivery]:
 
 
 def _agents_answering(asker_id: str, records: Sequence[reg.AgentRun]) -> list[reg.AgentRun]:
-    """The runs among `records` that owe run `asker_id`, or a run it took over from (`live`), their report (`owed`)."""
-    aliases = {asker_id} | {stored.run_id for stored in records if stored.successor and live(stored.run_id) == asker_id}
-    return [run for stored in records if aliases & stored.askers
-            and (run := reg.get_run(stored.run_id)) is not None and aliases.intersection(owed(run))]
+    """The runs among `records` that owe run `asker_id`, or a run it took over from (`live`), their report (`owed`): each
+    run it asked, and each run continuing one (`relations.continues`)."""
+    aliases = {asker_id} | {stored.run_id for stored in records
+                            if (stored.successor or outgrown(stored)) and live(stored.run_id) == asker_id}
+    children: dict[str, list[reg.AgentRun]] = {}
+    for stored in records:
+        children.setdefault(stored.parent_run_id or "", []).append(stored)
+    asked = [stored for stored in records if aliases & stored.askers]
+    found = dict.fromkeys(stored.run_id for stored in asked)
+    while asked:  # and each run continuing one, at any depth
+        asked = [child for stored in asked for child in children.get(stored.run_id, []) if child.run_id not in found and continues(child)]
+        found |= dict.fromkeys(child.run_id for child in asked)
+    return [run for run_id in found if (run := reg.get_run(run_id)) is not None and aliases.intersection(owed(run))]
 
 
 def _resume(asker_id: str, child: reg.AgentRun) -> messaging.Delivery | None:
@@ -86,9 +95,10 @@ def _resume(asker_id: str, child: reg.AgentRun) -> messaging.Delivery | None:
     if asker is None or asker.finished_at is None or asker.status not in _ENDED_ITS_TURN or _pending(asker):
         return None
     records = reg._stored_records()
-    agents = _agents_answering(asker_id, records)
-    if any(_pending(run) or any(_pending(own) for own in _agents_answering(run.run_id, records)) for run in agents):
-        return None
+    with one_read():
+        agents = _agents_answering(asker_id, records)
+        if any(_pending(run) or any(_pending(own) for own in _agents_answering(run.run_id, records)) for run in agents):
+            return None
     since = [run for run in agents if run.finished_at is not None and run.finished_at >= asker.finished_at]
     if not since:
         return None

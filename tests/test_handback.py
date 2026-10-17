@@ -8,8 +8,9 @@ import uuid
 
 import pytest
 
-from galaius.agents import agent_queue, handback
+from galaius.agents import agent_queue, handback, relations
 from galaius.agents import registry as reg
+from galaius.agents.events import Relation
 from galaius.agents.spawn_line import SpawnLine
 from tests.support import register_run
 
@@ -281,3 +282,36 @@ def test_the_watch_hands_back_a_run_with_no_parent_to_the_run_it_works_for(sent)
     watch.tick()
 
     assert [call["run_id"] for call in sent] == [coordinator] and "DONE: row I live." in sent[0]["message"]
+
+
+@pytest.mark.parametrize("handoff", [
+    pytest.param({"compactions": 2}, id="compacted-runs-handing-off-unrecorded"),
+    pytest.param({"context_tokens": 190_000, "context_window": 200_000}, id="full-contexts-handing-off-unrecorded"),
+])
+def test_a_continued_maker_is_resumed_by_its_critics_verdicts_while_its_coordinator_works(sent, at_work, handoff):
+    """2026-10-17: a maker continuing a compacted maker, under a coordinator continuing a compacted one, had written to
+    the coordinator first: the coordinator read as working for it, its orders as reports, and its turn (and agents)
+    held the maker's hand-back for good — three critics' verdicts, one FAIL, never reached it."""
+    root, coordinator, own, first, maker, fail, ok = (str(uuid.UUID(int=n << 96)) for n in range(1, 8))
+    _ended(root, 10.0, agent="main")
+    at_work(coordinator, agent="main", parent_run_id=root)
+    at_work(own, agent="backend-engineer", parent_run_id=coordinator)
+    _ended(first, 20.0, agent="app-engineer", parent_run_id=root)
+    for outgrown in (root, first):
+        reg._merge_record_locked(outgrown, handoff)
+    _ended(maker, 100.0, agent="app-engineer", parent_run_id=first, provider_session_id="vendor-maker")
+    with reg.record_lock(coordinator):
+        reg.note_asker_locked(coordinator, maker)
+    reg.record_message_event(from_run=maker, to_run=coordinator, text="Row A landed; critics dispatched.")
+    for critic, verdict, at in ((fail, "Verdict: FAIL — the footer overlaps the list.", 200.0), (ok, "Verdict: PASS.", 201.0)):
+        _ended(critic, at, agent="visual-critic", parent_run_id=maker)
+        _answered(critic, verdict)
+
+    handback.hand_back(ok)
+
+    assert [call["run_id"] for call in sent] == [maker]
+    assert "FAIL — the footer overlaps the list." in sent[0]["message"] and "Verdict: PASS." in sent[0]["message"]
+    maker_run, coordinator_run = reg.get_run(maker), reg.get_run(coordinator)
+    assert relations.boss(maker_run) == coordinator
+    assert relations.relation(coordinator_run, maker_run, "fix the footer") is Relation.ASKER
+    assert relations.relation(maker_run, coordinator_run, "Row A live.") is Relation.REPORT
