@@ -164,6 +164,19 @@ def test_a_turn_handed_over_on_another_revision_starts_on_it_and_the_run_stays_t
     assert resolved == [revision] and reg.get_run("r1").agent_ref == revision
 
 
+@pytest.mark.parametrize("fyi", [False, True])
+def test_only_a_message_that_asks_lists_its_sender_among_the_runs_its_recipient_works_for(monkeypatch, fyi):
+    """A one-way note (`--fyi`: a report, an ack) leaves its sender out of `asked_by`: never woken by the recipient's turns."""
+    _setup(monkeypatch)
+    reporter = str(uuid.UUID(int=2))  # only a run of this PC (a UUID with a record) is listed
+    reg.register(run_id=reporter, pid=999998, provider="claude", name="reporter", task="t", agent="tester")
+
+    messaging.deliver_message("r1", "row H live", sender=reporter, turn=agent_queue.MessageTurn(fyi=fyi))
+
+    assert reg.get_run("r1").asked_by == (() if fyi else (reporter,))
+    assert [event.fyi for event in reg.read_messages("r1")] == [fyi]
+
+
 def test_failed_resume_records_bounded_redacted_stderr(monkeypatch):
     provider = _Provider(
         "import sys; sys.stderr.write('api_key=test-secret-value\\n'); sys.exit(7)"

@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 from galaius_core import AgentRevisionRef
 
-from galaius.agents import messaging, registry as reg
+from galaius.agents import agent_queue, messaging, registry as reg
 from galaius.agents.conversations import ConversationAnswers, ConversationScope
 from galaius.agents.providers import PROVIDERS, available_providers, provider_caveat_note, provider_for
 from galaius.agents.run import run_agent
@@ -289,7 +289,7 @@ async def agent_providers() -> str:
 
 @mcp.tool(category="agents")
 @instrumented
-async def agent_send(run_id: str, message: str, wait: bool = False) -> str:
+async def agent_send(run_id: str, message: str, wait: bool = False, fyi: bool = False) -> str:
     """Send a message to another agent — it answers with its full context intact.
 
     Delivery resumes the recipient's own session rather than handing it a cold summary, so it
@@ -302,11 +302,12 @@ async def agent_send(run_id: str, message: str, wait: bool = False) -> str:
     run_id: the agent to address (agent_list shows the ids).
     message: what to say — write it as a complete request; it cannot ask you a follow-up.
     wait: block until it has replied, instead of returning as soon as the message is delivered.
+    fyi: a one-way note (a report, an ack, a heads-up): it reads it, and its turns never report back to you for it.
     """
     if reg.resolve_run_id(run_id) is None and (waiting := SpawnLine.here().describe(run_id)) is not None:
         return f"ERROR: {run_id[:8]} has not started ({waiting}); send once it runs."
     # Shared with `galaius agents send`, so both surfaces use one routing and policy lifecycle.
-    delivery = messaging.deliver_message(run_id, message)
+    delivery = messaging.deliver_message(run_id, message, turn=agent_queue.MessageTurn(fyi=fyi))
     waiting = SpawnLine.here().waits(delivery.run_id) if delivery.state == "queued" else None
     said = f"{delivery.text} Its turn: {waiting}" if waiting else delivery.text
     if delivery.state == "error" or not wait:

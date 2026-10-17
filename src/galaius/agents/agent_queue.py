@@ -22,7 +22,7 @@ import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Annotated, ClassVar, Literal
+from typing import Annotated, ClassVar, Literal, TypedDict
 
 from galaius_core import AGENT_IMAGES_MAX, MEDIA_KEY, AgentRevisionRef
 from pydantic import BaseModel, ConfigDict, Field
@@ -53,6 +53,14 @@ ACTIVE: frozenset[QueueState] = frozenset({"pending", "running"})
 #: after each tool call to find nothing it reads.
 PENDING_MARK = '"pending"'
 AttemptState = Literal["replied", "failed", "uncertain"]
+
+
+class EventFields(TypedDict, total=False):
+    """What a queued turn's transcript entry records beside its text (`registry.record_message_event_locked`)."""
+
+    media: tuple[str, ...]
+    fyi: bool
+    reports: tuple[str, ...]
 
 
 class QueuedTurn(BaseModel, ABC):
@@ -89,6 +97,14 @@ class QueuedTurn(BaseModel, ABC):
         """`run` as a turn of its own starts on it, while the caller holds `record_lock`."""
         return run
 
+    def asks(self) -> bool:
+        """Whether its sender becomes a run its recipient works for (`registry.note_asker_locked`), its report owed."""
+        return True
+
+    def event_fields(self) -> EventFields:
+        """What its recipient's transcript entry records beside the text."""
+        return {}
+
     @abstractmethod
     def accepts(self, event: AgentEvent) -> bool:
         """Whether `event`, of its attempt, accepts it."""
@@ -111,6 +127,13 @@ class MessageTurn(QueuedTurn):
     #: role started on another one (`spawn_line.Spawn.hand_over`). None: the run's own. Read by a turn already running
     #: (`inject`), it changes nothing: that turn keeps the prompt it started with.
     agent_ref: AgentRevisionRef | None = Field(default=None, exclude_if=lambda value: value is None)
+    #: A one-way note (a report, an ack, a heads-up): read like any message, yet its sender is never owed the turns'
+    #: report (`asks`). 2026-10-17: one coordinator listed 9 runs that had only reported to it, and each of its turns
+    #: after one woke that run with an empty report.
+    fyi: bool = Field(default=False, exclude_if=lambda value: not value)
+    #: The runs whose reports it hands back (`handback._resume`), kept on its transcript entry. A hand-back is never an
+    #: ask (`asks`): two runs that once asked each other would otherwise hand back to each other for good.
+    reports: tuple[str, ...] = Field(default=(), exclude_if=lambda value: not value)
     mid_turn = True
     unaccepted = "resumed turn completed without a reply; resend explicitly"
 
@@ -134,6 +157,12 @@ class MessageTurn(QueuedTurn):
 
     def accepts(self, event: AgentEvent) -> bool:
         return (event.kind == "text" or (event.kind == "done" and event.final_text)) and bool(event.text.strip())
+
+    def asks(self) -> bool:
+        return not (self.fyi or self.reports)
+
+    def event_fields(self) -> EventFields:
+        return {"media": self.media, "fyi": self.fyi, "reports": self.reports}
 
     def begin_locked(self, run: reg.AgentRun) -> reg.AgentRun:
         if self.agent_ref is None or self.agent_ref == run.agent_ref:
@@ -315,7 +344,8 @@ def enqueue_locked(run_id: str, *, message_id: str, sender: str, turn: QueuedTur
     state["version"] = 1
     state["items"] = [*state.get("items", []), item.model_dump(mode="json")]
     _write_state(run_id, state)
-    reg.note_asker_locked(run_id, sender)
+    if turn.asks():
+        reg.note_asker_locked(run_id, sender)
     return item
 
 

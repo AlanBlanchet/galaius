@@ -234,8 +234,7 @@ def queue_message(
         if for_run is not None:
             reg.note_asker_locked(run.run_id, for_run)
         recorded_id = None if entry is None else reg.record_message_event_locked(
-            from_run=speaker, to_run=run.run_id, text=entry, event_id=message_id,
-            media=turn.media if isinstance(turn, agent_queue.MessageTurn) else (), for_run=for_run,
+            from_run=speaker, to_run=run.run_id, text=entry, event_id=message_id, for_run=for_run, **turn.event_fields(),
         )
         if entry is not None and recorded_id is None:
             agent_queue.mark_locked(

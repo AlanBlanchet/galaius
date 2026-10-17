@@ -33,6 +33,7 @@ def sent(monkeypatch) -> list[dict]:
     def deliver(run_id, message, *, sender, message_id, only_if_idle, turn):
         assert only_if_idle and turn.refusal(message, None) is None
         calls.append({"run_id": run_id, "message": message, "message_id": message_id, "sender": sender})
+        reg.record_message_event(from_run=sender, to_run=run_id, text=message, **turn.event_fields())  # as `queue_message`
         return handback.messaging.Delivery(state="queued", text="Queued.", run_id=run_id, queue_id="q")
 
     monkeypatch.setattr(handback.messaging, "deliver_message", deliver)
@@ -53,41 +54,116 @@ def test_the_last_child_to_end_resumes_its_ended_parent_with_every_report(sent, 
     _answered("rev", "Verdict: PASS.")
 
     first = handback.hand_back("rev")
-    again = handback.hand_back("eng")  # a second ending read (same tick, another reader) queues nothing new
+    again = handback.hand_back("eng")  # a second ending read (same tick, another reader): both reports already carried
 
     if not woken:
         assert first == [] and sent == []
         return
-    assert first and [call["run_id"] for call in sent] == ["lead", "lead"]
-    assert sent[0]["message_id"] == sent[1]["message_id"]
+    assert first and again == [] and [call["run_id"] for call in sent] == ["lead"]
     message = sent[0]["message"]
     assert "DONE: endpoint shipped, image abc123." in message and "Verdict: PASS." in message
     assert "eng" in message and "rev" in message
-    assert again
 
 
 @pytest.mark.parametrize("latest, told", [
-    pytest.param("coordinator", ["parent", "coordinator"], id="asked-last-by-another-run-both-hear"),
-    pytest.param("parent", ["parent"], id="asked-last-by-its-parent-only-it-hears"),
-    pytest.param("person", ["parent"], id="asked-last-by-the-person-only-its-parent-hears"),
+    pytest.param("coordinator", ["parent", "coordinator"], id="asked-by-another-run-mid-task-both-hear"),
+    pytest.param("parent", ["parent", "coordinator"], id="asked-last-by-its-parent-the-coordinators-earlier-ask-still-owed"),
+    pytest.param("person", ["parent", "coordinator"], id="asked-last-by-the-person-its-parent-hears"),
     pytest.param("resume", ["parent", "coordinator"], id="the-persons-continue-carries-on-the-coordinators-ask"),
+    # 2026-10-17: a run that had only reported to a coordinator was woken by each of its later turns.
+    pytest.param("reporter", ["parent", "coordinator"], id="a-one-way-note-carries-on-the-ask-before-it"),
 ])
-def test_a_continued_run_hands_back_to_the_run_that_asked_it_last_as_well_as_its_parent(sent, latest, told):
-    """2026-10-17: a continued instance's reports reached its parent, never the coordinator that had asked it the work."""
-    ids = {name: str(uuid.UUID(int=n)) for n, name in enumerate(("parent", "coordinator", "eng"), start=1)} | {"person": reg.PERSON_SENDER, "resume": reg.PERSON_SENDER}
-    _ended(ids["parent"], 100.0, agent="main")
-    _ended(ids["coordinator"], 100.0, agent="main")
+def test_a_continued_run_hands_back_to_the_run_that_asked_it_last(sent, latest, told):
+    """2026-10-17: a continued instance's reports reached its parent, never the coordinator that had asked it the work.
+    Each asker whose ask is still unanswered hears, the parent for the task it spawned the run with included."""
+    ids = {name: str(uuid.UUID(int=n)) for n, name in enumerate(("parent", "coordinator", "eng", "reporter"), start=1)} \
+        | {"person": reg.PERSON_SENDER, "resume": reg.PERSON_SENDER}
+    for name in ("parent", "coordinator", "reporter"):
+        _ended(ids[name], 100.0, agent="main")
     _ended(ids["eng"], 200.0, agent="backend-engineer", parent_run_id=ids["parent"])
     for sender in ("parent", "coordinator", latest):
-        with reg.record_lock(ids["eng"]):
-            reg.note_asker_locked(ids["eng"], ids[sender])
-        reg.record_message_event(from_run=ids[sender], to_run=ids["eng"], text=reg.RESUME_BRIEF if sender == "resume" else f"ask from {sender}")
+        fyi = sender == "reporter"
+        if not fyi:  # a one-way note lists no asker (`MessageTurn.asks`)
+            with reg.record_lock(ids["eng"]):
+                reg.note_asker_locked(ids["eng"], ids[sender])
+        reg.record_message_event(from_run=ids[sender], to_run=ids["eng"], text=reg.RESUME_BRIEF if sender == "resume" else f"ask from {sender}", fyi=fyi)
     _answered(ids["eng"], "DONE: row G live.")
 
     handback.hand_back(ids["eng"])
 
     assert sorted(call["run_id"] for call in sent) == sorted(ids[name] for name in told)
     assert all("DONE: row G live." in call["message"] for call in sent)
+
+
+@pytest.mark.parametrize("next_turn, woken_again", [
+    pytest.param("own-agents", False, id="its-own-agents-hand-back-leaves-the-answered-asker-alone"),
+    pytest.param("continue", False, id="the-persons-continue-leaves-the-answered-asker-alone"),
+    pytest.param("askers-hand-back", False, id="the-askers-own-hand-back-is-no-new-ask"),
+    # A reused instance: the task its parent spawned it with is answered, a new ask from another run wakes that run only.
+    pytest.param("new-ask", True, id="a-new-ask-from-it-is-answered-again-and-the-answered-parent-left-alone"),
+])
+def test_an_ask_is_answered_by_one_hand_back(sent, next_turn, woken_again):
+    """2026-10-17: a run sent one report (no `--fyi`) became an asker for good. Its target woke it after each later turn:
+    a librarian took 4 empty turns, and four runs looped every 3 min (the asker's own agents started each turn of the
+    target, and the asker's own hand-back went up to them again)."""
+    ids = {name: str(uuid.UUID(int=n)) for n, name in enumerate(("parent", "coordinator", "eng", "helper"), start=1)}
+    for name in ("parent", "coordinator"):
+        _ended(ids[name], 100.0, agent="main")
+    _ended(ids["eng"], 200.0, agent="backend-engineer", parent_run_id=ids["parent"])
+    _ended(ids["helper"], 150.0, agent="tester", parent_run_id=ids["eng"])
+
+    def ask(sender: str, text: str, reports: tuple[str, ...] = ()) -> None:
+        if sender == "coordinator" and not reports:
+            with reg.record_lock(ids["eng"]):
+                reg.note_asker_locked(ids["eng"], ids[sender])
+        reg.record_message_event(from_run=ids.get(sender, reg.PERSON_SENDER), to_run=ids["eng"], text=text, reports=reports)
+
+    ask("coordinator", "status of row H?")
+    _answered(ids["eng"], "Row H live.")
+    handback.hand_back(ids["eng"])
+    assert sorted(call["run_id"] for call in sent) == sorted([ids["parent"], ids["coordinator"]])
+
+    for name in ("parent", "coordinator"):
+        reg._merge_record_locked(ids[name], {"finished_at": 250.0})
+    {"own-agents": lambda: ask("helper", "The agents you started or asked ended…"),
+     "continue": lambda: ask("person", reg.RESUME_BRIEF),
+     "askers-hand-back": lambda: ask("coordinator", "The agents you started or asked ended…", reports=(ids["helper"],)),
+     "new-ask": lambda: ask("coordinator", "and row I?")}[next_turn]()
+    reg._merge_record_locked(ids["eng"], {"finished_at": 300.0})
+    sent.clear()
+    handback.hand_back(ids["eng"])
+
+    assert [call["run_id"] for call in sent] == [ids["coordinator"]] * woken_again
+
+
+def test_a_run_waiting_on_its_own_agents_hands_back_its_final_report_once(sent, at_work):
+    """An ask is answered by one hand-back, so that hand-back carries the final report, never the words of a turn that
+    ended to wait on its own agents."""
+    ids = {name: str(uuid.UUID(int=n)) for n, name in enumerate(("parent", "coordinator", "eng", "helper"), start=1)}
+    for name in ("parent", "coordinator"):
+        _ended(ids[name], 100.0, agent="main")
+    _ended(ids["eng"], 200.0, agent="backend-engineer", parent_run_id=ids["parent"])
+    with reg.record_lock(ids["eng"]):
+        reg.note_asker_locked(ids["eng"], ids["coordinator"])
+    reg.record_message_event(from_run=ids["coordinator"], to_run=ids["eng"], text="ship row H")
+    helper = at_work(ids["helper"], agent="tester", parent_run_id=ids["eng"])
+    _answered(ids["eng"], "Dispatched the tester; waiting.")
+
+    assert handback.hand_back(ids["eng"]) == [] and sent == []
+
+    helper.kill()
+    helper.wait()
+    reg._merge_record_locked(ids["helper"], {"status": "done", "finished_at": 260.0})
+    reg.record_message_event(from_run=ids["helper"], to_run=ids["eng"], text="The agents you started or asked ended…",
+                             reports=(ids["helper"],))
+    with reg.raw_events_path(ids["eng"]).open("a") as raw:  # its next turn's answer, appended as the vendor writes it
+        raw.write(json.dumps({"type": "result", "subtype": "success", "is_error": False, "session_id": "s",
+                              "stop_reason": "end_turn", "result": "Row H live."}) + "\n")
+    reg._merge_record_locked(ids["eng"], {"finished_at": 300.0})
+    handback.hand_back(ids["eng"])
+
+    assert sorted(call["run_id"] for call in sent) == sorted([ids["parent"], ids["coordinator"]])
+    assert all("Row H live." in call["message"] for call in sent)
 
 
 def test_a_child_still_at_work_holds_the_hand_back(sent, at_work):

@@ -365,6 +365,12 @@ class AgentEvent(ContextGauge):
     #: For a "message": the run it was sent for, when its sender passes on another run's ask (`galaius agents spawn
     #: --for`: a job queue waking its worker for the run that queued the job). Left out when None.
     for_run: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    #: For a "message": a one-way note (`agent_queue.MessageTurn.fyi`), never an ask its recipient's turns answer
+    #: (`handback.owed`). Left out when False.
+    fyi: bool = Field(default=False, exclude_if=lambda value: not value)
+    #: For a "message": the runs whose reports it hands back (`handback._resume`); each such run's latest ask from its
+    #: recipient is answered by it (`handback.owed`). Left out when empty.
+    reports: tuple[str, ...] = Field(default=(), exclude_if=lambda value: not value)
     #: For a "prompt" or a "message": the images it showed, by their name among its run's media (`RunMedia`).
     media: tuple[str, ...] = ()
     #: Where this sits in the vendor's raw stream — for a MESSAGE, how many raw lines existed

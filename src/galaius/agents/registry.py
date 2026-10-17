@@ -1744,6 +1744,7 @@ def upsert_provider_child(
 
 def _record_message_event_locked(
     *, from_run: str, to_run: str, text: str, event_id: str | None = None, media: tuple[str, ...] = (), for_run: str | None = None,
+    fyi: bool = False, reports: tuple[str, ...] = (),
 ) -> str | None:
     if _read_record(to_run) is None:
         return None
@@ -1752,7 +1753,7 @@ def _record_message_event_locked(
         if side in SYSTEM_SENDERS:
             continue
         event = AgentEvent(kind="message", event_id=message_id, text=text, media=media,
-                           from_run=from_run, to_run=to_run, for_run=for_run, at=time.time(),
+                           from_run=from_run, to_run=to_run, for_run=for_run, fyi=fyi, reports=reports, at=time.time(),
                            raw_index=raw_line_count(side))
         _append_private(messages_path(side), (event.model_dump_json() + "\n").encode())
         if _read_record(side) is not None:
@@ -1761,23 +1762,25 @@ def _record_message_event_locked(
 
 
 def record_message_event(
-    *, from_run: str, to_run: str, text: str, event_id: str | None = None, media: tuple[str, ...] = (),
+    *, from_run: str, to_run: str, text: str, event_id: str | None = None, media: tuple[str, ...] = (), fyi: bool = False,
+    reports: tuple[str, ...] = (),
 ) -> str | None:
     """Record one exchange and return its stable id for delivery metadata."""
     with ExitStack() as stack:
         for side in sorted({from_run, to_run}):
             stack.enter_context(record_lock(side))
         return _record_message_event_locked(
-            from_run=from_run, to_run=to_run, text=text, event_id=event_id, media=media,
+            from_run=from_run, to_run=to_run, text=text, event_id=event_id, media=media, fyi=fyi, reports=reports,
         )
 
 
 def record_message_event_locked(
     *, from_run: str, to_run: str, text: str, event_id: str | None = None, media: tuple[str, ...] = (), for_run: str | None = None,
+    fyi: bool = False, reports: tuple[str, ...] = (),
 ) -> str | None:
     """Record an exchange while the caller owns every needed run lock."""
     return _record_message_event_locked(
-        from_run=from_run, to_run=to_run, text=text, event_id=event_id, media=media, for_run=for_run,
+        from_run=from_run, to_run=to_run, text=text, event_id=event_id, media=media, for_run=for_run, fyi=fyi, reports=reports,
     )
 
 

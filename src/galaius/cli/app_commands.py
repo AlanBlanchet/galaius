@@ -1002,19 +1002,21 @@ def refresh_live_data() -> None:
 
 
 @agents_app.command(name="send")
-def agents_send(run_id: str, message: str) -> None:
+def agents_send(run_id: str, message: str, *, fyi: Annotated[bool, Parameter(name="--fyi")] = False) -> None:
     """Send a message to a running agent — it answers with its full context intact.
 
     How the VS Code panel lets you join the conversation instead of only watching: the agent
     resumes its own session, so it remembers what it already did and its reply lands in the same
     transcript the panel shows.
+
+    --fyi: a one-way note (a report, an ack, a heads-up): it reads it, and its turns never report back to you for it.
     """
 
 
     if reg.resolve_run_id(run_id) is None and (waiting := SpawnLine.here().describe(run_id)) is not None:
         print(f"ERROR: {run_id} has not started ({waiting}); send once it runs.")
         raise SystemExit(1)
-    delivery = messaging.deliver_message(run_id, message)
+    delivery = messaging.deliver_message(run_id, message, turn=agent_queue.MessageTurn(fyi=fyi))
     if (refused := messaging.wait_for_start(delivery)) is not None:
         print(f"ERROR: the resumed turn did not start: {refused}")
         raise SystemExit(1)
