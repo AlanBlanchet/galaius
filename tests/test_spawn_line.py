@@ -328,6 +328,17 @@ def _ended(run_id: str, **rest) -> None:
     pytest.param([("eng1", {"session_id": "s2", "parent_run_id": None})], {"parent_run_id": None}, None, "", id="no-parent-other-session"),
     pytest.param([("eng1", {"parent_run_id": None})], {"parent_run_id": None}, "eng1", "", id="no-parent-same-session-continued"),
     pytest.param([("eng1", {})], {"task": "x" * 5000}, "eng1", "", id="long-brief-continued"),
+    pytest.param([("eng1", {"context": (170_000, 200_000)})], {}, None, "eng1 has its context near full (170000/200000)", id="context-near-full"),
+    pytest.param([("eng1", {"context": (90_000, 200_000)})], {}, "eng1", "", id="context-with-room-continued"),
+    # Owner 2026-10-17: « it should be 1 person for this project to be able to deploy, not 8 ».
+    pytest.param([("eng1", {"busy": True}), ("eng2", {})], {"single": True}, "eng1", "", id="single-queues-the-one-at-work"),
+    pytest.param([("eng1", {"agent_ref": {"id": str(uuid.UUID(int=1)), "revision": str(uuid.UUID(int=2))}})], {"single": True}, None,
+                 "eng1 runs another revision of the role", id="single-other-revision-starts-new"),
+    pytest.param([("eng1", {"busy": True, "agent_ref": {"id": str(uuid.UUID(int=1)), "revision": str(uuid.UUID(int=2))}})], {"single": True},
+                 None, "eng1 runs another revision of the role", id="single-busy-other-revision-starts-new"),
+    pytest.param([("eng1", {"busy": True, "context": (170_000, 200_000)})], {"single": True}, None,
+                 "eng1 has its context near full (170000/200000)", id="single-busy-context-near-full-starts-new"),
+    pytest.param([("eng1", {"busy": True})], {}, None, "eng1 is working", id="busy-not-single-starts-new"),
 ])
 def test_a_spawn_continues_its_conversations_idle_agent_of_that_role(at_work, monkeypatch, tmp_path, peers, asked, continued, why):
     """Owner 2026-10-15: no « backend engineer three » while engineer one sits idle in the conversation."""
@@ -347,7 +358,7 @@ def test_a_spawn_continues_its_conversations_idle_agent_of_that_role(at_work, mo
     _ended("mid", agent="tech-lead", session_id="s1", parent_run_id="lead")
 
     def deliver(run_id, task, *, only_if_idle, turn, for_run):
-        assert only_if_idle and turn.refusal(task, None) is None
+        assert only_if_idle != reg.get_run(run_id).working() and turn.refusal(task, None) is None
         sent.append(run_id)
         texts.append(task)
         return spawn_line.messaging.Delivery(state="queued", text="Queued.", run_id=run_id, queue_id="q")
@@ -363,13 +374,15 @@ def test_a_spawn_continues_its_conversations_idle_agent_of_that_role(at_work, mo
             refusing.add(run_id)
         if fields.pop("read", False):
             read.add(run_id)
-        replaced_by, stream = fields.pop("replaced_by", None), fields.pop("stream", None)
+        replaced_by, stream, context = fields.pop("replaced_by", None), fields.pop("stream", None), fields.pop("context", None)
         if fields.pop("busy", False):
             at_work(run_id, **fields)
         else:
             _ended(run_id, **fields)
         if replaced_by is not None:
             reg._merge_record_locked(run_id, {"replaced_by": replaced_by})
+        if context is not None:
+            reg._merge_record_locked(run_id, dict(zip(("context_tokens", "context_window"), context)))
         if stream is not None:
             reg.raw_events_path(run_id).write_text("".join(json.dumps(line) + "\n" for line in stream))
     spawn = Spawn(task="add the endpoint", cwd=str(tmp_path), agent="backend-engineer", parent_run_id="lead", session_id="s1") \
@@ -383,3 +396,17 @@ def test_a_spawn_continues_its_conversations_idle_agent_of_that_role(at_work, mo
         assert texts[-1].endswith(spawn.task) and (str(tmp_path) in texts[-1].removesuffix(spawn.task)) == elsewhere
     if not continued:
         assert handover.why == (f"backend-engineer already here, not continued: {why}" if why else "")
+
+
+def test_single_forgets_every_other_agent_of_its_role_not_at_work(at_work, monkeypatch, tmp_path):
+    """`--single`: the conversation keeps one agent of the role; one at work, another role's or another conversation's stay."""
+    monkeypatch.setattr(spawn_line, "load_policy", lambda: None)
+    monkeypatch.setattr(spawn_line, "resolve_role", lambda policy, agent, **_: (policy, agent, None))
+    for run_id, agent, session in [("old1", "deployer", "q"), ("old2", "deployer", "q"), ("kept", "deployer", "q"),
+                                   ("rev", "code-reviewer", "q"), ("else", "deployer", "s2")]:
+        _ended(run_id, agent=agent, session_id=session, parent_run_id=None, cwd=str(tmp_path))
+    at_work("live", agent="deployer", session_id="q", parent_run_id=None, cwd=str(tmp_path))
+    spawn = Spawn(task="ship", cwd=str(tmp_path), agent="deployer", session_id="q")
+    assert spawn.forget_peers("kept") == []          # not single: nothing forgotten
+    assert sorted(spawn.model_copy(update={"single": True}).forget_peers("kept")) == ["old1", "old2"]
+    assert sorted(run.run_id for run in reg.list_runs()) == ["else", "kept", "live", "rev"]

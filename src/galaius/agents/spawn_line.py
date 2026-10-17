@@ -65,6 +65,8 @@ ASIDE = f"attend {ITS_AGENTS}, place rendue"
 ASIDE_GRACE_SECONDS = 15.0
 #: How long a spawn that could not start stays readable (`agents list`, `agents events`) before it is forgotten.
 FAILED_KEPT_SECONDS = 24 * 3600.0
+#: Share of its context window past which a run is not handed a new task (`Spawn._misfit`): a fresh one starts instead.
+CONTEXT_NEAR_FULL = 0.8
 
 logger = logging.getLogger(__name__)
 
@@ -95,8 +97,11 @@ class Spawn(BaseModel):
     #: The run this spawn is for (`galaius agents spawn --for`): on the message handing it over, and in the
     #: `asked_by` of the run taking it, continued or new.
     for_run: str | None = None
+    #: One agent of its role in its conversation (`galaius agents spawn --single`): one at work is queued the task behind
+    #: its turn rather than another started beside it, and every other one of the role is forgotten (`forget_peers`).
+    single: bool = False
     #: Its fields `start` passes to `run_agent` other than by their own names.
-    NOT_RUN_ARGUMENTS: ClassVar[frozenset[str]] = frozenset({"task", "provider", "session_id", "for_run"})
+    NOT_RUN_ARGUMENTS: ClassVar[frozenset[str]] = frozenset({"task", "provider", "session_id", "for_run", "single"})
 
     @classmethod
     def asked(cls, *, parent_run_id: str | None = None, **fields) -> Spawn:
@@ -128,17 +133,21 @@ class Spawn(BaseModel):
 
     def _misfit(self, run: reg.AgentRun, policy: Policy, revision: AgentRevisionRef | None) -> str | None:
         """Why `run` (same conversation, same role) cannot take this spawn's task as its next turn; None when it can.
+        Busy (`_busy`) fits only a `single` spawn (queued behind its turn; its first turn may still be on its way).
         Its `name` and `model` are not compared: a label (the continued run keeps its own) and a request the role's
         policy overrides, at a start as at a continuation. `queue_message(only_if_idle=True)` re-reads "is working"
         under the run's lock."""
-        if run.working() or run.status not in REUSABLE or any(item.state in {"pending", "running"} for item in agent_queue.items(run.run_id)):
+        busy = self._busy(run)
+        if busy and not self.single or not busy and run.status not in REUSABLE:
             return "is working"
         if run.replaced_by is not None:
             return f"was refused at launch, relaunched as {run.replaced_by.run_id[:8]}"
-        if not reg.model_spoke_in(run.run_id):
+        if not busy and not reg.model_spoke_in(run.run_id):
             return "never got a first turn"
         if revision is not None and run.agent_ref != revision:
             return "runs another revision of the role"
+        if run.context_window and (run.context_tokens or 0) >= CONTEXT_NEAR_FULL * run.context_window:
+            return f"has its context near full ({run.context_tokens}/{run.context_window})"
         if self.provider is not None and run.provider != self.provider:
             return f"runs on {run.provider}"
         # The run records the permission it got: never a wider run than this spawn would get, e.g. one a person started unrestricted.
@@ -150,6 +159,20 @@ class Spawn(BaseModel):
         if set(self.denied_tools) != set(run.denied_tools or ()) or self.image_paths or self.profile or self.fence is not None:
             return "was started with other tools, images, profile or fence"
         return messaging.check_deliverable(run.run_id)[1]
+
+    @staticmethod
+    def _busy(run: reg.AgentRun) -> bool:
+        """At work on a turn, or a turn queued for it."""
+        return run.working() or any(item.state in {"pending", "running"} for item in agent_queue.items(run.run_id))
+
+    def _peers(self, role: str) -> list[reg.AgentRun]:
+        return [run for run in self._conversation() if run.agent == role]
+
+    def forget_peers(self, keep: str) -> list[str]:
+        """`single`: every other run of its role in its conversation, none busy (`_busy`), forgotten (`reg.forget`); their ids."""
+        if not self.single or (resolved := self._role()) is None:
+            return []
+        return [run.run_id for run in self._peers(resolved[1]) if run.run_id != keep and not self._busy(run) and reg.forget(run.run_id)]
 
     def _within(self, run: reg.AgentRun) -> bool:
         """Whether this spawn's folder is `run`'s own or inside it."""
@@ -173,15 +196,23 @@ class Spawn(BaseModel):
         (`messaging.deliver_message`: its own session, everything it did still in context) instead of starting
         another (owner 2026-10-15: no « backend engineer three » while engineer one sits idle in the conversation).
         Its caller's own child first, then the latest to finish; one whose turn would not start is passed over unless
-        its agent may have read the task (then kept, the doubt said: never run twice). Every same-role run busy or
-        unfit: start new, and why. Blocks up to `messaging.wait_for_start`'s timeout per run tried."""
+        its agent may have read the task (then kept, the doubt said: never run twice). `single`: one at work first, the
+        task queued behind its turn. Every same-role run busy or unfit: start new, and why. Blocks up to `messaging.wait_for_start`'s timeout per run tried."""
         if (resolved := self._role()) is None:
             return StartNew()
         policy, role, revision = resolved
-        peers = [run for run in self._conversation() if run.agent == role]
+        peers = self._peers(role)
         misfits = {run.run_id: self._misfit(run, policy, revision) for run in peers}
         why = [f"{run_id[:8]} {said}" for run_id, said in misfits.items() if said]
         fit = [run for run in peers if misfits[run.run_id] is None]
+        # `single`: a fit one at work takes it as its next turn, never another started beside it.
+        for run in sorted((run for run in fit if self._busy(run)), key=lambda run: run.started_at or 0, reverse=True):
+            delivery = messaging.deliver_message(run.run_id, self._brief(run), only_if_idle=False, turn=agent_queue.MessageTurn(limit=agent_queue.BRIEF_MAX),
+                                                 for_run=self.for_run)
+            if delivery.state != "error":
+                return Continued(run=run, delivery=delivery)
+            why.append(f"{run.run_id[:8]} {delivery.text}")
+        fit = [run for run in fit if not self._busy(run)]
         for run in sorted(fit, key=lambda run: (run.parent_run_id == self.parent_run_id, run.finished_at or run.started_at), reverse=True):
             delivery = messaging.deliver_message(run.run_id, self._brief(run), only_if_idle=True, turn=agent_queue.MessageTurn(limit=agent_queue.BRIEF_MAX),
                                                  for_run=self.for_run)

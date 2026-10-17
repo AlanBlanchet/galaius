@@ -1609,7 +1609,7 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
                  machine: str | None = None, folder: str | None = None,
                  fence: Annotated[Path | None, Parameter(name="--fence")] = None,
                  for_run: Annotated[str | None, Parameter(name="--for")] = None,
-                 fresh: bool = False) -> None:
+                 fresh: bool = False, single: bool = False) -> None:
     """Start an agent and return its id immediately, without waiting for it to finish.
 
     --machine <name or id> starts it on another of your computers instead, through the server, in
@@ -1637,7 +1637,10 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
     --fence names a file holding what the run's OS fence is built from (`galaius.fence.FenceSpec`
     JSON); every turn builds it again from the machine's levels. The machine runner writes it.
     An agent of the same role already in this conversation, between turns, takes the task as its
-    next turn (its context intact) and its id is printed; --fresh starts a new one regardless.
+    next turn (its context intact) and its id is printed, unless its context is near full; --fresh starts a new one
+    regardless. --single keeps ONE agent of the role in the conversation (a job queue's worker): one at work is queued
+    the task behind its turn instead of another started beside it, and every other one of the role not at work is
+    forgotten (`agents clear`) once the task is handed over or its run started (one queued for a place keeps them).
     --for names the run of this computer (full or short id) the task is asked for (an operator passing on its ask: the
     job queue waking its worker for the run that queued the job): the message handing it over records it, and the
     run taking it lists it among the runs it works for (`asked_by`).
@@ -1673,13 +1676,18 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
                 denied_tools=tuple(denied_tools or ()), provider_modes=_provider_modes(provider_modes),
                 quota_window=quota_window,
                 fence=FenceSpec.model_validate_json(fence.read_text()) if fence is not None else None,
-                for_run=for_run,
+                for_run=for_run, single=single,
             )
             handover = StartNew() if fresh else spawn.hand_over()
+
+            def forget_others(keep: str) -> None:
+                if forgotten := spawn.forget_peers(keep):
+                    print(f"Forgot {', '.join(reg.short_id(run_id) for run_id in forgotten)}: one {agent or 'agent'} of the role in this conversation (--single).")
             # The hand-over's sentence on stdout too: a caller capturing only stdout sees why it was (not) continued; the run id
             # stays the last line.
             if isinstance(handover, Continued):
                 print(handover.sentence())
+                forget_others(handover.run.run_id)
                 print(handover.run.run_id)
                 return
             if handover.why:
@@ -1688,13 +1696,15 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
             admission = line.enter(spawn)
             if admission.ahead is not None:
                 # Before the id: the run id stays the last stdout line.
-                print(admission.sentence())
+                print(admission.sentence())  # its peers stay until it starts: the next --single spawn forgets them
                 print(admission.run_id)
                 return
             try:
-                print(asyncio.run(spawn.start(admission.run_id, _agent_runner())).run_id)
+                started = asyncio.run(spawn.start(admission.run_id, _agent_runner())).run_id
             finally:
                 line.leave(admission.run_id)
+            forget_others(started)
+            print(started)
     except (ValueError, RuntimeError) as e:
         # argv builder validates permission mode, four frames down; a criterion nothing clears, a
         # nonexistent profile, and a provider switched off all refuse the same way. Without this
