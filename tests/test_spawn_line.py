@@ -420,3 +420,20 @@ def test_single_forgets_every_other_agent_of_its_role_not_at_work(at_work, monke
     assert spawn.forget_peers("kept") == []          # not single: nothing forgotten
     assert sorted(spawn.model_copy(update={"single": True}).forget_peers("kept")) == ["old1", "old2"]
     assert sorted(run.run_id for run in reg.list_runs()) == ["else", "kept", "live", "rev"]
+
+
+@pytest.mark.parametrize("from_a_run", [True, False], ids=["an-agent-runs-process-refused", "the-persons-terminal-starts-a-root-run"])
+def test_a_spawn_from_a_runs_process_never_leaves_its_tree(monkeypatch, capsys, from_a_run):
+    """2026-10-17: 282 spawns in 68 transcripts cleared `GALAIUS_PARENT_RUN_ID` (`env -u`) or passed an empty
+    --parent-run-id, starting runs whose reports reached no one."""
+    from galaius.processes import process_started
+
+    monkeypatch.delenv("GALAIUS_PARENT_RUN_ID", raising=False)
+    if from_a_run:  # this test's own parent process stands for the run's
+        register_run("caller", pid=os.getppid())
+        reg._merge_record_locked("caller", {"status": "running", "pid_started": process_started(os.getppid())})
+        with pytest.raises(SystemExit) as refused:
+            agents_spawn("review it", agent="code-reviewer", parent_run_id="")
+        assert refused.value.code == 2 and "caller" in capsys.readouterr().err
+    else:
+        assert Spawn.asked(task="review it", cwd=".", agent="code-reviewer", parent_run_id="").parent_run_id is None

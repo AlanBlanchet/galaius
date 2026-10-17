@@ -1648,8 +1648,8 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
     run taking it lists it among the runs it works for (`asked_by`).
     --continues names the run of this computer the new one takes over from (a hand-off): what that run owed, what is
     handed back or sent to it from then on, reaches the new one; it is never resumed again. A run of the same role under
-    the same parent whose context filled is taken over without it, and so is a calling run of the new run's role that
-    compacted twice or whose context filled; --helper keeps the new run the caller's.
+    the same parent that outgrew its context is taken over without it, and so is a calling run of the new run's role whose
+    context is still near full after a compaction; --helper keeps the new run the caller's.
     """
 
 

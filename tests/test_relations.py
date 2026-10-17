@@ -132,13 +132,13 @@ def _spawned(name: str, *, parent: str | None, **spawn) -> dict:
 
 def test_a_successor_owes_only_what_its_predecessor_still_owed_and_reads_what_is_sent_to_it(team):
     _run("old", parent="lead")
-    reg._merge_record_locked(IDS["old"], {"context_tokens": 190_000, "context_window": 200_000})
+    reg._merge_record_locked(IDS["old"], {"compactions": 1, "context_tokens": 190_000, "context_window": 200_000})
     _asked("old", "coordinator", "fix rule 4")
     _asked("old", "stranger", "fix rule 5")
     reg.record_message_event(from_run=IDS["old"], to_run=IDS["stranger"], text="Rule 5 fixed.", reports=(IDS["old"],))
     _run("helper", parent="old", working=True)
 
-    _spawned("new", parent=IDS["lead"])  # its context full, the old librarian is taken over without --continues
+    _spawned("new", parent=IDS["lead"])  # still near full after a compaction, the old librarian is taken over without --continues
 
     new = reg.get_run(IDS["new"])
     assert relations.live(IDS["old"]) == IDS["new"] and not relations.succeed(IDS["old"], IDS["eng"])
@@ -167,10 +167,19 @@ def test_a_run_handing_off_its_own_work_leaves_its_successor_working_for_its_own
     assert relations.owed(reg.get_run(IDS["old"])) == ()  # the boss hears from the successor only
 
 
+@pytest.mark.parametrize("gauge, outgrown", [
+    pytest.param({"compactions": 1, "context_tokens": 160_000}, True, id="still-near-full-after-its-compaction"),
+    pytest.param({"compactions": 3, "context_tokens": 60_000}, False, id="compacted-often-yet-room-left"),
+    pytest.param({"compactions": 0, "context_tokens": 190_000}, False, id="near-full-not-yet-compacted"),
+])
+def test_a_run_hands_its_work_off_only_when_still_near_full_after_a_compaction(gauge, outgrown):
+    assert relations.outgrown(reg.AgentRun(run_id="r", provider="claude", name="r", cwd=".", context_window=200_000, **gauge)) is outgrown
+
+
 @pytest.mark.parametrize("helper", [False, True], ids=["takes-over-from-its-outgrown-parent", "helper-keeps-reporting-to-it"])
 def test_a_run_of_its_role_an_outgrown_run_spawns_takes_over_from_it_unless_a_helper(team, helper):
     _run("old", parent="lead", working=True)
-    reg._merge_record_locked(IDS["old"], {"compactions": relations.HANDOFF_COMPACTIONS})
+    reg._merge_record_locked(IDS["old"], {"compactions": 1, "context_tokens": 170_000, "context_window": 200_000})
 
     _spawned("new", parent=IDS["old"], helper=helper)
     reg._merge_record_locked(IDS["old"], {"status": "done", "finished_at": 60.0, "pid": None})  # its turn ended, waiting

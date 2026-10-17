@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 from galaius_core import AgentRevisionRef
 
-from galaius.agents import agent_queue, messaging, registry as reg
+from galaius.agents import agent_queue, handback, messaging, registry as reg
 from galaius.agents.conversations import ConversationAnswers, ConversationScope
 from galaius.agents.providers import PROVIDERS, available_providers, provider_caveat_note, provider_for
 from galaius.agents.run import run_agent
@@ -104,8 +104,8 @@ async def agent_spawn(
         and its run id comes back; a new one starts only when every such agent is busy or unfit.
     continues: the run (full or short id) the new one takes over from — a hand-off from a run whose context filled:
         what that run owed, and what is handed back or sent to it from then on, reaches the new one; it is never resumed
-        again. A run of the same role under the same parent whose context filled is taken over without it, and so is
-        a caller of the new run's role that compacted twice or whose context filled (`helper` keeps it the caller's).
+        again. A run of the same role under the same parent that outgrew its context is taken over without it, and so is
+        a caller of the new run's role still near full after a compaction (`helper` keeps it the caller's).
     helper: a run of your own role that helps you rather than taking over from you once your context is outgrown.
     for_run: the run (full or short id) the task is for besides you — e.g. the maker whose work a critic judges: its final
         report reaches that run as well as you.
@@ -337,6 +337,8 @@ async def agent_send(run_id: str, message: str, wait: bool = False, fyi: bool = 
     if delivery.state == "error" or not wait:
         return said
     reply = await messaging.wait_for_reply(delivery)
+    if (answered := await asyncio.to_thread(reg.get_run, delivery.run_id)) is not None:
+        await asyncio.to_thread(handback.collected, messaging.sender_id(), [handback.Report.of(answered)])
     return f"{said}\n{reply}" if waiting else reply
 
 

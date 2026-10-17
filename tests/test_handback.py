@@ -295,10 +295,7 @@ def _spawned(run_id: str, agent: str, parent: str) -> None:
     asyncio.run(Spawn(task=f"{agent} task", cwd=".", agent=agent, parent_run_id=parent).start(run_id, runner))
 
 
-@pytest.mark.parametrize("handoff", [
-    pytest.param({"compactions": 2}, id="compacted-runs-handing-off"),
-    pytest.param({"context_tokens": 190_000, "context_window": 200_000}, id="full-contexts-handing-off"),
-])
+@pytest.mark.parametrize("handoff", [{"compactions": 1, "context_tokens": 190_000, "context_window": 200_000}])
 def test_a_continued_maker_is_resumed_by_its_critics_verdicts_while_its_coordinator_works(sent, at_work, handoff):
     """2026-10-17: a maker continuing a compacted maker, under a coordinator continuing a compacted one, had written to
     the coordinator first: the coordinator read as working for it, its orders as reports, and its turn (and agents)
@@ -329,3 +326,36 @@ def test_a_continued_maker_is_resumed_by_its_critics_verdicts_while_its_coordina
     assert relations.boss(maker_run) == coordinator
     assert relations.relation(coordinator_run, maker_run, "fix the footer") is Relation.ASKER
     assert relations.relation(maker_run, coordinator_run, "Row A live.") is Relation.REPORT
+
+
+@pytest.mark.parametrize("read_through", ["agents-wait", "send-waiting-on-its-reply"])
+def test_a_report_read_inline_is_answered_and_never_handed_back_again(sent, monkeypatch, read_through):
+    """2026-10-17: a reviewer's verdict read through `agents wait` left its reader owed: when another run reused the
+    reviewer, its next verdict also woke the reader that had it already."""
+    reader, reviewer, other = (str(uuid.UUID(int=n << 96)) for n in (11, 12, 13))
+    _ended(reader, 100.0, agent="infra-engineer")
+    _ended(reviewer, 200.0, agent="code-reviewer", parent_run_id=reader)
+    _answered(reviewer, "Verdict: PASS.")
+    if read_through == "agents-wait":
+        assert [report.text for report in handback.wait([reviewer], timeout=1, interval=0.05, asker=reader).reports] == ["Verdict: PASS."]
+    else:
+        from galaius.server import tools_agents
+
+        async def replied(delivery):
+            return "Verdict: PASS."
+        with monkeypatch.context() as sending:
+            sending.setenv("GALAIUS_RUN_ID", reader)
+            sending.setattr(tools_agents.messaging, "deliver_message", lambda run_id, message, **_: handback.messaging.Delivery(state="queued", text="Queued.", run_id=run_id, queue_id="q"))
+            sending.setattr(tools_agents.messaging, "wait_for_reply", replied)
+            assert asyncio.run(tools_agents.agent_send(reviewer, "review row H", wait=True)) == "Verdict: PASS."
+    assert reader not in relations.owed(reg.get_run(reviewer))
+
+    _ended(other, 250.0, agent="backend-engineer")  # reuses the reviewer for its own round
+    with reg.record_lock(reviewer):
+        reg.note_asker_locked(reviewer, other)
+    reg.record_message_event(from_run=other, to_run=reviewer, text="round 3: review 10cf96fd")
+    reg._merge_record_locked(reader, {"finished_at": 240.0})
+    reg._merge_record_locked(reviewer, {"finished_at": 300.0})
+    handback.hand_back(reviewer)
+
+    assert [call["run_id"] for call in sent] == [other]

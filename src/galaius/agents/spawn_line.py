@@ -109,8 +109,16 @@ class Spawn(BaseModel):
 
     @classmethod
     def asked(cls, *, parent_run_id: str | None = None, **fields) -> Spawn:
-        """A spawn as its caller asks it: its parent the run asking (`GALAIUS_PARENT_RUN_ID`) unless one is named."""
-        return cls(parent_run_id=parent_run_id or os.environ.get("GALAIUS_PARENT_RUN_ID") or None, **fields)
+        """A spawn as its caller asks it: its parent the run asking (`GALAIUS_PARENT_RUN_ID`) unless one is named. A process
+        of a run at work (`reg.ancestor_run`) never starts a run outside its tree: an empty parent, or the variable cleared
+        from its environment, is refused (`ValueError`; 2026-10-17: 282 such spawns in 68 transcripts started runs nobody's
+        report reached). The person's terminal, and a queue's process its run let go of, descend from no run."""
+        parent = parent_run_id or os.environ.get("GALAIUS_PARENT_RUN_ID") or None
+        if parent is None and (calling := reg.ancestor_run()) is not None:
+            raise ValueError(f"run {calling.run_id} asks this spawn: an empty --parent-run-id or a cleared GALAIUS_PARENT_RUN_ID "
+                             "would start a run outside its tree, its report reaching no one. Spawn it plainly: it reports "
+                             f"to {calling.run_id[:8]}.")
+        return cls(parent_run_id=parent, **fields)
 
     async def start(self, run_id: str, runner: Callable[..., Awaitable[RunHandle]] | None = None) -> RunHandle:
         """Start it as run `run_id` (the id its caller was given) through `runner` (`run_agent` when None), and give
@@ -174,12 +182,12 @@ class Spawn(BaseModel):
                 f"{relations.tag(predecessor.run_id)} now reaches it.")
 
     def _outgrown(self) -> reg.AgentRun | None:
-        """The newest run of its role under its parent whose context filled (`relations.context_full`), not at work and
+        """The newest run of its role under its parent that outgrew its context (`relations.outgrown`), not at work and
         not taken over yet: the one it takes over from."""
         role = self._role_name()
         return next((peer for peer in self._conversation()
                      if role and peer.agent == role and peer.parent_run_id == self.parent_run_id
-                     and peer.successor is None and relations.context_full(peer) and not self._busy(peer)), None)
+                     and peer.successor is None and relations.outgrown(peer) and not self._busy(peer)), None)
 
     def _role_name(self) -> str | None:
         """The role it would run as (`_role`), else the agent it names."""

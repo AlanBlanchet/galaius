@@ -121,6 +121,22 @@ class EndWatch(BaseModel):
         return [delivery for run_id in self.ended() for delivery in hand_back(run_id)]
 
 
+def collected(asker: str | None, reports: Sequence[Report]) -> None:
+    """Record each ended report in `reports` as carried to run `asker`, the run that read it inline (`agents wait`, a send
+    waiting on its reply), as a hand-back records the reports it carries: the ask it answered is answered (`owed`), its
+    next turn hands back nothing to `asker` (2026-10-17: a reviewer whose verdict was read through `agents wait` woke
+    that reader again when it ended its next round). Once per ended turn, however often it is read."""
+    if asker is None or reg.get_run(asker) is None:
+        return
+    for report in reports:
+        if report.pending or (run := reg.get_run(report.run_id)) is None or run.finished_at is None:
+            continue
+        message_id = f"collected-{run.run_id}-{run.finished_at:.6f}"
+        if reg.message_for(asker, message_id) is None:
+            reg.record_message_event(from_run=run.run_id, to_run=asker, text=report.section(), event_id=message_id,
+                                     reports=(run.run_id,), fyi=True)
+
+
 class Waited(BaseModel):
     """What `wait` saw: each run's report, and the message that cut the wait short (None: all ended, or the timeout)."""
 
@@ -155,8 +171,10 @@ def wait(run_ids: Sequence[str], *, timeout: float, interval: float = 2.0, asker
                 else:
                     raise LookupError(f"no agent run {asked!r}")
             if not any(report.pending for report in reports) or time.monotonic() >= deadline:
+                collected(asker, reports)
                 return Waited(reports=reports)
             if waiting is not None and (message := agent_queue.next_step_read(waiting)) is not None:
+                collected(asker, reports)
                 return Waited(reports=reports, message=message)
             if not stepped_aside:
                 aside.enter_context(line.aside(asker, waits_on=[report.run_id for report in reports if report.pending]))

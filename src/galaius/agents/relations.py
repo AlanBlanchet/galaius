@@ -15,12 +15,9 @@ from galaius.agents import registry as reg
 from galaius.agents.events import AgentEvent, Relation, ending_of
 from galaius.inbox_hook import HEADING, OPERATOR
 
-#: Share of its context window past which a run is not handed a new task (`spawn_line.Spawn._misfit`): a new run of its
-#: role started under its parent takes over from it (`succeed`).
+#: Share of its context window past which a run is not handed a new task (`spawn_line.Spawn._misfit`), and, held after a
+#: compaction, past which it hands its work to the first run of its role it spawns (`outgrown`).
 CONTEXT_NEAR_FULL = 0.8
-#: Compactions after which a run hands its work to a fresh run of its role: the first run of its role it spawns from
-#: then on takes over from it (`spawn_line.Spawn.taking_over`).
-HANDOFF_COMPACTIONS = 2
 #: The other runs at work a card names, newest first.
 CARD_RUNS_MAX = 8
 #: The longest first line a card quotes.
@@ -72,8 +69,9 @@ def _get(run_id: str) -> reg.AgentRun | None:
 
 
 def outgrown(run: reg.AgentRun) -> bool:
-    """It compacted `HANDOFF_COMPACTIONS` times, or its context is near full (`context_full`): its work goes to a new run."""
-    return run.compactions >= HANDOFF_COMPACTIONS or context_full(run)
+    """Its context is still near full (`context_full`) after its last compaction (a compaction sets the size it left): its
+    work goes to a new run. A count of compactions says nothing of how full it is now."""
+    return run.compactions > 0 and context_full(run)
 
 
 @one_read()
