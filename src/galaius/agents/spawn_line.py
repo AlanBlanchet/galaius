@@ -98,11 +98,14 @@ class Spawn(BaseModel):
     #: The run it takes over from (`galaius agents spawn --continues`: a hand-off), else the run of its role under its parent
     #: whose context filled (`_outgrown`): `relations.succeed`.
     continues: str | None = None
+    #: A run of its parent's role that helps its parent rather than taking over from it (`galaius agents spawn --helper`):
+    #: its parent outgrown, it is still the one this run reports to (`taking_over`).
+    helper: bool = False
     #: One agent of its role in its conversation (`galaius agents spawn --single`): one at work is queued the task behind
     #: its turn rather than another started beside it, and every other one of the role is forgotten (`forget_peers`).
     single: bool = False
     #: Its fields `start` passes to `run_agent` other than by their own names.
-    NOT_RUN_ARGUMENTS: ClassVar[frozenset[str]] = frozenset({"task", "provider", "session_id", "for_run", "single", "continues"})
+    NOT_RUN_ARGUMENTS: ClassVar[frozenset[str]] = frozenset({"task", "provider", "session_id", "for_run", "single", "continues", "helper"})
 
     @classmethod
     def asked(cls, *, parent_run_id: str | None = None, **fields) -> Spawn:
@@ -113,7 +116,7 @@ class Spawn(BaseModel):
         """Start it as run `run_id` (the id its caller was given) through `runner` (`run_agent` when None), and give
         the child a moment to be alive before a caller about to exit lets go of it."""
         arguments = {name: getattr(self, name) for name in type(self).model_fields if name not in self.NOT_RUN_ARGUMENTS}
-        predecessor = reg.get_run(self.continues) if self.continues is not None else self._outgrown()
+        predecessor = self.taking_over()
         inherited = relations.inherited(predecessor, parent=self.parent_run_id) if predecessor is not None else {}
         # Recorded as it starts, so the card it starts on names whom it works for (`run.run_agent`).
         asked_by = tuple(dict.fromkeys(asker for asker in (self.for_run, *inherited) if asker and asker != self.parent_run_id))
@@ -146,6 +149,29 @@ class Spawn(BaseModel):
             if target is None or (target.run_id not in caller.askers and caller.run_id not in target.askers):
                 return f"for_run names {self.for_run[:8]}: outside your conversation, it neither asked you nor works for you"
         return None
+
+    def taking_over(self) -> reg.AgentRun | None:
+        """The run it takes over from (`relations.succeed`): the one it `continues`, else an ended run of its role under
+        its parent whose context filled (`_outgrown`), else its parent itself, of its role and outgrown
+        (`relations.outgrown`): a compacted run hands off by spawning its role, `--continues` named or not. Decided
+        here, once, and said to the caller (`takeover_sentence`); the records never flip it later."""
+        if self.continues is not None:
+            return reg.get_run(self.continues)
+        if (peer := self._outgrown()) is not None or self.helper:
+            return peer
+        parent = reg.get_run(self.parent_run_id) if self.parent_run_id else None
+        role = self._role_name()
+        return parent if parent is not None and role and parent.agent == role and parent.successor is None \
+            and relations.outgrown(parent) else None
+
+    def takeover_sentence(self, predecessor: reg.AgentRun | None, run_id: str) -> str:
+        """What the caller is told when run `run_id` took over from `predecessor` (`taking_over`); "" when it took over nothing."""
+        if predecessor is None or relations.live(predecessor.run_id) != run_id:
+            return ""
+        whose = "your work" if predecessor.run_id == self.parent_run_id else f"from {relations.tag(predecessor.run_id)}"
+        keep = " (spawn it as a helper to keep it reporting to you)" if predecessor.run_id == self.parent_run_id else ""
+        return (f"{relations.tag(run_id)} takes over {whose} (context outgrown){keep}: what is sent or handed back to "
+                f"{relations.tag(predecessor.run_id)} now reaches it.")
 
     def _outgrown(self) -> reg.AgentRun | None:
         """The newest run of its role under its parent whose context filled (`relations.context_full`), not at work and

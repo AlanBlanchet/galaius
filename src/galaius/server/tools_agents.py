@@ -51,6 +51,7 @@ async def agent_spawn(
     fresh: bool = False,
     continues: str | None = None,
     for_run: str | None = None,
+    helper: bool = False,
 ) -> str:
     """Start an agent to work alongside you, or hand the task to the idle one of that role already in
     this conversation (`fresh` to always start one), and return its run id immediately.
@@ -103,7 +104,9 @@ async def agent_spawn(
         and its run id comes back; a new one starts only when every such agent is busy or unfit.
     continues: the run (full or short id) the new one takes over from — a hand-off from a run whose context filled:
         what that run owed, and what is handed back or sent to it from then on, reaches the new one; it is never resumed
-        again. A run of the same role under the same parent whose context filled is taken over without it.
+        again. A run of the same role under the same parent whose context filled is taken over without it, and so is
+        a caller of the new run's role that compacted twice or whose context filled (`helper` keeps it the caller's).
+    helper: a run of your own role that helps you rather than taking over from you once your context is outgrown.
     for_run: the run (full or short id) the task is for besides you — e.g. the maker whose work a critic judges: its final
         report reaches that run as well as you.
     """
@@ -156,7 +159,7 @@ async def agent_spawn(
                 task=task, cwd=cwd or os.getcwd(), provider=provider, agent=agent, name=name, model=model,
                 permission_mode=permission_mode, profile=profile, agent_ref=agent_ref, delegate=delegate,
                 image_paths=tuple(Path(path) for path in (image_paths or ())), denied_tools=tuple(denied_tools or ()),
-                session_id=owner, continues=continues, for_run=for_run,
+                session_id=owner, continues=continues, for_run=for_run, helper=helper,
             )
             if (refused := spawn.naming_refusal()) is not None:
                 return f"ERROR: {refused}."
@@ -169,10 +172,13 @@ async def agent_spawn(
                 return (f"Queued [{label}] — run_id={admission.run_id}, {admission.sentence()}.{handover.note()}\n"
                         f"It starts by itself once a place frees; agent_events(run_id=\"{admission.run_id}\") says where it stands, "
                         "agent_stop takes it out of the line.")
+            predecessor = await asyncio.to_thread(spawn.taking_over)
             try:
                 handle = await spawn.start(admission.run_id, run_agent)
             finally:
                 line.leave(admission.run_id)
+            takeover = await asyncio.to_thread(spawn.takeover_sentence, predecessor, handle.run_id)
+            takeover = f"{takeover}\n" if takeover else ""
     except ValueError as e:  # an unknown permission mode, refused before it reaches a shell
         return f"ERROR: {e}"
     except (OSError, RuntimeError) as e:
@@ -194,6 +200,7 @@ async def agent_spawn(
             f"Launch policy: model={getattr(handle, 'model', None)}; "
             f"reasoning={getattr(handle, 'reasoning', None)}; "
             f"criterion={getattr(handle, 'criterion', None)}{walked}{handover.note()}\n"
+            f"{takeover}"
             f"Watch it with agent_list, or agent_events(run_id=\"{handle.run_id}\").{caveat}")
 
 

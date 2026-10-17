@@ -2,7 +2,9 @@
 (`galaius.agents.handback`). Owner 2026-10-16: « it said in the UI that tasks were done... But i never got another
 report saying "DONE" forthe tasks... »."""
 
+import asyncio
 import json
+import os
 import time
 import uuid
 
@@ -11,7 +13,7 @@ import pytest
 from galaius.agents import agent_queue, handback, relations
 from galaius.agents import registry as reg
 from galaius.agents.events import Relation
-from galaius.agents.spawn_line import SpawnLine
+from galaius.agents.spawn_line import Spawn, SpawnLine
 from tests.support import register_run
 
 
@@ -284,22 +286,34 @@ def test_the_watch_hands_back_a_run_with_no_parent_to_the_run_it_works_for(sent)
     assert [call["run_id"] for call in sent] == [coordinator] and "DONE: row I live." in sent[0]["message"]
 
 
+def _spawned(run_id: str, agent: str, parent: str) -> None:
+    """Start run `run_id` as `Spawn.start` does, its process this one."""
+    async def runner(provider, task, *, run_id, **rest):
+        register_run(run_id, agent=agent, name=agent, task=task, parent_run_id=parent, pid=os.getpid(),
+                     asked_by=rest["asked_by"], inherited_asks=rest["inherited_asks"])
+
+    asyncio.run(Spawn(task=f"{agent} task", cwd=".", agent=agent, parent_run_id=parent).start(run_id, runner))
+
+
 @pytest.mark.parametrize("handoff", [
-    pytest.param({"compactions": 2}, id="compacted-runs-handing-off-unrecorded"),
-    pytest.param({"context_tokens": 190_000, "context_window": 200_000}, id="full-contexts-handing-off-unrecorded"),
+    pytest.param({"compactions": 2}, id="compacted-runs-handing-off"),
+    pytest.param({"context_tokens": 190_000, "context_window": 200_000}, id="full-contexts-handing-off"),
 ])
 def test_a_continued_maker_is_resumed_by_its_critics_verdicts_while_its_coordinator_works(sent, at_work, handoff):
     """2026-10-17: a maker continuing a compacted maker, under a coordinator continuing a compacted one, had written to
     the coordinator first: the coordinator read as working for it, its orders as reports, and its turn (and agents)
     held the maker's hand-back for good — three critics' verdicts, one FAIL, never reached it."""
     root, coordinator, own, first, maker, fail, ok = (str(uuid.UUID(int=n << 96)) for n in range(1, 8))
-    _ended(root, 10.0, agent="main")
-    at_work(coordinator, agent="main", parent_run_id=root)
+    at_work(root, agent="main")
+    reg._merge_record_locked(root, handoff)
+    _spawned(coordinator, "main", root)  # each outgrown run hands off by spawning its role
+    at_work(first, agent="app-engineer", parent_run_id=root)
+    reg._merge_record_locked(first, handoff)
+    _spawned(maker, "app-engineer", first)
+    for ended, at in ((root, 10.0), (first, 20.0), (maker, 100.0)):
+        reg._merge_record_locked(ended, {"status": "done", "finished_at": at, "pid": None})
+    reg._merge_record_locked(maker, {"provider_session_id": "vendor-maker"})
     at_work(own, agent="backend-engineer", parent_run_id=coordinator)
-    _ended(first, 20.0, agent="app-engineer", parent_run_id=root)
-    for outgrown in (root, first):
-        reg._merge_record_locked(outgrown, handoff)
-    _ended(maker, 100.0, agent="app-engineer", parent_run_id=first, provider_session_id="vendor-maker")
     with reg.record_lock(coordinator):
         reg.note_asker_locked(coordinator, maker)
     reg.record_message_event(from_run=maker, to_run=coordinator, text="Row A landed; critics dispatched.")

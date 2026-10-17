@@ -167,17 +167,18 @@ def test_a_run_handing_off_its_own_work_leaves_its_successor_working_for_its_own
     assert relations.owed(reg.get_run(IDS["old"])) == ()  # the boss hears from the successor only
 
 
-@pytest.mark.parametrize("at_work", [True, False], ids=["outgrown-run-at-work-keeps-its-helpers", "ended-outgrown-run-handed-off"])
-def test_runs_of_its_role_an_outgrown_run_spawned_help_it_while_it_works_and_continue_it_once_it_ended(team, at_work):
-    _run("old", parent="lead", working=at_work)
+@pytest.mark.parametrize("helper", [False, True], ids=["takes-over-from-its-outgrown-parent", "helper-keeps-reporting-to-it"])
+def test_a_run_of_its_role_an_outgrown_run_spawns_takes_over_from_it_unless_a_helper(team, helper):
+    _run("old", parent="lead", working=True)
     reg._merge_record_locked(IDS["old"], {"compactions": relations.HANDOFF_COMPACTIONS})
-    _run("new", parent="old")
-    second = register_run(str(uuid.UUID(int=99 << 96)), agent="librarian", name="librarian", parent_run_id=IDS["old"], pid=None)
-    reg._merge_record_locked(second.run_id, {"status": "done", "finished_at": 60.0, "started_at": second.started_at + 1})
 
-    owed_to = IDS["old"] if at_work else IDS["lead"]
-    assert relations.owed(reg.get_run(IDS["new"])) == relations.owed(reg.get_run(second.run_id)) == (owed_to,)
-    assert relations.live(IDS["old"]) == (IDS["old"] if at_work else second.run_id)  # the newest takes what is sent to it
+    _spawned("new", parent=IDS["old"], helper=helper)
+    reg._merge_record_locked(IDS["old"], {"status": "done", "finished_at": 60.0, "pid": None})  # its turn ended, waiting
+
+    new = reg.get_run(IDS["new"])
+    assert relations.live(IDS["old"]) == (IDS["old"] if helper else IDS["new"])  # decided at the spawn, never after
+    assert relations.owed(new) == ((IDS["old"],) if helper else (IDS["lead"],))
+    assert relations.boss(new) == (IDS["old"] if helper else IDS["lead"])
 
 
 def test_a_critic_spawned_for_a_maker_starts_knowing_and_owing_both(team):

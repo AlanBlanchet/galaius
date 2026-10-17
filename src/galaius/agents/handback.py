@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 from galaius.agents import agent_queue, messaging
 from galaius.agents import registry as reg
-from galaius.agents.relations import continuations, final_words, live, one_read, outgrown, owed
+from galaius.agents.relations import final_words, live, one_read, owed
 from galaius.agents.spawn_line import SpawnLine
 
 #: Each report's share of the hand-back message (`agent_queue.BRIEF_MAX` in all); the full one is `galaius agents events`.
@@ -68,15 +68,9 @@ def hand_back(run_id: str) -> list[messaging.Delivery]:
 
 
 def _agents_answering(asker_id: str, records: Sequence[reg.AgentRun]) -> list[reg.AgentRun]:
-    """The runs among `records` that owe run `asker_id`, or a run it took over from (`live`), their report (`owed`): each
-    run it asked, and each run continuing one (`relations.continuations`)."""
-    aliases = {asker_id} | {stored.run_id for stored in records
-                            if (stored.successor or outgrown(stored)) and live(stored.run_id) == asker_id}
-    asked = [stored.run_id for stored in records if aliases & stored.askers]
-    found = dict.fromkeys(asked)
-    while asked:  # and each run continuing one, at any depth
-        asked = [heir for run_id in asked for heir in continuations(run_id) if heir not in found]
-        found |= dict.fromkeys(asked)
+    """The runs among `records` that owe run `asker_id`, or a run it took over from (`live`), their report (`owed`)."""
+    aliases = {asker_id} | {stored.run_id for stored in records if stored.successor and live(stored.run_id) == asker_id}
+    found = [stored.run_id for stored in records if aliases & stored.askers]
     return [run for run_id in found if (run := reg.get_run(run_id)) is not None and aliases.intersection(owed(run))]
 
 

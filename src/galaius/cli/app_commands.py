@@ -1611,7 +1611,7 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
                  machine: str | None = None, folder: str | None = None,
                  fence: Annotated[Path | None, Parameter(name="--fence")] = None,
                  for_run: Annotated[str | None, Parameter(name="--for")] = None,
-                 continues: str | None = None, fresh: bool = False, single: bool = False) -> None:
+                 continues: str | None = None, fresh: bool = False, single: bool = False, helper: bool = False) -> None:
     """Start an agent and return its id immediately, without waiting for it to finish.
 
     --machine <name or id> starts it on another of your computers instead, through the server, in
@@ -1648,7 +1648,8 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
     run taking it lists it among the runs it works for (`asked_by`).
     --continues names the run of this computer the new one takes over from (a hand-off): what that run owed, what is
     handed back or sent to it from then on, reaches the new one; it is never resumed again. A run of the same role under
-    the same parent whose context filled is taken over without it.
+    the same parent whose context filled is taken over without it, and so is a calling run of the new run's role that
+    compacted twice or whose context filled; --helper keeps the new run the caller's.
     """
 
 
@@ -1686,7 +1687,7 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
                 denied_tools=tuple(denied_tools or ()), provider_modes=_provider_modes(provider_modes),
                 quota_window=quota_window,
                 fence=FenceSpec.model_validate_json(fence.read_text()) if fence is not None else None,
-                for_run=for_run, single=single, continues=continues,
+                for_run=for_run, single=single, continues=continues, helper=helper,
             )
             if (refused := spawn.naming_refusal()) is not None:
                 print(f"ERROR: {refused}", file=sys.stderr)
@@ -1712,11 +1713,14 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
                 print(admission.sentence())  # its peers stay until it starts: the next --single spawn forgets them
                 print(admission.run_id)
                 return
+            predecessor = spawn.taking_over()
             try:
                 started = asyncio.run(spawn.start(admission.run_id, _agent_runner())).run_id
             finally:
                 line.leave(admission.run_id)
             forget_others(started)
+            if sentence := spawn.takeover_sentence(predecessor, started):
+                print(sentence)  # before the id: the run id stays the last stdout line
             print(started)
     except (ValueError, RuntimeError) as e:
         # argv builder validates permission mode, four frames down; a criterion nothing clears, a
