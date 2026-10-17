@@ -11,6 +11,7 @@ import time
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass, field
 
 from galaius.agents import registry as reg
 from galaius.agents.events import AgentEvent, Relation, ending_of
@@ -46,8 +47,15 @@ _AT_WORK = frozenset({"starting", "running", "waiting"})
 REUSABLE: frozenset[str] = reg.TERMINAL_STATUSES - {"cancelled"}
 
 
-#: The records one decision read (`one_read`), by run id.
-_READ: ContextVar[dict[str, reg.AgentRun | None] | None] = ContextVar("relations_read", default=None)
+@dataclass
+class _Read:
+    """The records one decision read (`one_read`): each run by id, and each parent's children once read."""
+
+    runs: dict[str, reg.AgentRun | None] = field(default_factory=dict)
+    children: dict[str, list[reg.AgentRun]] | None = None
+
+
+_READ: ContextVar[_Read | None] = ContextVar("relations_read", default=None)
 
 
 @contextmanager
@@ -57,7 +65,7 @@ def one_read() -> Iterator[None]:
     if _READ.get() is not None:
         yield
         return
-    token = _READ.set({})
+    token = _READ.set(_Read())
     try:
         yield
     finally:
@@ -65,12 +73,25 @@ def one_read() -> Iterator[None]:
 
 
 def _get(run_id: str) -> reg.AgentRun | None:
-    read = _READ.get()
-    if read is None:
+    if (read := _READ.get()) is None:
         return reg.get_run(run_id)
-    if run_id not in read:
-        read[run_id] = reg.get_run(run_id)
-    return read[run_id]
+    if run_id not in read.runs:
+        read.runs[run_id] = reg.get_run(run_id)
+    return read.runs[run_id]
+
+
+def _children(run_id: str) -> list[reg.AgentRun]:
+    """The runs `run_id` spawned, as stored, oldest first; the run folder read once per decision (`one_read`)."""
+    read = _READ.get()
+    index = read.children if read is not None else None
+    if index is None:
+        index = {}
+        for stored in sorted(reg._stored_records(), key=lambda stored: stored.started_at or 0.0):
+            if stored.parent_run_id:
+                index.setdefault(stored.parent_run_id, []).append(stored)
+        if read is not None:
+            read.children = index
+    return index.get(run_id, [])
 
 
 def outgrown(run: reg.AgentRun) -> bool:
@@ -79,44 +100,36 @@ def outgrown(run: reg.AgentRun) -> bool:
 
 
 @one_read()
+@one_read()
 def continues(run: reg.AgentRun) -> bool:
     """Whether `run` continues its parent's work: its parent handed it over (`succeed`), or `run` is of its parent's role
-    and its parent had outgrown its context (`outgrown`) — how a compacted run hands off, `--continues` named or not.
-    2026-10-17: such hand-offs went unrecorded; each continuation's boss read as its own predecessor."""
+    and its parent, outgrown (`outgrown`), is no longer at work (`_hands_off`) — how a compacted run hands off, in one run
+    or several over time, `--continues` named or not. A parent still at work keeps its helpers. 2026-10-17: such
+    hand-offs went unrecorded; each continuation's boss read as its own predecessor."""
     parent = _get(run.parent_run_id) if run.parent_run_id else None
-    return parent is not None and (parent.successor == run.run_id
-                                   or (parent.successor is None and parent.agent == run.agent and outgrown(parent)))
+    return parent is not None and (parent.successor == run.run_id or (parent.agent == run.agent and _hands_off(parent)))
+
+
+@one_read()
+def continuations(run_id: str) -> list[str]:
+    """The runs continuing run `run_id`'s work (`continues`), oldest first."""
+    return [child.run_id for child in _children(run_id) if continues(child)]
+
+
+def _hands_off(run: reg.AgentRun) -> bool:
+    """`run` outgrew its context (`outgrown`) and ended with no successor recorded: the runs of its role it spawned
+    continue it."""
+    return run.successor is None and outgrown(run) and not _working(run)
 
 
 def _successor(run: reg.AgentRun) -> str | None:
-    """The run that took over from `run`: the one recorded (`succeed`), else, once `run` ended outgrown, the one run of its
-    role it spawned (`continues`); None when it split its work over several."""
-    if run.successor or not outgrown(run) or _working(run):
+    """The run that took over from `run`: the one recorded (`succeed`), else the newest run continuing it (`continues`)."""
+    if not _hands_off(run):
         return run.successor
-    heirs = _heirs(run)
-    return heirs[0] if len(heirs) == 1 else None
+    return next((child.run_id for child in reversed(_children(run.run_id)) if child.agent == run.agent), None)
 
 
-#: (agents folder, when read, each parent's children as stored then).
-_CHILDREN: tuple[str, float, dict[str, list[reg.AgentRun]]] | None = None
-#: How long after a run's end the record of a run it spawned may still land.
-_SPAWN_LAG = 2.0
-
-
-def _heirs(run: reg.AgentRun) -> list[str]:
-    """The runs of its role that ended run `run` spawned. The children index is read again only when older than `run`'s
-    end: a run spawns nothing once ended (a resumed run is at work, `_successor` reads its record alone)."""
-    global _CHILDREN
-    folder = str(reg.agents_dir())
-    if _CHILDREN is None or _CHILDREN[0] != folder or _CHILDREN[1] <= (run.finished_at or time.time()) + _SPAWN_LAG:
-        index: dict[str, list[reg.AgentRun]] = {}
-        for stored in reg._stored_records():
-            if stored.parent_run_id:
-                index.setdefault(stored.parent_run_id, []).append(stored)
-        _CHILDREN = (folder, time.time(), index)
-    return [child.run_id for child in _CHILDREN[2].get(run.run_id, []) if child.agent == run.agent]
-
-
+@one_read()
 def chain(run_id: str) -> tuple[str, ...]:
     """`run_id` and each run that took over from the one before it (`_successor`), oldest first."""
     ids = [run_id]
