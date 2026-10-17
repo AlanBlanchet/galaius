@@ -742,7 +742,7 @@ class MachineAgents(BaseModel):
             case "session":
                 return self.sessions.read(str(run_id)) if self.sessions is not None else ()
             case "continued":
-                ids = [event.event_id for event in reversed(reg.read_messages(str(run_id))) if event.from_run == "operator"]
+                ids = [event.event_id for event in reversed(reg.read_messages(str(run_id))) if event.from_run == reg.PERSON_SENDER]
             case _:
                 ids = agent_queue.read_ids(str(run_id))
         # Only ids the web gave (a request id, as it writes it): a message sent from this computer has its own.
@@ -1025,7 +1025,7 @@ class MachineAgents(BaseModel):
             followups = self.followups
             delivery = await AgentSpawns.run(lambda: followups.send(str(request.run_id), request.text, environment=environment, message_id=str(request.id), turn=turn))
         else:
-            delivery = await asyncio.to_thread(deliver_message, str(request.run_id), request.text, sender="operator", environment=environment, message_id=str(request.id), turn=turn)
+            delivery = await asyncio.to_thread(deliver_message, str(request.run_id), request.text, sender=reg.PERSON_SENDER, environment=environment, message_id=str(request.id), turn=turn)
         if delivery.state == "error":
             raise RuntimeError(delivery.text.removeprefix("ERROR: ") or "not delivered")
         return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=delivery.text, reads_at=delivery.reads_at)
@@ -1040,7 +1040,7 @@ class MachineAgents(BaseModel):
         if kind == "session":
             return await self._session_action(request)
         environment = await asyncio.to_thread(self.launcher_environment_in, Path(run.cwd))
-        delivery = await asyncio.to_thread(deliver_message, run.run_id, "", sender="operator", environment=environment,
+        delivery = await asyncio.to_thread(deliver_message, run.run_id, "", sender=reg.PERSON_SENDER, environment=environment,
                                            message_id=str(request.id), turn=agent_queue.CompactionTurn())
         if delivery.state == "error":
             raise RuntimeError(delivery.text.removeprefix("ERROR: ") or "not compacted")
@@ -1069,7 +1069,7 @@ class MachineAgents(BaseModel):
         # Moved from here on, whatever the resume does: the answer names the new pin so the server records it too.
         try:
             environment = await asyncio.to_thread(self.launcher_environment_in, Path(moved.cwd))
-            delivery = await asyncio.to_thread(deliver_message, moved.run_id, reg.RESUME_BRIEF, sender="operator", environment=environment, message_id=str(request.id))
+            delivery = await asyncio.to_thread(deliver_message, moved.run_id, reg.RESUME_BRIEF, sender=reg.PERSON_SENDER, environment=environment, message_id=str(request.id))
             detail, reads_at = (f"moved to subscription {request.subscription_id}; not resumed: {delivery.text.removeprefix('ERROR: ')}", None) if delivery.state == "error" \
                 else (f"continued on subscription {request.subscription_id}", delivery.reads_at)
         except Exception as error:  # the move stands; its resume's failure is said, « Continuer » there resumes it
@@ -1117,7 +1117,7 @@ class MachineAgents(BaseModel):
         if run.status in {"running", "waiting"}:
             return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=f"allowed up to {request.up_to_percent}%")
         environment = await asyncio.to_thread(self.launcher_environment_in, Path(run.cwd))
-        delivery = await asyncio.to_thread(deliver_message, run.run_id, reg.RESUME_BRIEF, sender="operator", environment=environment, message_id=str(request.id))
+        delivery = await asyncio.to_thread(deliver_message, run.run_id, reg.RESUME_BRIEF, sender=reg.PERSON_SENDER, environment=environment, message_id=str(request.id))
         if delivery.state == "error":
             raise RuntimeError(delivery.text.removeprefix("ERROR: ") or "not resumed")
         return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=f"allowed up to {request.up_to_percent}%; resumed", reads_at=delivery.reads_at)
@@ -1504,7 +1504,7 @@ class MachineAgents(BaseModel):
             current = reg.get_run(run.run_id) or run
             if fork_from is None and reg.trees(frozenset({run.run_id}))[0].status in {"running", "waiting"}:
                 raise PermissionError("it is still answering; send this once it has finished")
-            reg.record_message_event(from_run="operator", to_run=run.run_id, text=text, event_id=str(request_id), media=media)
+            reg.record_message_event(from_run=reg.PERSON_SENDER, to_run=run.run_id, text=text, event_id=str(request_id), media=media)
             said = reg.RunMedia.mentioned(text, (reg.RunMedia.path(run.run_id, name) for name in media))
             try:
                 launch_editor_turn(PROVIDERS["claude"], current, said, environment=self.environment_in(Path(current.cwd)), fork_from=fork_from)

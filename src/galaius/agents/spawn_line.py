@@ -30,7 +30,7 @@ import os
 import sys
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import ClassVar, Literal, Self, TypeVar
@@ -56,7 +56,11 @@ POLL_SECONDS = 3.0
 #: Said of a run waiting when every place is held by a team with a run waiting in line (`SpawnLine._stuck`).
 STUCK = "chaque place est tenue par une équipe dont une run attend ici ; si elles s'attendent, arrêtez-en une"
 #: Said of a run set aside (`SpawnLine.aside`) whose place is free, where its activity line would be (`agents list`).
-ASIDE = "attend ses agents, place rendue"
+#: Whom a run waits on when its wait names none (a deploy's), in its run list line.
+ITS_AGENTS = "ses agents"
+#: The runs a waiting run's line names at most, the rest counted (`Aside.said`): the line keeps its « depuis N min ».
+WAITED_NAMED_MAX = 3
+ASIDE = f"attend {ITS_AGENTS}, place rendue"
 #: How long after stepping aside a run's agent may still write (the call it waits in, flushed) and stay aside (`Aside.stands_aside`).
 ASIDE_GRACE_SECONDS = 15.0
 #: How long a spawn that could not start stays readable (`agents list`, `agents events`) before it is forgotten.
@@ -307,11 +311,29 @@ class Aside(Held):
 
     run_id: str
     since: float
+    #: The runs it waits on (`agents wait`); empty: a wait naming none (a deploy's).
+    waits_on: list[str] = Field(default_factory=list)
+    #: When its run began waiting: `since`, or an earlier wait's start when this one followed it within
+    #: `SpawnLine.waiting_gap_seconds` (a loop of `agents wait` calls is one wait). None: an entry of an older galaius.
+    waiting_since: float | None = None
+    #: When its wait ended; None while it lasts. Kept `SpawnLine.waiting_gap_seconds` for a next wait to carry on.
+    left_at: float | None = None
 
     def stands_aside(self, run: reg.AgentRun) -> bool:
         """Still aside: held, and its agent wrote nothing since (past `ASIDE_GRACE_SECONDS`): one that writes waits in the
         background and is at work."""
-        return self.held() and (reg.vendor_said_at(run) or 0.0) <= self.since + ASIDE_GRACE_SECONDS
+        return self.left_at is None and self.held() and (reg.vendor_said_at(run) or 0.0) <= self.since + ASIDE_GRACE_SECONDS
+
+    def waited(self, now: float) -> float:
+        """Seconds its run has waited, back-to-back waits counted as one."""
+        return now - (self.waiting_since or self.since)
+
+    def said(self, now: float) -> str:
+        """Its run list line once flagged (`SpawnLine.waiting_said`): « attend 83da9bab depuis 14 min », naming the runs
+        it waits on still to end (one not on record yet is still in line)."""
+        pending = [reg.short_id(run_id) for run_id in self.waits_on if (run := reg.get_run(run_id)) is None or run.finished_at is None]
+        more = f" +{len(pending) - WAITED_NAMED_MAX}" if len(pending) > WAITED_NAMED_MAX else ""
+        return f"attend {', '.join(pending[:WAITED_NAMED_MAX]) + more or ITS_AGENTS} depuis {self.waited(now) / 60:.0f} min"
 
 
 class Load(BaseModel):
@@ -361,6 +383,8 @@ class AtWork(BaseModel):
 
     taken: dict[str, str | None]
     aside: dict[str, str | None] = Field(default_factory=dict)
+    #: The entry each run set aside stands under (`Aside.stands_aside`).
+    entries: dict[str, Aside] = Field(default_factory=dict)
 
     def giving(self) -> frozenset[str]:
         """The runs set aside whose place is free: each one back at work alone would take a place. One whose child works
@@ -383,10 +407,16 @@ class SpawnLine(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     limit: int = Field(ge=1)
+    #: Minutes a run waits on its agents before the run list says which and since when (`waiting_said`).
+    waiting_flag_minutes: float = Field(gt=0)
+    #: Seconds between two waits of a run within which the second carries on the first (`Aside.waiting_since`).
+    waiting_gap_seconds: float = Field(ge=0)
 
     @classmethod
     def here(cls) -> SpawnLine:
-        return cls(limit=Config().agent_runs_max)
+        config = Config()
+        return cls(limit=config.agent_runs_max, waiting_flag_minutes=config.agent_waiting_flag_minutes,
+                   waiting_gap_seconds=config.agent_waiting_gap_seconds)
 
     @contextmanager
     def _places(self) -> Iterator[list[Place]]:
@@ -395,13 +425,14 @@ class SpawnLine(BaseModel):
             places[:] = self._prune(places)
             yield places
 
-    @staticmethod
     @contextmanager
-    def _asides() -> Iterator[list[Aside]]:
-        """The runs set aside, those whose holder is gone dropped. Its own state: a waiter of an older galaius rewrites
-        the line, and would turn an entry it cannot read there into a failed spawn."""
+    def _asides(self) -> Iterator[list[Aside]]:
+        """The runs set aside, those whose holder is gone dropped, and the waits ended within `waiting_gap_seconds`. Its
+        own state: a waiter of an older galaius rewrites the line, and would turn an entry it cannot read there into a
+        failed spawn."""
+        now = time.time()
         with _listed("spawn-aside", Aside) as asides:
-            asides[:] = [aside for aside in asides if aside.held()]
+            asides[:] = [aside for aside in asides if (now - aside.left_at <= self.waiting_gap_seconds if aside.left_at is not None else aside.held())]
             yield asides
 
     @staticmethod
@@ -437,9 +468,10 @@ class SpawnLine(BaseModel):
         runs = [run for run in reg.running_runs() if run.kind == "process" and not run.foreign and run.run_id not in owners]
         with self._asides() as asides:
             listed = list(asides)
-        aside = {run.run_id: run.parent_run_id for run in runs if any(entry.run_id == run.run_id and entry.stands_aside(run) for entry in listed)}
+        entries = {run.run_id: entry for run in runs for entry in listed if entry.run_id == run.run_id and entry.stands_aside(run)}
+        aside = {run.run_id: run.parent_run_id for run in runs if run.run_id in entries}
         taken = {run.run_id: run.parent_run_id for run in runs if run.run_id not in aside}
-        return AtWork(taken=taken | {place.run_id: place.parent_run_id for place in places if place.state == "starting"}, aside=aside)
+        return AtWork(taken=taken | {place.run_id: place.parent_run_id for place in places if place.state == "starting"}, aside=aside, entries=entries)
 
     def set_aside(self) -> frozenset[str]:
         """The runs at work here whose place is free while they wait on their agents (`aside`, `AtWork.giving`)."""
@@ -448,6 +480,15 @@ class SpawnLine(BaseModel):
     def load(self, places: list[Place]) -> Load:
         return self._at_work(places).load(self.limit)
 
+    def waiting_said(self) -> dict[str, str]:
+        """What the run list says of each run waiting on its agents, in place of its last activity: past
+        `waiting_flag_minutes`, which runs and since when (`Aside.said`, 2026-10-17 « still wasting time / inference /
+        usage on stupid things »); before, `ASIDE` while its place is free."""
+        at_work, now, flag = self._at_work([]), time.time(), self.waiting_flag_minutes * 60
+        giving = at_work.giving()
+        return {run_id: entry.said(now) if entry.waited(now) >= flag else ASIDE
+                for run_id, entry in at_work.entries.items() if run_id in giving or entry.waited(now) >= flag}
+
     def _admits(self, places: list[Place], parent: str | None, *, first: bool) -> bool:
         """Whether a run of `parent` starts now: it shares its parent's place, or a place is free and it is `first` in line
         or its parent is set aside, its place given back (`AtWork.giving`): the child takes it ahead of the line."""
@@ -455,24 +496,29 @@ class SpawnLine(BaseModel):
         return at_work.shares(parent) or ((first or parent in at_work.giving()) and not at_work.load(self.limit).full)
 
     @contextmanager
-    def aside(self, run_id: str | None) -> Iterator[None]:
-        """Run `run_id` (the run asking, `GALAIUS_RUN_ID`) only waits on its agents for the block (`agents wait`): its
+    def aside(self, run_id: str | None, waits_on: Sequence[str] = ()) -> Iterator[None]:
+        """Run `run_id` (the run asking, `GALAIUS_RUN_ID`) only waits on its agents `waits_on` for the block (`agents wait`): its
         place is free meanwhile, a hand-off chain holding none per waiting ancestor. Leaving, it counts again at once,
-        every entry of its own dropped (a second wait of the same run included). A run not at work here, or never
-        counted (`_exempt`), takes the block as it is."""
+        every entry of its own ended (a second wait of the same run included); a next wait within `waiting_gap_seconds`
+        carries on its start. A run not at work here, or never counted (`_exempt`), takes the block as it is."""
         run = reg.get_run(run_id) if run_id else None
         if run is None or self._exempt(run) or not run.process_running():
             yield
             return
         me = os.getpid()
-        mine = Aside(run_id=run.run_id, since=time.time(), holder=me, holder_started=process_started(me))
+        now = time.time()
         with self._asides() as asides:
-            asides.append(mine)
+            earlier = [aside.waiting_since or aside.since for aside in asides if aside.run_id == run.run_id and aside.left_at is not None]
+            asides[:] = [aside for aside in asides if aside.run_id != run.run_id or aside.left_at is None]
+            asides.append(Aside(run_id=run.run_id, since=now, waits_on=list(waits_on), waiting_since=min(earlier, default=now),
+                                holder=me, holder_started=process_started(me)))
         try:
             yield
         finally:
             with self._asides() as asides:
-                asides[:] = [aside for aside in asides if aside.run_id != run.run_id]
+                left = time.time()
+                asides[:] = [aside.model_copy(update={"left_at": left}) if aside.run_id == run.run_id and aside.left_at is None else aside
+                             for aside in asides]
 
     def enter(self, spawn: Spawn) -> Admission:
         """Take a place for `spawn`: `starting` when it may start now (the caller starts it, then `leave`s), else

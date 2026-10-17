@@ -104,6 +104,10 @@ _INTERACTION_KEY = r"^[A-Za-z0-9._:@+-]+$"
 _UNSAFE_INTERACTION_KEYS = frozenset({".", "..", "__proto__", "prototype", "constructor"})
 
 
+#: Who a message from the person (the CLI, the web) is from, on its queue item and message event (`from_run`).
+PERSON_SENDER = "operator"
+
+
 class InteractionField(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -479,7 +483,7 @@ def answered_line(events: list[AgentEvent], run_id: str) -> int | None:
 
 
 def _who(run_id: str | None) -> str:
-    """A run's name, for a reader. "operator" is a person, not a run; an id we can't resolve
+    """A run's name, for a reader. `PERSON_SENDER` is a person, not a run; an id we can't resolve
     falls back to its short form, not a bare empty string.
 
     Reads the stored record DIRECTLY, not through ``list_runs``: that derives each run's
@@ -488,8 +492,8 @@ def _who(run_id: str | None) -> str:
     """
     if not run_id:
         return "?"
-    if run_id == "operator":
-        return "operator"
+    if run_id == PERSON_SENDER:
+        return PERSON_SENDER
     # Deliberately local: registry imports AgentEvent from this module, so a module-level
     # import would create the events<->registry cycle before either side declared its models.
     from galaius.agents import registry as reg

@@ -38,7 +38,7 @@ from galaius.agents import quota
 from galaius_core import ASKED_BY_MAX, MEDIA_KEY, MODEL_ID_MAX, AgentMedia, AgentRevisionRef, ContextGauge, PromptExecutionRef, RunReplacement, StopActor
 
 from galaius.agents.events import (
-    CONTEXT_FIELDS, TOKEN_FIELDS, AgentEvent, TokenUsage, UsageLedger, answered_line, ending_of, model_spoke, stream_lines,
+    CONTEXT_FIELDS, PERSON_SENDER, TOKEN_FIELDS, AgentEvent, TokenUsage, UsageLedger, answered_line, ending_of, model_spoke, stream_lines,
 )
 from galaius.agents.catalog_connection import CatalogConnection
 from galaius.agents.ceiling import contained, end_run_scope, is_run_scope
@@ -369,6 +369,11 @@ class AgentRun(ContextGauge):
     asked_by: tuple[str, ...] = ()
 
     status: RunStatus = "running"
+
+    @property
+    def askers(self) -> frozenset[str]:
+        """The runs it answers: its parent and every run it works for (`asked_by`)."""
+        return frozenset(asker for asker in (self.parent_run_id, *self.asked_by) if asker)
 
     def prepare_continue(self) -> None:
         """His « Continuer » on this run, asked by every resume path (the web's `MachineAgents`, the CLI's `galaius agents
@@ -1410,8 +1415,8 @@ def note_asker_locked(run_id: str, asker: str) -> AgentRun | None:
     child handing back to its parent, or a run replying to one it works for."""
     run = get_run(run_id)
     sender = get_run(asker) if _is_run_id(asker) else None
-    if (run is None or sender is None or asker in {run.run_id, run.parent_run_id, *run.asked_by}
-            or len(run.asked_by) >= ASKED_BY_MAX or run_id in {sender.parent_run_id, *sender.asked_by}):
+    if (run is None or sender is None or asker == run.run_id or asker in run.askers
+            or len(run.asked_by) >= ASKED_BY_MAX or run_id in sender.askers):
         return None
     return _merge_record_locked(run_id, {"asked_by": [*run.asked_by, asker]})
 

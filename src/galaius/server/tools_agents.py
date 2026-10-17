@@ -20,14 +20,15 @@ from galaius.agents.spawn_line import Continued, Spawn, SpawnLine, StartNew
 from galaius.server.core import instrumented, mcp
 
 
-def _fmt(run: reg.AgentRun) -> str:
+def _fmt(run: reg.AgentRun, waiting: str | None = None) -> str:
+    """One run's line; `waiting`: what `SpawnLine.waiting_said` says of it, in place of its last activity."""
     bits = [f"[{run.status}]", run.run_id[:8], f"({run.provider})", run.name]
     if run.foreign:
         bits.append("— not started by galaius")
     if run.cost_usd is not None:
         bits.append(f"~${run.cost_usd:.4f}")
-    if run.last:
-        bits.append(f"· {run.last}")
+    if said := waiting or run.last:
+        bits.append(f"· {said}")
     return "  " + " ".join(bits)
 
 
@@ -197,12 +198,14 @@ async def agent_list(include_foreign: bool = False, session_id: str | None = Non
     except ValueError as error:
         return f"ERROR: {error}"
     scope = "All sessions (including unknown owners)" if all_sessions else f"Session {reg.resolve_session_id(session_id)}"
+    line = SpawnLine.here()
     queued = [f"[{'failed' if place.state == 'failed' else 'queued'}] {place.run_id[:8]} {place.label()}  {said}"
-              for place, said in SpawnLine.here().session(None if all_sessions else reg.resolve_session_id(session_id))]
+              for place, said in line.session(None if all_sessions else reg.resolve_session_id(session_id))]
     if not runs and not queued:
         installed = ", ".join(p.name for p in available_providers()) or "none installed"
         return f"{scope}: No agent runs. Providers available here: {installed}."
-    lines = [_fmt(r) for r in runs]
+    waiting = line.waiting_said()
+    lines = [_fmt(r, waiting.get(r.run_id)) for r in runs]
     live = sum(1 for r in runs if r.status == "running")
     total = sum(r.cost_usd or 0 for r in runs)
     tree = [f"  {r.run_id[:8]} ← spawned by {r.parent_run_id[:8]}"

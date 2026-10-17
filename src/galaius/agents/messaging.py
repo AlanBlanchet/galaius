@@ -342,4 +342,4 @@ async def wait_for_reply(delivery: Delivery) -> str:
 
 
 def sender_id(environment: Mapping[str, str] | None = None) -> str:
-    return (os.environ if environment is None else environment).get("GALAIUS_RUN_ID") or "operator"
+    return (os.environ if environment is None else environment).get("GALAIUS_RUN_ID") or reg.PERSON_SENDER

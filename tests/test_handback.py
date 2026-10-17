@@ -4,6 +4,7 @@ report saying "DONE" forthe tasks... »."""
 
 import json
 import time
+import uuid
 
 import pytest
 
@@ -55,14 +56,38 @@ def test_the_last_child_to_end_resumes_its_ended_parent_with_every_report(sent, 
     again = handback.hand_back("eng")  # a second ending read (same tick, another reader) queues nothing new
 
     if not woken:
-        assert first is None and sent == []
+        assert first == [] and sent == []
         return
-    assert first is not None and [call["run_id"] for call in sent] == ["lead", "lead"]
+    assert first and [call["run_id"] for call in sent] == ["lead", "lead"]
     assert sent[0]["message_id"] == sent[1]["message_id"]
     message = sent[0]["message"]
     assert "DONE: endpoint shipped, image abc123." in message and "Verdict: PASS." in message
     assert "eng" in message and "rev" in message
-    assert again is not None
+    assert again
+
+
+@pytest.mark.parametrize("latest, told", [
+    pytest.param("coordinator", ["parent", "coordinator"], id="asked-last-by-another-run-both-hear"),
+    pytest.param("parent", ["parent"], id="asked-last-by-its-parent-only-it-hears"),
+    pytest.param("person", ["parent"], id="asked-last-by-the-person-only-its-parent-hears"),
+    pytest.param("resume", ["parent", "coordinator"], id="the-persons-continue-carries-on-the-coordinators-ask"),
+])
+def test_a_continued_run_hands_back_to_the_run_that_asked_it_last_as_well_as_its_parent(sent, latest, told):
+    """2026-10-17: a continued instance's reports reached its parent, never the coordinator that had asked it the work."""
+    ids = {name: str(uuid.UUID(int=n)) for n, name in enumerate(("parent", "coordinator", "eng"), start=1)} | {"person": reg.PERSON_SENDER, "resume": reg.PERSON_SENDER}
+    _ended(ids["parent"], 100.0, agent="main")
+    _ended(ids["coordinator"], 100.0, agent="main")
+    _ended(ids["eng"], 200.0, agent="backend-engineer", parent_run_id=ids["parent"])
+    for sender in ("parent", "coordinator", latest):
+        with reg.record_lock(ids["eng"]):
+            reg.note_asker_locked(ids["eng"], ids[sender])
+        reg.record_message_event(from_run=ids[sender], to_run=ids["eng"], text=reg.RESUME_BRIEF if sender == "resume" else f"ask from {sender}")
+    _answered(ids["eng"], "DONE: row G live.")
+
+    handback.hand_back(ids["eng"])
+
+    assert sorted(call["run_id"] for call in sent) == sorted(ids[name] for name in told)
+    assert all("DONE: row G live." in call["message"] for call in sent)
 
 
 def test_a_child_still_at_work_holds_the_hand_back(sent, at_work):
@@ -70,7 +95,7 @@ def test_a_child_still_at_work_holds_the_hand_back(sent, at_work):
     _ended("eng", 200.0, agent="backend-engineer", parent_run_id="lead")
     at_work("rev", agent="code-reviewer", parent_run_id="lead")
 
-    assert handback.hand_back("eng") is None and sent == []
+    assert handback.hand_back("eng") == [] and sent == []
 
 
 def test_wait_returns_each_runs_final_report_once_all_ended(at_work):
@@ -117,7 +142,7 @@ def test_a_message_for_the_waiting_run_cuts_its_wait_short(at_work, monkeypatch)
 def test_the_waiting_run_gives_its_place_back_and_a_message_still_cuts_its_wait_at_once(at_work, monkeypatch):
     """2026-10-17: every place on the computer held, half by runs sitting in `galaius agents wait` on a run that is
     not their child, which queued behind them. Woken on a full line, it counts again at once: never a wait for a place."""
-    monkeypatch.setattr(SpawnLine, "here", classmethod(lambda cls: cls(limit=1)))
+    monkeypatch.setattr(SpawnLine, "here", classmethod(lambda cls: cls(limit=1, waiting_flag_minutes=5, waiting_gap_seconds=60)))
     at_work("lead", agent="main")
     at_work("deployer", agent="deployer")
     looks: list[frozenset[str]] = []
@@ -163,3 +188,20 @@ def test_the_watch_sees_a_run_leave_its_live_set_and_one_that_lived_between_two_
 
     assert watch.ended() == ["brief", "long"]
     assert watch.ended() == []
+
+
+def test_the_watch_hands_back_a_run_with_no_parent_to_the_run_it_works_for(sent):
+    """A run started by the person, then asked work by another run, reports to that run once it ends."""
+    coordinator, worker = str(uuid.UUID(int=1)), str(uuid.UUID(int=2))
+    watch = handback.EndWatch()
+    _ended(coordinator, watch.looked - 10, agent="main")
+    register_run(worker, agent="backend-engineer")
+    with reg.record_lock(worker):
+        reg.note_asker_locked(worker, coordinator)
+    reg.record_message_event(from_run=coordinator, to_run=worker, text="row I")
+    reg.finish(worker, exit_code=0)
+    _answered(worker, "DONE: row I live.")
+
+    watch.tick()
+
+    assert [call["run_id"] for call in sent] == [coordinator] and "DONE: row I live." in sent[0]["message"]

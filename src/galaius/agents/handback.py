@@ -3,8 +3,9 @@
 A parent that ends its turn while its agents still work hears nothing when they finish: their ending reaches its
 record, never its conversation, and nobody writes the owner the result (owner 2026-10-16: « it said in the UI
 that tasks were done... But i never got another report saying "DONE" forthe tasks... »). `hand_back` resumes such a
-parent once its LAST pending agent ends, with every report that came in since its turn ended; the run mirror calls it
-for each run `EndWatch` sees end (the machine service's loop, `machines.MachineRunner`). `wait` is the same reports for a caller still in its turn, in one call."""
+parent (and the run that asked an agent its latest work) once its LAST pending agent ends, with every report that came
+in since its turn ended; the run mirror calls it for each run `EndWatch` sees end (the machine service's loop,
+`machines.MachineRunner`). `wait` is the same reports for a caller still in its turn, in one call."""
 
 import time
 from collections.abc import Sequence
@@ -58,28 +59,57 @@ def _pending(run: reg.AgentRun) -> bool:
         or any(item.state in {"pending", "running"} for item in agent_queue.items(run.run_id))
 
 
-def hand_back(run_id: str) -> messaging.Delivery | None:
-    """Resume `run_id`'s parent with its agents' reports when `run_id` ended the last of the ones it was waiting on.
+def latest_asker(run: reg.AgentRun) -> str | None:
+    """The run of its `asked_by` that sent it its latest ask (or a spawn sent for, `for_run`), the one its turn now
+    answers; None when that latest ask came from its parent or the person, or none came from a run it works for (a
+    `work-for` alone). An automatic resume, the person's « Continuer » or its own agents' hand-back carries on the ask
+    before it."""
+    def asker(event) -> str | None:
+        said_by = event.for_run or event.from_run
+        new_ask = said_by in run.askers or (said_by == reg.PERSON_SENDER and event.text != reg.RESUME_BRIEF)
+        return said_by if event.to_run == run.run_id and new_ask else None
 
-    Only a parent whose own turn ended (`_ENDED_ITS_TURN`) before those agents did; one message per ended parent turn
-    (its `message_id` names that turn), so every reader of the same ending queues it once."""
+    latest = next((said_by for event in reversed(reg.read_messages(run.run_id)) if (said_by := asker(event)) is not None), None)
+    return latest if latest in run.asked_by else None
+
+
+def _answers(run: reg.AgentRun, asker: str) -> bool:
+    """`run` owes `asker` its report: `asker` started it, or sent it the work it is on (`latest_asker`)."""
+    return run.parent_run_id == asker or (asker in run.asked_by and latest_asker(run) == asker)
+
+
+def hand_back(run_id: str) -> list[messaging.Delivery]:
+    """Resume each run `run_id` answers — its parent, and the run that asked it its latest work (`latest_asker`) —
+    with the reports of the agents it waited on, when `run_id` ended the last of them. 2026-10-17: a continued
+    instance's reports reached its parent, never the coordinator that had asked it the work."""
     child = reg.get_run(run_id)
-    parent = reg.get_run(child.parent_run_id) if child is not None and child.parent_run_id else None
-    if parent is None or parent.finished_at is None or parent.status not in _ENDED_ITS_TURN or _pending(parent):
+    if child is None:
+        return []
+    askers = dict.fromkeys(asker for asker in (child.parent_run_id, latest_asker(child)) if asker)
+    return [delivery for asker in askers if (delivery := _resume(asker, child)) is not None]
+
+
+def _resume(asker_id: str, child: reg.AgentRun) -> messaging.Delivery | None:
+    """Resume run `asker_id` with the reports of every agent that answers it (`_answers`) once none is pending.
+
+    Only a run whose own turn ended (`_ENDED_ITS_TURN`) before those agents did; one message per ended turn (its
+    `message_id` names that turn), so every reader of the same ending queues it once."""
+    asker = reg.get_run(asker_id)
+    if asker is None or asker.finished_at is None or asker.status not in _ENDED_ITS_TURN or _pending(asker):
         return None
-    agents = [run for stored in reg._stored_records() if stored.parent_run_id == parent.run_id
-              and (run := reg.get_run(stored.run_id)) is not None]
+    agents = [run for stored in reg._stored_records() if asker_id in stored.askers
+              and (run := reg.get_run(stored.run_id)) is not None and _answers(run, asker_id)]
     if any(_pending(run) for run in agents):
         return None
-    since = [run for run in agents if run.finished_at is not None and run.finished_at >= parent.finished_at]
+    since = [run for run in agents if run.finished_at is not None and run.finished_at >= asker.finished_at]
     if not since:
         return None
     reports = [Report.of(run) for run in sorted(since, key=lambda run: run.finished_at or 0.0)]
-    message = (f"Your agents ended after your turn did; their final reports follow. Report the outcome to whoever asked "
-               f"you (the result of each ask, from these reports), or continue the work.\n\n"
+    message = (f"The agents you started or asked ended after your turn did; their final reports follow. Report the outcome "
+               f"to whoever asked you (the result of each ask, from these reports), or continue the work.\n\n"
                + "\n\n".join(report.section() for report in reports))
     return messaging.deliver_message(
-        parent.run_id, message, sender=child.run_id, message_id=f"handback-{parent.finished_at:.6f}", only_if_idle=True,
+        asker.run_id, message, sender=child.run_id, message_id=f"handback-{asker.finished_at:.6f}", only_if_idle=True,
         turn=agent_queue.MessageTurn(limit=agent_queue.BRIEF_MAX),
     )
 
@@ -94,14 +124,14 @@ class EndWatch(BaseModel):
     def ended(self) -> list[str]:
         now, live = time.time(), frozenset(run.run_id for run in reg.running_runs())
         recorded = {run.run_id for run in reg._stored_records()
-                    if run.parent_run_id and run.finished_at is not None and self.looked <= run.finished_at <= now}
+                    if run.askers and run.finished_at is not None and self.looked <= run.finished_at <= now}
         ended = sorted((self.live - live) | (recorded - live))
         self.live, self.looked = live, now
         return ended
 
     def tick(self) -> list[messaging.Delivery]:
         """`hand_back` for every run that ended since the last look; the deliveries it queued."""
-        return [delivery for run_id in self.ended() if (delivery := hand_back(run_id)) is not None]
+        return [delivery for run_id in self.ended() for delivery in hand_back(run_id)]
 
 
 class Waited(BaseModel):
@@ -142,6 +172,6 @@ def wait(run_ids: Sequence[str], *, timeout: float, interval: float = 2.0, asker
             if waiting is not None and (message := agent_queue.next_step_read(waiting)) is not None:
                 return Waited(reports=reports, message=message)
             if not stepped_aside:
-                aside.enter_context(line.aside(asker))
+                aside.enter_context(line.aside(asker, waits_on=[report.run_id for report in reports if report.pending]))
                 stepped_aside = True
             time.sleep(interval)

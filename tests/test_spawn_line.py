@@ -17,7 +17,7 @@ import pytest
 from galaius.agents import registry as reg
 from galaius.agents import spawn_line
 from galaius.agents.run import run_agent
-from galaius.agents.spawn_line import STUCK, Admission, Load, Spawn, SpawnLine
+from galaius.agents.spawn_line import ASIDE, STUCK, Admission, Load, Spawn, SpawnLine
 from galaius.cli.app_commands import agents_spawn
 from galaius.machine_agents import WebRun, WebRuns
 from galaius.paths import UserPaths
@@ -59,7 +59,7 @@ def _spawn(parent: str | None = None) -> Spawn:
 
 
 def test_past_the_limit_a_spawn_waits_and_starts_in_order_under_its_id(at_work, started):
-    line = SpawnLine(limit=2)
+    line = SpawnLine(limit=2, waiting_flag_minutes=5, waiting_gap_seconds=60)
     at_work("a")
     busy = at_work("b")
     first, second = line.enter(_spawn()), line.enter(_spawn())
@@ -76,7 +76,7 @@ def test_past_the_limit_a_spawn_waits_and_starts_in_order_under_its_id(at_work, 
 
 def test_a_run_shares_its_place_with_its_first_child_one_level_only(at_work, started):
     """A lead waiting for the critic it started never waits behind its own place; the critic's own child does."""
-    line = SpawnLine(limit=1)
+    line = SpawnLine(limit=1, waiting_flag_minutes=5, waiting_gap_seconds=60)
     at_work("lead")
     critic = line.enter(_spawn(parent="lead"))
     assert critic.ahead is None
@@ -90,7 +90,7 @@ def test_a_run_shares_its_place_with_its_first_child_one_level_only(at_work, sta
 
 def test_runs_waiting_on_their_agents_give_their_place_back_until_they_wake(at_work, started):
     """2026-10-17: 6 places of 6 held, half by runs only waiting on their children; critic verdicts queued behind them."""
-    line = SpawnLine(limit=6)
+    line = SpawnLine(limit=6, waiting_flag_minutes=5, waiting_gap_seconds=60)
     for run_id in ("w1", "w2", "w3", "x1", "x2", "x3"):
         at_work(run_id)
     queued = line.enter(_spawn())
@@ -108,10 +108,37 @@ def test_runs_waiting_on_their_agents_give_their_place_back_until_they_wake(at_w
         "en file : 0 avant elle (7 agents au travail sur ce PC, 6 places prises sur 6, 3 rendues par des runs qui attendent leurs agents)"
 
 
+@pytest.mark.parametrize(("waits_on", "said"), [
+    pytest.param(["83da9bab-0000-4000-8000-000000000000", "5c0ffee1-0000-4000-8000-000000000000", "ended"], "attend 83da9bab, 5c0ffee1 depuis 14 min", id="names-the-runs-still-to-end"),
+    pytest.param([], "attend ses agents depuis 14 min", id="a-wait-naming-none"),
+    pytest.param([f"{n}0000000-0000-4000-8000-000000000000" for n in range(1, 6)], "attend 10000000, 20000000, 30000000 +2 depuis 14 min",
+                 id="a-wave-past-three-counted-so-the-cli-keeps-its-duration"),
+])
+def test_a_run_only_waiting_on_other_runs_past_the_flag_says_which_and_since_when(at_work, started, monkeypatch, waits_on, said):
+    """2026-10-17 « still wasting time / inference / usage on stupid things »: a run whose only activity is waiting on other
+    runs, in one wait or a loop of short ones, is flagged in the run list once past `waiting_flag_minutes`; before it its
+    place given back, and once it writes again, nothing."""
+    line, clock = SpawnLine(limit=2, waiting_flag_minutes=5, waiting_gap_seconds=60), time.time()
+    monkeypatch.setattr(time, "time", lambda: clock)
+    at_work("lead")
+    register_run("ended", agent="code-reviewer", parent_run_id="lead")
+    reg.finish("ended", exit_code=0)
+    with line.aside("lead", waits_on=waits_on):
+        assert line.waiting_said() == {"lead": ASIDE}
+        clock += 7 * 60
+    clock += 30  # its agent reads the wait's answer and waits again
+    with line.aside("lead", waits_on=waits_on):
+        clock += 7 * 60 - 30
+        assert line.waiting_said() == {"lead": said}
+        reg.raw_events_path("lead").write_text("{}\n")
+        os.utime(reg.raw_events_path("lead"), (clock, clock))
+        assert line.waiting_said() == {}
+
+
 def test_a_waiters_first_child_takes_its_place_and_the_woken_waiter_counts_at_once(at_work, started):
     """Its first child takes the place it gave back ahead of the line; woken, it counts again before any spawn; one whose
     agent writes again (its wait in the background) counts."""
-    line = SpawnLine(limit=1)
+    line = SpawnLine(limit=1, waiting_flag_minutes=5, waiting_gap_seconds=60)
     at_work("lead")
     waiting = line.aside("lead")
     waiting.__enter__()
@@ -135,7 +162,7 @@ def test_a_waiters_first_child_takes_its_place_and_the_woken_waiter_counts_at_on
 def test_a_waiter_whose_child_works_frees_no_place_and_says_none(at_work, started):
     """Its child at work takes over the place it shared: none is free, none is said free; one with no child frees one,
     its first child takes a free place ahead of the line, never one past the limit."""
-    line = SpawnLine(limit=4)
+    line = SpawnLine(limit=4, waiting_flag_minutes=5, waiting_gap_seconds=60)
     for lead in ("w1", "w2", "w3"):
         at_work(lead)
         at_work(f"{lead}-child", parent_run_id=lead)
@@ -156,7 +183,7 @@ def test_a_waiter_whose_child_works_frees_no_place_and_says_none(at_work, starte
 
 def test_a_hand_off_chain_waiting_holds_only_its_working_leafs_place(at_work, started):
     """A run handing off to a fresh run and waiting on it, three deep: the waiting ancestors hold no place."""
-    line = SpawnLine(limit=6)
+    line = SpawnLine(limit=6, waiting_flag_minutes=5, waiting_gap_seconds=60)
     at_work("r1")
     at_work("r2", parent_run_id="r1")
     at_work("r3", parent_run_id="r2")
@@ -171,7 +198,7 @@ def test_a_hand_off_chain_waiting_holds_only_its_working_leafs_place(at_work, st
 
 
 def test_the_owners_own_web_runs_are_not_counted(at_work, started):
-    line = SpawnLine(limit=1)
+    line = SpawnLine(limit=1, waiting_flag_minutes=5, waiting_gap_seconds=60)
     owners = str(uuid.uuid4())
     at_work(owners)
     UserPaths.config().mkdir(parents=True)
@@ -181,7 +208,7 @@ def test_the_owners_own_web_runs_are_not_counted(at_work, started):
 
 def test_a_resumed_turn_takes_its_turn_in_the_same_line_and_says_so(at_work, started):
     """A message to an ended run starts a process like a spawn: it waits its turn, and its sender is told."""
-    line = SpawnLine(limit=1)
+    line = SpawnLine(limit=1, waiting_flag_minutes=5, waiting_gap_seconds=60)
     at_work("lead")
     at_work("critic", parent_run_id="lead")
     ended = register_run(run_id="other", pid=None)
@@ -199,7 +226,7 @@ def test_a_resumed_turn_takes_its_turn_in_the_same_line_and_says_so(at_work, sta
 @pytest.mark.skipif(sys.platform != "linux", reason="reads the waiter's command line from /proc")
 def test_the_waiter_is_its_own_process_and_ends_when_taken_out_of_the_line(at_work):
     """The real waiter: detached, holding the place, gone within one look once `agents stop` cancels it."""
-    line = SpawnLine(limit=1)
+    line = SpawnLine(limit=1, waiting_flag_minutes=5, waiting_gap_seconds=60)
     at_work("a")
     queued = line.enter(_spawn())
     with line._places() as places:
@@ -213,7 +240,7 @@ def test_the_waiter_is_its_own_process_and_ends_when_taken_out_of_the_line(at_wo
 
 
 def test_a_start_cut_off_or_an_unreadable_entry_reads_failed_and_never_refuses(at_work, started):
-    line = SpawnLine(limit=1)
+    line = SpawnLine(limit=1, waiting_flag_minutes=5, waiting_gap_seconds=60)
     cut = line.enter(_spawn())  # starts now: `starting`, held by this process
     with line._places() as places:
         places[0] = places[0].model_copy(update={"holder_started": -1})

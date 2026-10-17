@@ -181,7 +181,7 @@ class QueueItem(BaseModel):
     def writer(self) -> str:
         """Who sent it, to the run it was sent to: the person, another run, or the launcher itself
         (`registry.LIMIT_RESUME_SENDER`)."""
-        if self.sender == "operator":
+        if self.sender == reg.PERSON_SENDER:
             return OPERATOR
         origin = reg.get_run(self.sender)
         return f"another agent, {origin.name} (run {self.sender[:8]})" if origin is not None else f"Galaius on this computer ({self.sender})"

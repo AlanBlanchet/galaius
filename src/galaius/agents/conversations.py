@@ -547,7 +547,7 @@ class ConversationIndex(BaseModel):
         conversations itself, never found."""
         if event.kind == "tool" and (_SEARCH_TOOL.search(event.tool or "") or _SEARCH_COMMAND.search(event.tool_input)):
             return None
-        his = event.kind == "prompt" or (event.kind == "message" and event.from_run == "operator" and event.text != reg.RESUME_BRIEF)
+        his = event.kind == "prompt" or (event.kind == "message" and event.from_run == reg.PERSON_SENDER and event.text != reg.RESUME_BRIEF)
         return TYPED if typed and his else TIERS[event.kind]
 
     def _file(self, db: sqlite3.Connection, found: ConversationFile, conversation: str, offset: int,

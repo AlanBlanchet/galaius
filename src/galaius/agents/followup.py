@@ -89,7 +89,7 @@ class FollowUps(BaseModel):
         run = await asyncio.to_thread(reg.get_run, run_id)
         readying = asyncio.create_task(self._child(run, environment)) if run is not None and self._resumable(run) and not run.process_running() else None
         try:
-            delivery = await asyncio.to_thread(queue_message, run_id, text, sender="operator", environment=environment, message_id=message_id, turn=turn)
+            delivery = await asyncio.to_thread(queue_message, run_id, text, sender=reg.PERSON_SENDER, environment=environment, message_id=message_id, turn=turn)
         except BaseException:
             if (child := await self._ready(readying)) is not None:
                 end_waiting(child.process)

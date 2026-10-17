@@ -206,6 +206,11 @@ class Config(BaseSettings):
     # How many agent runs may work on this computer at once, every conversation's; one more spawn waits
     # in line until one ends (`galaius.agents.spawn_line`). The owner's own conversations are not counted.
     agent_runs_max: Annotated[int, Field(ge=1)] = 6
+    # Minutes a run's only activity may be waiting on other runs (`galaius agents wait`) before the run list flags it
+    # (« attend 83da9bab depuis 14 min »): waiting on another agent, a run ends its turn and the reply resumes it.
+    agent_waiting_flag_minutes: Annotated[float, Field(gt=0)] = 5.0
+    # Seconds between two such waits of a run within which the second carries on the first's start (a loop of short waits).
+    agent_waiting_gap_seconds: Annotated[float, Field(ge=0)] = 60.0
     agent_memory_max_percent: Annotated[int, Field(ge=1, le=100)] = 45
     agent_run_memory_max_percent: Annotated[int, Field(ge=1, le=100)] = 20
     # systemd-oomd acts on the agents' slice when it stalls this share of the time on memory.
