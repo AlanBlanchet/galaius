@@ -148,6 +148,24 @@ async def test_a_run_streams_its_events_and_records_its_cost(tmp_path, mesh):
 
 
 @pytest.mark.asyncio
+async def test_a_headless_run_is_told_to_end_its_turn_instead_of_polling_another_agent(tmp_path):
+    """A headless run that polls a child's run burns inference while the child works; the brief
+    must tell it that the child's report resumes it (`handback`), so ending the turn is the wait."""
+    briefs = []
+    provider = _FakeProvider()
+    command = provider.command
+    provider.command = lambda task, **arguments: briefs.append(task) or command(task, **arguments)
+    run = await run_agent(provider, "do a thing", agent="tester", cwd=str(tmp_path))
+    await asyncio.wait_for(run.wait(), timeout=30)
+
+    [brief] = briefs
+    assert "send your request and end your turn" in brief
+    assert "never poll another agent's run" in brief
+    assert "at most 10 minutes per call" in brief
+    assert brief.endswith("do a thing")
+
+
+@pytest.mark.asyncio
 async def test_a_failing_run_is_recorded_as_failed(tmp_path):
     run = await run_agent(_CrashingProvider(), "boom", agent="tester", name="w", cwd=str(tmp_path))
     await asyncio.wait_for(run.wait(), timeout=30)
