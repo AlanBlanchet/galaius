@@ -8,6 +8,7 @@ for each run `EndWatch` sees end (the machine service's loop, `machines.MachineR
 
 import time
 from collections.abc import Sequence
+from contextlib import ExitStack
 
 from pydantic import BaseModel, Field
 
@@ -120,21 +121,27 @@ def wait(run_ids: Sequence[str], *, timeout: float, interval: float = 2.0, asker
     a run still waiting in this computer's line (`SpawnLine`) is pending; an id naming no run is refused (`LookupError`).
     A message `asker` (the run waiting, `GALAIUS_RUN_ID`) reads at its next step (`agent_queue.next_step_read`) ends the
     wait at once, never after a 10-minute wait (2026-10-16: the owner's words reached the coordinator 9.4 min late); one
-    it reads only once its turn ends leaves the wait running."""
+    it reads only once its turn ends leaves the wait running. While one is pending, `asker`'s place on this computer is
+    free for the line; it counts again as soon as the wait returns (`SpawnLine.aside`)."""
     line = SpawnLine.here()
     waiting = reg.get_run(asker) if asker is not None else None
     deadline = time.monotonic() + timeout
-    while True:
-        reports: list[Report] = []
-        for asked in run_ids:
-            if (run := reg.get_run(reg.resolve_run_id(asked) or asked)) is not None:
-                reports.append(Report.of(run))
-            elif line.describe(asked) is not None:
-                reports.append(Report(run_id=asked, agent=None, status="queued", pending=True, text=""))
-            else:
-                raise LookupError(f"no agent run {asked!r}")
-        if not any(report.pending for report in reports) or time.monotonic() >= deadline:
-            return Waited(reports=reports)
-        if waiting is not None and (message := agent_queue.next_step_read(waiting)) is not None:
-            return Waited(reports=reports, message=message)
-        time.sleep(interval)
+    stepped_aside = False
+    with ExitStack() as aside:
+        while True:
+            reports: list[Report] = []
+            for asked in run_ids:
+                if (run := reg.get_run(reg.resolve_run_id(asked) or asked)) is not None:
+                    reports.append(Report.of(run))
+                elif line.describe(asked) is not None:
+                    reports.append(Report(run_id=asked, agent=None, status="queued", pending=True, text=""))
+                else:
+                    raise LookupError(f"no agent run {asked!r}")
+            if not any(report.pending for report in reports) or time.monotonic() >= deadline:
+                return Waited(reports=reports)
+            if waiting is not None and (message := agent_queue.next_step_read(waiting)) is not None:
+                return Waited(reports=reports, message=message)
+            if not stepped_aside:
+                aside.enter_context(line.aside(asker))
+                stepped_aside = True
+            time.sleep(interval)

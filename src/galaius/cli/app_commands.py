@@ -38,7 +38,7 @@ from galaius.agents.providers import (
     provider_for,
 )
 from galaius.agents.run import ModelUnavailable, is_criterion, Ranking, rank, resolve_model, run_agent
-from galaius.agents.spawn_line import Continued, Spawn, SpawnLine, StartNew
+from galaius.agents.spawn_line import ASIDE, Continued, Spawn, SpawnLine, StartNew
 from galaius.cli.clients import ClientTarget, MCPServer, Scope
 from galaius.cli.command_bootstrap import Config, UserConfig
 from galaius.cli.render import CliRenderer
@@ -874,7 +874,8 @@ def agents_list(foreign: bool = False, session_id: str | None = None, all_sessio
         print(f"ERROR: {error}", file=sys.stderr)
         raise SystemExit(2) from None
     print("All sessions (including unknown owners)" if all_sessions else f"Session: {identity}")
-    places = SpawnLine.here().session(None if all_sessions else identity)
+    line = SpawnLine.here()
+    places, aside = line.session(None if all_sessions else identity), line.set_aside()
     for place, said in places:
         state = "failed" if place.state == "failed" else "queued"
         print(f"  {state:8} {place.run_id[:8]}  {'-':7} {place.label():16} {'—':>10}  {said}")
@@ -885,7 +886,7 @@ def agents_list(foreign: bool = False, session_id: str | None = None, all_sessio
     for run in runs:
         cost = f"~${run.cost_usd:.4f}" if run.cost_usd is not None else "—"
         mark = "*" if run.foreign else " "
-        said = run.interruption.describe() if run.interruption else run.last
+        said = run.interruption.describe() if run.interruption else ASIDE if run.run_id in aside else run.last
         print(f"{mark} {run.status:8} {run.run_id[:8]}  {run.provider:7} {run.name:16} "
               f"{cost:>10}  {said[:60]}")
     if any(r.foreign for r in runs):

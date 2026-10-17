@@ -9,6 +9,7 @@ import pytest
 
 from galaius.agents import agent_queue, handback
 from galaius.agents import registry as reg
+from galaius.agents.spawn_line import SpawnLine
 from tests.support import register_run
 
 
@@ -111,6 +112,26 @@ def test_a_message_for_the_waiting_run_cuts_its_wait_short(at_work, monkeypatch)
     waited = handback.wait(["rev"], timeout=30, interval=0.05, asker="lead")
     assert time.monotonic() - started < 5
     assert waited.message is not None and waited.message.id == item.id and [report.pending for report in waited.reports] == [True]
+
+
+def test_the_waiting_run_gives_its_place_back_and_a_message_still_cuts_its_wait_at_once(at_work, monkeypatch):
+    """2026-10-17: every place on the computer held, half by runs sitting in `galaius agents wait` on a run that is
+    not their child, which queued behind them. Woken on a full line, it counts again at once: never a wait for a place."""
+    monkeypatch.setattr(SpawnLine, "here", classmethod(lambda cls: cls(limit=1)))
+    at_work("lead", agent="main")
+    at_work("deployer", agent="deployer")
+    looks: list[frozenset[str]] = []
+
+    def look(seconds: float) -> None:
+        looks.append(SpawnLine.here().set_aside())
+        agent_queue.enqueue("lead", message_id="m1", sender="operator")
+
+    monkeypatch.setattr(handback.time, "sleep", look)
+    started = time.monotonic()
+    waited = handback.wait(["deployer"], timeout=30, interval=0.05, asker="lead")
+    assert time.monotonic() - started < 5 and waited.message is not None and looks == [frozenset({"lead"})]
+    with SpawnLine.here()._places() as places:
+        assert SpawnLine.here().load(places).places == 2 and SpawnLine.here().set_aside() == frozenset()
 
 
 @pytest.fixture

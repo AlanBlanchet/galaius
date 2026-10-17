@@ -3,6 +3,7 @@
 memory cap killed builds, browsers and whole runs."""
 
 import asyncio
+import contextlib
 import inspect
 import json
 import os
@@ -16,7 +17,7 @@ import pytest
 from galaius.agents import registry as reg
 from galaius.agents import spawn_line
 from galaius.agents.run import run_agent
-from galaius.agents.spawn_line import STUCK, Spawn, SpawnLine
+from galaius.agents.spawn_line import STUCK, Admission, Load, Spawn, SpawnLine
 from galaius.machine_agents import WebRun, WebRuns
 from galaius.paths import UserPaths
 from tests.support import register_run
@@ -84,6 +85,88 @@ def test_a_run_shares_its_place_with_its_first_child_one_level_only(at_work, sta
     assert (second_child.ahead, grandchild.ahead) == (0, 1)
     assert "2 agents au travail sur ce PC, 1 places prises sur 1" in grandchild.sentence()
     assert line.describe(grandchild.run_id).endswith(STUCK)  # the one place's team waits on its own grandchild
+
+
+def test_runs_waiting_on_their_agents_give_their_place_back_until_they_wake(at_work, started):
+    """2026-10-17: 6 places of 6 held, half by runs only waiting on their children; critic verdicts queued behind them."""
+    line = SpawnLine(limit=6)
+    for run_id in ("w1", "w2", "w3", "x1", "x2", "x3"):
+        at_work(run_id)
+    queued = line.enter(_spawn())
+    assert queued.ahead == 0
+    with contextlib.ExitStack() as waiting:
+        for run_id in ("w1", "w2", "w3"):
+            waiting.enter_context(line.aside(run_id))
+        assert line.set_aside() == frozenset({"w1", "w2", "w3"})
+        assert line._turn(queued.run_id) != "wait"  # the 4th worker starts at its waiter's next look
+        with line._places() as places:
+            assert (line.load(places).places, line.load(places).aside) == (4, 3)
+        line.leave(queued.run_id)  # never started here: a real start makes it a run at work, and the waiters wait for it to end
+    assert line.set_aside() == frozenset()
+    assert Admission(run_id="r", ahead=0, load=Load(runs=7, places=6, limit=6, aside=3)).sentence() == \
+        "en file : 0 avant elle (7 agents au travail sur ce PC, 6 places prises sur 6, 3 rendues par des runs qui attendent leurs agents)"
+
+
+def test_a_waiters_first_child_takes_its_place_and_the_woken_waiter_counts_at_once(at_work, started):
+    """Its first child takes the place it gave back ahead of the line; woken, it counts again before any spawn; one whose
+    agent writes again (its wait in the background) counts."""
+    line = SpawnLine(limit=1)
+    at_work("lead")
+    waiting = line.aside("lead")
+    waiting.__enter__()
+    critic = line.enter(_spawn(parent="lead"))
+    assert critic.ahead is None
+    busy = at_work(critic.run_id, parent_run_id="lead")
+    line.leave(critic.run_id)
+    fresh = line.enter(_spawn())
+    assert fresh.ahead == 0
+    waiting.__exit__(None, None, None)
+    busy.kill()
+    busy.wait()
+    assert line._turn(fresh.run_id) == "wait"  # the lead counts again at once
+    with line.aside("lead"):
+        reg.raw_events_path("lead").write_text("{}\n")
+        later = time.time() + 60
+        os.utime(reg.raw_events_path("lead"), (later, later))
+        assert line.set_aside() == frozenset()
+
+
+def test_a_waiter_whose_child_works_frees_no_place_and_says_none(at_work, started):
+    """Its child at work takes over the place it shared: none is free, none is said free; one with no child frees one,
+    its first child takes a free place ahead of the line, never one past the limit."""
+    line = SpawnLine(limit=4)
+    for lead in ("w1", "w2", "w3"):
+        at_work(lead)
+        at_work(f"{lead}-child", parent_run_id=lead)
+    at_work("x")
+    with contextlib.ExitStack() as waiting:
+        for run_id in ("w1", "w2", "w3", "x"):
+            waiting.enter_context(line.aside(run_id))
+        assert line.set_aside() == frozenset({"x"})
+        fresh = line.enter(_spawn())
+        assert fresh.ahead is None  # x's place
+        second = line.enter(_spawn(parent="w1"))
+        assert second.ahead == 0 and "4 places prises sur 4, 1 rendue par des runs qui attendent leurs agents)" in second.sentence()
+        x_child = line.enter(_spawn(parent="x"))
+        assert x_child.ahead == 1  # the place x gave back is taken: it waits
+        line.leave(fresh.run_id)
+        assert line._turn(x_child.run_id) != "wait" and line._turn(second.run_id) == "wait"
+
+
+def test_a_hand_off_chain_waiting_holds_only_its_working_leafs_place(at_work, started):
+    """A run handing off to a fresh run and waiting on it, three deep: the waiting ancestors hold no place."""
+    line = SpawnLine(limit=6)
+    at_work("r1")
+    at_work("r2", parent_run_id="r1")
+    at_work("r3", parent_run_id="r2")
+    at_work("leaf", parent_run_id="r3")
+    with line._places() as places:
+        assert line.load(places).places == 3
+    with contextlib.ExitStack() as waiting:
+        for run_id in ("r1", "r2", "r3"):
+            waiting.enter_context(line.aside(run_id))
+        with line._places() as places:
+            assert (line.load(places).places, line.load(places).aside) == (1, 2)
 
 
 def test_the_owners_own_web_runs_are_not_counted(at_work, started):

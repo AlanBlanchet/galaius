@@ -13,6 +13,12 @@ role: measured that day, a browser-driving critic held ~0.75 GB, a code reviewer
 0.4-0.6 GB. One exception keeps a team from blocking on itself, as make's jobserver does: a run in a
 place of its own and its first child at work share that place (one level only), so a lead waiting
 for the critic it started never waits behind its own place; at most twice as many runs as places.
+
+A run only waiting on its agents (`galaius agents wait`) takes no place meanwhile (`SpawnLine.aside`): 2026-10-17 every
+place of 6 was held, half by runs each waiting on a child, a chain of hand-offs holding one per ancestor, while the
+critic verdicts they waited for queued behind them. Its first child takes the place it gave back ahead of the line,
+when that place is still free. Woken, it counts again at once, never waiting (a message for it is read at once): the
+line is over the limit by the runs woken while it was full, and no spawn starts until it is below again.
 """
 
 from __future__ import annotations
@@ -27,7 +33,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import ClassVar, Literal
+from typing import ClassVar, Literal, Self, TypeVar
 
 from galaius_core import AgentRevisionRef
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -49,6 +55,10 @@ from galaius.upgrade.store import Runtime, RuntimeStore
 POLL_SECONDS = 3.0
 #: Said of a run waiting when every place is held by a team with a run waiting in line (`SpawnLine._stuck`).
 STUCK = "chaque place est tenue par une équipe dont une run attend ici ; si elles s'attendent, arrêtez-en une"
+#: Said of a run set aside (`SpawnLine.aside`) whose place is free, where its activity line would be (`agents list`).
+ASIDE = "attend ses agents, place rendue"
+#: How long after stepping aside a run's agent may still write (the call it waits in, flushed) and stay aside (`Aside.stands_aside`).
+ASIDE_GRACE_SECONDS = 15.0
 #: How long a spawn that could not start stays readable (`agents list`, `agents events`) before it is forgotten.
 FAILED_KEPT_SECONDS = 24 * 3600.0
 
@@ -212,25 +222,66 @@ class StartNew(BaseModel):
         return f"\n{self.why}" if self.why else ""
 
 
-class Place(BaseModel):
-    """One run in the line. `starting`: admitted, its process not on record yet; `waiting`: held by its waiter;
-    `failed`: it will not start (`said` why). A resumed turn (`spawn` None) is only ever `starting`."""
+class Held(BaseModel):
+    """An entry of a shared list (`_listed`) that lasts while the process holding it does."""
 
     model_config = ConfigDict(extra="ignore")
+
+    #: The process holding it and when that process started: an entry whose holder is gone is nobody's.
+    holder: int
+    holder_started: int | None
+
+    def held(self) -> bool:
+        return self.holder_started is not None and process_started(self.holder) == self.holder_started and not process_exited(self.holder)
+
+    @classmethod
+    def read(cls, raw: object) -> Self | None:
+        """One stored entry; one this build cannot read is `unreadable`'s."""
+        try:
+            return cls.model_validate(raw)
+        except ValidationError as error:
+            return cls.unreadable(raw, error)
+
+    @classmethod
+    def unreadable(cls, raw: object, error: Exception) -> Self | None:
+        """What an entry this build cannot read becomes: dropped."""
+        return None
+
+
+H = TypeVar("H", bound=Held)
+
+
+@contextmanager
+def _listed(name: str, kind: type[H]) -> Iterator[list[H]]:
+    """Shared state `name` (`registry.shared_state`), a list of `kind`, for the block to change in place; written back
+    after it, all under its lock. Never refuses: unreadable state reads as an empty list (kept aside), an unreadable
+    entry as `kind.read` says."""
+    with reg.shared_state(name) as (raw, replace, keep_aside):
+        try:
+            entries = json.loads(raw) if raw else []
+        except ValueError as error:
+            keep_aside()
+            logger.warning("%s unreadable, kept aside and started over: %s", name, error)
+            entries = []
+        listed = [read for entry in (entries if isinstance(entries, list) else []) if (read := kind.read(entry)) is not None]
+        before = [entry.model_dump(mode="json") for entry in listed]
+        yield listed
+        after = [entry.model_dump(mode="json") for entry in listed]
+        if after != before:
+            replace(json.dumps(after, ensure_ascii=False).encode())
+
+
+class Place(Held):
+    """One run in the line. `starting`: admitted, its process not on record yet; `waiting`: held by its waiter;
+    `failed`: it will not start (`said` why). A resumed turn (`spawn` None) is only ever `starting`. Its holder: the
+    process that asked, then its waiter; a resume's dispatcher (`SpawnLine._prune`)."""
 
     run_id: str
     asked_at: float
     state: Literal["starting", "waiting", "failed"]
-    #: The process holding it (the one that asked, then its waiter; a resume's dispatcher) and when that process
-    #: started: a place whose holder is gone is nobody's (`SpawnLine._prune`).
-    holder: int
-    holder_started: int | None
     parent_run_id: str | None = None
     spawn: Spawn | None = None
     said: str = ""
-
-    def held(self) -> bool:
-        return self.holder_started is not None and process_started(self.holder) == self.holder_started and not process_exited(self.holder)
 
     def asked(self) -> bool:
         """A spawn someone asked for (every place but a resumed turn's): one `agents list` shows until it starts."""
@@ -241,7 +292,7 @@ class Place(BaseModel):
 
     @classmethod
     def unreadable(cls, raw: object, error: Exception) -> Place | None:
-        """An entry this build cannot read, kept as failed under its run id (None: it has none)."""
+        """Kept as failed under its run id (None: it has none)."""
         run_id = raw.get("run_id") if isinstance(raw, dict) else None
         if not isinstance(run_id, str):
             return None
@@ -250,14 +301,28 @@ class Place(BaseModel):
                    said=f"its place in line is unreadable by this galaius ({type(error).__name__}); spawn it again")
 
 
+class Aside(Held):
+    """Run `run_id` at work here, its place given back while it only waits on its agents (`SpawnLine.aside`), held by
+    the process waiting."""
+
+    run_id: str
+    since: float
+
+    def stands_aside(self, run: reg.AgentRun) -> bool:
+        """Still aside: held, and its agent wrote nothing since (past `ASIDE_GRACE_SECONDS`): one that writes waits in the
+        background and is at work."""
+        return self.held() and (reg.vendor_said_at(run) or 0.0) <= self.since + ASIDE_GRACE_SECONDS
+
+
 class Load(BaseModel):
-    """What works here against the limit: runs, and the places they take (`SpawnLine.load`)."""
+    """What works here against the limit: runs, the places they take (`AtWork.load`), and the places the runs set aside gave back."""
 
     model_config = ConfigDict(frozen=True)
 
     runs: int
     places: int
     limit: int
+    aside: int = 0
 
     @property
     def full(self) -> bool:
@@ -277,7 +342,39 @@ class Admission(BaseModel):
         """« en file : 2 avant elle (8 agents au travail sur ce PC, 6 places prises sur 6) »; "" when it starts now."""
         if self.ahead is None:
             return ""
-        return f"en file : {self.ahead} avant elle ({self.load.runs} agents au travail sur ce PC, {self.load.places} places prises sur {self.load.limit})"
+        aside = f", {self.load.aside} rendue{'s' if self.load.aside > 1 else ''} par des runs qui attendent leurs agents" if self.load.aside else ""
+        return (f"en file : {self.ahead} avant elle ({self.load.runs} agents au travail sur ce PC, "
+                f"{self.load.places} places prises sur {self.load.limit}{aside})")
+
+
+def _places_taken(taken: dict[str, str | None]) -> int:
+    """The places `taken` (run id -> its parent) take: one per run, but a run in a place of its own (its parent not at
+    work here) with a child at work shares that place with one of them."""
+    return len(taken) - len({parent for parent in taken.values() if parent in taken and taken[parent] not in taken})
+
+
+class AtWork(BaseModel):
+    """One look at who takes a place here (`SpawnLine._at_work`): every run at work and every run starting (run id -> its
+    parent), the owner's own runs and the runs set aside left out; and the runs set aside (run id -> its parent)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    taken: dict[str, str | None]
+    aside: dict[str, str | None] = Field(default_factory=dict)
+
+    def giving(self) -> frozenset[str]:
+        """The runs set aside whose place is free: each one back at work alone would take a place. One whose child works
+        frees none (the child takes it over), nor one sharing its parent's place."""
+        places = _places_taken(self.taken)
+        return frozenset(run_id for run_id, parent in self.aside.items() if _places_taken(self.taken | {run_id: parent}) > places)
+
+    def load(self, limit: int) -> Load:
+        places = _places_taken(self.taken)
+        return Load(runs=len(self.taken), places=places, limit=limit, aside=_places_taken(self.taken | self.aside) - places)
+
+    def shares(self, parent: str | None) -> bool:
+        """Whether a child of `parent` takes no place of its own: `parent` works here in a place of its own, no child yet."""
+        return parent in self.taken and self.taken[parent] not in self.taken and parent not in self.taken.values()
 
 
 class SpawnLine(BaseModel):
@@ -293,28 +390,19 @@ class SpawnLine(BaseModel):
 
     @contextmanager
     def _places(self) -> Iterator[list[Place]]:
-        """The line, pruned, for the block to change in place; written back after it, all under one lock. Never
-        refuses: unreadable state reads as an empty line, an unreadable entry as a failed one."""
-        with reg.shared_state("spawn-line") as (raw, replace, keep_aside):
-            try:
-                entries = json.loads(raw) if raw else []
-            except ValueError as error:
-                keep_aside()
-                logger.warning("spawn line unreadable, kept aside and started over: %s", error)
-                entries = []
-            places = []
-            for entry in entries if isinstance(entries, list) else []:
-                try:
-                    places.append(Place.model_validate(entry))
-                except ValidationError as error:
-                    if (failed := Place.unreadable(entry, error)) is not None:
-                        places.append(failed)
-            before = [place.model_dump(mode="json") for place in places]
+        """The line, pruned (`_listed`). Taken before `_asides` whenever both are."""
+        with _listed("spawn-line", Place) as places:
             places[:] = self._prune(places)
             yield places
-            after = [place.model_dump(mode="json") for place in places]
-            if after != before:
-                replace(json.dumps(after, ensure_ascii=False).encode())
+
+    @staticmethod
+    @contextmanager
+    def _asides() -> Iterator[list[Aside]]:
+        """The runs set aside, those whose holder is gone dropped. Its own state: a waiter of an older galaius rewrites
+        the line, and would turn an entry it cannot read there into a failed spawn."""
+        with _listed("spawn-aside", Aside) as asides:
+            asides[:] = [aside for aside in asides if aside.held()]
+            yield asides
 
     @staticmethod
     def _prune(places: list[Place]) -> list[Place]:
@@ -343,30 +431,48 @@ class SpawnLine(BaseModel):
         except (OSError, ValueError):
             return frozenset()
 
-    def _taken(self, places: list[Place]) -> dict[str, str | None]:
-        """Every run at work here and every run starting (run id -> its parent), the owner's own runs left out."""
+    def _at_work(self, places: list[Place]) -> AtWork:
+        """Who takes a place now, `places` (the line, read under its lock) adding the runs starting."""
         owners = self._owners()
-        taken = {run.run_id: run.parent_run_id for run in reg.running_runs()
-                 if run.kind == "process" and not run.foreign and run.run_id not in owners}
-        return taken | {place.run_id: place.parent_run_id for place in places if place.state == "starting"}
+        runs = [run for run in reg.running_runs() if run.kind == "process" and not run.foreign and run.run_id not in owners]
+        with self._asides() as asides:
+            listed = list(asides)
+        aside = {run.run_id: run.parent_run_id for run in runs if any(entry.run_id == run.run_id and entry.stands_aside(run) for entry in listed)}
+        taken = {run.run_id: run.parent_run_id for run in runs if run.run_id not in aside}
+        return AtWork(taken=taken | {place.run_id: place.parent_run_id for place in places if place.state == "starting"}, aside=aside)
 
-    @staticmethod
-    def _sharing(taken: dict[str, str | None]) -> set[str]:
-        """The runs whose place a child shares: in a place of their own (their parent not at work here) with a child at work."""
-        return {parent for parent in taken.values() if parent in taken and taken[parent] not in taken}
+    def set_aside(self) -> frozenset[str]:
+        """The runs at work here whose place is free while they wait on their agents (`aside`, `AtWork.giving`)."""
+        return self._at_work([]).giving()
 
     def load(self, places: list[Place]) -> Load:
-        taken = self._taken(places)
-        return Load(runs=len(taken), places=len(taken) - len(self._sharing(taken)), limit=self.limit)
-
-    def _shares(self, places: list[Place], parent: str | None) -> bool:
-        """Whether a child of `parent` takes no place of its own: `parent` works here in a place of its own, no child yet."""
-        taken = self._taken(places)
-        return parent in taken and taken[parent] not in taken and parent not in taken.values()
+        return self._at_work(places).load(self.limit)
 
     def _admits(self, places: list[Place], parent: str | None, *, first: bool) -> bool:
-        """Whether a run of `parent` starts now: it shares its parent's place, or it is `first` in line and a place is free."""
-        return self._shares(places, parent) or (first and not self.load(places).full)
+        """Whether a run of `parent` starts now: it shares its parent's place, or a place is free and it is `first` in line
+        or its parent is set aside, its place given back (`AtWork.giving`): the child takes it ahead of the line."""
+        at_work = self._at_work(places)
+        return at_work.shares(parent) or ((first or parent in at_work.giving()) and not at_work.load(self.limit).full)
+
+    @contextmanager
+    def aside(self, run_id: str | None) -> Iterator[None]:
+        """Run `run_id` (the run asking, `GALAIUS_RUN_ID`) only waits on its agents for the block (`agents wait`): its
+        place is free meanwhile, a hand-off chain holding none per waiting ancestor. Leaving, it counts again at once,
+        every entry of its own dropped (a second wait of the same run included). A run not at work here, or never
+        counted (`_exempt`), takes the block as it is."""
+        run = reg.get_run(run_id) if run_id else None
+        if run is None or self._exempt(run) or not run.process_running():
+            yield
+            return
+        me = os.getpid()
+        mine = Aside(run_id=run.run_id, since=time.time(), holder=me, holder_started=process_started(me))
+        with self._asides() as asides:
+            asides.append(mine)
+        try:
+            yield
+        finally:
+            with self._asides() as asides:
+                asides[:] = [aside for aside in asides if aside.run_id != run.run_id]
 
     def enter(self, spawn: Spawn) -> Admission:
         """Take a place for `spawn`: `starting` when it may start now (the caller starts it, then `leave`s), else
@@ -470,7 +576,8 @@ class SpawnLine(BaseModel):
 
     def _stuck(self, places: list[Place]) -> bool:
         """Every place is held by a team one of whose runs waits in line: should each wait for that run, none frees."""
-        taken = self._taken(places)
+        at_work = self._at_work(places)
+        taken = at_work.taken
 
         def team(run_id: str) -> str:
             """The run in a place of its own whose team `run_id` is in (up its parents while they work here)."""
@@ -482,7 +589,7 @@ class SpawnLine(BaseModel):
 
         holders = {team(run_id) for run_id in taken}
         waiting = {team(place.parent_run_id) for place in places if place.state == "waiting" and place.parent_run_id in taken}
-        return self.load(places).full and bool(holders) and holders <= waiting
+        return at_work.load(self.limit).full and bool(holders) and holders <= waiting
 
     def cancel(self, prefix: str, *, within: frozenset[str] | None = None) -> str | None:
         """Take a spawn not started out of the line (`agents stop`): its run id, None when none matches (or its parent
