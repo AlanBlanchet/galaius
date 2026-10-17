@@ -175,6 +175,8 @@ def test_only_a_message_that_asks_lists_its_sender_among_the_runs_its_recipient_
 
     assert reg.get_run("r1").asked_by == (() if fyi else (reporter,))
     assert [event.fyi for event in reg.read_messages("r1")] == [fyi]
+    # Acted on once queued, never written: a dispatcher of an older galaius reads the item (2026-10-17: one could not).
+    assert [{"fyi", "reports"} & set(raw["turn"]) for raw in json.loads(agent_queue.path("r1").read_text())["items"]] == [set()]
 
 
 def test_failed_resume_records_bounded_redacted_stderr(monkeypatch):

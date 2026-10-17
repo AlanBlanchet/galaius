@@ -130,10 +130,13 @@ class MessageTurn(QueuedTurn):
     #: A one-way note (a report, an ack, a heads-up): read like any message, yet its sender is never owed the turns'
     #: report (`asks`). 2026-10-17: one coordinator listed 9 runs that had only reported to it, and each of its turns
     #: after one woke that run with an empty report.
-    fyi: bool = Field(default=False, exclude_if=lambda value: not value)
+    fyi: bool = Field(default=False, exclude=True)
     #: The runs whose reports it hands back (`handback._resume`), kept on its transcript entry. A hand-back is never an
     #: ask (`asks`): two runs that once asked each other would otherwise hand back to each other for good.
-    reports: tuple[str, ...] = Field(default=(), exclude_if=lambda value: not value)
+    #: `fyi` and `reports` act when it is queued (`enqueue_locked`, `event_fields`), never written to the queue file: a
+    #: dispatcher running an older galaius cannot read an item with a field it does not know (2026-10-17: a note stuck
+    #: in a coordinator's queue cut each of its `galaius agents wait` short, never delivered).
+    reports: tuple[str, ...] = Field(default=(), exclude=True)
     mid_turn = True
     unaccepted = "resumed turn completed without a reply; resend explicitly"
 
