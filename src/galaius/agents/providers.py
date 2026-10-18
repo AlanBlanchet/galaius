@@ -1608,7 +1608,7 @@ class ClaudeCodeProvider(AgentProvider):
                 raw.get("result") or raw.get("stop_reason") or raw.get("subtype") or ""
             )
             # The window the CLI sized the conversation to when it said so in this stream (`control_response`): 2.1.288
-            # reports the model's own here (1M or 200k for one model id, by account), never `autoCompactWindow`.
+            # reports the effective `autoCompactWindow` there, capped at the model's own; `modelUsage` only the model's.
             main = (raw.get("modelUsage") or {}).get(ledger.primary)
             window = ledger.window or (main.get("contextWindow") if isinstance(main, dict) else None)
             # The turn's own thinking (`usage.output_tokens_details`: this turn, main thread; `modelUsage` is cumulative).

@@ -516,6 +516,15 @@ def test_every_agent_turn_runs_under_galaius_settings_and_gets_its_task_back_aft
     assert agent_run.AheadLaunch.turn_arguments(provider, "r3", fence, role="tester")["turn"].brief_hook is None
 
 
+def test_an_agent_turn_compacts_where_claude_code_itself_would(monkeypatch):
+    """Unconfigured, galaius sends `autoCompactWindow` 1000000: on 2.1.288 the CLI then compacts a 1M-token model at 967k and
+    a 200k one at 167k, as with no setting at all, while the owner's own `autoCompactWindow` stays out of agent runs."""
+    monkeypatch.setattr(agent_run, "config", Config())
+    reg.register(run_id="w1", pid=os.getpid(), provider="claude", name="worker", task="t", agent="app-engineer")
+    turn = agent_run.AheadLaunch.turn_arguments(ClaudeCodeProvider(), "w1", None, role="app-engineer")["turn"]
+    assert json.loads(turn.arguments()[turn.arguments().index("--settings") + 1])["autoCompactWindow"] == 1_000_000
+
+
 @pytest.mark.parametrize(("role", "name"), [("app-engineer", "app-engineer-0f9576d3"), (None, "agent-0f9576d3")])
 def test_every_agent_turn_is_named_for_peers_by_its_role_and_run(role, name, tmp_path):
     """Claude Code names an unnamed session after its folder (`<folder>-<2 hex>`), so a peer's SendMessage to

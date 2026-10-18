@@ -130,13 +130,16 @@ class Config(BaseSettings):
     prompt_cache: Path = Path.home() / ".galaius" / "prompts.sqlite3"
     claude_media_criteria: str = ""
     # Every Claude Code agent turn galaius launches (its first and each resumed one; never the owner's own
-    # editor conversation) gets these as `--settings`, which win over the user's own settings files: each
-    # call re-reads the whole conversation, so a 1M-token window left to fill bills ever-larger re-reads
-    # before it compacts. Window: the size it compacts below (the CLI's bounds, 2.1.288; 1000000 leaves a
-    # 1M-token model its whole window). Bash output: characters a command's output may put in the
-    # conversation; the rest goes to a file the agent is pointed at. Override:
-    # GALAIUS_CLAUDE_COMPACT_WINDOW, GALAIUS_CLAUDE_BASH_OUTPUT_CHARS.
-    claude_compact_window: Annotated[int, Field(ge=100_000, le=1_000_000)] = 200_000
+    # editor conversation) gets these as `--settings`, which win over the user's own settings files.
+    # Window (`autoCompactWindow`, 100k-1M): the CLI compacts at `window - 33k`, capped at the model's own
+    # window. Default 1000000 = Claude Code's own behaviour: a 1M-token model compacts at 967k, a 200k one
+    # at 167k. A top-level "auto" would let the owner's own setting leak in (2.1.288; recheck: the
+    # `get_context_usage` control request on `claude -p --input-format stream-json` answers `maxTokens`
+    # and `autocompactThreshold`). Each call re-reads the whole conversation: a lower window bills less
+    # per call but makes long runs compact repeatedly.
+    # Bash output: characters a command's output may put in the conversation; the rest goes to a file the
+    # agent is pointed at. Override: GALAIUS_CLAUDE_COMPACT_WINDOW, GALAIUS_CLAUDE_BASH_OUTPUT_CHARS.
+    claude_compact_window: Annotated[int, Field(ge=100_000, le=1_000_000)] = 1_000_000
     claude_bash_output_chars: Annotated[int, Field(gt=0)] = 15_000
     # Sovereign-tier requirement (see QUALITY_TIERS); empty → cheapest VLM (self-hosted models
     # sort first on price with no key needed). Override: GALAIUS_TIER_SOVEREIGN_CRITERIA.
