@@ -41,6 +41,17 @@ EventKind = Literal[
     "other",       # recognised as valid, not specially handled — never silently dropped
 ]
 
+class RunCut(StrEnum):
+    """What cut a turn short from outside its work, as its program said it (`AgentProvider.cut_of`, on its `error`
+    event): each names the moment its runs come back, every run of a tree it cut then resuming by itself
+    (`registry.self_resuming`). An ending none names is the run's own failure: « Continuer » alone resumes it."""
+
+    #: Its program's login expired, was revoked or switched to another account: back once signed in again.
+    login_lost = "login_lost"
+    #: Its provider's usage window refused the turn: back at the reset it named.
+    usage_limit = "usage_limit"
+
+
 #: Kinds that say nothing about what the AGENT did — the harness's own bookkeeping, kept in the
 #: transcript (a reader wants to see it) but never read as the run's own last word.
 NOT_ITS_WORK: frozenset[str] = frozenset({"other"})
@@ -417,6 +428,8 @@ class AgentEvent(ContextGauge):
     cached_input_tokens: int | None = None
     cache_write_input_tokens: int | None = None
     raw_type: str = ""
+    #: For an "error": what cut its turn from outside its work (`RunCut`); left out when None.
+    cut: RunCut | None = Field(default=None, exclude_if=lambda value: value is None)
     interaction: ConversationInteraction | None = None
     status: EventStatus | None = None
     #: True when a terminal event itself carries the provider's final response (Claude

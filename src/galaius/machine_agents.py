@@ -26,7 +26,7 @@ import tempfile
 import threading
 import time
 from collections import deque
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import ClassVar, TypeVar
@@ -1123,32 +1123,41 @@ class MachineAgents(BaseModel):
         return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=f"allowed up to {request.up_to_percent}%; resumed", reads_at=delivery.reads_at)
 
     async def resume_paused(self) -> list[str]:
-        """The runs paused here until what stopped them reopens, each resumed once by itself with
+        """The runs paused here until what stopped them reopens (`RunCut`), each resumed once by itself with
         `RESUME_BRIEF`, as « Continuer » does (its dispatcher, the launcher's environment for its folder):
         a provider usage limit's at its reset (`registry.schedule_limit_resumes`, from `LIMIT_RESUME_SENDER`),
         a lost login's once that login is signed in again here (`registry.login_paused`, its status asked
-        once per login, from `LOGIN_RESUME_SENDER`). A resume refused before its turn starts becomes the
-        run's failure, with why, so « Continuer » stays offered. Returns the ids it resumed."""
-        resumed = []
+        once per login, from `LOGIN_RESUME_SENDER`). Every run of a tree the cut stopped resumes, deepest first
+        (`registry.deepest_first`): its agents are at work again before a launcher reads where they stand, and
+        its brief names them (`AGENTS_RESUMED`). A resume refused before its turn starts becomes the run's
+        failure, with why, so « Continuer » stays offered. Returns the ids it resumed."""
+        claimed: list[tuple[reg.AgentRun, str, str]] = []
         for run in await asyncio.to_thread(reg.schedule_limit_resumes):
-            if await asyncio.to_thread(reg.claim_limit_resume, run.run_id) is not None and await self._resume(run, reg.LIMIT_RESUME_SENDER, "the usage limit"):
-                resumed.append(run.run_id)
+            if await asyncio.to_thread(reg.claim_limit_resume, run.run_id) is not None:
+                claimed.append((run, reg.LIMIT_RESUME_SENDER, "the usage limit"))
         signed_in: dict[tuple[str, UUID | None], bool | None] = {}
         for run in await asyncio.to_thread(reg.login_paused) if self.programs is not None else ():
             login = run.provider, run.subscription_id
             if login not in signed_in:
                 signed_in[login] = await asyncio.to_thread(self.programs.signed_in, *login)
-            if signed_in[login] and await asyncio.to_thread(reg.claim_login_resume, run.run_id) is not None \
-                    and await self._resume(run, reg.LOGIN_RESUME_SENDER, "signing in again"):
+            if signed_in[login] and await asyncio.to_thread(reg.claim_login_resume, run.run_id) is not None:
+                claimed.append((run, reg.LOGIN_RESUME_SENDER, "signing in again"))
+        order = [run.run_id for run in await asyncio.to_thread(reg.deepest_first, [run for run, _, _ in claimed])]
+        above = {run_id: (await asyncio.to_thread(reg.ancestors, run_id))[1:] for run_id in order}
+        resumed: list[str] = []
+        for run, sender, after in sorted(claimed, key=lambda claim: order.index(claim[0].run_id)):
+            if await self._resume(run, sender, after, agents=[below for below in resumed if run.run_id in above[below]]):
                 resumed.append(run.run_id)
         return resumed
 
-    async def _resume(self, run: reg.AgentRun, sender: str, after: str) -> bool:
-        """Claimed run `run` resumed from `sender`; whatever stops it ends as the run's failure (« … after
-        `after` failed: why »), never a silent pause."""
+    async def _resume(self, run: reg.AgentRun, sender: str, after: str, *, agents: Sequence[str] = ()) -> bool:
+        """Claimed run `run` resumed from `sender`, its brief naming `agents` of its own resumed before it
+        (`AGENTS_RESUMED`); whatever stops it ends as the run's failure (« … after `after` failed: why »),
+        never a silent pause."""
+        brief = reg.RESUME_BRIEF + (f"\n\n{reg.AGENTS_RESUMED.format(runs=', '.join(run_id[:8] for run_id in agents))}" if agents else "")
         try:
             environment = await asyncio.to_thread(self.launcher_environment_in, Path(run.cwd))
-            delivery = await asyncio.to_thread(deliver_message, run.run_id, reg.RESUME_BRIEF, sender=sender, environment=environment)
+            delivery = await asyncio.to_thread(deliver_message, run.run_id, brief, sender=sender, environment=environment)
             refused = delivery.text.removeprefix("ERROR: ") if delivery.state == "error" else ""
         except Exception as error:  # claimed: never a silent pause
             refused = str(error) or type(error).__name__

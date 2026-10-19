@@ -2129,10 +2129,10 @@ def test_his_press_keeps_the_lift_for_other_paused_runs_and_a_refused_early_resu
     assert reg.get_run("lim-b").resume_at == reset, "resumed and refused again at every answer of another model"
 
 
-def test_a_paused_run_is_claimed_once_at_its_reset_and_its_sub_run_is_left_to_it():
+def test_a_paused_run_is_claimed_once_at_its_reset_and_its_sub_run_resumes_too_before_it():
     _ended_on("lim-root", _SESSION_LIMIT, pid=402)
     _ended_on("lim-sub", _SESSION_LIMIT, pid=403, parent="lim-root")
-    assert [r.run_id for r in reg.schedule_limit_resumes()] == ["lim-root"]
+    assert [r.run_id for r in reg.schedule_limit_resumes()] == ["lim-sub", "lim-root"]
     at = reg.get_run("lim-root").resume_at
 
     assert reg.claim_limit_resume("lim-root", now=at - 1) is None, "claimed before its reset"
@@ -2140,7 +2140,7 @@ def test_a_paused_run_is_claimed_once_at_its_reset_and_its_sub_run_is_left_to_it
     claimed = reg.claim_limit_resume("lim-root", now=at + 5)
     assert claimed is not None and claimed.resume_at is None and claimed.resumed_at == at + 5
     assert reg.claim_limit_resume("lim-root", now=at + 6) is None, "a second runner resumed it again"
-    assert reg.get_run("lim-sub").resume_at is None
+    assert reg.get_run("lim-sub").resume_at == at
 
 
 # A run its expired login stopped resumes by itself once that login is signed in again (owner 2026-10-12:
@@ -2150,14 +2150,15 @@ _LOGIN_EXPIRED = "Failed to authenticate: OAuth session expired and could not be
 
 @pytest.mark.parametrize("said, paused", [
     (_LOGIN_EXPIRED, True),
+    ("Failed to authenticate: OAuth token revoked. Please log in again or contact your administrator.", True),  # another account signed in
     ("Login expired · Please run /login", True),
     (_SESSION_LIMIT, False),  # the usage limit's own resume, at its reset
     ("Error: the build failed", False),
 ])
-def test_only_a_lost_login_pauses_a_run_until_signed_in_again(said, paused):
+def test_only_a_lost_login_pauses_a_run_and_its_sub_run_until_signed_in_again(said, paused):
     _ended_on("login1", said, pid=411)
     _ended_on("login1-sub", said, pid=412, parent="login1")
-    assert [run.run_id for run in reg.login_paused()] == (["login1"] if paused else [])
+    assert [run.run_id for run in reg.login_paused()] == (["login1-sub", "login1"] if paused else [])
 
 
 def test_a_run_its_lost_login_stopped_is_claimed_once_and_a_second_loss_at_once_is_left_to_continuer(monkeypatch):

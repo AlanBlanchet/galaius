@@ -1250,6 +1250,28 @@ def test_a_run_its_lost_login_stopped_resumes_only_once_signed_in_again(base: Pa
     assert asyncio.run(agents.resume_paused()) == [] and len(sent) == 1
 
 
+def test_a_tree_its_lost_login_cut_resumes_whole_deepest_first_once_signed_in_again(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Owner 2026-10-19: « I'm having to click on the continue the 4 stopped agents manually ». A login switch cut a
+    3-level tree (Claude Code's 401 `result`, « OAuth token revoked »): signed in again, every run resumes by itself,
+    each agent before its launcher, and the launcher's brief names its agents resumed."""
+    revoked = {"type": "result", "subtype": "success", "is_error": True, "api_error_status": 401, "session_id": "SID",
+               "result": "Failed to authenticate: OAuth token revoked. Please log in again or contact your administrator."}
+    for pid, (run_id, parent) in enumerate((("tree-main", None), ("tree-lead", "tree-main"), ("tree-maker", "tree-lead")), start=431):
+        reg.register(run_id=run_id, pid=pid, provider="claude", name="w", agent="app-engineer", model="claude-opus-5-5", cwd=str(base / "project"), parent_run_id=parent)
+        reg.raw_events_path(run_id).write_text(json.dumps(revoked) + "\n")
+        assert reg.finish(run_id, exit_code=1, expected_pid=pid, expected_lifecycle_token=reg.get_run(run_id).lifecycle_token)
+    signed_in = {"claude": False}
+    sent: list[tuple[str, str, str]] = []
+    monkeypatch.setattr("galaius.machine_agents.deliver_message", lambda run_id, text, *, sender, environment: sent.append((run_id, text, sender)) or SimpleNamespace(state="queued", text=""))
+    agents = _agents(base, tmp_path).model_copy(update={"programs": SimpleNamespace(signed_in=lambda provider, subscription: signed_in[provider])})
+    assert asyncio.run(agents.resume_paused()) == [] and sent == []
+    signed_in["claude"] = True
+    assert asyncio.run(agents.resume_paused()) == ["tree-maker", "tree-lead", "tree-main"]
+    assert {sender for _, _, sender in sent} == {reg.LOGIN_RESUME_SENDER} and sent[0][1] == reg.RESUME_BRIEF
+    assert "tree-mak" in sent[1][1] and {"tree-mak", "tree-lea"} <= set(sent[2][1].split("themselves: ")[1].split(".")[0].split(", "))
+    assert asyncio.run(agents.resume_paused()) == [] and len(sent) == 3
+
+
 def test_a_pasted_code_reaches_its_sign_in_through_the_web_request(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The web's `sign_in_code` request hands its sealed code, its attempt and its login to that program's sign-in here,
     agents off or on (a program is not an agent)."""

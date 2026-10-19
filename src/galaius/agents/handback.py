@@ -81,14 +81,15 @@ def _resume(asker_id: str, child: reg.AgentRun) -> messaging.Delivery | None:
     Only a run whose own turn ended (`_ENDED_ITS_TURN`) before those agents did; one message per ended turn (its
     `message_id` names that turn), so every reader of the same ending queues it once. An agent still waiting on agents
     of its own holds it: its interim words (« dispatched the tester; waiting ») would answer the ask (`owed`)
-    and cost `asker_id` a turn, while its final report comes once they end."""
+    and cost `asker_id` a turn, while its final report comes once they end. So does one a cut stopped that resumes
+    by itself (`registry.self_resuming`): its cut is no report, its report comes once it resumed and ended."""
     asker = reg.get_run(asker_id)
     if asker is None or asker.finished_at is None or asker.status not in _ENDED_ITS_TURN or _pending(asker):
         return None
     records = reg._stored_records()
     with one_read():
         agents = _agents_answering(asker_id, records)
-        if any(_pending(run) or any(_pending(own) for own in _agents_answering(run.run_id, records)) for run in agents):
+        if any(_pending(run) or reg.self_resuming(run) or any(_pending(own) for own in _agents_answering(run.run_id, records)) for run in agents):
             return None
     since = [run for run in agents if run.finished_at is not None and run.finished_at >= asker.finished_at]
     if not since:

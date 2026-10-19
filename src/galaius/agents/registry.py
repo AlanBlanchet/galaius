@@ -38,7 +38,7 @@ from galaius.agents import quota
 from galaius_core import ASKED_BY_MAX, MEDIA_KEY, MODEL_ID_MAX, AgentMedia, AgentRevisionRef, ContextGauge, PromptExecutionRef, RunReplacement, StopActor
 
 from galaius.agents.events import (
-    CONTEXT_FIELDS, PERSON_SENDER, TOKEN_FIELDS, AgentEvent, MessageFields, TokenUsage, UsageLedger, answered_line, ending_of, model_spoke, stream_lines,
+    CONTEXT_FIELDS, PERSON_SENDER, TOKEN_FIELDS, AgentEvent, MessageFields, RunCut, TokenUsage, UsageLedger, answered_line, ending_of, model_spoke, stream_lines,
 )
 from galaius.agents.catalog_connection import CatalogConnection
 from galaius.agents.ceiling import contained, end_run_scope, is_run_scope
@@ -223,6 +223,8 @@ class StreamDigest(BaseModel):
     #: The stream's own ending (`ending_of`); None while the stream is mid-work.
     ending: Literal["done", "error"] | None = None
     ending_text: str = ""
+    #: What cut that ending's turn from outside its work (`AgentEvent.cut`); None: no cut, or mid-work.
+    cut: RunCut | None = None
     #: The raw stream line its newest turn's answer sits on (`answered_line`); None mid-work.
     answered: int | None = None
     cost_usd: float | None = None
@@ -250,6 +252,7 @@ class StreamDigest(BaseModel):
             source=source, events=bool(events), context=context,
             ending=ending.kind if ending is not None else None,
             ending_text=(ending.text or "") if ending is not None else "",
+            cut=ending.cut if ending is not None else None,
             answered=answered_line(events, viewer),
             cost_usd=sum(costs) if costs else None, tokens=tokens,
             last=next((said for e in reversed(events) if (said := e.summary(viewer=viewer))), None),
@@ -2352,6 +2355,9 @@ RESUME_BRIEF = (
     "and your last committed slice, then continue your task where it stopped; commit by pathspec, "
     "diff against HEAD first."
 )
+#: What a run resumed by itself after a cut reads after `RESUME_BRIEF` when agents it launched were cut with it and
+#: resumed by themselves first (`MachineAgents.resume_paused`).
+AGENTS_RESUMED = "Your agents cut with you resumed by themselves: {runs}. Their reports come back to you; never relaunch them."
 
 
 def interrupted_runs(*, within_hours: float = 24.0) -> list[AgentRun]:
@@ -2480,7 +2486,7 @@ def limit_resume_at(run: AgentRun, *, now: float | None = None) -> float | None:
     the instant it was made at (the window did not reopen). A refused early resume keeps the named one."""
     digest = run.stream_digest
     if (run.foreign or run.kind != "process" or run.status != "failed" or run.finished_at is None
-            or digest is None or digest.ending != "error" or not quota.REFUSAL.search(digest.ending_text)):
+            or digest is None or digest.ending != "error" or digest.cut is not RunCut.usage_limit):
         return None
     refusal = quota.Refusal.read(digest.ending_text, now=run.finished_at)
     if refusal is None or refusal.reopens_at is None or refusal.reopens_at - run.finished_at > quota.MAX_COOLDOWN:
@@ -2499,17 +2505,14 @@ def limit_resume_at(run: AgentRun, *, now: float | None = None) -> float | None:
 
 
 def schedule_limit_resumes(*, now: float | None = None) -> list[AgentRun]:
-    """Write `resume_at` on every run a usage limit paused (`limit_resume_at`) and clear it where it
-    no longer holds (resumed by hand, stopped, superseded, `RESUME_GRACE` past it). A sub-run whose
-    parent is in this store is its parent's to resume: the same limit stopped that parent too, or the
-    parent is alive and sees it ended. Reads only records that moved; returns the paused runs, each
-    as written."""
+    """Write `resume_at` on every run a usage limit paused (`limit_resume_at`), sub-runs included (owner
+    2026-10-19: « I'm having to click on the continue the 4 stopped agents manually »), and clear it where it
+    no longer holds (resumed by hand, stopped, superseded, `RESUME_GRACE` past it). Reads only records that
+    moved; returns the paused runs, each as written, deepest first (`deepest_first`)."""
     moment = time.time() if now is None else now
-    records = _stored_records()
-    known = {run.run_id for run in records}
     paused = []
-    for run in records:
-        at = limit_resume_at(run, now=moment) if run.parent_run_id not in known else None
+    for run in _stored_records():
+        at = limit_resume_at(run, now=moment)
         wanted = at if at is not None and moment <= at + RESUME_GRACE else None
         if wanted == run.resume_at:
             if wanted is not None:
@@ -2523,7 +2526,7 @@ def schedule_limit_resumes(*, now: float | None = None) -> list[AgentRun]:
             written = _merge_record_locked(run.run_id, {"resume_at": wanted})
         if written is not None and wanted is not None:
             paused.append(written)
-    return paused
+    return deepest_first(paused)
 
 
 def claim_limit_resume(run_id: str, *, now: float | None = None) -> AgentRun | None:
@@ -2544,26 +2547,44 @@ def _claim(run_id: str, due: Callable[[AgentRun], bool], written: dict) -> Agent
 
 
 def login_lost(run: AgentRun, *, now: float | None = None) -> bool:
-    """`run` stopped only because its program's login was lost (`AgentProvider.login_lost` matched its
-    last words): a launched process run that failed on it within `LOGIN_RESUME_WINDOW`, not resumed by
-    itself for it already — a resume that met the same lost login within `RESUME_GRACE` is left to
-    « Continuer »."""
+    """`run` stopped only because its program's login was lost (`RunCut.login_lost`): a launched process run
+    that failed on it within `LOGIN_RESUME_WINDOW`, not resumed by itself for it already — a resume that met
+    the same lost login within `RESUME_GRACE` is left to « Continuer »."""
     digest = run.stream_digest
-    lost = PROVIDERS[run.provider].login_lost if run.provider in PROVIDERS else None
-    if (lost is None or run.foreign or run.kind != "process" or run.status != "failed" or run.finished_at is None
-            or digest is None or digest.ending != "error" or not lost.search(digest.ending_text)):
+    if (run.foreign or run.kind != "process" or run.status != "failed" or run.finished_at is None
+            or digest is None or digest.cut is not RunCut.login_lost):
         return False
-    if (time.time() if now is None else now) - run.finished_at > LOGIN_RESUME_WINDOW:
-        return False
-    return run.resumed_at is None or (run.resumed_at < run.finished_at and run.finished_at - run.resumed_at > RESUME_GRACE)
+    until = login_resume_until(run.finished_at, run.resumed_at)
+    return until is not None and (time.time() if now is None else now) <= until
+
+
+def login_resume_until(finished_at: float, resumed_at: float | None) -> float | None:
+    """Until when a run a lost login stopped at `finished_at` is resumed by itself once signed in again:
+    `LOGIN_RESUME_WINDOW` past that end. None when its resume is taken already (`resumed_at` at or past that end), or
+    one met the same lost login within `RESUME_GRACE` (left to « Continuer »)."""
+    if resumed_at is not None and (resumed_at >= finished_at or finished_at - resumed_at <= RESUME_GRACE):
+        return None
+    return finished_at + LOGIN_RESUME_WINDOW
 
 
 def login_paused(*, now: float | None = None) -> list[AgentRun]:
-    """The runs a lost login stopped (`login_lost`) that are their own to resume: a sub-run whose parent
-    is in this store is its parent's, as after a usage limit (`schedule_limit_resumes`)."""
-    records = _stored_records()
-    known = {run.run_id for run in records}
-    return [run for run in records if run.parent_run_id not in known and login_lost(run, now=now)]
+    """Every run a lost login stopped (`login_lost`), sub-runs included, deepest first (`deepest_first`)."""
+    return deepest_first([run for run in _stored_records() if login_lost(run, now=now)])
+
+
+def self_resuming(run: AgentRun, *, now: float | None = None) -> bool:
+    """`run` was cut by what comes back by itself (`RunCut`) and resumes then: a lost login (`login_lost`), a
+    usage limit up to `RESUME_GRACE` past its reset (`limit_resume_at`). Its work has not ended: its launcher is
+    not woken with its cut (`handback`)."""
+    moment = time.time() if now is None else now
+    at = limit_resume_at(run, now=moment)
+    return login_lost(run, now=moment) or (at is not None and moment <= at + RESUME_GRACE)
+
+
+def deepest_first(runs: Sequence[AgentRun]) -> list[AgentRun]:
+    """`runs`, each run below its launchers (`ancestors`): resumed in this order, an agent is at work again before
+    the run that launched it reads where its agents stand."""
+    return sorted(runs, key=lambda run: -len(ancestors(run.run_id)))
 
 
 def claim_login_resume(run_id: str, *, now: float | None = None) -> AgentRun | None:

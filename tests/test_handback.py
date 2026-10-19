@@ -68,6 +68,16 @@ def test_the_last_child_to_end_resumes_its_ended_parent_with_every_report(sent, 
     assert "eng" in message and "rev" in message
 
 
+def test_a_child_its_lost_login_cut_never_wakes_its_parent_with_the_cut(sent):
+    """Owner 2026-10-19 (« 4 of its agents stopped »): a cut that resumes by itself (`registry.self_resuming`) is no
+    report; its parent hears the child's report once it resumed and ended."""
+    _ended("lead", 100.0, agent="main", provider_session_id="vendor-lead")
+    reg.raw_events_path("eng").write_text(json.dumps({"type": "result", "subtype": "success", "is_error": True, "api_error_status": 401,
+                                                      "session_id": "s", "result": "Failed to authenticate: OAuth token revoked."}) + "\n")
+    _ended("eng", time.time(), status="failed", agent="backend-engineer", parent_run_id="lead")
+    assert handback.hand_back("eng") == [] and sent == []
+
+
 @pytest.mark.parametrize("latest, told", [
     pytest.param("coordinator", ["parent", "coordinator"], id="asked-by-another-run-mid-task-both-hear"),
     pytest.param("parent", ["parent", "coordinator"], id="asked-last-by-its-parent-the-coordinators-earlier-ask-still-owed"),

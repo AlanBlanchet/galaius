@@ -38,7 +38,8 @@ from galaius_core import AgentMedia, ContextGauge, UsageWindow, UsageWindowName
 
 from galaius import installed_version
 from galaius.agents.catalog import AgentCatalog
-from galaius.agents.events import TOKEN_FIELDS, AgentEvent, CompactionTrigger, TokenUsage, UsageLedger, instant, stream_lines
+from galaius.agents.events import TOKEN_FIELDS, AgentEvent, CompactionTrigger, RunCut, TokenUsage, UsageLedger, instant, stream_lines
+from galaius.agents.quota import REFUSAL
 from galaius.agents.profiles import overlay_for
 from galaius.agents.vocabulary import ApprovalIntent, TouchScope, ThinkingLevel, vocabulary_for
 from galaius.brief_hook import NOTE as BRIEF_NOTE
@@ -464,9 +465,19 @@ class AgentProvider(ABC):
         key-authenticated CLI runs it as well as a subscription one does."""
         return self.accepts_subscription_auth(stdout, stderr)
 
-    #: What a turn's last words say when its login was lost (expired, signed out) and no turn can run
-    #: until it is signed in again (`registry.login_lost`); None: not known for this CLI.
-    login_lost: ClassVar[re.Pattern[str] | None] = None
+    #: The cut each HTTP status of its provider's API names when a turn fails on it (`cut_of`): 401, the login
+    #: was refused (expired, revoked, switched to another account); 429, the usage window refused.
+    CUT_STATUS: ClassVar[Mapping[int, RunCut]] = {401: RunCut.login_lost, 429: RunCut.usage_limit}
+    #: The words a failed turn says each cut in when its program gives no status (`cut_of`), checked in order.
+    cut_words: ClassVar[Mapping[RunCut, re.Pattern[str]]] = {RunCut.usage_limit: REFUSAL}
+
+    @classmethod
+    def cut_of(cls, text: str, status: object = None) -> RunCut | None:
+        """What cut a turn that failed saying `text`, its API having answered `status` when its program says
+        it (`RunCut`); None: its own failure."""
+        if isinstance(status, int) and (cut := cls.CUT_STATUS.get(status)) is not None:
+            return cut
+        return next((cut for cut, words in cls.cut_words.items() if words.search(text)), None)
 
     #: What `expiry_command` says of a login `auth_command` still reports signed in but that expired and
     #: could not be refreshed; None: its status command alone says.
@@ -907,9 +918,10 @@ class ClaudeCodeProvider(AgentProvider):
     media_model_field = "claude_media_criteria"
     auth_home_env = ("CLAUDE_CONFIG_DIR",)
     home_folder = ".claude"
-    # 2.1.288: « Failed to authenticate: OAuth session expired and could not be refreshed »; its docs:
-    # « Login expired · Please run /login ».
-    login_lost = re.compile(r"OAuth session expired|OAuth token has expired|Login expired|Please run /login|Not logged in", re.IGNORECASE)
+    # 2.1.288 says its status (`api_error_status`); before it, only « Failed to authenticate: OAuth session expired and
+    # could not be refreshed », « …: OAuth token revoked » (another account signed in), its docs « Login expired · Please run /login ».
+    cut_words = {RunCut.login_lost: re.compile(r"Failed to authenticate|OAuth session expired|OAuth token (?:has expired|revoked)|Login expired|Please run /login|Not logged in", re.IGNORECASE),
+                 **AgentProvider.cut_words}
     settings_file = "settings.json"
     no_extra_usage_guidance = (
         "in Claude Settings → Usage, keep Usage credits disabled, ensure prepaid balance is zero, "
@@ -1644,7 +1656,7 @@ class ClaudeCodeProvider(AgentProvider):
             return AgentEvent(
                 kind="error" if failed else "done",
                 session_id=sid, raw_type=kind,
-                text=detail,
+                text=detail, cut=self.cut_of(detail, raw.get("api_error_status")) if failed else None,
                 cost_usd=cost,
                 final_text=has_final,
                 **ContextGauge.reported({"context_window": window, "thinking_tokens": thought}),
@@ -2365,7 +2377,7 @@ class CodexProvider(AgentProvider):
             error = raw.get("error") or {}
             text = error.get("message", "") if isinstance(error, dict) else str(error)
             return AgentEvent(kind="error", session_id=session_id, turn_id=turn_id,
-                              raw_type=kind, text=_clip(text or line))
+                              raw_type=kind, text=_clip(text or line), cut=self.cut_of(text))
         if kind in {"item.started", "item.updated", "item.completed"}:
             item = raw.get("item") or {}
             item_type = item.get("type") if isinstance(item, dict) else None
