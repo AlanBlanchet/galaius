@@ -469,7 +469,8 @@ class AgentProvider(ABC):
     #: was refused (expired, revoked, switched to another account). A 429 is no cut by itself: only a refusal naming its
     #: window (`quota.REFUSAL`) is a usage limit, a short rate limit is the turn's own failure.
     CUT_STATUS: ClassVar[Mapping[int, RunCut]] = {401: RunCut.login_lost}
-    #: What a 401 says when an API key was refused, not a login: no sign-in brings it back (`cut_of`).
+    #: What a 401 says when an API key was refused, not a login (`cut_of`): its words decide then (« Invalid API key ·
+    #: Please run /login » is a login to sign in again).
     KEY_REFUSED: ClassVar[re.Pattern[str]] = re.compile(r"\bAPI[ _-]?key\b", re.IGNORECASE)
     #: The words a failed turn says each cut in when its program gives no status (`cut_of`), checked in order.
     cut_words: ClassVar[Mapping[RunCut, re.Pattern[str]]] = {RunCut.usage_limit: REFUSAL}
@@ -478,8 +479,9 @@ class AgentProvider(ABC):
     def cut_of(cls, text: str, status: object = None) -> RunCut | None:
         """What cut a turn that failed saying `text`, its API having answered `status` when its program says
         it (`RunCut`); None: its own failure."""
-        if isinstance(status, int) and (cut := cls.CUT_STATUS.get(status)) is not None:
-            return None if cut is RunCut.login_lost and cls.KEY_REFUSED.search(text) else cut
+        if isinstance(status, int) and (cut := cls.CUT_STATUS.get(status)) is not None \
+                and not (cut is RunCut.login_lost and cls.KEY_REFUSED.search(text)):
+            return cut
         return next((cut for cut, words in cls.cut_words.items() if words.search(text)), None)
 
     #: What `expiry_command` says of a login `auth_command` still reports signed in but that expired and

@@ -79,8 +79,8 @@ def test_a_child_its_lost_login_cut_wakes_its_parent_only_once_nothing_resumes_i
     assert handback.hand_back("eng") == [] and watch.tick() == [] and sent == []
     # Its resume met the same lost login again: nothing resumes it any more, its launcher hears it on the next look, a
     # watcher started since (the PC's service restarted) too.
-    restarted = handback.EndWatch()
     reg._merge_record_locked("eng", {"resumed_at": reg.get_run("eng").finished_at - 10})
+    restarted = handback.EndWatch()  # started after its window lapsed (the PC off overnight)
     assert [delivery.run_id for delivery in restarted.tick()] == ["lead"]
     assert watch.tick() == [], "handed back once per ended turn"
 

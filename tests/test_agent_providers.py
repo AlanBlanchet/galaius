@@ -1233,6 +1233,7 @@ def test_a_long_stop_hook_block_keeps_its_verdict():
     (401, "Failed to authenticate: OAuth token revoked.", "login_lost"),  # another account signed in (Claude Code's result)
     (None, "Failed to authenticate: OAuth session expired and could not be refreshed", "login_lost"),  # before it said its status
     (401, "Invalid API key · Fix external API key", None),  # a key refused: no sign-in brings it back
+    (401, "Invalid API key · Please run /login", "login_lost"),  # no login at all: signing in brings it back
     (None, "Failed to authenticate: invalid x-api-key", None),  # a key refused says no status here: its own failure
     (429, "Rate limited, retry shortly", None),  # a short rate limit is no usage window
     (429, "You've hit your weekly limit · resets 9pm (Europe/Paris)", "usage_limit"),

@@ -2581,6 +2581,14 @@ def self_resuming(run: AgentRun, *, now: float | None = None) -> bool:
     return login_lost(run, now=moment) or (at is not None and moment <= at + RESUME_GRACE)
 
 
+def recently_cut(*, now: float | None = None) -> list[AgentRun]:
+    """The failed runs a cut ended (`StreamDigest.cut`) within the longest window one resumes in by itself
+    (`LOGIN_RESUME_WINDOW`, `quota.MAX_COOLDOWN`), resuming or not."""
+    since = (time.time() if now is None else now) - max(LOGIN_RESUME_WINDOW, quota.MAX_COOLDOWN)
+    return [run for run in _stored_records() if run.status == "failed" and run.finished_at is not None and run.finished_at >= since
+            and run.stream_digest is not None and run.stream_digest.cut is not None]
+
+
 def deepest_first(runs: Sequence[AgentRun]) -> list[AgentRun]:
     """`runs`, each run below its launchers (`ancestors`): resumed in this order, an agent is at work again before
     the run that launched it reads where its agents stand."""
