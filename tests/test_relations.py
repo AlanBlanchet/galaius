@@ -3,6 +3,7 @@
 for the agents »: a report read as an order to acknowledge, a third party's note read as the boss's."""
 
 import asyncio
+import re
 import os
 import time
 import uuid
@@ -38,6 +39,11 @@ def _asked(name: str, by: str, text: str = "status?") -> None:
 
 def _tag(name: str) -> str:
     return f"{ROLES[name]}-{IDS[name][:8]}"
+
+
+def _placed(name: str) -> str:
+    """`name`'s run as the turn card lists it: with its project."""
+    return f"{_tag(name)} (project: {relations.project_label(relations.project(IDS[name]))})"
 
 
 @pytest.fixture
@@ -100,20 +106,20 @@ def test_the_card_says_whom_the_run_works_for_what_is_at_work_and_where_its_repo
     card = relations.card(reg.get_run(IDS["eng"])).splitlines()
     assert card == [
         relations.CARD_HEADING,
-        f"You are {_tag('eng')}. You work for: {_tag('lead')} — « eng task ».",
-        f"Also asked by: {_tag('coordinator')} — « and row I? ».",
-        f"Your agents still at work: {_tag('helper')}.",
-        f"Idle, to reuse: {_tag('rev')}.",
-        f"When this turn ends your final message goes to {_tag('lead')}, {_tag('coordinator')} by itself: never send it, never ack a report.",
+        f"You are {_placed('eng')}. You work for: {_placed('lead')} — « eng task ».",
+        f"Also asked by: {_placed('coordinator')} — « and row I? ».",
+        f"Your agents still at work: {_placed('helper')}.",
+        f"Idle, to reuse: {_placed('rev')}.",
+        f"When this turn ends your final message goes to {_placed('lead')}, {_placed('coordinator')} by itself: never send it, never ack a report.",
     ]
 
 
 def test_a_card_lists_the_conversations_other_runs_at_work_and_a_top_run_reports_to_the_person(team):
     _run("helper", parent="eng", working=True)
     card = relations.card(reg.get_run(IDS["lead"])).splitlines()
-    assert card[1] == f"You are {_tag('lead')}. You work for: the person who launched you."
-    assert card[2] == f"Your agents still at work: {_tag('eng')}."
-    assert card[3] == f"At work in this conversation: {_tag('helper')} — « helper task »."
+    assert card[1] == f"You are {_placed('lead')}. You work for: the person who launched you."
+    assert card[2] == f"Your agents still at work: {_placed('eng')}."
+    assert card[3] == f"At work in this conversation: {_placed('helper')} — « helper task »."
     assert card[-1].startswith("When this turn ends your final message goes to the person who launched you by itself")
 
 
@@ -146,7 +152,7 @@ def test_a_successor_owes_only_what_its_predecessor_still_owed_and_reads_what_is
     assert relations.owed(reg.get_run(IDS["old"])) == ()  # its asks moved: each asker hears once
     assert relations.report_to(reg.get_run(IDS["helper"])) == _tag("new")
     assert relations.relation(reg.get_run(IDS["helper"]), new, "DONE") is Relation.REPORT
-    assert f"Your agents still at work: {_tag('helper')}." in relations.card(new)
+    assert f"Your agents still at work: {_placed('helper')}." in relations.card(new)
     assert _tag("old") not in relations.card(reg.get_run(IDS["eng"]))  # a run taken over is never offered for reuse
     assert messaging.queue_message(IDS["old"], "note to self", sender=IDS["new"]).state == "error"
 
@@ -159,10 +165,10 @@ def test_a_run_handing_off_its_own_work_leaves_its_successor_working_for_its_own
     _spawned("new", parent=IDS["old"], continues=IDS["old"])
 
     new = reg.get_run(IDS["new"])
-    boss = _tag("lead") if parent else "the person who launched you"
+    boss = _placed("lead") if parent else "the person who launched you"
     card = relations.card(new).splitlines()
-    assert card[1] == f"You are {_tag('new')}. You work for: {boss}{' — « old task »' if parent else ''}."  # what the boss asked
-    assert card[-1].startswith(f"When this turn ends your final message goes to {', '.join(filter(None, (parent and _tag('lead'), _tag('coordinator'))))} by itself")
+    assert card[1] == f"You are {_placed('new')}. You work for: {boss}{' — « old task »' if parent else ''}."  # what the boss asked
+    assert card[-1].startswith(f"When this turn ends your final message goes to {', '.join(filter(None, (parent and _placed('lead'), _placed('coordinator'))))} by itself")
     assert IDS["new"] not in {relations.live(asker) for asker in relations.owed(new)}
     assert relations.owed(reg.get_run(IDS["old"])) == ()  # the boss hears from the successor only
 
@@ -197,7 +203,7 @@ def test_a_critic_spawned_for_a_maker_starts_knowing_and_owing_both(team):
     rev = reg.get_run(IDS["rev"])
     assert handed["asked_by"] == (IDS["eng"],)  # recorded as it starts: the card its brief carries names the maker
     assert relations.owed(rev) == (IDS["lead"], IDS["eng"])
-    assert f"Also asked by: {_tag('eng')} — « rev task »." in relations.card(rev)
+    assert f"Also asked by: {_placed('eng')} — « rev task »." in relations.card(rev)
     assert relations.relation(rev, team["eng"], "Verdict: FAIL\nrow 2") is Relation.REPORT_ASKING
     assert relations.relation(rev, team["eng"], "C1 FAIL fixed\nC2 PASS (was FAIL)") is Relation.REPORT
 
@@ -291,3 +297,35 @@ def test_a_run_never_messages_or_hands_off_to_another_projects_run(two_projects,
         assert relations.succeed(IDS["coordinator"], IDS["lead"], cross_project=True)
     if entry == "terminal-continues":
         assert Spawn(task="t", cwd=str(two_projects["site"]), agent="main", continues=IDS["coordinator"], cross_project=True).naming_refusal() is None
+
+
+@pytest.mark.parametrize("folder, refused", [
+    pytest.param("site", False, id="its-own-repository"),
+    pytest.param("slice", False, id="a-slice-of-its-repository"),
+    pytest.param("scratch", False, id="a-folder-in-no-repository"),
+    pytest.param("shop", True, id="another-projects-repository"),
+    pytest.param("shop-worktree", True, id="a-linked-worktree-of-another-project-lying-elsewhere"),
+    pytest.param("override", False, id="the-persons-own-cross-project-act"),
+])
+def test_a_conversation_works_for_the_project_its_first_coordinator_started_in(two_projects, tmp_path, folder, refused):
+    """Owner 2026-10-19: one project's coordinator talked with another project's, which had nothing to do with it. A
+    run of lead's conversation (repository `site`) is never started in another project's repository: not `shop`, nor a
+    worktree of it added outside it; a scratch folder belongs to no project."""
+    worktree = tmp_path / "shop-wt" / "ui"
+    (two_projects["shop"] / ".git" / "worktrees" / "ui").mkdir(parents=True)
+    (two_projects["shop"] / ".git" / "worktrees" / "ui" / "commondir").write_text("../..\n")
+    worktree.mkdir(parents=True)
+    (worktree / ".git").write_text(f"gitdir: {two_projects['shop'] / '.git' / 'worktrees' / 'ui'}\n")
+    assert relations.folder_project(str(worktree)) == two_projects["shop"] and relations.folder_project(str(two_projects["slice"])) == two_projects["site"]
+    cwd = {"shop-worktree": worktree, "override": two_projects["shop"]}.get(folder) or two_projects[folder]
+    said = Spawn(task="t", cwd=str(cwd), agent="main", parent_run_id=IDS["lead"], cross_project=folder == "override").naming_refusal()
+    assert (said is not None) is refused
+    assert not refused or f"project shop, and this conversation works for project site" in said
+
+
+def test_the_turn_card_names_the_project_of_each_run_it_lists(two_projects):
+    card = relations.card(reg.get_run(IDS["eng"]))
+    site = relations.project_label(two_projects["site"])
+    assert f"You are {_tag('eng')} (project: {site}). You work for: {_tag('lead')} (project: {site})" in card
+    tags = re.findall(r"\b[a-z][a-z-]*-[0-9a-f]{8}\b", card)
+    assert len(tags) >= 3 and len(tags) == len(re.findall(r"\b[a-z][a-z-]*-[0-9a-f]{8} \(project: ", card)), card   # each run it lists

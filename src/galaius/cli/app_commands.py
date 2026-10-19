@@ -1658,7 +1658,7 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
     the same parent that outgrew its context is taken over without it, and so is a calling run of the new run's role whose
     context is still near full after a compaction; --helper keeps the new run the caller's. --cross-project: a person's
     deliberate act, at his own terminal (never from an agent run's process): --continues names a run of another project
-    than the new run's (refused otherwise).
+    than the new run's, or --cwd lies in another project's repository than its conversation's (each refused otherwise).
     """
 
 

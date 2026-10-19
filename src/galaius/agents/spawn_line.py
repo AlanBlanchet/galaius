@@ -151,6 +151,8 @@ class Spawn(BaseModel):
         for named in (self.parent_run_id, self.continues):
             if named is not None and (foreign := self._foreign(named)) is not None:
                 return foreign
+        if (elsewhere := self._foreign_folder()) is not None:
+            return elsewhere
         if self.parent_run_id is None:
             return None
         if (caller := reg.get_run(self.parent_run_id)) is None:
@@ -174,6 +176,20 @@ class Spawn(BaseModel):
         if self.cross_project:
             return None
         return relations.foreign_project(messaging.asking_run() or self.parent_run_id, run_id, here=relations.folder_project(self.cwd))
+
+    def _foreign_folder(self) -> str | None:
+        """Why its folder (`cwd`) is another project's than its conversation's (`relations.project`): one conversation
+        works for one project, the repository its first coordinator started in (owner 2026-10-19); None when it is that
+        project's, in no repository (a scratch folder), started by no run (a conversation of its own), or
+        `cross_project` (the person's own act). A conversation whose first coordinator started in no repository (the
+        home folder) works for none."""
+        if self.cross_project or self.parent_run_id is None or relations.repository(Path(self.cwd).expanduser().resolve()) is None:
+            return None
+        here, there = relations.project(self.parent_run_id), relations.folder_project(self.cwd)
+        if here is None or there is None or here == there or relations.repository(here) is None:   # a conversation started in no repository is no project's
+            return None
+        return (f"{self.cwd} is in project {there.name}, and this conversation works for project {here.name}: one conversation "
+                f"works for one project; start {there.name}'s work from a conversation of {there.name}")
 
     def taking_over(self) -> reg.AgentRun | None:
         """The run it takes over from (`relations.succeed`): the one it `continues`, else an ended run of its role under

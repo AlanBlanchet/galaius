@@ -7,7 +7,7 @@ good, reports read as asks and acknowledged (each acknowledgement a turn), verdi
 run unknown to the runs still writing to the old one."""
 
 import re
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
@@ -119,14 +119,40 @@ def project(run_id: str) -> Path | None:
 
 def folder_project(cwd: str) -> Path | None:
     """The project a run started in folder `cwd` with no coordinator works for (`project`): the outermost repository
-    holding it (a workspace's own checkouts and its `.worktrees/` slices are the workspace), never the home folder;
-    else the folder itself."""
+    holding it (`repository`, climbed until none holds it: a workspace's own checkouts and its slices are the
+    workspace), else the folder itself."""
     if not cwd:
         return None
     here = Path(cwd).expanduser().resolve()
-    repositories = [folder for folder in (here, *here.parents)
-                    if folder != Path.home() and any((folder / marker).exists() for marker in reg.REPO_MARKERS)]
-    return repositories[-1] if repositories else here
+    found, seen = None, set()
+    while (root := repository(here if found is None else found.parent)) is not None and root not in seen:
+        found = root
+        seen.add(root)
+    return found or here
+
+
+def repository(folder: Path) -> Path | None:
+    """The repository holding `folder`, as its main checkout: a linked worktree (its `.git` a file naming
+    `<checkout>/.git/worktrees/<name>`, wherever it lies) is the checkout it was added to; never the home folder."""
+    nearest = next((above for above in (folder, *folder.parents)
+                    if above != Path.home() and any((above / marker).exists() for marker in reg.REPO_MARKERS)), None)
+    if nearest is None or not (link := nearest / ".git").is_file():
+        return nearest
+    try:
+        gitdir = nearest / link.read_text(encoding="utf-8").removeprefix("gitdir:").strip()
+        common = (gitdir / (gitdir / "commondir").read_text(encoding="utf-8").strip()).resolve()
+    except OSError:   # no `commondir`: a submodule, a checkout of its own
+        return nearest
+    return common.parent if common.name == ".git" else nearest
+
+
+def project_label(path: Path | None) -> str:
+    """A project as the turn card prints it: its repository's folder, the home folder as `~`; `none` for a conversation
+    started in no repository (it is bound to none: `Spawn._foreign_folder`)."""
+    if path is None or repository(path) is None:
+        return "none"
+    home = Path.home()
+    return "~" if path == home else f"~/{path.relative_to(home)}" if path.is_relative_to(home) else str(path)
 
 
 def person_override_refusal() -> str | None:
@@ -342,11 +368,11 @@ def _working(run: reg.AgentRun) -> bool:
 
 
 @one_read()
-def report_to(run: reg.AgentRun) -> str:
-    """Whom `run`'s final message reaches by itself: each run it owes its report (`owed`, at the end of its chain), the
-    person for a run nobody launched; "" when every ask was answered."""
+def report_to(run: reg.AgentRun, name: Callable[[str], str] | None = None) -> str:
+    """Whom `run`'s final message reaches by itself: each run it owes its report (`owed`, at the end of its chain, each as
+    `name` says it: `tag` when None), the person for a run nobody launched; "" when every ask was answered."""
     if (due := owed(run)):
-        return ", ".join(dict.fromkeys(tag(live(asker)) for asker in due))
+        return ", ".join(dict.fromkeys((name or tag)(live(asker)) for asker in due))
     return "" if boss(run) else OPERATOR
 
 
@@ -355,21 +381,29 @@ def card(run: reg.AgentRun) -> str:
     """Where `run` stands as a turn of it starts: whom it works for and on what, its agents and the conversation's still at
     work, the idle ones of a role it can hand a task to, and where its final message goes."""
     first, asked = _working_for(run)
-    works_for = OPERATOR if first is None else f"{tag(first)} — « {_last_ask(asked, asked.parent_run_id or first)} »"
-    lines = [f"{CARD_HEADING}\nYou are {_tag(run)}. You work for: {works_for}."]
+    projects: dict[str, str] = {}
+
+    def placed(run_id: str) -> str:   # each run with the project it works for (owner 2026-10-19: one conversation, one project)
+        top = reg.conversation_of(run_id)
+        if top not in projects:
+            projects[top] = project_label(project(run_id))
+        return f"{tag(run_id)} (project: {projects[top]})"
+
+    works_for = OPERATOR if first is None else f"{placed(first)} — « {_last_ask(asked, asked.parent_run_id or first)} »"
+    lines = [f"{CARD_HEADING}\nYou are {placed(run.run_id)}. You work for: {works_for}."]
     also = [asker for asker in owed(run) if asker != run.parent_run_id and live(asker) != first]
     if also:
-        lines.append("Also asked by: " + "; ".join(f"{tag(live(asker))} — « {_last_ask(run, asker)} »" for asker in also) + ".")
+        lines.append("Also asked by: " + "; ".join(f"{placed(live(asker))} — « {_last_ask(run, asker)} »" for asker in also) + ".")
     conversation = [other for other in reg.stored_tree(reg.conversation_of(run.parent_run_id or run.run_id)) if other.run_id != run.run_id]
     mine = [other for other in conversation if _working(other) and (live(other.parent_run_id or '') == run.run_id or run.run_id in {live(asker) for asker in other.asked_by})]
-    lines.append("Your agents still at work: " + (", ".join(_tag(other) for other in mine) or "none") + ".")
+    lines.append("Your agents still at work: " + (", ".join(placed(other.run_id) for other in mine) or "none") + ".")
     others = [other for other in conversation if _working(other) and other not in mine and other.run_id not in run.askers][:CARD_RUNS_MAX]
     if others:
-        lines.append("At work in this conversation: " + "; ".join(f"{_tag(other)} — « {_first_line(other.task)} »" for other in others) + ".")
+        lines.append("At work in this conversation: " + "; ".join(f"{placed(other.run_id)} — « {_first_line(other.task)} »" for other in others) + ".")
     idle = {other.agent: other for other in reversed(conversation) if other.agent and _reusable(other)}
     if idle:
-        lines.append("Idle, to reuse: " + ", ".join(_tag(other) for other in sorted(idle.values(), key=lambda other: other.agent or "")) + ".")
-    goes_to = report_to(run)
+        lines.append("Idle, to reuse: " + ", ".join(placed(other.run_id) for other in sorted(idle.values(), key=lambda other: other.agent or "")) + ".")
+    goes_to = report_to(run, placed)
     lines.append(f"When this turn ends your final message goes to {goes_to} by itself: never send it, never ack a report." if goes_to
                  else "Every ask of you is answered: when this turn ends your final message goes to nobody; never ack a report.")
     return "\n".join(lines)
