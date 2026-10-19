@@ -529,7 +529,7 @@ def _reject_unisolated_fixture_record(raw: dict) -> None:
 #: "project": this repo's `vscode-extension/` has its own package.json, and treating that as a root
 #: filed one repo's agents under two different projects — the "project detection is folder level"
 #: complaint, still true after the first fix because a manifest counted equally with a VCS root.
-_REPO_MARKERS = (".git", ".hg", ".svn")
+REPO_MARKERS = (".git", ".hg", ".svn")
 #: A package boundary — only meaningful when nothing above it is a repo at all (a loose tool in a
 #: directory nobody version-controls still deserves its own name rather than falling back to $HOME).
 _PACKAGE_MARKERS = ("pyproject.toml", "package.json", "Cargo.toml", "go.mod")
@@ -565,7 +565,7 @@ def project_root(cwd: str) -> Path | None:
     except (OSError, RuntimeError):
         return None
     chain = (here, *here.parents)
-    for markers in (_REPO_MARKERS, _PACKAGE_MARKERS):
+    for markers in (REPO_MARKERS, _PACKAGE_MARKERS):
         for candidate in chain:
             if any((candidate / marker).exists() for marker in markers):
                 return candidate

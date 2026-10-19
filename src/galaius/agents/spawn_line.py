@@ -104,8 +104,11 @@ class Spawn(BaseModel):
     #: One agent of its role in its conversation (`galaius agents spawn --single`): one at work is queued the task behind
     #: its turn rather than another started beside it, and every other one of the role is forgotten (`forget_peers`).
     single: bool = False
+    #: The person at a terminal hands off across projects on purpose (`galaius agents spawn --cross-project`):
+    #: `relations.foreign_project` is not asked.
+    cross_project: bool = False
     #: Its fields `start` passes to `run_agent` other than by their own names.
-    NOT_RUN_ARGUMENTS: ClassVar[frozenset[str]] = frozenset({"task", "provider", "session_id", "for_run", "single", "continues", "helper"})
+    NOT_RUN_ARGUMENTS: ClassVar[frozenset[str]] = frozenset({"task", "provider", "session_id", "for_run", "single", "continues", "helper", "cross_project"})
 
     @classmethod
     def asked(cls, *, parent_run_id: str | None = None, **fields) -> Spawn:
@@ -125,6 +128,8 @@ class Spawn(BaseModel):
         the child a moment to be alive before a caller about to exit lets go of it."""
         arguments = {name: getattr(self, name) for name in type(self).model_fields if name not in self.NOT_RUN_ARGUMENTS}
         predecessor = self.taking_over()
+        if predecessor is not None and (foreign := self._foreign(predecessor.run_id)) is not None:
+            raise relations.ForeignProject(foreign)  # before its run starts; `succeed` holds the same line
         inherited = relations.inherited(predecessor, parent=self.parent_run_id) if predecessor is not None else {}
         # Recorded as it starts, so the card it starts on names whom it works for (`run.run_agent`).
         asked_by = tuple(dict.fromkeys(asker for asker in (self.for_run, *inherited) if asker and asker != self.parent_run_id))
@@ -133,7 +138,7 @@ class Spawn(BaseModel):
         with reg.session_context(self.session_id, parent_run_id=self.parent_run_id):
             handle = await (runner or run_agent)(provider_for(self.provider) if self.provider is not None else None, self.task, run_id=run_id, **arguments)
         if predecessor is not None:
-            relations.succeed(predecessor.run_id, run_id)
+            relations.succeed(predecessor.run_id, run_id, cross_project=self.cross_project)
         await asyncio.sleep(0.2)
         return handle
 
@@ -141,7 +146,11 @@ class Spawn(BaseModel):
         """Why a run it names (`continues`, `for_run`) is not its caller's to name; None when each is. A run asking
         (`parent_run_id`) hands off only its own work or that of an ended run of the role in its conversation, and spawns
         for a run of its conversation, one it works for or one working for it: an agent steered by a page or a file it
-        read never routes another conversation's reports to a run of its choosing. The person at a terminal names any."""
+        read never routes another conversation's reports to a run of its choosing, nor starts under or hands off to another
+        project's run (`_foreign`). The person at a terminal names any other."""
+        for named in (self.parent_run_id, self.continues):
+            if named is not None and (foreign := self._foreign(named)) is not None:
+                return foreign
         if self.parent_run_id is None:
             return None
         if (caller := reg.get_run(self.parent_run_id)) is None:
@@ -157,6 +166,14 @@ class Spawn(BaseModel):
             if target is None or (target.run_id not in caller.askers and caller.run_id not in target.askers):
                 return f"for_run names {self.for_run[:8]}: outside your conversation, it neither asked you nor works for you"
         return None
+
+    def _foreign(self, run_id: str) -> str | None:
+        """Why run `run_id` (its parent, the run it continues) works for another project than the run asking this spawn
+        (`messaging.asking_run`: never the parent it names, which a caller picks), else than its parent, else than its
+        folder (`relations.foreign_project`); None when one project, or `cross_project` (the person's own act)."""
+        if self.cross_project:
+            return None
+        return relations.foreign_project(messaging.asking_run() or self.parent_run_id, run_id, here=relations.folder_project(self.cwd))
 
     def taking_over(self) -> reg.AgentRun | None:
         """The run it takes over from (`relations.succeed`): the one it `continues`, else an ended run of its role under

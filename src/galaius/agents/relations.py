@@ -10,6 +10,7 @@ import re
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
+from pathlib import Path
 
 from galaius.agents import registry as reg
 from galaius.agents.events import AgentEvent, Relation, ending_of
@@ -104,13 +105,59 @@ def inherited(predecessor: reg.AgentRun, *, parent: str | None) -> dict[str, flo
             if asker not in (parent, predecessor.run_id)}
 
 
-def succeed(predecessor_id: str, successor_id: str) -> bool:
+class ForeignProject(ValueError):
+    """Two runs of different projects about to hand off to each other (`foreign_project`)."""
+
+
+def project(run_id: str) -> Path | None:
+    """The project run `run_id` works for: the repository (`reg.project_root`) of the folder its conversation's top run
+    started in (`reg.conversation_of`), else that folder; None without a record or a folder. A run its coordinator
+    started in another folder (a scratch directory, a sibling repository) stays its coordinator's project."""
+    top = reg.get_run(reg.conversation_of(run_id))
+    return folder_project(top.cwd) if top is not None else None
+
+
+def folder_project(cwd: str) -> Path | None:
+    """The project a run started in folder `cwd` with no coordinator works for (`project`): the outermost repository
+    holding it (a workspace's own checkouts and its `.worktrees/` slices are the workspace), never the home folder;
+    else the folder itself."""
+    if not cwd:
+        return None
+    here = Path(cwd).expanduser().resolve()
+    repositories = [folder for folder in (here, *here.parents)
+                    if folder != Path.home() and any((folder / marker).exists() for marker in reg.REPO_MARKERS)]
+    return repositories[-1] if repositories else here
+
+
+def person_override_refusal() -> str | None:
+    """Why `--cross-project` (lifting `foreign_project`) is refused: it is the person's own act, and this process
+    descends from an agent run (`reg.ancestor_run`: clearing `GALAIUS_RUN_ID` hides none); None at his terminal."""
+    return None if reg.ancestor_run() is None else "--cross-project is the person's own act: a process of an agent run never passes it"
+
+
+def foreign_project(caller_id: str | None, target_id: str, *, here: Path | None = None) -> str | None:
+    """Why run `caller_id` (or a run to start for project `here`) may not message, hand off to or take over from run
+    `target_id`: they work for different projects (`project`), each conversation coordinating its own; None when both
+    work for one, or either is unknown (the person at a terminal sends as no run). Its callers let a person override it
+    (`--cross-project`), never a tool."""
+    caller = caller_id if caller_id and caller_id != reg.PERSON_SENDER else None
+    here = project(caller) if caller is not None else here
+    there = project(target_id) if caller != target_id else here
+    if here is None or there is None or here == there:
+        return None
+    return (f"{tag(target_id)} works for project {there.name}, {tag(caller) if caller else 'this run'} for project "
+            f"{here.name}: a run never messages or hands off to another project's runs")
+
+
+def succeed(predecessor_id: str, successor_id: str, *, cross_project: bool = False) -> bool:
     """Record run `successor_id` as taking over from run `predecessor_id` (a hand-off, a run whose context filled), the
     successor started owing what it inherited (`inherited`): what is handed back or sent to the predecessor reaches the
     successor (`live`), and the predecessor is never resumed again. False when it had a successor already, or is the
-    same run."""
+    same run. `ForeignProject` when the two work for different projects, unless `cross_project` (a person's act)."""
     if predecessor_id == successor_id:
         return False
+    if not cross_project and (refused := foreign_project(successor_id, predecessor_id)) is not None:
+        raise ForeignProject(refused)
     with reg.record_lock(predecessor_id):
         predecessor = reg.get_run(predecessor_id)
         if predecessor is None or predecessor.successor is not None:

@@ -330,6 +330,9 @@ async def agent_send(run_id: str, message: str, wait: bool = False, fyi: bool = 
     """
     if reg.resolve_run_id(run_id) is None and (waiting := SpawnLine.here().describe(run_id)) is not None:
         return f"ERROR: {run_id[:8]} has not started ({waiting}); send once it runs."
+    # A tool is never the person: no override of the project rule here (`galaius agents send --cross-project`).
+    if (refused := messaging.send_refusal(run_id)) is not None:
+        return f"ERROR: {refused}"
     # Shared with `galaius agents send`, so both surfaces use one routing and policy lifecycle.
     delivery = messaging.deliver_message(run_id, message, turn=agent_queue.MessageTurn(fyi=fyi))
     waiting = SpawnLine.here().waits(delivery.run_id) if delivery.state == "queued" else None

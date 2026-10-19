@@ -20,7 +20,7 @@ from pydantic import ValidationError
 from galaius import feedback, live_sources, model_catalog, ollama
 from galaius_core import AGENT_TOUCH_SCOPES, ASKED_BY_MAX
 
-from galaius.agents import agent_queue, handback, messaging
+from galaius.agents import agent_queue, handback, messaging, relations
 from galaius.agents import providers as agent_providers
 from galaius.agents import registry as reg
 from galaius.agents.conversations import ConversationAnswers
@@ -1002,7 +1002,8 @@ def refresh_live_data() -> None:
 
 
 @agents_app.command(name="send")
-def agents_send(run_id: str, message: str, *, fyi: Annotated[bool, Parameter(name="--fyi")] = False) -> None:
+def agents_send(run_id: str, message: str, *, fyi: Annotated[bool, Parameter(name="--fyi")] = False,
+                cross_project: Annotated[bool, Parameter(name="--cross-project")] = False) -> None:
     """Send a message to a running agent — it answers with its full context intact.
 
     How the VS Code panel lets you join the conversation instead of only watching: the agent
@@ -1010,11 +1011,16 @@ def agents_send(run_id: str, message: str, *, fyi: Annotated[bool, Parameter(nam
     transcript the panel shows.
 
     --fyi: a one-way note (a report, an ack, a heads-up): it reads it, and its turns never report back to you for it.
+    --cross-project: the person's deliberate act, at his own terminal (never from an agent run's process): a run working
+    for another project than the sending run's is sent to anyway (`relations.foreign_project` refuses it otherwise).
     """
 
 
     if reg.resolve_run_id(run_id) is None and (waiting := SpawnLine.here().describe(run_id)) is not None:
         print(f"ERROR: {run_id} has not started ({waiting}); send once it runs.")
+        raise SystemExit(1)
+    if (refused := messaging.send_refusal(run_id, cross_project=cross_project)) is not None:
+        print(f"ERROR: {refused}")
         raise SystemExit(1)
     delivery = messaging.deliver_message(run_id, message, turn=agent_queue.MessageTurn(fyi=fyi))
     if (refused := messaging.wait_for_start(delivery)) is not None:
@@ -1611,7 +1617,8 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
                  machine: str | None = None, folder: str | None = None,
                  fence: Annotated[Path | None, Parameter(name="--fence")] = None,
                  for_run: Annotated[str | None, Parameter(name="--for")] = None,
-                 continues: str | None = None, fresh: bool = False, single: bool = False, helper: bool = False) -> None:
+                 continues: str | None = None, fresh: bool = False, single: bool = False, helper: bool = False,
+                 cross_project: Annotated[bool, Parameter(name="--cross-project")] = False) -> None:
     """Start an agent and return its id immediately, without waiting for it to finish.
 
     --machine <name or id> starts it on another of your computers instead, through the server, in
@@ -1649,7 +1656,9 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
     --continues names the run of this computer the new one takes over from (a hand-off): what that run owed, what is
     handed back or sent to it from then on, reaches the new one; it is never resumed again. A run of the same role under
     the same parent that outgrew its context is taken over without it, and so is a calling run of the new run's role whose
-    context is still near full after a compaction; --helper keeps the new run the caller's.
+    context is still near full after a compaction; --helper keeps the new run the caller's. --cross-project: a person's
+    deliberate act, at his own terminal (never from an agent run's process): --continues names a run of another project
+    than the new run's (refused otherwise).
     """
 
 
@@ -1661,6 +1670,9 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
             print(f"ERROR: --for names an agent run of this computer (full or unambiguous short id): {for_run!r} is none", file=sys.stderr)
             raise SystemExit(2)
         for_run = asker
+    if cross_project and (refused := relations.person_override_refusal()) is not None:
+        print(f"ERROR: {refused}", file=sys.stderr)
+        raise SystemExit(2)
     if continues is not None:
         if (predecessor := reg.resolve_run_id(continues)) is None or reg.get_run(predecessor) is None:
             print(f"ERROR: --continues names an agent run of this computer (full or unambiguous short id): {continues!r} is none", file=sys.stderr)
@@ -1687,7 +1699,7 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
                 denied_tools=tuple(denied_tools or ()), provider_modes=_provider_modes(provider_modes),
                 quota_window=quota_window,
                 fence=FenceSpec.model_validate_json(fence.read_text()) if fence is not None else None,
-                for_run=for_run, single=single, continues=continues, helper=helper,
+                for_run=for_run, single=single, continues=continues, helper=helper, cross_project=cross_project,
             )
             if (refused := spawn.naming_refusal()) is not None:
                 print(f"ERROR: {refused}", file=sys.stderr)

@@ -229,3 +229,65 @@ def test_a_report_needs_an_answer_when_a_line_opens_on_a_failed_verdict_read_in_
     started = time.perf_counter()
     assert relations.needs_answer(f"Done.\n{line}") is failed
     assert time.perf_counter() - started < 0.1  # a run of dashes once held the recipient's queue lock for seconds
+
+
+@pytest.fixture
+def two_projects(team, tmp_path, monkeypatch):
+    """lead coordinates repository `site`, coordinator repository `shop`; eng, lead's child, works in a scratch folder;
+    stranger coordinates from a `.worktrees/` slice of `site`. This process descends from no run (the person's terminal)."""
+    folders = {name: tmp_path / name for name in ("site", "shop", "scratch")} | {"slice": tmp_path / "site" / ".worktrees" / "fix"}
+    for name in ("site", "shop"):
+        (folders[name] / ".git").mkdir(parents=True)
+    folders["scratch"].mkdir()
+    folders["slice"].mkdir(parents=True)
+    (folders["slice"] / ".git").write_text("gitdir: ../../.git/worktrees/fix\n")
+    for run, folder in (("lead", "site"), ("coordinator", "shop"), ("eng", "scratch"), ("stranger", "slice")):
+        reg._merge_record_locked(IDS[run], {"cwd": str(folders[folder])})
+    monkeypatch.setenv("GALAIUS_RUN_ID", IDS["lead"])
+    monkeypatch.setattr(reg, "ancestor_run", lambda: None)
+    return folders
+
+
+def _send_cli(capsys, **flags) -> str:
+    from galaius.cli.app_commands import agents_send
+    with pytest.raises(SystemExit):
+        agents_send(IDS["coordinator"], "take it all", **flags)
+    return capsys.readouterr().out
+
+
+def _from_an_agents_process(monkeypatch, variable: str | None = None) -> None:
+    """This process descends from lead's run, its `GALAIUS_RUN_ID` cleared (`env -u`) or set to `variable`."""
+    monkeypatch.delenv("GALAIUS_RUN_ID") if variable is None else monkeypatch.setenv("GALAIUS_RUN_ID", variable)
+    monkeypatch.setattr(reg, "ancestor_run", lambda: reg.get_run(IDS["lead"]))
+
+
+@pytest.mark.parametrize("entry", ["foreign_project", "succeed", "spawn-continues", "terminal-continues", "cli-send", "mcp-send",
+                                   "cleared-variable-send", "agent-passes-the-override", "forged-parent-continues",
+                                   "bogus-run-id-send"])
+def test_a_run_never_messages_or_hands_off_to_another_projects_run(two_projects, entry, capsys, monkeypatch):
+    """Owner 2026-10-19: one project's coordinator handed its work to another project's coordinator (same web session,
+    separate launch trees). Each entry refuses, naming both projects; nothing is recorded or queued."""
+    from galaius.server import tools_agents
+    heard = len(reg.read_events(IDS["coordinator"]))
+    assert relations.foreign_project(IDS["eng"], IDS["lead"]) is None  # a child in another folder is its coordinator's project
+    assert relations.foreign_project(IDS["stranger"], IDS["lead"]) is None  # a slice of the repository is the repository
+    said = {
+        "foreign_project": lambda: relations.foreign_project(IDS["lead"], IDS["coordinator"]),
+        "succeed": lambda: str(pytest.raises(relations.ForeignProject, relations.succeed, IDS["coordinator"], IDS["lead"]).value),
+        "spawn-continues": lambda: Spawn(task="t", cwd=".", agent="main", parent_run_id=IDS["lead"], continues=IDS["coordinator"]).naming_refusal(),
+        "terminal-continues": lambda: Spawn(task="t", cwd=str(two_projects["site"]), agent="main", continues=IDS["coordinator"]).naming_refusal(),
+        "cli-send": lambda: _send_cli(capsys),
+        "mcp-send": lambda: asyncio.run(tools_agents.agent_send(IDS["coordinator"], "take it all")),
+        "cleared-variable-send": lambda: _from_an_agents_process(monkeypatch) or _send_cli(capsys),
+        "agent-passes-the-override": lambda: _from_an_agents_process(monkeypatch) or _send_cli(capsys, cross_project=True),
+        "bogus-run-id-send": lambda: _from_an_agents_process(monkeypatch, "not-a-run") or _send_cli(capsys),
+        "forged-parent-continues": lambda: _from_an_agents_process(monkeypatch) or Spawn(
+            task="t", cwd=".", agent="main", parent_run_id=IDS["coordinator"], continues=IDS["coordinator"]).naming_refusal(),
+    }[entry]()
+    assert "the person's own act" in said if entry == "agent-passes-the-override" else "project shop" in said and "project site" in said, said
+    assert reg.get_run(IDS["lead"]).successor is None and reg.get_run(IDS["coordinator"]).successor is None
+    assert len(reg.read_events(IDS["coordinator"])) == heard
+    if entry == "succeed":  # the person's deliberate act
+        assert relations.succeed(IDS["coordinator"], IDS["lead"], cross_project=True)
+    if entry == "terminal-continues":
+        assert Spawn(task="t", cwd=str(two_projects["site"]), agent="main", continues=IDS["coordinator"], cross_project=True).naming_refusal() is None

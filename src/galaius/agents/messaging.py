@@ -354,3 +354,23 @@ async def wait_for_reply(delivery: Delivery) -> str:
 
 def sender_id(environment: Mapping[str, str] | None = None) -> str:
     return (os.environ if environment is None else environment).get("GALAIUS_RUN_ID") or reg.PERSON_SENDER
+
+
+def asking_run() -> str | None:
+    """The run asking from this process: the running run it descends from (`reg.ancestor_run`: its process ancestry, which
+    no command of its agent changes, where `GALAIUS_RUN_ID` is cleared or forged at will), else the run `GALAIUS_RUN_ID`
+    names when it has a record (a process its run let go of: a queue's wake); None for the person at a terminal."""
+    if (run := reg.ancestor_run()) is not None:
+        return run.run_id
+    sender = sender_id()
+    return sender if sender != reg.PERSON_SENDER and reg.get_run(sender) is not None else None
+
+
+def send_refusal(run_id: str, *, cross_project: bool = False) -> str | None:
+    """Why this process (`asking_run`) may not message run `run_id`: the run it reaches (`relations.live`) works for
+    another project (`relations.foreign_project`). `cross_project` lifts it at the person's terminal only
+    (`relations.person_override_refusal`)."""
+    if cross_project:
+        return relations.person_override_refusal()
+    target = reg.resolve_run_id(run_id)
+    return relations.foreign_project(asking_run(), relations.live(target)) if target is not None else None
