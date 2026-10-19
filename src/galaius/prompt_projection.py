@@ -277,8 +277,9 @@ def _server_outputs(catalog: AgentCatalog, home: Path, projection: Path, gateway
         if agent.id == main.id:
             continue
         key = identifiers[agent.id]
-        header = {"name": key, "description": agent.description or agent.name,
-                  "tools": _listable_tools(key, gateway.granted(key, agent.harness_tools, TOOL_PREFIX))}
+        tools = gateway.granted(key, agent.harness_tools, TOOL_PREFIX)
+        # No `tools` line: every tool; `tools: []`: none (Claude Code 2.1.288 reads an empty list as no tool at all).
+        header = {"name": key, "description": agent.description or agent.name, **({} if tools is None else {"tools": _listable_tools(key, tools)})}
         body = snapshot.definition(key, projection / "references", instructions=AgentInstructionSet(agent=agent, prompts=snapshot.paradigms))
         outputs[_projection_relative("agents", f"{key}.md", agent.scope)] = (
             "---\n" + yaml.safe_dump(header, sort_keys=False, allow_unicode=True) + "---\n\n" + body + "\n"

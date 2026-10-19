@@ -348,7 +348,7 @@ def resolve_continuable_model(
 
 async def _unavailable(
     provider: AgentProvider, policy: Policy, *, permission_mode: str | None, images: bool,
-    allowed_tools: list[str], denied_tools: tuple[str, ...], env: dict[str, str],
+    allowed_tools: list[str] | None, denied_tools: tuple[str, ...], env: dict[str, str],
     auth_cache: dict[tuple[str, str], tuple[bool | None, str]], route_key: str,
     coarse_accepted: bool = False,
 ) -> _SkipDecision | None:
@@ -435,10 +435,10 @@ def model_for_agent(agent: str | None) -> str | None:
     return load_policy().criterion_for(agent)
 
 
-def tools_for_agent(agent: str | None) -> list[str]:
-    """Tools this agent may use, expanded from its toolsets and fully prefixed."""
+def tools_for_agent(agent: str | None) -> list[str] | None:
+    """Tools this agent may use, expanded from its toolsets and fully prefixed (`Policy.tools_for`)."""
     if not agent:
-        return []
+        return None
     return load_policy().tools_for(agent)
 
 

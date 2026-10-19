@@ -595,15 +595,15 @@ class AgentProvider(ABC):
             text = text[frontmatter.end():].strip()
         return text
 
-    def validate_tool_policy(self, allowed_tools: list[str], denied_tools: tuple[str, ...], *,
+    def validate_tool_policy(self, allowed_tools: list[str] | None, denied_tools: tuple[str, ...], *,
                              coarse_accepted: bool = False) -> None:
-        """Refuse a role restriction this CLI cannot express, UNLESS the caller already recorded
+        """Refuse a role restriction (`allowed_tools` a list, empty included: no tool at all) this CLI cannot express, UNLESS the caller already recorded
         an explicit acceptance of coarser (sandbox-scope, not per-tool) enforcement instead — see
         :meth:`galaius.agents.policy.Policy.accepts_coarse_tool_policy`. A provider that genuinely
         cannot express ANY part of the restriction, coarse or not, ignores ``coarse_accepted``;
         only a provider whose own docstring says otherwise (:class:`CodexProvider`) honours it."""
         validate_denied_tools(denied_tools)
-        if allowed_tools or denied_tools:
+        if allowed_tools is not None or denied_tools:
             raise UnsupportedToolPolicy(f"{self.name} cannot enforce this role's tool restriction")
 
     @abstractmethod
@@ -1218,7 +1218,7 @@ class ClaudeCodeProvider(AgentProvider):
     def permission_modes(self) -> list[PermissionMode]:
         return list(self._MODES)
 
-    def validate_tool_policy(self, allowed_tools: list[str], denied_tools: tuple[str, ...], *,
+    def validate_tool_policy(self, allowed_tools: list[str] | None, denied_tools: tuple[str, ...], *,
                              coarse_accepted: bool = False) -> None:
         # Claude enforces the FULL list itself (`--agents`/`--allowedTools`/`--disallowedTools`
         # below); there is nothing coarser to fall back to, so acceptance of one is moot here.
@@ -1226,24 +1226,33 @@ class ClaudeCodeProvider(AgentProvider):
 
     def role_arguments(self, agent: str | None, agent_prompt: str | None,
                        allowed_tools: list[str] | None, denied_tools: tuple[str, ...]) -> list[str]:
-        self.validate_tool_policy(allowed_tools or [], denied_tools)
+        self.validate_tool_policy(allowed_tools, denied_tools)
         arguments = []
         if agent is not None:
             self.validate_agent_name(agent)
-        if allowed_tools or agent_prompt is not None:
+        if allowed_tools is not None or agent_prompt is not None:
             if not agent:
                 raise UnsupportedToolPolicy("A named role is required to restrict Claude tools")
             if agent_prompt is None:
                 agent_prompt = self.definition_prompt(agent)
             definition = {"description": f"Galaius role {agent}", "prompt": agent_prompt}
-            if allowed_tools:
+            if allowed_tools is not None:
                 definition["tools"] = allowed_tools
             arguments += ["--agents", json.dumps({agent: definition})]
         if agent:
             arguments += ["--agent", agent]
+        if allowed_tools == []:
+            # No tool at all: no built-in one, and no MCP server — not even one the person configured for himself
+            # (2.1.288: `--tools ""` alone keeps every MCP server's tools; `--strict-mcp-config` with no config loads none).
+            arguments += ["--tools", "", "--strict-mcp-config"]
         if denied_tools:
             arguments += ["--disallowedTools", ",".join(denied_tools)]
         return arguments
+
+    @staticmethod
+    def _mcp_arguments(mcp_config: str | None, allowed_tools: list[str] | None) -> list[str]:
+        """`--mcp-config`, never for a role with no tool at all (`role_arguments`)."""
+        return ["--mcp-config", mcp_config] if mcp_config and allowed_tools != [] else []
 
     def command(self, task: str, **arguments) -> list[str]:
         # The prompt goes LAST, after "--": one starting with "-" (a markdown bullet) is the
@@ -1277,9 +1286,7 @@ class ClaudeCodeProvider(AgentProvider):
         ]
         if model:
             argv += ["--model", model]
-        argv += self.role_arguments(agent, agent_prompt, allowed_tools, denied_tools)
-        if mcp_config:
-            argv += ["--mcp-config", mcp_config]
+        argv += self.role_arguments(agent, agent_prompt, allowed_tools, denied_tools) + self._mcp_arguments(mcp_config, allowed_tools)
         argv += self._permission_flag(permission_mode) + self._setting_sources(environment) + (turn.arguments() if turn else [])
         if reasoning is not None:
             argv += ["--effort", self.provider_thinking_level(reasoning)]
@@ -1429,7 +1436,7 @@ class ClaudeCodeProvider(AgentProvider):
             *(["--fork-session", "--session-id", fork_to] if fork_to else []),
             "--output-format", "stream-json",
             "--verbose",
-        ] + (["--model", model] if model else []) + self._permission_flag(permission_mode) + self._setting_sources() + (turn.arguments() if turn else []) + self.role_arguments(agent, agent_prompt, allowed_tools, denied_tools) + (["--mcp-config", mcp_config] if mcp_config else [])
+        ] + (["--model", model] if model else []) + self._permission_flag(permission_mode) + self._setting_sources() + (turn.arguments() if turn else []) + self.role_arguments(agent, agent_prompt, allowed_tools, denied_tools) + self._mcp_arguments(mcp_config, allowed_tools)
 
     #: Claude's two usage dialects: ``message.usage`` / ``result.usage`` (snake) and
     #: ``result.modelUsage[model]`` (camel). Each reports the UNCACHED prompt remainder, cache
@@ -2154,10 +2161,13 @@ class CodexProvider(AgentProvider):
             *(item for key, value in sorted(server.env.items()) for item in ("-c", f"mcp_servers.galaius.env.{key}=" + json.dumps(value, ensure_ascii=False))),
         ]
 
-    def validate_tool_policy(self, allowed_tools: list[str], denied_tools: tuple[str, ...], *,
+    def validate_tool_policy(self, allowed_tools: list[str] | None, denied_tools: tuple[str, ...], *,
                              coarse_accepted: bool = False) -> None:
         validate_denied_tools(denied_tools)
-        allowed_native, denied_native = _native_tool_sets(allowed_tools, denied_tools)
+        if allowed_tools == []:
+            # Its shell and its file reading cannot both be switched off: no sandbox or flag runs it with no tool.
+            raise UnsupportedToolPolicy("Codex cannot run an agent with no tools (its shell and file reading cannot be switched off)")
+        allowed_native, denied_native = _native_tool_sets(allowed_tools or [], denied_tools)
         reason = _classify_native_tools(allowed_native, denied_native).blocking_reason
         if reason and not coarse_accepted:
             raise UnsupportedToolPolicy(
@@ -2221,7 +2231,7 @@ class CodexProvider(AgentProvider):
                 agent_prompt: str | None = None, denied_tools: tuple[str, ...] = (),
                 image_paths: tuple[Path, ...] = (), coarse_accepted: bool = False,
                 base_url: str | None = None, environment: Mapping[str, str] | None = None) -> list[str]:
-        self.validate_tool_policy(allowed_tools or [], denied_tools, coarse_accepted=coarse_accepted)
+        self.validate_tool_policy(allowed_tools, denied_tools, coarse_accepted=coarse_accepted)
         task = self._inject_definition(agent, task, agent_prompt)
         sandbox = self._native_sandbox_arguments(allowed_tools or [], denied_tools, permission_mode=permission_mode, coarse_accepted=coarse_accepted)
         confinement = self._confinement(sandbox[1], mcp_config)
@@ -2282,7 +2292,7 @@ class CodexProvider(AgentProvider):
         """
         if fork_to is not None:
             raise ValueError("codex continues its own session; it cannot resume into a copy")
-        self.validate_tool_policy(allowed_tools or [], denied_tools, coarse_accepted=coarse_accepted)
+        self.validate_tool_policy(allowed_tools, denied_tools, coarse_accepted=coarse_accepted)
         if agent:
             self.validate_agent_name(agent)
         mapping = _widen_for_coarse_acceptance(

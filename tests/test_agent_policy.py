@@ -115,7 +115,7 @@ def test_acting_default_is_a_machine_local_shared_touch_intent(policy_file):
 def test_a_missing_file_is_an_empty_policy_not_a_crash(tmp_path):
     p = Policy.load(tmp_path / "nothing.json")
     assert p.criterion_for("anyone") is None
-    assert p.tools_for("anyone") == []
+    assert p.tools_for("anyone") is None   # no list: every tool
     assert p.provider_active("claude") is True
 
 

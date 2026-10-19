@@ -26,7 +26,7 @@ from galaius.agents.catalog_connection import (
 )
 from galaius.agents.policy import Policy
 from galaius.agents.tool_gateway import CONVERSATION_TOOLS
-from galaius.agents.providers import AgentProvider, ClaudeCodeProvider, CodexProvider
+from galaius.agents.providers import AgentProvider, ClaudeCodeProvider, CodexProvider, UnsupportedToolPolicy
 from unittest.mock import AsyncMock
 from galaius.agents.run import ModelUnavailable, launch_continuation, run_agent
 from galaius.config import UserConfig
@@ -39,7 +39,7 @@ from galaius.cli import app_commands
 CONVERSATIONS = [f"mcp__galaius__{name}" for name in CONVERSATION_TOOLS]
 
 
-def snapshot(version=1, tools=None):
+def snapshot(version=1, tools=None, unrestricted=False):
     prompts = tuple(PromptRevision(
         key=PromptKey(namespace="fixture", slug=slug), revision=uuid4(),
         content=f"{slug} instruction revision {version}",
@@ -51,7 +51,7 @@ def snapshot(version=1, tools=None):
         id=uuid4(), revision=uuid4(), name="Fixture worker", role_key="fixture-worker",
         prompt=refs[0], paradigms=(refs[1], refs[2]), skill_paradigms=(refs[3],),
         criteria=f"price.in >= {version}", reasoning="high" if version == 1 else "low",
-        criteria_weights="gui.screenspot=1", harness_tools=tools if tools is not None else (("Read",) if version == 1 else ("Write",)),
+        criteria_weights="gui.screenspot=1", harness_tools=None if unrestricted else tools if tools is not None else (("Read",) if version == 1 else ("Write",)),
         resources=(), created_at=datetime.now(UTC),
     )
     lead = AgentRevision(
@@ -240,6 +240,28 @@ def test_invalid_server_snapshot_never_replaces_last_valid_cache(catalog_home, d
     assert AgentCatalog.cache_path().read_bytes() == previous
 
 
+@pytest.mark.parametrize("tools", [None, (), ("Read",)])
+def test_a_role_with_an_empty_tool_list_starts_with_no_tool_and_no_mcp_server(catalog_home, tools):
+    """A router role (`harness_tools` ()) answers with no tool at all: Claude gets `--tools ""`, an empty definition list
+    and no MCP server, not even the person's own (2.1.288: its `init` lists 0 tools); Codex, which cannot switch its
+    shell and file reading off, refuses it. A role with no list (None) keeps every tool; a listed one gets its list."""
+    connection = CatalogConnection(endpoint="http://127.0.0.1:8767", auth_mode="preview", workspace_id=uuid4())
+    catalog = AgentCatalog.refresh(connection, transport=catalog_transport(snapshot(1, tools=tools, unrestricted=tools is None)))
+    allowed = Policy.from_catalog(catalog).tools_for("fixture-worker")
+    argv = ClaudeCodeProvider().command("Answer.", cwd=str(catalog_home), model=None, mcp_config="mesh.json", run_id=str(uuid4()), agent="fixture-worker",
+                                        allowed_tools=allowed, agent_prompt="Answer only.")
+    options = argv[:argv.index("--")]
+    definition = json.loads(options[options.index("--agents") + 1])["fixture-worker"]
+    none = tools == ()
+    assert (allowed is None, definition.get("tools"), "--mcp-config" in options) == (tools is None, None if tools is None else allowed, not none)
+    assert (options[options.index("--tools"):options.index("--tools") + 3] == ["--tools", "", "--strict-mcp-config"]) if none else "--tools" not in options
+    if none:
+        with pytest.raises(UnsupportedToolPolicy, match="no tools"):
+            CodexProvider().validate_tool_policy(allowed, ())
+    else:
+        CodexProvider().validate_tool_policy(allowed, (), coarse_accepted=True)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("provider_type", [ClaudeCodeProvider, CodexProvider])
 async def test_common_launcher_uses_one_catalog_for_prompt_and_policy(catalog_home, monkeypatch, provider_type):
@@ -260,7 +282,7 @@ async def test_common_launcher_uses_one_catalog_for_prompt_and_policy(catalog_ho
     monkeypatch.setattr("galaius.agents.run.rank_candidates", lambda rule, env, *, providers, weights="", role=None: (
         reg.LaunchCandidate(provider=providers[0].name, model=rule, rank=0),))
     for version in (1, 2):
-        catalog = AgentCatalog.refresh(connection, transport=catalog_transport(snapshot(version, tools=() if provider_type is CodexProvider else None)))
+        catalog = AgentCatalog.refresh(connection, transport=catalog_transport(snapshot(version, unrestricted=provider_type is CodexProvider)))
         monkeypatch.setattr("galaius.agents.run.load_policy", lambda: Policy.from_catalog(catalog))
         handle = await run_agent(provider_type(), "bounded task", cwd=str(catalog_home), agent="fixture-worker", mesh=False)
         await asyncio.wait_for(handle.wait(), 10)
@@ -269,7 +291,7 @@ async def test_common_launcher_uses_one_catalog_for_prompt_and_policy(catalog_ho
     assert "primary instruction revision 1" in prompt(captured[0])
     assert "primary instruction revision 2" in prompt(captured[1])
     assert captured[1][1]["reasoning"] == "low"
-    assert captured[1][1]["allowed_tools"] == ([] if provider_type is CodexProvider else ["Write"])
+    assert captured[1][1]["allowed_tools"] == (None if provider_type is CodexProvider else ["Write"])
     if provider_type is ClaudeCodeProvider:
         assert captured[1][1]["agent"] == "fixture-worker"
         assert "--agents" in captured[1][2] and "--allowedTools" not in captured[1][2]

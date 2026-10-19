@@ -65,12 +65,14 @@ class AgentToolList(BaseModel):
         """`role`'s gateway tools, as galaius's MCP server serves them (`ext__…`)."""
         return self.agents.get(role, ())
 
-    def granted(self, role: str, tools: list[str] | tuple[str, ...], prefix: str) -> list[str]:
+    def granted(self, role: str, tools: list[str] | tuple[str, ...] | None, prefix: str) -> list[str] | None:
         """`role`'s harness tools with its gateway tools added under `prefix` (galaius's own MCP
-        name), and the conversation tools when it reads files. A role with no list is unrestricted and
-        already reaches every one: it stays so."""
+        name), and the conversation tools when it reads files. A role with no list (None) is unrestricted and
+        already reaches every one: it stays so; one with an empty list has no tool at all, gateway ones included."""
+        if not tools:
+            return None if tools is None else []
         added = (*(CONVERSATION_TOOLS if FILE_READERS & set(tools) else ()), *self.names(role))
-        return [*tools, *(f"{prefix}{name}" for name in added if f"{prefix}{name}" not in tools)] if tools else list(tools)
+        return [*tools, *(f"{prefix}{name}" for name in added if f"{prefix}{name}" not in tools)]
 
     def tool(self, name: str) -> GatewayTool | None:
         return next((tool for tool in self.tools if tool.name == name), None)

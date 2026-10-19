@@ -76,6 +76,7 @@ class Policy:
     profiles: dict[str, str] = field(default_factory=dict)
     agents: dict[str, str] = field(default_factory=dict)
     toolsets: dict[str, list[str]] = field(default_factory=dict)
+    #: Each role's tools; a role absent from it has every tool, one listed with none has no tool at all.
     agent_tools: dict[str, list[str]] = field(default_factory=dict)
     paradigms: dict[str, list[ParadigmAssignment]] = field(default_factory=dict)
     providers: dict[str, bool] = field(default_factory=dict)
@@ -175,7 +176,8 @@ class Policy:
             elif agent.model is not None:
                 policy.agents[agent.role_key] = agent.model.id
             policy.reasoning[agent.role_key] = agent.reasoning
-            policy.agent_tools[agent.role_key] = list(agent.harness_tools)
+            if agent.harness_tools is not None:
+                policy.agent_tools[agent.role_key] = list(agent.harness_tools)
             policy.paradigms[agent.role_key] = [
                 ParadigmAssignment(paradigm=f"{reference.key.namespace}/{reference.key.slug}", projection=projection)
                 for projection, references in (("system_prompt", agent.paradigms), ("skill", agent.skill_paradigms))
@@ -336,13 +338,13 @@ class Policy:
             return [member]
         return [f"{TOOL_PREFIX}{member}"]
 
-    def tools_for(self, agent: str) -> list[str]:
-        """The tools this agent may use, or [] when the policy does not restrict it."""
+    def tools_for(self, agent: str) -> list[str] | None:
+        """The tools this agent may use: None when the policy does not restrict it, [] when it may use none."""
         if self.catalog is not None:
             return self.gateway.granted(agent, self.catalog.role(agent).harness_tools, TOOL_PREFIX)
         members = self.agent_tools.get(agent)
         if not members:
-            return []
+            return None if members is None else []
         out: list[str] = []
         for member in members:
             out.extend(self._expand_member(member, ()))
