@@ -1227,3 +1227,15 @@ def test_a_long_stop_hook_block_keeps_its_verdict():
     }))
     assert event.kind == "check" and event.text.startswith("Stop hook feedback:")
     assert event.text.endswith("]: Check 1(b) fires: two items left as remaining.") and len(event.text) < 2100
+
+
+@pytest.mark.parametrize("status, said, cut", [
+    (401, "Failed to authenticate: OAuth token revoked.", "login_lost"),  # another account signed in (Claude Code's result)
+    (None, "Failed to authenticate: OAuth session expired and could not be refreshed", "login_lost"),  # before it said its status
+    (401, "Invalid API key", "login_lost"),
+    (None, "Failed to authenticate: invalid x-api-key", None),  # a key refused says no status here: its own failure
+    (429, "Rate limited, retry shortly", None),  # a short rate limit is no usage window
+    (429, "You've hit your weekly limit · resets 9pm (Europe/Paris)", "usage_limit"),
+])
+def test_a_failed_turn_says_its_cut_by_its_api_status_else_its_words(status, said, cut):
+    assert PROVIDERS["claude"].cut_of(said, status) == cut

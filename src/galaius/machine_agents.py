@@ -1143,18 +1143,25 @@ class MachineAgents(BaseModel):
             if signed_in[login] and await asyncio.to_thread(reg.claim_login_resume, run.run_id) is not None:
                 claimed.append((run, reg.LOGIN_RESUME_SENDER, "signing in again"))
         order = [run.run_id for run in await asyncio.to_thread(reg.deepest_first, [run for run, _, _ in claimed])]
-        above = {run_id: (await asyncio.to_thread(reg.ancestors, run_id))[1:] for run_id in order}
         resumed: list[str] = []
         for run, sender, after in sorted(claimed, key=lambda claim: order.index(claim[0].run_id)):
-            if await self._resume(run, sender, after, agents=[below for below in resumed if run.run_id in above[below]]):
+            if await self._resume(run, sender, after, agents=await asyncio.to_thread(self._cut_with, run.run_id, resumed)):
                 resumed.append(run.run_id)
         return resumed
 
+    @staticmethod
+    def _cut_with(run_id: str, resumed: Sequence[str]) -> list[str]:
+        """The agents run `run_id` launched, at any depth, that a cut stopped and are back or will be by themselves: resumed
+        in this pass (`resumed`), or still to resume (`registry.self_resuming`, a lost login after a usage limit reset), each
+        as `galaius agents list` names it (`role-id8`)."""
+        return [f"{run.agent}-{run.run_id[:8]}" if run.agent else run.run_id[:8] for run in reg.stored_tree(run_id)
+                if run.run_id != run_id and (run.run_id in resumed or reg.self_resuming(run))]
+
     async def _resume(self, run: reg.AgentRun, sender: str, after: str, *, agents: Sequence[str] = ()) -> bool:
-        """Claimed run `run` resumed from `sender`, its brief naming `agents` of its own resumed before it
-        (`AGENTS_RESUMED`); whatever stops it ends as the run's failure (« … after `after` failed: why »),
+        """Claimed run `run` resumed from `sender`, its brief naming `agents` of its own cut with it that are back or
+        will be by themselves (`AGENTS_RESUMED`); whatever stops it ends as the run's failure (« … after `after` failed: why »),
         never a silent pause."""
-        brief = reg.RESUME_BRIEF + (f"\n\n{reg.AGENTS_RESUMED.format(runs=', '.join(run_id[:8] for run_id in agents))}" if agents else "")
+        brief = reg.RESUME_BRIEF + (f"\n\n{reg.AGENTS_RESUMED.format(runs=', '.join(agents))}" if agents else "")
         try:
             environment = await asyncio.to_thread(self.launcher_environment_in, Path(run.cwd))
             delivery = await asyncio.to_thread(deliver_message, run.run_id, brief, sender=sender, environment=environment)

@@ -1268,7 +1268,8 @@ def test_a_tree_its_lost_login_cut_resumes_whole_deepest_first_once_signed_in_ag
     signed_in["claude"] = True
     assert asyncio.run(agents.resume_paused()) == ["tree-maker", "tree-lead", "tree-main"]
     assert {sender for _, _, sender in sent} == {reg.LOGIN_RESUME_SENDER} and sent[0][1] == reg.RESUME_BRIEF
-    assert "tree-mak" in sent[1][1] and {"tree-mak", "tree-lea"} <= set(sent[2][1].split("themselves: ")[1].split(".")[0].split(", "))
+    assert sent[1][1].endswith(reg.AGENTS_RESUMED.format(runs="app-engineer-tree-mak"))
+    assert sent[2][1].endswith(reg.AGENTS_RESUMED.format(runs="app-engineer-tree-mak, app-engineer-tree-lea"))
     assert asyncio.run(agents.resume_paused()) == [] and len(sent) == 3
 
 

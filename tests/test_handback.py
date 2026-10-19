@@ -68,14 +68,18 @@ def test_the_last_child_to_end_resumes_its_ended_parent_with_every_report(sent, 
     assert "eng" in message and "rev" in message
 
 
-def test_a_child_its_lost_login_cut_never_wakes_its_parent_with_the_cut(sent):
+def test_a_child_its_lost_login_cut_wakes_its_parent_only_once_nothing_resumes_it(sent):
     """Owner 2026-10-19 (« 4 of its agents stopped »): a cut that resumes by itself (`registry.self_resuming`) is no
-    report; its parent hears the child's report once it resumed and ended."""
+    report; its parent hears the child's report once it resumed and ended, or its cut once nothing will resume it."""
     _ended("lead", 100.0, agent="main", provider_session_id="vendor-lead")
     reg.raw_events_path("eng").write_text(json.dumps({"type": "result", "subtype": "success", "is_error": True, "api_error_status": 401,
                                                       "session_id": "s", "result": "Failed to authenticate: OAuth token revoked."}) + "\n")
+    watch = handback.EndWatch(live=frozenset({"eng"}))
     _ended("eng", time.time(), status="failed", agent="backend-engineer", parent_run_id="lead")
-    assert handback.hand_back("eng") == [] and sent == []
+    assert handback.hand_back("eng") == [] and watch.tick() == [] and sent == []
+    # Its resume met the same lost login again: nothing resumes it any more, its launcher hears it on the next look.
+    reg._merge_record_locked("eng", {"resumed_at": reg.get_run("eng").finished_at - 10})
+    assert [delivery.run_id for delivery in watch.tick()] == ["lead"]
 
 
 @pytest.mark.parametrize("latest, told", [

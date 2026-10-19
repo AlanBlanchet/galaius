@@ -2356,8 +2356,8 @@ RESUME_BRIEF = (
     "diff against HEAD first."
 )
 #: What a run resumed by itself after a cut reads after `RESUME_BRIEF` when agents it launched were cut with it and
-#: resumed by themselves first (`MachineAgents.resume_paused`).
-AGENTS_RESUMED = "Your agents cut with you resumed by themselves: {runs}. Their reports come back to you; never relaunch them."
+#: are back or will be by themselves (`MachineAgents.resume_paused`).
+AGENTS_RESUMED = "Your agents cut with you resume by themselves: {runs}. Their reports come back to you; never relaunch them."
 
 
 def interrupted_runs(*, within_hours: float = 24.0) -> list[AgentRun]:

@@ -466,8 +466,9 @@ class AgentProvider(ABC):
         return self.accepts_subscription_auth(stdout, stderr)
 
     #: The cut each HTTP status of its provider's API names when a turn fails on it (`cut_of`): 401, the login
-    #: was refused (expired, revoked, switched to another account); 429, the usage window refused.
-    CUT_STATUS: ClassVar[Mapping[int, RunCut]] = {401: RunCut.login_lost, 429: RunCut.usage_limit}
+    #: was refused (expired, revoked, switched to another account). A 429 is no cut by itself: only a refusal naming its
+    #: window (`quota.REFUSAL`) is a usage limit, a short rate limit is the turn's own failure.
+    CUT_STATUS: ClassVar[Mapping[int, RunCut]] = {401: RunCut.login_lost}
     #: The words a failed turn says each cut in when its program gives no status (`cut_of`), checked in order.
     cut_words: ClassVar[Mapping[RunCut, re.Pattern[str]]] = {RunCut.usage_limit: REFUSAL}
 
@@ -920,7 +921,7 @@ class ClaudeCodeProvider(AgentProvider):
     home_folder = ".claude"
     # 2.1.288 says its status (`api_error_status`); before it, only « Failed to authenticate: OAuth session expired and
     # could not be refreshed », « …: OAuth token revoked » (another account signed in), its docs « Login expired · Please run /login ».
-    cut_words = {RunCut.login_lost: re.compile(r"Failed to authenticate|OAuth session expired|OAuth token (?:has expired|revoked)|Login expired|Please run /login|Not logged in", re.IGNORECASE),
+    cut_words = {RunCut.login_lost: re.compile(r"OAuth session expired|OAuth token (?:has expired|revoked)|Login expired|Please run /login|Not logged in", re.IGNORECASE),
                  **AgentProvider.cut_words}
     settings_file = "settings.json"
     no_extra_usage_guidance = (

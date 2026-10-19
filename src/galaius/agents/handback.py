@@ -108,13 +108,18 @@ class EndWatch(BaseModel):
 
     live: frozenset[str] = Field(default_factory=lambda: frozenset(run.run_id for run in reg.running_runs()))
     looked: float = Field(default_factory=time.time)
+    #: Ended runs a cut stopped that resume by themselves (`registry.self_resuming`): their launcher was not woken with the
+    #: cut (`_resume`). Each ends again here once that no longer holds and nothing resumed it (its window lapsed).
+    held: frozenset[str] = frozenset()
 
     def ended(self) -> list[str]:
         now, live = time.time(), frozenset(run.run_id for run in reg.running_runs())
         recorded = {run.run_id for run in reg._stored_records()
                     if run.askers and run.finished_at is not None and self.looked <= run.finished_at <= now}
-        ended = sorted((self.live - live) | (recorded - live))
-        self.live, self.looked = live, now
+        fresh = (self.live - live) | (recorded - live)
+        cut = frozenset(run_id for run_id in (self.held | fresh) - live if (run := reg.get_run(run_id)) is not None and reg.self_resuming(run, now=now))
+        ended = sorted(fresh | (self.held - live - cut))
+        self.live, self.looked, self.held = live, now, cut
         return ended
 
     def tick(self) -> list[messaging.Delivery]:
