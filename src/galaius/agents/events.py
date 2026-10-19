@@ -256,9 +256,12 @@ class UsageLedger(BaseModel):
 
     #: Checkpoint key the invocation-local figure belongs to — the session's main model.
     primary: str | None = None
-    #: The window the CLI said it sizes the conversation to, once it said so (Claude's context request): what its
-    #: later reports of the model's own window (`result.modelUsage`) never replace.
+    #: The window the CLI said this turn compacts below (Claude's context request), until the turn's result: there
+    #: it wins over the model's own window (`result.modelUsage`); the next turn asks again or reads the model's.
     window: int | None = None
+    #: The compaction window galaius launched this turn with (its line ahead of the CLI's, `turn_preface`), until
+    #: the turn's result: what caps the model's own window when the turn did not ask.
+    compact_window: int | None = None
     seen: set[str] = Field(default_factory=set)
     live: TokenUsage = TokenUsage()
     checkpoints: list[_UsageCheckpoint] = Field(default_factory=list)

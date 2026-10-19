@@ -28,7 +28,7 @@ from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Annotated, ClassVar, Literal, Protocol, get_args
 from urllib.parse import urlsplit
 
@@ -807,6 +807,10 @@ class AgentProvider(ABC):
         `task_message` writes (`starts_ahead`)."""
         raise UnsupportedToolPolicy(f"{self.name} cannot resume before its message")
 
+    def turn_preface(self, argv: Sequence[str]) -> bytes:
+        """What galaius writes into a turn's stream ahead of the CLI's, from the turn's `argv`: nothing by default."""
+        return b""
+
     def took_message(self, line: str) -> bool:
         """Whether `line`, written by a turn's child after its message was handed to it (on its
         command line or its stdin), says it took it: anything but its start's bookkeeping."""
@@ -1271,6 +1275,19 @@ class ClaudeCodeProvider(AgentProvider):
 
     #: The id its context request answers under (`task_message`).
     CONTEXT_REQUEST: ClassVar[str] = "galaius-context"
+    #: The `type` of the line galaius writes ahead of each turn's stream (`turn_preface`).
+    TURN_LINE: ClassVar[str] = "galaius_turn"
+
+    def turn_preface(self, argv: Sequence[str]) -> bytes:
+        """The compaction window this turn's `argv` sets (`ClaudeTurnSettings`'s `--settings`), as a line ahead of the
+        CLI's own: a replay of the stream reads what each turn ran under. Nothing for a turn that sets none (an editor
+        conversation's: its owner's own settings apply)."""
+        options = list(argv[:argv.index("--")] if "--" in argv else argv)
+        try:
+            window = json.loads(options[options.index("--settings") + 1]).get("autoCompactWindow")
+        except (ValueError, IndexError, AttributeError):  # no `--settings`, or a settings file's path (`media_command`)
+            window = None
+        return (json.dumps({"type": self.TURN_LINE, "compact_window": window}) + "\n").encode() if isinstance(window, int) else b""
 
     def task_message(self, task: str, images: tuple[Path, ...] = ()) -> bytes:
         """Its stream-json user message — `task` alone, or a text block (when `task` says something) then one base64
@@ -1487,6 +1504,10 @@ class ClaudeCodeProvider(AgentProvider):
         kind = raw.get("type", "")
         sid = raw.get("session_id")
 
+        if kind == self.TURN_LINE:
+            ledger.compact_window = raw.get("compact_window") if isinstance(raw.get("compact_window"), int) else None
+            return None  # galaius's own line: what the turn runs under, not what the agent did
+
         if kind == "system" and raw.get("subtype") in _HARNESS_BOOKKEEPING:
             return None  # about the harness's own machinery, not about what the agent did
 
@@ -1607,10 +1628,16 @@ class ClaudeCodeProvider(AgentProvider):
             detail = json.dumps(structured) if structured is not None else str(
                 raw.get("result") or raw.get("stop_reason") or raw.get("subtype") or ""
             )
-            # The window the CLI sized the conversation to when it said so in this stream (`control_response`): 2.1.288
-            # reports the effective `autoCompactWindow` there, capped at the model's own; `modelUsage` only the model's.
+            # The window this turn compacts below: the CLI's answer to its context request when this turn asked
+            # (`control_response`, 2.1.288: the effective `autoCompactWindow`, capped at the model's own), else the
+            # model's own (`modelUsage`) capped at the window this turn was launched with (2.1.288's rule). Both count
+            # for this turn only: a later one (a resume with its message as an argument asks nothing) may run under
+            # another setting.
             main = (raw.get("modelUsage") or {}).get(ledger.primary)
-            window = ledger.window or (main.get("contextWindow") if isinstance(main, dict) else None)
+            model_window = main.get("contextWindow") if isinstance(main, dict) else None
+            capped = min(model_window, ledger.compact_window) if isinstance(model_window, int) and ledger.compact_window else model_window
+            window = ledger.window or capped
+            ledger.window = ledger.compact_window = None
             # The turn's own thinking (`usage.output_tokens_details`: this turn, main thread; `modelUsage` is cumulative).
             details = (raw.get("usage") or {}).get("output_tokens_details") or {}
             thought = ledger.settle_thinking(details.get("thinking_tokens") if isinstance(details, dict) else None)

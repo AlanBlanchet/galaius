@@ -777,6 +777,8 @@ class AheadLaunch(BaseModel):
         reads what it is to do from its stdin, written later (`hand`)."""
         later, env = stderr is not None, self.provider.child_environment(reg.participant_environment(env))
         sink = reg.open_raw_events(run_id, append=later)
+        sink.write(self.provider.turn_preface(argv))
+        sink.flush()
         stderr = stderr if later else reg.open_stderr(run_id, append=False)
         try:
             return await asyncio.create_subprocess_exec(
@@ -1096,6 +1098,8 @@ def _spawn_turn(
     """Start one resumed turn of `run` from `argv` and its reaper, before returning."""
     env = provider.child_environment(reg.participant_environment(env))
     sink = reg.open_raw_events(run.run_id, append=True)
+    sink.write(provider.turn_preface(argv))
+    sink.flush()
     stderr_file = tempfile.TemporaryFile()
     try:
         process = subprocess.Popen(
