@@ -383,14 +383,19 @@ def card(run: reg.AgentRun) -> str:
     first, asked = _working_for(run)
     projects: dict[str, str] = {}
 
-    def placed(run_id: str) -> str:   # each run with the project it works for (owner 2026-10-19: one conversation, one project)
+    def label(run_id: str) -> str:   # the project a run works for, once per conversation
         top = reg.conversation_of(run_id)
         if top not in projects:
             projects[top] = project_label(project(run_id))
-        return f"{tag(run_id)} (project: {projects[top]})"
+        return projects[top]
+
+    def placed(run_id: str) -> str:   # each run with the project it works for (owner 2026-10-19: one conversation, one project)
+        return f"{tag(run_id)} (project: {label(run_id)})"
 
     works_for = OPERATOR if first is None else f"{placed(first)} — « {_last_ask(asked, asked.parent_run_id or first)} »"
-    lines = [f"{CARD_HEADING}\nYou are {placed(run.run_id)}. You work for: {works_for}."]
+    # The run itself from the record handed in: a first turn's card is drawn before its record can be read back.
+    own = label(run.parent_run_id) if run.parent_run_id else project_label(folder_project(run.cwd))
+    lines = [f"{CARD_HEADING}\nYou are {_tag(run)} (project: {own}). You work for: {works_for}."]
     also = [asker for asker in owed(run) if asker != run.parent_run_id and live(asker) != first]
     if also:
         lines.append("Also asked by: " + "; ".join(f"{placed(live(asker))} — « {_last_ask(run, asker)} »" for asker in also) + ".")

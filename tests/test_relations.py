@@ -327,5 +327,7 @@ def test_the_turn_card_names_the_project_of_each_run_it_lists(two_projects):
     card = relations.card(reg.get_run(IDS["eng"]))
     site = relations.project_label(two_projects["site"])
     assert f"You are {_tag('eng')} (project: {site}). You work for: {_tag('lead')} (project: {site})" in card
+    unread = reg.get_run(IDS["eng"]).model_copy(update={"run_id": str(uuid.uuid4())})   # a first turn: no record to read back yet
+    assert relations.card(unread).splitlines()[1].startswith(f"You are {ROLES['eng']}-{unread.run_id[:8]} (project: {site}).")
     tags = re.findall(r"\b[a-z][a-z-]*-[0-9a-f]{8}\b", card)
     assert len(tags) >= 3 and len(tags) == len(re.findall(r"\b[a-z][a-z-]*-[0-9a-f]{8} \(project: ", card)), card   # each run it lists
