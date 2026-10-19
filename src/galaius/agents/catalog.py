@@ -1,5 +1,6 @@
 """Validated server catalog, replaceable local cache, and role prompt composition."""
 
+import json
 import re
 import sys
 from datetime import UTC, datetime
@@ -161,6 +162,11 @@ class CatalogSnapshot(AgentCatalogSnapshot):
         return "\n\n".join(fragments)
 
 
+#: How the tool lists of a cached catalog read: 2 since galaius-core 0.58 (`AgentRevision.harness_tools` [] = no tool, a
+#: left-out list = every tool). A cache file with no mark was written when [] meant every tool: never read again.
+TOOL_LISTS = 2
+
+
 class AgentCatalog(BaseModel):
     """One connection-bound snapshot; refresh before use, never merge with local authoring."""
 
@@ -170,6 +176,8 @@ class AgentCatalog(BaseModel):
     snapshot: CatalogSnapshot
     fetched_at: datetime
     access_generation: UUID = UUID(int=0)
+    #: `TOOL_LISTS` when written; a cache file without it predates it (`written_now`).
+    tool_lists: int = TOOL_LISTS
     stale: bool = Field(default=False, exclude=True)
     selection: AgentInstructionSet | None = Field(default=None, exclude=True)
 
@@ -214,8 +222,16 @@ class AgentCatalog(BaseModel):
             except ValueError:
                 target.unlink(missing_ok=True)
                 return
-            if cached.connection == connection and cached.access_generation != generation:
+            if not cls.written_now(target.read_bytes()) or (cached.connection == connection and cached.access_generation != generation):
                 target.unlink(missing_ok=True)
+
+    @staticmethod
+    def written_now(payload: bytes) -> bool:
+        """A cache file whose tool lists read as this galaius reads them (`TOOL_LISTS`)."""
+        try:
+            return json.loads(payload).get("tool_lists") == TOOL_LISTS
+        except (ValueError, AttributeError):
+            return False
 
     @classmethod
     def cached(cls, target: Path) -> Self | None:
@@ -225,7 +241,7 @@ class AgentCatalog(BaseModel):
                 payload = source.read(16 * 1024 * 1024 + 1)
             if len(payload) > 16 * 1024 * 1024:
                 return None
-            return cls.model_validate_json(payload)
+            return cls.model_validate_json(payload) if cls.written_now(payload) else None
         except (OSError, ValueError):
             return None
 

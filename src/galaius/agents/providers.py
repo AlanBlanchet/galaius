@@ -173,6 +173,11 @@ class UnsupportedToolPolicy(ValueError):
     """The adapter cannot expose the requested role tool set without weakening it."""
 
 
+def no_tools(allowed_tools: list[str] | None) -> bool:
+    """A role restricted to no tool at all (`AgentRevision.harness_tools` ()), as opposed to an unrestricted one (None)."""
+    return allowed_tools == []
+
+
 DeniedTool = Annotated[str, StringConstraints(
     pattern=r"^(?:[A-Z][A-Za-z0-9]*|mcp__[A-Za-z0-9_.-]+__[A-Za-z0-9_.-]+)$",
     max_length=256,
@@ -1241,7 +1246,7 @@ class ClaudeCodeProvider(AgentProvider):
             arguments += ["--agents", json.dumps({agent: definition})]
         if agent:
             arguments += ["--agent", agent]
-        if allowed_tools == []:
+        if no_tools(allowed_tools):
             # No tool at all: no built-in one, and no MCP server — not even one the person configured for himself
             # (2.1.288: `--tools ""` alone keeps every MCP server's tools; `--strict-mcp-config` with no config loads none).
             arguments += ["--tools", "", "--strict-mcp-config"]
@@ -1252,7 +1257,7 @@ class ClaudeCodeProvider(AgentProvider):
     @staticmethod
     def _mcp_arguments(mcp_config: str | None, allowed_tools: list[str] | None) -> list[str]:
         """`--mcp-config`, never for a role with no tool at all (`role_arguments`)."""
-        return ["--mcp-config", mcp_config] if mcp_config and allowed_tools != [] else []
+        return ["--mcp-config", mcp_config] if mcp_config and not no_tools(allowed_tools) else []
 
     def command(self, task: str, **arguments) -> list[str]:
         # The prompt goes LAST, after "--": one starting with "-" (a markdown bullet) is the
@@ -2164,7 +2169,7 @@ class CodexProvider(AgentProvider):
     def validate_tool_policy(self, allowed_tools: list[str] | None, denied_tools: tuple[str, ...], *,
                              coarse_accepted: bool = False) -> None:
         validate_denied_tools(denied_tools)
-        if allowed_tools == []:
+        if no_tools(allowed_tools):
             # Its shell and its file reading cannot both be switched off: no sandbox or flag runs it with no tool.
             raise UnsupportedToolPolicy("Codex cannot run an agent with no tools (its shell and file reading cannot be switched off)")
         allowed_native, denied_native = _native_tool_sets(allowed_tools or [], denied_tools)

@@ -240,6 +240,20 @@ def test_invalid_server_snapshot_never_replaces_last_valid_cache(catalog_home, d
     assert AgentCatalog.cache_path().read_bytes() == previous
 
 
+def test_a_catalog_cached_when_an_empty_tool_list_meant_every_tool_is_never_read_again(catalog_home, tmp_path):
+    """code-reviewer e0d4bb0a: a cache written before galaius-core 0.58 holds `[]` for the roles that had every tool; read
+    now, `[]` is no tool. With no `tool_lists` mark it is not read and is discarded; one written now is read back."""
+    connection = CatalogConnection(endpoint="http://127.0.0.1:8767", auth_mode="preview", workspace_id=uuid4())
+    written = AgentCatalog.refresh(connection, transport=catalog_transport(snapshot(1, tools=())), cache_path=tmp_path / "cache.json")
+    assert AgentCatalog.cached(tmp_path / "cache.json") == written
+    old = json.loads((tmp_path / "cache.json").read_text())
+    del old["tool_lists"]
+    (tmp_path / "cache.json").write_text(json.dumps(old))
+    assert AgentCatalog.cached(tmp_path / "cache.json") is None
+    AgentCatalog.discard_invalidated_cache(connection, tmp_path / "cache.json")
+    assert not (tmp_path / "cache.json").exists()
+
+
 @pytest.mark.parametrize("tools", [None, (), ("Read",)])
 def test_a_role_with_an_empty_tool_list_starts_with_no_tool_and_no_mcp_server(catalog_home, tools):
     """A router role (`harness_tools` ()) answers with no tool at all: Claude gets `--tools ""`, an empty definition list
