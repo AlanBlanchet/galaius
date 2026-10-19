@@ -216,13 +216,14 @@ class AgentCatalog(BaseModel):
     def discard_invalidated_cache(cls, connection: CatalogConnection, target: Path) -> None:
         with connection.access_guard() as generation:
             try:
-                cached = cls.model_validate_json(target.read_bytes())
+                payload = target.read_bytes()
+                cached = cls.model_validate_json(payload)
             except FileNotFoundError:
                 return
             except ValueError:
                 target.unlink(missing_ok=True)
                 return
-            if not cls.written_now(target.read_bytes()) or (cached.connection == connection and cached.access_generation != generation):
+            if not cls.written_now(payload) or (cached.connection == connection and cached.access_generation != generation):
                 target.unlink(missing_ok=True)
 
     @staticmethod
