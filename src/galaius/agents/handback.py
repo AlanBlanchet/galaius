@@ -109,8 +109,10 @@ class EndWatch(BaseModel):
     live: frozenset[str] = Field(default_factory=lambda: frozenset(run.run_id for run in reg.running_runs()))
     looked: float = Field(default_factory=time.time)
     #: Ended runs a cut stopped that resume by themselves (`registry.self_resuming`): their launcher was not woken with the
-    #: cut (`_resume`). Each ends again here once that no longer holds and nothing resumed it (its window lapsed).
-    held: frozenset[str] = frozenset()
+    #: cut (`_resume`). Each ends again here once that no longer holds and nothing resumed it (its window lapsed). Read from
+    #: the store at start: a cut before a restart of this watcher is still watched.
+    held: frozenset[str] = Field(default_factory=lambda: frozenset(
+        run.run_id for run in reg._stored_records() if run.askers and run.finished_at is not None and reg.self_resuming(run)))
 
     def ended(self) -> list[str]:
         now, live = time.time(), frozenset(run.run_id for run in reg.running_runs())
