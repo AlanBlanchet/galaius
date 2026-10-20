@@ -34,6 +34,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, model_validator
 
+from galaius.caller import Caller
 from galaius_core import AgentMedia, ContextGauge, UsageWindow, UsageWindowName
 
 from galaius import installed_version
@@ -318,7 +319,7 @@ class AgentProvider(ABC):
     def _setting_sources(self, environment: Mapping[str, str] | None = None) -> list[str]:
         """`folder_settings_off` when the folder's own settings must not load (`PROJECT_SETTINGS_OFF`
         in `environment`, the one the CLI runs in; this process's own when None), else nothing."""
-        if not (os.environ if environment is None else environment).get(PROJECT_SETTINGS_OFF):
+        if not Caller.environ(environment).get(PROJECT_SETTINGS_OFF):
             return []
         if self.folder_settings_off is None:
             raise UnsupportedToolPolicy(f"{self.name} cannot run in a workspace cloned from the web: its folder's own settings cannot be switched off")
@@ -430,7 +431,7 @@ class AgentProvider(ABC):
         silently take precedence over the user's Claude.ai/ChatGPT subscription, and unrelated
         credentials stay out of child tools and diagnostics.
         """
-        source = os.environ if base is None else base
+        source = Caller.environ(base)
         exact = {
             "HOME", "PATH", "USER", "LOGNAME", "SHELL", "LANG", "TERM",
             "SSL_CERT_FILE", "SSL_CERT_DIR", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",

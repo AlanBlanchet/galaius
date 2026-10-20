@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from galaius.mcp_endpoint import SharedEndpoint
 from galaius import __version__
 from galaius.data import PackageData
 from galaius.upgrade.handoff import Handoff
@@ -113,7 +114,8 @@ class Client:
     def __init__(self, store: RuntimeStore, *arguments: str) -> None:
         # The supervisor under test runs this checkout's code, never the (fake) active runtime's.
         environment = {**os.environ, "GALAIUS_SUPERVISE": "1", "GALAIUS_RUNTIMES": str(store.root), Handoff.child: "1",
-                       "GALAIUS_SUPERVISOR_TICK_SECONDS": "0.05", "GALAIUS_SUPERVISOR_PROBATION_SECONDS": "2", "GALAIUS_SUPERVISOR_STOP_SECONDS": "5", "GALAIUS_SUPERVISOR_REPLACE_ITSELF": "false"}
+                       "GALAIUS_SUPERVISOR_TICK_SECONDS": "0.05", "GALAIUS_SUPERVISOR_PROBATION_SECONDS": "2", "GALAIUS_SUPERVISOR_STOP_SECONDS": "5", "GALAIUS_SUPERVISOR_REPLACE_ITSELF": "false",
+                       SharedEndpoint.SWITCH_VARIABLE: "0"}
         environment.pop("GALAIUS_SUPERVISED", None)
         self.process = subprocess.Popen([sys.executable, "-m", "galaius", *(arguments or ("mcp",))], stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=environment)
         self.lines: queue.Queue[dict] = queue.Queue()

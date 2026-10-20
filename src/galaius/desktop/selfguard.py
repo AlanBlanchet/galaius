@@ -14,26 +14,20 @@ Guessing would block legitimate targets, and a guard that cries wolf gets bypass
 worse than no guard at all.
 """
 
-import os
 import re
 from pathlib import Path
+from galaius.caller import Caller
 
 #: Editors whose windows can host a coding agent. Matching an editor's window title is what makes
 #: "my own window" identifiable at all; a browser or terminal of the same name is not one.
 _EDITOR_MARKERS = ("visual studio code", "vscode", "code - oss", "cursor", "windsurf")
 
 
-def _cwd_name() -> str:
-    try:
-        return Path(os.getcwd()).name
-    except OSError:
-        return ""
-
-
 def self_window_hints() -> list[str]:
-    """Project names whose editor window would be the caller's own. Empty when unknown."""
-    raw = os.environ.get("CLAUDE_PROJECT_DIR", "").strip()
-    name = Path(raw).name if raw else _cwd_name()
+    """Project names whose editor window would be the caller's own (`Caller`). Empty when unknown."""
+    caller = Caller.current()
+    raw = caller.environment.get("CLAUDE_PROJECT_DIR", "").strip()
+    name = Path(raw).name if raw else caller.cwd.name
     return [name] if name else []
 
 

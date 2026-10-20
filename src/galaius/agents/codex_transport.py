@@ -3,7 +3,6 @@
 import asyncio
 import hashlib
 import json
-import os
 import re
 import time
 import uuid
@@ -23,6 +22,7 @@ from pydantic import (
 )
 from typing_extensions import TypedDict
 
+from galaius.caller import Caller
 from galaius_core import CompactionTrigger, ContextGauge
 
 from galaius.agents.codex_schema import (
@@ -1010,7 +1010,7 @@ class _CodexTransport(_ConversationTransport):
         return value
 
     async def _spawn(self) -> None:
-        env = participant_environment(self.provider.subscription_env(dict(os.environ)))
+        env = participant_environment(self.provider.subscription_env(dict(Caller.environ())))
         # Its own process tree (Codex runs tools as children): a failed or closed session stops them all.
         self._process = await asyncio.create_subprocess_exec(
             *contained(spawnable(self.provider.app_server_command(), env)),

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import secrets
 import time
 from collections.abc import Mapping
@@ -11,6 +10,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from galaius.caller import Caller
 from galaius_core import ReadsAt
 
 from galaius.agents import agent_queue, relations
@@ -127,7 +127,7 @@ def policy_for_continuation(run, provider: AgentProvider, environment: Mapping[s
                 f"Recorded permission intent {run.permission_mode!r} is not accepted by "
                 f"{provider.name!r}; refusing continuation"
             ) from error
-        model = resolve_continuable_model(criterion, dict(os.environ if environment is None else environment), provider=provider, weights=policy.weights_for(run.agent), role=run.agent,
+        model = resolve_continuable_model(criterion, dict(Caller.environ(environment)), provider=provider, weights=policy.weights_for(run.agent), role=run.agent,
                                           subscription=run.subscription_id)[1]
         return policy, criterion, model, policy.reasoning_for(run.agent)
     except (ModelUnavailable, PolicyError, ValueError) as error:
@@ -151,7 +151,7 @@ def deliver_message(
                              only_if_idle=only_if_idle, for_run=for_run)
     if delivery.state != "queued":
         return delivery
-    refused = start_dispatcher(delivery.run_id, os.environ if environment is None else environment)
+    refused = start_dispatcher(delivery.run_id, Caller.environ(environment))
     if refused is None:
         return delivery
     if delivery.queue_id is not None and not delivery.repeated:
@@ -185,7 +185,7 @@ def queue_message(
     spawn handing its task over, `spawn_line.Spawn.hand_over`, starts a new run instead).
     `for_run`: the run it is sent for (`galaius agents spawn --for`), kept on its transcript entry and listed among
     the recipient's `asked_by` as a message from that run would be."""
-    environment = dict(os.environ if environment is None else environment)
+    environment = dict(Caller.environ(environment))
     if message_id is not None:
         with reg.record_lock(recipient := reg.resolve_run_id(run_id) or run_id):
             if (repeat := Delivery.repeat(recipient, message_id)) is not None:
@@ -353,7 +353,7 @@ async def wait_for_reply(delivery: Delivery) -> str:
 
 
 def sender_id(environment: Mapping[str, str] | None = None) -> str:
-    return (os.environ if environment is None else environment).get("GALAIUS_RUN_ID") or reg.PERSON_SENDER
+    return Caller.environ(environment).get("GALAIUS_RUN_ID") or reg.PERSON_SENDER
 
 
 def asking_run() -> str | None:

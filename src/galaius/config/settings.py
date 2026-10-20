@@ -1,7 +1,6 @@
 import functools
 import glob
 import json
-import os
 import re
 from datetime import datetime
 from pathlib import Path
@@ -9,6 +8,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode
+from galaius.caller import Caller
 from galaius_core.tool_settings import VLM_MIN_DIM_DEFAULT, VLM_MAX_DIM_DEFAULT
 
 from galaius.agents.providers import MEDIA_PROVIDERS
@@ -60,10 +60,11 @@ def caller_session_name() -> str:
     """Claude Code session name driving galaius, for per-session logs: custom-title
     (e.g. 'Aino') if resolvable, else CLAUDE_PROJECT_DIR / cwd basename, else 'default'.
     Title wins over basename — it's what the user set and sees."""
+    caller = Caller.current()
     return _resolve_session_name(
-        os.environ.get("CLAUDE_CODE_SESSION_ID", ""),
-        os.environ.get("CLAUDE_PROJECT_DIR", ""),
-        os.getcwd(),
+        caller.environment.get("CLAUDE_CODE_SESSION_ID", ""),
+        caller.environment.get("CLAUDE_PROJECT_DIR", ""),
+        str(caller.cwd),
         str(Path.home()),
     )
 

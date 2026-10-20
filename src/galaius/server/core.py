@@ -22,6 +22,7 @@ import weakref
 from typing import Literal
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
+from contextvars import ContextVar
 from pathlib import Path
 
 from mcp import types
@@ -121,10 +122,17 @@ _session_drift_note: dict[str, str] = {}
 _session_shared_warned: set[str] = set()
 
 
+#: The client connection a request came in on when one server serves many (`galaius.server.shared`).
+CONNECTION: ContextVar[object | None] = ContextVar("galaius_connection", default=None)
+
+
 def _connection() -> object | None:
-    """The object that IS this MCP connection, or None outside a live request (CLI / tests).
-    The one identity every session helper derives from — caller keys and minted session names
-    must come from the same source or they disagree and drift detection breaks."""
+    """The object that IS this MCP connection, or None outside a live request (CLI / tests): the
+    shared server's connection (`CONNECTION`), else the stdio session. The one identity every session
+    helper derives from — caller keys and minted session names must come from the same source or they
+    disagree and drift detection breaks."""
+    if (connection := CONNECTION.get()) is not None:
+        return connection
     try:
         return mcp.get_context().session
     except Exception:
@@ -548,6 +556,18 @@ class _SessionScopedMCP(FastMCP):
 
 
 mcp = _SessionScopedMCP("galaius", lifespan=_lifespan, instructions=_instructions())
+
+
+def offloaded(fn):
+    """A tool body that reads run records and starts processes, made a coroutine that runs it on a worker
+    thread (the caller's context carried along): one server answers every client of this computer, and a
+    second spent here in its event loop is a second every other client waits."""
+
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        return await asyncio.to_thread(fn, *args, **kwargs)
+
+    return wrapper
 
 
 def instrumented(fn):

@@ -3,6 +3,7 @@
 import asyncio
 from pathlib import Path
 
+from galaius.caller import Caller
 from galaius_core import ImageBackground, ImageQuality, ImageRequest, ImageSize
 from pydantic import ValidationError
 
@@ -39,7 +40,7 @@ async def generate_image(
     given = {"size": size, "quality": quality, "background": background, "n": n, "model": model}
     try:
         request = ImageRequest(prompt=prompt, **{name: value for name, value in given.items() if value is not None})
-        target = Images.inside(Path.cwd(), folder)
+        target = Images.inside(Caller.current().cwd, folder)
     except (ValidationError, ValueError) as error:
         return f"No image drawn: {error}"
     try:

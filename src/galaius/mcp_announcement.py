@@ -5,13 +5,13 @@ upgrade relay answers a client's handshake and first listings from its worker's 
 while that worker still starts (`galaius.upgrade.supervisor.McpProtocol`), so an agent CLI that
 waits only a moment for its MCP servers finds every galaius tool in its first tool list."""
 
-import os
 from importlib.metadata import distributions
 from pathlib import Path
 from typing import Annotated, ClassVar, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from galaius.caller import Caller
 from galaius.data import PackageData
 from galaius.private_files import PRIVATE_FILES
 
@@ -48,7 +48,7 @@ class GatewayServed(BaseModel):
     @classmethod
     def role(cls) -> str | None:
         """The role this process's run plays; None outside a run started by galaius (an editor session)."""
-        return os.environ.get(cls.ROLE) or None
+        return Caller.environ().get(cls.ROLE) or None
 
     @classmethod
     def environment(cls, environment: dict[str, str], role: str | None) -> dict[str, str]:

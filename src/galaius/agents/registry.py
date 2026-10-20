@@ -41,6 +41,7 @@ from galaius.agents.events import (
     CONTEXT_FIELDS, PERSON_SENDER, TOKEN_FIELDS, AgentEvent, MessageFields, RunCut, TokenUsage, UsageLedger, answered_line, ending_of, model_spoke, stream_lines,
 )
 from galaius.agents.catalog_connection import CatalogConnection
+from galaius.caller import Caller
 from galaius.agents.ceiling import contained, end_run_scope, is_run_scope
 from galaius.agents.providers import PROVIDERS, AgentProvider, DeniedTool
 from galaius.agents.subscriptions import RunSubscription, Subscription, SubscriptionRefused
@@ -88,9 +89,6 @@ ConversationCapability = Literal[
 ]
 _RUN_ID = re.compile(r"^[A-Za-z0-9._:@+-]{1,160}$")
 _SESSION_ID: ContextVar[str | None] = ContextVar("agent_session_id", default=None)
-#: The environment of the caller a spawn is bound to (`session_context`): where its parent run and
-#: session identity are read from; this process's own when unset.
-_CALLER_ENVIRONMENT: ContextVar[Mapping[str, str] | None] = ContextVar("agent_caller_environment", default=None)
 #: Why a ranked candidate was passed over. Every value but one is a fact about this machine or
 #: the caller's request, checked BEFORE anything ran: a denial or failure once the child could
 #: act is otherwise a run outcome, recorded on that run, never a reason to try the next
@@ -619,7 +617,7 @@ def start_participant(module: str, *arguments: str, cwd: str, environment: Mappi
     return subprocess.Popen(
         contained(argv) if contain else argv, cwd=cwd if cwd and Path(cwd).is_dir() else ".",
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=stderr,
-        env=participant_environment(os.environ if environment is None else environment), **detached_options(),
+        env=participant_environment(Caller.environ(environment)), **detached_options(),
     )
 
 
@@ -989,10 +987,6 @@ def _terminate(pid: int) -> bool:
     return end_process_tree(pid)
 
 
-#: Where each agent CLI tells a command it runs which conversation it is in: a run launched from
-#: that shell (a script, a background command) belongs to that conversation, so the reader can show
-#: the prompt it answered (runs launched by a script from Claude Code recorded no owner at all).
-CALLER_THREAD_ENV = ("CODEX_THREAD_ID", "CLAUDE_CODE_SESSION_ID")
 
 
 def resolve_session_id(session_id: str | None = None, *, parent_run_id: str | None = None, cli_harness: bool = False):
@@ -1001,8 +995,7 @@ def resolve_session_id(session_id: str | None = None, *, parent_run_id: str | No
     Vendor thread environment is read only for an explicit CLI caller: an MCP server may
     be shared. This is a listing scope, not a new authorization boundary.
     """
-    environment = _CALLER_ENVIRONMENT.get()
-    environment = os.environ if environment is None else environment
+    environment = Caller.environ()
     parent_id = parent_run_id or environment.get("GALAIUS_PARENT_RUN_ID")
     parent = _read_record(parent_id) if parent_id else None
     supplied = session_id if session_id is not None else _SESSION_ID.get()
@@ -1017,7 +1010,7 @@ def resolve_session_id(session_id: str | None = None, *, parent_run_id: str | No
         supplied = _safe_run_id(inherited) if inherited is not None else None
     # A child's vendor thread cannot establish its unknown parent's owning conversation.
     if supplied is None and cli_harness and parent_id is None:
-        supplied = next((environment[name] for name in CALLER_THREAD_ENV if environment.get(name)), None)
+        supplied = next((environment[name] for name in Caller.THREAD if environment.get(name)), None)
         if supplied is not None:
             supplied = _safe_run_id(supplied)
     return supplied
@@ -1029,18 +1022,16 @@ def session_context(
     environment: Mapping[str, str] | None = None,
 ):
     """Bind one asynchronous spawn to its caller without mutating process-global environment:
-    its session, and the `environment` its parent and session identity are read from (this
-    process's own when None; a long-lived runner launching for others passes theirs)."""
-    bound = _CALLER_ENVIRONMENT.set(environment)
-    try:
+    its session, and the `environment` its parent and session identity are read from (the current
+    `Caller`'s when None; a long-lived runner launching for others passes theirs)."""
+    caller = Caller.current()
+    with (caller if environment is None else caller.model_copy(update={"environment": environment})).bound():
         identity = resolve_session_id(session_id, parent_run_id=parent_run_id, cli_harness=cli_harness)
         token = _SESSION_ID.set(identity)
         try:
             yield identity
         finally:
             _SESSION_ID.reset(token)
-    finally:
-        _CALLER_ENVIRONMENT.reset(bound)
 
 
 def session_runs(*, session_id: str | None = None, all_sessions: bool = False, include_foreign: bool = False):
@@ -1294,7 +1285,7 @@ def caller_stop_actor(environment: Mapping[str, str]) -> StopActor:
     run = _read_record(asking) if asking else None
     if run is not None:
         return StopActor(kind="agent", name=(run.agent or run.name)[:120], run_id=run.run_id)
-    if any(environment.get(name) for name in CALLER_THREAD_ENV):
+    if any(environment.get(name) for name in Caller.THREAD):
         return StopActor(kind="agent", name=(environment.get("GALAIUS_RUN_ROLE") or None))
     return StopActor(kind="terminal")
 
@@ -1398,14 +1389,14 @@ def repin(run_id: str, subscription: RunSubscription, fence: FenceSpec | None, u
 
 
 def ancestor_run() -> AgentRun | None:
-    """The running run this process descends from (its pid and start time recorded on the run): the
+    """The running run the caller's process (`Caller.pid`) descends from (its pid and start time recorded on the run): the
     parent a launch cannot hide by clearing `GALAIUS_PARENT_RUN_ID` from its environment.
 
     A deterrent, not the boundary: a process handed to a new parent (`setsid -f`, `systemd-run
     --user`) with its login variables cleared escapes it, and Windows has no parent walk here. Only
     the fence holds a run to its subscription (A3): a lent run starts only inside it; an unfenced run
     on the owner's own subscription can reach his own default login, never another account's."""
-    ancestors = set(process_ancestry(os.getpid()))
+    ancestors = set(process_ancestry(Caller.current().pid))
     return next((run for run in running_runs() if run.pid is not None and (run.pid, run.pid_started) in ancestors), None)
 
 

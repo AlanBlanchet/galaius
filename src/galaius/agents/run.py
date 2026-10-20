@@ -25,6 +25,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 from typing import BinaryIO, ClassVar, Mapping, Sequence
+from galaius.caller import Caller
 from galaius_core import IMAGE_TYPES, AgentRevisionRef, SubscriptionCap, SubscriptionChoices
 from pydantic import BaseModel, ConfigDict
 
@@ -882,7 +883,7 @@ class ResumeLaunch(AheadLaunch):
            environment: Mapping[str, str] | None = None) -> "ResumeLaunch":
         """The current policy's next turn of `run`, run in `environment` (this process's own when None),
         on the subscription `run` is pinned to: refused while it is at a cap."""
-        environment = dict(os.environ if environment is None else environment)
+        environment = dict(Caller.environ(environment))
         if run.subscription is not None:
             environment = run.subscription.bound(environment)
         policy = load_policy()
@@ -1071,7 +1072,7 @@ def launch_continuation(
     record_locked: bool = False,
 ) -> ContinuationHandle:
     """Spawn one resumed turn and start its reaper before returning to a caller."""
-    restore_folder(run, provider, session_id, {**os.environ, **(run.subscription.overlay() if run.subscription is not None else {})}, record_locked=record_locked)
+    restore_folder(run, provider, session_id, {**Caller.environ(), **(run.subscription.overlay() if run.subscription is not None else {})}, record_locked=record_locked)
     launch = ResumeLaunch.of(provider, run, session_id, model=model, criterion=criterion, reasoning=reasoning)
     return _spawn_turn(provider, launch.command(message), run, env=launch.env, raw_index=raw_index, model=launch.model, criterion=launch.criterion,
                        reasoning=launch.reasoning, record_locked=record_locked)
@@ -1382,7 +1383,7 @@ async def run_agent(
     candidate is still ranked under it, and every skip (quota included) is recorded on the run
     that finally started, naming which candidate ran and why each earlier one was passed over.
     """
-    environment = dict(os.environ if environment is None else environment)
+    environment = dict(Caller.environ(environment))
     parent = parent_run_id or environment.get("GALAIUS_PARENT_RUN_ID") or None
     parent_run = reg.get_run(parent) if parent is not None else None
     # The run this process descends from holds it to its subscription whatever the environment says.

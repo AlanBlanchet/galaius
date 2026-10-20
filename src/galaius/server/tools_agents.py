@@ -8,8 +8,8 @@ connected.
 """
 
 import asyncio
-import os
 from pathlib import Path
+from galaius.caller import Caller
 from galaius_core import AgentRevisionRef
 
 from galaius.agents import agent_queue, handback, messaging, registry as reg
@@ -17,7 +17,7 @@ from galaius.agents.conversations import ConversationAnswers, ConversationScope
 from galaius.agents.providers import PROVIDERS, available_providers, provider_caveat_note, provider_for
 from galaius.agents.run import run_agent
 from galaius.agents.spawn_line import Continued, Spawn, SpawnLine, StartNew
-from galaius.server.core import instrumented, mcp
+from galaius.server.core import instrumented, mcp, offloaded
 
 
 def _fmt(run: reg.AgentRun, waiting: str | None = None) -> str:
@@ -156,7 +156,7 @@ async def agent_spawn(
     try:
         with reg.session_context(session_id) as owner:
             spawn = Spawn.asked(
-                task=task, cwd=cwd or os.getcwd(), provider=provider, agent=agent, name=name, model=model,
+                task=task, cwd=cwd or str(Caller.current().cwd), provider=provider, agent=agent, name=name, model=model,
                 permission_mode=permission_mode, profile=profile, agent_ref=agent_ref, delegate=delegate,
                 image_paths=tuple(Path(path) for path in (image_paths or ())), denied_tools=tuple(denied_tools or ()),
                 session_id=owner, continues=continues, for_run=for_run, helper=helper,
@@ -206,7 +206,8 @@ async def agent_spawn(
 
 @mcp.tool(category="agents")
 @instrumented
-async def agent_list(include_foreign: bool = False, session_id: str | None = None, all_sessions: bool = False) -> str:
+@offloaded
+def agent_list(include_foreign: bool = False, session_id: str | None = None, all_sessions: bool = False) -> str:
     """Launched runs owned by this conversation, including nested children; not the agent roster.
 
     Pass session_id used at spawn, or inherit the recorded parent / GALAIUS_SESSION_ID.
@@ -245,7 +246,7 @@ async def agent_list(include_foreign: bool = False, session_id: str | None = Non
 def _fenced_team() -> tuple[str, frozenset[str]] | None:
     """When the asking agent is fenced (`ConversationScope.held`): what holds it and its team's run ids, the only runs
     it may read or stop; None when it is not. Raises PermissionError as `ConversationScope.asking` does."""
-    asking = ConversationScope.asking(os.environ)
+    asking = ConversationScope.asking(Caller.environ())
     if asking is None or (held := ConversationScope.held(asking)) is None:
         return None
     return held, frozenset(run.run_id for run in reg.trees(frozenset({asking.root_run_id or asking.run_id})))
@@ -253,7 +254,8 @@ def _fenced_team() -> tuple[str, frozenset[str]] | None:
 
 @mcp.tool(category="agents")
 @instrumented
-async def agent_events(run_id: str, limit: int = 20) -> str:
+@offloaded
+def agent_events(run_id: str, limit: int = 20) -> str:
     """What an agent has actually been doing — its most recent events, oldest first."""
     resolved = reg.resolve_run_id(run_id) or run_id
     try:
@@ -277,9 +279,10 @@ async def agent_events(run_id: str, limit: int = 20) -> str:
 
 @mcp.tool(category="agents")
 @instrumented
-async def agent_stop(run_id: str) -> str:
+@offloaded
+def agent_stop(run_id: str) -> str:
     """Stop a running agent (and the tool processes it spawned), or take one not started yet out of the line."""
-    if reg.stop(run_id, by=reg.caller_stop_actor(os.environ)):
+    if reg.stop(run_id, by=reg.caller_stop_actor(Caller.environ())):
         return f"Stopped {run_id[:8]}."
     try:
         fenced = _fenced_team()
@@ -292,7 +295,8 @@ async def agent_stop(run_id: str) -> str:
 
 @mcp.tool(category="agents")
 @instrumented
-async def agent_providers() -> str:
+@offloaded
+def agent_providers() -> str:
     """Which agent CLIs can be spawned here, and which named agents each can resolve.
 
     The definitions matter as much as the providers: `agent_spawn(agent=...)` runs one of them
@@ -309,6 +313,18 @@ async def agent_providers() -> str:
         if definitions := p.agent_definitions():
             lines.append(f"    agents: {', '.join(definitions)}")
     return "Agent providers:\n" + "\n".join(lines)
+
+
+def _deliver(run_id: str, message: str, fyi: bool) -> "tuple[messaging.Delivery, str | None] | str":
+    """`agent_send`'s delivery (records and a dispatcher process): the delivery and what its turn waits for, or the refusal."""
+    if reg.resolve_run_id(run_id) is None and (waiting := SpawnLine.here().describe(run_id)) is not None:
+        return f"ERROR: {run_id[:8]} has not started ({waiting}); send once it runs."
+    # A tool is never the person: no override of the project rule here (`galaius agents send --cross-project`).
+    if (refused := messaging.send_refusal(run_id)) is not None:
+        return f"ERROR: {refused}"
+    # Shared with `galaius agents send`, so both surfaces use one routing and policy lifecycle.
+    delivery = messaging.deliver_message(run_id, message, turn=agent_queue.MessageTurn(fyi=fyi))
+    return delivery, SpawnLine.here().waits(delivery.run_id) if delivery.state == "queued" else None
 
 
 @mcp.tool(category="agents")
@@ -328,14 +344,10 @@ async def agent_send(run_id: str, message: str, wait: bool = False, fyi: bool = 
     wait: block until it has replied, instead of returning as soon as the message is delivered.
     fyi: a one-way note (a report, an ack, a heads-up): it reads it, and its turns never report back to you for it.
     """
-    if reg.resolve_run_id(run_id) is None and (waiting := SpawnLine.here().describe(run_id)) is not None:
-        return f"ERROR: {run_id[:8]} has not started ({waiting}); send once it runs."
-    # A tool is never the person: no override of the project rule here (`galaius agents send --cross-project`).
-    if (refused := messaging.send_refusal(run_id)) is not None:
-        return f"ERROR: {refused}"
-    # Shared with `galaius agents send`, so both surfaces use one routing and policy lifecycle.
-    delivery = messaging.deliver_message(run_id, message, turn=agent_queue.MessageTurn(fyi=fyi))
-    waiting = SpawnLine.here().waits(delivery.run_id) if delivery.state == "queued" else None
+    sent = await asyncio.to_thread(_deliver, run_id, message, fyi)
+    if isinstance(sent, str):
+        return sent
+    delivery, waiting = sent
     said = f"{delivery.text} Its turn: {waiting}" if waiting else delivery.text
     if delivery.state == "error" or not wait:
         return said
@@ -366,7 +378,8 @@ async def conversation_search(query: str, limit: int = 20, project: str | None =
     every_project: the person's own session only — search every project, not just this folder's.
     Read one with conversation_read(id, around=<line>).
     """
-    answers = ConversationAnswers(environment=dict(os.environ), cwd=os.getcwd())
+    caller = Caller.current()
+    answers = ConversationAnswers(environment=dict(caller.environment), cwd=str(caller.cwd))
     return await asyncio.to_thread(answers.search, query, limit, project, since, every_project)
 
 
@@ -381,5 +394,6 @@ async def conversation_read(id: str, around: int | None = None, limit: int = 50,
     limit: lines returned (1-200). Page with around= the first or last line number shown.
     every_project: the person's own session only — read outside this folder's project.
     """
-    answers = ConversationAnswers(environment=dict(os.environ), cwd=os.getcwd())
+    caller = Caller.current()
+    answers = ConversationAnswers(environment=dict(caller.environment), cwd=str(caller.cwd))
     return await asyncio.to_thread(answers.read, id, around, limit, every_project)

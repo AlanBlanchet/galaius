@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from galaius.caller import Caller
 from galaius.agents import registry as reg
 from galaius.agents import run as run_module
 from galaius.agents.providers import ClaudeCodeProvider, CodexProvider
@@ -23,7 +24,7 @@ from galaius.config import UserConfig
 @pytest.fixture(autouse=True)
 def isolated_registry(tmp_path, monkeypatch):
     monkeypatch.setattr(UserConfig, "PATH", tmp_path / ".galaius" / "config.env")
-    for key in ("GALAIUS_PARENT_RUN_ID", "GALAIUS_SESSION_ID", *reg.CALLER_THREAD_ENV):
+    for key in ("GALAIUS_PARENT_RUN_ID", "GALAIUS_SESSION_ID", *Caller.THREAD):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(reg, "_discover_foreign", lambda: [{"sessionId": "foreign-session", "name": "foreign-window", "cwd": "/same"}])
 
@@ -85,7 +86,7 @@ def test_child_harness_thread_cannot_invent_unknown_parent_owner(monkeypatch, pa
     assert reg.resolve_session_id("explicit-owner", cli_harness=True) == "explicit-owner"
 
 
-@pytest.mark.parametrize("variable", reg.CALLER_THREAD_ENV)
+@pytest.mark.parametrize("variable", Caller.THREAD)
 def test_a_cli_launch_records_the_calling_conversation_of_either_agent_cli(monkeypatch, variable):
     """A script or background command run inside a Claude Code or Codex conversation launches a
     run that belongs to that conversation (it recorded none, so the Runs page had no prompt)."""

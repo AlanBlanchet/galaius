@@ -9,8 +9,10 @@ The blast radius of an action must never include the actor. So a desktop target 
 the caller's own editor window is refused by default, with the reason and the escape hatch named.
 """
 
+from pathlib import Path
 import pytest
 
+from galaius.caller import Caller
 from galaius.desktop.selfguard import is_self_window, self_window_hints
 
 
@@ -47,12 +49,11 @@ def test_other_windows_are_not_mistaken_for_it(title):
     assert is_self_window(title) is False
 
 
-def test_a_caller_with_no_project_dir_claims_no_self_window(monkeypatch):
+def test_a_caller_with_no_project_dir_claims_no_self_window():
     # Guessing here would be worse than not guarding: it would block legitimate targets.
-    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
-    monkeypatch.setattr("galaius.desktop.selfguard._cwd_name", lambda: "")
-    assert self_window_hints() == []
-    assert is_self_window("anything - Visual Studio Code") is False
+    with Caller(environment={}, cwd=Path("/"), pid=1).bound():
+        assert self_window_hints() == []
+        assert is_self_window("anything - Visual Studio Code") is False
 
 
 def test_the_hint_is_the_project_name_not_a_path():

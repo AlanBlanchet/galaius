@@ -6,10 +6,11 @@ import sys
 from cyclopts import App
 
 from galaius import installed_version
+from galaius.mcp_endpoint import SharedEndpoint
 from galaius.upgrade.quiet import UpgradeReady
 from galaius.upgrade.handoff import Handoff
 from galaius.upgrade.release import BuildIdentity
-from galaius.upgrade.store import EXIT_UPGRADE, Addressed, RuntimeStore
+from galaius.upgrade.store import EXIT_UPGRADE, Addressed, Runtime, RuntimeStore
 from galaius.upgrade.supervisor import Supervisor
 from galaius.versioning import force_utf8_io
 
@@ -118,9 +119,10 @@ def version() -> None:
 
 
 def main() -> None:
-    """Every command continues in the active runtime (`Handoff`); a long-lived one (`mcp`,
-    `machine connect`, the TUI) then starts as its supervisor, which runs it again as a worker; a
-    worker at its quiet point exits `EXIT_UPGRADE` for the supervisor to start the new runtime."""
+    """Every command continues in the active runtime (`Handoff`). `mcp` then becomes a relay to this
+    computer's shared MCP server (`galaius.mcp_relay`, where a Unix socket exists); another
+    long-lived one (`machine connect`, the TUI) starts as its supervisor, which runs it again as a
+    worker; a worker at its quiet point exits `EXIT_UPGRADE` for the supervisor to start the new runtime."""
     force_utf8_io()
     Addressed.take()
     command = Supervisor.command(tuple(sys.argv[1:]), sys.stdout is not None and sys.stdout.isatty())  # pythonw: no stdout
@@ -128,6 +130,8 @@ def main() -> None:
         handoff, long_lived = Handoff(store=RuntimeStore.default()), Supervisor.member(command) is not None
         if (target := handoff.target(command, long_lived)) is not None:
             handoff.continue_in(target, command, long_lived)
+        if command == ("mcp",) and SharedEndpoint.supported():
+            SharedEndpoint.relay(Runtime.own())
         if (supervisor := Supervisor.for_command(command)) is not None:
             raise SystemExit(supervisor.run())
     try:

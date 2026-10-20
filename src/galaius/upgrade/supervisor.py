@@ -250,17 +250,7 @@ class Supervisor(BaseModel):
         return Worker(process, runtime, generation, state, probation)
 
     def check_releases(self, checker: subprocess.Popen | None) -> subprocess.Popen | None:
-        """Start `galaius upgrade check` from the active runtime when one is due (the newest code
-        fetches, verifies and installs; this process only watches the pointer). Its output goes to
-        the store's `check.log`, never to a client's terminal."""
-        if checker is not None and checker.poll() is None:
-            return checker
-        if time.time() < self.store.next_check():
-            return None
-        self.store.schedule(self.settings.check_claim_seconds)
-        with open(self.store.root / "check.log", "ab") as log:
-            return subprocess.Popen(self.store.active().command(("upgrade", "check", "--background")), stdin=subprocess.DEVNULL, stdout=log, stderr=log,
-                                    env={**os.environ, "GALAIUS_RUNTIMES": str(self.store.root)})
+        return self.store.check_releases(checker, self.settings.check_claim_seconds)
 
     def say(self, text: str) -> None:
         print(f"galaius: {text}", file=sys.stderr, flush=True)

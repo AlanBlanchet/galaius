@@ -34,6 +34,7 @@ from typing import ClassVar, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from galaius.caller import Caller
 from galaius.agents import registry as reg
 from galaius.agents.events import AgentEvent, instant
 from galaius.agents.providers import PROVIDERS, AgentProvider
@@ -293,7 +294,7 @@ class ConversationIndex(BaseModel):
 
     folder: Path = Field(default_factory=reg.agents_dir)
     #: Where each CLI keeps its saved sessions (its login folder) and which credential values are masked.
-    environment: dict[str, str] = Field(default_factory=lambda: dict(os.environ))
+    environment: dict[str, str] = Field(default_factory=lambda: dict(Caller.environ()))
 
     #: The one catch-up read this process runs in the background (`catch_up`).
     _reader: ClassVar[threading.Thread | None] = None

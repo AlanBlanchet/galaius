@@ -15,7 +15,6 @@ and a start read it with no network, and a server that does not answer leaves th
 import asyncio
 import hashlib
 import logging
-import os
 from pathlib import Path
 from typing import Any, Self
 
@@ -25,6 +24,7 @@ from mcp import types
 from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from galaius.caller import Caller
 from galaius.agents.catalog_connection import CatalogConnection, CatalogConnectionError
 from galaius.mcp_announcement import GatewayServed, GatewayToolName, GatewayToolWire, McpAnnouncement
 from galaius.private_files import PRIVATE_FILES
@@ -207,7 +207,8 @@ class ServedGateway(BaseModel):
         if gateway is None:
             raise ToolError("this PC is not linked to a Galaius server (run `galaius login`): its external tools are unavailable")
         # The run this server serves and the role it plays: `serves` routed only that role's tools here.
-        role, run_id = GatewayServed.role(), os.environ.get("GALAIUS_RUN_ID") or os.environ.get("GALAIUS_PARENT_RUN_ID")
+        caller = Caller.environ()
+        role, run_id = GatewayServed.role(), caller.get("GALAIUS_RUN_ID") or caller.get("GALAIUS_PARENT_RUN_ID")
         listed = self.listing.tool(name)
         try:
             text = await anyio.to_thread.run_sync(lambda: gateway.call(name, arguments, role=role, run_id=run_id, budget=listed.timeout if listed else None))

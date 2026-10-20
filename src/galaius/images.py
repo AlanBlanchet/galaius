@@ -4,10 +4,10 @@ image is a run charged to him (his ceilings and the company's apply) and listed 
 Facturation, linked to the agent run that asked. No provider key on this computer is used."""
 
 import base64
-import os
 from pathlib import Path
 from uuid import UUID, uuid4
 
+from galaius.caller import Caller
 from galaius_core import ImageAnswer, ImageRequest
 from pydantic import BaseModel, ConfigDict
 
@@ -50,7 +50,7 @@ class Images:
     def caller() -> UUID | None:
         """The agent run asking, when one does: the id galaius gave it at launch."""
         try:
-            return UUID(os.environ["GALAIUS_RUN_ID"])
+            return UUID(Caller.environ()["GALAIUS_RUN_ID"])
         except (KeyError, ValueError):
             return None
 

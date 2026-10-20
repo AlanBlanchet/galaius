@@ -567,6 +567,19 @@ class RuntimeStore(BaseModel):
     def schedule(self, seconds: float) -> None:
         PRIVATE_FILES.write_text(self.check_path, json.dumps({"next_at": time.time() + seconds}) + "\n")
 
+    def check_releases(self, checker: subprocess.Popen | None, claim_seconds: float) -> subprocess.Popen | None:
+        """Start `galaius upgrade check` from the active runtime when one is due (the newest code
+        fetches, verifies and installs; the caller only watches the pointer), claiming the next
+        `claim_seconds` first. Its output goes to `check.log`, never to a client's terminal."""
+        if checker is not None and checker.poll() is None:
+            return checker
+        if time.time() < self.next_check():
+            return None
+        self.schedule(claim_seconds)
+        with open(self.root / "check.log", "ab") as log:
+            return subprocess.Popen(self.active().command(("upgrade", "check", "--background")), stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                                    env={**os.environ, "GALAIUS_RUNTIMES": str(self.root)})
+
     def request_check(self, min_gap: float = 60.0) -> bool:
         """Ask for a release check now (a server just restarted), at most once per `min_gap`."""
         now = time.time()
