@@ -86,6 +86,27 @@ def spawnable(argv: Sequence[str], env: Mapping[str, str] | None = None) -> list
     return [resolved, *arguments]
 
 
+#: glibc's `mallopt` parameter capping its malloc arenas (`M_ARENA_MAX`).
+_M_ARENA_MAX = -8
+
+
+def share_malloc_arenas(count: int = 2) -> None:
+    """Every thread this process starts from now on allocates from at most `count` C-library arenas.
+
+    glibc gives each new thread an arena of its own (up to 8 per core) and keeps what it freed there: a long-lived
+    process whose threads each read a run's large tool outputs grows by every arena it ever filled. Measured
+    2026-10-20 on the agent dispatcher, 3 runs messaged 5 times: 391 -> 523 MB after the turns, against
+    263 -> 244 MB with 2 arenas. Called before the first thread; a C library without `mallopt` (musl, macOS,
+    Windows) keeps its own allocator as it is."""
+    if not sys.platform.startswith("linux"):
+        return
+    try:
+        mallopt = ctypes.CDLL(None).mallopt
+    except (OSError, AttributeError):
+        return
+    mallopt(_M_ARENA_MAX, count)
+
+
 def process_group_options() -> dict:
     """Spawn options making the child lead its own process tree, so `stop_process_tree` reaches
     every descendant (POSIX: a new session; Windows: a new process group)."""

@@ -34,7 +34,7 @@ from galaius.agents.events import AgentEvent, MessageFields
 from galaius.agents.providers import _CLIP, AgentProvider, _safe_process_detail, provider_for
 from galaius.agents.relations import card, heading
 from galaius.inbox_hook import HEADING, OPERATOR
-from galaius.processes import process_started
+from galaius.processes import process_started, share_malloc_arenas
 from galaius.upgrade.store import Runtime, RuntimeStore, active_interpreter
 
 MAX_PENDING = 128
@@ -904,6 +904,7 @@ async def wait_for_item(run_id: str, item_id: str) -> QueueItem | None:
 def main() -> None:
     if len(sys.argv) == 3 and sys.argv[1] == "--serve":
         RuntimeStore.default().register(Runtime.own(), os.getpid())  # a run can outlive an upgrade: its runtime stays until it ends
+        share_malloc_arenas()  # a thread per run: its own arena each would keep every run's peak
         serve(sys.argv[2])
         return
     if len(sys.argv) in {3, 4} and sys.argv[1] == "--dispatch":

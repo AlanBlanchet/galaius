@@ -32,6 +32,7 @@ from galaius.caller import Caller
 from galaius.config import UserConfig
 from galaius.mcp_endpoint import SharedEndpoint
 from galaius.mcp_relay import HELLO, SWITCH, Endpoint
+from galaius.processes import share_malloc_arenas
 from galaius.server import sandbox
 from galaius.server.core import CONNECTION, _auto_session_names, _lifespan, _sessions, mcp
 from galaius.upgrade.store import Runtime, RuntimeStore
@@ -167,6 +168,7 @@ class SharedServer:
         """Started by a relay in its allowlisted environment (`galaius.mcp_relay.STARTER`), it takes its settings and keys
         from the user's config (`UserConfig.apply`), never from a client."""
         UserConfig.apply(portable=False)
+        share_malloc_arenas()  # tool calls of every client run in worker threads
         Caller.serve_many()
         os.chdir(Path.home())
         asyncio.run(cls(Path(argv[0]), SharedServerSettings.from_environment()).run())
