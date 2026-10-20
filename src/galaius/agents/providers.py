@@ -347,11 +347,20 @@ class AgentProvider(ABC):
         """The key variables this CLI's own login reads in `environment` (`fence.KEYS`)."""
         return frozenset(KEYS.get(self.name, ()))
 
-    def child_environment(self, environment: Mapping[str, str]) -> dict[str, str]:
+    #: The variable making this CLI's turn wait (milliseconds) for its MCP servers to connect before it starts; none: it
+    #: waits by itself or not at all.
+    mcp_wait_variable: ClassVar[str | None] = None
+
+    def child_environment(self, environment: Mapping[str, str], *, mcp_wait_seconds: float) -> dict[str, str]:
         """`environment` as this CLI's agent runs with it: every model API key gone but its own login's
-        (`MODEL_API_KEY`). galaius's own commands it runs read theirs from this computer's settings."""
+        (`MODEL_API_KEY`), and its turn waiting up to `mcp_wait_seconds` for its MCP servers, galaius's tools among them
+        (`mcp_wait_variable`; a value the caller set stands). galaius's own commands it runs read their keys from this
+        computer's settings."""
         own = self.login_keys(environment)
-        return {name: value for name, value in environment.items() if name in own or not MODEL_API_KEY.fullmatch(name)}
+        kept = {name: value for name, value in environment.items() if name in own or not MODEL_API_KEY.fullmatch(name)}
+        if self.mcp_wait_variable is not None and mcp_wait_seconds > 0:
+            kept.setdefault(self.mcp_wait_variable, str(round(mcp_wait_seconds * 1000)))
+        return kept
 
     def auth_home(self, environment: Mapping[str, str]) -> Path:
         """The folder this CLI keeps its login in, in `environment`: its `auth_home_env` value
@@ -929,6 +938,10 @@ class ClaudeCodeProvider(AgentProvider):
     media_model_field = "claude_media_criteria"
     auth_home_env = ("CLAUDE_CONFIG_DIR",)
     home_folder = ".claude"
+    # 2.1.288 headless (read from its own code, undocumented: check again on a CLI upgrade): unset, a turn starts before a
+    # server still connecting answers (its init reads it `pending`, its tools absent from that turn); set above 0, the
+    # turn holds until each server connected or the time passed.
+    mcp_wait_variable = "CLAUDE_CODE_MCP_STARTUP_WAIT_MS"
     # 2.1.288 says its status (`api_error_status`); before it, only « Failed to authenticate: OAuth session expired and
     # could not be refreshed », « …: OAuth token revoked » (another account signed in), its docs « Login expired · Please run /login ».
     cut_words = {RunCut.login_lost: re.compile(r"OAuth session expired|OAuth token (?:has expired|revoked)|Login expired|Please run /login|Not logged in", re.IGNORECASE),

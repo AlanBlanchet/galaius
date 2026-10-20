@@ -67,7 +67,7 @@ def test_an_agent_holds_no_model_key_but_its_own_logins(tmp_path, provider, code
     if codex_login:
         (home / "auth.json").write_text(json.dumps({"auth_mode": codex_login, "OPENAI_API_KEY": None}))
     environment = {name: "x" for name in kept | gone} | {"CODEX_HOME": str(home), "PATH": "/usr/bin"}
-    child = PROVIDERS[provider].child_environment(environment)
+    child = PROVIDERS[provider].child_environment(environment, mcp_wait_seconds=0)
     assert kept <= child.keys() and not gone & child.keys()
     # Codex's app server starts from its subscription environment: no key of any kind reaches it.
     assert not {"OPENAI_API_KEY", "GEMINI_API_KEY"} & PROVIDERS["codex"].subscription_env(environment).keys()

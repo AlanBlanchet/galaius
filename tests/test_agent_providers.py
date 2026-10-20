@@ -1240,3 +1240,14 @@ def test_a_long_stop_hook_block_keeps_its_verdict():
 ])
 def test_a_failed_turn_says_its_cut_by_its_api_status_else_its_words(status, said, cut):
     assert PROVIDERS["claude"].cut_of(said, status) == cut
+
+
+@pytest.mark.parametrize(("provider", "given", "wait", "expected"), [
+    ("claude", {}, 12.5, "12500"),                                         # waits the time asked for galaius's tools
+    ("claude", {"CLAUDE_CODE_MCP_STARTUP_WAIT_MS": "0"}, 12.5, "0"),      # a caller's own choice stands
+    ("claude", {}, 0.0, None),                                             # 0: never waits
+    ("codex", {}, 12.5, None),                                             # a CLI with no such variable gets none
+])
+def test_a_turn_waits_for_its_mcp_servers(provider, given, wait, expected):
+    child = PROVIDERS[provider].child_environment({"PATH": "/usr/bin", **given}, mcp_wait_seconds=wait)
+    assert child.get("CLAUDE_CODE_MCP_STARTUP_WAIT_MS") == expected

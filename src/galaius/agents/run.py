@@ -26,6 +26,7 @@ import subprocess
 import tempfile
 from typing import BinaryIO, ClassVar, Mapping, Sequence
 from galaius.caller import Caller
+from galaius.config import Config
 from galaius_core import IMAGE_TYPES, AgentRevisionRef, SubscriptionCap, SubscriptionChoices
 from pydantic import BaseModel, ConfigDict
 
@@ -776,7 +777,7 @@ class AheadLaunch(BaseModel):
         a coroutine tied events to the caller's event loop, and a caller that spawned and returned
         lost every event. At OS level the stream survives the caller, or galaius, dying. `ahead`: it
         reads what it is to do from its stdin, written later (`hand`)."""
-        later, env = stderr is not None, self.provider.child_environment(reg.participant_environment(env))
+        later, env = stderr is not None, self.provider.child_environment(reg.participant_environment(env), mcp_wait_seconds=Config().agent_mcp_startup_wait_seconds)
         sink = reg.open_raw_events(run_id, append=later)
         sink.write(self.provider.turn_preface(argv))
         sink.flush()
@@ -1097,7 +1098,7 @@ def _spawn_turn(
     model: str | None, criterion: str | None, reasoning: str | None, record_locked: bool = False,
 ) -> ContinuationHandle:
     """Start one resumed turn of `run` from `argv` and its reaper, before returning."""
-    env = provider.child_environment(reg.participant_environment(env))
+    env = provider.child_environment(reg.participant_environment(env), mcp_wait_seconds=Config().agent_mcp_startup_wait_seconds)
     sink = reg.open_raw_events(run.run_id, append=True)
     sink.write(provider.turn_preface(argv))
     sink.flush()

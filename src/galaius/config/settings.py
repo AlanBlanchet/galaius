@@ -224,6 +224,11 @@ class Config(BaseSettings):
     # A run at work whose vendor wrote nothing for this many seconds is silent: the run waiting on it names it so
     # (`agents wait`), and the run that asked it is told once per silence (`galaius.agents.handback.SilenceWatch`).
     silent_seconds: Annotated[float, Field(gt=0)] = 600.0
+    # How long each agent turn waits for its MCP servers to connect (galaius's own tools among them) before it starts
+    # without the ones still connecting; 0: it never waits (`AgentProvider.mcp_wait_variable`). Every turn pays it while a
+    # server is still connecting, so it stays near the slowest real start: measured 2026-10-20 over 405 connects of
+    # galaius's server, p95 1.6 s, max 5.6 s, a cold server 3.1-3.3 s.
+    agent_mcp_startup_wait_seconds: Annotated[float, Field(ge=0)] = 10.0
     # A run whose last word is one command it started (a build, a test suite) is silent only after this many seconds.
     silent_command_seconds: Annotated[float, Field(gt=0)] = 3600.0
     # How many agent runs may work on this computer at once, every conversation's; one more spawn waits
