@@ -18,7 +18,7 @@ from cyclopts import App, Parameter
 from pydantic import ValidationError
 
 from galaius import feedback, live_sources, model_catalog, ollama
-from galaius_core import AGENT_TOUCH_SCOPES, ASKED_BY_MAX
+from galaius_core import AGENT_TOUCH_SCOPES, ASKED_BY_MAX, IMAGE_TYPES
 
 from galaius.agents import agent_queue, handback, messaging, relations
 from galaius.agents import providers as agent_providers
@@ -1003,7 +1003,8 @@ def refresh_live_data() -> None:
 
 @agents_app.command(name="send")
 def agents_send(run_id: str, message: str, *, fyi: Annotated[bool, Parameter(name="--fyi")] = False,
-                cross_project: Annotated[bool, Parameter(name="--cross-project")] = False) -> None:
+                cross_project: Annotated[bool, Parameter(name="--cross-project")] = False,
+                image_paths: Annotated[list[Path] | None, Parameter(name="--image")] = None) -> None:
     """Send a message to a running agent — it answers with its full context intact.
 
     How the VS Code panel lets you join the conversation instead of only watching: the agent
@@ -1013,6 +1014,8 @@ def agents_send(run_id: str, message: str, *, fyi: Annotated[bool, Parameter(nam
     --fyi: a one-way note (a report, an ack, a heads-up): it reads it, and its turns never report back to you for it.
     --cross-project: the person's deliberate act, at his own terminal (never from an agent run's process): a run working
     for another project than the sending run's is sent to anyway (`relations.foreign_project` refuses it otherwise).
+    --image PATH (repeatable): an image the message shows, kept with the run it reaches; the agent sees it (an image
+    input when its CLI takes one, else a line naming its file). MESSAGE may then be "".
     """
 
 
@@ -1022,7 +1025,12 @@ def agents_send(run_id: str, message: str, *, fyi: Annotated[bool, Parameter(nam
     if (refused := messaging.send_refusal(run_id, cross_project=cross_project)) is not None:
         print(f"ERROR: {refused}")
         raise SystemExit(1)
-    delivery = messaging.deliver_message(run_id, message, turn=agent_queue.MessageTurn(fyi=fyi))
+    try:   # kept with the run the message reaches (`relations.live`), which opens them
+        media = reg.RunMedia.keep_files(relations.live(target), image_paths) if image_paths and (target := reg.resolve_run_id(run_id)) else ()
+    except (OSError, ValueError) as error:
+        print(f"ERROR: --image takes an image file ({', '.join(kind.removeprefix('image/').upper() for _, kind, _ in IMAGE_TYPES)}): {error}")
+        raise SystemExit(1)
+    delivery = messaging.deliver_message(run_id, message, turn=agent_queue.MessageTurn(fyi=fyi, media=media))
     if (refused := messaging.wait_for_start(delivery)) is not None:
         print(f"ERROR: the resumed turn did not start: {refused}")
         raise SystemExit(1)

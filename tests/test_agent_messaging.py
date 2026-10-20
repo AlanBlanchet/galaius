@@ -6,6 +6,7 @@ agree on every refusal, so the checks live here once rather than being written t
 """
 
 import asyncio
+import base64
 import json
 import sys
 import threading
@@ -699,3 +700,33 @@ def test_the_mirror_updates_when_the_CONTENT_changes_not_only_its_length(tmp_pat
     fresh = [AgentEvent(kind="text", text="ORDER"), AgentEvent(kind="text", text="RIGHT")]
     reg._mirror_normalised("r1", fresh)  # same LENGTH, different content
     assert "RIGHT" in events_file.read_text()
+
+
+#: A pasted screenshot as the web sends it (owner 2026-10-20): a PNG.
+PASTED_PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
+
+
+@pytest.mark.parametrize("content, words, sent", [
+    pytest.param(PASTED_PNG, "what is on this screen?", True, id="words-and-an-image"),
+    pytest.param(PASTED_PNG, "", True, id="an-image-alone"),
+    pytest.param(b"not an image", "look", False, id="a-file-that-is-no-image"),
+])
+def test_a_message_sent_with_an_image_shows_it_to_the_run_it_reaches(tmp_path, monkeypatch, capsys, content, words, sent):
+    """Owner 2026-10-20: an image sent from the web to a running agent never reached it (its PC's mirror ran
+    `galaius agents send RUN TEXT`, words alone). `--image` keeps it with the run and queues the message showing it."""
+    from galaius.cli.app_commands import agents_send
+
+    provider = _continuation_policy(monkeypatch)
+    register_run("r1", name="reviewer", provider=provider.name, task="t", pid=1234, agent="tester", provider_session_id="vendor-r1")
+    monkeypatch.setattr(messaging, "start_dispatcher", lambda run_id, environment: None)
+    monkeypatch.setattr(messaging, "wait_for_start", lambda delivery: None)
+    (image := tmp_path / "screen.png").write_bytes(content)
+    if not sent:
+        with pytest.raises(SystemExit):
+            agents_send("r1", words, image_paths=[image])
+        assert "--image takes an image file" in capsys.readouterr().out and not agent_queue.items("r1")
+        return
+    agents_send("r1", words, image_paths=[image])
+    [queued] = agent_queue.items("r1")
+    [name] = queued.turn.media
+    assert reg.RunMedia.path("r1", name).read_bytes() == PASTED_PNG
