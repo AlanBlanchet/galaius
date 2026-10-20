@@ -198,7 +198,7 @@ class McpRelay:
     #: Connections lost (not switched) within `crash_window` that end the relay.
     crash_limit, crash_window = 3, 600.0
 
-    def __init__(self, endpoint: Endpoint) -> None:
+    def __init__(self, endpoint: Endpoint, carried: dict | None = None) -> None:
         self.endpoint = endpoint
         self.events: queue.Queue[tuple] = queue.Queue()
         self.out = sys.stdout.buffer
@@ -218,6 +218,12 @@ class McpRelay:
         self.notice: str | None = None
         self.switch_to: Endpoint | None = None
         self.crashes: list[float] = []
+        if carried is not None:  # an older supervisor's client (`galaius.upgrade.supervisor.RelayHandover`): its session goes on here
+            self.initialize = Line.parsed(carried["initialize"].encode())
+            self.initialized = Line.parsed(carried["initialized"].encode()) if carried.get("initialized") else None
+            self.client_initialized = carried["client_initialized"]
+            self.held = [Line.parsed(raw.encode()) for raw in carried["held"]]
+            self.ahead, self.notice = None, "moved to this computer's shared galaius MCP server"
 
     # ---- plumbing ----------------------------------------------------------------------------
 
@@ -407,6 +413,6 @@ class McpRelay:
 
 
 if __name__ == "__main__":
-    code = McpRelay(Endpoint.parsed(sys.argv[1])).serve()
+    code = McpRelay(Endpoint.parsed(sys.argv[1]), json.loads(sys.argv[2]) if len(sys.argv) > 2 else None).serve()
     sys.stdout.flush()
     os._exit(code)  # the client reader may sit in readline holding the buffer lock

@@ -159,6 +159,8 @@ class SharedServer:
         self.checker = None
         #: The newer runtime whose server answered: quiet connections move there.
         self.verified: Path | None = None
+        #: When each newer runtime's server last did not answer.
+        self.refused: dict[Path, float] = {}
 
     @classmethod
     def main(cls, argv: list[str]) -> None:
@@ -199,19 +201,23 @@ class SharedServer:
         return time.monotonic() - self.idle_since > (self.settings.outdated_seconds if self.outdated() else self.settings.idle_seconds)
 
     async def follow_active(self) -> Endpoint | None:
-        """Where quiet connections move: the active runtime's server, once it answers; None while this
-        server's runtime is the active one. A runtime whose server never answers is rolled back from
-        (`RuntimeStore.roll_back`), and condemned when that brings the pointer back to this one, which serves."""
-        active = self.store.active()
-        if active.path == Runtime.own().path:
+        """Where quiet connections move: the active runtime's shared server, once it answers; None while this
+        server's runtime is the active one, or the active one has no shared server (an older build) or its
+        server does not answer (asked again after `start_seconds`). Its clients then stay here: a server never
+        moves the runtime pointer, the upgrade's own checks judge a build."""
+        active, now = self.store.active(), time.monotonic()
+        site = active.site_packages
+        if active.path == Runtime.own().path or site is None or not (site / "galaius" / "server" / "shared.py").is_file():
             return None
         endpoint = SharedEndpoint.of(active)
         if self.verified != active.path:
+            if now - self.refused.get(active.path, -self.settings.start_seconds) < self.settings.start_seconds:
+                return None
             try:
                 await asyncio.to_thread(lambda: endpoint.connect(self.settings.start_seconds).close())
             except OSError as error:
-                if self.store.roll_back(active, f"its MCP server did not start ({error})").path == Runtime.own().path:
-                    self.store.condemn(active)
+                self.refused[active.path] = now
+                _log.warning("the active runtime's MCP server did not answer (%s): clients stay here", error)
                 return None
             self.verified = active.path
         return endpoint

@@ -192,31 +192,59 @@ def test_a_relay_told_to_switch_replays_the_handshake_and_resends_what_never_ran
         client.close()
 
 
-def test_an_older_server_rolls_back_from_a_runtime_whose_server_never_answers(endpoint, tmp_path, monkeypatch):
+def test_a_server_keeps_its_clients_and_the_pointer_when_the_newer_runtimes_server_never_answers(endpoint, tmp_path, monkeypatch):
     broken = tmp_path / "runtimes" / "broken"
     (broken / "bin").mkdir(parents=True)
     (broken / "bin" / "python").write_text("#!/bin/sh\nexit 3\n")
     (broken / "bin" / "python").chmod(0o755)
+    shared = broken / "lib" / "python3" / "site-packages" / "galaius" / "server"
+    shared.mkdir(parents=True)
+    (shared / "shared.py").write_text("")  # a build whose clients share a server
     (tmp_path / "runtimes").chmod(0o700)
     pointer = tmp_path / "runtimes" / "current.json"
-    pointer.write_text(json.dumps({"active": str(broken), "previous": sys.prefix}))
+    pointer.write_text(json.dumps({"active": str(broken)}))
     pointer.chmod(0o600)
     monkeypatch.setenv("GALAIUS_AGENT_CEILING", "0")
-    monkeypatch.setenv("GALAIUS_SHARED_MCP_START_SECONDS", "3")
-    server = subprocess.Popen(endpoint["start"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    client = Client(endpoint, {}, tmp_path)  # a client to move is what makes it look at the newer runtime
+    monkeypatch.setenv("GALAIUS_SHARED_MCP_START_SECONDS", "2")
+    server = serve(endpoint)
+    client = Client(endpoint, {"GALAIUS_SESSION_ID": "conversation-a"}, tmp_path)
     try:
         client.start()
-        deadline = time.time() + 30
-        while json.loads(pointer.read_text())["active"] != sys.prefix and time.time() < deadline:
-            time.sleep(0.2)
-        assert json.loads(pointer.read_text())["active"] == sys.prefix
-        assert server.poll() is None  # this runtime is active again: its server stays
-        assert client.tool("agent_providers").startswith("Agent providers:")  # and its client never moved
+        time.sleep(5)  # it asked the newer runtime's server, which never answered
+        assert json.loads(pointer.read_text())["active"] == str(broken)  # never moved by a server
+        assert client.tool("agent_list").startswith("Session conversation-a:")  # its client stays served
     finally:
         client.close()
         server.kill()
 
+
+def test_a_client_an_older_supervisor_hands_over_keeps_its_session(tmp_path):
+    initialize = {"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}}}
+    held = {"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"name": "anything", "arguments": {}}}
+
+    def server(read, write):
+        assert read()["method"] == relay_module.HELLO
+        replayed = read()
+        assert replayed["id"].startswith(relay_module.PRIVATE) and replayed["params"] == initialize["params"]
+        write({"jsonrpc": "2.0", "id": replayed["id"], "result": {"protocolVersion": "2025-06-18", "capabilities": {}, "serverInfo": {"name": "galaius", "version": "x"}}})
+        assert read()["method"] == "notifications/initialized"
+        call = read()
+        write({"jsonrpc": "2.0", "id": call["id"], "result": {"content": [{"type": "text", "text": "held call ran"}]}})
+
+    FakeServer(tmp_path / "s.sock", server)
+    carried = {"initialize": json.dumps(initialize), "initialized": '{"jsonrpc":"2.0","method":"notifications/initialized"}', "client_initialized": True,
+               "held": [json.dumps(held)], "from_runtime": str(tmp_path)}
+    endpoint = {"socket": str(tmp_path / "s.sock"), "start": ["false"], "log": str(tmp_path / "log"), "ahead": None}
+    relay = subprocess.Popen([sys.executable, "-I", "-S", relay_module.__file__, json.dumps(endpoint), json.dumps(carried)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        answers = []
+        while not any(answer.get("id") == 7 for answer in answers):
+            answers.append(json.loads(relay.stdout.readline()))
+        assert next(answer for answer in answers if answer.get("id") == 7)["result"]["content"][0]["text"] == "held call ran"
+        assert not any(answer.get("id") == 0 for answer in answers)  # its client saw its handshake answered long ago
+    finally:
+        relay.stdin.close()
+        relay.wait(10)
 
 def test_a_client_leaving_closes_its_own_browser_session_only(endpoint, tmp_path):
     serve(endpoint, GALAIUS_HEADLESS="true")

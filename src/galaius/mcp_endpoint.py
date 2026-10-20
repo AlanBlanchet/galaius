@@ -18,6 +18,7 @@ from galaius.mcp_relay import Endpoint
 from galaius.paths import UserPaths
 from galaius.private_files import PRIVATE_FILES
 from galaius.upgrade.store import Runtime, RuntimeStore
+from galaius.upgrade.supervisor import RelayHandover
 
 
 class SharedEndpoint:
@@ -64,5 +65,7 @@ class SharedEndpoint:
     def relay(cls, runtime: Runtime) -> NoReturn:
         """Become this client's relay to `runtime`'s shared server: the standard library alone, run as a
         file (`-I -S`: no package of this process stays loaded)."""
-        python = str(runtime.python)
-        os.execv(python, [python, "-I", "-S", mcp_relay.__file__, json.dumps(cls.for_client(runtime).dumped())])
+        python, handover = str(runtime.python), RelayHandover.taken()
+        RuntimeStore.default().arrived()  # an older supervisor handed its client to this runtime: it started
+        carried = [] if handover is None else [handover.model_dump_json()]  # the client's session, picked up as the relay's own
+        os.execv(python, [python, "-I", "-S", mcp_relay.__file__, json.dumps(cls.for_client(runtime).dumped()), *carried])
