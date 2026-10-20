@@ -21,8 +21,9 @@ from typing import ClassVar, Literal, NamedTuple
 
 from docx import Document
 from galaius_core import FILE_CONTENT_TYPES
+from docx.shared import Mm
 from openpyxl import Workbook
-from openpyxl.styles import Font
+from openpyxl.styles import Alignment, Font
 from pptx import Presentation
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -231,6 +232,8 @@ class Docx(FileFormat):
 
     def render(self, spec: FileSpec) -> bytes:
         document = Document()
+        for section in document.sections:  # A4, the page his printer and readers use (python-docx starts on Letter)
+            section.page_width, section.page_height = Mm(210), Mm(297)
         for block in blocks(spec.content):
             paragraph = document.add_heading("", level=block.level) if block.kind == "heading" else \
                 document.add_paragraph(style={"bullet": "List Bullet", "numbered": "List Number"}.get(block.kind))
@@ -252,8 +255,12 @@ class Docx(FileFormat):
 
 
 class Xlsx(FileFormat):
+    """A workbook: a sheet per name, its first row the header (bold, kept in view, filterable), each column as wide as
+    its longest cell up to `COLUMN_MAX` characters, a longer cell wrapped inside that width; printed on A4, one page wide."""
+
     suffixes = (".xlsx",)
     reads = ("rows", "sheets")
+    COLUMN_MAX: ClassVar[int] = 60
 
     def render(self, spec: FileSpec) -> bytes:
         book = Workbook()
@@ -265,10 +272,17 @@ class Xlsx(FileFormat):
                 for cell in sheet[sheet.max_row]:
                     if isinstance(cell.value, str) and cell.value.startswith("="):
                         cell.data_type = "s"  # his text, never a formula the sheet runs
-            for cell in sheet[1] if rows else ():
-                cell.font = Font(bold=True)
+            if rows:
+                for cell in sheet[1]:
+                    cell.font = Font(bold=True)
+                sheet.freeze_panes, sheet.auto_filter.ref = "A2", sheet.dimensions
             for column in sheet.columns:
-                sheet.column_dimensions[column[0].column_letter].width = min(60, 2 + max(len(str(cell.value or "")) for cell in column))
+                sheet.column_dimensions[column[0].column_letter].width = min(self.COLUMN_MAX, 2 + max(len(str(cell.value or "")) for cell in column))
+                for cell in column:
+                    if len(str(cell.value or "")) > self.COLUMN_MAX:
+                        cell.alignment = Alignment(wrap_text=True, vertical="top")
+            sheet.page_setup.paperSize, sheet.page_setup.orientation = sheet.PAPERSIZE_A4, "landscape"
+            sheet.sheet_properties.pageSetUpPr.fitToPage, sheet.page_setup.fitToWidth, sheet.page_setup.fitToHeight = True, 1, 0
         out = io.BytesIO()
         book.save(out)
         return out.getvalue()

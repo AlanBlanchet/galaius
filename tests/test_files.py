@@ -144,3 +144,16 @@ def test_a_documents_markdown_marks_become_its_styles_never_its_text(tmp_path: P
     assert (styled[2][0], styled[2][-1], paragraphs[1].style.name) == (("c3d4", True, False, None), ("twice", True, True, None), "List Number")
     slide = pptx.Presentation(tmp_path / "a.pptx").slides[0]
     assert (slide.shapes.title.text, slide.placeholders[1].text_frame.text) == ("The last runs", "a1b2 is done\nc3d4 failed, twice")
+
+
+def test_a_spreadsheet_wraps_a_long_cell_keeps_its_header_in_view_and_prints_on_a4(tmp_path: Path) -> None:
+    """A run's error text in the last column took two screens of scrolling (live check 2026-10-21): a cell longer than
+    a column's cap wraps inside it; the header stays in view and filters; the sheet and the document print on A4."""
+    rows = [["run", "error"], ["a1b2", "the project hit its monthly spending cap " * 4]]
+    write(FileSpec(path="a.xlsx", rows=rows), replace=False)
+    write(FileSpec(path="a.docx", content="# Runs"), replace=False)
+    sheet = openpyxl.load_workbook(tmp_path / "a.xlsx")["Sheet1"]
+    assert (sheet.column_dimensions["B"].width, sheet["B2"].alignment.wrap_text, sheet["A2"].alignment.wrap_text) == (60, True, None)
+    assert (sheet.freeze_panes, sheet.auto_filter.ref, sheet.page_setup.paperSize) == ("A2", "A1:B2", int(sheet.PAPERSIZE_A4))
+    section = docx.Document(tmp_path / "a.docx").sections[0]
+    assert (round(section.page_width.mm), round(section.page_height.mm)) == (210, 297)
