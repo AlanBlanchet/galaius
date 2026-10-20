@@ -9,7 +9,7 @@ license-files = ["LICENSE"]
 keywords = ["mcp", "automation", "browser", "desktop", "playwright", "vision", "agent", "llm"]
 requires-python = ">=3.11"
 dependencies = [
-    "galaius-core @ git+https://github.com/AlanBlanchet/galaius-core.git@d15e75bdd5c35b9a99d357ecbeb497f3be439541",
+    "galaius-core @ git+https://github.com/AlanBlanchet/galaius-core.git@2abc3aa418a521116642a434a6ae7663a09fa1b2",
     "cyclopts>=3.0",
     "rich>=13.0",
     # /dev/uinput absolute input (X11 + Wayland). Same `evdev` import either way: prebuilt wheels
@@ -43,6 +43,11 @@ dependencies = [
     "datasets>=2.20",
     "textual>=8.2.7",
     "huggingface_hub>=0.35",  # fetches a workspace's own huggingface_repo model weights (galaius/user_models.py); no torch dependency
+    # create_file's formats (galaius/files.py), written locally: Word, Excel, PowerPoint (MIT), PDF from Typst (Apache-2.0)
+    "python-docx>=1.2,<2",
+    "openpyxl>=3.1.5,<4",
+    "python-pptx>=1.0.2,<2",
+    "typst>=0.15,<0.16",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",

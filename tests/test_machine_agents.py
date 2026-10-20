@@ -364,6 +364,35 @@ def test_a_run_image_is_served_only_when_its_own_step_names_a_plain_image(base: 
     assert media.content_type == served and base64.b64decode(media.data) == PNG
 
 
+@pytest.mark.parametrize(("case", "served"), [("kept", True), ("only named by a step", False), ("kept for another run", False), ("kept but too large", False)])
+def test_a_created_file_is_served_only_from_the_copy_create_file_kept_for_that_run(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str, served: bool) -> None:
+    """Threat-modeler W2 r1: deny by default, never a path. The web downloads a document only when create_file kept it
+    for THAT web run (`RunFiles`, keyed on its bytes); a step naming a file (a refused `create_file(path=".env")`, a read
+    of his taxes) makes nothing reachable."""
+    import galaius.machine_agents as machine_agents
+    from galaius_core import FILE_CONTENT_TYPES, file_key
+    monkeypatch.setattr(machine_agents, "MACHINE_AGENT_MEDIA", 64)
+    agents = _agents(base, tmp_path, run_agents=False)
+    mine, foreign = str(uuid4()), str(uuid4())
+    for run_id in (mine, foreign):
+        reg.save_run(reg.AgentRun(run_id=run_id, provider="claude", name="r", cwd=str(base / "project"), started_at=1.0))
+    agents.runs.add(WebRun(run_id=mine, root="project"))
+    content = b"PK\x03\x04" + b"\0" * (80 if case == "kept but too large" else 8)
+    key = file_key(content, ".docx")
+    if case == "only named by a step":
+        (base / "project" / "summary.docx").write_bytes(content)
+        reg.events_path(mine).write_text(json.dumps({"kind": "tool", "tool": "mcp__galaius__create_file", "tool_input": json.dumps({"path": "summary.docx"})}) + "\n")
+    else:
+        assert reg.RunFiles.keep(foreign if case == "kept for another run" else mine, content, ".docx") == key
+    request = _request("media", run_id=mine, name=key)
+    if not served:
+        with pytest.raises(PermissionError):
+            _answer(agents, request)
+        return
+    answer = _answer(agents, request)
+    assert answer.media is None and answer.file.content_type == FILE_CONTENT_TYPES[".docx"] and answer.file.content == content
+
+
 def test_a_message_is_answered_once_durably_queued_and_its_dispatcher_gets_the_machine_environment(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """No CLI child and no wait for the resumed turn: the answer leaves as soon as the message is in
     the run's durable queue, and the dispatcher resuming it runs in the scrubbed machine environment."""

@@ -37,7 +37,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from galaius_core import (
     MODEL_ID_MAX,
-    PROJECTS_ROOT, AGENT_TOUCH_SCOPES, AgentCompactRequest, ContextGauge, MACHINE_AGENT_MEDIA, MACHINE_AGENT_READ, MACHINE_AGENT_TAIL, AgentAnswerRequest, AgentMedia, AgentMediaRequest, image_type, AgentContinueRequest, AgentFoldersRequest, AgentInteraction, AgentLogsRequest, AgentOptionsRequest,
+    PROJECTS_ROOT, AGENT_TOUCH_SCOPES, AgentCompactRequest, ContextGauge, MACHINE_AGENT_MEDIA, MACHINE_AGENT_READ, MACHINE_AGENT_TAIL, AgentAnswerRequest, AgentMedia, AgentMediaRequest, AgentFile, media_kind, image_type, AgentContinueRequest, AgentFoldersRequest, AgentInteraction, AgentLogsRequest, AgentOptionsRequest,
     AgentAllowanceRequest, AgentMoveRequest, AgentProgramInstallRequest, AgentProgramsRequest, AgentProviderState, AgentSignInCodeRequest, AgentSignOutRequest, SubscriptionAllowance, Lent, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
     MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, PassedOverCandidate, ReadsAt, AgentRefusalCode, WebLimited, WebLoad, media_key, media_paths, MachineAgentSession, MachineFileEntry, StopActor, WorkspaceCreateRequest, WorkspacePack, WorkspacePackRequest, WorkspacePrepareRequest, WorkspaceRefresh, WorkspacesRequest,
 )
@@ -760,30 +760,42 @@ class MachineAgents(BaseModel):
         """One image of this web run: one it was shown (`RunMedia`), or one a step names (`media_key` of the path it
         wrote: only a path that run's own stream names); only a plain file (never a link, a FIFO or a device: opened
         non-blocking, checked before any read), at most MACHINE_AGENT_MEDIA bytes, its type proven
-        by its first bytes. A path a later step overwrote serves its CURRENT bytes."""
+        by its first bytes. A path a later step overwrote serves its CURRENT bytes. Or one file create_file kept for
+        it (`RunFiles`, by the hash of its bytes): that copy alone, never a path any step names."""
         run = self._require_run(request.run_id)
+        if media_kind(request.name) == "file":
+            return MachineAgentAnswer(request_id=request.id, file=AgentFile.of(self._plain_file(reg.RunFiles.path(run.run_id, request.name), "file"), request.name))
         path = reg.RunMedia.path(run.run_id, request.name)
         if not path.is_file():
             written = self._named_image(run.run_id, request.name)
             if written is None or not written.startswith(("/", "~/")):
                 raise PermissionError("no step of this run names that image")
             path = Path.home() / written[2:] if written.startswith("~/") else Path(written)
+        data = self._plain_file(path, "image")
+        content_type = image_type(data)
+        if content_type is None:
+            raise PermissionError("that file is not an image")
+        return MachineAgentAnswer(request_id=request.id, media=AgentMedia(content_type=content_type, data=base64.b64encode(data).decode("ascii")))
+
+    @staticmethod
+    def _plain_file(path: Path, what: str) -> bytes:
+        """`path`'s bytes when it is a plain file of at most MACHINE_AGENT_MEDIA bytes: never a link, a FIFO or a device
+        (opened non-blocking, checked before any read)."""
         flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
         try:
             descriptor = os.open(path, flags)
         except OSError:
-            raise PermissionError("that image is no longer on this computer") from None
+            raise PermissionError(f"that {what} is no longer on this computer") from None
         with os.fdopen(descriptor, "rb") as handle:
             facts = os.fstat(handle.fileno())
             if not stat.S_ISREG(facts.st_mode):
-                raise PermissionError("that image is not a plain file")
+                raise PermissionError(f"that {what} is not a plain file")
             if facts.st_size > MACHINE_AGENT_MEDIA:
-                raise PermissionError(f"that image is larger than {MACHINE_AGENT_MEDIA // (1024 * 1024)} MiB")
+                raise PermissionError(f"that {what} is larger than {MACHINE_AGENT_MEDIA // (1024 * 1024)} MiB")
             data = handle.read(MACHINE_AGENT_MEDIA + 1)
-        content_type = image_type(data)
-        if content_type is None or len(data) > MACHINE_AGENT_MEDIA:
-            raise PermissionError("that file is not an image")
-        return MachineAgentAnswer(request_id=request.id, media=AgentMedia(content_type=content_type, data=base64.b64encode(data).decode("ascii")))
+        if len(data) > MACHINE_AGENT_MEDIA:
+            raise PermissionError(f"that {what} is larger than {MACHINE_AGENT_MEDIA // (1024 * 1024)} MiB")
+        return data
 
     @staticmethod
     def _named_image(run_id: str, name: str) -> str | None:

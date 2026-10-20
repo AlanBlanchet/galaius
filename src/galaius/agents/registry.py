@@ -36,7 +36,7 @@ from uuid import UUID
 
 from pydantic import ConfigDict, BaseModel, Field, PrivateAttr, ValidationInfo, field_validator
 from galaius.agents import quota
-from galaius_core import ASKED_BY_MAX, MEDIA_KEY, MODEL_ID_MAX, AgentMedia, AgentRevisionRef, ContextGauge, PromptExecutionRef, RunReplacement, StopActor
+from galaius_core import ASKED_BY_MAX, FILE_KEY, MEDIA_KEY, file_key, MODEL_ID_MAX, AgentMedia, AgentRevisionRef, ContextGauge, PromptExecutionRef, RunReplacement, StopActor
 
 from galaius.agents.events import (
     CONTEXT_FIELDS, PERSON_SENDER, TOKEN_FIELDS, AgentEvent, MessageFields, RunCut, TokenUsage, UsageLedger, answered_line, its_work, model_spoke,
@@ -961,6 +961,27 @@ class RunMedia:
     def mentioned(cls, text: str, paths: Iterable[Path]) -> str:
         """`text`, then one line naming each image's file, for an agent that opens it itself."""
         return "\n".join([*([text] if text.strip() else []), *(cls.MENTION.format(path=path) for path in paths)])
+
+
+class RunFiles:
+    """The files `create_file` wrote for a run, each kept beside the run's other files under its key (`file_key`: the
+    hash of its bytes): what the web downloads. Never read back from the folder the agent wrote it to, so a download
+    names no path an agent chose (threat-modeler W2 r1: a refused call naming `.env` served the real one)."""
+
+    @staticmethod
+    def path(run_id: str, key: str) -> Path:
+        if not re.fullmatch(FILE_KEY, key):
+            raise ValueError("not a created file's name")
+        # `.kept` last: no reader of `*.json` records ever takes a kept JSON file for a run.
+        return agents_dir() / f"{_safe_run_id(run_id)}.file.{key}.kept"
+
+    @classmethod
+    def keep(cls, run_id: str, content: bytes, suffix: str) -> str:
+        """`content` kept for run `run_id` as a file of format `suffix` (one it holds already is left as it is); its key."""
+        key = file_key(content, suffix)
+        if not cls.path(run_id, key).is_file():
+            _replace_private(cls.path(run_id, key), content)
+        return key
 
 
 def messages_path(run_id: str) -> Path:
