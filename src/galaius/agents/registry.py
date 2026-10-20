@@ -30,7 +30,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager, suppress
 from contextvars import ContextVar
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO, ClassVar, Literal, Self, Unpack
+from typing import TYPE_CHECKING, BinaryIO, ClassVar, Literal, NamedTuple, Self, Unpack
 from uuid import UUID
 
 from pydantic import BaseModel, Field, PrivateAttr, ValidationInfo, field_validator
@@ -72,6 +72,11 @@ TERMINAL_STATUSES: frozenset[str] = frozenset(
     {"done", "failed", "cancelled", "interrupted", "stopped"}
 )
 RunKind = Literal["process", "conversation", "provider_child"]
+#: What cut a run from outside its work (`cut_cause`): its program's word (`RunCut`), its process gone with no word of
+#: its own, or a signal nobody it answers to sent.
+CutCause = Literal["login_lost", "usage_limit", "process_gone", "killed"]
+#: How a cut run comes back (`cut_resume`): `itself` with no one's action, `sign_in` once its login is signed in again.
+CutResumes = Literal["itself", "sign_in"]
 ConnectionMode = Literal["local_session", "api"]
 ChargePath = Literal[
     "subscription_quota", "usage_credit", "metered_api", "local_compute", "unknown"
@@ -345,14 +350,18 @@ class AgentRun(ContextGauge):
     started_at: float = 0.0
     finished_at: float | None = None
     exit_code: int | None = None
-    #: When this PC's runner resumes the run by itself: its last turn was refused by a provider usage
-    #: limit that named when its window reopens (`limit_resume_at`). Written and cleared by the runner
-    #: only (`schedule_limit_resumes`, `claim_limit_resume`); None otherwise.
+    #: How this PC's runner resumes it by itself, a cut having stopped it (`cut_resume`): `itself` from `resume_at` on,
+    #: `sign_in` once its login is signed in again here. Written and cleared by the runner only (`schedule_resumes`,
+    #: `claim_resume`), cleared as a new turn begins; None: nothing resumes it but a person.
+    resumes: CutResumes | None = None
+    #: When the runner resumes it (`resumes` « itself »): at once for a process cut, at its usage limit's reset.
     resume_at: float | None = None
-    #: When the runner last resumed it by itself (`claim_limit_resume`): a refusal naming a reset no
-    #: later than this, or heard within `RESUME_GRACE` of it naming about this instant (the window did
-    #: not reopen), is left to « Reprendre », never resumed again (`limit_resume_at`).
+    #: When the runner last resumed it by itself (`claim_resume`), and for which cut (`resumed_cut`): cut again by
+    #: the same cause within `RESUME_GRACE` of it, it is left to a person (`cut_resume`); a refusal naming a reset no
+    #: later than it, or heard within `RESUME_GRACE` of it naming about this instant (the window did not reopen), too
+    #: (`limit_resume_at`).
     resumed_at: float | None = None
+    resumed_cut: CutCause | None = None
     #: True for a session galaius did NOT spawn — the user's own editor windows, surfaced so the
     #: supervisor shows the machine's real state rather than only its own children.
     foreign: bool = False
@@ -1506,7 +1515,7 @@ def save_run(run: AgentRun) -> None:
 #: Record fields that describe how the run's PREVIOUS turn ended, cleared when it starts another
 #: one: a cause and hour kept from an earlier cut were read as this turn's, so a run cut off today
 #: was shown as cut off yesterday, and the one that ended cleanly after it inherited that cause.
-PREVIOUS_ENDING: dict[str, None] = dict.fromkeys(("exit_code", "finished_at", "stopped_by", "replaced_by", "interruption"))
+PREVIOUS_ENDING: dict[str, None] = dict.fromkeys(("exit_code", "finished_at", "stopped_by", "replaced_by", "interruption", "resumes", "resume_at"))
 
 
 def begin_turn(
@@ -2453,17 +2462,16 @@ def settle_gone() -> list[AgentRun]:
     return settled
 
 
-#: How long an automatic resume after a usage limit holds: the runner takes it within this long of its
-#: `resume_at` (a PC off at the reset leaves it to « Reprendre »; the web reads it ended past then too),
-#: and a refusal heard within this long of that resume means the window did not reopen.
+#: How soon after an automatic resume the same cut means it did not come back (`cut_resume`'s loop guard): the run is
+#: then left to a person; a usage refusal heard this soon after its resume means the window did not reopen.
 RESUME_GRACE = 300.0
 #: Who an automatic resume is from, on its queue item and message event (`from_run`): never the person.
 LIMIT_RESUME_SENDER = "limit-resume"
-#: Who the resume of a run its lost login stopped is from, once that login is signed in again (`login_lost`).
+#: Who the resume of a run its lost login stopped is from, once that login is signed in again.
 LOGIN_RESUME_SENDER = "login-resume"
-#: How long after it stopped a run its lost login stopped is resumed by itself once signed in again
-#: (a login lost overnight comes back the next morning); past it, « Continuer ».
-LOGIN_RESUME_WINDOW = 24 * 3600.0
+#: Who the resume of a run whose process was cut is from (gone, the PC restarted, killed by the system or a signal
+#: nobody it answers to sent).
+CUT_RESUME_SENDER = "cut-resume"
 #: Who the line saying a resumed run's missing folder was put back is from (`run_folder.FolderRestored.sentence`): never the person.
 FOLDER_RESTORED_SENDER = "folder-restored"
 #: The conversation's own machinery as message senders (never a person, never a run), as a reader names each: only the
@@ -2471,6 +2479,7 @@ FOLDER_RESTORED_SENDER = "folder-restored"
 SYSTEM_SENDERS: dict[str, str] = {
     LIMIT_RESUME_SENDER: "automatic resume after the usage limit",
     LOGIN_RESUME_SENDER: "automatic resume after signing in again",
+    CUT_RESUME_SENDER: "automatic resume after its process was cut",
     FOLDER_RESTORED_SENDER: "folder put back",
 }
 
@@ -2504,103 +2513,143 @@ def limit_resume_at(run: AgentRun, *, now: float | None = None) -> float | None:
     return min(reset, lifted) if lifted is not None and moment <= lifted + RESUME_GRACE else reset
 
 
-def schedule_limit_resumes(*, now: float | None = None) -> list[AgentRun]:
-    """Write `resume_at` on every run a usage limit paused (`limit_resume_at`), sub-runs included (owner
-    2026-10-19: « I'm having to click on the continue the 4 stopped agents manually »), and clear it where it
-    no longer holds (resumed by hand, stopped, superseded, `RESUME_GRACE` past it). Reads only records that
-    moved; returns the paused runs, each as written, deepest first (`deepest_first`)."""
+def cut_cause(run: AgentRun) -> CutCause | None:
+    """What cut `run` from outside its work, None when nothing did: its program's word (`RunCut`: a lost login, a
+    usage limit), its process gone without a word of its own (`process_gone`: a crash, the memory killer, the PC
+    restarted or switched off), or a signal nobody it answers to sent (`killed`: an external SIGTERM / SIGKILL, a time
+    limit). Never a stop someone recorded (`stopped_by`), its own subscription cap, its own program error, a launch
+    another run took over (`replaced_by`, `successor`), nor a run galaius did not launch here."""
+    if (run.foreign or run.kind != "process" or run.finished_at is None or run.stopped_by is not None
+            or run.replaced_by is not None or run.successor is not None
+            or (run.subscription is not None and run.subscription.capped is not None)):
+        return None
+    signalled = run.exit_code is not None and (run.exit_code < 0 or run.exit_code > 128)
+    if run.status == "interrupted":
+        return "process_gone"
+    if run.status == "stopped":
+        return "killed" if signalled else None
+    if run.status != "failed":
+        return None
+    if run.stream_digest is not None and run.stream_digest.ending == "error" and run.stream_digest.cut is not None:
+        return run.stream_digest.cut.value
+    return "killed" if signalled else None
+
+
+class CutOwed(NamedTuple):
+    """How a cut run comes back by itself (`cut_resume`)."""
+
+    cause: CutCause
+    resumes: CutResumes
+    #: `itself`: when (at once: its end); `sign_in`: None, once its login is signed in again.
+    at: float | None
+
+
+def cut_resume(run: AgentRun, *, now: float | None = None) -> CutOwed | None:
+    """How `run` comes back with no one's click (owner 2026-10-20: « Shouldn't things continue on their own ? »): every
+    cut (`cut_cause`) that ended since this PC resumes cuts (`cut_resume_since`), once per cut, whatever time since —
+    a process cut at once, a usage limit at its reset (`limit_resume_at`), a lost login once signed in again. None
+    when nothing resumes it but a person: no cut, resumed for it already, or cut again by the same cause within
+    `RESUME_GRACE` of its last automatic resume (it did not come back)."""
+    cause = cut_cause(run)
+    if cause is None or run.finished_at is None or run.finished_at < _cut_since():
+        return None
+    if run.resumed_at is not None and (run.resumed_at >= run.finished_at or (
+            cause != "usage_limit" and run.resumed_cut in (None, cause) and run.finished_at - run.resumed_at <= RESUME_GRACE)):
+        return None
+    if cause == "login_lost":
+        return CutOwed(cause, "sign_in", None)
+    if cause == "usage_limit":
+        at = limit_resume_at(run, now=now)
+        return None if at is None else CutOwed(cause, "itself", at)
+    return CutOwed(cause, "itself", run.finished_at)
+
+
+def cut_resume_since(*, now: float | None = None) -> float:
+    """From when this PC resumes cut runs by itself: the first start of a runner that does (`#cut-resume-since.state`,
+    written once). A cut that ended before stays as it was: a runner taking this up never wakes a week of
+    abandoned runs and their launchers at once."""
+    with shared_state(_CUT_SINCE) as (raw, write, _keep):
+        if raw is None:
+            raw = repr(time.time() if now is None else now).encode()
+            write(raw)
+    _CUT_SINCE_READ[str(agents_dir())] = since = float(raw)
+    return since
+
+
+_CUT_SINCE = "cut-resume-since"
+#: `cut_resume_since` as read, per agents folder: written once, never moved.
+_CUT_SINCE_READ: dict[str, float] = {}
+
+
+def _cut_since() -> float:
+    """`cut_resume_since` as written; infinite before a runner wrote it: no runner here resumes a cut (a computer running
+    agents from its terminal alone), so none is held as coming back and its launcher is woken with it (`handback`)."""
+    if (known := _CUT_SINCE_READ.get(str(agents_dir()))) is not None:
+        return known
+    raw = _read_private(agents_dir() / f"#{_CUT_SINCE}.state")
+    if raw is None:
+        return math.inf
+    _CUT_SINCE_READ[str(agents_dir())] = since = float(raw)
+    return since
+
+
+def schedule_resumes(*, now: float | None = None) -> list[tuple[AgentRun, CutOwed]]:
+    """Write how each cut run comes back (`cut_resume`: `resumes`, `resume_at`) on its record, sub-runs included
+    (owner 2026-10-19: « I'm having to click on the continue the 4 stopped agents manually »), and clear it where it
+    no longer holds (resumed by hand, a new turn, stopped). Returns the owed runs as written, with how each comes
+    back, deepest first (`deepest_first`)."""
     moment = time.time() if now is None else now
-    paused = []
+    owed: dict[str, tuple[AgentRun, CutOwed]] = {}
     for run in _stored_records():
-        at = limit_resume_at(run, now=moment)
-        wanted = at if at is not None and moment <= at + RESUME_GRACE else None
-        if wanted == run.resume_at:
-            if wanted is not None:
-                paused.append(run)
+        cut = cut_resume(run, now=moment)
+        wanted = (None, None) if cut is None else (cut.resumes, cut.at)
+        if wanted == (run.resumes, run.resume_at):
+            if cut is not None:
+                owed[run.run_id] = run, cut
             continue
         with record_lock(run.run_id):
             stored = _read_record(run.run_id)
-            # Re-read under the lock: a turn begun meanwhile is no longer paused.
+            # Re-read under the lock: a turn begun meanwhile is no longer cut.
             if stored is None or stored.status != run.status or stored.finished_at != run.finished_at:
                 continue
-            written = _merge_record_locked(run.run_id, {"resume_at": wanted})
-        if written is not None and wanted is not None:
-            paused.append(written)
-    return deepest_first(paused)
+            written = _merge_record_locked(run.run_id, {"resumes": wanted[0], "resume_at": wanted[1]})
+        if written is not None and cut is not None:
+            owed[run.run_id] = written, cut
+    return [owed[run.run_id] for run in deepest_first([run for run, _ in owed.values()])]
 
 
-def claim_limit_resume(run_id: str, *, now: float | None = None) -> AgentRun | None:
-    """Take run `run_id`'s automatic resume once its `resume_at` came, and at most `RESUME_GRACE`
-    after: clears it and records `resumed_at`, so no second runner (nor a restart) resumes it again.
-    The run as claimed, or None when it is not due, too late, or no longer paused."""
+def claim_resume(run_id: str, *, signed_in: bool = False, now: float | None = None) -> AgentRun | None:
+    """Take run `run_id`'s automatic resume once, under its lock, when it is due: `itself` from its `resume_at` on,
+    `sign_in` when its login is `signed_in` again. Records `resumed_at` and the cut it answers (`resumed_cut`) and
+    clears `resumes`, so no second runner (nor a restart) resumes it again. The run as claimed, else None."""
     moment = time.time() if now is None else now
-    return _claim(run_id, lambda stored: stored.status == "failed" and stored.resume_at is not None and stored.resume_at <= moment <= stored.resume_at + RESUME_GRACE,
-                  {"resume_at": None, "resumed_at": moment})
 
-
-def _claim(run_id: str, due: Callable[[AgentRun], bool], written: dict) -> AgentRun | None:
-    """Run `run_id`'s automatic resume taken once, under its lock: `written` merged when its record, read
-    again there, is still `due`; the run as claimed, else None."""
+    def due(stored: AgentRun) -> bool:
+        cut = cut_resume(stored, now=moment)
+        return cut is not None and (signed_in if cut.resumes == "sign_in" else cut.at is not None and cut.at <= moment)
     with record_lock(run_id):
         stored = _read_record(run_id)
-        return _merge_record_locked(run_id, written) if stored is not None and due(stored) else None
-
-
-def login_lost(run: AgentRun, *, now: float | None = None) -> bool:
-    """`run` stopped only because its program's login was lost (`RunCut.login_lost`): a launched process run
-    that failed on it within `LOGIN_RESUME_WINDOW`, not resumed by itself for it already — a resume that met
-    the same lost login within `RESUME_GRACE` is left to « Continuer »."""
-    digest = run.stream_digest
-    if (run.foreign or run.kind != "process" or run.status != "failed" or run.finished_at is None
-            or digest is None or digest.cut is not RunCut.login_lost):
-        return False
-    until = login_resume_until(run.finished_at, run.resumed_at)
-    return until is not None and (time.time() if now is None else now) <= until
-
-
-def login_resume_until(finished_at: float, resumed_at: float | None) -> float | None:
-    """Until when a run a lost login stopped at `finished_at` is resumed by itself once signed in again:
-    `LOGIN_RESUME_WINDOW` past that end. None when its resume is taken already (`resumed_at` at or past that end), or
-    one met the same lost login within `RESUME_GRACE` (left to « Continuer »)."""
-    if resumed_at is not None and (resumed_at >= finished_at or finished_at - resumed_at <= RESUME_GRACE):
-        return None
-    return finished_at + LOGIN_RESUME_WINDOW
-
-
-def login_paused(*, now: float | None = None) -> list[AgentRun]:
-    """Every run a lost login stopped (`login_lost`), sub-runs included, deepest first (`deepest_first`)."""
-    return deepest_first([run for run in _stored_records() if login_lost(run, now=now)])
+        if stored is None or not due(stored):
+            return None
+        return _merge_record_locked(run_id, {"resumes": None, "resume_at": None, "resumed_at": moment, "resumed_cut": cut_cause(stored)})
 
 
 def self_resuming(run: AgentRun, *, now: float | None = None) -> bool:
-    """`run` was cut by what comes back by itself (`RunCut`) and resumes then: a lost login (`login_lost`), a
-    usage limit up to `RESUME_GRACE` past its reset (`limit_resume_at`). Its work has not ended: its launcher is
-    not woken with its cut (`handback`)."""
-    moment = time.time() if now is None else now
-    at = limit_resume_at(run, now=moment)
-    return login_lost(run, now=moment) or (at is not None and moment <= at + RESUME_GRACE)
+    """`run` was cut and comes back by itself (`cut_resume`): its work has not ended, its launcher is not woken with
+    its cut (`handback`)."""
+    return cut_resume(run, now=now) is not None
 
 
 def recently_cut(*, now: float | None = None) -> list[AgentRun]:
-    """The failed runs a cut ended (`StreamDigest.cut`) within the longest window one resumes in by itself
-    (`LOGIN_RESUME_WINDOW`, `quota.MAX_COOLDOWN`), resuming or not."""
-    since = (time.time() if now is None else now) - max(LOGIN_RESUME_WINDOW, quota.MAX_COOLDOWN)
-    return [run for run in _stored_records() if run.status == "failed" and run.finished_at is not None and run.finished_at >= since
-            and run.stream_digest is not None and run.stream_digest.cut is not None]
+    """The runs a cut ended (`cut_cause`) since this PC resumes cuts (`cut_resume_since`), coming back or not."""
+    since = _cut_since()
+    return [run for run in _stored_records() if run.finished_at is not None and run.finished_at >= since and cut_cause(run) is not None]
 
 
 def deepest_first(runs: Sequence[AgentRun]) -> list[AgentRun]:
     """`runs`, each run below its launchers (`ancestors`): resumed in this order, an agent is at work again before
     the run that launched it reads where its agents stand."""
     return sorted(runs, key=lambda run: -len(ancestors(run.run_id)))
-
-
-def claim_login_resume(run_id: str, *, now: float | None = None) -> AgentRun | None:
-    """Take the resume of run `run_id`, stopped by a lost login now signed in again, once: records
-    `resumed_at` under its lock, so no second runner (nor a restart) resumes it again. The run as
-    claimed, or None when it no longer is one (`login_lost`)."""
-    moment = time.time() if now is None else now
-    return _claim(run_id, lambda stored: login_lost(stored, now=moment), {"resumed_at": moment})
 
 
 def _tree_of(records: Sequence[AgentRun], root_run_ids: frozenset[str]) -> dict[str, str]:

@@ -44,7 +44,8 @@ EventKind = Literal[
 class RunCut(StrEnum):
     """What cut a turn short from outside its work, as its program said it (`AgentProvider.cut_of`, on its `error`
     event): each names the moment its runs come back, every run of a tree it cut then resuming by itself
-    (`registry.self_resuming`). An ending none names is the run's own failure: « Continuer » alone resumes it."""
+    (`registry.cut_resume`, which also resumes a process cut no program words). An ending none names is the run's own
+    failure: « Continuer » alone resumes it."""
 
     #: Its program's login expired, was revoked or switched to another account: back once signed in again.
     login_lost = "login_lost"

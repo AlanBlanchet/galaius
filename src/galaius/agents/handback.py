@@ -109,9 +109,9 @@ class EndWatch(BaseModel):
     live: frozenset[str] = Field(default_factory=lambda: frozenset(run.run_id for run in reg.running_runs()))
     looked: float = Field(default_factory=time.time)
     #: Ended runs a cut stopped that resume by themselves (`registry.self_resuming`): their launcher was not woken with the
-    #: cut (`_resume`). Each ends again here once that no longer holds and nothing resumed it (its window lapsed). Read from
-    #: the store at start, every run a cut ended within its resume windows (`registry.recently_cut`): one whose window
-    #: lapsed while this watcher was down ends on its first look (a report already carried is never carried twice).
+    #: cut (`_resume`). Each ends again here once that no longer holds and nothing resumed it (cut again by the same cause
+    #: right after its resume). Read from the store at start, every run a cut ended (`registry.recently_cut`): one that
+    #: stopped coming back while this watcher was down ends on its first look (a report already carried is never carried twice).
     held: frozenset[str] = Field(default_factory=lambda: frozenset(run.run_id for run in reg.recently_cut() if run.askers))
 
     def ended(self) -> list[str]:

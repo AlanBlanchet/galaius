@@ -2065,6 +2065,12 @@ def test_a_line_separator_inside_an_event_keeps_the_event_whole(separator):
 _SESSION_LIMIT = "You've hit your session limit · resets 5:20pm (Europe/Paris)"
 
 
+@pytest.fixture
+def resuming() -> None:
+    """A runner here resumes cut runs (`registry.cut_resume_since`) since long before these tests' runs ended."""
+    reg.cut_resume_since(now=0.0)
+
+
 def _ended_on(run_id: str, said: str, *, pid: int, parent: str | None = None) -> reg.AgentRun:
     reg.register(run_id=run_id, pid=pid, provider="claude", name="w", agent="app-engineer",
                  model="claude-opus-5-5", parent_run_id=parent)
@@ -2078,16 +2084,16 @@ def _ended_on(run_id: str, said: str, *, pid: int, parent: str | None = None) ->
     ("You've reached your Fable limit. Switch to another model, or manage usage credits.", False),  # names no reset
     ("Error: the build failed", False),
 ])
-def test_only_a_usage_limit_naming_its_reset_pauses_a_run(said, paused):
+def test_only_a_usage_limit_naming_its_reset_pauses_a_run(resuming, said, paused):
     from galaius.agents import quota
 
     run = _ended_on("lim1", said, pid=401)
-    written = reg.schedule_limit_resumes()
+    written = reg.schedule_resumes()
     if not paused:
         assert written == [] and reg.get_run("lim1").resume_at is None
         return
     reopens = quota.Refusal.read(said, now=run.finished_at).reopens_at
-    assert [r.run_id for r in written] == ["lim1"]
+    assert [(r.run_id, r.resumes) for r, _ in written] == [("lim1", "itself")]
     assert reg.get_run("lim1").resume_at == reopens + quota.RESET_SLACK
     assert 0 < reopens - run.finished_at <= 24 * 3600
 
@@ -2097,19 +2103,19 @@ def test_only_a_usage_limit_naming_its_reset_pauses_a_run(said, paused):
     ("claude-sonnet-5", 240.0, True),  # another model of that login: the server's « limit lifted » counts it too
     ("claude-opus-5-5", -60.0, False),  # an answer heard before the refusal
 ])
-def test_a_paused_run_resumes_once_its_login_answers_again_before_the_named_reset(answered_by, after, early):
+def test_a_paused_run_resumes_once_its_login_answers_again_before_the_named_reset(resuming, answered_by, after, early):
     from galaius.agents import quota
 
     run = _ended_on("lim-lift", _SESSION_LIMIT, pid=404)
     reset = quota.Refusal.read(_SESSION_LIMIT, now=run.finished_at).reopens_at + quota.RESET_SLACK
     quota.served("claude", answered_by, at=run.finished_at + after)
 
-    reg.schedule_limit_resumes(now=run.finished_at + after + 1)
+    reg.schedule_resumes(now=run.finished_at + after + 1)
 
     assert reg.get_run("lim-lift").resume_at == (run.finished_at + after if early else reset)
 
 
-def test_his_press_keeps_the_lift_for_other_paused_runs_and_a_refused_early_resume_keeps_the_named_reset():
+def test_his_press_keeps_the_lift_for_other_paused_runs_and_a_refused_early_resume_keeps_the_named_reset(resuming):
     from galaius.agents import quota
 
     first, other = _ended_on("lim-a", _SESSION_LIMIT, pid=405), _ended_on("lim-b", _SESSION_LIMIT, pid=406)
@@ -2118,28 +2124,28 @@ def test_his_press_keeps_the_lift_for_other_paused_runs_and_a_refused_early_resu
     assert quota.blocked_until("claude", "claude-opus-5-5") is None
     answered = first.finished_at + 30
     quota.served("claude", "claude-opus-5-5", at=answered)  # A answers
-    reg.schedule_limit_resumes(now=answered + 1)
+    reg.schedule_resumes(now=answered + 1)
     assert reg.get_run("lim-b").resume_at == answered, "B waits for the named reset though its login answered"
-    assert reg.claim_limit_resume("lim-b", now=answered + 2) is not None
+    assert reg.claim_resume("lim-b", now=answered + 2) is not None
     reg._update_fields("lim-b", {"finished_at": answered + 60})  # its early resume refused again within RESUME_GRACE
-    reg.schedule_limit_resumes(now=answered + 61)
+    reg.schedule_resumes(now=answered + 61)
     assert reg.get_run("lim-b").resume_at == reset, "a refused early resume lost the resume at the named reset"
     quota.served("claude", "claude-sonnet-5", at=answered + 90)  # another model's pool keeps answering
-    reg.schedule_limit_resumes(now=answered + 91)
+    reg.schedule_resumes(now=answered + 91)
     assert reg.get_run("lim-b").resume_at == reset, "resumed and refused again at every answer of another model"
 
 
-def test_a_paused_run_is_claimed_once_at_its_reset_and_its_sub_run_resumes_too_before_it():
+def test_a_paused_run_is_claimed_once_from_its_reset_on_and_its_sub_run_resumes_too_before_it(resuming):
     _ended_on("lim-root", _SESSION_LIMIT, pid=402)
     _ended_on("lim-sub", _SESSION_LIMIT, pid=403, parent="lim-root")
-    assert [r.run_id for r in reg.schedule_limit_resumes()] == ["lim-sub", "lim-root"]
+    assert [r.run_id for r, _ in reg.schedule_resumes()] == ["lim-sub", "lim-root"]
     at = reg.get_run("lim-root").resume_at
 
-    assert reg.claim_limit_resume("lim-root", now=at - 1) is None, "claimed before its reset"
-    assert reg.claim_limit_resume("lim-root", now=at + reg.RESUME_GRACE + 1) is None, "claimed long after the web said it ended"
-    claimed = reg.claim_limit_resume("lim-root", now=at + 5)
-    assert claimed is not None and claimed.resume_at is None and claimed.resumed_at == at + 5
-    assert reg.claim_limit_resume("lim-root", now=at + 6) is None, "a second runner resumed it again"
+    assert reg.claim_resume("lim-root", now=at - 1) is None, "claimed before its reset"
+    claimed = reg.claim_resume("lim-root", now=at + 86400)  # the PC off at the reset: taken the next day
+    assert claimed is not None and claimed.resume_at is None and claimed.resumes is None and claimed.resumed_at == at + 86400
+    assert claimed.resumed_cut == "usage_limit"
+    assert reg.claim_resume("lim-root", now=at + 86401) is None, "a second runner resumed it again"
     assert reg.get_run("lim-sub").resume_at == at
 
 
@@ -2155,38 +2161,51 @@ _LOGIN_EXPIRED = "Failed to authenticate: OAuth session expired and could not be
     (_SESSION_LIMIT, False),  # the usage limit's own resume, at its reset
     ("Error: the build failed", False),
 ])
-def test_only_a_lost_login_pauses_a_run_and_its_sub_run_until_signed_in_again(said, paused):
+def test_only_a_lost_login_pauses_a_run_and_its_sub_run_until_signed_in_again(resuming, said, paused):
     _ended_on("login1", said, pid=411)
     _ended_on("login1-sub", said, pid=412, parent="login1")
-    assert [run.run_id for run in reg.login_paused()] == (["login1-sub", "login1"] if paused else [])
+    assert [run.run_id for run, cut in reg.schedule_resumes() if cut.resumes == "sign_in"] == (["login1-sub", "login1"] if paused else [])
 
 
-def test_a_run_its_lost_login_stopped_is_claimed_once_and_a_second_loss_at_once_is_left_to_continuer(monkeypatch):
+def test_a_run_its_lost_login_stopped_is_claimed_once_and_a_second_loss_at_once_is_left_to_continuer(resuming, monkeypatch):
     run = _ended_on("login2", _LOGIN_EXPIRED, pid=413)
-    assert reg.claim_login_resume("login2", now=run.finished_at + reg.LOGIN_RESUME_WINDOW + 1) is None, "resumed a day after it stopped"
-    claimed = reg.claim_login_resume("login2", now=run.finished_at + 60)
-    assert claimed is not None and claimed.resumed_at == run.finished_at + 60
-    assert reg.claim_login_resume("login2", now=run.finished_at + 61) is None, "a second runner resumed it again"
+    assert reg.claim_resume("login2", now=run.finished_at + 60) is None, "resumed while its login is still lost"
+    claimed = reg.claim_resume("login2", signed_in=True, now=run.finished_at + 3 * 86400)  # signed in again days later
+    assert claimed is not None and claimed.resumed_at == run.finished_at + 3 * 86400
+    assert reg.claim_resume("login2", signed_in=True, now=run.finished_at + 3 * 86400 + 1) is None, "a second runner resumed it again"
     resumed = reg.begin_turn("login2", pid=414, model="claude-opus-5-5")
     with reg.raw_events_path("login2").open("a") as stream:
         stream.write(_claude_error_stream(_LOGIN_EXPIRED))
     monkeypatch.setattr(reg.time, "time", lambda: claimed.resumed_at + 10)
     assert reg.finish("login2", exit_code=1, expected_pid=414, expected_lifecycle_token=resumed.lifecycle_token)
-    assert reg.login_paused(now=claimed.resumed_at + 20) == [], "a login still lost after its resume looped"
+    assert reg.schedule_resumes(now=claimed.resumed_at + 20) == [], "a login still lost after its resume looped"
 
 
-def test_a_resumed_turn_refused_again_right_away_is_left_to_reprendre(monkeypatch):
+def test_a_cut_comes_back_by_itself_only_once_a_runner_here_resumes_cuts_and_only_cuts_since_then():
+    """No runner wrote when it resumes cuts (a computer running agents from its terminal alone): no cut is held as coming
+    back, its launcher hears it. A runner taking this up never wakes the cuts that ended before it (a week of abandoned
+    runs and their launchers at once); a cut after it comes back."""
+    before = _ended_on("cut-before", _LOGIN_EXPIRED, pid=421)
+    assert not reg.self_resuming(before)
+    since = reg.cut_resume_since(now=before.finished_at + 1)
+    assert reg.cut_resume_since(now=since + 50) == since, "moved once written"
+    after = _ended_on("cut-after", _LOGIN_EXPIRED, pid=422)
+    reg._merge_record_locked("cut-after", {"finished_at": since + 5})
+    assert not reg.self_resuming(before) and reg.self_resuming(reg.get_run("cut-after")) and after.run_id == "cut-after"
+
+
+def test_a_resumed_turn_refused_again_right_away_is_left_to_reprendre(resuming, monkeypatch):
     """The resumed turn hears the same « resets 5:20pm » just after 17:20: read then, it names TOMORROW's
     17:20 (code-reviewer r1) — the window did not reopen, so it is never paused for a day, nor looped."""
     _ended_on("lim-again", _SESSION_LIMIT, pid=404)
-    at = reg.schedule_limit_resumes()[0].resume_at
-    claimed = reg.claim_limit_resume("lim-again", now=at)
+    at = reg.schedule_resumes()[0][0].resume_at
+    claimed = reg.claim_resume("lim-again", now=at)
     resumed = reg.begin_turn("lim-again", pid=405, model="claude-opus-5-5")
     with reg.raw_events_path("lim-again").open("a") as stream:
         stream.write(_claude_error_stream(_SESSION_LIMIT))
     monkeypatch.setattr(reg.time, "time", lambda: claimed.resumed_at + 10)
     assert reg.finish("lim-again", exit_code=1, expected_pid=405, expected_lifecycle_token=resumed.lifecycle_token)
-    assert reg.schedule_limit_resumes() == [] and reg.get_run("lim-again").resume_at is None
+    assert reg.schedule_resumes() == [] and reg.get_run("lim-again").resume_at is None
 
 
 def test_a_run_keeps_the_size_its_last_compaction_left_once_its_context_grows_back():

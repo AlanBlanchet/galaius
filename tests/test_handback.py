@@ -71,6 +71,7 @@ def test_the_last_child_to_end_resumes_its_ended_parent_with_every_report(sent, 
 def test_a_child_its_lost_login_cut_wakes_its_parent_only_once_nothing_resumes_it(sent):
     """Owner 2026-10-19 (« 4 of its agents stopped »): a cut that resumes by itself (`registry.self_resuming`) is no
     report; its parent hears the child's report once it resumed and ended, or its cut once nothing will resume it."""
+    reg.cut_resume_since(now=0.0)  # a runner here resumes cuts
     _ended("lead", 100.0, agent="main", provider_session_id="vendor-lead")
     reg.raw_events_path("eng").write_text(json.dumps({"type": "result", "subtype": "success", "is_error": True, "api_error_status": 401,
                                                       "session_id": "s", "result": "Failed to authenticate: OAuth token revoked."}) + "\n")
@@ -80,7 +81,7 @@ def test_a_child_its_lost_login_cut_wakes_its_parent_only_once_nothing_resumes_i
     # Its resume met the same lost login again: nothing resumes it any more, its launcher hears it on the next look, a
     # watcher started since (the PC's service restarted) too.
     reg._merge_record_locked("eng", {"resumed_at": reg.get_run("eng").finished_at - 10})
-    restarted = handback.EndWatch()  # started after its window lapsed (the PC off overnight)
+    restarted = handback.EndWatch()  # started since (the PC's service restarted)
     assert [delivery.run_id for delivery in restarted.tick()] == ["lead"]
     assert watch.tick() == [], "handed back once per ended turn"
 

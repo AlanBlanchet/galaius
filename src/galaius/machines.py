@@ -1001,6 +1001,8 @@ class MachineRunner:
         # Exact secrets masked in every kept log line from the first one on (`LogRing`).
         self._log_ring.secrets = self._secrets(config)
         self._workspace_jobs.settle_interrupted()
+        # Before anything reads which cut runs come back by themselves (`EndWatch`, `_resume_paused`): from when they do.
+        await asyncio.to_thread(reg.cut_resume_since)
         # Local and independent of the server: a run killed while the PC is offline is settled too.
         settler = asyncio.create_task(self._settle_runs())
         handing = asyncio.create_task(self._hand_back())
@@ -1052,9 +1054,9 @@ class MachineRunner:
             logger.exception("queued follow-ups not recovered")
 
     async def _resume_paused(self, config: MachineConfig) -> None:
-        """Every `settle_seconds`, while agents run here: the runs a provider usage limit or a lost login
-        paused are resumed once what stopped them reopened (`MachineAgents.resume_paused`). Local and
-        independent of the server, like `_settle_runs`: web-started and terminal-started runs alike."""
+        """Every `settle_seconds`, while agents run here: the runs a cut stopped are resumed once what stopped them
+        reopened (`MachineAgents.resume_paused`). Local and independent of the server, like `_settle_runs`: web-started
+        and terminal-started runs alike."""
         while True:
             try:
                 agents = await asyncio.to_thread(self._agents, self._current_config(config))

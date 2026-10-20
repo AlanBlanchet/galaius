@@ -86,6 +86,13 @@ MODEL_RANKING = "aa.intelligence and price.in >= 0"
 MODELS_PER_PROVIDER = 12
 #: A release date closing a model id: -20260416 or -2026-04-16.
 _DATED = re.compile(r"-(?:\d{8}|\d{4}-\d{2}-\d{2})$")
+#: Who each cut's automatic resume is from (`registry.SYSTEM_SENDERS`) and what it came back after, as its failure says it.
+_RESUMED_AFTER: dict[reg.CutCause, tuple[str, str]] = {
+    "usage_limit": (reg.LIMIT_RESUME_SENDER, "the usage limit"),
+    "login_lost": (reg.LOGIN_RESUME_SENDER, "signing in again"),
+    "process_gone": (reg.CUT_RESUME_SENDER, "its process went away"),
+    "killed": (reg.CUT_RESUME_SENDER, "its process was killed"),
+}
 #: Editor conversations offered for continuing: written in the last two weeks, newest first.
 EDITOR_SESSIONS_DAYS, EDITOR_SESSIONS_MAX = 14, 40
 #: An editor conversation written this recently is open in the editor right now.
@@ -1123,28 +1130,27 @@ class MachineAgents(BaseModel):
         return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=f"allowed up to {request.up_to_percent}%; resumed", reads_at=delivery.reads_at)
 
     async def resume_paused(self) -> list[str]:
-        """The runs paused here until what stopped them reopens (`RunCut`), each resumed once by itself with
-        `RESUME_BRIEF`, as « Continuer » does (its dispatcher, the launcher's environment for its folder):
-        a provider usage limit's at its reset (`registry.schedule_limit_resumes`, from `LIMIT_RESUME_SENDER`),
-        a lost login's once that login is signed in again here (`registry.login_paused`, its status asked
-        once per login, from `LOGIN_RESUME_SENDER`). Every run of a tree the cut stopped resumes, deepest first
-        (`registry.deepest_first`): its agents are at work again before a launcher reads where they stand, and
-        its brief names them (`AGENTS_RESUMED`). A resume refused before its turn starts becomes the run's
-        failure, with why, so « Continuer » stays offered. Returns the ids it resumed."""
+        """The runs a cut stopped here (`registry.cut_resume`), each resumed once by itself with `RESUME_BRIEF`, as
+        « Continuer » does (its dispatcher, the launcher's environment for its folder): a process cut (gone, the PC
+        restarted, killed by the system or a signal nobody it answers to sent) at once, a provider usage limit at its
+        reset, a lost login once that login is signed in again here (its status asked once per login). Every run of a
+        tree the cut stopped resumes, deepest first (`registry.deepest_first`): its agents are at work again before a
+        launcher reads where they stand, and its brief names them (`AGENTS_RESUMED`). A resume refused before its turn
+        starts becomes the run's failure, with why (never resumed by itself again). Returns the ids it resumed."""
         claimed: list[tuple[reg.AgentRun, str, str]] = []
-        for run in await asyncio.to_thread(reg.schedule_limit_resumes):
-            if await asyncio.to_thread(reg.claim_limit_resume, run.run_id) is not None:
-                claimed.append((run, reg.LIMIT_RESUME_SENDER, "the usage limit"))
         signed_in: dict[tuple[str, UUID | None], bool | None] = {}
-        for run in await asyncio.to_thread(reg.login_paused) if self.programs is not None else ():
-            login = run.provider, run.subscription_id
-            if login not in signed_in:
-                signed_in[login] = await asyncio.to_thread(self.programs.signed_in, *login)
-            if signed_in[login] and await asyncio.to_thread(reg.claim_login_resume, run.run_id) is not None:
-                claimed.append((run, reg.LOGIN_RESUME_SENDER, "signing in again"))
-        order = [run.run_id for run in await asyncio.to_thread(reg.deepest_first, [run for run, _, _ in claimed])]
+        for run, cut in await asyncio.to_thread(reg.schedule_resumes):
+            ready = False
+            if cut.resumes == "sign_in":
+                login = run.provider, run.subscription_id
+                if self.programs is not None and login not in signed_in:
+                    signed_in[login] = await asyncio.to_thread(self.programs.signed_in, *login)
+                if not (ready := bool(signed_in.get(login))):
+                    continue
+            if await asyncio.to_thread(reg.claim_resume, run.run_id, signed_in=ready) is not None:
+                claimed.append((run, *_RESUMED_AFTER[cut.cause]))
         resumed: list[str] = []
-        for run, sender, after in sorted(claimed, key=lambda claim: order.index(claim[0].run_id)):
+        for run, sender, after in claimed:  # deepest first, as scheduled
             if await self._resume(run, sender, after, agents=await asyncio.to_thread(self._cut_with, run.run_id, resumed)):
                 resumed.append(run.run_id)
         return resumed
@@ -1152,7 +1158,7 @@ class MachineAgents(BaseModel):
     @staticmethod
     def _cut_with(run_id: str, resumed: Sequence[str]) -> list[str]:
         """The agents run `run_id` launched, at any depth, that a cut stopped and are back or will be by themselves: resumed
-        in this pass (`resumed`), or still to resume (`registry.self_resuming`, a lost login after a usage limit reset), each
+        in this pass (`resumed`), or still to resume (`registry.self_resuming`: a lost login, a usage limit not reset yet), each
         as `galaius agents list` names it (`role-id8`)."""
         return [f"{run.agent}-{run.run_id[:8]}" if run.agent else run.run_id[:8] for run in reg.stored_tree(run_id)
                 if run.run_id != run_id and (run.run_id in resumed or reg.self_resuming(run))]

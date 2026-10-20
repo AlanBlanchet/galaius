@@ -1232,45 +1232,68 @@ def test_a_copy_of_a_folder_with_no_file_arrives_as_an_empty_folder(tmp_path: Pa
     assert (job.state, job.name) == ("ready", "aino") and list((pc_b_base / "galaius" / "projets" / "aino").iterdir()) == []
 
 
-def test_a_run_its_lost_login_stopped_resumes_only_once_signed_in_again(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """« Failed to authenticate: OAuth session expired » ended the run: while the login stays lost it waits;
-    the pass after it is signed in again resumes it once, from the login resume, with the resume brief."""
-    reg.register(run_id="lost-login", pid=421, provider="claude", name="w", agent="app-engineer", model="claude-opus-5-5", cwd=str(base / "project"))
-    reg.raw_events_path("lost-login").write_text(json.dumps({"type": "result", "is_error": True, "session_id": "SID",
-                                                             "result": "Failed to authenticate: OAuth session expired and could not be refreshed"}) + "\n")
-    assert reg.finish("lost-login", exit_code=1, expected_pid=421, expected_lifecycle_token=reg.get_run("lost-login").lifecycle_token)
-    signed_in = {"claude": False}
-    sent: list[tuple[str, str, str]] = []
-    monkeypatch.setattr("galaius.machine_agents.deliver_message", lambda run_id, text, *, sender, environment: sent.append((run_id, text, sender)) or SimpleNamespace(state="queued", text=""))
-    agents = _agents(base, tmp_path).model_copy(update={"programs": SimpleNamespace(signed_in=lambda provider, subscription: signed_in[provider])})
-    assert asyncio.run(agents.resume_paused()) == [] and sent == []
-    signed_in["claude"] = True
-    assert asyncio.run(agents.resume_paused()) == ["lost-login"]
-    assert sent == [("lost-login", reg.RESUME_BRIEF, reg.LOGIN_RESUME_SENDER)]
-    assert asyncio.run(agents.resume_paused()) == [] and len(sent) == 1
+_REVOKED = {"type": "result", "subtype": "success", "is_error": True, "api_error_status": 401, "session_id": "SID",
+            "result": "Failed to authenticate: OAuth token revoked. Please log in again or contact your administrator."}
+_LIMITED = {"type": "result", "is_error": True, "session_id": "SID", "result": "You've hit your session limit · resets 5:20pm (Europe/Paris)"}
+_BROKEN = {"type": "result", "is_error": True, "session_id": "SID", "result": "Error: the build failed"}
 
 
-def test_a_tree_its_lost_login_cut_resumes_whole_deepest_first_once_signed_in_again(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Owner 2026-10-19: « I'm having to click on the continue the 4 stopped agents manually ». A login switch cut a
-    3-level tree (Claude Code's 401 `result`, « OAuth token revoked »): signed in again, every run resumes by itself,
-    each agent before its launcher, and the launcher's brief names its agents resumed."""
-    revoked = {"type": "result", "subtype": "success", "is_error": True, "api_error_status": 401, "session_id": "SID",
-               "result": "Failed to authenticate: OAuth token revoked. Please log in again or contact your administrator."}
-    for pid, (run_id, parent) in enumerate((("tree-main", None), ("tree-lead", "tree-main"), ("tree-maker", "tree-lead")), start=431):
+def _cut(run_id: str, kind: str, *, pid: int, at: float) -> None:
+    """Run `run_id` cut by `kind` as its PC records it, ended at `at`."""
+    stream = {"login_lost": _REVOKED, "usage_limit": _LIMITED, "error": _BROKEN}.get(kind)
+    reg.raw_events_path(run_id).write_text(json.dumps(stream) + "\n" if stream else "")
+    exit_code = {"killed": -9, "sigterm": -15, "stopped": -15}.get(kind, 1)
+    if kind not in ("process_gone", "out_of_memory"):
+        assert reg.finish(run_id, exit_code=exit_code, expected_pid=pid, expected_lifecycle_token=reg.get_run(run_id).lifecycle_token)
+    ending = ({"status": "interrupted", "exit_code": None, "pid": None, "interruption": {"cause": kind, "at": at, "source": "journal"}}
+              if kind in ("process_gone", "out_of_memory") else {})
+    by = {"stopped_by": {"kind": "person", "name": "Alan"}} if kind == "stopped" else {}
+    reg._merge_record_locked(run_id, {**ending, **by, "finished_at": at})
+
+
+@pytest.mark.parametrize("kind, resumes, sender", [
+    pytest.param("process_gone", "itself", reg.CUT_RESUME_SENDER, id="process-gone-or-pc-rebooted"),
+    pytest.param("out_of_memory", "itself", reg.CUT_RESUME_SENDER, id="oom"),
+    pytest.param("killed", "itself", reg.CUT_RESUME_SENDER, id="sigkill"),
+    pytest.param("sigterm", "itself", reg.CUT_RESUME_SENDER, id="sigterm-nobody-asked-pc-shutdown-or-timeout"),
+    pytest.param("usage_limit", "itself", reg.LIMIT_RESUME_SENDER, id="usage-limit-reset-a-day-ago"),
+    pytest.param("login_lost", "sign_in", reg.LOGIN_RESUME_SENDER, id="login-lost-a-day-ago"),
+])
+def test_a_tree_any_cut_stopped_resumes_whole_by_itself_deepest_first_once(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                                           kind: str, resumes: str, sender: str) -> None:
+    """Owner 2026-10-19 « I'm having to click on the continue the 4 stopped agents manually », 2026-10-20 « Shouldn't things
+    continue on their own ? »: a 3-level tree any cut stopped (a day ago: no window lapses) resumes by itself, each agent
+    before its launcher, the launcher's brief naming its agents; a lost login waits for its sign-in alone. Its sibling
+    that failed on its own error, the one he stopped, and a cut from before this PC resumed cuts stay as they are; a
+    second cut by the same cause right after the resume is left to him."""
+    reg.cut_resume_since(now=1000.0)
+    day_ago = time.time() - 86400
+    tree = (("tree-main", None, kind), ("tree-lead", "tree-main", kind), ("tree-maker", "tree-lead", kind),
+            ("tree-broken", "tree-lead", "error"), ("tree-his", "tree-lead", "stopped"), ("tree-old", "tree-lead", "process_gone"))
+    for pid, (run_id, parent, cut) in enumerate(tree, start=431):
         reg.register(run_id=run_id, pid=pid, provider="claude", name="w", agent="app-engineer", model="claude-opus-5-5", cwd=str(base / "project"), parent_run_id=parent)
-        reg.raw_events_path(run_id).write_text(json.dumps(revoked) + "\n")
-        assert reg.finish(run_id, exit_code=1, expected_pid=pid, expected_lifecycle_token=reg.get_run(run_id).lifecycle_token)
+        _cut(run_id, cut, pid=pid, at=500.0 if run_id == "tree-old" else day_ago)
     signed_in = {"claude": False}
     sent: list[tuple[str, str, str]] = []
     monkeypatch.setattr("galaius.machine_agents.deliver_message", lambda run_id, text, *, sender, environment: sent.append((run_id, text, sender)) or SimpleNamespace(state="queued", text=""))
     agents = _agents(base, tmp_path).model_copy(update={"programs": SimpleNamespace(signed_in=lambda provider, subscription: signed_in[provider])})
-    assert asyncio.run(agents.resume_paused()) == [] and sent == []
+    if resumes == "sign_in":
+        assert asyncio.run(agents.resume_paused()) == [] and sent == []
+    reg.schedule_resumes()  # what the web reads of each before its pass takes it
+    assert {run_id: reg.get_run(run_id).resumes for run_id, _, _ in tree} == {"tree-main": resumes, "tree-lead": resumes, "tree-maker": resumes,
+                                                                             "tree-broken": None, "tree-his": None, "tree-old": None}
     signed_in["claude"] = True
     assert asyncio.run(agents.resume_paused()) == ["tree-maker", "tree-lead", "tree-main"]
-    assert {sender for _, _, sender in sent} == {reg.LOGIN_RESUME_SENDER} and sent[0][1] == reg.RESUME_BRIEF
+    assert {used for _, _, used in sent} == {sender} and sent[0][1] == reg.RESUME_BRIEF
     assert sent[1][1].endswith(reg.AGENTS_RESUMED.format(runs="app-engineer-tree-mak"))
     assert sent[2][1].endswith(reg.AGENTS_RESUMED.format(runs="app-engineer-tree-mak, app-engineer-tree-lea"))
-    assert asyncio.run(agents.resume_paused()) == [] and len(sent) == 3
+    assert asyncio.run(agents.resume_paused()) == [] and len(sent) == 3, "resumed twice for one cut"
+    if kind == "usage_limit":
+        return  # refused again right after its reset: `test_a_resumed_turn_refused_again_right_away_is_left_to_reprendre`
+    for run_id in ("tree-main", "tree-lead", "tree-maker"):  # cut again by the same cause right after its resume
+        reg._merge_record_locked(run_id, {"finished_at": reg.get_run(run_id).resumed_at + 10})
+    assert asyncio.run(agents.resume_paused()) == [] and len(sent) == 3, "looped on a cut that did not come back"
+    assert not any(reg.get_run(run_id).resumes for run_id, _, _ in tree)
 
 
 def test_a_pasted_code_reaches_its_sign_in_through_the_web_request(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
