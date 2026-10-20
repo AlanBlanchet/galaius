@@ -59,7 +59,7 @@ from galaius.agents.warm import WarmStart
 from galaius.agents import registry as reg
 from galaius.agents.profiles import ALLOWED_ENV
 from galaius.functions import FunctionRegistry, PermissionLevel, invoke as invoke_function
-from galaius.vision_env import Report, VisionWorker, ensure_vision_env
+from galaius.vision_env import ModelWorker, Report, ensure_speech_env, ensure_vision_env
 from galaius import gpu_scrub, user_models
 from galaius.sandbox import run_pooled
 from galaius.paths import UserPaths
@@ -898,8 +898,8 @@ class MachineRunner:
         self._reported_crash = ""
         #: Next event sequence per command in flight: every event of one command, from any path, is ordered.
         self._sequences: dict[UUID, int] = {}
-        #: The vision model runtime kept loaded between steps (`MachineConfig.model_keep_warm_seconds`).
-        self._vision: VisionWorker | None = None
+        #: The model runtimes kept loaded between steps, by script (`MachineConfig.model_keep_warm_seconds`).
+        self._workers: dict[str, ModelWorker] = {}
         #: File queries being answered (held so the loop does not drop them mid-answer).
         self._queries: set[asyncio.Task] = set()
         #: Agent actions already accepted (id -> expiry): each is taken once (`_answer_agent_request`).
@@ -936,12 +936,13 @@ class MachineRunner:
         self.programs = AgentPrograms(environment=self._system_environment(), log_path=self.config_path.with_name("agent-programs.log"),
                                       active=lambda name: load_policy().provider_active(name), usage=self._subscriptions.login_usage)
 
-    def _vision_worker(self, config: MachineConfig) -> VisionWorker:
-        if self._vision is None or self._vision.keep_warm != config.model_keep_warm_seconds:
-            if self._vision is not None:
-                self._vision.close()
-            self._vision = VisionWorker(config.model_keep_warm_seconds)
-        return self._vision
+    def _worker(self, script: str, config: MachineConfig) -> ModelWorker:
+        worker = self._workers.get(script)
+        if worker is None or worker.keep_warm != config.model_keep_warm_seconds:
+            if worker is not None:
+                worker.close()
+            worker = self._workers[script] = ModelWorker(script, config.model_keep_warm_seconds)
+        return worker
 
     def _next_sequence(self, command_id: UUID) -> int:
         self._sequences[command_id] = self._sequences.get(command_id, 0) + 1
@@ -1653,6 +1654,8 @@ class MachineRunner:
         if command.impl.provider == "workspace":
             return self._run_user_model(command, config, report)
         model_id = command.impl.model
+        if MACHINE_MODELS[model_id].task == "automatic-speech-recognition":
+            return self._run_speech(command, config, report)
         images = command.inputs.get("images", command.config.get("images", ()))
         score_threshold = command.config.get("score_threshold", 0.5)
         # The one registry (galaius_core.MACHINE_MODELS); the runner script names tasks its own way.
@@ -1679,9 +1682,28 @@ class MachineRunner:
             "score_threshold": score_threshold,
             "image_paths": image_paths,
         }), encoding="utf-8")
-        output = self._vision_worker(config).run(python, request_path, report)
+        output = self._worker("vision_infer.py", config).run(python, request_path, report)
         found = {key: len(value) for key, value in output.items() if isinstance(value, list)} if isinstance(output, dict) else {}
         logger.info("%s answered: %s", model_id, ", ".join(f"{count} {key}" for key, count in found.items()) or "no list output")
+        return output
+
+    #: The languages the owner speaks to the blob: Whisper tells them apart before transcribing, and
+    #: a third language it half-hears never wins (`speech_infer.spoken_language`).
+    SPOKEN_LANGUAGES: ClassVar[tuple[str, ...]] = ("fr", "en")
+
+    def _run_speech(self, command: MachineCommand, config: MachineConfig, report: Report) -> dict[str, object]:
+        """One recording to text on this machine's own GPU (`speech_infer.py`, kept warm): the
+        recording is the command's `audio` input, already a checked local copy (`CommandFiles`)."""
+        cache_root = Path.home() / ".galaius" / "models"
+        cache_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        run_dir = cache_root / "runs" / str(command.run_id) / str(command.node_id)
+        run_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        python = ensure_speech_env(cache_root, report=report)
+        request_path = run_dir / "request.json"
+        request_path.write_text(json.dumps({"model": command.impl.model, "audio_path": str(command.inputs["audio"]), "cache_root": str(cache_root),
+                                            "languages": list(self.SPOKEN_LANGUAGES)}), encoding="utf-8")
+        output = self._worker("speech_infer.py", config).run(python, request_path, report)
+        logger.info("%s heard %s s of %s", command.impl.model, output.get("seconds"), output.get("language"))
         return output
 
     def _run_user_model(self, command: MachineCommand, config: MachineConfig, report: Report = lambda phase, detail: None) -> dict[str, object]:
@@ -1744,7 +1766,7 @@ class MachineRunner:
             "image_paths": image_paths,
             "weights_dir": str(weights_dir),
         }), encoding="utf-8")
-        output = self._vision_worker(config).run(python, request_path, report)
+        output = self._worker("vision_infer.py", config).run(python, request_path, report)
         found = {key: len(value) for key, value in output.items() if isinstance(value, list)} if isinstance(output, dict) else {}
         logger.info("%s answered: %s", label, ", ".join(f"{count} {key}" for key, count in found.items()) or "no list output")
         return output

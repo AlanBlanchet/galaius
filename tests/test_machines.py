@@ -539,6 +539,33 @@ def _user_model_command(machine_id, origin: UserModelOrigin, task: str = "object
 _HF_ORIGIN = UserModelOrigin(kind="huggingface_repo", repo_id="hustvl/yolos-tiny", revision="main", weight_files=("model.safetensors",))
 
 
+def test_his_pc_transcribes_a_recording_with_the_warm_speech_worker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The blob's free voice: the recording (already downloaded to a local path by `CommandFiles`)
+    goes to the warm `speech_infer.py` worker, told the two languages he speaks; its answer is the step's."""
+    config = _config(tmp_path, "full_access")
+    audio = tmp_path / "said.webm"
+    audio.write_bytes(b"\x1aE")
+    command = MachineCommand(
+        id=uuid4(), nonce=uuid4(), machine=MachineRef(id=config.machine_id), workspace_id=uuid4(), run_id=uuid4(),
+        workflow=WorkflowRevisionRef(key=WorkflowKey(id=uuid4()), revision=uuid4()), node_id=uuid4(),
+        impl=ModelImplementation(kind="model", provider="huggingface", model="mobiuslabsgmbh/faster-whisper-large-v3-turbo", task="automatic-speech-recognition"),
+        inputs={"audio": str(audio)}, expires_at=datetime.now(UTC), signature="a" * 64,
+    )
+    asked = {}
+
+    class Worker:
+        def run(self, python, request_path, report):
+            asked.update(json.loads(Path(request_path).read_text()))
+            return {"text": "Montre-moi mes PC.", "language": "fr", "seconds": 1.9}
+
+    monkeypatch.setattr("galaius.machines.ensure_speech_env", lambda cache_root, report: Path("/env/bin/python"))
+    runner = MachineRunner()
+    monkeypatch.setattr(runner, "_worker", lambda script, cfg: Worker() if script == "speech_infer.py" else None)
+
+    assert runner._run_model(command, config) == {"text": "Montre-moi mes PC.", "language": "fr", "seconds": 1.9}
+    assert (asked["audio_path"], asked["languages"], asked["model"]) == (str(audio), ["fr", "en"], "mobiuslabsgmbh/faster-whisper-large-v3-turbo")
+
+
 def test_run_user_model_refuses_a_task_this_machine_has_no_loader_for(tmp_path: Path) -> None:
     config = _config(tmp_path, "full_access")
     command = _user_model_command(config.machine_id, _HF_ORIGIN, task="text-generation")

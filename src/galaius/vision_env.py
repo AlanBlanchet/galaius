@@ -1,4 +1,4 @@
-"""Lazily provision the isolated venv vision model nodes run inference in.
+"""Lazily provision the isolated venv machine model nodes (vision, speech) run inference in.
 
 A bare `galaius machine connect` must not carry torch/transformers just because vision nodes
 exist on the machine's catalog — most enrolled machines never run one. `ensure_vision_env` builds
@@ -6,9 +6,10 @@ exist on the machine's catalog — most enrolled machines never run one. `ensure
 torch build is decided once (via `nvidia-smi`) and pinned in a marker file so a later call never
 races a second provision or silently re-decides the device mid-fleet-life.
 
-`VisionWorker` keeps one `vision_infer.py` process running in that venv between steps, so a step on
-the model the last one used starts inferring at once instead of re-importing torch and re-loading
-weights (~6 s on an RTX 2070); it exits after `keep_warm` seconds idle, freeing the GPU.
+`ModelWorker` keeps one inference script (`vision_infer.py`, `speech_infer.py`) running in that venv
+between steps, so a step on the model the last one used starts inferring at once instead of
+re-importing torch and re-loading weights (~6 s for DETR, ~4 s for Whisper turbo on an RTX 2070); it
+exits after `keep_warm` seconds idle, freeing the GPU.
 """
 
 import collections
@@ -57,17 +58,35 @@ def ensure_vision_env(cache_root: Path, timeout: float = 1800, report: Report = 
     return python
 
 
+def ensure_speech_env(cache_root: Path, timeout: float = 1800, report: Report = lambda phase, detail: None) -> Path:
+    """The model venv with faster-whisper added (`speech_infer.py`). The CUDA libraries CTranslate2
+    opens come with the venv's CUDA torch. PyAV stays below 16: faster-whisper 1.2.1 opens audio with
+    an argument PyAV 16 removed."""
+    python = ensure_vision_env(cache_root, timeout, report)
+    marker = cache_root / "env" / ".speech-marker"
+    if marker.is_file():
+        return python
+    report("installing", "installing speech to text (faster-whisper) on first use")
+    uv = shutil.which("uv")
+    if uv is None:
+        raise RuntimeError("uv is required to provision the model inference environment (~/.galaius/models/env)")
+    subprocess.run([uv, "pip", "install", "--python", str(python), "faster-whisper==1.2.1", "av<16"], check=True, capture_output=True, text=True, timeout=timeout)
+    marker.write_text(json.dumps({"faster_whisper": "1.2.1"}), encoding="utf-8")
+    return python
+
+
 class InferenceFailed(RuntimeError):
     """The worker answered this request with an error: the step fails, the worker (and the model
     it holds) stays."""
 
 
-class VisionWorker:
-    """The long-lived `vision_infer.py` process (its module docstring holds the line protocol).
-    One request at a time; a worker that died or hung is replaced on the next request; its phase
-    lines reach `report` as they come."""
+class ModelWorker:
+    """One long-lived inference script beside this module (`vision_infer.py`'s module docstring holds
+    the line protocol both scripts speak). One request at a time; a worker that died or hung is
+    replaced on the next request; its phase lines reach `report` as they come."""
 
-    def __init__(self, keep_warm: float) -> None:
+    def __init__(self, script: str, keep_warm: float) -> None:
+        self.script = script
         self.keep_warm = keep_warm
         self._lock = threading.Lock()
         self._process: subprocess.Popen | None = None
@@ -116,7 +135,7 @@ class VisionWorker:
         if self._process is not None and self._process.poll() is None:
             return self._process
         self._lines, self._stderr, self._stderr_read = queue.Queue(), collections.deque(maxlen=200), threading.Event()
-        script = Path(__file__).with_name("vision_infer.py")
+        script = Path(__file__).with_name(self.script)
         self._process = subprocess.Popen(spawnable([str(python), str(script)]), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
         stderr, stderr_read = self._stderr, self._stderr_read
 
@@ -150,18 +169,18 @@ class VisionWorker:
                     # Its stdout ended first: what it said on stderr before dying is the reason (a
                     # descendant still holding stderr open bounds the wait).
                     self._stderr_read.wait(2)
-                    raise RuntimeError(("".join(self._stderr) or "vision inference stopped").strip()[-2000:])
+                    raise RuntimeError(("".join(self._stderr) or f"{self.script} stopped").strip()[-2000:])
                 message = json.loads(line)
                 if "phase" in message:
                     report(str(message["phase"]), str(message.get("detail") or ""))
                 elif "error" in message:
                     # The step says what failed (the traceback's last line); the log keeps the rest.
                     trace = str(message["error"]).strip()
-                    logger.error("vision inference failed:\n%s", trace)
-                    raise InferenceFailed(trace.splitlines()[-1][:400] if trace else "vision inference failed")
+                    logger.error("%s failed:\n%s", self.script, trace)
+                    raise InferenceFailed(trace.splitlines()[-1][:400] if trace else f"{self.script} failed")
                 else:
                     return message["result"]
-            raise TimeoutError(f"vision inference did not answer in {timeout:g} s")
+            raise TimeoutError(f"{self.script} did not answer in {timeout:g} s")
         finally:
             timer.cancel()
 

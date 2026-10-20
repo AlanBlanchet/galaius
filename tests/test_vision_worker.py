@@ -1,4 +1,4 @@
-"""The vision runtime kept warm between steps (`VisionWorker`), driven through its real line
+"""A model runtime kept warm between steps (`ModelWorker`), driven through its real line
 protocol by a stand-in interpreter: phases reach the reporter, a warm worker serves the next step
 without restarting, and a worker that errs, dies or hangs fails that step only."""
 
@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from galaius.vision_env import VisionWorker
+from galaius.vision_env import ModelWorker
 from tests.support.agents import install_fake_cli
 
 #: Answers like `vision_infer.serve`: the request file says what to do. Each start appends to `starts`
@@ -46,7 +46,7 @@ def machine(tmp_path: Path):
 @pytest.mark.parametrize(("keep_warm", "starts", "second_phases"), [(60, 1, ["running_model"]), (0, 2, ["loading_model", "running_model"])])
 def test_a_warm_worker_serves_the_next_step_without_reloading(machine, keep_warm, starts, second_phases):
     python, request, started = machine
-    worker = VisionWorker(keep_warm)
+    worker = ModelWorker("vision_infer.py", keep_warm)
     phases: list[list[str]] = []
     for _ in range(2):
         seen: list[str] = []
@@ -64,7 +64,7 @@ def test_a_warm_worker_serves_the_next_step_without_reloading(machine, keep_warm
 ])
 def test_a_failing_request_fails_its_step_and_the_next_one_still_runs(machine, do, failure, message, restarted):
     python, request, started = machine
-    worker = VisionWorker(60)
+    worker = ModelWorker("vision_infer.py", 60)
     with pytest.raises(failure, match=message):
         worker.run(python, request(do), lambda phase, detail: None, timeout=1)
     assert worker.run(python, request("ok"), lambda phase, detail: None) == {"count": 2}
