@@ -362,6 +362,9 @@ class AgentRun(ContextGauge):
     #: (`limit_resume_at`).
     resumed_at: float | None = None
     resumed_cut: CutCause | None = None
+    #: Automatic resumes in a row for `resumed_cut` (`claim_resume`), back to 0 once a turn ends done: past
+    #: `AUTO_RESUMES_PER_CUT`, a cut that keeps coming back (the same memory peak, a time limit) is left to a person.
+    resumed_cuts: int = 0
     #: True for a session galaius did NOT spawn — the user's own editor windows, surfaced so the
     #: supervisor shows the machine's real state rather than only its own children.
     foreign: bool = False
@@ -1235,6 +1238,7 @@ def finish(
             "finished_at": stored.finished_at if (stored.status == "stopped" or idle) and stored.finished_at else finished_at,
             "exit_code": exit_code,
             "status": status,
+            **({"resumed_cuts": 0} if status == "done" else {}),  # its work went through: a later cut resumes by itself again
         })
     if finished is None:
         return False
@@ -2465,6 +2469,13 @@ def settle_gone() -> list[AgentRun]:
 #: How soon after an automatic resume the same cut means it did not come back (`cut_resume`'s loop guard): the run is
 #: then left to a person; a usage refusal heard this soon after its resume means the window did not reopen.
 RESUME_GRACE = 300.0
+#: How many times in a row a run cut by the same cause (its usage limit apart: each reset is a new window) is resumed by
+#: itself before it is left to a person (`cut_resume`): a cut that comes back later than `RESUME_GRACE` each time (an
+#: OOM at the same peak, a time limit) never loops paid turns.
+AUTO_RESUMES_PER_CUT = 2
+#: Exit codes of a signal sent from outside the program (SIGHUP, SIGKILL, SIGTERM; `-N` as the launcher records them,
+#: `128 + N` through a shell): a kill. Any other (SIGABRT, SIGSEGV…) is the program's own crash, never resumed by itself.
+_KILLED_EXITS = frozenset(code for sig in (signal.SIGHUP, signal.SIGKILL, signal.SIGTERM) for code in (-sig, 128 + sig))
 #: Who an automatic resume is from, on its queue item and message event (`from_run`): never the person.
 LIMIT_RESUME_SENDER = "limit-resume"
 #: Who the resume of a run its lost login stopped is from, once that login is signed in again.
@@ -2523,7 +2534,7 @@ def cut_cause(run: AgentRun) -> CutCause | None:
             or run.replaced_by is not None or run.successor is not None
             or (run.subscription is not None and run.subscription.capped is not None)):
         return None
-    signalled = run.exit_code is not None and (run.exit_code < 0 or run.exit_code > 128)
+    signalled = run.exit_code in _KILLED_EXITS
     if run.status == "interrupted":
         return "process_gone"
     if run.status == "stopped":
@@ -2555,6 +2566,8 @@ def cut_resume(run: AgentRun, *, now: float | None = None) -> CutOwed | None:
         return None
     if run.resumed_at is not None and (run.resumed_at >= run.finished_at or (
             cause != "usage_limit" and run.resumed_cut in (None, cause) and run.finished_at - run.resumed_at <= RESUME_GRACE)):
+        return None
+    if cause != "usage_limit" and run.resumed_cut == cause and run.resumed_cuts >= AUTO_RESUMES_PER_CUT:
         return None
     if cause == "login_lost":
         return CutOwed(cause, "sign_in", None)
@@ -2631,7 +2644,9 @@ def claim_resume(run_id: str, *, signed_in: bool = False, now: float | None = No
         stored = _read_record(run_id)
         if stored is None or not due(stored):
             return None
-        return _merge_record_locked(run_id, {"resumes": None, "resume_at": None, "resumed_at": moment, "resumed_cut": cut_cause(stored)})
+        cause = cut_cause(stored)
+        return _merge_record_locked(run_id, {"resumes": None, "resume_at": None, "resumed_at": moment, "resumed_cut": cause,
+                                             "resumed_cuts": stored.resumed_cuts + 1 if stored.resumed_cut == cause else 1})
 
 
 def self_resuming(run: AgentRun, *, now: float | None = None) -> bool:

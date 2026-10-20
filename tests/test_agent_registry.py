@@ -2194,6 +2194,30 @@ def test_a_cut_comes_back_by_itself_only_once_a_runner_here_resumes_cuts_and_onl
     assert not reg.self_resuming(before) and reg.self_resuming(reg.get_run("cut-after")) and after.run_id == "cut-after"
 
 
+@pytest.mark.parametrize("exit_code, cause", [(-9, "killed"), (137, "killed"), (129, "killed"), (134, None), (139, None), (2, None)],
+                         ids=["sigkill", "sigkill-shell", "sighup-shell", "its-own-abort", "its-own-segfault", "its-own-error"])
+def test_only_a_signal_sent_from_outside_reads_as_a_kill_its_pc_resumes(resuming, exit_code, cause):
+    """code-reviewer b57485ab: a crash of the program itself (SIGABRT, SIGSEGV) is its own error, never resumed by itself."""
+    register_run(run_id="sig")
+    reg.finish("sig", exit_code=exit_code)
+    assert reg.cut_cause(reg.get_run("sig")) == cause
+
+
+def test_a_cut_that_keeps_coming_back_is_resumed_twice_then_left_to_a_person_until_a_turn_ends_done(resuming):
+    """code-reviewer b57485ab: an OOM at the same peak 10 min into each resumed turn is past `RESUME_GRACE` every time: it
+    is resumed `AUTO_RESUMES_PER_CUT` times, then left to him — never a paid turn per cycle; a turn that ends done clears it."""
+    register_run(run_id="oom")
+    at = time.time()
+    for cycle in range(reg.AUTO_RESUMES_PER_CUT + 1):
+        reg._merge_record_locked("oom", {"status": "interrupted", "exit_code": None, "pid": None, "finished_at": at + cycle * 600,
+                                         "interruption": {"cause": "out_of_memory", "at": at + cycle * 600, "source": "journal"}})
+        claimed = reg.claim_resume("oom", now=at + cycle * 600 + 1)
+        assert (claimed is not None) is (cycle < reg.AUTO_RESUMES_PER_CUT), f"cycle {cycle}"
+    reg._merge_record_locked("oom", {"status": "running", "pid": os.getpid(), "pid_started": None})
+    reg.finish("oom", exit_code=0)
+    assert reg.get_run("oom").resumed_cuts == 0
+
+
 def test_a_resumed_turn_refused_again_right_away_is_left_to_reprendre(resuming, monkeypatch):
     """The resumed turn hears the same « resets 5:20pm » just after 17:20: read then, it names TOMORROW's
     17:20 (code-reviewer r1) — the window did not reopen, so it is never paused for a day, nor looped."""
