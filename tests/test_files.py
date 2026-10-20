@@ -2,9 +2,11 @@
 
 import email
 import json
-import os
 from pathlib import Path
 
+import docx
+import openpyxl
+import pptx
 import pytest
 from galaius_core import FILE_CONTENT_TYPES
 
@@ -29,22 +31,16 @@ MARKDOWN = "# Summary\n\nFive runs ended,\nthree done.\n\n- one\n- two\n\n# Next
 
 
 def _docx(path: Path) -> object:
-    import docx
-
     document = docx.Document(path)
     return [paragraph.text for paragraph in document.paragraphs], [[cell.text for cell in row.cells] for row in document.tables[0].rows]
 
 
 def _xlsx(path: Path) -> object:
-    import openpyxl
-
     book = openpyxl.load_workbook(path)
     return book.sheetnames, [[cell.value for cell in row] for row in book["Runs"].iter_rows()], book["Runs"]["A1"].font.b
 
 
 def _pptx(path: Path) -> object:
-    import pptx
-
     return [(slide.shapes.title.text, slide.placeholders[1].text_frame.text) for slide in pptx.Presentation(path).slides]
 
 
@@ -116,8 +112,6 @@ def test_a_fenced_run_writes_only_where_its_levels_let_agents_write(tmp_path: Pa
 
 def test_a_spreadsheet_keeps_a_cell_starting_like_a_formula_as_text(tmp_path: Path) -> None:
     """Threat-modeler W2 r1 S1: a cell an agent copied from a web page (`=HYPERLINK(...)`) never runs when he opens it."""
-    import openpyxl
-
     rows = [["name", "note"], ["x", '=HYPERLINK("http://example.com","click")'], ["y", -3]]
     write(FileSpec(path="a.csv", rows=rows), replace=False)
     write(FileSpec(path="a.xlsx", rows=rows), replace=False)
@@ -135,3 +129,18 @@ def test_a_read_only_or_unknown_run_writes_no_file(monkeypatch: pytest.MonkeyPat
     with pytest.raises(PermissionError, match=refused):
         write(FileSpec(path="out.md", content="x"), replace=False)
 
+
+
+def test_a_documents_markdown_marks_become_its_styles_never_its_text(tmp_path: Path) -> None:
+    """Visual-critic W2 r1: the docx kept literal Markdown backticks. Bold, italic and code show as styles in a
+    document and a deck; numbered items are a numbered list; no mark is left in the text."""
+    content = "# The **last** runs\n\n1. `a1b2` is *done*\n2. **c3d4** failed, ***twice***"
+    write(FileSpec(path="a.docx", content=content), replace=False)
+    write(FileSpec(path="a.pptx", content=content), replace=False)
+    paragraphs = docx.Document(tmp_path / "a.docx").paragraphs
+    styled = [[(run.text, bool(run.bold), bool(run.italic), run.font.name) for run in paragraph.runs] for paragraph in paragraphs]
+    assert [paragraph.text for paragraph in paragraphs] == ["The last runs", "a1b2 is done", "c3d4 failed, twice"]
+    assert styled[1] == [("a1b2", False, False, "Consolas"), (" is ", False, False, None), ("done", False, True, None)]
+    assert (styled[2][0], styled[2][-1], paragraphs[1].style.name) == (("c3d4", True, False, None), ("twice", True, True, None), "List Number")
+    slide = pptx.Presentation(tmp_path / "a.pptx").slides[0]
+    assert (slide.shapes.title.text, slide.placeholders[1].text_frame.text) == ("The last runs", "a1b2 is done\nc3d4 failed, twice")

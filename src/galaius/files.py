@@ -86,28 +86,70 @@ class FileSpec(BaseModel):
 
 
 class Block(NamedTuple):
-    """One block of Markdown-lite text: a heading (its level), a bullet, or a paragraph (level 0)."""
+    """One block of Markdown-lite text: a heading (its level), a bullet, a numbered item, or a paragraph (level 0)."""
 
-    kind: Literal["heading", "bullet", "paragraph"]
+    kind: Literal["heading", "bullet", "numbered", "paragraph"]
     text: str
     level: int = 0
 
 
+class Span(NamedTuple):
+    """A stretch of a block's text in one style: `**bold**`, `*italic*`, `` `code` `` or plain."""
+
+    text: str
+    bold: bool = False
+    italic: bool = False
+    code: bool = False
+
+
+_INLINE = re.compile(r"\*\*\*(?P<both>.+?)\*\*\*|\*\*(?P<bold>.+?)\*\*|`(?P<code>[^`]+)`|(?<![\w*])\*(?P<italic>[^*\s][^*]*?)\*(?![\w*])")
+#: The face a `code` span is set in, in a document and a deck alike.
+CODE_FONT = "Consolas"
+
+
+def spans(text: str) -> Iterator[Span]:
+    """`text` cut into its styled stretches, the marks themselves dropped: a document shows bold, never `**`."""
+    at = 0
+    for found in _INLINE.finditer(text):
+        if found.start() > at:
+            yield Span(text[at:found.start()])
+        yield Span(found["both"] or found["bold"] or found["code"] or found["italic"], bold=found["both"] is not None or found["bold"] is not None,
+                   italic=found["both"] is not None or found["italic"] is not None, code=found["code"] is not None)
+        at = found.end()
+    if at < len(text):
+        yield Span(text[at:])
+
+
+def styled(font, span: Span) -> None:
+    """`span`'s style on a run's `font` (a document's and a deck's take the same attributes)."""
+    font.bold, font.italic = span.bold or None, span.italic or None
+    if span.code:
+        font.name = CODE_FONT
+
+
+def plain(text: str) -> str:
+    """`text` without its inline marks (a slide title, a sheet's words)."""
+    return "".join(span.text for span in spans(text))
+
+
 def blocks(text: str) -> Iterator[Block]:
-    """`text` as headings (`#`..`######`), bullets (`-`, `*`) and paragraphs (consecutive lines joined, a blank line
-    between two)."""
+    """`text` as headings (`#`..`######`), bullets (`-`, `*`), numbered items (`1.`, `1)`) and paragraphs (consecutive
+    lines joined, a blank line between two)."""
     paragraph: list[str] = []
     for line in [*text.splitlines(), ""]:
         stripped = line.strip()
         heading = re.match(r"(#{1,6})\s+(.*)", stripped)
         bullet = re.match(r"[-*]\s+(.*)", stripped)
-        if paragraph and (not stripped or heading or bullet):
+        numbered = re.match(r"\d{1,3}[.)]\s+(.*)", stripped)
+        if paragraph and (not stripped or heading or bullet or numbered):
             yield Block("paragraph", " ".join(paragraph))
             paragraph = []
         if heading:
             yield Block("heading", heading[2], len(heading[1]))
         elif bullet:
             yield Block("bullet", bullet[1])
+        elif numbered:
+            yield Block("numbered", numbered[1])
         elif stripped:
             paragraph.append(stripped)
 
@@ -190,10 +232,10 @@ class Docx(FileFormat):
     def render(self, spec: FileSpec) -> bytes:
         document = Document()
         for block in blocks(spec.content):
-            if block.kind == "heading":
-                document.add_heading(block.text, level=block.level)
-            else:
-                document.add_paragraph(block.text, style="List Bullet" if block.kind == "bullet" else None)
+            paragraph = document.add_heading("", level=block.level) if block.kind == "heading" else \
+                document.add_paragraph(style={"bullet": "List Bullet", "numbered": "List Number"}.get(block.kind))
+            for span in spans(block.text):
+                styled(paragraph.add_run(span.text).font, span)
         if spec.rows:
             width = max(len(row) for row in spec.rows)
             table = document.add_table(rows=0, cols=width, style="Table Grid")
@@ -248,13 +290,16 @@ class Pptx(FileFormat):
         for block in blocks(spec.content):
             if block.kind == "heading" or body is None:
                 slide = deck.slides.add_slide(deck.slide_layouts[1])
-                slide.shapes.title.text = block.text if block.kind == "heading" else ""
+                slide.shapes.title.text = plain(block.text) if block.kind == "heading" else ""
                 body = slide.placeholders[1].text_frame
                 body.text = ""
                 if block.kind == "heading":
                     continue
-            paragraph = body.paragraphs[0] if not body.paragraphs[0].text else body.add_paragraph()
-            paragraph.text = block.text
+            paragraph = body.paragraphs[0] if not body.paragraphs[0].runs else body.add_paragraph()
+            for span in spans(block.text):
+                run = paragraph.add_run()
+                run.text = span.text
+                styled(run.font, span)
         out = io.BytesIO()
         deck.save(out)
         return out.getvalue()
