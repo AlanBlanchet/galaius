@@ -18,6 +18,8 @@ async def create_file(
     sheets: dict[str, list[list[Cell]]] | None = None,
     subject: str = "",
     to: list[str] | None = None,
+    cc: list[str] | None = None,
+    attach: list[str] | None = None,
     replace: bool = False,
 ) -> str:
     """Write a file the person opens — a document, a spreadsheet, a deck, a PDF, a mail draft — in your working folder.
@@ -32,14 +34,16 @@ async def create_file(
     - .docx: `content` as Markdown-lite (`#` headings, `-` bullets, paragraphs), then `rows` as a table.
     - .pptx: `content` as Markdown-lite, one slide per `#` heading with its bullets.
     - .pdf: `content` as Typst markup (`= Title`, `- item`, `*bold*`), then `rows` as a table.
-    - .eml: a mail DRAFT the person sends themselves: `to`, `subject`, `content` as its body. Never sent from here.
+    - .eml: a mail DRAFT the person sends themselves: `to`, `cc`, `subject`, `content` as its body, `attach` the paths
+      of files you wrote with create_file in this run (a report, a sheet; 4 MiB together). Never sent from here.
 
     replace: write over a file already at `path` (refused otherwise). Written only where you may write on this
     computer, never as an agent's steering file (CLAUDE.md, AGENTS.md…). Returns where it was written and its size, or
     why nothing was written.
     """
     try:
-        spec = FileSpec(path=path, content=content, rows=rows or [], sheets=sheets or {}, subject=subject, to=to or [])
+        spec = FileSpec(path=path, content=content, rows=rows or [], sheets=sheets or {}, subject=subject, to=to or [], cc=cc or [],
+                        attach=attach or [])
         written = await asyncio.to_thread(write, spec, replace=replace)
     except ValidationError as error:
         return "No file written: " + "; ".join(str(problem["msg"]).removeprefix("Value error, ") for problem in error.errors())

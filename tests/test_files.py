@@ -157,3 +157,31 @@ def test_a_spreadsheet_wraps_a_long_cell_keeps_its_header_in_view_and_prints_on_
     assert (sheet.freeze_panes, sheet.auto_filter.ref, sheet.page_setup.paperSize) == ("A2", "A1:B2", int(sheet.PAPERSIZE_A4))
     section = docx.Document(tmp_path / "a.docx").sections[0]
     assert (round(section.page_width.mm), round(section.page_height.mm)) == (210, 297)
+
+
+def test_a_mail_draft_attaches_only_what_the_run_wrote_itself(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """W3 « prepare emails »: a draft he sends himself, with its cc and the report the agent wrote attached, opens with
+    the PDF inside. The draft is downloadable from his chat, so it never carries out a file of his the agent only found
+    in the folder; a document takes no attachment."""
+    register_run(run_id="writer")
+    _as(monkeypatch, "writer")
+    report = write(FileSpec(path="out/report.pdf", content="= Report"), replace=False)
+    write(FileSpec(path="out/runs.eml", to=["ana@example.com"], cc=["bob@example.com"], subject="Runs", content="Attached.",
+                   attach=["out/report.pdf"]), replace=False)
+    mail = email.message_from_bytes((tmp_path / "out/runs.eml").read_bytes(), policy=email.policy.default)
+    (attached,) = mail.iter_attachments()
+    assert (mail["To"], mail["Cc"], mail["X-Unsent"], mail.get_body(("plain",)).get_content().strip()) == ("ana@example.com", "bob@example.com", "1", "Attached.")
+    assert (attached.get_filename(), attached.get_content_type(), attached.get_content()) == ("report.pdf", "application/pdf", report.path.read_bytes())
+    (tmp_path / "taxes.pdf").write_bytes(b"%PDF-1.7 his own")
+    with pytest.raises(PermissionError, match="only a file you wrote"):
+        write(FileSpec(path="leak.eml", content="x", attach=["taxes.pdf"]), replace=False)
+    with pytest.raises(ValueError, match="only a mail draft"):
+        FileSpec(path="a.docx", content="x", attach=["out/report.pdf"])
+    assert not (tmp_path / "leak.eml").exists()
+    # A mail attached is a message part of its own; a file the run wrote that weighs too much says so.
+    write(FileSpec(path="fwd.eml", content="See below.", attach=["out/runs.eml"]), replace=False)
+    (forwarded,) = email.message_from_bytes((tmp_path / "fwd.eml").read_bytes(), policy=email.policy.default).iter_attachments()
+    assert (forwarded.get_content_type(), forwarded["Content-Transfer-Encoding"] != "base64", forwarded.get_content()["Subject"]) == ("message/rfc822", True, "Runs")
+    big = write(FileSpec(path="big.txt", content="x" * (5 * 1024 * 1024)), replace=False)
+    with pytest.raises(ValueError, match="weighs more"):
+        write(FileSpec(path="heavy.eml", content="x", attach=[big.path.name]), replace=False)

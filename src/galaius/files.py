@@ -9,23 +9,26 @@ import io
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
 from abc import ABC, abstractmethod
 from contextlib import suppress
 from collections.abc import Iterator
+from email import message_from_bytes
 from email.message import EmailMessage
+from email.policy import default
 from pathlib import Path, PurePosixPath
-from typing import ClassVar, Literal, NamedTuple
+from typing import Annotated, ClassVar, Literal, NamedTuple
 
 from docx import Document
-from galaius_core import FILE_CONTENT_TYPES
+from galaius_core import FILE_CONTENT_TYPES, file_key
 from docx.shared import Mm
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
 from pptx import Presentation
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import AfterValidator, BaseModel, Field, model_validator
 
 from galaius.agents import registry as reg
 from galaius.agents.messaging import asking_run
@@ -40,10 +43,38 @@ Cell = str | int | float | bool | None
 Rows = list[list[Cell]]
 
 
+def _plain(path: str) -> str:
+    """Relative to the working folder, '/'-separated and written plainly, never climbing, hidden, absolute or an agent's
+    steering file (a CLAUDE.md written here would steer the next agent), with a suffix of `FILE_TYPES`."""
+    parts = PurePosixPath(path).parts
+    if (not parts or str(PurePosixPath(path)) != path or path.startswith(("/", "~")) or "\\" in path or ":" in path
+            or any(part.startswith(".") or part.casefold() in STEERING | INSTRUCTIONS for part in parts)
+            or PurePosixPath(path).suffix.lower() not in FILE_CONTENT_TYPES):
+        raise ValueError(f"{path!r}: a path inside your working folder ending in one of {', '.join(sorted(FILE_CONTENT_TYPES))}")
+    return path
+
+
+def _address(address: str) -> str:
+    """One plain address on one line: a line break would add a mail header of its own (a hidden Bcc)."""
+    if not re.fullmatch(r"[^@\s<>,;\"]+@[^@\s<>,;\"]+\.[^@\s<>,;\"]+", address):
+        raise ValueError(f"{address!r}: each recipient is one plain address (name@domain.tld)")
+    return address
+
+
+def _one_line(text: str) -> str:
+    if re.search(r"[\r\n]", text):
+        raise ValueError("a mail subject holds no line break")
+    return text
+
+
+PlainPath = Annotated[str, AfterValidator(_plain)]
+Address = Annotated[str, AfterValidator(_address)]
+
+
 class FileSpec(BaseModel):
     """What an agent asks `create_file` for. `path`'s suffix picks the format; each format reads the fields it takes."""
 
-    path: str
+    path: PlainPath
     #: Text: the whole file (txt, md, json), the body (eml), Markdown-lite (docx, pptx: `#` headings, `-` bullets,
     #: paragraphs; a pptx slide per `#` heading), or Typst markup (pdf).
     content: str = ""
@@ -51,34 +82,19 @@ class FileSpec(BaseModel):
     rows: Rows = Field(default_factory=list)
     #: Several named sheets (xlsx), each a table.
     sheets: dict[str, Rows] = Field(default_factory=dict)
-    #: A mail draft's subject and recipients (eml); never sent.
-    subject: str = ""
-    to: list[str] = Field(default_factory=list)
-
-    @field_validator("path")
-    @classmethod
-    def plain(cls, path: str) -> str:
-        """Relative to the working folder, '/'-separated and written plainly, never climbing, hidden, absolute or an
-        agent's steering file (a CLAUDE.md written here would steer the next agent), with a suffix of `FILE_TYPES`."""
-        parts = PurePosixPath(path).parts
-        if (not parts or str(PurePosixPath(path)) != path or path.startswith(("/", "~")) or "\\" in path or ":" in path
-                or any(part.startswith(".") or part.casefold() in STEERING | INSTRUCTIONS for part in parts)
-                or PurePosixPath(path).suffix.lower() not in FILE_CONTENT_TYPES):
-            raise ValueError(f"{path!r}: a path inside your working folder ending in one of {', '.join(sorted(FILE_CONTENT_TYPES))}")
-        return path
-
-    @field_validator("subject", "to")
-    @classmethod
-    def one_line(cls, value: str | list[str]) -> str | list[str]:
-        """A mail header holds one line: a line break would add a header of its own (a hidden Bcc)."""
-        if any(re.search(r"[\r\n]", item) for item in ([value] if isinstance(value, str) else value)):
-            raise ValueError("a subject or recipient holds no line break")
-        return value
+    #: A mail draft's subject, recipients and attachments (eml); never sent. An attachment is a file this run wrote with
+    #: create_file (`write` checks it), by its path.
+    subject: Annotated[str, AfterValidator(_one_line)] = ""
+    to: list[Address] = Field(default_factory=list)
+    cc: list[Address] = Field(default_factory=list)
+    attach: list[PlainPath] = Field(default_factory=list, max_length=10)
+    #: The attachments' bytes by file name, as `write` read them (never given by an agent).
+    attached: dict[str, bytes] = Field(default_factory=dict, exclude=True)
 
     @model_validator(mode="after")
-    def addresses(self) -> "FileSpec":
-        if any(not re.fullmatch(r"[^@\s<>,;\"]+@[^@\s<>,;\"]+\.[^@\s<>,;\"]+", address) for address in self.to):
-            raise ValueError("each recipient is one plain address (name@domain.tld)")
+    def attached_to_a_mail(self) -> "FileSpec":
+        if self.attach and self.suffix != ".eml":
+            raise ValueError("only a mail draft (.eml) takes attachments")
         return self
 
     @property
@@ -218,11 +234,18 @@ class Eml(FileFormat):
 
     def render(self, spec: FileSpec) -> bytes:
         message = EmailMessage()
-        if spec.to:
-            message["To"] = ", ".join(spec.to)
+        for header, addresses in (("To", spec.to), ("Cc", spec.cc)):
+            if addresses:
+                message[header] = ", ".join(addresses)
         message["Subject"] = spec.subject
         message["X-Unsent"] = "1"  # opened as a draft to send, not a received mail
         message.set_content(spec.content)
+        for name, data in spec.attached.items():
+            kind, _, subtype = FILE_CONTENT_TYPES[PurePosixPath(name).suffix.lower()].partition("/")
+            if kind == "message":  # a mail attached as itself (message/rfc822 takes no base64 encoding)
+                message.add_attachment(message_from_bytes(data, policy=default), filename=name)
+            else:
+                message.add_attachment(data, maintype=kind, subtype=subtype, filename=name)
         return bytes(message)
 
 
@@ -397,6 +420,8 @@ def write(spec: FileSpec, *, replace: bool) -> Written:
         raise PermissionError("this run reads only: it writes no file")
     if run is not None and run.fence is not None:
         _writable(run.fence, target)
+    if spec.attach:
+        spec = spec.model_copy(update={"attached": _attachments(spec.attach, caller.cwd.resolve(), run)})
     data = FileFormat.of(spec).bytes(spec)
     *folders, name = PurePosixPath(spec.path).parts
     with PinnedDirectory.open(caller.cwd.resolve(), *folders, create=True) as folder:
@@ -414,6 +439,37 @@ def write(spec: FileSpec, *, replace: bool) -> Written:
             with suppress(FileNotFoundError):
                 folder.unlink(staged)
     return Written(target, len(data), reg.RunFiles.keep(run.run_id, data, spec.suffix) if run is not None else None)
+
+
+#: The most a mail draft's attachments weigh together: the draft stays under what its chat card downloads
+#: (`MACHINE_AGENT_MEDIA`, once base64-encoded inside the mail).
+ATTACHED_MAX = 4 * 1024 * 1024
+
+
+def _attachments(paths: list[str], root: Path, run: "reg.AgentRun | None") -> dict[str, bytes]:
+    """The files a mail draft attaches, by name, read below `root` without a link. For an agent run, only a file it wrote
+    itself with create_file (its kept copy, `reg.RunFiles`, holds the same bytes): the draft is downloadable from the
+    web, and must never carry out a file of his it merely found in the folder (an `.env`, his taxes)."""
+    found: dict[str, bytes] = {}
+    for path in paths:
+        *folders, name = PurePosixPath(path).parts
+        try:
+            with PinnedDirectory.open(root, *folders) as folder, os.fdopen(folder.file(name, os.O_RDONLY | PinnedDirectory.NONBLOCK), "rb") as handle:
+                if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                    raise ValueError(f"{path} is not a plain file")
+                data = handle.read(ATTACHED_MAX + 1)
+        except FileNotFoundError:
+            raise ValueError(f"{path}: no such file in your working folder") from None
+        if name in found:
+            raise ValueError(f"two attachments are named {name}")
+        if len(data) > ATTACHED_MAX:
+            raise ValueError(f"{path} weighs more than the {ATTACHED_MAX // (1024 * 1024)} MiB a draft attaches")
+        if run is not None and not reg.RunFiles.path(run.run_id, file_key(data, PurePosixPath(name).suffix.lower())).is_file():
+            raise PermissionError(f"{path}: a draft attaches only a file you wrote with create_file in this run")
+        found[name] = data
+    if sum(map(len, found.values())) > ATTACHED_MAX:
+        raise ValueError(f"the attachments weigh more than {ATTACHED_MAX // (1024 * 1024)} MiB together")
+    return found
 
 
 def _writable(fence, target: Path) -> None:
