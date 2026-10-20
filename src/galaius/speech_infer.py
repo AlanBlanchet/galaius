@@ -1,9 +1,11 @@
 """Speech to text (Whisper through faster-whisper / CTranslate2), run as a long-lived subprocess inside
 the managed `~/.galaius/models/env` venv, on the same line protocol as `vision_infer.py` (its module
-docstring): each stdin line names one JSON request file, the answer is phase lines then one
-`{"result": ...}` or `{"error": ...}` line. The model it last loaded stays loaded, so the next
-utterance is transcribed at once (Whisper large-v3-turbo on an RTX 2070: ~0.5 s for a 2-8 s command,
-language detection included).
+docstring): each stdin line is `{"request": <path of a JSON request file>}`, the answer is phase
+lines then one `{"result": ...}` or `{"error": ...}` line. The model it last loaded stays loaded (for
+the machine's `model_keep_warm_seconds`, then the worker exits), so the next utterance is transcribed
+at once (Whisper large-v3-turbo on an RTX 2070: ~0.5 s for a 2-8 s command, language detection
+included). The server warms it up when the owner allows voice on this machine: a request on one
+second of silence, which installs, fetches and loads whatever is missing.
 
 Request: `{"model": <MACHINE_MODELS id>, "audio_path": <local file>, "cache_root": <dir>,
 "languages": ["fr", "en"]}`. Result: `{"text": str, "language": str, "seconds": float}`.
