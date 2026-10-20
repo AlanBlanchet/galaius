@@ -207,6 +207,9 @@ class Config(BaseSettings):
     # so one run's memory cannot kill another (`galaius.agents.ceiling`). Linux with a systemd user
     # manager; elsewhere the agent runs uncapped. Percent of physical RAM / of all CPU cores.
     agent_ceiling: bool = True
+    # A run at work whose vendor wrote nothing for this many seconds is silent: the run waiting on it names it so
+    # (`agents wait`), and the run that asked it is told once per silence (`galaius.agents.handback.SilenceWatch`).
+    silent_seconds: Annotated[float, Field(gt=0)] = 600.0
     # How many agent runs may work on this computer at once, every conversation's; one more spawn waits
     # in line until one ends (`galaius.agents.spawn_line`). The owner's own conversations are not counted.
     agent_runs_max: Annotated[int, Field(ge=1)] = 6

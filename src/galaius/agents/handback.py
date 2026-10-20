@@ -9,6 +9,7 @@ in since its turn ended; the run mirror calls it for each run `EndWatch` sees en
 
 import time
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from contextlib import ExitStack
 
 from pydantic import BaseModel, Field
@@ -17,11 +18,10 @@ from galaius.agents import agent_queue, messaging
 from galaius.agents import registry as reg
 from galaius.agents.relations import final_words, live, one_read, owed
 from galaius.agents.spawn_line import SpawnLine
+from galaius.config import Config
 
 #: Each report's share of the hand-back message (`agent_queue.BRIEF_MAX` in all); the full one is `galaius agents events`.
 REPORT_MAX = 12_000
-#: A run at work that wrote nothing for this long is named silent to the run waiting on it (`Waited.still_at_work`).
-SILENT_SECONDS = 600.0
 #: The statuses of a parent whose turn ended on its own (a conversation's done turn reads "waiting"); a person's stop or a
 #: failure is never resumed behind them.
 _ENDED_ITS_TURN = frozenset({"done", "waiting"})
@@ -129,6 +129,31 @@ class EndWatch(BaseModel):
         return [delivery for run_id in self.ended() for delivery in hand_back(run_id)]
 
 
+class SilenceWatch(BaseModel):
+    """Each run on a turn whose vendor wrote nothing for `seconds` (`Config.silent_seconds`): the run that asked it — its
+    launcher, else the first run it works for — is told once per silence, never the silent run itself. A silence is named by
+    the run and its last write (`reg.vendor_said_at`), and its message by that name (`reg.message_for`): told already is
+    told already after a restart of the watch too, and a new write starts a new silence. A run nobody asked (the person's
+    own) has no run to tell here."""
+
+    def tick(self, seconds: float) -> list[messaging.Delivery]:
+        now, told = time.time(), []
+        for run in reg.running_runs():
+            said, asker = reg.vendor_said_at(run), run.parent_run_id or next(iter(run.asked_by), None)
+            if run.status != "running" or said is None or now - said < seconds or asker in (None, run.run_id) or reg.get_run(asker) is None:
+                continue
+            silence = f"silent-{run.run_id}-{said:.0f}"
+            if reg.message_for(asker, silence) is not None:
+                continue
+            last = next(reversed(reg.read_events(run.run_id)), None)
+            told.append(messaging.deliver_message(
+                asker, f"{run.run_id} ({run.agent or 'no role'}) has written nothing for {int((now - said) // 60)} min while at work; "
+                       f"its last event: {last.kind if last else 'none'} at {datetime.fromtimestamp(said, UTC):%H:%M} UTC. "
+                       f"Look: galaius agents events {run.run_id}",
+                sender=run.run_id, message_id=silence, turn=agent_queue.MessageTurn(fyi=True)))
+        return told
+
+
 def collected(asker: str | None, reports: Sequence[Report]) -> None:
     """Record each ended report in `reports` as carried to run `asker`, the run that read it inline (`agents wait`, a send
     waiting on its reply), as a hand-back records the reports it carries: the ask it answered is answered (`owed`), its
@@ -152,8 +177,9 @@ class Waited(BaseModel):
     message: agent_queue.QueueItem | None = None
 
     def still_at_work(self) -> list[str]:
-        """Each pending run's id, with how long it has written nothing once that passes `SILENT_SECONDS`."""
-        return [report.run_id + (f" (silent {report.silent_for / 60:.0f} min)" if (report.silent_for or 0) >= SILENT_SECONDS else "")
+        """Each pending run's id, with how long it has written nothing once that passes `Config.silent_seconds`."""
+        silent = Config().silent_seconds
+        return [report.run_id + (f" (silent {report.silent_for / 60:.0f} min)" if (report.silent_for or 0) >= silent else "")
                 for report in self.reports if report.pending]
 
 

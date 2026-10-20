@@ -382,3 +382,42 @@ def test_a_report_read_inline_is_answered_and_never_handed_back_again(sent, monk
     handback.hand_back(reviewer)
 
     assert sorted(call["run_id"] for call in sent) == sorted([other] if answered else [reader, other])
+
+
+@pytest.fixture
+def told(monkeypatch) -> list[dict]:
+    calls: list[dict] = []
+
+    def deliver(run_id, message, *, sender, message_id, turn):
+        calls.append({"run_id": run_id, "message": message, "message_id": message_id, "sender": sender})
+        reg.record_message_event(from_run=sender, to_run=run_id, text=message, event_id=message_id, **turn.event_fields())  # as `queue_message`
+        return handback.messaging.Delivery(state="queued", text="Queued.", run_id=run_id, queue_id="q")
+
+    monkeypatch.setattr(handback.messaging, "deliver_message", deliver)
+    return calls
+
+
+@pytest.mark.parametrize("asked_by", ["launcher", "worked for", "nobody"])
+def test_a_run_silent_too_long_is_told_once_to_the_run_that_asked_it(told, at_work, asked_by):
+    lead, silent = str(uuid.UUID(int=1)), str(uuid.UUID(int=2))
+    register_run(lead, agent="main")
+    at_work(silent, agent="backend-engineer", parent_run_id=lead if asked_by == "launcher" else None)
+    if asked_by == "worked for":
+        with reg.record_lock(silent):
+            reg.note_asker_locked(silent, lead)
+    raw = reg.raw_events_path(silent)
+    raw.write_text(json.dumps({"type": "system", "subtype": "init", "session_id": "s"}) + "\n")
+    os.utime(raw, (time.time() - 700, time.time() - 700))
+
+    handback.SilenceWatch().tick(600)
+    handback.SilenceWatch().tick(600)  # its next look, or the watch started again after the PC restarted: told already
+
+    expected = [] if asked_by == "nobody" else [lead]
+    assert [call["run_id"] for call in told] == expected
+    if expected:
+        said = told[0]["message"]
+        assert silent in said and "backend-engineer" in said and "11 min" in said and f"galaius agents events {silent}" in said
+        assert told[0]["sender"] == silent
+        os.utime(raw, (time.time() - 650, time.time() - 650))  # it wrote again, then went silent again
+        handback.SilenceWatch().tick(600)
+        assert [call["run_id"] for call in told] == [lead, lead]
