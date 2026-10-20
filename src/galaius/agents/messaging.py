@@ -14,6 +14,7 @@ from galaius.caller import Caller
 from galaius_core import ReadsAt
 
 from galaius.agents import agent_queue, relations
+from galaius.agents.critic_rounds import CriticRounds, turn_of
 from galaius.agents import registry as reg
 from galaius.agents.events import Relation
 from galaius.agents.policy import PolicyError
@@ -228,6 +229,15 @@ def queue_message(
         kind = None if origin is None or entry is None else relations.relation(origin, run, message, reports=turn.event_fields().get("reports", ()))
         if kind is Relation.REPORT:
             turn = turn.as_report()  # answering an ask: never an ask itself, whatever its sender chose
+        # A task for a maker to a run of a critic role is one of its rounds on that maker's work (`CriticRounds`): past the
+        # cap an agent's is refused; an answer or a note is no round. The asker is the process's run (`asking_run`).
+        rounds = CriticRounds.here()
+        task = kind is not Relation.REPORT and not turn.event_fields().get("fyi")
+        maker = rounds.maker_of(run, for_run=for_run, sender=speaker if origin is not None else None) if task else None
+        asker = asking_run() or (speaker if origin is not None else None)
+        asked_in = turn_of(asker)
+        if (capped := rounds.refusal(run.agent, maker, asker=asker, turn=asked_in)) is not None:
+            return Delivery(state="error", text=f"ERROR: {capped}", run_id=run.run_id)
         try:
             # The queue intent is durable before either transcript append. A crash after this
             # point leaves a recoverable pending item instead of an invisible message.
@@ -243,6 +253,7 @@ def queue_message(
             )
         if for_run is not None:
             reg.note_asker_locked(run.run_id, for_run)
+        rounds.note(run.agent, maker, run.run_id, asker=asker, turn=asked_in)
         if kind is Relation.OTHER and speaker in relations.works_for(reg.get_run(run.run_id) or run):
             kind = Relation.ASKER  # its message asks (`enqueue_locked`): the run now works for it
         recorded_id = None if entry is None else reg.record_message_event_locked(

@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode
 from galaius.caller import Caller
 from galaius_core.tool_settings import VLM_MIN_DIM_DEFAULT, VLM_MAX_DIM_DEFAULT
@@ -93,6 +93,20 @@ _ROLE_DEFAULT_CRITERIA: dict[ModelRole, str] = {
 }
 _CLAUDE_MEDIA_DEFAULT_CRITERIA = "cap.vlm"
 _TIER_SOVEREIGN_DEFAULT_CRITERIA = "cap.vlm"
+
+
+class CriticCap(BaseModel):
+    """The roles that judge another run's work and how many rounds one of them may take on one maker's work (the maker
+    and the runs it handed off to): a critic loop past three rounds finds nothing new and spends the subscription (274
+    visual-critic runs in 71 subjects reviewed again and again over a week). A round older than `kept_days` no longer
+    counts: work reviewed again weeks later is new work."""
+
+    model_config = ConfigDict(frozen=True)
+
+    roles: frozenset[str] = frozenset({"visual-critic", "ux-critic", "product-critic", "code-reviewer", "generalizer", "tester",
+                                       "audio-critic", "perf-critic", "pii-critic", "threat-modeler"})
+    rounds: int = Field(default=3, ge=1)
+    kept_days: float = Field(default=14.0, gt=0)
 
 
 def _default_media_provider_order() -> tuple[str, ...]:
@@ -220,6 +234,9 @@ class Config(BaseSettings):
     agent_waiting_flag_minutes: Annotated[float, Field(gt=0)] = 5.0
     # Seconds between two such waits of a run within which the second carries on the first's start (a loop of short waits).
     agent_waiting_gap_seconds: Annotated[float, Field(ge=0)] = 60.0
+    # How many rounds a critic role may take on one maker's work before an agent asking for another is refused
+    # (`galaius.agents.critic_rounds`). The person is never refused.
+    agent_critic_cap: CriticCap = Field(default_factory=lambda: CriticCap())
     agent_memory_max_percent: Annotated[int, Field(ge=1, le=100)] = 45
     agent_run_memory_max_percent: Annotated[int, Field(ge=1, le=100)] = 20
     # The agents' soft memory limit, a share of that slice's cap: past it no agent turn starts here (a spawn, a resumed

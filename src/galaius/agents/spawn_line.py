@@ -45,6 +45,7 @@ from galaius_core import AgentRevisionRef
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from galaius.agents import agent_queue, messaging, relations
+from galaius.agents.critic_rounds import CriticRounds, turn_of
 from galaius.agents.admission import Hold, Paused, SoftMemory, turn_hold
 from galaius.agents import registry as reg
 from galaius.agents.policy import Policy, PolicyError
@@ -144,6 +145,8 @@ class Spawn(BaseModel):
                       "asked_by": asked_by, "inherited_asks": inherited}
         with reg.session_context(self.session_id, parent_run_id=self.parent_run_id):
             handle = await (runner or run_agent)(provider_for(self.provider) if self.provider is not None else None, self.task, run_id=run_id, **arguments)
+        asker = self._asker()   # a critic's round, when it is one (`CriticRounds`)
+        CriticRounds.here().note(self._role_name(), self.for_run, run_id, asker=asker, turn=turn_of(asker))
         if predecessor is not None:
             relations.succeed(predecessor.run_id, run_id, cross_project=self.cross_project)
         await asyncio.sleep(0.2)
@@ -164,6 +167,10 @@ class Spawn(BaseModel):
             return None
         if (caller := reg.get_run(self.parent_run_id)) is None:
             return f"the run asking ({self.parent_run_id}) has no record on this computer" if self.continues or self.for_run else None
+        # A critic's round on a maker's work past the cap (`CriticRounds`): asked by an agent, refused.
+        asker = self._asker()
+        if (capped := CriticRounds.here().refusal(self._role_name(), self.for_run, asker=asker, turn=turn_of(asker))) is not None:
+            return capped
         here = {run.run_id for run in reg.stored_tree(reg.conversation_of(caller.run_id))}
         if self.continues is not None and self.continues != caller.run_id:
             predecessor = reg.get_run(self.continues)
@@ -175,6 +182,11 @@ class Spawn(BaseModel):
             if target is None or (target.run_id not in caller.askers and caller.run_id not in target.askers):
                 return f"for_run names {self.for_run[:8]}: outside your conversation, it neither asked you nor works for you"
         return None
+
+    def _asker(self) -> str | None:
+        """The run asking this spawn: the one this process descends from (`messaging.asking_run`, which no flag changes),
+        else its parent when that is a run here; None for the person."""
+        return messaging.asking_run() or (self.parent_run_id if self.parent_run_id and reg.get_run(self.parent_run_id) else None)
 
     def _foreign(self, run_id: str) -> str | None:
         """Why run `run_id` (its parent, the run it continues) works for another project than the run asking this spawn
