@@ -646,7 +646,7 @@ class SpawnLine(BaseModel):
         if run is None or self._exempt(run) or not run.process_running():
             yield
             return
-        me = os.getpid()
+        me = Caller.current().pid  # the caller waiting: its place counts again once it is gone
         now = time.time()
         with self._asides() as asides:
             earlier = [aside.waiting_since or aside.since for aside in asides if aside.run_id == run.run_id and aside.left_at is not None]
@@ -664,7 +664,7 @@ class SpawnLine(BaseModel):
     def enter(self, spawn: Spawn) -> Admission:
         """Take a place for `spawn`: `starting` when it may start now (the caller starts it, then `leave`s), else
         `waiting` behind every spawn already waiting, held by a waiter started here."""
-        run_id, me = str(uuid.uuid4()), os.getpid()
+        run_id, me = str(uuid.uuid4()), Caller.current().pid  # the caller asking: a client gone frees its place
         with self._places() as places:
             ahead = sum(place.state == "waiting" for place in places)
             load = self.load(places)

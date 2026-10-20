@@ -26,6 +26,7 @@ import json
 import os
 import queue
 import socket
+import stat
 import subprocess
 import sys
 import threading
@@ -37,6 +38,13 @@ HELLO = "galaius/hello"
 SWITCH = "galaius/switch"
 #: Prefix of the ids the relay gives its own requests (a replayed handshake, a confirmation).
 PRIVATE = "galaius-relay-"
+#: What of a relay's environment the server it starts keeps: who the user is, his desktop and the folders that
+#: key the server (`galaius.paths.UserPaths`), never one caller's run, keys or network route: the server takes its
+#: settings and keys from the user's config, and each call its caller's environment from the hello.
+STARTER = frozenset({"HOME", "USER", "LOGNAME", "PATH", "SHELL", "LANG", "LANGUAGE", "TZ", "TMPDIR", "DISPLAY", "WAYLAND_DISPLAY",
+                     "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS", "GALAIUS_AGENTS_DIR", "GALAIUS_SUBSCRIPTIONS_DIR", "GALAIUS_RUNTIMES",
+                     "GALAIUS_AGENT_CEILING"})
+STARTER_PREFIXES = ("LC_", "XDG_", "GALAIUS_SHARED_MCP_")
 
 
 class Endpoint:
@@ -54,6 +62,16 @@ class Endpoint:
     def dumped(self) -> dict:
         return {"socket": self.socket, "start": self.start, "log": self.log, "ahead": self.ahead}
 
+    @staticmethod
+    def private_folder(socket_path: str) -> None:
+        """The socket's folder, made when missing: refused unless it is this user's own, mode 0700, not a link
+        (another user's folder could listen in its place and read every caller's environment)."""
+        folder = os.path.dirname(socket_path)
+        os.makedirs(folder, mode=0o700, exist_ok=True)
+        info = os.lstat(folder)
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise OSError(f"{folder} is not a folder private to this user (yours, mode 0700, not a link): not using it")
+
     def dial(self) -> socket.socket:
         conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
@@ -66,11 +84,11 @@ class Endpoint:
     def connect(self, wait: float) -> socket.socket:
         """A connection to the server, starting it first when nothing listens (one starter at a
         time: the others wait on the lock, then find it listening). OSError when none answers in `wait`."""
+        self.private_folder(self.socket)
         try:
             return self.dial()
         except OSError:
             pass
-        os.makedirs(os.path.dirname(self.socket), mode=0o700, exist_ok=True)
         with open(self.socket + ".lock", "a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             try:
@@ -78,7 +96,8 @@ class Endpoint:
             except OSError:
                 pass
             with open(self.log, "ab") as log:
-                server = subprocess.Popen(self.start, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True, cwd=os.path.expanduser("~"))
+                server = subprocess.Popen(self.start, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True, cwd=os.path.expanduser("~"),
+                                          env={name: value for name, value in os.environ.items() if name in STARTER or name.startswith(STARTER_PREFIXES)})
             deadline = time.monotonic() + wait
             while time.monotonic() < deadline:
                 try:

@@ -32,6 +32,7 @@ from mcp.shared.version import SUPPORTED_PROTOCOL_VERSIONS
 from galaius import __version__
 from galaius.agents.tool_gateway import ServedGateway
 from galaius.browser import SessionRegistry
+from galaius.caller import Caller
 from galaius.debug_utils import _CURRENT_INV, Debug, resolve_output_path
 from galaius.mcp_announcement import GATEWAY_PREFIX, McpAnnouncement
 from galaius.desktop import CaptureError
@@ -302,10 +303,13 @@ class _SideLoop:
 
     def __init__(self, name: str, body) -> None:
         self._alive = True
-        self._thread = threading.Thread(
-            target=lambda: asyncio.run(body(lambda: self._alive)), name=name, daemon=True,
-        )
+        self._thread = threading.Thread(target=self._run, args=(body,), name=name, daemon=True)
         self._thread.start()
+
+    def _run(self, body) -> None:
+        """Maintenance acts for this server itself, never for a client (`Caller.here`)."""
+        with Caller.here().bound():
+            asyncio.run(body(lambda: self._alive))
 
     def stop(self, timeout: float = 2.0) -> None:
         """Ask the loop to end and wait briefly. Daemon thread: a wedged pass never holds

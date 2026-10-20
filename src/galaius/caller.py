@@ -29,13 +29,8 @@ class Caller(BaseModel):
     #: that shell (a script, a background command) belongs to that conversation, so the reader can show
     #: the prompt it answered (runs launched by a script from Claude Code recorded no owner at all).
     THREAD: ClassVar[tuple[str, ...]] = ("CODEX_THREAD_ID", "CLAUDE_CODE_SESSION_ID")
-    #: What names one caller or how it reaches the network: a process serving many callers holds none of
-    #: these of its own (whichever client started it would otherwise speak for all), its callers' only.
-    PERSONAL: ClassVar[tuple[str, ...]] = (
-        "GALAIUS_RUN_ID", "GALAIUS_PARENT_RUN_ID", "GALAIUS_SESSION_ID", "GALAIUS_RUN_ROLE", "GALAIUS_STOP_BY",
-        "GALAIUS_PROJECT_SETTINGS_OFF", "CLAUDE_PROJECT_DIR", *THREAD,
-        "http_proxy", "https_proxy", "all_proxy", "no_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
-    )
+    #: This process serves many callers (`galaius.server.shared`): it never stands in for one.
+    _serving: ClassVar[bool] = False
 
     @classmethod
     def here(cls) -> "Caller":
@@ -44,8 +39,18 @@ class Caller(BaseModel):
 
     @classmethod
     def current(cls) -> "Caller":
-        """The caller bound to this context, else this process."""
-        return cls._current.get() or cls.here()
+        """The caller bound to this context, else this process; LookupError in a process serving many
+        callers (`serve_many`), where an unbound read would answer for whichever client started it."""
+        if (bound := cls._current.get()) is not None:
+            return bound
+        if cls._serving:
+            raise LookupError("no caller is bound here: this server answers for its clients, never for itself")
+        return cls.here()
+
+    @classmethod
+    def serve_many(cls) -> None:
+        """From now on this process serves many callers: every read of a caller needs one bound."""
+        cls._serving = True
 
     @classmethod
     def environ(cls, environment: Mapping[str, str] | None = None) -> Mapping[str, str]:

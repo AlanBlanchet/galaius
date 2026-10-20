@@ -7,7 +7,6 @@ import json
 import os
 import socket
 import sys
-import tempfile
 from pathlib import Path
 from typing import NoReturn
 
@@ -28,7 +27,8 @@ class SharedEndpoint:
     def of(runtime: Runtime) -> Endpoint:
         """The endpoint of `runtime`'s server for this user and agents folder (a probe's own folder gets its own server)."""
         key = hashlib.sha256(f"{runtime.path}\0{UserPaths.agents()}".encode()).hexdigest()[:16]
-        folder = Path(os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir()) / f"galaius-{os.getuid()}"
+        runtime_folder = os.environ.get("XDG_RUNTIME_DIR")
+        folder = Path(runtime_folder) / "galaius" if runtime_folder else Path.home() / ".galaius" / "run"
         socket = folder / f"mcp-{key}.sock"
         start = contained([str(runtime.python), "-I", "-m", "galaius.server.shared", str(socket)])
         return Endpoint(socket=str(socket), start=start, log=str(RuntimeStore.default().root / "mcp-server.log"))
@@ -48,12 +48,17 @@ class SharedEndpoint:
 
     #: `0`: each client starts its own server under its upgrade supervisor, as on Windows.
     SWITCH_VARIABLE = "GALAIUS_SHARED_MCP"
+    #: Set by a client that configures galaius through the server's environment (the VS Code extension: its keys,
+    #: settings and model catalog): such a client keeps its own server, which a shared one could not honour.
+    CONFIGURING = ("GALAIUS_MODELS_JSON", "GALAIUS_CONFIGURED_PROVIDERS")
 
     @classmethod
     def supported(cls) -> bool:
         """Clients share one server where Unix sockets and file locks exist (not Windows: there each
-        client keeps its own server under its upgrade supervisor), unless `SWITCH_VARIABLE` says `0`."""
-        return sys.platform != "win32" and hasattr(socket, "AF_UNIX") and os.environ.get(cls.SWITCH_VARIABLE, "1") != "0"
+        client keeps its own server under its upgrade supervisor), unless `SWITCH_VARIABLE` says `0` or the
+        client configures galaius through its environment (`CONFIGURING`)."""
+        return (sys.platform != "win32" and hasattr(socket, "AF_UNIX") and os.environ.get(cls.SWITCH_VARIABLE, "1") != "0"
+                and not any(os.environ.get(name) for name in cls.CONFIGURING))
 
     @classmethod
     def relay(cls, runtime: Runtime) -> NoReturn:

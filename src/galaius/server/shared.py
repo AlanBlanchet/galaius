@@ -22,7 +22,6 @@ import sys
 import time
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
-from typing import ClassVar
 
 import anyio
 from mcp import types
@@ -30,6 +29,7 @@ from mcp.shared.message import SessionMessage
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from galaius.caller import Caller
+from galaius.config import UserConfig
 from galaius.mcp_endpoint import SharedEndpoint
 from galaius.mcp_relay import HELLO, SWITCH, Endpoint
 from galaius.server import sandbox
@@ -138,7 +138,10 @@ class Connection:
                 await self.writer.drain()
 
     async def move(self, endpoint: Endpoint) -> None:
-        """Tell the relay to move to `endpoint` and run nothing more of it here."""
+        """Tell the relay to move to `endpoint` and run nothing more of it here: only while it is still quiet
+        and holds nothing, decided with no await before `moving` (a request read meanwhile would run twice)."""
+        if self.moving or not self.quiet() or self.holds():
+            return
         self.moving = True
         self.writer.write(json.dumps({"jsonrpc": "2.0", "method": SWITCH, "params": endpoint.dumped()}).encode() + b"\n")
         await self.writer.drain()
@@ -147,9 +150,6 @@ class Connection:
 
 class SharedServer:
     """The listening server: its connections, its runtime's place among the installed ones, its idleness."""
-
-    #: Variables a caller's own name or network route lives in: cleared from this process at start (`Caller.PERSONAL`).
-    personal: ClassVar[tuple[str, ...]] = Caller.PERSONAL
 
     def __init__(self, socket: Path, settings: SharedServerSettings) -> None:
         self.socket, self.settings = socket, settings
@@ -162,15 +162,17 @@ class SharedServer:
 
     @classmethod
     def main(cls, argv: list[str]) -> None:
-        for name in cls.personal:
-            os.environ.pop(name, None)
+        """Started by a relay in its allowlisted environment (`galaius.mcp_relay.STARTER`), it takes its settings and keys
+        from the user's config (`UserConfig.apply`), never from a client."""
+        UserConfig.apply(portable=False)
+        Caller.serve_many()
         os.chdir(Path.home())
         asyncio.run(cls(Path(argv[0]), SharedServerSettings.from_environment()).run())
 
     async def run(self) -> None:
         mcp._mcp_server.lifespan = _per_connection  # the server's lifespan runs once, around every connection
         async with _lifespan(mcp):
-            self.socket.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            Endpoint.private_folder(str(self.socket))
             self.socket.unlink(missing_ok=True)
             listener = await asyncio.start_unix_server(self._accept, path=str(self.socket))
             os.chmod(self.socket, 0o600)
@@ -217,7 +219,7 @@ class SharedServer:
     async def move_quiet(self) -> None:
         if not self.connections or (endpoint := await self.follow_active()) is None:
             return  # no client to move: an outdated server simply leaves (`done`)
-        for connection in [connection for connection in self.connections if not connection.moving and connection.quiet() and not connection.holds()]:
+        for connection in list(self.connections):
             await connection.move(endpoint)
 
     async def _accept(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:

@@ -70,6 +70,15 @@ def endpoint(tmp_path, monkeypatch):
     subprocess.run(["pkill", "-f", f"galaius.server.shared {socket}"], check=False)
 
 
+def serve(endpoint: dict, **environment: str) -> subprocess.Popen:
+    """The endpoint's server started here (a relay starts one with the user's environment only), listening."""
+    server = subprocess.Popen(endpoint["start"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env={**os.environ, **environment})
+    deadline = time.time() + 60
+    while not Path(endpoint["socket"]).exists() and time.time() < deadline:
+        time.sleep(0.1)
+    return server
+
+
 def servers(endpoint: dict) -> list[int]:
     found = subprocess.run(["pgrep", "-f", f"galaius.server.shared {endpoint['socket']}"], capture_output=True, text=True).stdout.split()
     return [int(pid) for pid in found]
@@ -209,8 +218,8 @@ def test_an_older_server_rolls_back_from_a_runtime_whose_server_never_answers(en
         server.kill()
 
 
-def test_a_client_leaving_closes_its_own_browser_session_only(endpoint, tmp_path, monkeypatch):
-    monkeypatch.setenv("GALAIUS_HEADLESS", "true")
+def test_a_client_leaving_closes_its_own_browser_session_only(endpoint, tmp_path):
+    serve(endpoint, GALAIUS_HEADLESS="true")
     first, second = Client(endpoint, {}, tmp_path), Client(endpoint, {}, tmp_path)
     try:
         for client in (first, second):
@@ -226,3 +235,13 @@ def test_a_client_leaving_closes_its_own_browser_session_only(endpoint, tmp_path
         assert left.count("caller-") == 1 and "(yours)" in left
     finally:
         second.close()
+
+
+def test_a_relay_refuses_a_socket_folder_another_user_could_open(endpoint, tmp_path):
+    folder = Path(endpoint["socket"]).parent
+    folder.mkdir(mode=0o755)
+    folder.chmod(0o755)
+    client = Client(endpoint, {}, tmp_path)
+    assert client.process.wait(30) == 1
+    assert "not a folder private to this user" in client.process.stderr.read().decode()
+    assert not servers(endpoint)
