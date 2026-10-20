@@ -55,6 +55,12 @@
  },
  {
   "server": "galaius",
+  "name": "create_file",
+  "category": "media",
+  "description": "Write a file the person opens \u2014 a document, a spreadsheet, a deck, a PDF, a mail draft \u2014 in your working folder."
+ },
+ {
+  "server": "galaius",
   "name": "download_asset",
   "category": "browser",
   "description": "Download a URL to a local file. Uses the browser session's cookies for authenticated downloads."

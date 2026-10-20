@@ -20,13 +20,13 @@
    "listChanged": false
   }
  },
- "instructions": "galaius v{version} — drives a browser and desktop windows by vision/refs over MCP. Act by `ref` (from get_interactive_elements / get_page_state / screenshot), a CSS `selector`, accessible `name`, or `x,y` — whichever fits. Browser automation works on Linux, macOS and Windows. THE DESKTOP ITSELF works on all three too (Linux = X11): target=\"screen\", or one monitor target=\"screen:<n>\" (list_desktop_windows lists monitors with geometry, and windows). On it, run_actions key_press sends OS keys and chords — \"super\" (the Windows key; the Linux launcher), \"cmd+space\" (Spotlight), \"alt+tab\", \"Escape\" — type_text types into whatever has focus, click/scroll act at x,y; screenshot takes region=[x,y,w,h] and max_width= to keep one area of one monitor at a readable size; wait_for window=\"<title>\" or text=\"<words>\" (READ by OCR in the ACTIVE window by default, region=\"screen\" or [x,y,w,h] to widen or narrow; whole words only, never the echo of what you just typed; state visible/hidden) waits for a window or a launcher's result row instead of a sleep. Per-window targets and launch_app's sandbox are Linux-only. SEEING & MEDIA — pick the cheapest tool that answers your question: a FACT about the page (element present, text, count, attribute, URL) → get_page_state / get_interactive_elements / evaluate_js, no pixels needed. How it LOOKS → screenshot (add query= only when you need an interpretation, it costs a VLM call). Judging quality → review_ui (find defects) / verify_ui (PASS-FAIL your requirements) / measure_ui (deterministic contrast, free). BATCHING — reading or clicking over MANY elements is ONE run_actions evaluate_js step (a JS program run against the live page: query → filter → loop → read/act, args + return value, browser-isolated), NOT N get_interactive_elements→act round-trips. MOTION & VIDEO — an animation, a transition, 'did it move smoothly', or WHAT HAPPENED over time is invisible to a still screenshot: record it (start=True → act → start=False, browser AND desktop; duration= for a fixed clip), then pass query= to have the video model EXPLAIN the sequence (a native video model watches it; others sample frames). HEARING — galaius can HEAR, not only see: transcribe(path, query=…) turns any local audio OR video file (a download_asset clip, a record(path=…) capture, any mp3/wav/mp4/mov) into text, or ANSWERS a question about the sound — speakers, tone, music, spoken words — acoustically when the audio model can listen (Gemini, gpt-4o-audio). Sandbox recordings carry the launched app's own audio, so record(path=…) then transcribe(path=…) hears what a native app said or played. DRAWING — a generated picture comes from generate_image (the company's image model on the Galaius platform, charged to the person you work for and shown in their Facturation), never from an image API called with a key found on this computer. SESSIONS: omit `session` and you get your OWN isolated browser session — every reply names it in its `[session: …]` prefix, and it stays yours for this whole connection, so there is no name to invent and nothing to remember. Pass `session=\"default\"` only when you deliberately want to SHARE tabs with other callers on this connection. DESKTOP: use galaius's own tools — never shell out to xdotool/wmctrl, crop with ImageMagick, or `sleep` between steps: each has an equivalent above. For an app that fights the window manager, runs in the background, or is GPU-rendered and screen-grabs black (Flutter/Electron/games/emulators), launch it with `launch_app(\"<cmd>\")` — just the binary/command, no env tricks needed (the sandbox forces software GL itself so a GPU app renders instead of capturing black) — and drive it via `target=\"nested:<title>\"`, an isolated, occlusion-proof display. If `launch_app` isn't in your tool list, your galaius server is out of date: it moves to the newest installed version by itself once no browser session or sandbox is open (`galaius upgrade` shows its state); don't fall back to raw shell automation. If sandbox launches start failing (e.g. rc=1 for every app after many launches), the display is respawned automatically on the next `launch_app`, or call `reset_sandbox` to force a clean one — keep using the sandbox, don't switch to driving the real desktop. If galaius itself errors in a way that blocks you, behaves unexpectedly, or is missing a capability you needed, call `report_issue` — it sends the problem to galaius's maintainers so it gets fixed. That's the channel for feedback about the tool (not about the site you automate). If its result says a prefilled issue page was opened in the browser, tell the user to press Submit there; never copy report files into repos.",
+ "instructions": "galaius v{version} — drives a browser and desktop windows by vision/refs over MCP. Act by `ref` (from get_interactive_elements / get_page_state / screenshot), a CSS `selector`, accessible `name`, or `x,y` — whichever fits. Browser automation works on Linux, macOS and Windows. THE DESKTOP ITSELF works on all three too (Linux = X11): target=\"screen\", or one monitor target=\"screen:<n>\" (list_desktop_windows lists monitors with geometry, and windows). On it, run_actions key_press sends OS keys and chords — \"super\" (the Windows key; the Linux launcher), \"cmd+space\" (Spotlight), \"alt+tab\", \"Escape\" — type_text types into whatever has focus, click/scroll act at x,y; screenshot takes region=[x,y,w,h] and max_width= to keep one area of one monitor at a readable size; wait_for window=\"<title>\" or text=\"<words>\" (READ by OCR in the ACTIVE window by default, region=\"screen\" or [x,y,w,h] to widen or narrow; whole words only, never the echo of what you just typed; state visible/hidden) waits for a window or a launcher's result row instead of a sleep. Per-window targets and launch_app's sandbox are Linux-only. SEEING & MEDIA — pick the cheapest tool that answers your question: a FACT about the page (element present, text, count, attribute, URL) → get_page_state / get_interactive_elements / evaluate_js, no pixels needed. How it LOOKS → screenshot (add query= only when you need an interpretation, it costs a VLM call). Judging quality → review_ui (find defects) / verify_ui (PASS-FAIL your requirements) / measure_ui (deterministic contrast, free). BATCHING — reading or clicking over MANY elements is ONE run_actions evaluate_js step (a JS program run against the live page: query → filter → loop → read/act, args + return value, browser-isolated), NOT N get_interactive_elements→act round-trips. MOTION & VIDEO — an animation, a transition, 'did it move smoothly', or WHAT HAPPENED over time is invisible to a still screenshot: record it (start=True → act → start=False, browser AND desktop; duration= for a fixed clip), then pass query= to have the video model EXPLAIN the sequence (a native video model watches it; others sample frames). HEARING — galaius can HEAR, not only see: transcribe(path, query=…) turns any local audio OR video file (a download_asset clip, a record(path=…) capture, any mp3/wav/mp4/mov) into text, or ANSWERS a question about the sound — speakers, tone, music, spoken words — acoustically when the audio model can listen (Gemini, gpt-4o-audio). Sandbox recordings carry the launched app's own audio, so record(path=…) then transcribe(path=…) hears what a native app said or played. DRAWING — a generated picture comes from generate_image (the company's image model on the Galaius platform, charged to the person you work for and shown in their Facturation), never from an image API called with a key found on this computer. FILES FOR THE PERSON — a document, a spreadsheet, a deck, a PDF or a mail draft they asked for comes from create_file (docx, xlsx, pptx, pdf, csv, md, json, txt, eml), never a script of your own: it writes the file in your working folder AND offers it in their chat as a file to download, which a file you write yourself never is. SESSIONS: omit `session` and you get your OWN isolated browser session — every reply names it in its `[session: …]` prefix, and it stays yours for this whole connection, so there is no name to invent and nothing to remember. Pass `session=\"default\"` only when you deliberately want to SHARE tabs with other callers on this connection. DESKTOP: use galaius's own tools — never shell out to xdotool/wmctrl, crop with ImageMagick, or `sleep` between steps: each has an equivalent above. For an app that fights the window manager, runs in the background, or is GPU-rendered and screen-grabs black (Flutter/Electron/games/emulators), launch it with `launch_app(\"<cmd>\")` — just the binary/command, no env tricks needed (the sandbox forces software GL itself so a GPU app renders instead of capturing black) — and drive it via `target=\"nested:<title>\"`, an isolated, occlusion-proof display. If `launch_app` isn't in your tool list, your galaius server is out of date: it moves to the newest installed version by itself once no browser session or sandbox is open (`galaius upgrade` shows its state); don't fall back to raw shell automation. If sandbox launches start failing (e.g. rc=1 for every app after many launches), the display is respawned automatically on the next `launch_app`, or call `reset_sandbox` to force a clean one — keep using the sandbox, don't switch to driving the real desktop. If galaius itself errors in a way that blocks you, behaves unexpectedly, or is missing a capability you needed, call `report_issue` — it sends the problem to galaius's maintainers so it gets fixed. That's the channel for feedback about the tool (not about the site you automate). If its result says a prefilled issue page was opened in the browser, tell the user to press Submit there; never copy report files into repos.",
  "lists": {
   "tools/list": {
    "tools": [
     {
      "name": "agent_spawn",
-     "description": "Start an agent to work alongside you, or hand the task to the idle one of that role already in\nthis conversation (`fresh` to always start one), and return its run id immediately.\n\nRuns as its own process on this machine, using the vendor CLI's own login — you never handle\na credential. Given galaius as an MCP server, so it can call these same tools: it can spawn\nagents of its own, including from a DIFFERENT provider than yours.\n\nReturns as soon as the agent is alive, not when it finishes — use agent_list / agent_events\nto watch it, agent_stop to end it.\n\nprofile: one of the OPERATOR's own named profiles (GALAIUS_PROFILE_* in ~/.galaius/config.env)\n    deciding what this agent runs on — e.g. a local Ollama model for a cheap critic while a\n    reviewer stays on a frontier one. A profile resolves to a fixed, allow-listed set of\n    variables; you cannot pass an environment, and an unknown name is refused rather than\n    silently ignored.\n\nsession_id: owning caller conversation, shared by spawn and list. Omit only when a\n    recorded parent or GALAIUS_SESSION_ID provides it. No cwd or MCP transport inference.\ntask: what the agent should do — write it as a complete brief; the agent cannot ask you.\nprovider: which CLI to run (\"claude\", \"codex\"). Omit it to rank the role's criterion across\n    every installed, switched-on CLI and start the first candidate this machine can run;\n    naming one restricts the ranked list to it and never falls through to another.\nagent: a definition the CLI resolves itself — Claude Code reads ~/.claude/agents/<name>.md —\n    so the run IS that agent (e.g. \"code-reviewer\"), with its own system prompt and tools.\n    The run is named after it, which is what makes a team readable at a glance.\nname: a short role label for the supervisor view. Defaults to the agent definition, then to\n    the provider — so several runs are not all just called \"claude\".\nmodel: does not override a configured role policy. Edit the rule in the agent UI instead.\n    A named agent and a satisfiable role criterion are required; no silent model fallback.\ncwd: directory to work in; defaults to galaius's own working directory.\npermission_mode: shared intent describing how much the agent may do on its own. galaius\n    translates it into each provider's CLI vocabulary; an intent with no exact provider\n    equivalent uses the provider's safest useful mapping. Omit to leave the CLI's own\n    configured default alone. Modes that act WITHOUT ASKING cannot be set from here — a person\n    chooses those for themselves, from the CLI or the panel.\nimage_paths: optional absolute paths to existing PNG, JPEG, or WebP files to attach to the\n    initial prompt. The provider must support native image attachments and the resolved model\n    must meet cap.vlm; paths are bounded and validated before spawn.\nagent_ref: exact server agent identity and revision. Both prompt and model policy come from\n    this revision, never the current head. Conflicts with a parent's capability pin fail.\ndelegate: name of a delegate capability on the parent run's recorded revision. Its exact\n    agent reference is resolved automatically. Named-role delegation also honours parent pins.\ndenied_tools: exact built-in or qualified MCP tool names to remove for this run and its\n    continuations. Only narrows the role tool set; never changes permissions or user config.\nfresh: start a new run even when an agent of the same role already in this conversation sits\n    between turns. Without it that agent takes the task as its next turn, its context intact,\n    and its run id comes back; a new one starts only when every such agent is busy or unfit.",
+     "description": "Start an agent to work alongside you, or hand the task to the idle one of that role already in\nthis conversation (`fresh` to always start one), and return its run id immediately.\n\nRuns as its own process on this machine, using the vendor CLI's own login — you never handle\na credential. Given galaius as an MCP server, so it can call these same tools: it can spawn\nagents of its own, including from a DIFFERENT provider than yours.\n\nReturns as soon as the agent is alive, not when it finishes — use agent_list / agent_events\nto watch it, agent_stop to end it.\n\nprofile: one of the OPERATOR's own named profiles (GALAIUS_PROFILE_* in ~/.galaius/config.env)\n    deciding what this agent runs on — e.g. a local Ollama model for a cheap critic while a\n    reviewer stays on a frontier one. A profile resolves to a fixed, allow-listed set of\n    variables; you cannot pass an environment, and an unknown name is refused rather than\n    silently ignored.\n\nsession_id: owning caller conversation, shared by spawn and list. Omit only when a\n    recorded parent or GALAIUS_SESSION_ID provides it. No cwd or MCP transport inference.\ntask: what the agent should do — write it as a complete brief; the agent cannot ask you.\nprovider: which CLI to run (\"claude\", \"codex\"). Omit it to rank the role's criterion across\n    every installed, switched-on CLI and start the first candidate this machine can run;\n    naming one restricts the ranked list to it and never falls through to another.\nagent: a definition the CLI resolves itself — Claude Code reads ~/.claude/agents/<name>.md —\n    so the run IS that agent (e.g. \"code-reviewer\"), with its own system prompt and tools.\n    The run is named after it, which is what makes a team readable at a glance.\nname: a short role label for the supervisor view. Defaults to the agent definition, then to\n    the provider — so several runs are not all just called \"claude\".\nmodel: does not override a configured role policy. Edit the rule in the agent UI instead.\n    A named agent and a satisfiable role criterion are required; no silent model fallback.\ncwd: directory to work in; defaults to galaius's own working directory.\npermission_mode: shared intent describing how much the agent may do on its own. galaius\n    translates it into each provider's CLI vocabulary; an intent with no exact provider\n    equivalent uses the provider's safest useful mapping. Omit to leave the CLI's own\n    configured default alone. Modes that act WITHOUT ASKING cannot be set from here — a person\n    chooses those for themselves, from the CLI or the panel.\nimage_paths: optional absolute paths to existing PNG, JPEG, or WebP files to attach to the\n    initial prompt. The provider must support native image attachments and the resolved model\n    must meet cap.vlm; paths are bounded and validated before spawn.\nagent_ref: exact server agent identity and revision. Both prompt and model policy come from\n    this revision, never the current head. Conflicts with a parent's capability pin fail.\ndelegate: name of a delegate capability. Its exact agent reference is resolved from the parent\n    run's recorded revision when that revision declares the name, else from the catalog's own\n    declaration of it — so a run whose revision carries no delegates (only a lead's does) still\n    commissions one. Named-role delegation also honours parent pins.\ndenied_tools: exact built-in or qualified MCP tool names to remove for this run and its\n    continuations. Only narrows the role tool set; never changes permissions or user config.\nfresh: start a new run even when an agent of the same role already in this conversation sits\n    between turns. Without it that agent takes the task as its next turn, its context intact,\n    and its run id comes back; a new one starts only when every such agent is busy or unfit.\ncontinues: the run (full or short id) the new one takes over from — a hand-off from a run whose context filled:\n    what that run owed, and what is handed back or sent to it from then on, reaches the new one; it is never resumed\n    again. A run of the same role under the same parent that outgrew its context is taken over without it, and so is\n    a caller of the new run's role still near full after a compaction (`helper` keeps it the caller's).\nhelper: a run of your own role that helps you rather than taking over from you once your context is outgrown.\nfor_run: the run (full or short id) the task is for besides you — e.g. the maker whose work a critic judges: its final\n    report reaches that run as well as you.",
      "inputSchema": {
       "$defs": {
        "AgentRevisionRef": {
@@ -209,6 +209,35 @@
         "default": false,
         "title": "Fresh",
         "type": "boolean"
+       },
+       "continues": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Continues"
+       },
+       "for_run": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "For Run"
+       },
+       "helper": {
+        "default": false,
+        "title": "Helper",
+        "type": "boolean"
        }
       },
       "required": [
@@ -380,7 +409,7 @@
     },
     {
      "name": "agent_send",
-     "description": "Send a message to another agent — it answers with its full context intact.\n\nDelivery resumes the recipient's own session rather than handing it a cold summary, so it\nremembers everything it already did and its reply lands in the same transcript — what makes\nthe exchange readable afterwards, and what a sequence view draws its arrows from.\n\nUse it to ask a teammate for something, or answer one. The exchange is recorded on BOTH\nsides, so either agent's history shows it.\n\nrun_id: the agent to address (agent_list shows the ids).\nmessage: what to say — write it as a complete request; it cannot ask you a follow-up.\nwait: block until it has replied, instead of returning as soon as the message is delivered.",
+     "description": "Send a message to another agent — it answers with its full context intact.\n\nDelivery resumes the recipient's own session rather than handing it a cold summary, so it\nremembers everything it already did and its reply lands in the same transcript — what makes\nthe exchange readable afterwards, and what a sequence view draws its arrows from.\n\nUse it to ask a teammate for something, or answer one. The exchange is recorded on BOTH\nsides, so either agent's history shows it.\n\nrun_id: the agent to address (agent_list shows the ids).\nmessage: what to say — write it as a complete request; it cannot ask you a follow-up.\nwait: block until it has replied, instead of returning as soon as the message is delivered.\nfyi: a one-way note (a report, an ack, a heads-up): it reads it, and its turns never report back to you for it.",
      "inputSchema": {
       "properties": {
        "run_id": {
@@ -394,6 +423,11 @@
        "wait": {
         "default": false,
         "title": "Wait",
+        "type": "boolean"
+       },
+       "fyi": {
+        "default": false,
+        "title": "Fyi",
         "type": "boolean"
        }
       },
@@ -935,6 +969,140 @@
        "analysis"
       ],
       "title": "RecordingResult",
+      "type": "object"
+     },
+     "_meta": {
+      "category": "media"
+     }
+    },
+    {
+     "name": "create_file",
+     "description": "Write a file the person opens — a document, a spreadsheet, a deck, a PDF, a mail draft — in your working folder.\n\nUse this for every file meant for the person: it is written here at no cost, and shows in their chat as a file\nthey can download. `path` is relative to your working folder (folders made when missing); its suffix picks the\nformat and what it reads:\n\n- .txt, .md: `content` as is. .json: `content`, which must be valid JSON.\n- .csv: `rows` (the first row is the header).\n- .xlsx: `rows`, or `sheets` {sheet name: rows} for several (numbers stay numbers; header in bold).\n- .docx: `content` as Markdown-lite (`#` headings, `-` bullets, paragraphs), then `rows` as a table.\n- .pptx: `content` as Markdown-lite, one slide per `#` heading with its bullets.\n- .pdf: `content` as Typst markup (`= Title`, `- item`, `*bold*`), then `rows` as a table.\n- .eml: a mail DRAFT the person sends themselves: `to`, `subject`, `content` as its body. Never sent from here.\n\nreplace: write over a file already at `path` (refused otherwise). Written only where you may write on this\ncomputer, never as an agent's steering file (CLAUDE.md, AGENTS.md…). Returns where it was written and its size, or\nwhy nothing was written.",
+     "inputSchema": {
+      "properties": {
+       "path": {
+        "title": "Path",
+        "type": "string"
+       },
+       "content": {
+        "default": "",
+        "title": "Content",
+        "type": "string"
+       },
+       "rows": {
+        "anyOf": [
+         {
+          "items": {
+           "items": {
+            "anyOf": [
+             {
+              "type": "string"
+             },
+             {
+              "type": "integer"
+             },
+             {
+              "type": "number"
+             },
+             {
+              "type": "boolean"
+             },
+             {
+              "type": "null"
+             }
+            ]
+           },
+           "type": "array"
+          },
+          "type": "array"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Rows"
+       },
+       "sheets": {
+        "anyOf": [
+         {
+          "additionalProperties": {
+           "items": {
+            "items": {
+             "anyOf": [
+              {
+               "type": "string"
+              },
+              {
+               "type": "integer"
+              },
+              {
+               "type": "number"
+              },
+              {
+               "type": "boolean"
+              },
+              {
+               "type": "null"
+              }
+             ]
+            },
+            "type": "array"
+           },
+           "type": "array"
+          },
+          "type": "object"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Sheets"
+       },
+       "subject": {
+        "default": "",
+        "title": "Subject",
+        "type": "string"
+       },
+       "to": {
+        "anyOf": [
+         {
+          "items": {
+           "type": "string"
+          },
+          "type": "array"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "To"
+       },
+       "replace": {
+        "default": false,
+        "title": "Replace",
+        "type": "boolean"
+       }
+      },
+      "required": [
+       "path"
+      ],
+      "title": "create_fileArguments",
+      "type": "object"
+     },
+     "outputSchema": {
+      "properties": {
+       "result": {
+        "title": "Result",
+        "type": "string"
+       }
+      },
+      "required": [
+       "result"
+      ],
+      "title": "create_fileOutput",
       "type": "object"
      },
      "_meta": {
