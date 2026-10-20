@@ -2088,6 +2088,34 @@ def test_an_attempt_is_read_from_its_anchor_as_the_whole_run_reads_it_past_there
     for anchor in range(lines + 2):
         past = [event.model_dump(exclude=ledger) for event in whole if event.raw_index is not None and event.raw_index >= anchor]
         assert [event.model_dump(exclude=ledger) for event in reg.events_from("r1", anchor)] == past, anchor
+    # A message with no anchor written before one anchored at the stream's end keeps the file's order, as `_interleave` keeps it.
+    with reg.messages_path("r1").open("a", encoding="utf-8") as messages:
+        for at in (None, lines):
+            messages.write(AgentEvent(kind="message", from_run="lead", to_run="r1", text=f"at {at}", raw_index=at).model_dump_json() + "\n")
+    provider = reg.PROVIDERS["claude"]
+    parsed = [event.model_copy(update={"raw_index": index}) for index, line in enumerate(reg.raw_events_path("r1").read_text(encoding="utf-8").split("\n"))
+              if (event := _parsed(provider, line)) is not None]
+    interleaved = reg._interleave(parsed, reg.read_messages("r1"), lines)
+    assert [event.model_dump(exclude=ledger) for event in reg.StreamReader("r1")] == [event.model_dump(exclude=ledger) for event in interleaved]
+
+
+def _parsed(provider, line: str):
+    try:
+        return provider.parse(line, reg.UsageLedger())
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def test_a_turn_that_ends_records_the_session_its_own_lines_name(monkeypatch):
+    """Code-reviewer W1 r1: `finish` reads only its turn and writes nothing through a stream reader any more; on a
+    computer where no run-mirror holder runs, a run whose provider names its session only in its stream ended with none
+    on its record, and its next message could not resume it. `finish` records what its own turn's lines say."""
+    monkeypatch.setattr(reg, "_alive", lambda pid: True)
+    register_run(run_id="r1", provider="claude", pid=4242)
+    reg.raw_events_path("r1").write_text("\n".join(_CLAUDE_LINES) + "\n", encoding="utf-8")
+    assert reg.get_run("r1").provider_session_id is None
+    assert reg.finish("r1", exit_code=0, first=0, expected_pid=4242, expected_lifecycle_token=reg.get_run("r1").lifecycle_token)
+    assert (reg.get_run("r1").provider_session_id, reg.get_run("r1").status) == ("s", "done")
 
 
 # A run a provider usage limit stopped resumes by itself at the reset the provider named (owner

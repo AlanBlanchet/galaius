@@ -61,6 +61,8 @@ class Claimed(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     item: agent_queue.QueueItem
+    #: The raw line its turn begins at (the item's attempt anchor, `QueueItem.raw_index`): its ending is read from there.
+    first: int
     text: str
     #: The files of the images it shows, handed with `text` to a CLI whose stdin message carries them (else named in `text`).
     images: tuple[Path, ...] = ()
@@ -308,7 +310,8 @@ class FollowUps(BaseModel):
             if text is None or current is None or current.lifecycle_token is None:
                 agent_queue.release_locked(run_id, item.id)  # its dispatcher fails it as it fails any such item
                 return None
-            return Claimed(item=item, text=text, images=item.turn.shown(run) if native else (), lifecycle_token=current.lifecycle_token)
+            first = item.raw_index if item.raw_index is not None else reg.raw_line_count(run_id)
+            return Claimed(item=item, first=first, text=text, images=item.turn.shown(run) if native else (), lifecycle_token=current.lifecycle_token)
 
     @staticmethod
     def _release(run_id: str, item_id: str) -> None:
@@ -330,5 +333,5 @@ class FollowUps(BaseModel):
             if code:
                 record_turn_stderr(run_id, stderr)
             stderr.close()
-        reg.finish(run_id, exit_code=code, first=claimed.item.raw_index or 0, expected_pid=pid, expected_lifecycle_token=claimed.lifecycle_token)
+        reg.finish(run_id, exit_code=code, first=claimed.first, expected_pid=pid, expected_lifecycle_token=claimed.lifecycle_token)
         agent_queue.settle(run_id, claimed.item, code)

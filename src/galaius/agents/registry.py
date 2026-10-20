@@ -263,7 +263,10 @@ class StreamDigest(BaseModel):
                     answer = event
             if event.kind == "compacted":
                 compacted = event.context_tokens
-            said = [event] if event.kind != "message" and event.summary(viewer=viewer) else [*said, event]
+            if event.kind != "message" and event.summary(viewer=viewer):
+                said = [event]
+            else:
+                said.append(event)
         ending = work if work is not None and work.kind in ("done", "error") else None
         return cls(
             source=source, events=seen, context=context,
@@ -1207,7 +1210,8 @@ def finish(
     Events are read BEFORE the lock: `_derive` below merges through `_update_fields`, which takes `record_lock` itself,
     and a single-fd flock is not reentrant, even within one process.
     """
-    events = events_from(run_id, first)
+    reader = StreamReader(run_id, first)
+    events = reader.past()
     terminal = events[-1] if events else None
     answered = answered_line(events, run_id)
     with record_lock(run_id):
@@ -1244,7 +1248,15 @@ def finish(
         )
         if status == "done" and (stored.output_tokens or 0) > 0:
             quota.served(stored.provider, stored.model, subscription=stored.subscription_id)  # it answered: nothing holds against it
+        # What its turn's own lines say of the run, as a stream reader writes it (`read_events`): no other reader may run
+        # here (a computer with no run-mirror holder), and a provider that names its session only in its stream is resumed by it.
+        # The FIRST session its stream names, as `read_events` keeps it: a turn's own may only fill a record that has none.
+        said = {"provider_session_id": reader.session_id} if reader.session_id and not stored.provider_session_id else {}
+        if reader.turn_id and stored.provider_turn_id != reader.turn_id:
+            said["provider_turn_id"] = reader.turn_id
+        said |= _thinking_update(stored, reader.ledger.thinking, urgent=True)
         finished = _merge_record_locked(run_id, {
+            **said,
             "finished_at": stored.finished_at if (stored.status == "stopped" or idle) and stored.finished_at else finished_at,
             "exit_code": exit_code,
             "status": status,
@@ -2047,10 +2059,10 @@ class StreamReader:
             yield from read_messages(self.run_id)
             return
         self.raw = True
-        # A message belongs before every parsed event from a later line; one with no anchor at the END (`_interleave`).
-        order = sorted(enumerate(event for event in read_messages(self.run_id) if event.raw_index is None or event.raw_index >= self.first),
-                       key=lambda pair: (math.inf if pair[1].raw_index is None else pair[1].raw_index, pair[0]))
-        pending = deque(event for _, event in order)
+        # A message belongs before every parsed event from a later line; one with no anchor at the END (`_interleave`'s
+        # order: by anchor, the file's order between equal ones).
+        messages = [(at, event) for at, event in enumerate(read_messages(self.run_id)) if event.raw_index is None or event.raw_index >= self.first]
+        pending = deque(sorted(messages, key=lambda pair: (math.inf if pair[1].raw_index is None else pair[1].raw_index, pair[0])))
         total = self.first
         for index, line in enumerate(lines, start=self.first):
             total = index + 1
@@ -2062,10 +2074,15 @@ class StreamReader:
                 continue
             self.session_id = self.session_id or event.session_id
             self.turn_id = event.turn_id or self.turn_id
-            while pending and pending[0].raw_index is not None and pending[0].raw_index <= index:
-                yield pending.popleft()
+            while pending and pending[0][1].raw_index is not None and pending[0][1].raw_index <= index:
+                yield pending.popleft()[1]
             yield event.model_copy(update={"raw_index": index})
-        yield from sorted(pending, key=lambda event: total if event.raw_index is None else event.raw_index)
+        yield from (event for _, event in sorted(pending, key=lambda pair: (total if pair[1].raw_index is None else pair[1].raw_index, pair[0])))
+
+    def past(self) -> list[AgentEvent]:
+        """Its events from raw line `first` on (`events_from`), read now: the messages with no anchor (`raw_index` None)
+        are the ones this filter still drops, every other one before `first` was never read."""
+        return [event for event in self if event.raw_index is not None and event.raw_index >= self.first]
 
     def _appended(self) -> Iterator[AgentEvent]:
         try:
@@ -2113,7 +2130,7 @@ def events_from(run_id: str, first: int) -> list[AgentEvent]:
     lines (`agent_queue`, a queued delivery's reply, `finish`), whatever the run's transcript grew to. Its usage figures
     are that part's own (the usage ledger starts at `first`); nothing is written (no record field, no mirror: the run's
     mirror process keeps those)."""
-    return [event for event in StreamReader(run_id, first) if event.raw_index is not None and event.raw_index >= first]
+    return StreamReader(run_id, first).past()
 
 
 def _carry_observed_at(path: Path, events: list[AgentEvent]) -> None:
