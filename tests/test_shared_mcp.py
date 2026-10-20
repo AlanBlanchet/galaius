@@ -273,3 +273,17 @@ def test_a_relay_refuses_a_socket_folder_another_user_could_open(endpoint, tmp_p
     assert client.process.wait(30) == 1
     assert "not a folder private to this user" in client.process.stderr.read().decode()
     assert not servers(endpoint)
+
+
+@pytest.mark.parametrize("poisoned", [True, False])
+def test_a_runtime_whose_shared_server_cannot_import_is_never_activated(tmp_path, poisoned):
+    from galaius.upgrade.store import Runtime, RuntimeStore
+    runtime = tmp_path / "runtime"
+    (runtime / "bin").mkdir(parents=True)
+    poison = "import sys; sys.modules['galaius.server.shared'] = None\n" if poisoned else ""
+    (runtime / "bin" / "python").write_text(f'#!/bin/sh\nexec {sys.executable} -I -c "{poison}$3"\n')
+    (runtime / "bin" / "python").chmod(0o755)
+    with pytest.raises(RuntimeError) as refused:
+        RuntimeStore.probe(Runtime(path=runtime))
+    # poisoned: its shared server does not import; else every import passed and only the stray source is refused
+    assert ("does not import" in str(refused.value) and "galaius.server.shared" in str(refused.value)) == poisoned

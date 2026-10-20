@@ -416,9 +416,11 @@ class RuntimeStore(BaseModel):
 
     @staticmethod
     def probe(runtime: Runtime) -> dict[str, str]:
-        """Both packages and the command entry (supervisor, handoff) import inside `runtime`, from
-        `runtime` (never a stray path): a runtime that cannot start a command is never activated."""
-        script = ("import json, galaius, galaius_core, galaius.cli.app; from importlib.metadata import version; "
+        """Both packages, the command entry (supervisor, handoff) and the MCP relay and shared server every
+        client reaches (`galaius.mcp_relay`, `galaius.server.shared`) import inside `runtime`, from `runtime`
+        (never a stray path): a runtime that cannot start a command or serve its clients is never activated."""
+        script = ("import json, galaius, galaius_core, galaius.cli.app, galaius.mcp_relay, galaius.server.shared; "
+                  "from importlib.metadata import version; "
                   "print(json.dumps({'galaius': version('galaius'), 'galaius-core': version('galaius-core'), "
                   "'sources': [galaius.__file__, galaius_core.__file__]}))")
         output = subprocess.run([str(runtime.python), "-I", "-c", script], capture_output=True, text=True, check=False, env=Uv.environment())
