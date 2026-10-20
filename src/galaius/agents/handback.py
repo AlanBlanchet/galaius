@@ -41,18 +41,27 @@ class Report(BaseModel):
     text: str
     #: Seconds since its vendor last wrote, for a run still at work; None for an ended one or one with nothing written.
     silent_for: float | None = None
+    #: The run whose brief it took, refused by its plan's limit before it started (`reg.Relaunch.line`), and why its own
+    #: relaunch could not start; "" for neither.
+    relaunched: str = ""
 
     @classmethod
     def of(cls, run: reg.AgentRun) -> "Report":
-        if _pending(run):
+        """`run`'s report; a run its plan's limit refused before it did anything is still to end until its brief is
+        relaunched or its relaunch refused (`registry.relaunch_pending`), never read as a failure meanwhile."""
+        relaunched = "\n".join(line for line in (run.relaunched_from.line(run.agent) if run.relaunched_from is not None else "",
+                                                  f"its brief could not be relaunched on another model: {run.relaunch_refused}"
+                                                  if run.relaunch_refused else "") if line)
+        if _pending(run) or reg.relaunch_pending(run):
             said = reg.vendor_said_at(run) if run.process_running() else None  # a queued item alone: no turn to be silent
-            return cls(run_id=run.run_id, agent=run.agent, status=run.status, pending=True, text="",
+            return cls(run_id=run.run_id, agent=run.agent, status=run.status, pending=True, text="", relaunched=relaunched,
                        silent_for=None if said is None else max(0.0, time.time() - said))
-        return cls(run_id=run.run_id, agent=run.agent, status=run.status, pending=False, text=final_words(run.run_id))
+        return cls(run_id=run.run_id, agent=run.agent, status=run.status, pending=False, text=final_words(run.run_id), relaunched=relaunched)
 
     def section(self, limit: int | None = REPORT_MAX) -> str:
         text = self.text if limit is None or len(self.text) <= limit else f"{self.text[:limit]}\n… (clipped; `galaius agents events {self.run_id}`)"
-        return f"## {self.agent or 'agent'} {self.run_id[:8]} — {self.status}\n{text or '(it ended without a final message)'}"
+        lead = f"{self.relaunched}\n" if self.relaunched else ""
+        return f"## {self.agent or 'agent'} {self.run_id[:8]} — {self.status}\n{lead}{text or '(it ended without a final message)'}"
 
 
 def _pending(run: reg.AgentRun) -> bool:
@@ -212,7 +221,8 @@ class Waited(BaseModel):
 
 
 def wait(run_ids: Sequence[str], *, timeout: float, interval: float = 2.0, asker: str | None = None) -> Waited:
-    """Each run's report once none of them is pending, or at `timeout` with the pending ones marked. A short id is resolved;
+    """Each run's report once none of them is pending, or at `timeout` with the pending ones marked; for a run whose brief
+    was relaunched on another model (`registry.relaunch_owed`), the run that took it (`live`). A short id is resolved;
     a run still waiting in this computer's line (`SpawnLine`) is pending; an id naming no run is refused (`LookupError`).
     A message `asker` (the run waiting, `GALAIUS_RUN_ID`) reads at its next step (`agent_queue.next_step_read`) ends the
     wait at once, never after a 10-minute wait (2026-10-16: the owner's words reached the coordinator 9.4 min late); one
@@ -226,7 +236,13 @@ def wait(run_ids: Sequence[str], *, timeout: float, interval: float = 2.0, asker
         while True:
             reports: list[Report] = []
             for asked in run_ids:
-                if (run := reg.get_run(reg.resolve_run_id(asked) or asked)) is not None:
+                if (run := reg.get_run(reg.resolve_run_id(asked) or asked)) is not None and run.relaunched_at is not None \
+                        and (taken := live(run.run_id)) != run.run_id \
+                        and ((started := reg.get_run(taken)) is not None or line.describe(taken) is not None):
+                    # Its brief relaunched on another model: that run's report, or it waits in line.
+                    reports.append(Report.of(started) if started is not None else
+                                   Report(run_id=taken, agent=run.agent, status="queued", pending=True, text=""))
+                elif run is not None:
                     reports.append(Report.of(run))
                 elif line.describe(asked) is not None:
                     reports.append(Report(run_id=asked, agent=None, status="queued", pending=True, text=""))

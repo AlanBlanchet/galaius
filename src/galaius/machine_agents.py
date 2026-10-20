@@ -13,6 +13,7 @@ no request ever changes this process's environment and no request waits for a co
 
 import asyncio
 import base64
+import functools
 import hashlib
 import json
 import logging
@@ -1145,7 +1146,12 @@ class MachineAgents(BaseModel):
                 signed_in[login] = await asyncio.to_thread(self.programs.signed_in, *login)
             if signed_in.get(login):
                 await asyncio.to_thread(quota.login_back, login[0], subscription=login[1])
+        relaunching: list[reg.AgentRun] = []
         for run, cut in await asyncio.to_thread(reg.schedule_resumes):
+            if cut.resumes == "relaunch":
+                if (taken := await asyncio.to_thread(reg.claim_resume, run.run_id)) is not None:
+                    relaunching.append(taken)
+                continue
             ready = False
             if cut.resumes == "sign_in":
                 login = run.provider, run.subscription_id
@@ -1155,11 +1161,29 @@ class MachineAgents(BaseModel):
                     continue
             if await asyncio.to_thread(reg.claim_resume, run.run_id, signed_in=ready) is not None:
                 claimed.append((run, *_RESUMED_AFTER[cut.cause]))
-        resumed: list[str] = []
+        resumed: list[str] = [run.run_id for run in relaunching if await self._relaunch(run)]
         for run, sender, after in claimed:  # deepest first, as scheduled
             if await self._resume(run, sender, after, agents=await asyncio.to_thread(self._cut_with, run.run_id, resumed)):
                 resumed.append(run.run_id)
         return resumed
+
+    async def _relaunch(self, run: reg.AgentRun) -> bool:
+        """Claimed run `run`'s brief started again on the next ranked model (`SpawnLine.relaunch`), in the launcher's
+        environment for its folder. One that cannot start leaves `run` to its reset (`registry.limit_resume_at`), said in
+        the log."""
+        # Circular layers: spawn_line imports this module (the web's runs).
+        from galaius.agents.spawn_line import SpawnLine
+
+        try:
+            environment = await asyncio.to_thread(self.launcher_environment_in, Path(run.cwd or "."))
+            new = await SpawnLine.here().relaunch(run, functools.partial(run_agent, environment=environment))
+        except Exception as error:  # whatever stops it leaves the run to its reset, saying why on its report
+            refused = str(error) or type(error).__name__
+            await asyncio.to_thread(reg.record_relaunch_refused, run.run_id, refused)
+            logger.warning("run %s not relaunched after its limit refused its first turn: %s", run.run_id[:8], refused)
+            return False
+        logger.info("run %s refused before it started: relaunched as %s", run.run_id[:8], new[:8])
+        return True
 
     @staticmethod
     def _cut_with(run_id: str, resumed: Sequence[str]) -> list[str]:

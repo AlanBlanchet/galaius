@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, ClassVar, Literal, NamedTuple, Self, Unpack
 from uuid import UUID
 
-from pydantic import BaseModel, Field, PrivateAttr, ValidationInfo, field_validator
+from pydantic import ConfigDict, BaseModel, Field, PrivateAttr, ValidationInfo, field_validator
 from galaius.agents import quota
 from galaius_core import ASKED_BY_MAX, MEDIA_KEY, MODEL_ID_MAX, AgentMedia, AgentRevisionRef, ContextGauge, PromptExecutionRef, RunReplacement, StopActor
 
@@ -79,7 +79,7 @@ RunKind = Literal["process", "conversation", "provider_child"]
 #: its own, or a signal nobody it answers to sent.
 CutCause = Literal["login_lost", "usage_limit", "process_gone", "killed"]
 #: How a cut run comes back (`cut_resume`): `itself` with no one's action, `sign_in` once its login is signed in again.
-CutResumes = Literal["itself", "sign_in"]
+CutResumes = Literal["itself", "sign_in", "relaunch"]
 ConnectionMode = Literal["local_session", "api"]
 ChargePath = Literal[
     "subscription_quota", "usage_credit", "metered_api", "local_compute", "unknown"
@@ -280,6 +280,51 @@ class StreamDigest(BaseModel):
         )
 
 
+#: The longest refusal a relaunch keeps, in its CLI's words (`Relaunch.said`).
+RELAUNCH_SAID_MAX = 300
+
+
+class Relaunch(BaseModel):
+    """The run whose brief a run took (`AgentRun.relaunched_from`): its plan's limit refused it before its first turn did
+    anything (`relaunch_owed`), and its brief started again on the next ranked model (`spawn_line.Spawn.relaunching`)."""
+
+    model_config = ConfigDict(frozen=True)
+    run_id: str
+    provider: str
+    model: str | None = None
+    #: The refusal, as its CLI said it.
+    said: str = Field(default="", max_length=RELAUNCH_SAID_MAX)
+    #: Every (provider, model) that refused this brief along its relaunches, this one's last: none is started again
+    #: (`run_agent`'s `passed_over`), so a chain ends once the ranked list has no other.
+    passed_over: tuple[tuple[str, str | None], ...] = ()
+
+    @classmethod
+    def of(cls, run: "AgentRun") -> "Relaunch":
+        """`run`'s brief as relaunched: its refusal, and every model that refused it so far, its own included."""
+        said = " ".join((run.stream_digest.ending_text if run.stream_digest is not None else "").split())[:RELAUNCH_SAID_MAX]
+        before = run.relaunched_from.passed_over if run.relaunched_from is not None else ()
+        return cls(run_id=run.run_id, provider=run.provider, model=run.model, said=said,
+                   passed_over=tuple(dict.fromkeys((*before, (run.provider, run.model)))))
+
+    def line(self, agent: str | None) -> str:
+        """What its relaunch says of it: which run, which model refused, in the vendor's words."""
+        refused = f"{self.provider}/{self.model}" if self.model else self.provider
+        return f"relaunched from {agent or 'agent'} {self.run_id[:8]}: {refused} refused it before it started ({self.said})"
+
+
+def record_relaunch(relaunch: Relaunch, run_id: str) -> None:
+    """Run `run_id` started with the brief `relaunch` names: each records the other (`relaunched_from`, `replaced_by`)."""
+    with record_lock(run_id):
+        relaunched = _merge_record_locked(run_id, {"relaunched_from": relaunch.model_dump(mode="json")})
+    with record_lock(relaunch.run_id):
+        stored = _read_record(relaunch.run_id)
+        if stored is not None and stored.replaced_by is None:
+            model = relaunched.model if relaunched is not None else None
+            replacement = RunReplacement(run_id=run_id, provider=relaunched.provider if relaunched is not None else relaunch.provider,
+                                         model=model[:MODEL_ID_MAX] if model else None)
+            _merge_record_locked(relaunch.run_id, {"replaced_by": replacement.model_dump(mode="json")})
+
+
 class AgentRun(ContextGauge):
     """One supervised run.
 
@@ -397,6 +442,13 @@ class AgentRun(ContextGauge):
     #: The run that took its task after it ended before its first turn (`take_over_refused`): no stop to continue, a
     #: launch that moved on. Cleared as a new turn begins: whatever ends a resumed turn is its own ending.
     replaced_by: RunReplacement | None = None
+    #: The run whose brief it took, refused by its plan's limit before its first turn did anything (`Relaunch`).
+    relaunched_from: Relaunch | None = None
+    #: When its brief was relaunched on another model (`claim_resume`): once per run; a relaunch that could not start leaves
+    #: it to its reset (`limit_resume_at`).
+    relaunched_at: float | None = None
+    #: Why its relaunch could not start (no other ranked model, every login paused past the line): its report says so.
+    relaunch_refused: str = ""
     #: The other runs it works for, first asker first (`note_asker_locked`): each run that sent it work, and each run it
     #: said it works for (`galaius agents work-for`). Never itself nor its parent; kept across turns.
     asked_by: tuple[str, ...] = ()
@@ -2650,12 +2702,42 @@ def cut_cause(run: AgentRun) -> CutCause | None:
     return "killed" if signalled else None
 
 
+#: How long after its first turn's limit refusal a run's brief is relaunched on another model (`relaunch_owed`): its
+#: launcher is still there to use it. Later, it waits for its reset like any usage limit.
+RELAUNCH_WINDOW = TAKEOVER_WINDOW
+
+
+def relaunch_owed(run: AgentRun, *, now: float | None = None) -> bool:
+    """Whether `run`'s brief starts again on the next ranked model now: its plan's limit refused its first turn
+    (`cut_cause`) before it did anything (no line of its model, `model_spoke_in`; never resumed), at most
+    `RELAUNCH_WINDOW` ago, and it was never relaunched. One that worked is the pause's: it resumes at the reset."""
+    moment = time.time() if now is None else now
+    return (cut_cause(run) == "usage_limit" and run.relaunched_at is None and run.resumed_at is None
+            and run.finished_at is not None and moment - run.finished_at <= RELAUNCH_WINDOW and not model_spoke_in(run.run_id))
+
+
+def relaunch_pending(run: AgentRun, *, now: float | None = None) -> bool:
+    """Whether `run`'s brief is about to start again elsewhere: its relaunch is owed (`relaunch_owed`), or claimed and
+    not started yet (no run took it, none refused), at most `RELAUNCH_WINDOW` ago (a runner killed after its claim never
+    holds it for good). Meanwhile it is neither a report nor a failure (`handback`)."""
+    moment = time.time() if now is None else now
+    # Its last end before the claim: a run resumed by hand meanwhile is at work again, never pending.
+    return relaunch_owed(run, now=moment) or (run.relaunched_at is not None and run.successor is None and not run.relaunch_refused
+                                              and run.finished_at is not None and run.finished_at <= run.relaunched_at
+                                              and moment - run.relaunched_at <= RELAUNCH_WINDOW)
+
+
+def record_relaunch_refused(run_id: str, why: str) -> None:
+    """Run `run_id`'s relaunch could not start (`relaunch_refused`, said on its report): it is left to its reset."""
+    _update_fields(run_id, {"relaunch_refused": why[:500]})
+
+
 class CutOwed(NamedTuple):
     """How a cut run comes back by itself (`cut_resume`)."""
 
     cause: CutCause
     resumes: CutResumes
-    #: `itself`: when (at once: its end); `sign_in`: None, once its login is signed in again.
+    #: `itself`, `relaunch`: when (at once: its end); `sign_in`: None, once its login is signed in again.
     at: float | None
 
 
@@ -2668,6 +2750,8 @@ def cut_resume(run: AgentRun, *, now: float | None = None) -> CutOwed | None:
     cause = cut_cause(run)
     if cause is None or run.finished_at is None or run.finished_at < _cut_since():
         return None
+    if relaunch_owed(run, now=now):
+        return CutOwed(cause, "relaunch", run.finished_at)
     if run.resumed_at is not None and (run.resumed_at >= run.finished_at or (
             cause != "usage_limit" and run.resumed_cut in (None, cause) and run.finished_at - run.resumed_at <= RESUME_GRACE)):
         return None
@@ -2737,8 +2821,9 @@ def schedule_resumes(*, now: float | None = None) -> list[tuple[AgentRun, CutOwe
 
 def claim_resume(run_id: str, *, signed_in: bool = False, now: float | None = None) -> AgentRun | None:
     """Take run `run_id`'s automatic resume once, under its lock, when it is due: `itself` from its `resume_at` on,
-    `sign_in` when its login is `signed_in` again. Records `resumed_at` and the cut it answers (`resumed_cut`) and
-    clears `resumes`, so no second runner (nor a restart) resumes it again. The run as claimed, else None."""
+    `sign_in` when its login is `signed_in` again, `relaunch` at once. Records `resumed_at` and the cut it answers
+    (`resumed_cut`), or for a relaunch `relaunched_at`, and clears `resumes`, so no second runner (nor a restart) takes
+    it again. The run as claimed, else None."""
     moment = time.time() if now is None else now
 
     def due(stored: AgentRun) -> bool:
@@ -2748,15 +2833,17 @@ def claim_resume(run_id: str, *, signed_in: bool = False, now: float | None = No
         stored = _read_record(run_id)
         if stored is None or not due(stored):
             return None
+        if relaunch_owed(stored, now=moment):
+            return _merge_record_locked(run_id, {"resumes": None, "resume_at": None, "relaunched_at": moment})
         cause = cut_cause(stored)
         return _merge_record_locked(run_id, {"resumes": None, "resume_at": None, "resumed_at": moment, "resumed_cut": cause,
                                              "resumed_cuts": stored.resumed_cuts + 1 if stored.resumed_cut == cause else 1})
 
 
 def self_resuming(run: AgentRun, *, now: float | None = None) -> bool:
-    """`run` was cut and comes back by itself (`cut_resume`): its work has not ended, its launcher is not woken with
-    its cut (`handback`)."""
-    return cut_resume(run, now=now) is not None
+    """`run` was cut and comes back by itself (`cut_resume`), or its brief starts again elsewhere (`relaunch_pending`): its
+    work has not ended, its launcher is not woken with its cut (`handback`)."""
+    return cut_resume(run, now=now) is not None or relaunch_pending(run, now=now)
 
 
 def recently_cut(*, now: float | None = None) -> list[AgentRun]:

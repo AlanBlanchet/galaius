@@ -23,6 +23,7 @@ from galaius.machine_programs import AgentPrograms
 from galaius.agents import agent_queue, messaging
 from galaius.agents import registry as reg
 from galaius.agents.host import ConversationRefused
+from galaius.agents.run import ModelUnavailable
 from galaius.agents.subscriptions import RunSubscription, Subscription, SubscriptionRefused
 from galaius.machine_agents import LogRing, MachineAgents, MachineSessions, UnderWay, WebFull, WebRun, WebRuns, interaction_digest, redact
 from galaius.fence import FenceSpec
@@ -1294,6 +1295,62 @@ def test_a_tree_any_cut_stopped_resumes_whole_by_itself_deepest_first_once(base:
         reg._merge_record_locked(run_id, {"finished_at": reg.get_run(run_id).resumed_at + 10})
     assert asyncio.run(agents.resume_paused()) == [] and len(sent) == 3, "looped on a cut that did not come back"
     assert not any(reg.get_run(run_id).resumes for run_id, _, _ in tree)
+
+
+def test_a_run_its_limit_refused_before_it_did_anything_starts_again_on_the_next_model_and_its_launcher_reads_that(
+        base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Owner 2026-10-20 « we're still waisting time / inference / usage on stupid things »: its brief starts again
+    as a new run of its role, its asks moved to it, on any model but the refused one; the new run says what it relaunched,
+    the refused one what took its brief, and a wait on the refused run reports the one that took over, saying so."""
+    from galaius.agents import handback
+    from galaius.agents.spawn_line import SpawnLine
+
+    reg.cut_resume_since(now=1000.0)
+    reg.register(run_id="relaunch-boss", pid=None, provider="claude", name="main", agent="main", model="claude-opus-5-5", cwd=str(base / "project"))
+    reg.register(run_id="relaunch-old", pid=451, provider="claude", name="w", agent="app-engineer", model="claude-opus-5",
+                 cwd=str(base / "project"), parent_run_id="relaunch-boss", task="- build the rail")
+    _cut("relaunch-old", "usage_limit", pid=451, at=time.time() - 30)
+    started: dict = {}
+
+    async def runner(provider, task, *, run_id, passed_over=(), **kwargs):
+        started.update(kwargs, task=task, run_id=run_id, passed_over=passed_over)
+        reg.register(run_id=run_id, pid=None, provider="claude", name="w", agent=kwargs["agent"], model="claude-opus-5-5",
+                     cwd=kwargs["cwd"], parent_run_id=kwargs["parent_run_id"], task=task)
+        return SimpleNamespace(run_id=run_id)
+
+    monkeypatch.setattr("galaius.machine_agents.run_agent", runner)
+    assert handback.wait(["relaunch-old"], timeout=0, interval=0).reports[0].pending, "its failure read before its relaunch"
+
+    assert asyncio.run(_agents(base, tmp_path).resume_paused()) == ["relaunch-old"]
+
+    new, old = reg.get_run(started["run_id"]), reg.get_run("relaunch-old")
+    assert (started["task"], started["agent"], started["parent_run_id"], started["passed_over"]) == (
+        "- build the rail", "app-engineer", "relaunch-boss", (("claude", "claude-opus-5"),))
+    assert (new.relaunched_from.run_id, new.relaunched_from.model) == ("relaunch-old", "claude-opus-5")
+    assert "session limit" in new.relaunched_from.said
+    assert old.successor == new.run_id and old.replaced_by.run_id == new.run_id
+    assert asyncio.run(_agents(base, tmp_path).resume_paused()) == [], "relaunched twice"
+    [report] = handback.wait(["relaunch-old"], timeout=0, interval=0).reports
+    assert report.run_id == new.run_id and "relaunched from app-engineer relaunch" in report.section()
+    assert "claude/claude-opus-5 " in report.section()
+
+    # Its relaunch refused at its first turn too: relaunched again, on neither model; once none is left, its report says so.
+    first = new.run_id
+    reg._merge_record_locked(first, {"pid": 452, "status": "running"})
+    _cut(first, "usage_limit", pid=452, at=time.time() - 20)
+    assert asyncio.run(_agents(base, tmp_path).resume_paused()) == [first]
+    assert started["passed_over"] == (("claude", "claude-opus-5"), ("claude", "claude-opus-5-5"))
+    second = started["run_id"]
+    reg._merge_record_locked(second, {"pid": 453, "status": "running"})
+    _cut(second, "usage_limit", pid=453, at=time.time() - 10)
+
+    async def nothing_left(provider, task, **kwargs):
+        raise ModelUnavailable("No candidate for 'app-engineer' can start on this machine")
+
+    monkeypatch.setattr("galaius.machine_agents.run_agent", nothing_left)
+    assert asyncio.run(_agents(base, tmp_path).resume_paused()) == []
+    [report] = handback.wait([second], timeout=0, interval=0).reports
+    assert report.run_id == second and "could not be relaunched on another model: No candidate" in report.section()
 
 
 def test_a_pasted_code_reaches_its_sign_in_through_the_web_request(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

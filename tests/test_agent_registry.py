@@ -22,6 +22,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -2121,6 +2122,8 @@ def test_a_turn_that_ends_records_the_session_its_own_lines_name(monkeypatch):
 # A run a provider usage limit stopped resumes by itself at the reset the provider named (owner
 # 2026-10-09: five builder runs stayed « failed » after their « resets 5:20pm » had passed).
 _SESSION_LIMIT = "You've hit your session limit · resets 5:20pm (Europe/Paris)"
+#: A line its model wrote: the run did something before its limit refused it.
+_SPOKE = json.dumps({"type": "assistant", "session_id": "SID", "message": {"model": "claude-opus-5-5", "content": [{"type": "text", "text": "on it"}]}}) + "\n"
 
 
 @pytest.fixture
@@ -2129,10 +2132,11 @@ def resuming() -> None:
     reg.cut_resume_since(now=0.0)
 
 
-def _ended_on(run_id: str, said: str, *, pid: int, parent: str | None = None) -> reg.AgentRun:
+def _ended_on(run_id: str, said: str, *, pid: int, parent: str | None = None, worked: bool = True) -> reg.AgentRun:
+    """Run `run_id` ended on `said`, having `worked` first (a line of its model), else refused before it did anything."""
     reg.register(run_id=run_id, pid=pid, provider="claude", name="w", agent="app-engineer",
                  model="claude-opus-5-5", parent_run_id=parent)
-    reg.raw_events_path(run_id).write_text(_claude_error_stream(said))
+    reg.raw_events_path(run_id).write_text((_SPOKE if worked else "") + _claude_error_stream(said))
     assert reg.finish(run_id, exit_code=1, first=0, expected_pid=pid, expected_lifecycle_token=reg.get_run(run_id).lifecycle_token)
     return reg.get_run(run_id)
 
@@ -2205,6 +2209,36 @@ def test_a_paused_run_is_claimed_once_from_its_reset_on_and_its_sub_run_resumes_
     assert claimed.resumed_cut == "usage_limit"
     assert reg.claim_resume("lim-root", now=at + 86401) is None, "a second runner resumed it again"
     assert reg.get_run("lim-sub").resume_at == at
+
+
+_MODEL_LIMIT = "You've reached your Opus limit. Switch to another model, or manage usage credits."
+
+
+@pytest.mark.parametrize("said, worked, ended_ago, first, then", [
+    # The plan's limit refused its first turn before it did anything: its brief is relaunched on the next ranked model
+    # now (`spawn_line.Spawn.relaunching`), once; a relaunch that could not start leaves it to its reset, if it names one.
+    (_SESSION_LIMIT, False, 60, "relaunch", "itself"),
+    (_MODEL_LIMIT, False, 60, "relaunch", None),
+    # It worked first: it is the pause's, resumed at the reset (never relaunched: its work would start over).
+    (_SESSION_LIMIT, True, 60, "itself", "itself"),
+    # Refused long ago: nobody is there to use a relaunch now.
+    (_SESSION_LIMIT, False, 2 * 3600, "itself", "itself"),
+], ids=["session-limit-first-turn", "model-limit-first-turn", "worked-first", "refused-hours-ago"])
+def test_a_run_its_limit_refused_before_it_did_anything_is_relaunched_once(resuming, said, worked, ended_ago, first, then):
+    _ended_on("relaunch-me", said, pid=441, worked=worked)
+    moment = time.time()
+    reg._merge_record_locked("relaunch-me", {"finished_at": moment - ended_ago})
+    assert [cut.resumes for _, cut in reg.schedule_resumes(now=moment)] == [first]
+    if first != "relaunch":
+        return
+    claimed = reg.claim_resume("relaunch-me", now=moment + 1)
+    assert claimed is not None and claimed.relaunched_at == moment + 1 and claimed.resumed_at is None
+    # Claimed, its relaunch still starting: neither a report nor a failure to its launcher yet.
+    assert reg.relaunch_pending(claimed, now=moment + 2) and reg.self_resuming(claimed, now=moment + 2)
+    assert not reg.relaunch_pending(claimed, now=moment + 1 + reg.RELAUNCH_WINDOW + 1), "held for good by a runner killed after its claim"
+    assert [cut.resumes for _, cut in reg.schedule_resumes(now=moment + 2)] == ([then] if then else []), "relaunched twice"
+    reg._merge_record_locked("relaunch-me", {"successor": str(uuid.uuid4())})  # its relaunch took its brief
+    assert reg.schedule_resumes(now=moment + 3) == [], "resumed beside its relaunch"
 
 
 # A run its expired login stopped resumes by itself once that login is signed in again (owner 2026-10-12:

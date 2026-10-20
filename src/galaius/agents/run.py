@@ -1324,6 +1324,7 @@ async def run_agent(
     run_id: str | None = None,
     asked_by: tuple[str, ...] = (),
     inherited_asks: Mapping[str, float] | None = None,
+    passed_over: tuple[tuple[str, str | None], ...] = (),
 ) -> RunHandle:
     """Spawn an agent run and register it, returning as soon as it is alive.
 
@@ -1345,6 +1346,9 @@ async def run_agent(
     ``environment`` is the one the run's CLI starts in and its candidates are judged against
     (credentials, the folder-settings switch, a parent run's tag); this process's own when None.
     A long-lived caller serving others (the machine runner) passes the scrubbed one it owns.
+
+    ``passed_over`` names candidates (provider, model) it never starts on: each model whose limit refused the brief it
+    relaunches (`registry.Relaunch.passed_over`). Skipped in the ranked walk as refused for quota, never re-ranked.
 
     ``asked_by`` and ``inherited_asks`` are recorded as it starts (`AgentRun`): the card its brief carries
     (`relations.card`) names every run it works for, a maker a critic is spawned for and a hand-off's askers included.
@@ -1504,6 +1508,9 @@ async def run_agent(
             skipped = [entry for entry in skipped if entry.candidate not in (candidates[index] for index in remembered)]
         index = walk.popleft()
         candidate = candidates[index]
+        if (candidate.provider, candidate.model) in passed_over:
+            skipped.append(_skip_record(candidate, _skip("quota_exceeded", f"{candidate.provider}/{candidate.model} refused this brief before it started; relaunched on the next ranked model")))
+            continue
         if (hold := admission.Hold.of_login(candidate.provider, first_login.get(candidate.provider, pinned_id))) is not None \
                 and hold.reason == "usage_limit":
             held[index] = hold

@@ -115,8 +115,23 @@ class Spawn(BaseModel):
     #: The person at a terminal hands off across projects on purpose (`galaius agents spawn --cross-project`):
     #: `relations.foreign_project` is not asked.
     cross_project: bool = False
+    #: The run whose brief it starts again (`relaunching`): its plan's limit refused it before its first turn did anything.
+    #: Never on the model that refused (`run_agent`'s `passed_over`); each run records the other (`relaunched_from`,
+    #: `replaced_by`).
+    relaunches: reg.Relaunch | None = None
     #: Its fields `start` passes to `run_agent` other than by their own names.
-    NOT_RUN_ARGUMENTS: ClassVar[frozenset[str]] = frozenset({"task", "provider", "session_id", "for_run", "single", "continues", "helper", "cross_project"})
+    NOT_RUN_ARGUMENTS: ClassVar[frozenset[str]] = frozenset({"task", "provider", "session_id", "for_run", "single", "continues", "helper",
+                                                             "cross_project", "relaunches"})
+
+    @classmethod
+    def relaunching(cls, run: reg.AgentRun) -> Spawn:
+        """`run`'s brief as a new run of its role in its place (`registry.relaunch_owed`): its task, folder, parent,
+        conversation, prompt revision, permission, denied tools, fence and images; ranked again (its provider and model
+        unpinned), taking over its asks (`continues`)."""
+        return cls(task=run.task, cwd=run.cwd or ".", agent=run.agent, name=run.name, permission_mode=run.permission_mode,
+                   image_paths=tuple(reg.RunMedia.path(run.run_id, name) for name in run.media), agent_ref=run.agent_ref,
+                   parent_run_id=run.parent_run_id, session_id=run.session_id, denied_tools=tuple(run.denied_tools), fence=run.fence,
+                   continues=run.run_id, relaunches=reg.Relaunch.of(run))
 
     @classmethod
     def asked(cls, *, parent_run_id: str | None = None, **fields) -> Spawn:
@@ -143,12 +158,16 @@ class Spawn(BaseModel):
         asked_by = tuple(dict.fromkeys(asker for asker in (self.for_run, *inherited) if asker and asker != self.parent_run_id))
         arguments |= {"name": self.name or self.agent, "provider_modes": self.provider_modes or None,
                       "asked_by": asked_by, "inherited_asks": inherited}
+        if self.relaunches is not None:
+            arguments["passed_over"] = self.relaunches.passed_over
         with reg.session_context(self.session_id, parent_run_id=self.parent_run_id):
             handle = await (runner or run_agent)(provider_for(self.provider) if self.provider is not None else None, self.task, run_id=run_id, **arguments)
         asker = self._asker()   # a critic's round, when it is one (`CriticRounds`)
         CriticRounds.here().note(self._role_name(), self.for_run, run_id, asker=asker, turn=turn_of(asker))
         if predecessor is not None:
             relations.succeed(predecessor.run_id, run_id, cross_project=self.cross_project)
+        if self.relaunches is not None:
+            reg.record_relaunch(self.relaunches, run_id)
         await asyncio.sleep(0.2)
         return handle
 
@@ -726,6 +745,18 @@ class SpawnLine(BaseModel):
             raise
         self.leave(admission.run_id)
         return handle
+
+    async def relaunch(self, run: reg.AgentRun, runner: Callable[..., Awaitable[RunHandle]] | None = None) -> str:
+        """`run`'s brief started again as a new run of its role (`Spawn.relaunching`), its plan's limit having refused it
+        before its first turn did anything (`registry.relaunch_owed`): in line like any spawn, on any model but the
+        refused one, through `runner` (`run_agent` when None). It takes over `run`'s asks (`relations.succeed`) once it
+        is in line: held while every login it could run on is paused, it starts once one reopens. Its run id."""
+        spawn = Spawn.relaunching(run)
+        admission = self.enter(spawn)
+        launched = admission if admission.ahead is not None else await self.launch(admission, spawn, runner)
+        if isinstance(launched, Admission):
+            relations.succeed(run.run_id, launched.run_id)
+        return launched.run_id
 
     def _defer(self, run_id: str, spawn: Spawn, holds: tuple[Hold, ...], *, asker: int | None) -> Admission:
         """`run_id`'s place back to `waiting`, behind every spawn waiting, until one of `holds` lifts (`_turn`); its
