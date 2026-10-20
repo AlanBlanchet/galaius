@@ -1136,7 +1136,7 @@ class MachineRunner:
         while True:
             await asyncio.sleep(self.settle_seconds)
             try:
-                for delivery in await asyncio.to_thread(watch.tick, Config().silent_seconds):
+                for delivery in await asyncio.to_thread(watch.tick, Config()):
                     logger.info("run %s told of a silent run it asked: %s", delivery.run_id[:8], delivery.state)
             except Exception:  # one unreadable record never stops the watch
                 logger.exception("telling of silent runs failed")

@@ -2586,6 +2586,8 @@ LOGIN_RESUME_SENDER = "login-resume"
 CUT_RESUME_SENDER = "cut-resume"
 #: Who the line saying a resumed run's missing folder was put back is from (`run_folder.FolderRestored.sentence`): never the person.
 FOLDER_RESTORED_SENDER = "folder-restored"
+#: Who tells a run that one it asked has been silent too long at work (`handback.SilenceWatch`).
+SILENCE_SENDER = "silence-watch"
 #: The conversation's own machinery as message senders (never a person, never a run), as a reader names each: only the
 #: recipient's transcript holds their lines.
 SYSTEM_SENDERS: dict[str, str] = {
@@ -2593,6 +2595,7 @@ SYSTEM_SENDERS: dict[str, str] = {
     LOGIN_RESUME_SENDER: "automatic resume after signing in again",
     CUT_RESUME_SENDER: "automatic resume after its process was cut",
     FOLDER_RESTORED_SENDER: "folder put back",
+    SILENCE_SENDER: "the silent-run watch",
 }
 
 

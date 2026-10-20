@@ -210,6 +210,8 @@ class Config(BaseSettings):
     # A run at work whose vendor wrote nothing for this many seconds is silent: the run waiting on it names it so
     # (`agents wait`), and the run that asked it is told once per silence (`galaius.agents.handback.SilenceWatch`).
     silent_seconds: Annotated[float, Field(gt=0)] = 600.0
+    # A run whose last word is one command it started (a build, a test suite) is silent only after this many seconds.
+    silent_command_seconds: Annotated[float, Field(gt=0)] = 3600.0
     # How many agent runs may work on this computer at once, every conversation's; one more spawn waits
     # in line until one ends (`galaius.agents.spawn_line`). The owner's own conversations are not counted.
     agent_runs_max: Annotated[int, Field(ge=1)] = 6
