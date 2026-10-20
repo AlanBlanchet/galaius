@@ -330,5 +330,5 @@ class FollowUps(BaseModel):
             if code:
                 record_turn_stderr(run_id, stderr)
             stderr.close()
-        reg.finish(run_id, exit_code=code, expected_pid=pid, expected_lifecycle_token=claimed.lifecycle_token)
+        reg.finish(run_id, exit_code=code, first=claimed.item.raw_index or 0, expected_pid=pid, expected_lifecycle_token=claimed.lifecycle_token)
         agent_queue.settle(run_id, claimed.item, code)

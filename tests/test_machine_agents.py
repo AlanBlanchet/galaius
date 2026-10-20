@@ -506,7 +506,7 @@ def test_a_stopped_run_stays_stopped_when_its_process_exits(base: Path, exit_cod
     run_id = str(uuid4())
     reg.save_run(reg.AgentRun(run_id=run_id, provider="claude", name="r", cwd=str(base / "project"), started_at=1.0, pid=None, lifecycle_token="t" * 32))
     assert reg.stop(run_id, by=None)
-    reg.finish(run_id, exit_code=exit_code, expected_lifecycle_token="t" * 32)
+    reg.finish(run_id, exit_code=exit_code, first=0, expected_lifecycle_token="t" * 32)
     assert reg.get_run(run_id).status == "stopped"
 
 
@@ -630,7 +630,7 @@ def test_a_continued_copy_stops_taking_turns_once_the_opt_in_is_off(base: Path, 
     _, editor = _editor(tmp_path, base, base / "project")
     monkeypatch.setattr("galaius.machine_agents.launch_editor_turn", lambda *args, **kwargs: None)
     copy = _answer(on, _request("continue", session_id=str(editor), text="go"))
-    reg.finish(str(copy.run_id), exit_code=0)
+    reg.finish(str(copy.run_id), exit_code=0, first=0)
     off = on.model_copy(update={"continue_conversations": False})
     with pytest.raises(PermissionError, match="continuing your editor conversations"):
         _answer(off, _request("send", run_id=str(copy.run_id), text="and more"))
@@ -1244,7 +1244,7 @@ def _cut(run_id: str, kind: str, *, pid: int, at: float) -> None:
     reg.raw_events_path(run_id).write_text(json.dumps(stream) + "\n" if stream else "")
     exit_code = {"killed": -9, "sigterm": -15, "stopped": -15}.get(kind, 1)
     if kind not in ("process_gone", "out_of_memory"):
-        assert reg.finish(run_id, exit_code=exit_code, expected_pid=pid, expected_lifecycle_token=reg.get_run(run_id).lifecycle_token)
+        assert reg.finish(run_id, exit_code=exit_code, first=0, expected_pid=pid, expected_lifecycle_token=reg.get_run(run_id).lifecycle_token)
     ending = ({"status": "interrupted", "exit_code": None, "pid": None, "interruption": {"cause": kind, "at": at, "source": "journal"}}
               if kind in ("process_gone", "out_of_memory") else {})
     by = {"stopped_by": {"kind": "person", "name": "Alan"}} if kind == "stopped" else {}

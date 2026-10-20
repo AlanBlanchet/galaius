@@ -1537,7 +1537,7 @@ class MachineAgents(BaseModel):
             try:
                 launch_editor_turn(PROVIDERS["claude"], current, said, environment=self.environment_in(Path(current.cwd)), fork_from=fork_from)
             except BaseException:
-                reg.finish(run.run_id, exit_code=1)  # never left "running" by a turn that did not start
+                reg.finish(run.run_id, exit_code=1, first=reg.raw_line_count(run.run_id))  # never left "running" by a turn that did not start
                 raise
         return MachineAgentAnswer(request_id=request_id, run_id=UUID(run.run_id), detail="sent", reads_at="now")
 

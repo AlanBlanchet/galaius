@@ -122,7 +122,7 @@ def test_a_run_only_waiting_on_other_runs_past_the_flag_says_which_and_since_whe
     monkeypatch.setattr(time, "time", lambda: clock)
     at_work("lead")
     register_run("ended", agent="code-reviewer", parent_run_id="lead")
-    reg.finish("ended", exit_code=0)
+    reg.finish("ended", exit_code=0, first=0)
     with line.aside("lead", waits_on=waits_on):
         assert line.waiting_said() == {"lead": ASIDE}
         clock += 7 * 60
@@ -297,7 +297,7 @@ def test_every_kept_argument_of_a_spawn_is_one_run_agent_takes():
 
 def _ended(run_id: str, **rest) -> None:
     run = register_run(run_id=run_id, **rest)
-    reg.finish(run_id, exit_code=0, expected_pid=run.pid, expected_lifecycle_token=run.lifecycle_token)
+    reg.finish(run_id, exit_code=0, first=0, expected_pid=run.pid, expected_lifecycle_token=run.lifecycle_token)
 
 
 #: Another revision of the role's prompt (the spawn resolves revision 3 of agent 1).

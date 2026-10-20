@@ -25,7 +25,7 @@ def _answered(run_id: str, text: str) -> None:
 
 def _ended(run_id: str, at: float, *, status: str = "done", **rest) -> None:
     register_run(run_id, **rest)
-    reg.finish(run_id, exit_code=0 if status == "done" else 1)
+    reg.finish(run_id, exit_code=0 if status == "done" else 1, first=0)
     reg._merge_record_locked(run_id, {"status": status, "finished_at": at})
 
 
@@ -296,7 +296,7 @@ def test_the_watch_hands_back_a_run_with_no_parent_to_the_run_it_works_for(sent)
     with reg.record_lock(worker):
         reg.note_asker_locked(worker, coordinator)
     reg.record_message_event(from_run=coordinator, to_run=worker, text="row I")
-    reg.finish(worker, exit_code=0)
+    reg.finish(worker, exit_code=0, first=0)
     _answered(worker, "DONE: row I live.")
 
     watch.tick()

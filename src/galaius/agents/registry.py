@@ -26,6 +26,7 @@ import stat
 import subprocess
 import sys
 import time
+from collections import deque
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager, suppress
 from contextvars import ContextVar
@@ -38,7 +39,8 @@ from galaius.agents import quota
 from galaius_core import ASKED_BY_MAX, MEDIA_KEY, MODEL_ID_MAX, AgentMedia, AgentRevisionRef, ContextGauge, PromptExecutionRef, RunReplacement, StopActor
 
 from galaius.agents.events import (
-    CONTEXT_FIELDS, PERSON_SENDER, TOKEN_FIELDS, AgentEvent, MessageFields, RunCut, TokenUsage, UsageLedger, answered_line, ending_of, model_spoke, stream_lines,
+    CONTEXT_FIELDS, PERSON_SENDER, TOKEN_FIELDS, AgentEvent, MessageFields, RunCut, TokenUsage, UsageLedger, answered_line, its_work, model_spoke,
+    received, stream_lines,
 )
 from galaius.agents.catalog_connection import CatalogConnection
 from galaius.caller import Caller
@@ -240,26 +242,38 @@ class StreamDigest(BaseModel):
     last: str | None = None
 
     @classmethod
-    def of(cls, source: str, events: list[AgentEvent], viewer: str) -> Self:
-        ending = ending_of(events, viewer)
-        costs = [e.cost_usd for e in events if e.cost_usd is not None]
-        tokens = {}
-        for field in TOKEN_FIELDS:
-            used = [getattr(e, field) for e in events if getattr(e, field) is not None]
-            if used:
-                tokens[field] = sum(used)
-        context = ContextGauge()
+    def of(cls, source: str, events: Iterable[AgentEvent], viewer: str) -> Self:
+        """Folded as the events come (`StreamReader`), none held but the newest ones its last line may need: a digest
+        costs a line's memory, whatever the run's transcript grew to."""
+        seen, cost, tokens, context = False, None, {}, ContextGauge()
+        work = answer = None  # its newest event about its own work (`ending_of`), the same past the messages sent to it (`answered_line`)
+        compacted: int | None = None
+        said: list[AgentEvent] = []  # its newest event that summarises to something without a lookup, then the messages after it
         for event in events:
+            seen = True
+            if event.cost_usd is not None:
+                cost = (0 if cost is None else cost) + event.cost_usd
+            for field in TOKEN_FIELDS:
+                if (used := getattr(event, field)) is not None:
+                    tokens[field] = tokens.get(field, 0) + used
             context = context.model_copy(update=event.gauge_onto(context))
+            if its_work(event, viewer):
+                work = event
+                if not received(event, viewer):
+                    answer = event
+            if event.kind == "compacted":
+                compacted = event.context_tokens
+            said = [event] if event.kind != "message" and event.summary(viewer=viewer) else [*said, event]
+        ending = work if work is not None and work.kind in ("done", "error") else None
         return cls(
-            source=source, events=bool(events), context=context,
+            source=source, events=seen, context=context,
             ending=ending.kind if ending is not None else None,
             ending_text=(ending.text or "") if ending is not None else "",
             cut=ending.cut if ending is not None else None,
-            answered=answered_line(events, viewer),
-            cost_usd=sum(costs) if costs else None, tokens=tokens,
-            last=next((said for e in reversed(events) if (said := e.summary(viewer=viewer))), None),
-            compacted_to=next((e.context_tokens for e in reversed(events) if e.kind == "compacted"), None),
+            answered=answer.raw_index if answer is not None and answer.kind == "done" else None,
+            cost_usd=cost, tokens=tokens,
+            last=next((line for e in reversed(said) if (line := e.summary(viewer=viewer))), None),
+            compacted_to=compacted,
         )
 
 
@@ -1172,10 +1186,12 @@ def _remember_vendor_refusal(run: AgentRun, said: str, *, cut: RunCut | None = N
 
 
 def finish(
-    run_id: str, *, exit_code: int | None, expected_pid: int | None = None,
+    run_id: str, *, exit_code: int | None, first: int, expected_pid: int | None = None,
     expected_lifecycle_token: str | None = None,
 ) -> bool:
-    """Record how a run ended, only if this caller still owns its recorded process.
+    """Record how a run ended, only if this caller still owns its recorded process. `first`: the raw line its ended
+    process began at — its own events are read (`events_from`), in that turn's size, never the whole run's (a
+    dispatcher ends every queued turn of every run: its peak grew with each transcript).
 
     Also where a LATE quota/rate-limit refusal is caught — the one the post-spawn probe
     (`run.py::_quota_probe`) cannot see because the run had already been working for minutes.
@@ -1188,11 +1204,10 @@ def finish(
     `agent_queue.dispatch`) converge on exactly once per real termination, so checking here covers
     both without a second poller and without double-recording a run already finished.
 
-    Events are read BEFORE the lock: `read_events` takes `record_lock` itself (session/turn-id
-    backfill), and nesting the same advisory flock from this function's own `with` block below
-    would deadlock — a single-fd flock is not reentrant, even within one process.
+    Events are read BEFORE the lock: `_derive` below merges through `_update_fields`, which takes `record_lock` itself,
+    and a single-fd flock is not reentrant, even within one process.
     """
-    events = read_events(run_id)
+    events = events_from(run_id, first)
     terminal = events[-1] if events else None
     answered = answered_line(events, run_id)
     with record_lock(run_id):
@@ -1237,8 +1252,7 @@ def finish(
         })
     if finished is None:
         return False
-    # Fold the run's usage into its record the moment it ends. Outside the lock: `_derive`
-    # re-reads the stream and merges through `_update_fields`, each taking `record_lock` itself.
+    # Fold the run's usage into its record the moment it ends (`_digest` streams the whole run: a line's memory).
     _derive(finished)
     return True
 
@@ -1830,13 +1844,62 @@ def record_message(*, from_run: str, to_run: str, text: str) -> bool:
     return record_message_event(from_run=from_run, to_run=to_run, text=text) is not None
 
 
-def raw_line_count(run_id: str) -> int:
-    """How many lines the vendor stream holds right now — where a message lands in it."""
+#: Bytes read at a time where a whole raw stream is only scanned for its newlines (`raw_line_count`, `events_from`):
+#: what a run's length costs in memory, whatever it grew to (81 MB transcripts are real).
+_SCAN_CHUNK = 1 << 20
+
+
+def _raw_stream(run_id: str) -> BinaryIO | None:
+    """The run's raw vendor stream open for reading; None when it has none."""
     try:
-        payload = _read_private(raw_events_path(run_id))
-        return 0 if payload is None else len(stream_lines(payload.decode(errors="replace")))
+        return os.fdopen(_open_private(raw_events_path(run_id), os.O_RDONLY, create=False), "rb")
     except OSError:
+        return None
+
+
+def raw_line_count(run_id: str) -> int:
+    """How many lines the vendor stream holds right now — where a message lands in it. Its newlines counted chunk by
+    chunk, never decoded: the lines `stream_lines` splits it into (a last one without its newline counts)."""
+    stream = _raw_stream(run_id)
+    if stream is None:
         return 0
+    count, last = 0, b"\n"
+    with stream:
+        while chunk := stream.read(_SCAN_CHUNK):
+            count, last = count + chunk.count(b"\n"), chunk[-1:]
+    return count + (last != b"\n")
+
+
+def _raw_lines(run_id: str, first: int) -> Iterator[str] | None:
+    """The run's raw stream lines from line `first` on, as `stream_lines` splits the whole stream, read a chunk at a
+    time: the lines before `first` are only counted, never decoded nor held. None when it holds no byte."""
+    stream = _raw_stream(run_id)
+    if stream is None:
+        return None
+    if os.fstat(stream.fileno()).st_size == 0:
+        stream.close()
+        return None
+    return _lines_of(stream, first)
+
+
+def _lines_of(stream: BinaryIO, first: int) -> Iterator[str]:
+    with stream:
+        skip, rest = first, b""
+        while chunk := stream.read(_SCAN_CHUNK):
+            if skip:
+                if (count := chunk.count(b"\n")) < skip:
+                    skip -= count
+                    continue
+                at = -1
+                for _ in range(skip):
+                    at = chunk.index(b"\n", at + 1)
+                chunk, skip = chunk[at + 1:], 0
+            # A newline byte never sits inside a UTF-8 sequence: each line decodes as the whole stream would.
+            *lines, rest = (rest + chunk).split(b"\n")
+            for line in lines:
+                yield line.decode(errors="replace").removesuffix("\r")
+        if rest and not skip:
+            yield rest.decode(errors="replace").removesuffix("\r")
 
 
 def message_for(run_id: str, message_id: str) -> AgentEvent | None:
@@ -1888,7 +1951,7 @@ def _reader_code() -> str:
     code = hashlib.sha256()
     for module in (events, providers):
         code.update(Path(module.__file__).read_bytes())
-    for reader in (read_events, _interleave, _carry_observed_at, _mirror_normalised, StreamDigest.of):
+    for reader in (StreamReader, _lines_of, read_events, _interleave, _carry_observed_at, _mirror_normalised, StreamDigest.of):
         code.update(inspect.getsource(reader).encode())
     return code.hexdigest()[:16]
 
@@ -1960,66 +2023,97 @@ def _thinking_update(stored: AgentRun, estimate: int, *, urgent: bool) -> dict[s
     return {"thinking_live": live}
 
 
-def read_events(run_id: str) -> list[AgentEvent]:
-    """Every event of a run, normalised.
+class StreamReader:
+    """A run's events as `read_events` returns them — its raw vendor stream through its provider's parser, a corrupt or
+    half-written line skipped, the messages recorded on its side placed at the raw line each was sent at (`_interleave`)
+    — from raw line `first` on, read line by line: none held, so reading costs a line's memory whatever the transcript
+    grew to (81 MB are real). Without a raw stream (events appended directly: a test, a provider with none), its
+    normalised file then its messages. Once read: its `session_id` (the first a line names), `turn_id` (the last), its
+    usage `ledger`, and whether it read a raw stream (`raw`)."""
 
-    Reads the RAW vendor stream the child wrote itself and translates it through that provider's
-    parser. A corrupt or half-written line is skipped, never fatal — a truncated write during a
-    crash must not make the whole run unreadable.
-    """
-    stored = _read_record(run_id)
-    provider = PROVIDERS.get(stored.provider) if stored else None
-    try:
-        payload = _read_private(raw_events_path(run_id))
-        raw_lines = [] if payload is None else stream_lines(payload.decode(errors="replace"))
-    except OSError:
-        raw_lines = []
+    def __init__(self, run_id: str, first: int = 0) -> None:
+        self.run_id, self.first = run_id, first
+        self.stored = _read_record(run_id)
+        self.provider = PROVIDERS.get(self.stored.provider) if self.stored else None
+        self.ledger = UsageLedger()
+        self.session_id: str | None = None
+        self.turn_id: str | None = None
+        self.raw = False
 
-    # A raw stream is AUTHORITATIVE when present: the child wrote it itself, so it cannot be out
-    # of date. The mirror below is derived from it, and re-reading both would double-count.
-    if provider is not None and raw_lines:
-        parsed: list[AgentEvent] = []
-        ledger = UsageLedger()
-        for index, line in enumerate(raw_lines):
+    def __iter__(self) -> Iterator[AgentEvent]:
+        lines = _raw_lines(self.run_id, self.first) if self.provider is not None else None
+        if lines is None:
+            yield from self._appended()
+            yield from read_messages(self.run_id)
+            return
+        self.raw = True
+        # A message belongs before every parsed event from a later line; one with no anchor at the END (`_interleave`).
+        order = sorted(enumerate(event for event in read_messages(self.run_id) if event.raw_index is None or event.raw_index >= self.first),
+                       key=lambda pair: (math.inf if pair[1].raw_index is None else pair[1].raw_index, pair[0]))
+        pending = deque(event for _, event in order)
+        total = self.first
+        for index, line in enumerate(lines, start=self.first):
+            total = index + 1
             try:
-                event = provider.parse(line, ledger)
+                event = self.provider.parse(line, self.ledger)
             except (KeyError, TypeError, ValueError):
                 continue
-            if event is not None:
-                parsed.append(event.model_copy(update={"raw_index": index}))
-        if stored is not None:
-            session_id = next((event.session_id for event in parsed if event.session_id), None)
-            turn_id = next((event.turn_id for event in reversed(parsed) if event.turn_id), None)
-            updates = {}
-            if session_id and stored.provider_session_id != session_id:
-                updates["provider_session_id"] = session_id
-            if turn_id and stored.provider_turn_id != turn_id:
-                updates["provider_turn_id"] = turn_id
-            # The process watching a run re-reads it whole (a computer's runner every 0.3 s), and may not be the one
-            # holding `#run-mirror.lock`: its live thinking is published from here too.
-            updates |= _thinking_update(stored, ledger.thinking, urgent=bool(updates))
-            if updates:
-                current = _update_fields(run_id, updates)
-                if current is not None:
-                    stored = current
-        merged = _interleave(parsed, read_messages(run_id), len(raw_lines))
-        # The mirror is what the VS Code panel reads, so it must carry the WHOLE conversation.
-        # Written without messages, the chat showed the agent talking to nobody.
-        _mirror_normalised(run_id, merged)
-        return merged
+            if event is None:
+                continue
+            self.session_id = self.session_id or event.session_id
+            self.turn_id = event.turn_id or self.turn_id
+            while pending and pending[0].raw_index is not None and pending[0].raw_index <= index:
+                yield pending.popleft()
+            yield event.model_copy(update={"raw_index": index})
+        yield from sorted(pending, key=lambda event: total if event.raw_index is None else event.raw_index)
 
-    # No raw stream — events were appended directly (a test, or a provider that has none).
-    out: list[AgentEvent] = []
-    try:
-        payload = _read_private(events_path(run_id))
+    def _appended(self) -> Iterator[AgentEvent]:
+        try:
+            payload = _read_private(events_path(self.run_id))
+        except OSError:
+            return
         for line in ([] if payload is None else stream_lines(payload.decode())):
             try:
-                out.append(AgentEvent.model_validate_json(line))
+                yield AgentEvent.model_validate_json(line)
             except ValueError:
                 continue
-    except OSError:
-        pass
-    return out + read_messages(run_id)
+
+
+def read_events(run_id: str) -> list[AgentEvent]:
+    """Every event of a run, normalised (`StreamReader`), and what its raw stream says of the run kept current on its
+    record (its provider session and turn, its live thinking) and in its provider-agnostic mirror.
+
+    A raw stream is AUTHORITATIVE when present: the child wrote it itself, so it cannot be out of date. The mirror is
+    derived from it, and re-reading both would double-count."""
+    reader = StreamReader(run_id)
+    events = list(reader)
+    if not reader.raw:
+        return events
+    stored = reader.stored
+    if stored is not None:
+        updates = {}
+        if reader.session_id and stored.provider_session_id != reader.session_id:
+            updates["provider_session_id"] = reader.session_id
+        if reader.turn_id and stored.provider_turn_id != reader.turn_id:
+            updates["provider_turn_id"] = reader.turn_id
+        # The process watching a run re-reads it whole (a computer's runner every 0.3 s), and may not be the one
+        # holding `#run-mirror.lock`: its live thinking is published from here too.
+        updates |= _thinking_update(stored, reader.ledger.thinking, urgent=bool(updates))
+        if updates:
+            _update_fields(run_id, updates)
+    # The mirror is what the VS Code panel reads, so it must carry the WHOLE conversation.
+    # Written without messages, the chat showed the agent talking to nobody.
+    _mirror_normalised(run_id, events)
+    return events
+
+
+def events_from(run_id: str, first: int) -> list[AgentEvent]:
+    """The events of a run from raw line `first` on — exactly those of `read_events` whose `raw_index` is at least
+    `first`, messages included — in memory the size of that part alone: one attempt of a turn is settled from its own
+    lines (`agent_queue`, a queued delivery's reply, `finish`), whatever the run's transcript grew to. Its usage figures
+    are that part's own (the usage ledger starts at `first`); nothing is written (no record field, no mirror: the run's
+    mirror process keeps those)."""
+    return [event for event in StreamReader(run_id, first) if event.raw_index is not None and event.raw_index >= first]
 
 
 def _carry_observed_at(path: Path, events: list[AgentEvent]) -> None:
@@ -2194,11 +2288,6 @@ class StreamMirror:
             os.close(descriptor)
 
 
-def last_event(run_id: str) -> AgentEvent | None:
-    events = read_events(run_id)
-    return events[-1] if events else None
-
-
 def _status_for(run: AgentRun, *, depth: int = 0) -> RunStatus:
     """The one thing a file cannot assert about itself: whether it is still running.
 
@@ -2251,7 +2340,7 @@ def _digest(run: AgentRun) -> StreamDigest:
     # so the next listing re-reads it rather than trusting a digest that never saw that line.
     source = _stream_source(run.run_id)
     digest = run.stream_digest
-    return digest if digest is not None and digest.source == source else StreamDigest.of(source, read_events(run.run_id), viewer=run.run_id)
+    return digest if digest is not None and digest.source == source else StreamDigest.of(source, StreamReader(run.run_id), viewer=run.run_id)
 
 
 def _derive(run: AgentRun) -> AgentRun:

@@ -676,10 +676,9 @@ def _fresh_policy(run: reg.AgentRun):
 
 
 def _attempt_events(run_id: str, item: QueueItem) -> list[AgentEvent]:
-    """The events of the attempt `item` records (from its `raw_index` on); none when it records none."""
-    if item.raw_index is None:
-        return []
-    return [event for event in reg.read_events(run_id) if event.raw_index is not None and event.raw_index >= item.raw_index]
+    """The events of the attempt `item` records (from its `raw_index` on, `reg.events_from`: read in the attempt's size,
+    never the run's); none when it records none."""
+    return [] if item.raw_index is None else reg.events_from(run_id, item.raw_index)
 
 
 def _classify_attempt(item: QueueItem, attempt_events: list[AgentEvent]) -> tuple[AttemptState, str]:
@@ -711,10 +710,9 @@ def settle(run_id: str, item: QueueItem, code: int) -> None:
         error = f"resumed provider exited {code}"
         if detail:
             error += f": {_safe_process_detail(detail)}"
-        # Read before the lock: `read_events` locks the record itself. The provider's own
-        # last word (a quota refusal, a vendor error) outranks the exit code; a child that
-        # died saying nothing gets the exit code and its stderr as the run's last line.
-        said = reg.last_event(run_id)
+        # The provider's own last word in this attempt (a quota refusal, a vendor error) outranks the exit code; a child
+        # that died saying nothing gets the exit code and its stderr as the run's last line.
+        said = events[-1] if events else None
         stopped = code in (-signal.SIGTERM, 128 + signal.SIGTERM)
         # A turn that answered, or acted (a commit, a message, a deploy) before it died, is never sent again: its
         # tool calls would run twice.

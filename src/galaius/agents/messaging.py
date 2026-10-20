@@ -336,12 +336,9 @@ async def wait_for_reply(delivery: Delivery) -> str:
     if anchor is None:
         delivery.state = "error"
         return "ERROR: queued delivery has no persisted attempt anchor; resend explicitly."
-    events = reg.read_events(delivery.run_id)
     replies = [
-        event.text for event in events
-        if (event.kind == "text" or (event.kind == "done" and event.final_text))
-        and event.text.strip()
-        and event.raw_index is not None and event.raw_index >= anchor
+        event.text for event in reg.events_from(delivery.run_id, anchor)
+        if (event.kind == "text" or (event.kind == "done" and event.final_text)) and event.text.strip()
     ]
     if not replies:
         delivery.state = "error"

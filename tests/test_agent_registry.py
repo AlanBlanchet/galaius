@@ -488,7 +488,7 @@ def test_status_is_derived_from_pid_liveness_and_recorded_exit(
     survives the process going away."""
     register_run(pid=999999 if not alive else 1)
     if finish_exit_code is not None:
-        reg.finish("r1", exit_code=finish_exit_code)
+        reg.finish("r1", exit_code=finish_exit_code, first=0)
     monkeypatch.setattr(reg, "_alive", lambda pid: alive)
     run = reg.list_runs()[0]
     assert run.status == expected_status
@@ -671,14 +671,14 @@ def test_a_stale_reaper_cannot_finish_a_reused_run_pid():
     assert current is not None and current.lifecycle_token != first.lifecycle_token
 
     assert reg.finish(
-        "r1", exit_code=0, expected_pid=111,
+        "r1", exit_code=0, first=0, expected_pid=111,
         expected_lifecycle_token=first.lifecycle_token,
     ) is False
     current = reg.get_run("r1")
     assert current is not None and current.pid == 111 and current.status == "running"
 
     assert reg.finish(
-        "r1", exit_code=0, expected_pid=111,
+        "r1", exit_code=0, first=0, expected_pid=111,
         expected_lifecycle_token=current.lifecycle_token,
     ) is True
 
@@ -717,14 +717,17 @@ def test_derived_fields_cannot_clobber_a_same_pid_new_turn(monkeypatch):
     entered = threading.Event()
     release = threading.Event()
     stale_events = [AgentEvent(kind="text", text="stale reply", cost_usd=1.0)]
-    real_read_events = reg.read_events
+    real_reader = reg.StreamReader
 
-    def delayed_read_events(run_id):
-        entered.set()
-        assert release.wait(timeout=10)
-        return stale_events if run_id == "r1" else real_read_events(run_id)
+    class DelayedReader(real_reader):
+        def __iter__(self):
+            if self.run_id != "r1":
+                return super().__iter__()
+            entered.set()
+            assert release.wait(timeout=10)
+            return iter(stale_events)
 
-    monkeypatch.setattr(reg, "read_events", delayed_read_events)
+    monkeypatch.setattr(reg, "StreamReader", DelayedReader)
     result = {}
 
     def derive():
@@ -767,13 +770,6 @@ def test_the_tree_spans_providers():
 # ── events: what it is doing now, and what it cost ───────────────────────────────────────────
 
 
-def test_the_last_event_is_what_it_is_doing_now():
-    register_run()
-    reg.append_event("r1", reg.AgentEvent(kind="tool", tool="Bash"))
-    reg.append_event("r1", reg.AgentEvent(kind="text", text="thinking about it"))
-    assert reg.last_event("r1").text == "thinking about it"
-
-
 def test_cost_totals_come_from_the_events():
     register_run()
     reg.append_event("r1", reg.AgentEvent(kind="text", output_tokens=10))
@@ -793,7 +789,7 @@ def test_events_survive_a_corrupt_line():
     reg.append_event("r1", reg.AgentEvent(kind="text", text="one"))
     (reg.agents_dir() / "r1.jsonl").open("a").write("{ this is not json\n")
     reg.append_event("r1", reg.AgentEvent(kind="text", text="two"))
-    assert reg.last_event("r1").text == "two"
+    assert reg.read_events("r1")[-1].text == "two"
 
 
 # ── seeing agents we did NOT spawn ───────────────────────────────────────────────────────────
@@ -889,7 +885,7 @@ def test_a_stop_after_its_answer_leaves_the_run_finished(monkeypatch, lines, tur
     monkeypatch.setattr(reg, "_alive", lambda pid: alive)
     assert reg.stop("r1", by=reg.caller_stop_actor({"GALAIUS_PARENT_RUN_ID": "boss"})) is True
     assert killed == ([1] if alive else [])
-    reg.finish("r1", exit_code=exit_code)  # its process, ended by that stop, reaped with SIGTERM's code
+    reg.finish("r1", exit_code=exit_code, first=0)  # its process, ended by that stop, reaped with SIGTERM's code
     monkeypatch.setattr(reg, "_alive", lambda pid: False)
     stopped = expected == "stopped"
     for run in (reg.get_run("r1"), next(run for run in reg.list_runs() if run.run_id == "r1")):
@@ -933,7 +929,7 @@ def test_a_launch_refused_before_its_first_turn_is_replaced_by_its_relaunch(line
         register_run(boss, pid=2, agent="main", session_id="web-1")
     reg.register(run_id="r1", name="refused", provider=provider, task="t", pid=1, agent=role, parent_run_id=parent, session_id=session)
     reg.raw_events_path("r1").write_text("".join(json.dumps(line) + "\n" for line in lines))
-    reg.finish("r1", exit_code=1)
+    reg.finish("r1", exit_code=1, first=0)
     relaunch = reg.register(run_id="r2", name="relaunch", provider="claude", model="claude-opus-5-5", task="t", pid=3,
                             agent="backend-engineer", parent_run_id="boss" if parent else None, session_id=None if parent else "web-1")
     assert reg.take_over_refused(relaunch) == ("r1" if replaced else None)
@@ -943,7 +939,7 @@ def test_a_launch_refused_before_its_first_turn_is_replaced_by_its_relaunch(line
     if replaced:
         # Resumed since, then ended again: its own ending, « Continuer » offered again.
         reg.begin_turn("r1", pid=4)
-        reg.finish("r1", exit_code=1)
+        reg.finish("r1", exit_code=1, first=0)
         assert reg.get_run("r1").replaced_by is None
 
 
@@ -955,7 +951,7 @@ def test_a_run_continued_with_the_task_takes_over_the_launch_refused_before_it()
     reg._merge_record_locked("idle", {"started_at": time.time() - 2 * reg.TAKEOVER_WINDOW})
     reg.register(run_id="r1", name="refused", provider="codex", task="t", pid=1, agent="backend-engineer", parent_run_id="boss")
     reg.raw_events_path("r1").write_text("".join(json.dumps(line) + "\n" for line in _CODEX_REFUSED))
-    reg.finish("r1", exit_code=1)
+    reg.finish("r1", exit_code=1, first=0)
 
     assert reg.take_over_refused(reg.get_run("idle")) is None  # by its own parent and start: not its launch
     assert reg.take_over_refused(reg.get_run("idle"), parent="boss", at=time.time()) == "r1"
@@ -972,7 +968,7 @@ def test_a_relaunch_takes_over_only_its_newest_refused_launch_within_the_window(
             reg._merge_record_locked(run_id, {"started_at": started_at})
         if run_id != "later":
             reg.raw_events_path(run_id).write_text(json.dumps(_CODEX_REFUSED[-1]) + "\n")
-            reg.finish(run_id, exit_code=1)
+            reg.finish(run_id, exit_code=1, first=0)
     later = reg.get_run("later")
     assert reg.take_over_refused(later) is None  # 500 s past the window of "new"
     assert reg.take_over_refused(later, window=reg.TAKEOVER_WINDOW * 2) == "new"
@@ -1034,7 +1030,7 @@ def test_the_record_on_disk_carries_cost_and_activity(monkeypatch):
     register_run()
     reg.append_event("r1", reg.AgentEvent(kind="tool", tool="Bash"))
     reg.append_event("r1", reg.AgentEvent(kind="done", cost_usd=0.61))
-    reg.finish("r1", exit_code=0)
+    reg.finish("r1", exit_code=0, first=0)
 
     raw = json.loads((reg.agents_dir() / "r1.json").read_text())
     assert raw["cost_usd"] == pytest.approx(0.61)
@@ -1434,7 +1430,7 @@ def test_the_repo_root_itself_resolves_to_itself(tmp_path):
 
 def _finished(run_id="r1", name="reviewer"):
     run = reg.register(run_id=run_id, name=name, provider="claude", task="t", pid=None)
-    reg.finish(run_id, exit_code=0)
+    reg.finish(run_id, exit_code=0, first=0)
     return run
 
 
@@ -1535,7 +1531,7 @@ def test_tokens_accumulate_for_a_run_with_a_raw_vendor_stream(tmp_path, monkeypa
     })
     # One message's usage repeats on every content-block line; counted once.
     raw.write_text("\n".join([block_line, block_line, result_line]) + "\n")
-    assert reg.finish("r1", exit_code=0)
+    assert reg.finish("r1", exit_code=0, first=0)
     stored = reg.get_run("r1")  # complete at termination, before anything lists runs
     assert (stored.input_tokens, stored.cached_input_tokens, stored.output_tokens) == (800, 300, 40)
     assert stored.cost_usd == 0.5
@@ -1775,7 +1771,7 @@ def test_a_late_refusal_ending_a_fresh_run_records_a_cooldown():
     assert quota.blocked_until("claude", "claude-fable-5-1") is None, "sanity: nothing recorded yet"
 
     token = reg.get_run("late1").lifecycle_token
-    assert reg.finish("late1", exit_code=1, expected_pid=222, expected_lifecycle_token=token) is True
+    assert reg.finish("late1", exit_code=1, first=0, expected_pid=222, expected_lifecycle_token=token) is True
 
     assert quota.blocked_until("claude", "claude-fable-5-1") is not None, \
         "the late refusal in this run's own event stream never cooled its model down"
@@ -1800,7 +1796,7 @@ def test_a_late_model_refusal_is_remembered_against_the_login_that_heard_it():
     }) + "\n")
 
     token = reg.get_run("late-unsupported").lifecycle_token
-    assert reg.finish("late-unsupported", exit_code=1, expected_pid=555, expected_lifecycle_token=token) is True
+    assert reg.finish("late-unsupported", exit_code=1, first=0, expected_pid=555, expected_lifecycle_token=token) is True
 
     assert quota.unsupported_until("codex", "gpt-6-astra", login="chatgpt-account") is not None, \
         "the login the vendor refused the model to never remembered it; the next launch offers it again"
@@ -1822,7 +1818,7 @@ def test_a_late_refusal_ending_a_RESUMED_run_records_a_cooldown():
     reg.raw_events_path("late2").write_text(json.dumps({
         "type": "result", "is_error": False, "session_id": "SID", "result": "first turn ok",
     }) + "\n")
-    reg.finish("late2", exit_code=0, expected_pid=111,
+    reg.finish("late2", exit_code=0, first=0, expected_pid=111,
               expected_lifecycle_token=reg.get_run("late2").lifecycle_token)
     assert quota.blocked_until("claude", "claude-fable-5-1") is None, "a clean turn must not cool anything"
 
@@ -1834,7 +1830,7 @@ def test_a_late_refusal_ending_a_RESUMED_run_records_a_cooldown():
         ))
 
     assert reg.finish(
-        "late2", exit_code=1, expected_pid=333, expected_lifecycle_token=resumed.lifecycle_token,
+        "late2", exit_code=1, first=0, expected_pid=333, expected_lifecycle_token=resumed.lifecycle_token,
     ) is True
 
     assert quota.blocked_until("claude", "claude-fable-5-1") is not None, \
@@ -1910,7 +1906,7 @@ def test_a_clean_finish_records_no_cooldown():
     reg.raw_events_path("late3").write_text(json.dumps({
         "type": "result", "is_error": False, "session_id": "SID", "result": "all done",
     }) + "\n")
-    reg.finish("late3", exit_code=0, expected_pid=444,
+    reg.finish("late3", exit_code=0, first=0, expected_pid=444,
               expected_lifecycle_token=reg.get_run("late3").lifecycle_token)
     assert quota.blocked_until("claude", "claude-fable-5-1") is None
 
@@ -1930,7 +1926,7 @@ def test_polling_live_runs_rereads_only_records_written_since(monkeypatch):
     assert [r.run_id for r in reg.running_runs()] == ["live"]
     assert reads == []
 
-    reg.finish("live", exit_code=0)
+    reg.finish("live", exit_code=0, first=0)
     reads.clear()
     assert reg.running_runs() == []
     assert reads == ["live"]
@@ -2002,8 +1998,13 @@ def test_a_listing_rereads_a_transcript_only_when_it_changed(monkeypatch, ended,
     elif change == "message_arrived":
         assert reg.record_message(from_run="r0", to_run="r1", text="one more thing")
     reads: list[str] = []
-    real = reg.read_events
-    monkeypatch.setattr(reg, "read_events", lambda run_id: reads.append(run_id) or real(run_id))
+
+    class Counted(reg.StreamReader):
+        def __iter__(self):
+            reads.append(self.run_id)
+            return super().__iter__()
+
+    monkeypatch.setattr(reg, "StreamReader", Counted)
     listed = next(run for run in reg.list_runs() if run.run_id == "r1")
     assert ("r1" in reads) is rereads
 
@@ -2060,6 +2061,35 @@ def test_a_line_separator_inside_an_event_keeps_the_event_whole(separator):
     assert reg.raw_line_count("r1") == 2
 
 
+def test_an_attempt_is_read_from_its_anchor_as_the_whole_run_reads_it_past_there(monkeypatch):
+    """Settling one queued message read the WHOLE run (every line parsed, the mirror rewritten): the dispatcher's peak
+    grew with the transcript, 289 → 1,037 MB over 15 messages. `events_from` reads only the lines past the attempt's
+    anchor, chunk-scanned to them: every event `read_events` keeps past any anchor, messages included, the usage
+    ledger's figures aside (that part's own); `raw_line_count` counts the same lines, a last one still being written
+    too; nothing is written."""
+    monkeypatch.setattr(reg, "_SCAN_CHUNK", 7)  # anchors fall across chunk edges
+    fixtures = Path(__file__).parent / "fixtures" / "agents"
+    turns = [(fixtures / name).read_text().splitlines() for name in ("claude_context_usage.jsonl", "claude_stream.jsonl", "claude_compact_stream.jsonl")]
+    register_run(run_id="lead")
+    register_run(run_id="r1", provider="claude")
+    for number, lines in enumerate([*turns, _CLAUDE_LINES]):
+        with reg.raw_events_path("r1").open("a", encoding="utf-8") as raw:
+            raw.write("\n".join(lines) + "\n")
+        reg.record_message(from_run="lead", to_run="r1", text=f"next\u2028step {number}")
+    with reg.raw_events_path("r1").open("a", encoding="utf-8") as raw:
+        raw.write('{ not json\n{"type":"assistant","message":{"id":"half"')  # a corrupt line, then one being written
+    lines = reg.raw_line_count("r1")
+    assert lines == len(reg.raw_events_path("r1").read_text(encoding="utf-8").split("\n"))
+    ledger = {*TOKEN_FIELDS, "usage", "cost_usd", "context_window", "at"}
+    every = [event.model_dump(exclude=ledger) for event in reg.events_from("r1", 0)]
+    assert not reg.events_path("r1").exists()
+    whole = reg.read_events("r1")
+    assert [event.model_dump(exclude=ledger) for event in whole] == every
+    for anchor in range(lines + 2):
+        past = [event.model_dump(exclude=ledger) for event in whole if event.raw_index is not None and event.raw_index >= anchor]
+        assert [event.model_dump(exclude=ledger) for event in reg.events_from("r1", anchor)] == past, anchor
+
+
 # A run a provider usage limit stopped resumes by itself at the reset the provider named (owner
 # 2026-10-09: five builder runs stayed « failed » after their « resets 5:20pm » had passed).
 _SESSION_LIMIT = "You've hit your session limit · resets 5:20pm (Europe/Paris)"
@@ -2075,7 +2105,7 @@ def _ended_on(run_id: str, said: str, *, pid: int, parent: str | None = None) ->
     reg.register(run_id=run_id, pid=pid, provider="claude", name="w", agent="app-engineer",
                  model="claude-opus-5-5", parent_run_id=parent)
     reg.raw_events_path(run_id).write_text(_claude_error_stream(said))
-    assert reg.finish(run_id, exit_code=1, expected_pid=pid, expected_lifecycle_token=reg.get_run(run_id).lifecycle_token)
+    assert reg.finish(run_id, exit_code=1, first=0, expected_pid=pid, expected_lifecycle_token=reg.get_run(run_id).lifecycle_token)
     return reg.get_run(run_id)
 
 
@@ -2177,7 +2207,7 @@ def test_a_run_its_lost_login_stopped_is_claimed_once_and_a_second_loss_at_once_
     with reg.raw_events_path("login2").open("a") as stream:
         stream.write(_claude_error_stream(_LOGIN_EXPIRED))
     monkeypatch.setattr(reg.time, "time", lambda: claimed.resumed_at + 10)
-    assert reg.finish("login2", exit_code=1, expected_pid=414, expected_lifecycle_token=resumed.lifecycle_token)
+    assert reg.finish("login2", exit_code=1, first=0, expected_pid=414, expected_lifecycle_token=resumed.lifecycle_token)
     assert reg.schedule_resumes(now=claimed.resumed_at + 20) == [], "a login still lost after its resume looped"
 
 
@@ -2199,7 +2229,7 @@ def test_a_cut_comes_back_by_itself_only_once_a_runner_here_resumes_cuts_and_onl
 def test_only_a_signal_sent_from_outside_reads_as_a_kill_its_pc_resumes(resuming, exit_code, cause):
     """code-reviewer b57485ab: a crash of the program itself (SIGABRT, SIGSEGV) is its own error, never resumed by itself."""
     register_run(run_id="sig")
-    reg.finish("sig", exit_code=exit_code)
+    reg.finish("sig", exit_code=exit_code, first=0)
     assert reg.cut_cause(reg.get_run("sig")) == cause
 
 
@@ -2214,7 +2244,7 @@ def test_a_cut_that_keeps_coming_back_is_resumed_twice_then_left_to_a_person_unt
         claimed = reg.claim_resume("oom", now=at + cycle * 600 + 1)
         assert (claimed is not None) is (cycle < reg.AUTO_RESUMES_PER_CUT), f"cycle {cycle}"
     reg._merge_record_locked("oom", {"status": "running", "pid": os.getpid(), "pid_started": None})
-    reg.finish("oom", exit_code=0)
+    reg.finish("oom", exit_code=0, first=0)
     assert reg.get_run("oom").resumed_cuts == 0
 
 
@@ -2228,7 +2258,7 @@ def test_a_resumed_turn_refused_again_right_away_is_left_to_reprendre(resuming, 
     with reg.raw_events_path("lim-again").open("a") as stream:
         stream.write(_claude_error_stream(_SESSION_LIMIT))
     monkeypatch.setattr(reg.time, "time", lambda: claimed.resumed_at + 10)
-    assert reg.finish("lim-again", exit_code=1, expected_pid=405, expected_lifecycle_token=resumed.lifecycle_token)
+    assert reg.finish("lim-again", exit_code=1, first=0, expected_pid=405, expected_lifecycle_token=resumed.lifecycle_token)
     assert reg.schedule_resumes() == [] and reg.get_run("lim-again").resume_at is None
 
 

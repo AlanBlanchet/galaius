@@ -1030,17 +1030,17 @@ def _reap_continuation(lifecycle: ContinuationHandle) -> None:
         code = process.wait()
         if code:
             record_turn_stderr(run_id, stderr_file)
-        with suppress(Exception):
-            reg.read_events(run_id)
+        # Its stream's mirror is the run-mirror holder's (`_mirror_pass` settles a run leaving the live set): a reaper
+        # reads only its own turn.
         with suppress(Exception):
             reg.finish(
-                run_id, exit_code=code, expected_pid=process.pid,
+                run_id, exit_code=code, first=lifecycle.raw_index, expected_pid=process.pid,
                 expected_lifecycle_token=lifecycle.lifecycle_token,
             )
     except Exception:
         with suppress(Exception):
             reg.finish(
-                run_id, exit_code=None, expected_pid=process.pid,
+                run_id, exit_code=None, first=lifecycle.raw_index, expected_pid=process.pid,
                 expected_lifecycle_token=lifecycle.lifecycle_token,
             )
     finally:
@@ -1247,7 +1247,7 @@ async def _reap(run_id: str, process, lifecycle_token: str) -> None:
     with suppress(Exception):
         reg.read_events(run_id)
     reg.finish(
-        run_id, exit_code=code, expected_pid=process.pid,
+        run_id, exit_code=code, first=0, expected_pid=process.pid,  # a new run: its whole stream is this turn
         expected_lifecycle_token=lifecycle_token,
     )
 

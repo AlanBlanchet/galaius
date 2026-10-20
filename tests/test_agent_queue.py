@@ -640,7 +640,7 @@ def test_a_message_to_a_working_run_is_read_after_its_next_own_tool_call_and_set
     with reg.open_raw_events("r2", append=True) as stream:
         stream.write(json.dumps({"type": "assistant", "session_id": "vendor", "message": {"content": [{"type": "text", "text": "footer checked"}]}}).encode() + b"\n")
         stream.write(json.dumps({"type": "result", "is_error": False, "session_id": "vendor"}).encode() + b"\n")
-    reg.finish("r2", exit_code=0, expected_pid=run.pid, expected_lifecycle_token=run.lifecycle_token)
+    reg.finish("r2", exit_code=0, first=0, expected_pid=run.pid, expected_lifecycle_token=run.lifecycle_token)
     agent_queue.dispatch("r2")
 
     assert [item.state for item in agent_queue.items("r2")] == ["replied"] and provider.messages == []
