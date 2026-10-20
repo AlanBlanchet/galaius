@@ -27,39 +27,57 @@ from galaius.config import Config
 HoldReason = Literal["usage_limit", "login_lost", "memory"]
 
 
-class Hold(BaseModel):
-    """One reason a turn does not start here now, since `since`; `provider` / `subscription` name the login it holds
-    (None: every turn, the memory hold)."""
+class MemoryReading(BaseModel):
+    """The agents' memory past its soft limit (`SoftMemory.hold`): since when, the working set's share of the slice's cap,
+    the share it waits under, and the slice's largest tenant that is no agent run (a browser venue, a shared server)
+    with its working set in GB — waiting frees none of it, so the line names it for someone to stop."""
 
     model_config = ConfigDict(frozen=True)
 
-    reason: HoldReason
-    since: float
-    #: `usage_limit`: when its window reopens (it starts then, with no click). None: when its cause clears.
-    until: float | None = None
+    reason: Literal["memory"] = "memory"
+    at: float
+    used_percent: float
+    release_percent: int
+    tenant: tuple[str, float] | None = None
+
+
+class Hold(BaseModel):
+    """One reason a turn does not start here now: its cause, a login's pause (`quota.Pause`, for `provider` /
+    `subscription`) or the agents' memory (`MemoryReading`, every turn)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    cause: quota.Pause | MemoryReading = Field(discriminator="reason")
     provider: str | None = None
     subscription: UUID | None = None
-    #: `memory`: the working set's share of the slice's cap when it held, and the share it waits under.
-    used_percent: float | None = None
-    release_percent: int | None = None
-    #: `memory`: the slice's largest tenant that is no agent run (a browser venue, a shared server) and its working set
-    #: in GB: waiting frees none of it, so the line names it for someone to stop.
-    tenant: tuple[str, float] | None = None
+
+    @model_validator(mode="after")
+    def _login_of_its_cause(self) -> Self:
+        """A login's pause names that login; the memory hold, every turn's, none."""
+        if isinstance(self.cause, quota.Pause) != (self.provider is not None) or (self.provider is None and self.subscription is not None):
+            raise ValueError("a login's pause names its provider; the memory hold names no login")
+        return self
+
+    @property
+    def reason(self) -> HoldReason:
+        return self.cause.reason
+
+    @property
+    def until(self) -> float | None:
+        """`usage_limit`: when its window reopens (it starts then, with no click); None: when its cause clears."""
+        return self.cause.until if isinstance(self.cause, quota.Pause) else None
 
     @classmethod
     def of_login(cls, provider: str, subscription: UUID | None, *, now: float | None = None) -> Self | None:
         """This login's hold (`quota.login_pause`), None when it takes turns."""
         pause = quota.login_pause(provider, subscription=subscription, now=now)
-        if pause is None:
-            return None
-        return cls(reason=pause.reason, since=pause.at, until=pause.until, provider=provider, subscription=subscription)
+        return None if pause is None else cls(cause=pause, provider=provider, subscription=subscription)
 
     def holding(self, memory: SoftMemory | None, *, now: float | None = None) -> bool:
         """Still holding at `now`, asked again of its cause (`memory` None: no soft limit)."""
         if self.reason == "memory":
             return memory is not None and memory.hold(now=now) is not None
-        assert self.provider is not None
-        return Hold.of_login(self.provider, self.subscription, now=now) is not None
+        return Hold.of_login(self.provider or "", self.subscription, now=now) is not None
 
     def line(self, *, promise: bool = True) -> str:
         """The waiting run's line (`agents list`, `agents send`): « en pause : limite d'usage claude jusqu'à 17:21, reprise
@@ -69,9 +87,11 @@ class Hold(BaseModel):
             return f"en pause : limite d'usage {self.provider} jusqu'à {at}" + (", reprise sans clic" if promise else "")
         if self.reason == "login_lost":
             return f"en pause : connexion {self.provider} perdue" + (", reprise sans clic une fois reconnectée sur ce PC" if promise else "")
-        held_by = f" (dont {self.tenant[0]} : {self.tenant[1]:.1f} Go, hors agents)" if self.tenant is not None else ""
-        return (f"en pause : mémoire des agents à {self.used_percent:.0f} % de leur plafond{held_by}"
-                + (f", reprise sous {self.release_percent} %" if promise else ""))
+        memory = self.cause
+        assert isinstance(memory, MemoryReading)
+        held_by = f" (dont {memory.tenant[0]} : {memory.tenant[1]:.1f} Go, hors agents)" if memory.tenant is not None else ""
+        return (f"en pause : mémoire des agents à {memory.used_percent:.0f} % de leur plafond{held_by}"
+                + (f", reprise sous {memory.release_percent} %" if promise else ""))
 
 
 class Paused(Exception):
@@ -142,7 +162,7 @@ class SoftMemory(BaseModel):
             if since is None:
                 since = moment
                 write(repr(since).encode())
-        return Hold(reason="memory", since=since, used_percent=used, release_percent=self.release_percent, tenant=self.tenant())
+        return Hold(cause=MemoryReading(at=since, used_percent=used, release_percent=self.release_percent, tenant=self.tenant()))
 
 
 def _working_set(cgroup: Path) -> int | None:
