@@ -16,7 +16,7 @@ from galaius.agents import agent_queue, handback, messaging, registry as reg
 from galaius.agents.conversations import ConversationAnswers, ConversationScope
 from galaius.agents.providers import PROVIDERS, available_providers, provider_caveat_note, provider_for
 from galaius.agents.run import run_agent
-from galaius.agents.spawn_line import Continued, Spawn, SpawnLine, StartNew
+from galaius.agents.spawn_line import Admission, Continued, Spawn, SpawnLine, StartNew
 from galaius.server.core import instrumented, mcp, offloaded
 
 
@@ -173,10 +173,12 @@ async def agent_spawn(
                         f"It starts by itself once a place frees; agent_events(run_id=\"{admission.run_id}\") says where it stands, "
                         "agent_stop takes it out of the line.")
             predecessor = await asyncio.to_thread(spawn.taking_over)
-            try:
-                handle = await spawn.start(admission.run_id, run_agent)
-            finally:
-                line.leave(admission.run_id)
+            launched = await line.launch(admission, spawn, run_agent)
+            if isinstance(launched, Admission):   # held at launch: it waits in line, said why
+                return (f"Queued [{label}] — run_id={launched.run_id}, {launched.sentence()}.{handover.note()}\n"
+                        f"It starts by itself once that clears; agent_events(run_id=\"{launched.run_id}\") says where it stands, "
+                        "agent_stop takes it out of the line.")
+            handle = launched
             takeover = await asyncio.to_thread(spawn.takeover_sentence, predecessor, handle.run_id)
             takeover = f"{takeover}\n" if takeover else ""
     except ValueError as e:  # an unknown permission mode, or a spawn leaving its caller's tree (`Spawn.asked`)

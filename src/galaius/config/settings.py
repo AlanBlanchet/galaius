@@ -217,6 +217,11 @@ class Config(BaseSettings):
     agent_waiting_gap_seconds: Annotated[float, Field(ge=0)] = 60.0
     agent_memory_max_percent: Annotated[int, Field(ge=1, le=100)] = 45
     agent_run_memory_max_percent: Annotated[int, Field(ge=1, le=100)] = 20
+    # The agents' soft memory limit, a share of that slice's cap: past it no agent turn starts here (a spawn, a resumed
+    # turn) until the slice is back under the release share (`galaius.agents.admission.SoftMemory`). Never a kernel
+    # MemoryHigh: that throttle stalls every agent on reclaim (`galaius.agents.ceiling`).
+    agent_memory_soft_percent: Annotated[int, Field(ge=1, le=100)] = 85
+    agent_memory_release_percent: Annotated[int, Field(ge=1, le=100)] = 80
     # systemd-oomd acts on the agents' slice when it stalls this share of the time on memory.
     agent_oomd_pressure_percent: Annotated[int, Field(ge=1, le=100)] = 80
     agent_cpu_percent: Annotated[int, Field(ge=1, le=100)] = 75

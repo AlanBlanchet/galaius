@@ -1153,7 +1153,7 @@ def model_spoke_in(run_id: str) -> bool:
     return False
 
 
-def _remember_vendor_refusal(run: AgentRun, said: str, *, now: float | None = None) -> None:
+def _remember_vendor_refusal(run: AgentRun, said: str, *, cut: RunCut | None = None, now: float | None = None) -> None:
     """A refusal heard PAST the launch's own probe window, remembered against what it is a fact about.
 
     A quota or rate limit is a fact about the SUBSCRIPTION and cools down in minutes to hours
@@ -1165,6 +1165,10 @@ def _remember_vendor_refusal(run: AgentRun, said: str, *, now: float | None = No
     if (kind := quota.classify(said)) is not None:
         quota.remember(kind, run.provider, run.model, said=said, subscription=run.subscription_id,
                        login=run.login, now=now)
+    # A lost login (`cut`, as its program said it) pauses that login's new turns here until it answers or is signed in
+    # again (`admission`): every run resumed meanwhile would be cut the same way (2026-10-18: 8 at once).
+    if cut is RunCut.login_lost:
+        quota.pause_login(run.provider, "login_lost", subscription=run.subscription_id, said=said, now=now)
 
 
 def finish(
@@ -1205,7 +1209,7 @@ def finish(
                 and stored.lifecycle_token != expected_lifecycle_token):
             return False
         if terminal is not None and terminal.kind == "error" and terminal.text:
-            _remember_vendor_refusal(stored, terminal.text)
+            _remember_vendor_refusal(stored, terminal.text, cut=terminal.cut)
         finished_at = time.time()
         # A stop is the owner's decision and stays the ending: the killed process then exits with
         # SIGTERM's code (-15, or 143 through a shell) and its reaper must not turn it "failed".
@@ -1589,7 +1593,7 @@ def append_event(run_id: str, event: AgentEvent) -> None:
             # the error that follows it a moment later says only "switch to another model". The
             # error can no longer shorten what the rate-limit line already wrote (`record_refusal`
             # never lowers a live block), so hearing both is strictly better than hearing one.
-            _remember_vendor_refusal(stored, event.text)
+            _remember_vendor_refusal(stored, event.text, cut=event.cut)
         elif event.kind in ("text", "tool", "thinking") and (event.input_tokens or 0) > 0:
             # The MODEL answering — a turn that read tokens; the CLI's own notice reads none:
             # whatever an earlier refusal left against it is over, whatever reset it named. An
@@ -2342,7 +2346,7 @@ def _derive(run: AgentRun) -> AgentRun:
             # model for an hour (2026-10-10).
             if (ending == "error" and digest.ending_text
                     and original.get("status") != "failed" and run.status == "failed"):
-                _remember_vendor_refusal(run, digest.ending_text, now=vendor_said_at(run))
+                _remember_vendor_refusal(run, digest.ending_text, cut=digest.cut, now=vendor_said_at(run))
             # The other way round: a run nobody reaped (`agents spawn` detaches) that ended on its
             # model's answer proves the model serves — as `finish` says for a reaped one — but only
             # against what was heard before that answer.

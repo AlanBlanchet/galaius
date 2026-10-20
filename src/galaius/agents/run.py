@@ -29,7 +29,7 @@ from galaius.caller import Caller
 from galaius_core import IMAGE_TYPES, AgentRevisionRef, SubscriptionCap, SubscriptionChoices
 from pydantic import BaseModel, ConfigDict
 
-from galaius.agents import agent_queue
+from galaius.agents import admission, agent_queue
 from galaius.agents import registry as reg
 from galaius.agents import quota, relations
 from galaius.agents import run_folder
@@ -1487,6 +1487,10 @@ async def run_agent(
     pinned_id = pinned.subscription_id if pinned is not None else None
     noted = {index: until for index, candidate in enumerate(candidates)
              if (until := quota.blocked_until(candidate.provider, candidate.model, subscription=first_login.get(candidate.provider, pinned_id))) is not None}
+    # A login whose usage window refused a turn and named its reopening is out of the walk until then (`admission`),
+    # asked before each candidate: a child started there now is refused the same way, and a refusal heard from one model
+    # pauses its login's others. Every candidate held: the spawn waits in line (`admission.Paused`), never refused for it.
+    held: dict[int, admission.Hold] = {}
     chosen_index = -1
     walk = deque([index for index in range(len(candidates)) if index not in noted] + list(noted))
     #: Candidates passed over only because this login was refused them before: asked again, once, when
@@ -1500,6 +1504,11 @@ async def run_agent(
             skipped = [entry for entry in skipped if entry.candidate not in (candidates[index] for index in remembered)]
         index = walk.popleft()
         candidate = candidates[index]
+        if (hold := admission.Hold.of_login(candidate.provider, first_login.get(candidate.provider, pinned_id))) is not None \
+                and hold.reason == "usage_limit":
+            held[index] = hold
+            skipped.append(_skip_record(candidate, _skip("quota_exceeded", hold.line()), until=hold.until))
+            continue
         candidate_provider = by_name[candidate.provider]
         candidate_pin, candidate_env = pinned, environment
         if candidate.provider in offered:
@@ -1533,6 +1542,11 @@ async def run_agent(
             coarse_accepted=candidate_coarse_accepted,
         )
         login = auth_cache.get((candidate_provider.name, route_key), (None, ""))[1]
+        # Its login as just checked (`_unavailable`): signed in ends a lost-login pause, signed out pauses its resumed turns.
+        if reason is None:
+            quota.login_back(candidate.provider, subscription=candidate_pin_id)
+        elif reason.code == "unauthenticated":
+            quota.pause_login(candidate.provider, "login_lost", subscription=candidate_pin_id, said=reason.message)
         if reason is None and not asking_again \
                 and (asked_again := quota.unsupported_until(candidate.provider, candidate.model, login=login)):
             remembered.append(index)
@@ -1715,6 +1729,13 @@ async def run_agent(
     ), until=until) for index, until in noted.items()
         if index < chosen_index and chosen_index not in noted and not asking_again] + skipped
     if chosen is None or process is None or chosen_provider is None or model is None:
+        # Nothing else could start: it starts once a held login reopens, never refused for it — one whose launch was just
+        # refused naming its reopening included (`quota.record_refusal` paused it).
+        held = held or {index: hold for index, candidate in enumerate(candidates)
+                        if (hold := admission.Hold.of_login(candidate.provider, first_login.get(candidate.provider, pinned_id))) is not None
+                        and hold.reason == "usage_limit"}
+        if held:
+            raise admission.Paused(tuple(dict.fromkeys(held.values())))
         if caps:
             # A cap is what stood in the way: said as such, the window reopening first (an allowance or a wait opens it).
             raise SubscriptionCapped(min(caps, key=lambda cap: cap.resets_at or datetime.max.replace(tzinfo=UTC)))

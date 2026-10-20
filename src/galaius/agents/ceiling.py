@@ -30,13 +30,14 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from galaius.config import Config
 
 SLICE = "galaius-agents.slice"
-_RUN_SCOPE = "galaius-run-"
+RUN_SCOPE_PREFIX = "galaius-run-"
 _SYSTEMCTL_TIMEOUT = 5
 
 log = logging.getLogger(__name__)
@@ -123,16 +124,26 @@ def contained(argv: Sequence[str], ceiling: Ceiling | None = None, *, run_id: st
     return [systemd_run, "--user", "--scope", "--quiet", "--collect", f"--slice={SLICE}", *scope, "--", *argv]
 
 
+def slice_cgroup(root: Path = Path("/sys/fs/cgroup")) -> Path | None:
+    """:data:`SLICE`'s cgroup folder under this user's manager (a dashed slice nests in its prefixes:
+    ``galaius.slice/galaius-agents.slice``); None where it does not exist (no user manager, never started)."""
+    uid = os.getuid()
+    parts = SLICE.removesuffix(".slice").split("-")
+    folder = root / "user.slice" / f"user-{uid}.slice" / f"user@{uid}.service"
+    folder = folder.joinpath(*(f"{'-'.join(parts[:depth])}.slice" for depth in range(1, len(parts) + 1)))
+    return folder if folder.is_dir() else None
+
+
 def run_scope_name(run_id: str) -> str:
     """The scope one turn of run ``run_id`` runs in: the run's id, then a nonce, since a resumed
     turn may start while the scope of an earlier one is still being torn down."""
-    return f"{_RUN_SCOPE}{run_id}-{secrets.token_hex(4)}.scope"
+    return f"{RUN_SCOPE_PREFIX}{run_id}-{secrets.token_hex(4)}.scope"
 
 
 def is_run_scope(unit: str | None, run_id: str) -> bool:
     """Whether ``unit`` is a scope :func:`contained` made for run ``run_id``: never its launcher's unit (the
     editor, the machine runner, a parent run's scope), which a pid sits in until ``systemd-run`` moves it."""
-    return bool(unit) and unit.startswith(f"{_RUN_SCOPE}{run_id}-") and unit.endswith(".scope")
+    return bool(unit) and unit.startswith(f"{RUN_SCOPE_PREFIX}{run_id}-") and unit.endswith(".scope")
 
 
 def _prepare_slice(systemctl: str, ceiling: Ceiling) -> None:

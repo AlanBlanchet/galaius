@@ -38,7 +38,7 @@ from galaius.agents.providers import (
     provider_for,
 )
 from galaius.agents.run import ModelUnavailable, is_criterion, Ranking, rank, resolve_model, run_agent
-from galaius.agents.spawn_line import Continued, Spawn, SpawnLine, StartNew
+from galaius.agents.spawn_line import Admission, Continued, Spawn, SpawnLine, StartNew
 from galaius.cli.clients import ClientTarget, MCPServer, Scope
 from galaius.cli.command_bootstrap import Config, UserConfig
 from galaius.cli.render import CliRenderer
@@ -1734,10 +1734,12 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
                 print(admission.run_id)
                 return
             predecessor = spawn.taking_over()
-            try:
-                started = asyncio.run(spawn.start(admission.run_id, _agent_runner())).run_id
-            finally:
-                line.leave(admission.run_id)
+            launched = asyncio.run(line.launch(admission, spawn, _agent_runner()))
+            if isinstance(launched, Admission):   # held at launch: it waits in line, said why
+                print(launched.sentence())
+                print(launched.run_id)
+                return
+            started = launched.run_id
             forget_others(started)
             if sentence := spawn.takeover_sentence(predecessor, started):
                 print(sentence)  # before the id: the run id stays the last stdout line

@@ -26,7 +26,8 @@ import json
 import os
 import re
 import time
-from contextlib import suppress
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal, Self
@@ -36,6 +37,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import BaseModel, ConfigDict, Field
 
 from galaius.agents.events import instant
+from galaius.file_lock import exclusive
 from galaius.paths import UserPaths
 
 #: A vendor CLI's own refusal for QUOTA or RATE LIMIT — provider-neutral by construction, keyed
@@ -138,6 +140,10 @@ MAX_COOLDOWN = max(WINDOWS.values())
 #: the vendor opens the model to that plan — which a login that reads the same across plans (Codex says
 #: only « Logged in using ChatGPT ») cannot show — so the question is asked again daily.
 UNSUPPORTED_RECHECK = 86400.0
+
+#: Why a provider login takes no new turn on this computer (`login_pause`): its usage window refused one and named
+#: when it reopens (`usage_limit`), or its program said the login was lost (`login_lost`).
+PauseReason = Literal["usage_limit", "login_lost"]
 
 #: What a vendor refusal IS, as `classify` reads it: a fact about the account's quota, or about this
 #: login's access to that model. Each is recorded in its own place and for its own length.
@@ -491,6 +497,8 @@ def record_refusal(provider: str, model: str | None, *, said: str = "", subscrip
         until = max(until, previous.until)
     entries[key] = Block(until=until, count=count, at=max(moment, previous.at) if previous else moment)
     _write(entries)
+    if refusal is not None and refusal.reopens_at is not None:
+        pause_login(provider, "usage_limit", subscription=subscription, said=said, now=moment, until=refusal.reopens_at + RESET_SLACK)
     return until
 
 
@@ -549,6 +557,7 @@ def served(provider: str, model: str | None, *, subscription: UUID | None = None
     remembered under it then (`lifted_after`). Writes only when there was something to forget or a
     lift to note; a refusal heard after the answer stands."""
     moment = time.time() if at is None else at
+    login_back(provider, subscription=subscription, at=moment)
     entries = _read(time.time())
     key = _key(provider, model, subscription)
     found = entries.get(key)
@@ -609,6 +618,111 @@ def forget_login(provider: str, *, subscription: UUID | None = None, now: float 
              if _of_login(key, provider, subscription) and block.until > moment}
     if ended:
         _write({**entries, **ended})
+
+
+class Pause(BaseModel):
+    """Why one provider login takes no new turn here (`login_pause`), heard `at`: a usage window that refused a turn
+    and named its reopening (`until`), or a lost login (until it answers or is signed in again, `login_back`)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    reason: PauseReason
+    at: float
+    #: `usage_limit`: the reopening the vendor named, plus `RESET_SLACK` (`registry.limit_resume_at` resumes a cut run then).
+    until: float | None = None
+    #: The vendor's words, first line, for the waiting run's line.
+    said: str = ""
+
+    def live(self, provider: str, subscription: UUID | None, now: float) -> bool:
+        """Still pausing at `now`: a lost login until `login_back`; a usage limit until its reopening, or until the login
+        answered after the refusal (`lifted_after`: a vendor reopens before the instant it names)."""
+        if self.reason == "login_lost":
+            return True
+        return self.until is not None and now < self.until and lifted_after(provider, self.at, subscription=subscription) is None
+
+
+def _paused_path() -> Path:
+    return UserPaths.agents() / "quota-paused.json"
+
+
+def _read_paused(now: float) -> dict[str, dict[str, Pause]]:
+    """Per login (`_login`), its pauses by reason, a usage pause gone once its reopening passed. Unreadable: none."""
+    found: dict[str, dict[str, Pause]] = {}
+    with suppress(Exception):
+        raw = json.loads(_paused_path().read_text(encoding="utf-8"))
+        for login, reasons in (raw if isinstance(raw, dict) else {}).items():
+            for value in (reasons.values() if isinstance(reasons, dict) else ()):
+                with suppress(ValueError):
+                    pause = Pause.model_validate(value)
+                    if pause.until is None or pause.until > now:
+                        found.setdefault(str(login), {})[pause.reason] = pause
+    return found
+
+
+@contextmanager
+def _paused(now: float) -> Iterator[dict[str, dict[str, Pause]]]:
+    """The login pauses at `now` (`_read_paused`) for the block to change in place, written back after it, all under
+    their own lock: every process here (a dispatcher, the runner, a spawn) pauses and lifts logins, and a lift lost to
+    a concurrent write would hold that login's turns for good."""
+    path = _paused_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with exclusive(os.open(path.with_name("#quota-paused.lock"), os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)):
+        entries = _read_paused(now)
+        before = {login: dict(reasons) for login, reasons in entries.items()}
+        yield entries
+        if entries != before:
+            _write_json(path, {login: {reason: pause.model_dump() for reason, pause in reasons.items()}
+                               for login, reasons in entries.items() if reasons})
+
+
+def pause_login(provider: str, reason: PauseReason, *, subscription: UUID | None = None, said: str = "",
+                now: float | None = None, until: float | None = None) -> None:
+    """Pause this login's new turns here (`login_pause`): a usage limit until `until` (the reopening it named, past
+    `now`; a live one is never shortened), a lost login until it answers again. A later reader hearing the same words
+    again rewrites nothing older."""
+    moment = time.time() if now is None else now
+    if reason == "usage_limit" and (until is None or until <= moment):
+        return
+    login = _login(provider, subscription)
+    with _paused(moment) as entries:
+        previous = entries.get(login, {}).get(reason)
+        if previous is not None and previous.at >= moment:
+            return
+        if reason == "usage_limit" and previous is not None and until is not None and previous.until is not None:
+            until = max(until, previous.until) if previous.live(provider, subscription, moment) else until
+        line = next((part.strip() for part in said.splitlines() if part.strip()), "")[:200]
+        entries.setdefault(login, {})[reason] = Pause(reason=reason, at=moment, until=until, said=line)
+
+
+def login_pause(provider: str, *, subscription: UUID | None = None, now: float | None = None) -> Pause | None:
+    """Why this login takes no new turn now (a lost login first: no reset brings it back), else None."""
+    moment = time.time() if now is None else now
+    reasons = _read_paused(moment).get(_login(provider, subscription), {})
+    return next((pause for reason in ("login_lost", "usage_limit")
+                 if (pause := reasons.get(reason)) is not None and pause.live(provider, subscription, moment)), None)
+
+
+def lost_logins(now: float | None = None) -> list[tuple[str, UUID | None]]:
+    """Each login paused as lost (provider, subscription): the runner asks whether it is signed in again."""
+    found = []
+    for login, reasons in _read_paused(time.time() if now is None else now).items():
+        if "login_lost" in reasons:
+            provider, _, subscription = login.partition("#")
+            with suppress(ValueError):
+                found.append((provider, UUID(subscription) if subscription else None))
+    return found
+
+
+def login_back(provider: str, *, subscription: UUID | None = None, at: float | None = None) -> None:
+    """This login answered, or is signed in again, at `at`: a lost login heard before then is over."""
+    moment = time.time() if at is None else at
+    login = _login(provider, subscription)
+    if "login_lost" not in _read_paused(time.time()).get(login, {}):   # every answer asks: the lock only when there is one to lift
+        return
+    with _paused(time.time()) as entries:
+        lost = entries.get(login, {}).get("login_lost")
+        if lost is not None and lost.at <= moment:
+            del entries[login]["login_lost"]
 
 
 def forget(provider: str | None = None, model: str | None = None) -> None:

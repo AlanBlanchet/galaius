@@ -40,7 +40,7 @@ from galaius_core import (
     AgentAllowanceRequest, AgentMoveRequest, AgentProgramInstallRequest, AgentProgramsRequest, AgentProviderState, AgentSignInCodeRequest, AgentSignOutRequest, SubscriptionAllowance, Lent, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
     MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, PassedOverCandidate, ReadsAt, AgentRefusalCode, WebLimited, WebLoad, media_key, media_paths, MachineAgentSession, MachineFileEntry, StopActor, WorkspaceCreateRequest, WorkspacePack, WorkspacePackRequest, WorkspacePrepareRequest, WorkspaceRefresh, WorkspacesRequest,
 )
-from galaius.agents import agent_queue
+from galaius.agents import agent_queue, quota
 from galaius.agents import registry as reg
 from galaius.agents.assembly import _TransportRegistry
 from galaius.agents.host import ConversationHost, ConversationRefused
@@ -1139,6 +1139,12 @@ class MachineAgents(BaseModel):
         starts becomes the run's failure, with why (never resumed by itself again). Returns the ids it resumed."""
         claimed: list[tuple[reg.AgentRun, str, str]] = []
         signed_in: dict[tuple[str, UUID | None], bool | None] = {}
+        # A lost login pausing this PC's turns (`quota.login_pause`) lifts once signed in again, held turns starting then.
+        for login in await asyncio.to_thread(quota.lost_logins):
+            if self.programs is not None and login not in signed_in:
+                signed_in[login] = await asyncio.to_thread(self.programs.signed_in, *login)
+            if signed_in.get(login):
+                await asyncio.to_thread(quota.login_back, login[0], subscription=login[1])
         for run, cut in await asyncio.to_thread(reg.schedule_resumes):
             ready = False
             if cut.resumes == "sign_in":

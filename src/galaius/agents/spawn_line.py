@@ -19,6 +19,11 @@ place of 6 was held, half by runs each waiting on a child, a chain of hand-offs 
 critic verdicts they waited for queued behind them. Its first child takes the place it gave back ahead of the line,
 when that place is still free. Woken, it counts again at once, never waiting (a message for it is read at once): the
 line is over the limit by the runs woken while it was full, and no spawn starts until it is below again.
+
+A turn also waits while this computer may not start it (`admission`): its login's usage window shut until the reopening
+it named, its login lost, the agents' memory past its soft limit. It starts once that clears, with no click, its line
+saying why meanwhile. His « Continuer » during a usage pause goes through alone, as the one try asking the vendor again
+(`_probe`): the others wait on its answer (2026-10-13: 12 runs resumed at once into the same refusal).
 """
 
 from __future__ import annotations
@@ -40,6 +45,7 @@ from galaius_core import AgentRevisionRef
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from galaius.agents import agent_queue, messaging, relations
+from galaius.agents.admission import Hold, Paused, SoftMemory, turn_hold
 from galaius.agents import registry as reg
 from galaius.agents.policy import Policy, PolicyError
 from galaius.agents.providers import provider_for
@@ -426,7 +432,14 @@ class Place(Held):
     state: Literal["starting", "waiting", "failed"]
     parent_run_id: str | None = None
     spawn: Spawn | None = None
+    #: `failed`: why. `waiting`: why it may not start now (`Hold.line`), "" when it only waits for a place.
     said: str = ""
+    #: A spawn held at launch (`admission.Paused`): every login it could run on, each paused; it waits until one lifts.
+    holds: tuple[Hold, ...] = ()
+
+    def queued(self) -> bool:
+        """Waiting for a place only: one held (`said`) waits on its cause, never ahead of the line."""
+        return self.state == "waiting" and not self.said
 
     def asked(self) -> bool:
         """A spawn someone asked for (every place but a resumed turn's): one `agents list` shows until it starts."""
@@ -500,11 +513,15 @@ class Admission(BaseModel):
     run_id: str
     ahead: int | None
     load: Load
+    #: Why it may not start now beyond a place (`Hold.line`); "" when it only waits for one.
+    held: str = ""
 
     def sentence(self) -> str:
         """« en file : 2 avant elle (8 agents au travail sur ce PC, 6 places prises sur 6) »; "" when it starts now."""
         if self.ahead is None:
             return ""
+        if self.held:
+            return self.held
         aside = f", {self.load.aside} rendue{'s' if self.load.aside > 1 else ''} par des runs qui attendent leurs agents" if self.load.aside else ""
         return (f"en file : {self.ahead} avant elle ({self.load.runs} agents au travail sur ce PC, "
                 f"{self.load.places} places prises sur {self.load.limit}{aside})")
@@ -552,12 +569,17 @@ class SpawnLine(BaseModel):
     waiting_flag_minutes: float = Field(gt=0)
     #: Seconds between two waits of a run within which the second carries on the first (`Aside.waiting_since`).
     waiting_gap_seconds: float = Field(ge=0)
+    #: The agents' soft memory limit: past it no turn starts here (`admission.SoftMemory`); None: none.
+    memory: SoftMemory | None = None
 
     @classmethod
     def here(cls) -> SpawnLine:
         config = Config()
         return cls(limit=config.agent_runs_max, waiting_flag_minutes=config.agent_waiting_flag_minutes,
-                   waiting_gap_seconds=config.agent_waiting_gap_seconds)
+                   waiting_gap_seconds=config.agent_waiting_gap_seconds, memory=SoftMemory.here(config))
+
+    def _memory_hold(self) -> Hold | None:
+        return self.memory.hold() if self.memory is not None else None
 
     @contextmanager
     def _places(self) -> Iterator[list[Place]]:
@@ -627,12 +649,16 @@ class SpawnLine(BaseModel):
         usage on stupid things »); before, `ASIDE` while its place is free."""
         at_work, now, flag = self._at_work([]), time.time(), self.waiting_flag_minutes * 60
         giving = at_work.giving()
-        return {run_id: entry.said(now) if entry.waited(now) >= flag else ASIDE
-                for run_id, entry in at_work.entries.items() if run_id in giving or entry.waited(now) >= flag}
+        with self._places() as places:   # a resumed turn held (`resuming`): why, in place of its last activity
+            held = {place.run_id: place.said for place in places if place.spawn is None and place.state == "waiting" and place.said}
+        return held | {run_id: entry.said(now) if entry.waited(now) >= flag else ASIDE
+                       for run_id, entry in at_work.entries.items() if run_id in giving or entry.waited(now) >= flag}
 
     def _admits(self, places: list[Place], parent: str | None, *, first: bool) -> bool:
         """Whether a run of `parent` starts now: it shares its parent's place, or a place is free and it is `first` in line
         or its parent is set aside, its place given back (`AtWork.giving`): the child takes it ahead of the line."""
+        if self._memory_hold() is not None:   # past the soft memory limit: no turn starts, a shared place's neither
+            return False
         at_work = self._at_work(places)
         return at_work.shares(parent) or ((first or parent in at_work.giving()) and not at_work.load(self.limit).full)
 
@@ -666,14 +692,45 @@ class SpawnLine(BaseModel):
         `waiting` behind every spawn already waiting, held by a waiter started here."""
         run_id, me = str(uuid.uuid4()), Caller.current().pid  # the caller asking: a client gone frees its place
         with self._places() as places:
-            ahead = sum(place.state == "waiting" for place in places)
+            ahead = sum(place.queued() for place in places)
             load = self.load(places)
             starts = self._admits(places, spawn.parent_run_id, first=ahead == 0)
             places.append(Place(run_id=run_id, asked_at=time.time(), state="starting" if starts else "waiting", holder=me,
                                 holder_started=process_started(me), parent_run_id=spawn.parent_run_id, spawn=spawn))
         if not starts:
             self._hold(run_id, spawn, me)
-        return Admission(run_id=run_id, ahead=None if starts else ahead, load=load)
+        held = self._memory_hold() if not starts else None
+        return Admission(run_id=run_id, ahead=None if starts else ahead, load=load, held=held.line() if held is not None else "")
+
+    async def launch(self, admission: Admission, spawn: Spawn, runner: Callable[..., Awaitable[RunHandle]] | None = None) -> RunHandle | Admission:
+        """Start `spawn`, admitted now (`enter`), then free its place. Held at launch (`admission.Paused`: every login it
+        could run on paused) it waits in line instead, its waiter started, the `Admission` returned saying why."""
+        try:
+            handle = await spawn.start(admission.run_id, runner)
+        except Paused as held:
+            return self._defer(admission.run_id, spawn, held.holds, asker=os.getpid())
+        except BaseException:
+            self.leave(admission.run_id)
+            raise
+        self.leave(admission.run_id)
+        return handle
+
+    def _defer(self, run_id: str, spawn: Spawn, holds: tuple[Hold, ...], *, asker: int | None) -> Admission:
+        """`run_id`'s place back to `waiting`, behind every spawn waiting, until one of `holds` lifts (`_turn`); its
+        waiter started when `asker` (the process that tried it) holds it, else the waiter itself does."""
+        said = min(holds, key=lambda hold: hold.until or float("inf")).line()
+        with self._places() as places:
+            place = next((place for place in places if place.run_id == run_id), None)
+            if place is not None:
+                places.remove(place)
+            ahead = sum(other.queued() for other in places)
+            me = os.getpid()
+            places.append(Place(run_id=run_id, asked_at=place.asked_at if place is not None else time.time(), state="waiting", holder=me,
+                                holder_started=process_started(me), parent_run_id=spawn.parent_run_id, spawn=spawn, said=said, holds=holds))
+            load = self.load(places)
+        if asker is not None:
+            self._hold(run_id, spawn, asker)
+        return Admission(run_id=run_id, ahead=ahead, load=load, held=said)
 
     def _hold(self, run_id: str, spawn: Spawn, asker: int) -> None:
         """Start the waiter holding `run_id`'s place, writing to the run's own stderr file (`_prune` quotes it)."""
@@ -713,6 +770,7 @@ class SpawnLine(BaseModel):
             return
         me = os.getpid()
         with self._places() as places:
+            hold = self._turn_hold(run, places)
             place = next((place for place in places if place.run_id == run.run_id), None)
             if place is None or place.state == "failed":
                 if place is not None:
@@ -721,8 +779,11 @@ class SpawnLine(BaseModel):
                               holder_started=process_started(me), parent_run_id=run.parent_run_id)
                 places.append(place)
             index = places.index(place)
-            head = next((other for other in places if other.state == "waiting"), None)
-            admitted = place.state == "waiting" and self._admits(places, run.parent_run_id, first=head is place)
+            said = hold.line() if hold is not None else ""
+            if place.state == "waiting" and place.said != said:
+                places[index] = place = place.model_copy(update={"said": said})
+            head = next((other for other in places if other.queued()), None)
+            admitted = hold is None and place.state == "waiting" and self._admits(places, run.parent_run_id, first=head is place)
             if admitted:
                 places[index] = place.model_copy(update={"state": "starting", "holder": me, "holder_started": process_started(me)})
         try:
@@ -730,6 +791,27 @@ class SpawnLine(BaseModel):
         finally:
             if admitted:
                 self.leave(run.run_id)
+
+    def _turn_hold(self, run: reg.AgentRun, places: list[Place]) -> Hold | None:
+        """Why `run`'s next turn may not start now (`admission.turn_hold`); asked under its record lock (`agent_queue.dispatch`)
+        and the line's (`places`). His own turn passes a login's pause alone (`_probe`)."""
+        hold = turn_hold(run.provider, run.subscription_id, self.memory)
+        return None if hold is not None and hold.reason != "memory" and self._probe(run, places) else hold
+
+    @staticmethod
+    def _probe(run: reg.AgentRun, places: list[Place]) -> bool:
+        """`run`'s next turn is the person's own (his « Continuer », a message he typed: `PERSON_SENDER`) and no run of its
+        login works or is starting here now: it asks the vendor again. A usage window reopens before the instant it named
+        (2026-10-13: « resets 1:40pm » heard 13:06, the login answering from 13:10); a login he signed in again answers.
+        Answered, the pause lifts for every run (`quota.lifted_after`, `quota.login_back`); refused, its new refusal pauses
+        them again. Read under its record lock and the line's, so two of his turns never both pass."""
+        pending = next((item for item in agent_queue.items_locked(run.run_id) if item.state == "pending"), None)
+        if pending is None or pending.sender != reg.PERSON_SENDER:
+            return False
+        starting = [reg.get_run(place.run_id) for place in places if place.state == "starting" and place.run_id != run.run_id]
+        working = [other for other in reg.running_runs() if other.run_id != run.run_id and other.working()]
+        return not any(other is not None and other.provider == run.provider and other.subscription_id == run.subscription_id
+                       for other in (*working, *starting))
 
     def waits(self, run_id: str) -> str | None:
         """Where `run_id`'s next turn stands when it waits for a place (`agents send`): its place's line, or, its dispatcher
@@ -741,7 +823,7 @@ class SpawnLine(BaseModel):
         with self._places() as places:
             if (place := next((place for place in places if place.run_id == run_id), None)) is not None:
                 return None if place.state == "starting" else self._said(places, place)
-            waiting = sum(place.state == "waiting" for place in places)
+            waiting = sum(place.queued() for place in places)
             if self._admits(places, run.parent_run_id, first=waiting == 0):
                 return None
             return Admission(run_id=run_id, ahead=waiting, load=self.load(places)).sentence()
@@ -757,7 +839,11 @@ class SpawnLine(BaseModel):
             return f"not started: {place.said}"
         if place.state == "starting":
             return "starting"
-        ahead = [other.run_id for other in places if other.state == "waiting"].index(place.run_id)
+        if place.said:
+            return place.said
+        if (memory := self._memory_hold()) is not None:
+            return memory.line()
+        ahead = [other.run_id for other in places if other.queued()].index(place.run_id)
         said = Admission(run_id=place.run_id, ahead=ahead, load=self.load(places)).sentence()
         return f"{said} — {STUCK}" if self._stuck(places) else said
 
@@ -775,7 +861,7 @@ class SpawnLine(BaseModel):
             return run_id
 
         holders = {team(run_id) for run_id in taken}
-        waiting = {team(place.parent_run_id) for place in places if place.state == "waiting" and place.parent_run_id in taken}
+        waiting = {team(place.parent_run_id) for place in places if place.queued() and place.parent_run_id in taken}
         return at_work.load(self.limit).full and bool(holders) and holders <= waiting
 
     def cancel(self, prefix: str, *, within: frozenset[str] | None = None) -> str | None:
@@ -814,7 +900,11 @@ class SpawnLine(BaseModel):
             index = places.index(place)
             if place.holder != me:
                 places[index] = place = place.model_copy(update={"holder": me, "holder_started": process_started(me)})
-            head = next(other for other in places if other.state == "waiting")
+            if place.holds:   # held at launch: tried again once one of its logins may take a turn
+                if all(hold.holding(self.memory) for hold in place.holds):
+                    return "wait"
+                places[index] = place = place.model_copy(update={"holds": (), "said": ""})
+            head = next(other for other in places if other.queued())
             if not self._admits(places, place.parent_run_id, first=head.run_id == run_id):
                 return "wait"
             places[index] = place = place.model_copy(update={"state": "starting"})
@@ -822,17 +912,22 @@ class SpawnLine(BaseModel):
 
     def wait(self, run_id: str) -> None:
         """The waiter: once `run_id` may start, start it, then free its place; ends when the place is gone."""
-        while (turn := self._turn(run_id)) == "wait":
-            time.sleep(POLL_SECONDS)
-        if turn == "gone":
+        while True:
+            while (turn := self._turn(run_id)) == "wait":
+                time.sleep(POLL_SECONDS)
+            if turn == "gone":
+                return
+            assert turn.spawn is not None
+            try:
+                asyncio.run(turn.spawn.start(run_id))
+            except Paused as held:   # its logins paused meanwhile: back in line until one lifts
+                self._defer(run_id, turn.spawn, held.holds, asker=None)
+                continue
+            except Exception as error:  # every way a start fails: the place says why, the run id resolves to it
+                self._settle(run_id, str(error) or type(error).__name__)
+                return
+            self.leave(run_id)
             return
-        assert turn.spawn is not None
-        try:
-            asyncio.run(turn.spawn.start(run_id))
-        except Exception as error:  # every way a start fails: the place says why, the run id resolves to it
-            self._settle(run_id, str(error) or type(error).__name__)
-            return
-        self.leave(run_id)
 
 
 def main() -> None:
