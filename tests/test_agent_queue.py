@@ -379,6 +379,79 @@ def test_wait_for_item_does_not_timeout_a_healthy_slow_dispatcher(monkeypatch):
     assert item is not None and item.state == "replied"
 
 
+def _stream(*lines: dict, code: int = 0) -> str:
+    """A resumed turn's child: `lines` on its stream, then exit `code`."""
+    return "import json, sys\n" + "".join(f"print(json.dumps({line!r}), flush=True)\n" for line in lines) + f"sys.exit({code})\n"
+
+
+_TEXT = {"type": "assistant", "session_id": "vendor", "message": {"content": [{"type": "text", "text": "reply"}]}}
+_DONE = {"type": "result", "subtype": "success", "is_error": False, "session_id": "vendor"}
+_LIMIT = "You've hit your session limit · resets 11pm (Europe/Paris)"
+#: How resumed turns ended in this PC's queue files (2026-10-13..20), and what their message reads once settled.
+ATTEMPTS = {
+    # 32 « resumed provider exited 1 » with nothing said, 7 of them before any result: sent once more, once.
+    "died saying nothing, then replied": ([_stream(code=1), _stream(_TEXT, _DONE)], "replied", 2),
+    "died twice": ([_stream(code=1), _stream(code=1)], "failed", 2),
+    # 13 refused by the plan's limit: sending again before the reset is refused again.
+    "usage limit": ([_stream({"type": "assistant", "session_id": "vendor", "message": {"model": "<synthetic>", "content": [{"type": "text", "text": _LIMIT}]}},
+                             {**_DONE, "is_error": True, "result": _LIMIT}, code=1)], "failed", 1),
+    # Died after it acted: sent again, its tool calls (a commit, a message) would run twice.
+    "acted, then died": ([_stream({"type": "assistant", "session_id": "vendor", "message": {"content": [
+        {"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"command": "git commit -m x"}}]}}, code=1)], "failed", 1),
+    # ~8 answered, then the CLI exited 1: the answer stands.
+    "replied, then exited 1": ([_stream(_TEXT, _DONE, code=1)], "replied", 1),
+    # 43 « resumed turn completed without a reply »: the turn ended done, its work is the answer.
+    "ended done without text": ([_stream(_DONE)], "replied", 1),
+}
+
+
+@pytest.mark.parametrize(("streams", "state", "launched"), ATTEMPTS.values(), ids=ATTEMPTS.keys())
+def test_a_message_is_sent_once_more_only_when_its_turn_died_before_answering(monkeypatch, streams, state, launched):
+    scripts = iter(streams)
+
+    class Provider(_Provider):
+        def resume_command(self, session_id, message, **kwargs):
+            self.messages.append(said(message))
+            return [sys.executable, "-c", next(scripts)]
+
+    provider = _setup(monkeypatch, Provider())
+    delivery = messaging.deliver_message("r1", "do it", sender="operator")
+    agent_queue.dispatch("r1")
+
+    [item] = agent_queue.items("r1")
+    assert (item.state, len(provider.messages)) == (state, launched), item.error
+    assert item.attempts == launched - 1 and delivery.state == "queued"
+
+
+def test_two_runs_queued_at_once_are_drained_by_one_dispatcher_process(monkeypatch, request):
+    """Each message hands its run to the PC's one dispatcher (started once), which drains every run handed to it, each
+    in a thread of its own, then ends once nothing is left."""
+    ensure = agent_queue.ensure_dispatcher_locked
+    provider = _setup(monkeypatch)
+    monkeypatch.setattr(agent_queue, "ensure_dispatcher_locked", ensure)
+    monkeypatch.setattr(agent_queue, "HUB_IDLE_SECONDS", 0.2)
+    reg.register(run_id="r2", pid=999999, provider=provider.name, name="other", task="t", agent="tester", provider_session_id="vendor-2")
+    started, stand_ins = [], []
+    monkeypatch.setattr(reg, "start_participant", lambda *argv, **_kwargs: started.append(argv) or stand_ins.append(
+        subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])) or stand_ins[-1])
+    request.addfinalizer(lambda: [process.kill() for process in stand_ins])
+
+    deliveries = [messaging.deliver_message(run_id, f"for {run_id}", sender="operator") for run_id in ("r1", "r2")]
+    [(module, verb, token)] = started
+    hub = {agent_queue._state(run_id)["dispatcher_pid"] for run_id in ("r1", "r2")}
+    assert (module, verb, len(hub)) == ("galaius.agents.agent_queue", "--serve", 1)
+
+    drained = []
+    real_dispatch = agent_queue.dispatch
+    monkeypatch.setattr(agent_queue, "dispatch", lambda run_id, own=None: drained.append((run_id, os.getpid())) or real_dispatch(run_id, own))
+    agent_queue.serve(token)
+
+    assert all(delivery.state == "queued" for delivery in deliveries)
+    assert sorted(drained) == [("r1", os.getpid()), ("r2", os.getpid())]
+    assert [item.state for run_id in ("r1", "r2") for item in agent_queue.items(run_id)] == ["replied", "replied"]
+    assert not any(agent_queue._state(run_id)["dispatcher_pid"] for run_id in ("r1", "r2")) and agent_queue._hub_change(lambda hubs: hubs) == agent_queue.Hubs()
+
+
 def test_full_queue_refuses_before_recording_transcript_message(monkeypatch):
     monkeypatch.setattr(agent_queue, "MAX_PENDING", 1)
     _setup(monkeypatch)

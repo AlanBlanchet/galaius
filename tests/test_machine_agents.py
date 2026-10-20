@@ -389,7 +389,7 @@ def test_a_message_is_answered_once_durably_queued_and_its_dispatcher_gets_the_m
     env, path = dict(started["env"]), started["env"]["PATH"]
     assert {**env, "PATH": None} == {**agents.environment, "GALAIUS_AGENTS_DIR": str(reg.agents_dir()), "PATH": None}
     assert path.startswith(agents.environment["PATH"])
-    assert started["argv"][-3:-1] == ["--dispatch", run_id] and started["start_new_session"]
+    assert started["argv"][-2] == "--serve" and started["start_new_session"] and agent_queue._hub_change(lambda hubs: hubs).runs == {started["argv"][-1]: (run_id,)}
     assert [(item.state, item.message_id) for item in agent_queue.items(run_id)] == [("pending", str(request.id))]
     assert [event.text for event in reg.read_messages(run_id)] == ["- and one more thing"]
     # One that was never delivered says so when asked again, never "queued".

@@ -17,6 +17,7 @@ import os
 import shlex
 import signal
 import sys
+import threading
 import time
 import uuid
 from abc import ABC, abstractmethod
@@ -27,15 +28,18 @@ from typing import Annotated, ClassVar, Literal, Self
 from galaius_core import AGENT_IMAGES_MAX, MEDIA_KEY, AgentRevisionRef
 from pydantic import BaseModel, ConfigDict, Field
 
+from galaius.agents import quota
 from galaius.agents import registry as reg
 from galaius.agents.events import AgentEvent, MessageFields
 from galaius.agents.providers import _CLIP, AgentProvider, _safe_process_detail, provider_for
 from galaius.agents.relations import card, heading
 from galaius.inbox_hook import HEADING, OPERATOR
 from galaius.processes import process_started
-from galaius.upgrade.store import Runtime, RuntimeStore
+from galaius.upgrade.store import Runtime, RuntimeStore, active_interpreter
 
 MAX_PENDING = 128
+#: How many times a message is sent again after its turn's CLI died before answering it (`settle`).
+RETRIES = 1
 _POLL_SECONDS = 0.1
 _DISPATCHER_RECOVERY_TIMEOUT = 30.0
 
@@ -136,7 +140,7 @@ class MessageTurn(QueuedTurn):
     #: in a coordinator's queue cut each of its `galaius agents wait` short, never delivered).
     reports: tuple[str, ...] = Field(default=(), exclude=True)
     mid_turn = True
-    unaccepted = "resumed turn completed without a reply; resend explicitly"
+    unaccepted = "resumed turn ended in an error before it replied; resend explicitly"
 
     def refusal(self, text: str, provider: AgentProvider) -> str | None:
         """The same transcript-sized input boundary on every sending surface."""
@@ -160,7 +164,9 @@ class MessageTurn(QueuedTurn):
         return tuple(reg.RunMedia.path(run.run_id, name) for name in self.media)
 
     def accepts(self, event: AgentEvent) -> bool:
-        return (event.kind == "text" or (event.kind == "done" and event.final_text)) and bool(event.text.strip())
+        # A turn that ended done answered it, with words or with what it did (2026-10-20: 43 of 1,365 messages in a
+        # week read « completed without a reply » on turns that worked and wrote nothing at the end).
+        return event.kind == "done" or (event.kind == "text" and bool(event.text.strip()))
 
     def asks(self) -> bool:
         return not (self.fyi or self.reports)
@@ -224,6 +230,10 @@ class QueueItem(BaseModel):
     finished_at: float | None = None
     raw_index: int | None = None
     attempt_token: str | None = Field(default=None, min_length=1, max_length=80)
+    #: Attempts sent again after their CLI died before answering (`settle`: at most `RETRIES`). Written only once
+    #: one was: a dispatcher of an older galaius cannot read an item carrying it (`_entries`), so it never claims it;
+    #: the dispatcher that sent it again delivers it.
+    attempts: int = Field(default=0, ge=0, exclude_if=lambda value: value == 0)
     error: str = ""
 
     @property
@@ -478,25 +488,126 @@ def _dispatcher_matches(state: dict) -> bool:
     )
 
 
+class Hub(BaseModel):
+    """The PC's dispatcher process (`serve`), as the one that started it recorded it."""
+
+    model_config = ConfigDict(frozen=True)
+    pid: int
+    #: Its start time (`process_started`): a pid alone may since name another process.
+    started: int | None
+    token: str = Field(min_length=1, max_length=80)
+    #: The interpreter it runs (`active_interpreter` when it started): once a newer runtime is active, a new one starts
+    #: for the runs handed on from then, and this one ends with the runs it has.
+    interpreter: str
+
+
+class Hubs(BaseModel):
+    """`reg.shared_state(HUB)`: the dispatcher new runs are handed to, and the runs each one serving drains."""
+
+    current: Hub | None = None
+    runs: dict[str, tuple[str, ...]] = {}
+
+
+#: The registry-wide state naming this PC's dispatcher (`Hubs`).
+HUB = "agent-dispatcher"
+#: How long the dispatcher waits with no run left before it ends (one more message soon reuses it).
+HUB_IDLE_SECONDS = 30.0
+
+
+def _hub_change(change: Callable[[Hubs], Hubs]) -> Hubs:
+    """Apply `change` to the dispatchers' state under its lock; an unreadable state is kept aside and read as none."""
+    with reg.shared_state(HUB) as (raw, write, keep_aside):
+        try:
+            hubs = Hubs.model_validate_json(raw) if raw else Hubs()
+        except ValueError:
+            keep_aside()
+            hubs = Hubs()
+        changed = change(hubs)
+        if changed != hubs:
+            write(changed.model_dump_json().encode())
+        return changed
+
+
+def _serving(hub: Hub | None) -> bool:
+    """Whether `hub` is still that very process, on the runtime active now (`_dispatcher_matches`'s rule)."""
+    return (hub is not None and hub.started is not None and reg._alive(hub.pid) and process_started(hub.pid) == hub.started
+            and hub.interpreter == active_interpreter())
+
+
 def ensure_dispatcher_locked(run_id: str, *, cwd: str = ".", environment: Mapping[str, str] | None = None) -> int:
-    """Start exactly one detached dispatcher while the caller owns the run lock, in `environment`
-    (this process's own when None)."""
+    """Hand run `run_id` to this PC's one dispatcher while the caller owns the run lock, starting it (in `environment`,
+    this process's own when None) when none serves on the active runtime; its pid. The run's queue records it
+    (`dispatcher_pid`/`token`/`started`) until it drained the run (`dispatch`)."""
     state = _state(run_id)
     if _dispatcher_matches(state):
         return state["dispatcher_pid"]
-    token = uuid.uuid4().hex
-    state["dispatcher_pid"] = None
-    state["dispatcher_token"] = token
-    _write_state(run_id, state)
-    try:
-        process = reg.start_participant("galaius.agents.agent_queue", "--dispatch", run_id, token, cwd=cwd, environment=environment)
-    except BaseException:
-        current = _state(run_id)
-        if current.get("dispatcher_token") == token:
-            _set_dispatcher_locked(run_id, None)
-        raise
-    _set_dispatcher_locked(run_id, process.pid, token, process_started(process.pid))
-    return process.pid
+
+    def hand(hubs: Hubs) -> Hubs:
+        hub = hubs.current
+        if not _serving(hub):
+            token = uuid.uuid4().hex
+            interpreter = active_interpreter()
+            process = reg.start_participant("galaius.agents.agent_queue", "--serve", token, cwd=cwd, environment=environment)
+            hub = Hub(pid=process.pid, started=process_started(process.pid), token=token, interpreter=interpreter)
+        handed = hubs.runs.get(hub.token, ())
+        return hubs.model_copy(update={"current": hub, "runs": {**hubs.runs, hub.token: handed if run_id in handed else (*handed, run_id)}})
+
+    hub = _hub_change(hand).current
+    _set_dispatcher_locked(run_id, hub.pid, hub.token, hub.started)
+    return hub.pid
+
+
+def _drained_locked(run_id: str, token: str | None) -> None:
+    """Run `run_id` is no longer the dispatcher `token`'s, while the caller owns the run lock: its queue stops naming it
+    and it leaves the runs handed to it, both at once, so a message queued next hands it on again."""
+    if _state(run_id).get("dispatcher_token") == token:
+        _set_dispatcher_locked(run_id, None)
+    if token is not None:
+        _hub_change(lambda hubs: hubs.model_copy(update={"runs": {
+            key: tuple(run for run in runs if key != token or run != run_id) for key, runs in hubs.runs.items()}}))
+
+
+def serve(token: str) -> None:
+    """This PC's dispatcher `token`: drains each run handed to it (`ensure_dispatcher_locked`), each in a thread of
+    its own (`dispatch`). It ends once it has none left: at once when it is no longer the current one (a newer
+    runtime's took over), else after `HUB_IDLE_SECONDS`, deciding under the state's lock, so a run handed to it
+    meanwhile is never lost."""
+    working: dict[str, threading.Thread] = {}
+    idle_since = time.monotonic()
+    while True:
+        try:
+            idle_since = _serve_once(token, working, idle_since)
+        except (OSError, ValueError, RuntimeError) as error:
+            # The runs it drains carry on in their threads: a failed read of the shared state ends none of them.
+            log.warning("agent dispatcher %s: %s", token[:8], error)
+        if idle_since is None:
+            return
+        time.sleep(_POLL_SECONDS)
+
+
+def _serve_once(token: str, working: dict[str, threading.Thread], idle_since: float) -> float | None:
+    """One look of the dispatcher `token` at the runs handed to it (`serve`), starting a thread for each new one;
+    `working`, its threads by run, updated here. Its idle start from now on; None once it is to end."""
+    for run_id in [run_id for run_id, thread in working.items() if not thread.is_alive()]:
+        del working[run_id]
+
+    def leave_when_done(hubs: Hubs) -> Hubs:
+        current = hubs.current is not None and hubs.current.token == token
+        if working or hubs.runs.get(token) or (current and time.monotonic() - idle_since < HUB_IDLE_SECONDS):
+            return hubs
+        return hubs.model_copy(update={"current": None if current else hubs.current,
+                                       "runs": {key: runs for key, runs in hubs.runs.items() if key != token}})
+
+    hubs = _hub_change(leave_when_done)
+    if token not in hubs.runs and not working:
+        return None
+    handed = hubs.runs.get(token, ())
+    for run_id in handed:
+        if run_id not in working:
+            # Not a daemon: the process ends only once each run it took is settled.
+            working[run_id] = threading.Thread(target=dispatch, args=(run_id, token), name=f"dispatch-{run_id[:8]}")
+            working[run_id].start()
+    return time.monotonic() if handed or working else idle_since
 
 
 def ensure_dispatcher(run_id: str, *, cwd: str = ".") -> int:
@@ -564,16 +675,18 @@ def _fresh_policy(run: reg.AgentRun):
     return provider, criterion, model, reasoning
 
 
-def _classify_attempt(run_id: str, item: QueueItem) -> tuple[AttemptState, str]:
-    """Classify one persisted provider attempt without treating exit as acceptance (`QueuedTurn.accepts`)."""
-    raw_index = item.raw_index
-    if raw_index is None:
+def _attempt_events(run_id: str, item: QueueItem) -> list[AgentEvent]:
+    """The events of the attempt `item` records (from its `raw_index` on); none when it records none."""
+    if item.raw_index is None:
+        return []
+    return [event for event in reg.read_events(run_id) if event.raw_index is not None and event.raw_index >= item.raw_index]
+
+
+def _classify_attempt(item: QueueItem, attempt_events: list[AgentEvent]) -> tuple[AttemptState, str]:
+    """Classify one persisted provider attempt from its events (`_attempt_events`) without treating exit as acceptance
+    (`QueuedTurn.accepts`)."""
+    if item.raw_index is None:
         return "uncertain", "resumed turn has no persisted attempt anchor; resend explicitly"
-    events = reg.read_events(run_id)
-    attempt_events = [
-        event for event in events
-        if event.raw_index is not None and event.raw_index >= raw_index
-    ]
     accepted = any(item.turn.accepts(event) for event in attempt_events)
     terminal = next(
         (event for event in reversed(attempt_events) if event.kind in {"done", "error"}),
@@ -587,9 +700,13 @@ def _classify_attempt(run_id: str, item: QueueItem) -> tuple[AttemptState, str]:
 
 
 def settle(run_id: str, item: QueueItem, code: int) -> None:
-    """Record how the attempt `item` ended once its provider child exited with `code`: replied,
-    failed or uncertain (never sent again); a child that died saying nothing fails the run's turn."""
-    if code:
+    """Record how the attempt `item` ended once its provider child exited with `code`: replied, failed or uncertain.
+    One whose CLI exited non-zero is replied when its turn answered all the same; sent once more (`RETRIES`) when it
+    died having answered and done nothing, unless it was stopped or refused by its plan's limit (sent again before
+    the reset, it is refused again); else failed, and a child that died saying nothing fails the run's turn."""
+    events = _attempt_events(run_id, item)
+    attempt_state, attempt_error = _classify_attempt(item, events)
+    if code and attempt_state != "replied":
         detail = reg.read_stderr(run_id, 500)
         error = f"resumed provider exited {code}"
         if detail:
@@ -599,28 +716,43 @@ def settle(run_id: str, item: QueueItem, code: int) -> None:
         # died saying nothing gets the exit code and its stderr as the run's last line.
         said = reg.last_event(run_id)
         stopped = code in (-signal.SIGTERM, 128 + signal.SIGTERM)
+        # A turn that answered, or acted (a commit, a message, a deploy) before it died, is never sent again: its
+        # tool calls would run twice.
+        answered = any(item.turn.accepts(event) or event.kind == "tool" for event in events)
+        limited = said is not None and said.kind == "error" and quota.classify(said.text) is not None
         with reg.record_lock(run_id):
             current = item_locked(run_id, item.id)
-            if current is not None and current.state == "running":
-                _replace_item_locked(
-                    run_id, item.id, state="failed", finished_at=time.time(), error=error,
-                )
+            if current is None or current.state != "running":
+                return
+            if not (stopped or answered or limited) and current.attempts < RETRIES:
+                _replace_item_locked(run_id, item.id, state="pending", started_at=None, raw_index=None, attempt_token=None,
+                                     error="", attempts=current.attempts + 1)
+                log.warning("agent queue %s: item %s sent again: %s", path(run_id), item.id, error)
+                _hand_on_locked(run_id)
+                return
+            _replace_item_locked(run_id, item.id, state="failed", finished_at=time.time(), error=error)
             if not stopped and (said is None or said.kind != "error" or not said.text.strip()):
                 reg.fail_turn_locked(run_id, error, exit_code=code)
-    else:
-        attempt_state, attempt_error = _classify_attempt(run_id, item)
-        with reg.record_lock(run_id):
-            current = item_locked(run_id, item.id)
-            if current is not None and current.state == "running":
-                _replace_item_locked(
-                    run_id, item.id, state=attempt_state, finished_at=time.time(),
-                    error=attempt_error,
-                )
+        return
+    with reg.record_lock(run_id):
+        current = item_locked(run_id, item.id)
+        if current is not None and current.state == "running":
+            _replace_item_locked(run_id, item.id, state=attempt_state, finished_at=time.time(), error=attempt_error)
+
+
+def _hand_on_locked(run_id: str) -> None:
+    """Make sure a dispatcher delivers what is queued for `run_id` again (the launcher that settled it may be no
+    dispatcher: `galaius.agents.followup`). One that cannot start leaves it pending, for the next sender or waiter."""
+    run = reg.get_run(run_id)
+    try:
+        ensure_dispatcher_locked(run_id, cwd=(run.cwd if run is not None else None) or ".")
+    except (OSError, RuntimeError, ValueError) as error:
+        log.warning("agent queue %s: no dispatcher for the item sent again: %s", path(run_id), error)
 
 
 def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
-    """Drain one run serially; safe to call again after a dispatcher crash."""
-    own_pid = os.getpid()
+    """Drain one run serially (a thread of the dispatcher `dispatcher_token`, `serve`); safe to call again after a
+    dispatcher crash."""
     try:
         while True:
             recover: tuple[QueueItem, reg.AgentRun] | None = None
@@ -632,9 +764,7 @@ def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
                 running = next((item for item in queued_items if item.state == "running"), None)
                 run = reg.get_run(run_id)
                 if pending is None and running is None:
-                    if (state.get("dispatcher_pid") == own_pid
-                            and state.get("dispatcher_token") == dispatcher_token):
-                        _set_dispatcher_locked(run_id, None)
+                    _drained_locked(run_id, dispatcher_token)
                     return
                 if run is None:
                     cancel_pending_locked(run_id)
@@ -689,7 +819,7 @@ def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
                                     item = None
             if recover is not None:
                 recovered_item, _ = recover
-                attempt_state, attempt_error = _classify_attempt(run_id, recovered_item)
+                attempt_state, attempt_error = _classify_attempt(recovered_item, _attempt_events(run_id, recovered_item))
                 with reg.record_lock(run_id):
                     current = item_locked(run_id, recovered_item.id)
                     if current is not None and current.state == "running":
@@ -703,12 +833,11 @@ def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
                 continue
 
             settle(run_id, item, lifecycle.wait())
-    finally:
+    except BaseException:
+        # Drained under the lock where it found nothing left; ended by an error, it lets the run go here.
         with reg.record_lock(run_id):
-            state = _state(run_id)
-            if (state.get("dispatcher_pid") == own_pid
-                    and state.get("dispatcher_token") == dispatcher_token):
-                _set_dispatcher_locked(run_id, None)
+            _drained_locked(run_id, dispatcher_token)
+        raise
 
 
 async def wait_for_item(run_id: str, item_id: str) -> QueueItem | None:
@@ -773,15 +902,22 @@ async def wait_for_item(run_id: str, item_id: str) -> QueueItem | None:
 
 
 def main() -> None:
-    if len(sys.argv) in {3, 4} and sys.argv[1] == "--dispatch":
+    if len(sys.argv) == 3 and sys.argv[1] == "--serve":
         RuntimeStore.default().register(Runtime.own(), os.getpid())  # a run can outlive an upgrade: its runtime stays until it ends
+        serve(sys.argv[2])
+        return
+    if len(sys.argv) in {3, 4} and sys.argv[1] == "--dispatch":
+        # What a galaius that predates `serve`, still running on this PC (an MCP server started before an upgrade),
+        # starts on the active runtime for one run: it drains that run alone, as it expects. Goes once no runtime
+        # registered on a PC predates `serve` (`RuntimeStore`).
+        RuntimeStore.default().register(Runtime.own(), os.getpid())
         dispatch(sys.argv[2], sys.argv[3] if len(sys.argv) == 4 else None)
         return
     if len(sys.argv) == 3 and sys.argv[1] == "--inject":
         if said := inject(sys.argv[2]):
             print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": "\n\n---\n\n".join(said)}}))
         return
-    raise SystemExit("usage: python -m galaius.agents.agent_queue --dispatch RUN_ID | --inject RUN_ID")
+    raise SystemExit("usage: python -m galaius.agents.agent_queue --serve TOKEN | --dispatch RUN_ID [TOKEN] | --inject RUN_ID")
 
 
 if __name__ == "__main__":
