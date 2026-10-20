@@ -158,7 +158,8 @@ class SilenceWatch(BaseModel):
             standing.add(silence)
             if silence in told or (asking := reg.get_run(asker)) is None or not asking.working():
                 continue
-            last = next(reversed(reg.events_from(run.run_id, max(0, reg.raw_line_count(run.run_id) - 50))), None)
+            # Its own last word, never a message another run sent it meanwhile (one sent during a long command hid it).
+            last = next((event for event in reversed(reg.events_from(run.run_id, max(0, reg.raw_line_count(run.run_id) - 50))) if event.kind != "message"), None)
             if last is not None and last.kind == "tool" and now - said < config.silent_command_seconds:
                 continue  # it runs one command it started: a long build is not silence
             silent.setdefault(asker, []).append((silence, f"- {run.run_id} ({run.agent or 'no role'}): nothing written for {int((now - said) // 60)} min "

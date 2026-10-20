@@ -428,7 +428,7 @@ def test_runs_silent_too_long_are_named_once_to_the_run_at_work_that_asked_them(
     assert len(told) == 2 and first in told[1]["message"] and second not in told[1]["message"]
 
 
-@pytest.mark.parametrize("case", ["asker ended", "running one command", "nobody asked"])
+@pytest.mark.parametrize("case", ["asker ended", "running one command", "running one command, sent a message since", "nobody asked"])
 def test_no_run_is_woken_or_told_for_a_silence_that_is_not_one(told, at_work, case):
     lead, silent = str(uuid.UUID(int=1)), str(uuid.UUID(int=2))
     if case == "asker ended":
@@ -436,7 +436,9 @@ def test_no_run_is_woken_or_told_for_a_silence_that_is_not_one(told, at_work, ca
     else:
         at_work(lead, agent="main")
     at_work(silent, agent="backend-engineer", parent_run_id=None if case == "nobody asked" else lead)
-    _silent(silent, 900, last=COMMAND if case == "running one command" else None)  # 15 min
+    _silent(silent, 900, last=COMMAND if case.startswith("running one command") else None)  # 15 min
+    if case.endswith("since"):
+        reg.record_message_event(from_run=lead, to_run=silent, text="how is it going?")  # 5 min ago, during its command
 
     handback.SilenceWatch().tick(LIMITS)
 
