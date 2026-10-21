@@ -1096,6 +1096,10 @@ def test_the_web_cap_counts_conversations_never_the_agents_they_launched(base: P
     assert refused.value.code == "web_full"
     listed = _answer(agents, _request("runs"))
     assert listed.web == WebLoad(working=4, limit=4)  # what the web's Auto reads to pass over a full PC
+    # A question to the blob (a tool of the web's own UI) is none of his conversations: it takes no place, nor is it refused.
+    started(agent="blob")
+    assert agents.runs.live() == 4
+    agents._prepare_start(_request("start", root="project", role="blob", text="où sont mes crédits ?"), None)
     # Its owner set another number on the web (owner 2026-10-11 « where do i set this number ? »): it rides on each start
     # and runs read; one out of the settable range keeps the default rather than refusing the request it rides on.
     agents._prepare_start(start.model_copy(update={"web_limit": 6}), None)

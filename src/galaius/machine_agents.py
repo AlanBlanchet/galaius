@@ -36,6 +36,7 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 from galaius_core import (
+    listed_role,
     MODEL_ID_MAX,
     PROJECTS_ROOT, AGENT_TOUCH_SCOPES, AgentCompactRequest, ContextGauge, MACHINE_AGENT_MEDIA, MACHINE_AGENT_READ, MACHINE_AGENT_TAIL, AgentAnswerRequest, AgentMedia, AgentMediaRequest, AgentFile, media_kind, image_type, AgentContinueRequest, AgentFoldersRequest, AgentInteraction, AgentLogsRequest, AgentOptionsRequest,
     AgentAllowanceRequest, AgentMoveRequest, AgentProgramInstallRequest, AgentProgramsRequest, AgentToolInstallRequest, AgentToolsRequest, AgentProviderState, AgentSignInCodeRequest, AgentSignOutRequest, SubscriptionAllowance, Lent, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
@@ -229,8 +230,10 @@ class WebRuns(BaseModel):
     def live(self) -> int:
         """The conversations started from the web that work now (one of their runs starting or running): one counts
         ONCE, whatever agents it launched (owner 2026-10-10: two conversations and their five sub-agents refused his
-        third); one waiting for its owner, with nothing of it working, does not count."""
-        return sum(1 for runs in reg.forest(frozenset(str(item.run_id) for item in self.read())).values() if any(run.status in WORKING for run in runs))
+        third); one waiting for its owner, with nothing of it working, does not count; nor a run of a tool of the web's own
+        UI (`UI_ROLES`: a question to the blob), which is none of his conversations."""
+        return sum(1 for root, runs in reg.forest(frozenset(str(item.run_id) for item in self.read())).items()
+                   if any(run.status in WORKING for run in runs) and listed_role(next((run.agent for run in runs if run.run_id == root), None)))
 
     def load(self, request: WebLimited) -> WebLoad:
         """The conversations started from the web working here against how many may at once, as `request` carries it
@@ -238,8 +241,10 @@ class WebRuns(BaseModel):
         return WebLoad(working=self.live(), limit=request.web_conversations)
 
     def refuse_full(self, request: WebLimited) -> None:
-        """Refuses one more start while as many conversations started from the web as `request` allows work here."""
-        if (load := self.load(request)).full:
+        """Refuses one more start while as many conversations started from the web as `request` allows work here; never a
+        run of a tool of the web's own UI (a question to the blob: no conversation of his, `UI_ROLES`). Nothing here caps how
+        many of those start at once but the web's start rate limit: the blob role has no tools and runs read_only."""
+        if listed_role(request.role if isinstance(request, AgentStartRequest) else None) and (load := self.load(request)).full:
             raise WebFull(f"{load.working} conversations started from the web are already working on this computer (at most {load.limit}); stop one first", request)
 
     def working(self) -> bool:
