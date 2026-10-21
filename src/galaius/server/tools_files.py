@@ -2,7 +2,7 @@
 
 import asyncio
 
-from galaius_core import file_token
+from galaius_core import FILE_REFUSED, file_token
 from pydantic import ValidationError
 
 from galaius.files import Cell, FileSpec, write
@@ -46,9 +46,9 @@ async def create_file(
                         attach=attach or [])
         written = await asyncio.to_thread(write, spec, replace=replace)
     except ValidationError as error:
-        return "No file written: " + "; ".join(str(problem["msg"]).removeprefix("Value error, ") for problem in error.errors())
+        return FILE_REFUSED + "; ".join(str(problem["msg"]).removeprefix("Value error, ") for problem in error.errors())
     except (ValueError, OSError) as error:
-        return f"No file written: {error}"
+        return f"{FILE_REFUSED}{error}"
     said = f"Wrote {written.path} ({spec.suffix[1:]}, {written.size:,} bytes)."
     # The token is how the chat finds the file to offer (the copy kept under that key), never a path.
     return said if written.key is None else f"{said} It shows in the person's chat as a file to download. {file_token(written.key, written.path.name)}"
