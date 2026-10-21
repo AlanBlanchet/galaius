@@ -19,9 +19,10 @@ import subprocess
 import time
 from collections.abc import Sequence
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field
 
-from galaius.agents import handback
+from galaius.agents import handback, reflection_marks
+from galaius.agents.reflection_marks import Marks
 from galaius.agents import registry as reg
 from galaius.agents.relations import final_words, report_section
 from galaius.caller import RUN_VARIABLES
@@ -29,37 +30,11 @@ from galaius.config.settings import ReflectionCadence
 
 log = logging.getLogger(__name__)
 
-#: How long the watcher remembers a run it looked at (`Marks.pruned`): work weeks old is never asked about again.
-KEPT_DAYS = 14
 #: What the coordinator reads where its reflection's report would have come back (`Ask.answered`).
 ANSWERED = ("{role} {run} was asked about your answer to the person by the runtime: its open rows reach your next turn "
             "(never a report waking you).")
 #: How long one ask may take to be handed over (`galaius agents spawn` returns once its run is in line).
 ASK_SECONDS = 120
-
-
-class Marks(BaseModel):
-    """What the watcher already did: per coordinator run, the time up to which its turns were reflected on; per
-    reflection run, the end of the turn whose durable rows were forwarded."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    reflected: dict[str, float] = Field(default_factory=dict)
-    forwarded: dict[str, float] = Field(default_factory=dict)
-
-    @classmethod
-    def read(cls, raw: bytes | None) -> Marks:
-        """The marks as written; an unreadable file reads as none (the watcher's start bounds what it asks about)."""
-        try:
-            return cls.model_validate_json(raw) if raw else cls()
-        except ValidationError:
-            return cls()
-
-    def pruned(self, now: float) -> Marks:
-        """Without the marks older than `KEPT_DAYS`."""
-        kept = now - KEPT_DAYS * 86400
-        return Marks(reflected={run: at for run, at in self.reflected.items() if at >= kept},
-                     forwarded={run: at for run, at in self.forwarded.items() if at >= kept})
 
 
 class Ask(BaseModel):
@@ -107,17 +82,14 @@ class ReflectionWatch(BaseModel):
         if not cadence.enabled:
             return []
         records = reg._stored_records()
-        with reg.shared_state("reflection-cadence") as (raw, _write, _keep):
-            marks = Marks.read(raw)
+        marks = reflection_marks.read()
         before = marks.model_copy(deep=True)
         asks = [*self._answers(records, cadence, marks), *self._durable(records, cadence, marks)]
         if marks != before:
-            with reg.shared_state("reflection-cadence") as (raw, write, _keep):   # merged with a look made meanwhile
-                stored = Marks.read(raw)
-                merged = Marks(reflected=stored.reflected | marks.reflected, forwarded=stored.forwarded | marks.forwarded)
-                write(merged.pruned(time.time()).model_dump_json().encode())
+            reflection_marks.update(lambda stored: stored.with_(marks))   # merged with a look made meanwhile
         for ask in asks:
-            ask.make()
+            if (run_id := ask.make()) is not None and ask.role == cadence.role:
+                reflection_marks.update(lambda stored, run_id=run_id: stored.with_(Marks(asked={run_id: time.time()})))
         return asks
 
     def _answers(self, records: Sequence[reg.AgentRun], cadence: ReflectionCadence, marks: Marks) -> list[Ask]:
@@ -144,7 +116,7 @@ class ReflectionWatch(BaseModel):
         asks = []
         for run in records:
             coordinator = reg.get_run(run.parent_run_id) if run.agent == cadence.role and run.parent_run_id else None
-            if (coordinator is None or coordinator.agent not in cadence.coordinators or run.finished_at is None
+            if (coordinator is None or run.run_id not in marks.asked or run.finished_at is None
                     or run.finished_at <= marks.forwarded.get(run.run_id, self.started) or handback._pending(run)):
                 continue
             marks.forwarded[run.run_id] = run.finished_at

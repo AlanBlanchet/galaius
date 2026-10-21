@@ -63,16 +63,20 @@ def test_a_coordinators_answer_to_the_person_is_reflected_on_once_waking_no_one(
     assert MAIN not in relations.owed(reg.get_run(REFLECTION)) and handback.hand_back(REFLECTION) == []   # wakes no one
 
 
-def test_the_open_rows_reach_the_coordinators_next_turn_and_the_durable_ones_the_librarian(asked):
+def test_the_open_rows_reach_the_coordinators_next_card_and_the_durable_ones_the_librarian(asked):
+    """He replies while the reflection still runs: the turn his reply starts shows nothing yet; the first card drawn after
+    the reflection ended shows its open rows, once."""
     watch = reflection.ReflectionWatch(started=time.time() - 1)
-    register_run(MAIN, agent="main", name="main", asked_by=(str(uuid.uuid4()),))   # no answer to the person of its own
+    register_run(MAIN, agent="main", name="main", asked_by=(str(uuid.uuid4()),))
+    reg.record_message_event(from_run=reg.PERSON_SENDER, to_run=MAIN, text="ajoute le mode sombre")
     _ended(MAIN)
-    _ended(REFLECTION, report=REPORT, agent="reflection", name="reflection", parent_run_id=MAIN)
+    watch.tick(ReflectionCadence())                            # reflection asked, at work
+    assert "R1" not in relations.card(reg.get_run(MAIN))       # his reply starts a turn meanwhile
+    _ended(REFLECTION, report=REPORT)
     watch.tick(ReflectionCadence())
-    [spawn] = asked
-    assert (spawn["--agent"], spawn["--parent-run-id"]) == ("librarian", MAIN)
-    assert "D1 hook: refuse kill by pattern" in spawn["--task"] and "R1" not in spawn["--task"]
-    card = relations.card(reg.get_run(MAIN))   # its next turn: drawn before that turn ends
+    assert [(spawn["--agent"], spawn["--parent-run-id"]) for spawn in asked] == [("reflection", MAIN), ("librarian", MAIN)]
+    assert "D1 hook: refuse kill by pattern" in asked[-1]["--task"] and "R1" not in asked[-1]["--task"]
+    _ended(MAIN)                                               # that turn ends after the reflection did
+    card = relations.card(reg.get_run(MAIN))                   # the next one
     assert "R1 rerun the visual check" in card and "D1" not in card
-    _ended(MAIN)   # that turn ended: the rows are not shown again
-    assert "R1 rerun" not in relations.card(reg.get_run(MAIN))
+    assert "R1 rerun" not in relations.card(reg.get_run(MAIN))  # never again

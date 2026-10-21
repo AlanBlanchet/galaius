@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
 
+from galaius.agents import reflection_marks
 from galaius.agents import registry as reg
 from galaius.config import Config
 from galaius.agents.events import AgentEvent, Relation, ending_of
@@ -430,16 +431,21 @@ def report_section(report: str, name: str) -> str:
 
 
 def _left_open(run: reg.AgentRun, conversation: Sequence[reg.AgentRun]) -> str:
-    """The rows the reflection of a coordinator's last answer to the person left open (`Config.agent_reflection`): on the
-    first turn it starts after that reflection ended (its own last turn ended before), never again."""
+    """The rows each reflection the runtime asked about a coordinator's answers to the person left open
+    (`Config.agent_reflection`), on the first card drawn after that reflection's turn ended, however many of the
+    coordinator's turns started meanwhile; each written down as shown (`reflection_marks`), never shown again."""
     cadence = Config().agent_reflection
-    if run.finished_at is None or run.agent not in cadence.coordinators:
+    if run.agent not in cadence.coordinators:
         return ""
-    ended = [other for other in conversation if other.parent_run_id == run.run_id and other.agent == cadence.role
-             and other.finished_at is not None and other.finished_at > run.finished_at and not _working(other)]
-    reflected = max(ended, key=lambda other: other.finished_at or 0.0, default=None)
-    rows = report_section(final_words(reflected.run_id), "REDO") if reflected is not None else ""
-    return f"Open rows reflection {_tag(reflected)} left on your last answer to the person (do them now):\n{rows}" if rows else ""
+    marks = reflection_marks.read()
+    ended = [other for other in conversation if other.parent_run_id == run.run_id and other.run_id in marks.asked
+             and other.finished_at is not None and other.finished_at > marks.shown.get(other.run_id, 0.0) and not _working(other)]
+    if not ended:
+        return ""
+    reflection_marks.update(lambda stored: stored.with_(reflection_marks.Marks(shown={other.run_id: other.finished_at or 0.0 for other in ended})))
+    said = [f"Open rows reflection {_tag(other)} left on your answer to the person (do them now):\n{rows}"
+            for other in ended if (rows := report_section(final_words(other.run_id), "REDO"))]
+    return "\n".join(said)
 
 
 def context_full(run: reg.AgentRun) -> bool:
