@@ -1,10 +1,11 @@
 """The reflection a coordinator's answer to the person gets, asked by the runtime, never left to the coordinator's memory
 (`Config.agent_reflection`; 2026-10-21: the step lived only as prompt text and was skipped on nearly every turn).
 
-Once a root run of a coordinator role has ended the turns that answered the person, its agents back too, an instance of
-the reflection role in its conversation is asked about those turns (`galaius agents spawn`, which continues the instance
-already there). Its report reaches the coordinator like any agent's (`handback`): the rows it owes this turn are open
-there on its next wake. The rows naming a durable change (a prompt, a hook, code) go to the prompts' owner role in the
+Once a root run of a coordinator role has ended the turns that answered the person (his messages, or his words that
+started it), its agents back too, an instance of the reflection role in its conversation is asked about those turns
+(`galaius agents spawn`, which continues the instance already there). Its ask is answered at once on the coordinator's
+side, so its report wakes no one: the rows it says this answer still owes are on the coordinator's card on the first
+turn it starts after (`relations.card`). The rows naming a durable change (a prompt, a hook, code) go to the prompts' owner role in the
 same conversation, the reflection role reading only. Each ask and each forward is written down before it is made
 (`#reflection-cadence.state`): a watcher started again never asks twice, and never asks about turns that ended before it.
 """
@@ -22,14 +23,17 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from galaius.agents import handback
 from galaius.agents import registry as reg
-from galaius.agents.relations import final_words
+from galaius.agents.relations import final_words, report_section
+from galaius.caller import RUN_VARIABLES
 from galaius.config.settings import ReflectionCadence
 
 log = logging.getLogger(__name__)
 
-#: Where a reflection's report names its durable changes, and where that list ends.
-DURABLE = re.compile(r"^\W*DURABLE CHANGES?\b.*$", re.M | re.I)
-ENDS = re.compile(r"^\W*(?:REDO|NO CHANGE|NOT DURABLE)\b", re.M | re.I)
+#: How long the watcher remembers a run it looked at (`Marks.pruned`): work weeks old is never asked about again.
+KEPT_DAYS = 14
+#: What the coordinator reads where its reflection's report would have come back (`Ask.answered`).
+ANSWERED = ("{role} {run} was asked about your answer to the person by the runtime: its open rows reach your next turn "
+            "(never a report waking you).")
 #: How long one ask may take to be handed over (`galaius agents spawn` returns once its run is in line).
 ASK_SECONDS = 120
 
@@ -51,9 +55,16 @@ class Marks(BaseModel):
         except ValidationError:
             return cls()
 
+    def pruned(self, now: float) -> Marks:
+        """Without the marks older than `KEPT_DAYS`."""
+        kept = now - KEPT_DAYS * 86400
+        return Marks(reflected={run: at for run, at in self.reflected.items() if at >= kept},
+                     forwarded={run: at for run, at in self.forwarded.items() if at >= kept})
+
 
 class Ask(BaseModel):
-    """One `galaius agents spawn` of `role` under coordinator run `parent` with `task`."""
+    """One `galaius agents spawn` of `role` under coordinator run `parent` with `task`, made on the coordinator's behalf
+    (the instance of its conversation continued when one is there), its answer never handed back to wake it."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -65,6 +76,24 @@ class Ask(BaseModel):
     def argv(self) -> list[str]:
         return reg.participant_argv("galaius", "agents", "spawn", "--agent", self.role, "--name", self.role,
                                     "--parent-run-id", self.parent, "--cwd", self.cwd, "--task", self.task)
+
+    def make(self) -> str | None:
+        """Ask it; the run that took it (the spawn's last line), None when the spawn refused (logged)."""
+        environment = {**os.environ, **dict.fromkeys(RUN_VARIABLES, self.parent)}
+        done = subprocess.run(self.argv(), cwd=self.cwd, capture_output=True, text=True, timeout=ASK_SECONDS,
+                              env=reg.participant_environment(environment), check=False)
+        said = (done.stdout or "").strip().splitlines()
+        if done.returncode != 0 or not said or reg.get_run(said[-1]) is None:
+            log.warning("could not ask %s for %s: %s", self.role, self.parent[:8], (done.stderr or done.stdout).strip()[-400:])
+            return None
+        self.answered(said[-1])
+        return said[-1]
+
+    def answered(self, run_id: str) -> None:
+        """Its ask answered at once on the coordinator's side (`relations._reported`): the run's report is read where the
+        coordinator stands on its next turn (`relations.card`), so ending it hands nothing back and wakes nobody."""
+        reg.record_message_event(from_run=run_id, to_run=self.parent, text=ANSWERED.format(role=self.role, run=run_id[:8]),
+                                 reports=(run_id,), fyi=True)
 
 
 class ReflectionWatch(BaseModel):
@@ -78,16 +107,17 @@ class ReflectionWatch(BaseModel):
         if not cadence.enabled:
             return []
         records = reg._stored_records()
-        with reg.shared_state("reflection-cadence") as (raw, write, _keep):
+        with reg.shared_state("reflection-cadence") as (raw, _write, _keep):
             marks = Marks.read(raw)
-            asks = [*self._answers(records, cadence, marks), *self._durable(records, cadence, marks)]
-            if asks:
-                write(marks.model_dump_json().encode())
+        before = marks.model_copy(deep=True)
+        asks = [*self._answers(records, cadence, marks), *self._durable(records, cadence, marks)]
+        if marks != before:
+            with reg.shared_state("reflection-cadence") as (raw, write, _keep):   # merged with a look made meanwhile
+                stored = Marks.read(raw)
+                merged = Marks(reflected=stored.reflected | marks.reflected, forwarded=stored.forwarded | marks.forwarded)
+                write(merged.pruned(time.time()).model_dump_json().encode())
         for ask in asks:
-            done = subprocess.run(ask.argv(), cwd=ask.cwd if ask.cwd else ".", capture_output=True, text=True, timeout=ASK_SECONDS,
-                                  env=reg.participant_environment(os.environ), check=False)
-            if done.returncode != 0:
-                log.warning("could not ask %s for %s: %s", ask.role, ask.parent[:8], (done.stderr or done.stdout).strip()[-400:])
+            ask.make()
         return asks
 
     def _answers(self, records: Sequence[reg.AgentRun], cadence: ReflectionCadence, marks: Marks) -> list[Ask]:
@@ -101,6 +131,8 @@ class ReflectionWatch(BaseModel):
                 continue
             asked = [event.at for event in reg.read_messages(run.run_id)
                      if event.from_run == reg.PERSON_SENDER and event.to_run == run.run_id and since < event.at <= run.finished_at]
+            if _launched_by_person(run) and since < (run.started_at or 0.0) <= run.finished_at:
+                asked.append(run.started_at)   # his words opened it: its task, never a message
             marks.reflected[run.run_id] = run.finished_at
             if asked:
                 asks.append(Ask(role=cadence.role, parent=run.run_id, cwd=run.cwd or ".", task=reflection_brief(run, min(asked), cadence)))
@@ -116,7 +148,7 @@ class ReflectionWatch(BaseModel):
                     or run.finished_at <= marks.forwarded.get(run.run_id, self.started) or handback._pending(run)):
                 continue
             marks.forwarded[run.run_id] = run.finished_at
-            if rows := durable_rows(final_words(run.run_id)):
+            if rows := report_section(final_words(run.run_id), "DURABLE CHANGE"):
                 asks.append(Ask(role=cadence.librarian, parent=coordinator.run_id, cwd=coordinator.cwd or ".",
                                 task=f"Durable changes reflection {run.run_id[:8]} found in coordinator {coordinator.run_id[:8]}'s answer "
                                      f"to the person. Make each one, generic, never fitted to the one case:\n\n{rows}"))
@@ -129,14 +161,9 @@ def _settled(run: reg.AgentRun, records: Sequence[reg.AgentRun]) -> bool:
             and not any(handback._pending(agent) for agent in handback._agents_answering(run.run_id, records)))
 
 
-def durable_rows(report: str) -> str:
-    """The rows a reflection report lists under its durable changes, up to its next list ("" when it names none)."""
-    start = DURABLE.search(report)
-    if start is None:
-        return ""
-    rest = report[start.end():]
-    end = ENDS.search(rest)
-    return (rest[:end.start()] if end else rest).strip()
+def _launched_by_person(run: reg.AgentRun) -> bool:
+    """Whether the person's words started `run`: a root run no other run asked or handed its asks to."""
+    return run.parent_run_id is None and not run.asked_by and not run.inherited_asks
 
 
 def reflection_brief(run: reg.AgentRun, asked_at: float, cadence: ReflectionCadence) -> str:
@@ -148,7 +175,7 @@ def reflection_brief(run: reg.AgentRun, asked_at: float, cadence: ReflectionCade
             f"transcript {reg.events_path(run.run_id)} (one JSON event per line). Reflect on it as your role says: done right, "
             "done wrong, could upgrade. End your report with `DURABLE CHANGE` rows (each one change to a prompt, a hook or "
             "code that stops the class of mistake, never fitted to one case) or `NO CHANGE`, then `REDO` rows: what this "
-            f"answer still owes the person. The {cadence.librarian} gets your DURABLE CHANGE rows; the coordinator gets your report.")
+            f"answer still owes the person. The {cadence.librarian} gets your DURABLE CHANGE rows; the coordinator reads your REDO rows on its next turn.")
 
 
 def transcript_span(run_id: str, since: float) -> tuple[int, int]:

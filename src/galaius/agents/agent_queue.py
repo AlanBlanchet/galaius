@@ -30,6 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from galaius.agents import quota
 from galaius.agents import registry as reg
+from galaius.caller import RUN_VARIABLES
 from galaius.agents.events import AgentEvent, MessageFields
 from galaius.agents.providers import AgentProvider, _safe_process_detail, provider_for
 from galaius.agents.relations import card, heading
@@ -562,7 +563,9 @@ def ensure_dispatcher_locked(run_id: str, *, cwd: str = ".", environment: Mappin
         if not _serving(hub):
             token = uuid.uuid4().hex
             interpreter = active_interpreter()
-            process = reg.start_participant("galaius.agents.agent_queue", "--serve", token, cwd=cwd, environment=environment)
+            # In a scope of its own, naming no run: it serves every run of this PC, never the one whose message started it.
+            served = {name: value for name, value in (environment or os.environ).items() if name not in RUN_VARIABLES}
+            process = reg.start_participant("galaius.agents.agent_queue", "--serve", token, cwd=cwd, environment=served, contain=True)
             hub = Hub(pid=process.pid, started=process_started(process.pid), token=token, interpreter=interpreter)
         handed = hubs.runs.get(hub.token, ())
         return hubs.model_copy(update={"current": hub, "runs": {**hubs.runs, hub.token: handed if run_id in handed else (*handed, run_id)}})

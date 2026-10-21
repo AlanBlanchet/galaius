@@ -13,6 +13,7 @@ from contextvars import ContextVar
 from pathlib import Path
 
 from galaius.agents import registry as reg
+from galaius.config import Config
 from galaius.agents.events import AgentEvent, Relation, ending_of
 from galaius.inbox_hook import HEADING, OPERATOR
 
@@ -27,6 +28,8 @@ QUOTE_MAX = 100
 _CHAIN_MAX = 32
 #: The line a turn card (`card`) opens with.
 CARD_HEADING = "[Galaius: where you stand, from the run records]"
+#: The lists a reflection's report ends with (`report_section`): the durable changes, what the answer still owes, or none.
+REPORT_SECTIONS = ("DURABLE CHANGE", "REDO", "NO CHANGE")
 #: A line opening on a failed verdict, bare or after a label of up to four words ending on a colon or a dash (« Verdict:
 #: FAIL », « Review round 2 — FAIL », « STATE: BLOCKED »): a report whose first or last line (its closing stamp) is one
 #: still needs its reader (`needs_answer`). « C2 PASS (was FAIL) » is none.
@@ -408,10 +411,35 @@ def card(run: reg.AgentRun) -> str:
     idle = {other.agent: other for other in reversed(conversation) if other.agent and _reusable(other)}
     if idle:
         lines.append("Idle, to reuse: " + ", ".join(placed(other.run_id) for other in sorted(idle.values(), key=lambda other: other.agent or "")) + ".")
+    if rows := _left_open(run, conversation):
+        lines.append(rows)
     goes_to = report_to(run, placed)
     lines.append(f"When this turn ends your final message goes to {goes_to} by itself: never send it, never ack a report." if goes_to
                  else "Every ask of you is answered: when this turn ends your final message goes to nobody; never ack a report.")
     return "\n".join(lines)
+
+
+def report_section(report: str, name: str) -> str:
+    """The rows `report` lists under its heading `name` (one of `REPORT_SECTIONS`), up to the next of them; "" when none."""
+    heading = re.search(rf"^\W*{re.escape(name)}S?\b.*$", report, re.M | re.I)
+    if heading is None:
+        return ""
+    rest = report[heading.end():]
+    end = re.search(rf"^\W*(?:{'|'.join(re.escape(other) for other in REPORT_SECTIONS if other != name)})S?\b", rest, re.M | re.I)
+    return (rest[:end.start()] if end else rest).strip()
+
+
+def _left_open(run: reg.AgentRun, conversation: Sequence[reg.AgentRun]) -> str:
+    """The rows the reflection of a coordinator's last answer to the person left open (`Config.agent_reflection`): on the
+    first turn it starts after that reflection ended (its own last turn ended before), never again."""
+    cadence = Config().agent_reflection
+    if run.finished_at is None or run.agent not in cadence.coordinators:
+        return ""
+    ended = [other for other in conversation if other.parent_run_id == run.run_id and other.agent == cadence.role
+             and other.finished_at is not None and other.finished_at > run.finished_at and not _working(other)]
+    reflected = max(ended, key=lambda other: other.finished_at or 0.0, default=None)
+    rows = report_section(final_words(reflected.run_id), "REDO") if reflected is not None else ""
+    return f"Open rows reflection {_tag(reflected)} left on your last answer to the person (do them now):\n{rows}" if rows else ""
 
 
 def context_full(run: reg.AgentRun) -> bool:

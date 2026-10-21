@@ -432,15 +432,17 @@ def test_two_runs_queued_at_once_are_drained_by_one_dispatcher_process(monkeypat
     monkeypatch.setattr(agent_queue, "ensure_dispatcher_locked", ensure)
     monkeypatch.setattr(agent_queue, "HUB_IDLE_SECONDS", 0.2)
     reg.register(run_id="r2", pid=999999, provider=provider.name, name="other", task="t", agent="tester", provider_session_id="vendor-2")
-    started, stand_ins = [], []
-    monkeypatch.setattr(reg, "start_participant", lambda *argv, **_kwargs: started.append(argv) or stand_ins.append(
+    started, stand_ins, how = [], [], []
+    monkeypatch.setattr(reg, "start_participant", lambda *argv, **kwargs: started.append(argv) or how.append(kwargs) or stand_ins.append(
         subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])) or stand_ins[-1])
     request.addfinalizer(lambda: [process.kill() for process in stand_ins])
+    monkeypatch.setenv("GALAIUS_RUN_ID", "r9")   # started by a run's message: it serves every run, never as that one
 
     deliveries = [messaging.deliver_message(run_id, f"for {run_id}", sender="operator") for run_id in ("r1", "r2")]
     [(module, verb, token)] = started
     hub = {agent_queue._state(run_id)["dispatcher_pid"] for run_id in ("r1", "r2")}
     assert (module, verb, len(hub)) == ("galaius.agents.agent_queue", "--serve", 1)
+    assert how[0]["contain"] and "GALAIUS_RUN_ID" not in how[0]["environment"]
 
     drained = []
     real_dispatch = agent_queue.dispatch
