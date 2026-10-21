@@ -15,7 +15,7 @@ import sys
 import tempfile
 from abc import ABC, abstractmethod
 from contextlib import suppress
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from email import message_from_bytes
 from email.message import EmailMessage
 from email.policy import default
@@ -23,7 +23,7 @@ from pathlib import Path, PurePosixPath
 from typing import Annotated, ClassVar, Literal, NamedTuple
 
 from docx import Document
-from galaius_core import FILE_CONTENT_TYPES, file_key
+from galaius_core import CREATE_FILE_TYPES, FILE_CONTENT_TYPES, file_key
 from docx.shared import Mm
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
@@ -43,14 +43,16 @@ Cell = str | int | float | bool | None
 Rows = list[list[Cell]]
 
 
-def _plain(path: str) -> str:
+def kept_path(path: str, suffixes: Iterable[str] | None = FILE_CONTENT_TYPES) -> str:
     """Relative to the working folder, '/'-separated and written plainly, never climbing, hidden, absolute or an agent's
-    steering file (a CLAUDE.md written here would steer the next agent), with a suffix of `FILE_TYPES`."""
+    steering file (a CLAUDE.md written here would steer the next agent), with one of `suffixes` (every kept file's,
+    `FILE_TYPES`, by default; None: any)."""
+    allowed = None if suffixes is None else set(suffixes)
     parts = PurePosixPath(path).parts
     if (not parts or str(PurePosixPath(path)) != path or path.startswith(("/", "~")) or "\\" in path or ":" in path
             or any(part.startswith(".") or part.casefold() in STEERING | INSTRUCTIONS for part in parts)
-            or PurePosixPath(path).suffix.lower() not in FILE_CONTENT_TYPES):
-        raise ValueError(f"{path!r}: a path inside your working folder ending in one of {', '.join(sorted(FILE_CONTENT_TYPES))}")
+            or (allowed is not None and PurePosixPath(path).suffix.lower() not in allowed)):
+        raise ValueError(f"{path!r}: a path inside your working folder" + ("" if allowed is None else f" ending in one of {', '.join(sorted(allowed))}"))
     return path
 
 
@@ -67,7 +69,8 @@ def _one_line(text: str) -> str:
     return text
 
 
-PlainPath = Annotated[str, AfterValidator(_plain)]
+#: A path `create_file` writes: one of its own formats (`CREATE_FILE_TYPES`).
+PlainPath = Annotated[str, AfterValidator(lambda path: kept_path(path, dict(CREATE_FILE_TYPES)))]
 Address = Annotated[str, AfterValidator(_address)]
 
 
@@ -393,8 +396,8 @@ def _typst_string(value: Cell) -> str:
     return '"' + text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n") + '"'
 
 
-if FileFormat.registry.keys() != FILE_CONTENT_TYPES.keys():
-    raise RuntimeError(f"create_file formats {sorted(FileFormat.registry)} differ from the contract's {sorted(FILE_CONTENT_TYPES)}")
+if FileFormat.registry.keys() != dict(CREATE_FILE_TYPES).keys():
+    raise RuntimeError(f"create_file formats {sorted(FileFormat.registry)} differ from the contract's {sorted(dict(CREATE_FILE_TYPES))}")
 
 
 class Written(NamedTuple):
@@ -405,25 +408,45 @@ class Written(NamedTuple):
 
 
 def write(spec: FileSpec, *, replace: bool) -> Written:
-    """`spec` written as its format in the caller's working folder: only where the caller's run may write (its fence's
-    `write` / `sandbox` levels, its project folder; anywhere in that folder for a run with no fence, which writes there
-    itself), every folder on the way reached without a link and made when missing, a file already there only when
-    `replace`, written whole or not at all; then kept for the web (`reg.RunFiles`) under the run asking (`asking_run`:
-    its process ancestry first, never only what its environment claims)."""
-    caller = Caller.current()
+    """`spec` written as its format in the caller's working folder (`save`), a mail draft's attachments read first
+    (`_attachments`: for an agent run, only files it wrote itself)."""
+    if spec.attach:
+        spec = spec.model_copy(update={"attached": _attachments(spec.attach, _asking())})
+    return save(spec.path, FileFormat.of(spec).bytes(spec), replace=replace)
+
+
+def _asking() -> "reg.AgentRun | None":
+    """The agent run asking (`asking_run`: its process ancestry first, never only what its environment claims); None for a
+    person's own session. PermissionError: this process names a run this computer does not know."""
     asked = asking_run()
-    if asked is None and caller.environment.get("GALAIUS_RUN_ID"):
+    if asked is None and Caller.current().environment.get("GALAIUS_RUN_ID"):
         raise PermissionError("this process names an agent run this computer does not know")
-    run = reg.get_run(asked) if asked is not None else None
-    target = caller.cwd.resolve() / spec.path
+    return reg.get_run(asked) if asked is not None else None
+
+
+def writable(path: str) -> tuple[str, Caller, "reg.AgentRun | None", Path]:
+    """Where `save` would write `path`, refused (ValueError, PermissionError) where it may not: a path of `kept_path`, a
+    run that reads only, a fenced run's level that is no `write` / `sandbox`. Asked before a paid job (`galaius.media`),
+    so nothing is charged that cannot be kept."""
+    path = kept_path(path)
+    caller = Caller.current()
+    run = _asking()
+    target = caller.cwd.resolve() / path
     if run is not None and (provider := PROVIDERS.get(run.provider)) is not None and provider.touch_of(run.permission_mode) == TouchScope.READ_ONLY:
         raise PermissionError("this run reads only: it writes no file")
     if run is not None and run.fence is not None:
-        _writable(run.fence, target)
-    if spec.attach:
-        spec = spec.model_copy(update={"attached": _attachments(spec.attach, caller.cwd.resolve(), run)})
-    data = FileFormat.of(spec).bytes(spec)
-    *folders, name = PurePosixPath(spec.path).parts
+        _reachable(run.fence, target, WRITE_LEVELS, "write")
+    return path, caller, run, target
+
+
+def save(path: str, data: bytes, *, replace: bool) -> Written:
+    """`data` saved at `path` (`kept_path`: one of `FILE_TYPES`) in the caller's working folder: only where the caller's
+    run may write (its fence's `write` / `sandbox` levels, its project folder; anywhere in that folder for a run with no
+    fence, which writes there itself), every folder on the way reached without a link and made when missing, a file
+    already there only when `replace`, written whole or not at all; then kept for the web (`reg.RunFiles`) under the run
+    asking (`_asking`). What `create_file` and every media tool write (`galaius.media`)."""
+    path, caller, run, target = writable(path)
+    *folders, name = PurePosixPath(path).parts
     with PinnedDirectory.open(caller.cwd.resolve(), *folders, create=True) as folder:
         staged = f".{name}.{os.urandom(6).hex()}.new"
         with os.fdopen(folder.file(staged, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644), "wb") as handle:
@@ -434,11 +457,11 @@ def write(spec: FileSpec, *, replace: bool) -> Written:
             else:
                 folder.link(staged, folder, name)  # fails when the name is taken, even by a file made a moment ago
         except FileExistsError:
-            raise ValueError(f"{spec.path} exists already: pass replace to write over it") from None
+            raise ValueError(f"{path} exists already: pass replace to write over it") from None
         finally:
             with suppress(FileNotFoundError):
                 folder.unlink(staged)
-    return Written(target, len(data), reg.RunFiles.keep(run.run_id, data, spec.suffix) if run is not None else None)
+    return Written(target, len(data), reg.RunFiles.keep(run.run_id, data, PurePosixPath(path).suffix.lower()) if run is not None else None)
 
 
 #: The most a mail draft's attachments weigh together: the draft stays under what its chat card downloads
@@ -446,24 +469,16 @@ def write(spec: FileSpec, *, replace: bool) -> Written:
 ATTACHED_MAX = 4 * 1024 * 1024
 
 
-def _attachments(paths: list[str], root: Path, run: "reg.AgentRun | None") -> dict[str, bytes]:
-    """The files a mail draft attaches, by name, read below `root` without a link. For an agent run, only a file it wrote
+def _attachments(paths: list[str], run: "reg.AgentRun | None") -> dict[str, bytes]:
+    """The files a mail draft attaches, by name, read from the working folder (`read_working`). For an agent run, only a file it wrote
     itself with create_file (its kept copy, `reg.RunFiles`, holds the same bytes): the draft is downloadable from the
     web, and must never carry out a file of his it merely found in the folder (an `.env`, his taxes)."""
     found: dict[str, bytes] = {}
     for path in paths:
-        *folders, name = PurePosixPath(path).parts
-        try:
-            with PinnedDirectory.open(root, *folders) as folder, os.fdopen(folder.file(name, os.O_RDONLY | PinnedDirectory.NONBLOCK), "rb") as handle:
-                if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
-                    raise ValueError(f"{path} is not a plain file")
-                data = handle.read(ATTACHED_MAX + 1)
-        except FileNotFoundError:
-            raise ValueError(f"{path}: no such file in your working folder") from None
+        name = PurePosixPath(path).name
+        data = read_working(path, ATTACHED_MAX)
         if name in found:
             raise ValueError(f"two attachments are named {name}")
-        if len(data) > ATTACHED_MAX:
-            raise ValueError(f"{path} weighs more than the {ATTACHED_MAX // (1024 * 1024)} MiB a draft attaches")
         if run is not None and not reg.RunFiles.path(run.run_id, file_key(data, PurePosixPath(name).suffix.lower())).is_file():
             raise PermissionError(f"{path}: a draft attaches only a file you wrote with create_file in this run")
         found[name] = data
@@ -472,8 +487,36 @@ def _attachments(paths: list[str], root: Path, run: "reg.AgentRun | None") -> di
     return found
 
 
-def _writable(fence, target: Path) -> None:
-    """Refuse `target` unless the fenced run may write there: a `write` or `sandbox` level, or its project folder."""
+#: The levels at which a fenced run writes a file of its working folder (`save`), and reads one (`read_working`).
+WRITE_LEVELS: frozenset[str] = frozenset({"write", "sandbox"})
+READ_LEVELS: frozenset[str] = frozenset({"read", "write_on_review", "sandbox", "write"})
+
+
+def read_working(path: str, max_bytes: int) -> bytes:
+    """File `path` of the caller's working folder, read whole: a plain path below it (`kept_path`, any suffix), reached
+    without a link, a plain file, at most `max_bytes`; for a fenced run only where its levels let agents read
+    (`READ_LEVELS`, its project folder). ValueError / PermissionError: why not. What a mail draft attaches and what a
+    media job reads (`galaius.media`)."""
+    path = kept_path(path, None)
+    root = Caller.current().cwd.resolve()
+    run = _asking()
+    if run is not None and run.fence is not None:
+        _reachable(run.fence, root / path, READ_LEVELS, "read")
+    *folders, name = PurePosixPath(path).parts
+    try:
+        with PinnedDirectory.open(root, *folders) as folder, os.fdopen(folder.file(name, os.O_RDONLY | PinnedDirectory.NONBLOCK), "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                raise ValueError(f"{path} is not a plain file")
+            data = handle.read(max_bytes + 1)
+    except FileNotFoundError:
+        raise ValueError(f"{path}: no such file in your working folder") from None
+    if len(data) > max_bytes:
+        raise ValueError(f"{path} weighs more than the {max_bytes / (1024 * 1024):g} MiB it may")
+    return data
+
+
+def _reachable(fence, target: Path, levels: frozenset[str], verb: str) -> None:
+    """Refuse `target` unless the fenced run may `verb` it: one of `levels`, or its project folder."""
     places = fence.places()
     if fence.project is not None and target.is_relative_to(fence.project):
         return
@@ -482,5 +525,5 @@ def _writable(fence, target: Path) -> None:
     except ValueError:
         raise PermissionError(f"{target} is outside this PC's working directory") from None
     level = places.reach(parts)
-    if level not in ("write", "sandbox"):
-        raise PermissionError(f"{'/'.join(parts[:-1]) or '.'} is at level « {level} » on this PC: agents write only where it is « write »")
+    if level not in levels:
+        raise PermissionError(f"{'/'.join(parts[:-1]) or '.'} is at level « {level} » on this PC: agents {verb} only where it is « {' » or « '.join(sorted(levels))} »")

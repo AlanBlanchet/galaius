@@ -10,7 +10,7 @@ from urllib.parse import quote, urlencode
 from uuid import UUID, uuid4
 
 import httpx
-from galaius_core import AgentGraph, AgentGraphUpdate, ImageAnswer, ImageRequest, AgentRevision, AgentRevisionRef, AgentStartSpec, AgentTouchScope, ArtifactRef, CompanyProfile, ConfiguredModelRef, MachineRunEvents, MachineSummary, ReasoningLevel, ReleaseInfo, TriggerInvocation, WorkflowEvent, WorkflowRevision, WorkflowRevisionRef, WorkflowRun
+from galaius_core import AgentGraph, AgentGraphUpdate, ImageAnswer, ImageRequest, MediaAnswer, MediaRequest, AgentRevision, AgentRevisionRef, AgentStartSpec, AgentTouchScope, ArtifactRef, CompanyProfile, ConfiguredModelRef, MachineRunEvents, MachineSummary, ReasoningLevel, ReleaseInfo, TriggerInvocation, WorkflowEvent, WorkflowRevision, WorkflowRevisionRef, WorkflowRun
 from galaius_core.accounts import Bootstrap
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
@@ -32,12 +32,15 @@ class WorkflowRunRejected(CatalogConnectionError):
     """This attempt was rejected before dispatch; prior attempts remain independent."""
 
 
-class ImagesRefused(CatalogConnectionError):
-    """The platform drew no image: a ceiling, paid use of the provider off, the request, the provider."""
+class PlatformRefused(CatalogConnectionError):
+    """The platform made nothing (no image, no media job): a ceiling, paid use of the provider off, its price past the
+    cap asked, the request, the provider. Its message is the server's own sentence."""
 
 
 #: Seconds one image may take to draw, the provider's slowest included.
 IMAGE_SECONDS = 240.0
+#: Seconds one media job may take (a 3D model is the slowest: minutes on the provider's queue).
+MEDIA_SECONDS = 600.0
 
 
 class WorkflowRunUncertain(CatalogConnectionError):
@@ -236,28 +239,37 @@ class ServerWorkspace(ServerPrompts):
         return target
 
     def draw_images(self, request: ImageRequest, idempotency_key: str, *, transport=None) -> ImageAnswer:
-        """Images drawn by the platform with the company's provider connection, each charged to the
-        person this connection acts for (`POST /images`). A refusal (a ceiling, paid use off, the
-        provider) raises `ImagesRefused` with the server's own sentence; a dropped answer is retried
-        once with the same key, which never pays twice."""
+        """Images drawn by the platform with the company's provider connection, each charged to the person this
+        connection acts for (`POST /images`, `_made`)."""
+        return ImageAnswer.model_validate_json(self._made("images", request.model_dump_json(), idempotency_key, IMAGE_SECONDS * request.n, transport=transport))
+
+    def make_media(self, request: MediaRequest, idempotency_key: str, *, transport=None) -> MediaAnswer:
+        """A media job made by the platform (`POST /media`, `_made`): its quote when `request` names no
+        `max_cost_usd`, else what it made, charged to the person this connection acts for."""
+        return MediaAnswer.model_validate_json(self._made("media", request.model_dump_json(), idempotency_key, MEDIA_SECONDS, transport=transport))
+
+    def _made(self, path: str, body: str, idempotency_key: str, timeout: float, *, transport=None) -> bytes:
+        """What the platform answers `POST <workspace>/<path>` with `body`. A refusal (a ceiling, paid use off, the
+        provider) raises `PlatformRefused` with the server's own sentence; a dropped answer is retried once with the same
+        key, which never pays twice."""
         with self.session(transport=transport) as client:
             headers = {"Content-Type": "application/json", "Idempotency-Key": idempotency_key, **self.execute_headers(client)}
             for attempt in range(2):
                 try:
-                    response = client.post(f"{self.workspace_endpoint}/images", content=request.model_dump_json(), headers=headers, timeout=IMAGE_SECONDS * request.n)
+                    response = client.post(f"{self.workspace_endpoint}/{path}", content=body, headers=headers, timeout=timeout)
                     break
                 except (httpx.TimeoutException, httpx.TransportError):
                     if attempt:
                         raise
             if response.status_code == 401:
-                raise CatalogAuthenticationError("Image request refused (HTTP 401): this computer is no longer linked; run galaius login.")
+                raise CatalogAuthenticationError("Request refused (HTTP 401): this computer is no longer linked; run galaius login.")
             if not response.is_success:
                 try:
                     said = response.json()
                 except ValueError:
                     said = {}
-                raise ImagesRefused(f"{said.get('message') or said.get('detail') or said.get('code') or 'refused'} (HTTP {response.status_code})")
-            return ImageAnswer.model_validate_json(response.content)
+                raise PlatformRefused(f"{said.get('message') or said.get('detail') or said.get('code') or 'refused'} (HTTP {response.status_code})")
+            return response.content
 
     def run_workflow(self, request: WorkflowRunRequest, *, transport=None):
         """Start only the displayed revision and answer once the server accepted it (the run goes

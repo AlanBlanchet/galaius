@@ -8,7 +8,7 @@ import docx
 import openpyxl
 import pptx
 import pytest
-from galaius_core import FILE_CONTENT_TYPES
+from galaius_core import CREATE_FILE_TYPES, FILE_CONTENT_TYPES
 
 from galaius.agents import registry as reg
 from galaius.fence import FenceSpec
@@ -68,7 +68,7 @@ def test_each_format_opens_with_what_was_asked_inside(tmp_path: Path, monkeypatc
 
 
 def test_every_format_of_the_contract_is_written_here() -> None:
-    assert FileFormat.registry.keys() == FILE_CONTENT_TYPES.keys()
+    assert FileFormat.registry.keys() == dict(CREATE_FILE_TYPES).keys()
 
 
 @pytest.mark.parametrize(("path", "fields", "refused"), [

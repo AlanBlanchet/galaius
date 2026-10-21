@@ -67,6 +67,12 @@
  },
  {
   "server": "galaius",
+  "name": "generate_3d",
+  "category": "media",
+  "description": "Make a 3D model (a .glb file) of the object shown in an image, with your company's 3D model."
+ },
+ {
+  "server": "galaius",
   "name": "generate_image",
   "category": "media",
   "description": "Draw an image (up to 4) with your company's image model on the Galaius platform and save it here."
@@ -166,6 +172,12 @@
   "name": "transcribe",
   "category": "media",
   "description": "Transcribe an audio (or audio-bearing) file to text, and optionally answer a question about it."
+ },
+ {
+  "server": "galaius",
+  "name": "translate",
+  "category": "media",
+  "description": "Translate a text into another language with your company's text model, keeping its layout."
  },
  {
   "server": "galaius",

@@ -12,7 +12,7 @@ from galaius_core import GeneratedImage, ImageAnswer
 
 from galaius.agents.providers import PROVIDERS
 from galaius.server import tools_images
-from galaius.server_workspace import ImagesRefused, ServerWorkspace
+from galaius.server_workspace import PlatformRefused, ServerWorkspace
 
 PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==")
 
@@ -26,7 +26,7 @@ class Platform:
     def draw_images(self, request, idempotency_key):
         self.asked.append((request, idempotency_key))
         if self.refusal:
-            raise ImagesRefused(self.refusal)
+            raise PlatformRefused(self.refusal)
         return ImageAnswer(provider="openai", model=request.model, cost_usd=0.0336,
                            images=(GeneratedImage(run_id=uuid4(), media_type="image/png", data_base64=base64.b64encode(PNG).decode(), size_bytes=len(PNG), cost_usd=0.0336),))
 

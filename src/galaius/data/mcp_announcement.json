@@ -20,7 +20,7 @@
    "listChanged": false
   }
  },
- "instructions": "galaius v{version} — drives a browser and desktop windows by vision/refs over MCP. Act by `ref` (from get_interactive_elements / get_page_state / screenshot), a CSS `selector`, accessible `name`, or `x,y` — whichever fits. Browser automation works on Linux, macOS and Windows. THE DESKTOP ITSELF works on all three too (Linux = X11): target=\"screen\", or one monitor target=\"screen:<n>\" (list_desktop_windows lists monitors with geometry, and windows). On it, run_actions key_press sends OS keys and chords — \"super\" (the Windows key; the Linux launcher), \"cmd+space\" (Spotlight), \"alt+tab\", \"Escape\" — type_text types into whatever has focus, click/scroll act at x,y; screenshot takes region=[x,y,w,h] and max_width= to keep one area of one monitor at a readable size; wait_for window=\"<title>\" or text=\"<words>\" (READ by OCR in the ACTIVE window by default, region=\"screen\" or [x,y,w,h] to widen or narrow; whole words only, never the echo of what you just typed; state visible/hidden) waits for a window or a launcher's result row instead of a sleep. Per-window targets and launch_app's sandbox are Linux-only. SEEING & MEDIA — pick the cheapest tool that answers your question: a FACT about the page (element present, text, count, attribute, URL) → get_page_state / get_interactive_elements / evaluate_js, no pixels needed. How it LOOKS → screenshot (add query= only when you need an interpretation, it costs a VLM call). Judging quality → review_ui (find defects) / verify_ui (PASS-FAIL your requirements) / measure_ui (deterministic contrast, free). BATCHING — reading or clicking over MANY elements is ONE run_actions evaluate_js step (a JS program run against the live page: query → filter → loop → read/act, args + return value, browser-isolated), NOT N get_interactive_elements→act round-trips. MOTION & VIDEO — an animation, a transition, 'did it move smoothly', or WHAT HAPPENED over time is invisible to a still screenshot: record it (start=True → act → start=False, browser AND desktop; duration= for a fixed clip), then pass query= to have the video model EXPLAIN the sequence (a native video model watches it; others sample frames). HEARING — galaius can HEAR, not only see: transcribe(path, query=…) turns any local audio OR video file (a download_asset clip, a record(path=…) capture, any mp3/wav/mp4/mov) into text, or ANSWERS a question about the sound — speakers, tone, music, spoken words — acoustically when the audio model can listen (Gemini, gpt-4o-audio). Sandbox recordings carry the launched app's own audio, so record(path=…) then transcribe(path=…) hears what a native app said or played. DRAWING — a generated picture comes from generate_image (the company's image model on the Galaius platform, charged to the person you work for and shown in their Facturation), never from an image API called with a key found on this computer. FILES FOR THE PERSON — a document, a spreadsheet, a deck, a PDF or a mail draft they asked for comes from create_file (docx, xlsx, pptx, pdf, csv, md, json, txt, eml), never a script of your own: it writes the file in your working folder AND offers it in their chat as a file to download, which a file you write yourself never is. SESSIONS: omit `session` and you get your OWN isolated browser session — every reply names it in its `[session: …]` prefix, and it stays yours for this whole connection, so there is no name to invent and nothing to remember. Pass `session=\"default\"` only when you deliberately want to SHARE tabs with other callers on this connection. DESKTOP: use galaius's own tools — never shell out to xdotool/wmctrl, crop with ImageMagick, or `sleep` between steps: each has an equivalent above. For an app that fights the window manager, runs in the background, or is GPU-rendered and screen-grabs black (Flutter/Electron/games/emulators), launch it with `launch_app(\"<cmd>\")` — just the binary/command, no env tricks needed (the sandbox forces software GL itself so a GPU app renders instead of capturing black) — and drive it via `target=\"nested:<title>\"`, an isolated, occlusion-proof display. If `launch_app` isn't in your tool list, your galaius server is out of date: it moves to the newest installed version by itself once no browser session or sandbox is open (`galaius upgrade` shows its state); don't fall back to raw shell automation. If sandbox launches start failing (e.g. rc=1 for every app after many launches), the display is respawned automatically on the next `launch_app`, or call `reset_sandbox` to force a clean one — keep using the sandbox, don't switch to driving the real desktop. If galaius itself errors in a way that blocks you, behaves unexpectedly, or is missing a capability you needed, call `report_issue` — it sends the problem to galaius's maintainers so it gets fixed. That's the channel for feedback about the tool (not about the site you automate). If its result says a prefilled issue page was opened in the browser, tell the user to press Submit there; never copy report files into repos.",
+ "instructions": "galaius v{version} — drives a browser and desktop windows by vision/refs over MCP. Act by `ref` (from get_interactive_elements / get_page_state / screenshot), a CSS `selector`, accessible `name`, or `x,y` — whichever fits. Browser automation works on Linux, macOS and Windows. THE DESKTOP ITSELF works on all three too (Linux = X11): target=\"screen\", or one monitor target=\"screen:<n>\" (list_desktop_windows lists monitors with geometry, and windows). On it, run_actions key_press sends OS keys and chords — \"super\" (the Windows key; the Linux launcher), \"cmd+space\" (Spotlight), \"alt+tab\", \"Escape\" — type_text types into whatever has focus, click/scroll act at x,y; screenshot takes region=[x,y,w,h] and max_width= to keep one area of one monitor at a readable size; wait_for window=\"<title>\" or text=\"<words>\" (READ by OCR in the ACTIVE window by default, region=\"screen\" or [x,y,w,h] to widen or narrow; whole words only, never the echo of what you just typed; state visible/hidden) waits for a window or a launcher's result row instead of a sleep. Per-window targets and launch_app's sandbox are Linux-only. SEEING & MEDIA — pick the cheapest tool that answers your question: a FACT about the page (element present, text, count, attribute, URL) → get_page_state / get_interactive_elements / evaluate_js, no pixels needed. How it LOOKS → screenshot (add query= only when you need an interpretation, it costs a VLM call). Judging quality → review_ui (find defects) / verify_ui (PASS-FAIL your requirements) / measure_ui (deterministic contrast, free). BATCHING — reading or clicking over MANY elements is ONE run_actions evaluate_js step (a JS program run against the live page: query → filter → loop → read/act, args + return value, browser-isolated), NOT N get_interactive_elements→act round-trips. MOTION & VIDEO — an animation, a transition, 'did it move smoothly', or WHAT HAPPENED over time is invisible to a still screenshot: record it (start=True → act → start=False, browser AND desktop; duration= for a fixed clip), then pass query= to have the video model EXPLAIN the sequence (a native video model watches it; others sample frames). HEARING — galaius can HEAR, not only see: transcribe(path, query=…) turns any local audio OR video file (a download_asset clip, a record(path=…) capture, any mp3/wav/mp4/mov) into text, or ANSWERS a question about the sound — speakers, tone, music, spoken words — acoustically when the audio model can listen (Gemini, gpt-4o-audio). Sandbox recordings carry the launched app's own audio, so record(path=…) then transcribe(path=…) hears what a native app said or played. DRAWING — a generated picture comes from generate_image (the company's image model on the Galaius platform, charged to the person you work for and shown in their Facturation), never from an image API called with a key found on this computer. FILES FOR THE PERSON — a document, a spreadsheet, a deck, a PDF or a mail draft they asked for comes from create_file (docx, xlsx, pptx, pdf, csv, md, json, txt, eml), never a script of your own: it writes the file in your working folder AND offers it in their chat as a file to download, which a file you write yourself never is. MEDIA JOBS — a translation comes from translate, a 3D model from generate_3d (the company's models on the Galaius platform, charged to the person you work for): ask once without max_cost_usd for the price, then again with it to make it; the files they make show in the person's chat like create_file's. SESSIONS: omit `session` and you get your OWN isolated browser session — every reply names it in its `[session: …]` prefix, and it stays yours for this whole connection, so there is no name to invent and nothing to remember. Pass `session=\"default\"` only when you deliberately want to SHARE tabs with other callers on this connection. DESKTOP: use galaius's own tools — never shell out to xdotool/wmctrl, crop with ImageMagick, or `sleep` between steps: each has an equivalent above. For an app that fights the window manager, runs in the background, or is GPU-rendered and screen-grabs black (Flutter/Electron/games/emulators), launch it with `launch_app(\"<cmd>\")` — just the binary/command, no env tricks needed (the sandbox forces software GL itself so a GPU app renders instead of capturing black) — and drive it via `target=\"nested:<title>\"`, an isolated, occlusion-proof display. If `launch_app` isn't in your tool list, your galaius server is out of date: it moves to the newest installed version by itself once no browser session or sandbox is open (`galaius upgrade` shows its state); don't fall back to raw shell automation. If sandbox launches start failing (e.g. rc=1 for every app after many launches), the display is respawned automatically on the next `launch_app`, or call `reset_sandbox` to force a clean one — keep using the sandbox, don't switch to driving the real desktop. If galaius itself errors in a way that blocks you, behaves unexpectedly, or is missing a capability you needed, call `report_issue` — it sends the problem to galaius's maintainers so it gets fixed. That's the channel for feedback about the tool (not about the site you automate). If its result says a prefilled issue page was opened in the browser, tell the user to press Submit there; never copy report files into repos.",
  "lists": {
   "tools/list": {
    "tools": [
@@ -1248,6 +1248,133 @@
        "result"
       ],
       "title": "generate_imageOutput",
+      "type": "object"
+     },
+     "_meta": {
+      "category": "media"
+     }
+    },
+    {
+     "name": "translate",
+     "description": "Translate a text into another language with your company's text model, keeping its layout.\n\nUse this for every translation the person asks for. text: up to 50,000 characters. target_language: a language tag\n(fr, en, en-GB, de, es…). source_language: when known (else read from the text). context: what the text is and for\nwhom (« a reply to a client », « app labels »), so its register is kept.\n\nIt runs on the Galaius platform with your company's connection: charged to the person you work for, held to their\nceilings and the company's, and shown in Galaius › Facturation, linked to your run. Ask first WITHOUT max_cost_usd: the\nanswer is its price, nothing made, nothing charged. Then ask again with max_cost_usd (dollars, platform fee included)\nat or above that price to make it. folder: where its files go, inside your working folder (made when missing).\n\nReturns the price, or the translation and the file it is saved in (shown in the person's chat), or why nothing was\nmade.",
+     "inputSchema": {
+      "properties": {
+       "text": {
+        "title": "Text",
+        "type": "string"
+       },
+       "target_language": {
+        "title": "Target Language",
+        "type": "string"
+       },
+       "source_language": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Source Language"
+       },
+       "context": {
+        "default": "",
+        "title": "Context",
+        "type": "string"
+       },
+       "max_cost_usd": {
+        "anyOf": [
+         {
+          "type": "number"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Max Cost Usd"
+       },
+       "folder": {
+        "default": "galaius-media",
+        "title": "Folder",
+        "type": "string"
+       }
+      },
+      "required": [
+       "text",
+       "target_language"
+      ],
+      "title": "translateArguments",
+      "type": "object"
+     },
+     "outputSchema": {
+      "properties": {
+       "result": {
+        "title": "Result",
+        "type": "string"
+       }
+      },
+      "required": [
+       "result"
+      ],
+      "title": "translateOutput",
+      "type": "object"
+     },
+     "_meta": {
+      "category": "media"
+     }
+    },
+    {
+     "name": "generate_3d",
+     "description": "Make a 3D model (a .glb file) of the object shown in an image, with your company's 3D model.\n\nimage: the path of a PNG, JPEG or WebP image inside your working folder (one object on a plain background works best;\nmake one with generate_image first when you only have a description). pbr: physically-based materials (slower).\n\nIt runs on the Galaius platform with your company's connection: charged to the person you work for, held to their\nceilings and the company's, and shown in Galaius › Facturation, linked to your run. Ask first WITHOUT max_cost_usd: the\nanswer is its price, nothing made, nothing charged. Then ask again with max_cost_usd (dollars, platform fee included)\nat or above that price to make it. folder: where its files go, inside your working folder (made when missing).\n\nReturns the price, or the .glb file made (shown in the person's chat), or why nothing was made.",
+     "inputSchema": {
+      "properties": {
+       "image": {
+        "title": "Image",
+        "type": "string"
+       },
+       "pbr": {
+        "default": false,
+        "title": "Pbr",
+        "type": "boolean"
+       },
+       "max_cost_usd": {
+        "anyOf": [
+         {
+          "type": "number"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Max Cost Usd"
+       },
+       "folder": {
+        "default": "galaius-media",
+        "title": "Folder",
+        "type": "string"
+       }
+      },
+      "required": [
+       "image"
+      ],
+      "title": "generate_3dArguments",
+      "type": "object"
+     },
+     "outputSchema": {
+      "properties": {
+       "result": {
+        "title": "Result",
+        "type": "string"
+       }
+      },
+      "required": [
+       "result"
+      ],
+      "title": "generate_3dOutput",
       "type": "object"
      },
      "_meta": {
