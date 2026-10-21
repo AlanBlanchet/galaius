@@ -43,7 +43,7 @@ async def _asked(build: Callable[[], MediaSpec], *, max_cost_usd: float | None, 
 @mcp.tool(category="media", description=_described(
     """Translate a text into another language with your company's text model, keeping its layout.
 
-    Use this for every translation the person asks for. text: up to 50,000 characters. target_language: a language tag
+    Use this for every translation the person asks for. text: any length. target_language: a language tag
     (fr, en, en-GB, de, es…). source_language: when known (else read from the text). context: what the text is and for
     whom (« a reply to a client », « app labels »), so its register is kept.""",
     """Returns the price, or the translation and the file it is saved in (shown in the person's chat), or why nothing was

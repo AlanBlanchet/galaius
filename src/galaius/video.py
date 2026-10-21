@@ -31,7 +31,7 @@ VIDEO_IN = (*VIDEO_OUT, ".mov", ".mkv", ".m4v", ".avi")
 InputPath = Annotated[str, AfterValidator(lambda path: kept_path(path, VIDEO_IN))]
 OutputPath = Annotated[str, AfterValidator(lambda path: kept_path(path, (*VIDEO_OUT, *AUDIO_OUT)))]
 Seconds = Annotated[float, Field(ge=0, le=24 * 3600)]
-Text = Annotated[str, Field(min_length=1, max_length=500)]
+Text = Annotated[str, Field(min_length=1)]
 
 
 class Step(BaseModel, ABC):

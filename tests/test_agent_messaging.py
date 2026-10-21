@@ -555,15 +555,6 @@ def test_queued_reply_lookup_uses_persisted_attempt_anchor(monkeypatch):
     assert "[Interact agent provenance]" in reply
 
 
-def test_record_and_delivery_share_the_transcript_message_limit(monkeypatch):
-    register_run("r1", name="reviewer", provider="claude", task="t", pid=1234, agent="tester", provider_session_id="vendor-r1")
-    oversized = "x" * 2001
-
-    delivery = messaging.deliver_message("r1", oversized, sender="operator")
-
-    assert delivery.state == "error" and "2000-character limit" in delivery.text
-
-
 def test_queue_preserves_effective_policy_and_records_fresh_policy_separately(monkeypatch):
     from galaius.agents import agent_queue
     install_provider(monkeypatch, _DeliveryProvider())

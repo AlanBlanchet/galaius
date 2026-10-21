@@ -354,7 +354,7 @@ class Spawn(BaseModel):
         misfits = {run.run_id: self._misfit(run, policy, revision) for run in peers}
         why = [f"{run_id[:8]} {said}" for run_id, said in misfits.items() if said]
         fit = [run for run in peers if misfits[run.run_id] is None]
-        turn = agent_queue.MessageTurn(limit=agent_queue.BRIEF_MAX, agent_ref=revision)
+        turn = agent_queue.MessageTurn(agent_ref=revision)
         # `single`: a fit one at work takes it as its next turn, never another started beside it.
         for run in sorted((run for run in fit if self._busy(run)), key=lambda run: run.started_at or 0, reverse=True):
             delivery = messaging.deliver_message(run.run_id, self._brief(run), only_if_idle=False, turn=turn,

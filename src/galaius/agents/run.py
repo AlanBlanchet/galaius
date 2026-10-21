@@ -24,6 +24,7 @@ from uuid import UUID
 from pathlib import Path
 import subprocess
 import tempfile
+from collections.abc import Callable
 from typing import BinaryIO, ClassVar, Mapping, Sequence
 from galaius.caller import Caller
 from galaius.config import Config
@@ -41,7 +42,7 @@ from galaius.fence import FenceSpec, fenced
 from galaius.processes import process_group_options, spawnable
 from galaius.agents.policy import Policy, policy_path
 from galaius.agents.profiles import overlay_for, profiles_from
-from galaius.agents.providers import PROVIDERS, AgentProvider, ClaudeTurnSettings, UnsupportedToolPolicy, validate_denied_tools, _safe_process_detail
+from galaius.agents.providers import PROVIDERS, AgentProvider, ClaudeTurnSettings, UnsupportedToolPolicy, fits_argv, validate_denied_tools, _safe_process_detail
 from galaius.agents.vocabulary import TouchScope
 from galaius.agents.subscriptions import RunSubscription, Subscription, SubscriptionCapped, SubscriptionRefused
 from galaius.agents.warm import WarmStart
@@ -834,9 +835,16 @@ class ChildLaunch(AheadLaunch):
     async def launch(self, run_id: str, session: str, task: str) -> asyncio.subprocess.Process:
         """Run `run_id`'s child doing `task` (as vendor session `session`): handed on its stdin as to a child started
         ahead when its CLI reads it there (with what it asks its CLI before the turn: `task_message`), else on its
-        command line."""
+        command line, or on its stdin when it does not fit one argument (`AgentProvider.on_stdin`)."""
         if not self.provider.starts_ahead:
-            return await self.start(run_id, self.provider.command(task, **self.command_arguments(run_id, session)), env=self.env(run_id))
+            argv, stdin = self.provider.on_stdin(self.provider.command(task, **self.command_arguments(run_id, session)))
+            process = await self.start(run_id, argv, env=self.env(run_id), ahead=stdin is not None)
+            if stdin is not None:
+                with suppress(BrokenPipeError, ConnectionResetError):   # it ended before reading its task: its stream says how
+                    process.stdin.write(stdin)
+                    await process.stdin.drain()
+                    process.stdin.close()
+            return process
         process = await self._ahead(run_id, session)
         try:
             await self.hand(process, task)
@@ -1075,8 +1083,19 @@ def launch_continuation(
     """Spawn one resumed turn and start its reaper before returning to a caller."""
     restore_folder(run, provider, session_id, {**Caller.environ(), **(run.subscription.overlay() if run.subscription is not None else {})}, record_locked=record_locked)
     launch = ResumeLaunch.of(provider, run, session_id, model=model, criterion=criterion, reasoning=reasoning)
-    return _spawn_turn(provider, launch.command(message), run, env=launch.env, raw_index=raw_index, model=launch.model, criterion=launch.criterion,
-                       reasoning=launch.reasoning, record_locked=record_locked)
+    argv, stdin = carried(provider, message, launch.command, lambda: provider.resume_ahead_command(session_id, **launch.arguments))
+    return _spawn_turn(provider, argv, run, env=launch.env, raw_index=raw_index, model=launch.model, criterion=launch.criterion,
+                       reasoning=launch.reasoning, record_locked=record_locked, stdin=stdin)
+
+
+def carried(provider: AgentProvider, message: str, on_line: Callable[[str], list[str]],
+            ahead: Callable[[], list[str]]) -> tuple[list[str], bytes | None]:
+    """How a resumed turn's `message` reaches its child, whatever its length: on its command line when it fits one
+    argument (`fits_argv`), else on its stdin — as the stdin message of a CLI started ahead (`starts_ahead`: `ahead()`'s
+    command and `task_message`), or behind another CLI's `stdin_prompt` (`AgentProvider.on_stdin`)."""
+    if not provider.starts_ahead:
+        return provider.on_stdin(on_line(message))
+    return (on_line(message), None) if fits_argv(message) else (ahead(), provider.task_message(message))
 
 
 def launch_editor_turn(
@@ -1088,16 +1107,18 @@ def launch_editor_turn(
     keeps the model and instructions it was begun with; the permission is the run's recorded one,
     the environment exactly `environment` (never this process's)."""
     restore_folder(run, provider, fork_from or run.run_id, environment)
-    argv = provider.resume_command(fork_from or run.run_id, message, permission_mode=run.permission_mode, fork_to=run.run_id if fork_from else None)
+    session, options = fork_from or run.run_id, {"permission_mode": run.permission_mode, "fork_to": run.run_id if fork_from else None}
+    argv, stdin = carried(provider, message, lambda text: provider.resume_command(session, text, **options), lambda: provider.resume_ahead_command(session, **options))
     env = {**GatewayServed.environment(environment, run.agent), "GALAIUS_RUN_ID": run.run_id}
-    return _spawn_turn(provider, argv, run, env=env, raw_index=reg.raw_line_count(run.run_id), model=run.model, criterion=None, reasoning=None)
+    return _spawn_turn(provider, argv, run, env=env, raw_index=reg.raw_line_count(run.run_id), model=run.model, criterion=None, reasoning=None, stdin=stdin)
 
 
 def _spawn_turn(
     provider: AgentProvider, argv: list[str], run: reg.AgentRun, *, env: Mapping[str, str], raw_index: int,
-    model: str | None, criterion: str | None, reasoning: str | None, record_locked: bool = False,
+    model: str | None, criterion: str | None, reasoning: str | None, record_locked: bool = False, stdin: bytes | None = None,
 ) -> ContinuationHandle:
-    """Start one resumed turn of `run` from `argv` and its reaper, before returning."""
+    """Start one resumed turn of `run` from `argv` and its reaper, before returning; `stdin`: its turn, written to the
+    child's stdin then closed (`carried`)."""
     env = provider.child_environment(reg.participant_environment(env), mcp_wait_seconds=Config().agent_mcp_startup_wait_seconds)
     sink = reg.open_raw_events(run.run_id, append=True)
     sink.write(provider.turn_preface(argv))
@@ -1106,7 +1127,7 @@ def _spawn_turn(
     try:
         process = subprocess.Popen(
             contained(fenced(spawnable(argv, env), run.fence), run_id=run.run_id), cwd=run.cwd or ".", env=env,
-            stdin=subprocess.DEVNULL, stdout=sink, stderr=stderr_file,  # never the launcher's stdin (`AheadLaunch.start`)
+            stdin=subprocess.DEVNULL if stdin is None else subprocess.PIPE, stdout=sink, stderr=stderr_file,  # never the launcher's stdin (`AheadLaunch.start`)
             **process_group_options(),
         )
     except BaseException:
@@ -1114,6 +1135,11 @@ def _spawn_turn(
         raise
     finally:
         sink.close()
+    if stdin is not None:
+        with suppress(BrokenPipeError):   # it ended before reading its turn: its stream and exit status say how
+            process.stdin.write(stdin)
+        with suppress(BrokenPipeError):
+            process.stdin.close()
     begin_turn = reg.begin_turn_locked if record_locked else reg.begin_turn
     current = begin_turn(
         run.run_id, pid=process.pid, model=model,

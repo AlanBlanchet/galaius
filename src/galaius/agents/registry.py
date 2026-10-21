@@ -1003,6 +1003,15 @@ def file_parts(path: Path) -> Iterator[bytes]:
             yield part
 
 
+def filed_message(run_id: str, text: str) -> Path:
+    """A message too long for its turn to carry, kept whole beside run `run_id`'s files under the hash of its words (one
+    kept already is left as it is): the path its turn names. Never `RunFiles`, which the chat downloads from."""
+    path = agents_dir() / f"{_safe_run_id(run_id)}.said.{hashlib.sha256(text.encode()).hexdigest()[:20]}.md"
+    if not path.is_file():
+        _replace_private(path, text.encode())
+    return path
+
+
 def messages_path(run_id: str) -> Path:
     """Messages live BESIDE the vendor stream, never inside it. The stream is the vendor's own
     file and the mirror is rewritten from it, so anything appended there is clobbered on the next

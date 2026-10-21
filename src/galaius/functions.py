@@ -46,7 +46,7 @@ class FunctionMeta(BaseModel):
     """Marker `@galaius.function` leaves on the decorated callable, read back by `discover_python`."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
-    description: str = Field(min_length=1, max_length=240)
+    description: str = Field(min_length=1)
     permission: PermissionLevel = "read_only"
 
 
@@ -71,7 +71,7 @@ class FunctionEntry(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
     name: str = Field(min_length=1, max_length=80, pattern=r"^[a-z][a-z0-9_]*$")
-    description: str = Field(min_length=1, max_length=240)
+    description: str = Field(min_length=1)
     kind: FunctionKind
     permission: PermissionLevel
     ports: tuple[PortSpec, ...] = Field(min_length=1, max_length=32)

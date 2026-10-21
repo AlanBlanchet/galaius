@@ -111,7 +111,7 @@ def _resume(asker_id: str, child: reg.AgentRun) -> messaging.Delivery | None:
     return messaging.deliver_message(
         asker.run_id, "\n\n".join(report.section() for report in reports), sender=child.run_id,
         message_id=f"handback-{asker.finished_at:.6f}", only_if_idle=True,
-        turn=agent_queue.MessageTurn(limit=agent_queue.BRIEF_MAX, reports=tuple(report.run_id for report in reports)),
+        turn=agent_queue.MessageTurn(reports=tuple(report.run_id for report in reports)),
     )
 
 

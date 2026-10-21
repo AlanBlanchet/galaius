@@ -31,7 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from galaius.agents import quota
 from galaius.agents import registry as reg
 from galaius.agents.events import AgentEvent, MessageFields
-from galaius.agents.providers import _CLIP, AgentProvider, _safe_process_detail, provider_for
+from galaius.agents.providers import AgentProvider, _safe_process_detail, provider_for
 from galaius.agents.relations import card, heading
 from galaius.inbox_hook import HEADING, OPERATOR
 from galaius.processes import process_started, share_malloc_arenas
@@ -112,8 +112,21 @@ class QueuedTurn(BaseModel, ABC):
         """Whether `event`, of its attempt, accepts it."""
 
 
-#: The longest task a spawn hands to an agent already in its conversation: a coordinator's brief, never clipped.
+#: How much of a hand-back's reports its message carries (`handback`: each report's share; the full ones stay readable).
 BRIEF_MAX = 64_000
+#: The characters a turn takes inline: a message past it reaches its agent whole as a file the turn names, its opening
+#: inline (`MessageTurn.prompt`) — never refused for its length (owner 2026-10-21: « why are you putting these shit
+#: limits everywhere ? »).
+INLINE_CHARS = 100_000
+#: The opening of a filed message its turn shows inline, so the agent knows what it is about to read.
+FILED_OPENING = 2_000
+
+
+def filed(run: reg.AgentRun, text: str) -> str:
+    """What a turn says in place of `text` it does not carry whole: where the whole text is kept (`reg.filed_message`),
+    and its opening."""
+    return (f"[This message is {len(text):,} characters, more than one turn takes in at once: it is saved whole in "
+            f"{reg.filed_message(run.run_id, text)} — read all of it before you act on it. It opens with:]\n\n{text[:FILED_OPENING]}")
 
 
 class MessageTurn(QueuedTurn):
@@ -122,9 +135,8 @@ class MessageTurn(QueuedTurn):
     kind: Literal["message"] = "message"
     #: The images it shows, by their name among its run's media (`RunMedia`): its transcript entry names them too.
     media: tuple[Annotated[str, Field(pattern=MEDIA_KEY)], ...] = Field(default=(), max_length=AGENT_IMAGES_MAX)
-    #: The longest text it takes: a follow-up is transcript-sized; a spawn's task handed to an agent already here
-    #: (`spawn_line.Spawn.hand_over`) or a parent's agents' reports (`handback`) up to `BRIEF_MAX`.
-    limit: int = Field(default=_CLIP, gt=0, le=BRIEF_MAX, exclude_if=lambda value: value == _CLIP)
+    #: The characters its turn takes inline (`prompt`): past them, the agent is handed the whole text as a file.
+    limit: int = Field(default=INLINE_CHARS, gt=0, exclude_if=lambda value: value == INLINE_CHARS)
     #: The revision of its run's role the turn it starts runs on (`begin_locked`): a spawn's task handed to an agent of the
     #: role started on another one (`spawn_line.Spawn.hand_over`). None: the run's own. Read by a turn already running
     #: (`inject`), it changes nothing: that turn keeps the prompt it started with.
@@ -143,10 +155,8 @@ class MessageTurn(QueuedTurn):
     unaccepted = "resumed turn ended in an error before it replied; resend explicitly"
 
     def refusal(self, text: str, provider: AgentProvider) -> str | None:
-        """The same transcript-sized input boundary on every sending surface."""
-        if not text.strip() and not self.media:
-            return "message must contain text or an image."
-        return f"message exceeds the {self.limit}-character limit." if len(text) > self.limit else None
+        """Why it is not sent: nothing in it. Never its length (`prompt` files what one turn does not take in)."""
+        return "message must contain text or an image." if not text.strip() and not self.media else None
 
     def entry(self, text: str, origin: reg.AgentRun | None) -> str | None:
         return text if origin is None else origin.handoff_header() + text
@@ -158,7 +168,12 @@ class MessageTurn(QueuedTurn):
         if message is None:
             return None
         text = message.text if native_images else reg.RunMedia.mentioned(message.text, self.shown(run))
-        return "\n\n".join(part for part in (None if mid_turn else card(run), heading(message, run, mid_turn=mid_turn), text) if part)
+        return "\n\n".join(part for part in (None if mid_turn else card(run), heading(message, run, mid_turn=mid_turn), self._inline(run, text)) if part)
+
+    def _inline(self, run: reg.AgentRun, text: str) -> str:
+        """`text` as its turn takes it: whole up to `limit`, or for a fenced run (its sandbox shows none of galaius's own
+        files: the text then goes whole, on the child's stdin); past it, kept whole (`filed`) and named, its opening shown."""
+        return text if len(text) <= self.limit or run.fence is not None else filed(run, text)
 
     def shown(self, run: reg.AgentRun) -> tuple[Path, ...]:
         return tuple(reg.RunMedia.path(run.run_id, name) for name in self.media)

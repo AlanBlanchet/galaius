@@ -58,6 +58,18 @@ PROJECT_SETTINGS_OFF = "GALAIUS_PROJECT_SETTINGS_OFF"
 #: where galaius runs no git of its own (`run_folder.restore`). Set by the PC runner for every child it starts.
 UNTRUSTED_FOLDERS = "GALAIUS_UNTRUSTED_FOLDERS"
 
+#: The most text one command-line argument carries: Linux refuses an argument past 131,072 bytes (E2BIG; macOS's whole
+#: line is far larger), Windows a whole command line past 32,767 characters — room left for the CLI's own options. A
+#: turn's text past it goes on the child's stdin (`AgentProvider.on_stdin`, `task_message`).
+ARGV_TEXT_BYTES = 16_000 if sys.platform == "win32" else 100_000
+
+
+def fits_argv(text: str) -> bool:
+    """Whether `text` can be one command-line argument here (`ARGV_TEXT_BYTES`; Windows counts UTF-16 units, a byte
+    count bounds them)."""
+    return len(text.encode()) <= ARGV_TEXT_BYTES
+
+
 #: A transcript is read by a human, and a 50k-char tool result is not read — it is scrolled past,
 #: while bloating every refresh that parses the file. Keep the head, say what was cut.
 _CLIP = 2000
@@ -307,6 +319,15 @@ class AgentProvider(ABC):
         """`task`, and the images at `images` (`stdin_images`), as the first message an `ahead_command` child reads on its stdin."""
         raise UnsupportedToolPolicy(f"{self.name} cannot start before its task")
 
+    def on_stdin(self, argv: list[str]) -> tuple[list[str], bytes | None]:
+        """`argv`, a command ending with its turn's text, as it starts whatever that text's length: unchanged when the
+        text fits one argument (`fits_argv`), else with `stdin_prompt` in its place and the text for its stdin."""
+        if fits_argv(argv[-1]):
+            return argv, None
+        if self.stdin_prompt is None:
+            raise UnsupportedToolPolicy(f"{self.name} reads no turn on its stdin, and {len(argv[-1].encode()):,} bytes do not fit its command line")
+        return [*argv[:-1], self.stdin_prompt], argv[-1].encode()
+
     def startup_files(self, cwd: Path, environment: Mapping[str, str]) -> tuple[Path, ...]:
         """The files this CLI reads once, when it starts in `cwd`: a child started ahead is used only
         while none of them changed since."""
@@ -330,6 +351,9 @@ class AgentProvider(ABC):
     #: Whether the message a child started ahead reads on its stdin (`task_message`) carries images itself: a turn
     #: started that way is handed them whole, never their paths.
     stdin_images: ClassVar[bool] = False
+    #: What stands for the turn's text, its command's last argument, when this CLI is to read that text from its stdin
+    #: (`on_stdin`); None: it reads none there.
+    stdin_prompt: ClassVar[str | None] = None
 
     #: Its vendor's install script, per kind of system (`windows`, `posix`); none: galaius does not install it.
     installers: ClassVar[dict[Literal["windows", "posix"], ProgramInstaller]] = {}
@@ -1870,6 +1894,9 @@ class CodexProvider(AgentProvider):
     """
 
     name = "codex"
+    #: codex-cli 0.155.1 `exec --help`: « If not provided as an argument (or if `-` is used), instructions are read from
+    #: stdin »; `exec resume --help`: « If `-` is used, read from stdin ».
+    stdin_prompt = "-"
     native_providers = frozenset({"openai", "chatgpt"})
     binary = "codex"
     installers = {

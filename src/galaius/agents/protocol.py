@@ -92,7 +92,8 @@ class ConversationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     route_id: str = Field(min_length=1, max_length=160, pattern=_ENTITY_ID)
-    prompt: str = Field(default="", max_length=32_768)
+    #: What he asks, whole: never capped (a turn past what it takes in reaches its agent as a file).
+    prompt: str = ""
     #: The image files the turn shows (absolute paths), kept as the conversation's own (`RunMedia`).
     media: tuple[str, ...] = Field(default=(), max_length=AGENT_IMAGES_MAX)
     prompt_selection: PromptSelection | None = None
@@ -211,7 +212,7 @@ class StartCommand(ConversationCommandBase):
 class SendCommand(ConversationCommandBase):
     method: Literal["send"]
     run_id: str = Field(min_length=1, max_length=160, pattern=_ENTITY_ID)
-    prompt: str = Field(default="", max_length=32_768)
+    prompt: str = ""
     #: As `ConversationRequest.media`.
     media: tuple[str, ...] = Field(default=(), max_length=AGENT_IMAGES_MAX)
 
