@@ -41,26 +41,46 @@ class Caller(BaseModel):
     THREAD: ClassVar[tuple[str, ...]] = ("CODEX_THREAD_ID", "CLAUDE_CODE_SESSION_ID")
     #: This process serves many callers (`galaius.server.shared`): it never stands in for one.
     _serving: ClassVar[bool] = False
+    #: This galaius process works for every run of the PC (`serve_none`): it acts as none, whatever started it.
+    _for_no_run: ClassVar[bool] = False
 
     @model_validator(mode="before")
     @classmethod
     def _scoped(cls, data: dict) -> dict:
-        """Its run variables from the run scope its process lives in (`processes.unit_run`), when it lives in one."""
-        if not isinstance(data, dict) or (run := cls.scope_run(int(data.get("pid", 0) or 0))) is None:
+        """Its run variables from the run scope above its process (`scope_run`); none at all in a process working for
+        every run (`serve_none`)."""
+        if not isinstance(data, dict):
+            return data
+        if cls._for_no_run:
+            return {**data, "environment": {name: value for name, value in dict(data.get("environment") or {}).items() if name not in RUN_VARIABLES}}
+        if (run := cls.scope_run(int(data.get("pid", 0) or 0))) is None:
             return data
         return {**data, "environment": {**dict(data.get("environment") or {}), **dict.fromkeys(RUN_VARIABLES, run)}}
 
-    @staticmethod
-    def scope_run(pid: int) -> str | None:
+    @classmethod
+    def scope_run(cls, pid: int) -> str | None:
         """The run whose own scope process `pid`, or its nearest ancestor, lives in (`processes.run_of_process`); None
-        outside every run's tree (the person's terminal, the app's services, a system without user systemd)."""
-        return run_of_process(pid)
+        outside every run's tree (the person's terminal, the app's services, a system without user systemd), and in a
+        process working for every run (`serve_none`)."""
+        return None if cls._for_no_run else run_of_process(pid)
+
+    @classmethod
+    def serve_none(cls) -> None:
+        """From now on this process works for every run of the PC (the message dispatcher): it acts as none, though the
+        run whose message started it is still its parent (2026-10-21: a dispatcher read as that run refused a report to
+        another project's run). Its own code says so; no process structure can (a scope looks the same whoever named it)."""
+        cls._for_no_run = True
+
+    @classmethod
+    def serves_none(cls) -> bool:
+        """Whether this process works for every run (`serve_none`)."""
+        return cls._for_no_run
 
     def unowned(self) -> bool:
         """Whether its process runs in a service `systemd-run` started (`processes.transient_service`), whatever name it
         was given: it may act as no run and is not the person either (2026-10-21: an agent sent a message as the person
         from such a unit, then from one it named like galaius's own)."""
-        return transient_service(process_unit(self.pid))
+        return not self._for_no_run and transient_service(process_unit(self.pid))
 
     @classmethod
     def here(cls) -> "Caller":

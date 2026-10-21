@@ -30,7 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from galaius.agents import quota
 from galaius.agents import registry as reg
-from galaius.caller import RUN_VARIABLES
+from galaius.caller import RUN_VARIABLES, Caller
 from galaius.agents.events import AgentEvent, MessageFields
 from galaius.agents.providers import AgentProvider, _safe_process_detail, provider_for
 from galaius.agents.relations import card, heading
@@ -923,6 +923,7 @@ async def wait_for_item(run_id: str, item_id: str) -> QueueItem | None:
 
 def main() -> None:
     if len(sys.argv) == 3 and sys.argv[1] == "--serve":
+        Caller.serve_none()   # it serves every run of the PC, never as the run whose message started it
         RuntimeStore.default().register(Runtime.own(), os.getpid())  # a run can outlive an upgrade: its runtime stays until it ends
         share_malloc_arenas()  # a thread per run: its own arena each would keep every run's peak
         serve(sys.argv[2])

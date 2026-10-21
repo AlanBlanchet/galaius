@@ -384,6 +384,8 @@ def asking_run() -> str | None:
     `setsid` change nothing there), else the running run it descends from (`reg.ancestor_run`, where runs have no scope),
     else the run `GALAIUS_RUN_ID` names when it has a record (a process its run let go of: a queue's wake); None for the
     person at a terminal."""
+    if Caller.serves_none():
+        return None
     if (scoped := Caller.scope_run(Caller.current().pid)) is not None:
         return scoped
     if (run := reg.ancestor_run()) is not None:

@@ -138,6 +138,7 @@ def _in_no_run_scope(monkeypatch):
     unit): a test that means a scope sets its own (`galaius.caller.process_unit`)."""
     monkeypatch.setattr("galaius.caller.process_unit", lambda pid: None)
     monkeypatch.setattr("galaius.caller.run_of_process", lambda pid: None)
+    monkeypatch.setattr("galaius.caller.Caller._for_no_run", False)
 
 
 @pytest.fixture(autouse=True)

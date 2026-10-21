@@ -47,3 +47,15 @@ def test_a_process_acts_as_the_run_whose_scope_holds_it_or_an_ancestor(monkeypat
         if sender == RUN:
             assert asking.environment["GALAIUS_PARENT_RUN_ID"] == RUN
             assert Spawn.asked(task="review it", cwd=".", agent="code-reviewer").parent_run_id == RUN   # never outside its tree
+
+
+def test_the_dispatcher_acts_as_no_run_though_a_run_started_it(monkeypatch):
+    """The PC's dispatcher serves every run: started by a run's `galaius agents send`, that run's process stays its parent
+    while it waits (`Caller.serve_none`)."""
+    chain = {ASKING: "galaius-task-1a2b3c.scope", ASKING + 1: SCOPE}
+    monkeypatch.setattr(processes, "process_unit", chain.get)
+    monkeypatch.setattr(processes, "process_ancestry", lambda pid: tuple((other, None) for other in chain if other > pid))
+    monkeypatch.setattr(caller_module, "run_of_process", processes.run_of_process)
+    Caller.serve_none()
+    with Caller(environment={"GALAIUS_RUN_ID": RUN}, cwd=".", pid=ASKING).bound() as dispatcher:
+        assert messaging.asking_run() is None and "GALAIUS_RUN_ID" not in dispatcher.environment and not dispatcher.unowned()
