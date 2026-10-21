@@ -179,10 +179,6 @@ class _DeliveryProvider(ScriptedProvider):
     def permission_modes(self):
         return [PermissionMode("workspace-write", "write", "write")]
 
-    def queue_command(self, session_id, message):
-        self.calls.append(("queue", session_id, message))
-        return ["fake", "queue", session_id, message]
-
     def resume_command(self, session_id, message, **kwargs):
         self.calls.append(("resume", session_id, message, kwargs))
         return ["fake", "resume", session_id, message]

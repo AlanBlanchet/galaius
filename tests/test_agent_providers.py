@@ -379,9 +379,6 @@ def test_codex_command_start_exposes_the_actual_tool_and_command():
 
 def test_codex_delivery_commands_use_the_vendor_thread_id():
     provider = CodexProvider()
-    assert provider.queue_command("vendor-thread", "ping") == [
-        "codex", "queue", "--thread", "vendor-thread", "--message", "ping",
-    ]
     resumed = provider.resume_command(
         "vendor-thread", "ping", model="fresh-model", reasoning="high",
         permission_mode="acceptEdits",

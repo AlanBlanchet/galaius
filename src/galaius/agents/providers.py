@@ -874,10 +874,6 @@ class AgentProvider(ABC):
         except ValueError:
             return False
 
-    def queue_command(self, session_id: str, message: str) -> list[str]:
-        """The argv that queues ``message`` for a session already served by this CLI."""
-        raise NotImplementedError(f"{type(self).__name__} cannot queue a message")
-
     def discover(self) -> list[dict]:
         """Agent sessions this provider can see that galaius did NOT spawn — the user's own
         interactive windows included. Optional; a provider with no such view returns []."""
@@ -2309,9 +2305,6 @@ class CodexProvider(AgentProvider):
         except (OSError, subprocess.SubprocessError):
             return False
         return completed.returncode == 0 and "--image" in (completed.stdout or "")
-
-    def queue_command(self, session_id: str, message: str) -> list[str]:
-        return [self.binary, "queue", "--thread", session_id, "--message", message]
 
     def resume_command(
         self, session_id: str, message: str, *, model: str | None = None,
