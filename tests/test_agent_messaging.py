@@ -730,3 +730,27 @@ def test_a_message_sent_with_an_image_shows_it_to_the_run_it_reaches(tmp_path, m
     [queued] = agent_queue.items("r1")
     [name] = queued.turn.media
     assert reg.RunMedia.path("r1", name).read_bytes() == PASTED_PNG
+
+
+@pytest.mark.parametrize("message_id, recorded", [
+    pytest.param("7b44f970-1c2d-4e5f-8a9b-0c1d2e3f4a5b", True, id="an-outbox-row-id"),
+    pytest.param("two words", False, id="an-id-no-row-could-carry"),
+])
+def test_the_id_its_sender_gives_a_message_is_the_one_its_run_records(monkeypatch, capsys, message_id, recorded):
+    """Owner 2026-10-21: his message showed twice (the web paired its copy with the run's by words + clock).
+    `--message-id` (the web's outbox row) is the id the run's transcript records it under; sent again, nothing new."""
+    from galaius.cli.app_commands import agents_send
+
+    provider = _continuation_policy(monkeypatch)
+    register_run("r1", name="reviewer", provider=provider.name, task="t", pid=1234, agent="tester", provider_session_id="vendor-r1")
+    monkeypatch.setattr(messaging, "start_dispatcher", lambda run_id, environment: None)
+    monkeypatch.setattr(messaging, "wait_for_start", lambda delivery: None)
+    if not recorded:
+        with pytest.raises(SystemExit):
+            agents_send("r1", "hello", message_id=message_id)
+        assert "--message-id takes" in capsys.readouterr().out and not agent_queue.items("r1")
+        return
+    agents_send("r1", "hello", message_id=message_id)
+    agents_send("r1", "hello", message_id=message_id)
+    assert [event.event_id for event in reg.read_messages("r1")] == [message_id]
+    assert [item.message_id for item in agent_queue.items("r1")] == [message_id]

@@ -740,3 +740,17 @@ def test_an_operator_message_sent_for_a_run_names_it_on_its_entry_and_in_the_rec
     assert [message.for_run for message in reg.read_messages(deployer)] == [maker, other, maker, None]
     assert reg.get_run(deployer).asked_by == (maker, other)
     assert '"for_run"' not in reg.messages_path(deployer).read_text().splitlines()[-1]   # left out when none
+
+
+@pytest.mark.parametrize("queue_kept", [True, False], ids=["queue kept", "queue file gone"])
+def test_one_message_id_records_and_queues_one_message(monkeypatch, queue_kept):
+    """The web's mirror delivers its outbox row under that row's id, again on every retry: one message, one row."""
+    _setup(monkeypatch)
+    first = messaging.deliver_message("r1", "one message", sender="operator", message_id="outbox-7b44f970")
+    if not queue_kept:
+        agent_queue.path("r1").unlink()
+    again = messaging.deliver_message("r1", "one message", sender="operator", message_id="outbox-7b44f970")
+
+    assert (first.repeated, again.state, again.repeated) == (False, "queued", True)
+    assert [event.event_id for event in reg.read_messages("r1")] == ["outbox-7b44f970"]
+    assert len(agent_queue.items("r1")) == (1 if queue_kept else 0)

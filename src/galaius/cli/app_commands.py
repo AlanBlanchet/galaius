@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import platform as _pf
+import re
 import shutil
 import subprocess
 import sys
@@ -1004,7 +1005,8 @@ def refresh_live_data() -> None:
 @agents_app.command(name="send")
 def agents_send(run_id: str, message: str, *, fyi: Annotated[bool, Parameter(name="--fyi")] = False,
                 cross_project: Annotated[bool, Parameter(name="--cross-project")] = False,
-                image_paths: Annotated[list[Path] | None, Parameter(name="--image")] = None) -> None:
+                image_paths: Annotated[list[Path] | None, Parameter(name="--image")] = None,
+                message_id: Annotated[str | None, Parameter(name="--message-id")] = None) -> None:
     """Send a message to a running agent — it answers with its full context intact.
 
     How the VS Code panel lets you join the conversation instead of only watching: the agent
@@ -1016,7 +1018,12 @@ def agents_send(run_id: str, message: str, *, fyi: Annotated[bool, Parameter(nam
     for another project than the sending run's is sent to anyway (`relations.foreign_project` refuses it otherwise).
     --image PATH (repeatable): an image the message shows, kept with the run it reaches; the agent sees it (an image
     input when its CLI takes one, else a line naming its file). MESSAGE may then be "".
+    --message-id ID: the one id the message keeps end to end (the sender's own, e.g. a web outbox row): its transcript
+    entry is recorded under it, and the same id sent again records and enqueues nothing.
     """
+    if message_id is not None and not re.fullmatch(r"[A-Za-z0-9._:-]{1,160}", message_id):
+        print("ERROR: --message-id takes 1 to 160 letters, digits, '.', '_', ':' or '-'.")
+        raise SystemExit(1)
 
 
     if reg.resolve_run_id(run_id) is None and (waiting := SpawnLine.here().describe(run_id)) is not None:
@@ -1030,7 +1037,7 @@ def agents_send(run_id: str, message: str, *, fyi: Annotated[bool, Parameter(nam
     except (OSError, ValueError) as error:
         print(f"ERROR: --image takes an image file ({', '.join(kind.removeprefix('image/').upper() for _, kind, _ in IMAGE_TYPES)}): {error}")
         raise SystemExit(1)
-    delivery = messaging.deliver_message(run_id, message, turn=agent_queue.MessageTurn(fyi=fyi, media=media))
+    delivery = messaging.deliver_message(run_id, message, message_id=message_id, turn=agent_queue.MessageTurn(fyi=fyi, media=media))
     if (refused := messaging.wait_for_start(delivery)) is not None:
         print(f"ERROR: the resumed turn did not start: {refused}")
         raise SystemExit(1)

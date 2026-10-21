@@ -53,12 +53,16 @@ class Delivery(BaseModel):
     @classmethod
     def repeat(cls, run_id: str, message_id: str) -> "Delivery | None":
         """The message already queued for `run_id` under `message_id` (its lock held), told as when it
-        was queued, or why it was not delivered; None when there is none."""
+        was queued, or why it was not delivered — or already recorded in its transcript though its queue item is gone
+        (one id, one message: delivered again, it records and enqueues nothing); None when there is none."""
         run = reg.get_run(run_id)
         item = next((item for item in agent_queue.items_locked(run_id) if item.message_id == message_id), None) if run is not None else None
         if run is not None and item is None and agent_queue.holds_unreadable_locked(run_id, message_id):
             return cls(state="queued", repeated=True, run_id=run_id,
                        text=f"Already queued for {run.name} ({run_id[:8]}), as an item this galaius cannot read: the galaius that wrote it delivers it.")
+        if run is not None and item is None and reg.message_for(run_id, message_id) is not None:
+            return cls(state="queued", repeated=True, run_id=run_id, reads_at="now",
+                       text=f"Already delivered to {run.name} ({run_id[:8]}) as {message_id}.")
         if run is None or item is None:
             return None
         if item.state in {"failed", "cancelled"}:
