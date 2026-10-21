@@ -6,7 +6,7 @@ import base64
 import inspect
 from collections.abc import Callable
 
-from galaius_core import FILE_REFUSED, MediaImage, MediaSpec, Model3DSpec, TranslationSpec, image_type
+from galaius_core import FILE_REFUSED, MediaImage, MediaSpec, Model3DSpec, MusicSpec, SoundSpec, SpeechSpec, TranslationSpec, image_type
 from pydantic import ValidationError
 
 from galaius.agents.catalog_connection import CatalogConnectionError
@@ -69,3 +69,37 @@ async def generate_3d(image: str, pbr: bool = False, max_cost_usd: float | None 
             raise ValueError(f"{image} is no PNG, JPEG or WebP image")
         return Model3DSpec(image=MediaImage(media_type=kind, data_base64=base64.b64encode(content).decode()), pbr=pbr)
     return await _asked(build, max_cost_usd=max_cost_usd, folder=folder)
+
+
+@mcp.tool(category="media", description=_described(
+    """Say a text aloud with your company's voice model, as an audio file.
+
+    Use this for every voice-over, narration or spoken message the person asks for. text: the words said. voice: the model's voice id; empty: its default. style: how to
+    say it (« calm and warm », « cheerful »); empty: neutral.""",
+    """Returns the price, or the audio file made (shown in the person's chat), or why nothing was made."""))
+@instrumented
+async def generate_speech(text: str, voice: str = "", style: str = "", max_cost_usd: float | None = None, folder: str = FOLDER) -> str:
+    return await _asked(lambda: SpeechSpec(text=text, voice=voice, style=style), max_cost_usd=max_cost_usd, folder=folder)
+
+
+@mcp.tool(category="media", description=_described(
+    """Compose music from a description with your company's music model, as an audio file.
+
+    Use this for every song, jingle or soundtrack the person asks for. prompt: genre, mood, instruments, tempo,
+    structure, lyrics when it sings, and the length wanted.""",
+    """Returns the price, or the music file made (shown in the person's chat), or why nothing was made."""))
+@instrumented
+async def generate_music(prompt: str, max_cost_usd: float | None = None, folder: str = FOLDER) -> str:
+    return await _asked(lambda: MusicSpec(prompt=prompt), max_cost_usd=max_cost_usd, folder=folder)
+
+
+@mcp.tool(category="media", description=_described(
+    """Make a sound effect from a description with your company's sound model, as an audio file.
+
+    Use this for every sound effect or ambience the person asks for (« rain on a tin roof », « a door creaking »), never
+    for words said (generate_speech). seconds: its length, 0.5 to 30; empty: from the description. loop: made to repeat
+    seamlessly.""",
+    """Returns the price, or the sound file made (shown in the person's chat), or why nothing was made."""))
+@instrumented
+async def generate_sound(prompt: str, seconds: float | None = None, loop: bool = False, max_cost_usd: float | None = None, folder: str = FOLDER) -> str:
+    return await _asked(lambda: SoundSpec(prompt=prompt, seconds=seconds, loop=loop), max_cost_usd=max_cost_usd, folder=folder)

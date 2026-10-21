@@ -85,6 +85,24 @@
  },
  {
   "server": "galaius",
+  "name": "generate_music",
+  "category": "media",
+  "description": "Compose music from a description with your company's music model, as an audio file."
+ },
+ {
+  "server": "galaius",
+  "name": "generate_sound",
+  "category": "media",
+  "description": "Make a sound effect from a description with your company's sound model, as an audio file."
+ },
+ {
+  "server": "galaius",
+  "name": "generate_speech",
+  "category": "media",
+  "description": "Say a text aloud with your company's voice model, as an audio file."
+ },
+ {
+  "server": "galaius",
   "name": "get_interactive_elements",
   "category": "vision",
   "description": "List the interactive elements with numbered badges + their details; act on them by the returned `ref`/`element` in run_actions."

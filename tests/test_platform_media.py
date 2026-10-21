@@ -51,6 +51,9 @@ JOBS = {
     # A file name the platform gives is never a path: only its last part is used, inside the folder asked.
     "3d model": (lambda cap: tools_media.generate_3d("photo.png", max_cost_usd=cap), ("../../model-ab12.glb", MESH, None), "galaius-media/model-ab12.glb"),
     "translation": (lambda cap: tools_media.translate("Bonjour", "en", max_cost_usd=cap), ("translation-ab12.en.txt", b"Hello", "Hello"), "galaius-media/translation-ab12.en.txt"),
+    "speech": (lambda cap: tools_media.generate_speech("Bonjour à tous", style="warm", max_cost_usd=cap), ("speech-ab12.wav", b"RIFF-wav", None), "galaius-media/speech-ab12.wav"),
+    "music": (lambda cap: tools_media.generate_music("calm lo-fi piano, 1 minute", max_cost_usd=cap), ("music-ab12.mp3", b"ID3-mp3", None), "galaius-media/music-ab12.mp3"),
+    "sound": (lambda cap: tools_media.generate_sound("rain on a tin roof", seconds=4, loop=True, max_cost_usd=cap), ("sound-ab12.wav", b"RIFF-wav", None), "galaius-media/sound-ab12.wav"),
 }
 
 
