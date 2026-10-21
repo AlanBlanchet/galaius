@@ -365,10 +365,20 @@ def unit_run(unit: str | None) -> str | None:
     return found.group(1) if found else None
 
 
-def started_by_systemd_run(unit: str | None) -> bool:
-    """Whether `unit` has the name `systemd-run` gives a unit it starts without `--unit` (`run-u12.service`,
-    `run-p34-i56.scope`): a command handed to the user manager, outside the run it came from."""
-    return bool(unit) and unit.startswith("run-") and unit.endswith((".service", ".scope"))
+def transient_service(unit: str | None) -> bool:
+    """Whether `unit` is a service the user manager runs from no unit file: one `systemd-run` started (whatever name it
+    was given), its process a child of the manager, outside the process tree it was asked from. A unit file installed
+    (`galaius-machine.service`, a terminal's) is none; a scope never is (its process keeps its parent)."""
+    return bool(unit) and unit.endswith(".service") and (Path(f"/run/user/{os.getuid()}/systemd/transient") / unit).exists()
+
+
+def run_of_process(pid: int) -> str | None:
+    """The run whose own scope holds `pid` or its nearest ancestor in one (`unit_run`): `env -u`, `setsid` and a scope
+    `systemd-run --scope` names leave a process in that scope, or below a process that is."""
+    for candidate in (pid, *(ancestor for ancestor, _started in process_ancestry(pid))):
+        if (run := unit_run(process_unit(candidate))) is not None:
+            return run
+    return None
 
 
 def process_unit(pid: int) -> str | None:

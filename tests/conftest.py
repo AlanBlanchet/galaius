@@ -137,6 +137,7 @@ def _in_no_run_scope(monkeypatch):
     """A test process lives in no run's scope whatever unit runs the suite (an agent's own run scope, a `systemd-run`
     unit): a test that means a scope sets its own (`galaius.caller.process_unit`)."""
     monkeypatch.setattr("galaius.caller.process_unit", lambda pid: None)
+    monkeypatch.setattr("galaius.caller.run_of_process", lambda pid: None)
 
 
 @pytest.fixture(autouse=True)

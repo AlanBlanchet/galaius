@@ -144,9 +144,9 @@ def run_scope_name(run_id: str) -> str:
 
 
 def task_scope_name() -> str:
-    """The scope of a process working for no one run (a shared server, a dispatcher, a delivery of the person's message):
-    named by galaius, never `systemd-run`'s own `run-…` name, which marks a command an agent handed to the user manager
-    (`processes.started_by_systemd_run`)."""
+    """The scope of a process working for no one run (a shared server, a dispatcher, a delivery of the person's message),
+    named for galaius in the user manager's lists. Its name proves nothing: who a process acts as is read from the run
+    scopes above it (`processes.run_of_process`)."""
     return f"{TASK_SCOPE_PREFIX}{secrets.token_hex(6)}.scope"
 
 

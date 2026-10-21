@@ -8,9 +8,9 @@ spawns inherits — reads `Caller.current()`. Outside any bound scope (a CLI com
 caller is this process itself.
 
 A process inside a run's own scope (`processes.unit_run`) acts as that run whatever its environment says: `env -u`, a
-cleared parent or `setsid` leave a process in the scope it was started in, so the run variables (`RUN_VARIABLES`) are
-taken from the scope, never from the variables. A process `systemd-run` handed to the user manager is in no run's scope
-and is no one (`Caller.unowned`)."""
+cleared parent, `setsid` or a scope of its own naming leave a process in that scope or below a process that is, so the run
+variables (`RUN_VARIABLES`) are taken from it, never from the variables. A service `systemd-run` handed to the user
+manager, under any name, is in no run's tree and is no one (`Caller.unowned`)."""
 
 import os
 from collections.abc import Iterator, Mapping
@@ -21,7 +21,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from galaius.processes import process_unit, started_by_systemd_run, unit_run
+from galaius.processes import process_unit, run_of_process, transient_service
 
 #: The variables naming the run a process acts as (its launch sets both to the run's id).
 RUN_VARIABLES = ("GALAIUS_RUN_ID", "GALAIUS_PARENT_RUN_ID")
@@ -52,14 +52,15 @@ class Caller(BaseModel):
 
     @staticmethod
     def scope_run(pid: int) -> str | None:
-        """The run whose own scope process `pid` lives in; None outside every run's scope (the person's terminal, the
-        app's services, a system without user systemd)."""
-        return unit_run(process_unit(pid))
+        """The run whose own scope process `pid`, or its nearest ancestor, lives in (`processes.run_of_process`); None
+        outside every run's tree (the person's terminal, the app's services, a system without user systemd)."""
+        return run_of_process(pid)
 
     def unowned(self) -> bool:
-        """Whether its process is one `systemd-run` started (`processes.started_by_systemd_run`): it may act as no run and
-        is not the person either (2026-10-21: an agent sent a message as the person from such a unit)."""
-        return started_by_systemd_run(process_unit(self.pid))
+        """Whether its process runs in a service `systemd-run` started (`processes.transient_service`), whatever name it
+        was given: it may act as no run and is not the person either (2026-10-21: an agent sent a message as the person
+        from such a unit, then from one it named like galaius's own)."""
+        return transient_service(process_unit(self.pid))
 
     @classmethod
     def here(cls) -> "Caller":
