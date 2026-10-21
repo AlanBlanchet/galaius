@@ -109,6 +109,20 @@ class CriticCap(BaseModel):
     kept_days: float = Field(default=14.0, gt=0)
 
 
+class ReflectionCadence(BaseModel):
+    """Who reflects on a coordinator's work, and when: once a root run of a `coordinators` role has ended the turns that
+    answered the person (its agents back too), an instance of `role` in its conversation is asked about them; the rows
+    of its report naming a durable change go to `librarian` (the prompts' owner) in the same conversation. 2026-10-21:
+    the step lived only as prompt text, and the coordinator skipped it on nearly every turn."""
+
+    model_config = ConfigDict(frozen=True)
+
+    enabled: bool = True
+    coordinators: frozenset[str] = frozenset({"main"})
+    role: str = "reflection"
+    librarian: str = "librarian"
+
+
 def _default_media_provider_order() -> tuple[str, ...]:
     """Registry order is the one default; adding a real provider makes it configurable at once."""
     return tuple(MEDIA_PROVIDERS)
@@ -242,6 +256,8 @@ class Config(BaseSettings):
     # How many rounds a critic role may take on one maker's work before an agent asking for another is refused
     # (`galaius.agents.critic_rounds`). The person is never refused.
     agent_critic_cap: CriticCap = Field(default_factory=lambda: CriticCap())
+    # The reflection asked after a coordinator answered the person (`galaius.agents.reflection`).
+    agent_reflection: ReflectionCadence = Field(default_factory=lambda: ReflectionCadence())
     agent_memory_max_percent: Annotated[int, Field(ge=1, le=100)] = 45
     agent_run_memory_max_percent: Annotated[int, Field(ge=1, le=100)] = 20
     # The agents' soft memory limit, a share of that slice's cap: past it no agent turn starts here (a spawn, a resumed

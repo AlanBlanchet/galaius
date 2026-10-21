@@ -364,14 +364,28 @@ async def wait_for_reply(delivery: Delivery) -> str:
     return f"{delivery.text}\n{header}{replies[-1]}"
 
 
+#: Why a process `systemd-run` started may not send or spawn as no run (`Caller.unowned`).
+UNOWNED = ("this command runs in a unit systemd-run started, outside every run: it acts as no run and is not the person. "
+           "Run it from your own run, or let the person run it in his terminal.")
+
+
 def sender_id(environment: Mapping[str, str] | None = None) -> str:
-    return Caller.environ(environment).get("GALAIUS_RUN_ID") or reg.PERSON_SENDER
+    """Who a message from this caller is from: the run it acts as (`Caller`: its run scope first), else the person; a
+    process `systemd-run` started is neither (`ValueError`, `UNOWNED`)."""
+    if (run := Caller.environ(environment).get("GALAIUS_RUN_ID")) is not None and run:
+        return run
+    if environment is None and Caller.current().unowned():
+        raise ValueError(UNOWNED)
+    return reg.PERSON_SENDER
 
 
 def asking_run() -> str | None:
-    """The run asking from this process: the running run it descends from (`reg.ancestor_run`: its process ancestry, which
-    no command of its agent changes, where `GALAIUS_RUN_ID` is cleared or forged at will), else the run `GALAIUS_RUN_ID`
-    names when it has a record (a process its run let go of: a queue's wake); None for the person at a terminal."""
+    """The run asking from this process: the run whose scope it lives in (`Caller.scope_run`: `env -u`, a cleared parent,
+    `setsid` change nothing there), else the running run it descends from (`reg.ancestor_run`, where runs have no scope),
+    else the run `GALAIUS_RUN_ID` names when it has a record (a process its run let go of: a queue's wake); None for the
+    person at a terminal."""
+    if (scoped := Caller.scope_run(Caller.current().pid)) is not None:
+        return scoped
     if (run := reg.ancestor_run()) is not None:
         return run.run_id
     sender = sender_id()
@@ -382,6 +396,8 @@ def send_refusal(run_id: str, *, cross_project: bool = False) -> str | None:
     """Why this process (`asking_run`) may not message run `run_id`: the run it reaches (`relations.live`) works for
     another project (`relations.foreign_project`). `cross_project` lifts it at the person's terminal only
     (`relations.person_override_refusal`)."""
+    if Caller.current().unowned():
+        return UNOWNED
     if cross_project:
         return relations.person_override_refusal()
     target = reg.resolve_run_id(run_id)

@@ -354,6 +354,23 @@ def process_exited(pid: int) -> bool:
     return fields is not None and bool(fields) and fields[0] in ("Z", "X")
 
 
+#: How a run's own scope is named (`ceiling.run_scope_name`): this prefix, the run id, a nonce.
+RUN_SCOPE_PREFIX = "galaius-run-"
+_RUN_SCOPE = re.compile(re.escape(RUN_SCOPE_PREFIX) + r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-[0-9a-f]{8}\.scope")
+
+
+def unit_run(unit: str | None) -> str | None:
+    """The run whose own scope `unit` is; None for any other unit."""
+    found = _RUN_SCOPE.fullmatch(unit or "")
+    return found.group(1) if found else None
+
+
+def started_by_systemd_run(unit: str | None) -> bool:
+    """Whether `unit` has the name `systemd-run` gives a unit it starts without `--unit` (`run-u12.service`,
+    `run-p34-i56.scope`): a command handed to the user manager, outside the run it came from."""
+    return bool(unit) and unit.startswith("run-") and unit.endswith((".service", ".scope"))
+
+
 def process_unit(pid: int) -> str | None:
     """The systemd unit holding `pid` (a `run-….scope` / `….service`), from its cgroup v2 path: the journal
     records how that unit ENDED (out of memory, a failure) under its name, never under the pid. None off

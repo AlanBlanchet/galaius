@@ -35,9 +35,12 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from galaius.config import Config
+from galaius.processes import RUN_SCOPE_PREFIX
+
+#: How a scope working for no one run is named (`task_scope_name`).
+TASK_SCOPE_PREFIX = "galaius-task-"
 
 SLICE = "galaius-agents.slice"
-RUN_SCOPE_PREFIX = "galaius-run-"
 _SYSTEMCTL_TIMEOUT = 5
 
 log = logging.getLogger(__name__)
@@ -96,7 +99,8 @@ def contained(argv: Sequence[str], ceiling: Ceiling | None = None, *, run_id: st
     """``argv`` run in its own capped scope inside the agent slice, or unchanged where no user
     systemd exists or ``GALAIUS_AGENT_CEILING`` is off. An explicit ``ceiling`` always applies.
     A ``run_id`` names the scope after the run (:func:`run_scope_name`), so :func:`end_run_scope`
-    can find it; a process serving several runs (a shared app server) passes none.
+    can find it; a process serving several runs (a shared app server) passes none and gets a task scope
+    (:func:`task_scope_name`).
 
     A slice whose limits cannot be applied in time (systemctl timing out under load) still gets the
     run its own scope: unscoped, it would live and die inside its launcher's scope. Any other
@@ -119,8 +123,7 @@ def contained(argv: Sequence[str], ceiling: Ceiling | None = None, *, run_id: st
         log.warning("agent runs uncapped: %s could not be prepared (%s)", SLICE, error)
         return list(argv)
     scope = [f"--property={key}={value}" for key, value in ceiling.run_properties().items()]
-    if run_id is not None:
-        scope.append(f"--unit={run_scope_name(run_id)}")
+    scope.append(f"--unit={run_scope_name(run_id) if run_id is not None else task_scope_name()}")
     return [systemd_run, "--user", "--scope", "--quiet", "--collect", f"--slice={SLICE}", *scope, "--", *argv]
 
 
@@ -138,6 +141,13 @@ def run_scope_name(run_id: str) -> str:
     """The scope one turn of run ``run_id`` runs in: the run's id, then a nonce, since a resumed
     turn may start while the scope of an earlier one is still being torn down."""
     return f"{RUN_SCOPE_PREFIX}{run_id}-{secrets.token_hex(4)}.scope"
+
+
+def task_scope_name() -> str:
+    """The scope of a process working for no one run (a shared server, a dispatcher, a delivery of the person's message):
+    named by galaius, never `systemd-run`'s own `run-…` name, which marks a command an agent handed to the user manager
+    (`processes.started_by_systemd_run`)."""
+    return f"{TASK_SCOPE_PREFIX}{secrets.token_hex(6)}.scope"
 
 
 def is_run_scope(unit: str | None, run_id: str) -> bool:

@@ -133,6 +133,13 @@ def _isolate_unit_configuration(
 
 
 @pytest.fixture(autouse=True)
+def _in_no_run_scope(monkeypatch):
+    """A test process lives in no run's scope whatever unit runs the suite (an agent's own run scope, a `systemd-run`
+    unit): a test that means a scope sets its own (`galaius.caller.process_unit`)."""
+    monkeypatch.setattr("galaius.caller.process_unit", lambda pid: None)
+
+
+@pytest.fixture(autouse=True)
 def _codex_sandbox_starts(monkeypatch):
     """Codex's argv never depends on whether this host refuses bubblewrap a user namespace (a systemd
     service on Ubuntu 24.04 does): a test that means it probes on purpose."""

@@ -140,6 +140,8 @@ class Spawn(BaseModel):
         from its environment, is refused (`ValueError`; 2026-10-17: 282 such spawns in 68 transcripts started runs nobody's
         report reached). The person's terminal, and a queue's process its run let go of, descend from no run."""
         parent = parent_run_id or Caller.environ().get("GALAIUS_PARENT_RUN_ID") or None
+        if parent is None and Caller.current().unowned():
+            raise ValueError(messaging.UNOWNED)
         if parent is None and (calling := reg.ancestor_run()) is not None:
             raise ValueError(f"run {calling.run_id} asks this spawn: an empty --parent-run-id or a cleared GALAIUS_PARENT_RUN_ID "
                              "would start a run outside its tree, its report reaching no one. Spawn it plainly: it reports "

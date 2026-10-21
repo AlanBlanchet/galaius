@@ -865,6 +865,13 @@ def _replace_private(path: Path, payload: bytes | Iterable[bytes]) -> FileStamp:
 
 
 def _replace_in(folder: PinnedDirectory, name: str, payload: bytes | Iterable[bytes]) -> FileStamp:
+    """`payload` as `folder`'s file `name`, whole or not at all. A live file that is a link is refused, never replaced:
+    something links it with another place (2026-10-21: a scratch link let a shell redirect empty a live file)."""
+    try:
+        if folder.link_like(folder.stat(name)):
+            raise OSError(f"agent registry file {name} is a link: a live file is written where it is, never through one")
+    except FileNotFoundError:
+        pass
     descriptor = -1
     replacement_name: str | None = None
     owned_identity: tuple[int, int] | None = None
@@ -1523,8 +1530,8 @@ def ancestor_run() -> AgentRun | None:
     """The running run the caller's process (`Caller.pid`) descends from (its pid and start time recorded on the run): the
     parent a launch cannot hide by clearing `GALAIUS_PARENT_RUN_ID` from its environment.
 
-    A deterrent, not the boundary: a process handed to a new parent (`setsid -f`, `systemd-run
-    --user`) with its login variables cleared escapes it, and Windows has no parent walk here. Only
+    Where runs have scopes the scope answers first (`Caller.scope_run`: `setsid -f` leaves a process in it; a unit
+    `systemd-run` started is no one, `Caller.unowned`); this walk serves systems without one. Windows has none here. Only
     the fence holds a run to its subscription (A3): a lent run starts only inside it; an unfenced run
     on the owner's own subscription can reach his own default login, never another account's."""
     ancestors = set(process_ancestry(Caller.current().pid))
