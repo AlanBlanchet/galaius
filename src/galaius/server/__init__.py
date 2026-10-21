@@ -16,7 +16,7 @@ import asyncio  # noqa: F401 — re-exported: some tests patch galaius.server.as
 
 # Submodules — importing the tools_* modules runs their @mcp.tool decorators (registration).
 from galaius.server import capture, core, sandbox, targets, vlm  # noqa: F401
-from galaius.server import tools_agents, tools_desktop, tools_files, tools_images, tools_media, tools_meta, tools_vision, tools_web  # noqa: F401
+from galaius.server import tools_agents, tools_desktop, tools_files, tools_images, tools_media, tools_video, tools_meta, tools_vision, tools_web  # noqa: F401
 
 # --- Shared instances / entrypoint (core) ---
 from galaius.server.core import (  # noqa: F401

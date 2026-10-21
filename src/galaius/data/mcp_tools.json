@@ -67,6 +67,12 @@
  },
  {
   "server": "galaius",
+  "name": "edit_video",
+  "category": "media",
+  "description": "Edit a video in your working folder \u2014 cut it, join clips, caption it, lay text over it, resize it, take its sound \u2014 on this PC, at no cost, and show the result in the person's chat as a video they can play and download."
+ },
+ {
+  "server": "galaius",
   "name": "generate_3d",
   "category": "media",
   "description": "Make a 3D model (a .glb file) of the object shown in an image, with your company's 3D model."

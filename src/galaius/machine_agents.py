@@ -38,7 +38,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from galaius_core import (
     MODEL_ID_MAX,
     PROJECTS_ROOT, AGENT_TOUCH_SCOPES, AgentCompactRequest, ContextGauge, MACHINE_AGENT_MEDIA, MACHINE_AGENT_READ, MACHINE_AGENT_TAIL, AgentAnswerRequest, AgentMedia, AgentMediaRequest, AgentFile, media_kind, image_type, AgentContinueRequest, AgentFoldersRequest, AgentInteraction, AgentLogsRequest, AgentOptionsRequest,
-    AgentAllowanceRequest, AgentMoveRequest, AgentProgramInstallRequest, AgentProgramsRequest, AgentProviderState, AgentSignInCodeRequest, AgentSignOutRequest, SubscriptionAllowance, Lent, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
+    AgentAllowanceRequest, AgentMoveRequest, AgentProgramInstallRequest, AgentProgramsRequest, AgentToolInstallRequest, AgentToolsRequest, AgentProviderState, AgentSignInCodeRequest, AgentSignOutRequest, SubscriptionAllowance, Lent, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
     MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, PassedOverCandidate, ReadsAt, AgentRefusalCode, WebLimited, WebLoad, media_key, media_paths, MachineAgentSession, MachineFileEntry, StopActor, WorkspaceCreateRequest, WorkspacePack, WorkspacePackRequest, WorkspacePrepareRequest, WorkspaceRefresh, WorkspacesRequest,
 )
 from galaius.agents import agent_queue, quota
@@ -55,6 +55,7 @@ from galaius.config import UserConfig
 from galaius.fence import EGRESS, FenceSpec, available
 from galaius.file_lock import exclusive
 from galaius.machine_programs import AgentPrograms
+from galaius.machine_tools import MachineTools
 from galaius.machine_workspaces import MachineWorkspaces, unusable
 from galaius.pinned_directory import PinnedDirectory
 from galaius.workspace_copy import WorkspaceRefused
@@ -468,7 +469,8 @@ class MachineAgents(BaseModel):
         # With agents off (or no folder) what the web started here can still be read and stopped.
         # Programs are not agents: installed and signed in whatever the agent settings say.
         if not isinstance(request, AgentRunsRequest | AgentTailRequest | AgentMediaRequest | AgentStopRequest | AgentLogsRequest | WorkspacesRequest
-                          | AgentProgramsRequest | AgentProgramInstallRequest | AgentSignOutRequest | AgentSignInCodeRequest):
+                          | AgentProgramsRequest | AgentProgramInstallRequest | AgentSignOutRequest | AgentSignInCodeRequest
+                          | AgentToolsRequest | AgentToolInstallRequest):
             if not self.run_agents:
                 raise PermissionError("agents are off on this computer; its owner turns them on on its page on the web, or there with `galaius machine agents on`")
             if not self.roots:
@@ -539,6 +541,11 @@ class MachineAgents(BaseModel):
             case AgentSignInCodeRequest():
                 state = await asyncio.to_thread(self._programs().paste, request.provider, request.subscription_id, request.attempt, request.sealed)
                 return MachineAgentAnswer(request_id=request.id, providers=(state,), detail=f"{request.provider}: code handed to its sign-in")
+            case AgentToolsRequest():
+                return MachineAgentAnswer(request_id=request.id, tools=await asyncio.to_thread(MachineTools.states))
+            case AgentToolInstallRequest():
+                tools = await asyncio.to_thread(MachineTools.install, request.tool)
+                return MachineAgentAnswer(request_id=request.id, tools=tools, detail=f"{request.tool}: {next(tool.phase for tool in tools if tool.name == request.tool)}")
             case AgentAllowanceRequest():
                 return await self._allow(request)
             case AgentMoveRequest():
@@ -760,27 +767,29 @@ class MachineAgents(BaseModel):
         """One image of this web run: one it was shown (`RunMedia`), or one a step names (`media_key` of the path it
         wrote: only a path that run's own stream names); only a plain file (never a link, a FIFO or a device: opened
         non-blocking, checked before any read), at most MACHINE_AGENT_MEDIA bytes, its type proven
-        by its first bytes. A path a later step overwrote serves its CURRENT bytes. Or one file create_file kept for
-        it (`RunFiles`, by the hash of its bytes): that copy alone, never a path any step names."""
+        by its first bytes. A path a later step overwrote serves its CURRENT bytes. Or the part from `offset` of one file
+        a file tool kept for it (`RunFiles`, by the hash of its bytes): that copy alone, never a path any step names."""
         run = self._require_run(request.run_id)
         if media_kind(request.name) == "file":
-            return MachineAgentAnswer(request_id=request.id, file=AgentFile.of(self._plain_file(reg.RunFiles.path(run.run_id, request.name), "file"), request.name))
+            data, size = self._plain_file(reg.RunFiles.path(run.run_id, request.name), "file", request.offset)
+            return MachineAgentAnswer(request_id=request.id, file=AgentFile.of(data, request.name, request.offset, size))
         path = reg.RunMedia.path(run.run_id, request.name)
         if not path.is_file():
             written = self._named_image(run.run_id, request.name)
             if written is None or not written.startswith(("/", "~/")):
                 raise PermissionError("no step of this run names that image")
             path = Path.home() / written[2:] if written.startswith("~/") else Path(written)
-        data = self._plain_file(path, "image")
+        data, _size = self._plain_file(path, "image")
         content_type = image_type(data)
         if content_type is None:
             raise PermissionError("that file is not an image")
         return MachineAgentAnswer(request_id=request.id, media=AgentMedia(content_type=content_type, data=base64.b64encode(data).decode("ascii")))
 
     @staticmethod
-    def _plain_file(path: Path, what: str) -> bytes:
-        """`path`'s bytes when it is a plain file of at most MACHINE_AGENT_MEDIA bytes: never a link, a FIFO or a device
-        (opened non-blocking, checked before any read)."""
+    def _plain_file(path: Path, what: str, offset: int | None = None) -> tuple[bytes, int]:
+        """`path`'s bytes when it is a plain file of at most MACHINE_AGENT_MEDIA bytes, or (`offset` given: a kept file)
+        its MACHINE_AGENT_MEDIA bytes from `offset`; and its whole size. Never a link, a FIFO or a device (opened
+        non-blocking, checked before any read)."""
         flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
         try:
             descriptor = os.open(path, flags)
@@ -790,12 +799,17 @@ class MachineAgents(BaseModel):
             facts = os.fstat(handle.fileno())
             if not stat.S_ISREG(facts.st_mode):
                 raise PermissionError(f"that {what} is not a plain file")
+            if offset is not None:
+                if offset >= max(facts.st_size, 1):
+                    raise PermissionError(f"that {what} ends before byte {offset:,}")
+                handle.seek(offset)
+                return handle.read(MACHINE_AGENT_MEDIA), facts.st_size
             if facts.st_size > MACHINE_AGENT_MEDIA:
                 raise PermissionError(f"that {what} is larger than {MACHINE_AGENT_MEDIA // (1024 * 1024)} MiB")
             data = handle.read(MACHINE_AGENT_MEDIA + 1)
         if len(data) > MACHINE_AGENT_MEDIA:
             raise PermissionError(f"that {what} is larger than {MACHINE_AGENT_MEDIA // (1024 * 1024)} MiB")
-        return data
+        return data, len(data)
 
     @staticmethod
     def _named_image(run_id: str, name: str) -> str | None:

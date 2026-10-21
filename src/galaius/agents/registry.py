@@ -36,7 +36,7 @@ from uuid import UUID
 
 from pydantic import ConfigDict, BaseModel, Field, PrivateAttr, ValidationInfo, field_validator
 from galaius.agents import quota
-from galaius_core import ASKED_BY_MAX, FILE_KEY, MEDIA_KEY, file_key, MODEL_ID_MAX, AgentMedia, AgentRevisionRef, ContextGauge, PromptExecutionRef, RunReplacement, StopActor
+from galaius_core import ASKED_BY_MAX, FILE_KEY, KEPT_FILE_MAX, MACHINE_AGENT_MEDIA, MEDIA_KEY, file_key, MODEL_ID_MAX, AgentMedia, AgentRevisionRef, ContextGauge, PromptExecutionRef, RunReplacement, StopActor
 
 from galaius.agents.events import (
     CONTEXT_FIELDS, PERSON_SENDER, TOKEN_FIELDS, AgentEvent, MessageFields, RunCut, TokenUsage, UsageLedger, answered_line, its_work, model_spoke,
@@ -848,9 +848,9 @@ def _private_leaf_matches(name: str, folder: PinnedDirectory, identity: tuple[in
     return matches
 
 
-def _replace_private(path: Path, payload: bytes) -> FileStamp:
-    """`payload` at `path`, whole or not at all; the stamp of the file now there."""
-    if path.suffix == ".json":
+def _replace_private(path: Path, payload: bytes | Iterable[bytes]) -> FileStamp:
+    """`payload` (its bytes, or its parts in order) at `path`, whole or not at all; the stamp of the file now there."""
+    if path.suffix == ".json" and isinstance(payload, bytes):
         try:
             raw = json.loads(payload)
         except json.JSONDecodeError:
@@ -864,7 +864,7 @@ def _replace_private(path: Path, payload: bytes) -> FileStamp:
         return _replace_in(folder, path.name, payload)
 
 
-def _replace_in(folder: PinnedDirectory, name: str, payload: bytes) -> FileStamp:
+def _replace_in(folder: PinnedDirectory, name: str, payload: bytes | Iterable[bytes]) -> FileStamp:
     descriptor = -1
     replacement_name: str | None = None
     owned_identity: tuple[int, int] | None = None
@@ -875,8 +875,9 @@ def _replace_in(folder: PinnedDirectory, name: str, payload: bytes) -> FileStamp
         created = os.fstat(descriptor)
         owned_identity = (created.st_dev, created.st_ino)
         folder.chmod(descriptor, 0o600)
-        if os.write(descriptor, payload) != len(payload):
-            raise OSError("short agent-registry write")
+        for part in (payload,) if isinstance(payload, bytes) else payload:
+            if os.write(descriptor, part) != len(part):
+                raise OSError("short agent-registry write")
         os.fsync(descriptor)
         written = os.fstat(descriptor)
         owned_identity = (written.st_dev, written.st_ino)
@@ -964,9 +965,16 @@ class RunMedia:
 
 
 class RunFiles:
-    """The files `create_file` wrote for a run, each kept beside the run's other files under its key (`file_key`: the
-    hash of its bytes): what the web downloads. Never read back from the folder the agent wrote it to, so a download
-    names no path an agent chose (threat-modeler W2 r1: a refused call naming `.env` served the real one)."""
+    """The files a file tool (`FILE_TOOLS`: create_file, edit_video) wrote for a run, each kept beside the run's other
+    files under its key (`file_key`: the hash of its bytes): what the web downloads. Never read back from the folder the
+    agent wrote it to, so a download names no path an agent chose (threat-modeler W2 r1: a refused call naming `.env`
+    served the real one)."""
+
+    @staticmethod
+    def fits(size: int) -> None:
+        """ValueError, in one line, for a file larger than the chat keeps (`KEPT_FILE_MAX`)."""
+        if size > KEPT_FILE_MAX:
+            raise ValueError(f"{size:,} bytes: larger than the {KEPT_FILE_MAX // 1024 ** 3} GiB a file kept for the chat holds")
 
     @staticmethod
     def path(run_id: str, key: str) -> Path:
@@ -976,12 +984,23 @@ class RunFiles:
         return agents_dir() / f"{_safe_run_id(run_id)}.file.{key}.kept"
 
     @classmethod
-    def keep(cls, run_id: str, content: bytes, suffix: str) -> str:
-        """`content` kept for run `run_id` as a file of format `suffix` (one it holds already is left as it is); its key."""
-        key = file_key(content, suffix)
+    def keep(cls, run_id: str, content: bytes | Path, suffix: str, key: str | None = None) -> str:
+        """`content` (its bytes, or the private file the tool made them in, read in parts, never whole) kept for run
+        `run_id` as a file of format `suffix` (one it holds already is left as it is); its key (`key`: already hashed by
+        the caller, `file_key`). ValueError: larger than `KEPT_FILE_MAX` (`fits`)."""
+        parts: Callable[[], Iterable[bytes]] = (lambda: (content,)) if isinstance(content, bytes) else (lambda: file_parts(content))
+        cls.fits(len(content) if isinstance(content, bytes) else content.stat().st_size)
+        key = key or file_key(parts(), suffix)
         if not cls.path(run_id, key).is_file():
-            _replace_private(cls.path(run_id, key), content)
+            _replace_private(cls.path(run_id, key), parts())
         return key
+
+
+def file_parts(path: Path) -> Iterator[bytes]:
+    """`path`'s bytes in parts of `MACHINE_AGENT_MEDIA`, never through a link."""
+    with os.fdopen(os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)), "rb") as handle:
+        while part := handle.read(MACHINE_AGENT_MEDIA):
+            yield part
 
 
 def messages_path(run_id: str) -> Path:

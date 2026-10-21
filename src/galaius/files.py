@@ -9,18 +9,19 @@ import io
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
 import tempfile
 from abc import ABC, abstractmethod
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from collections.abc import Iterable, Iterator
 from email import message_from_bytes
 from email.message import EmailMessage
 from email.policy import default
 from pathlib import Path, PurePosixPath
-from typing import Annotated, ClassVar, Literal, NamedTuple
+from typing import Annotated, BinaryIO, ClassVar, Literal, NamedTuple
 
 from docx import Document
 from galaius_core import CREATE_FILE_TYPES, FILE_CONTENT_TYPES, file_key
@@ -362,8 +363,6 @@ class Pdf(FileFormat):
         "sys.stdout.buffer.write(typst.compile(sys.argv[1], root=sys.argv[2], package_path=sys.argv[2], package_cache_path=sys.argv[2]))\n")
     SECONDS: ClassVar[float] = 60.0
     MEMORY: ClassVar[int] = 2 * 1024**3
-    #: The address every proxy variable names for the compiler: nothing listens there, so a package fetch fails.
-    NOWHERE: ClassVar[str] = "http://127.0.0.1:9"
 
     def render(self, spec: FileSpec) -> bytes:
         source = spec.content
@@ -373,13 +372,12 @@ class Pdf(FileFormat):
             width = max(len(row) for row in spec.rows)
             cells = ", ".join(_typst_string(cell) for row in spec.rows for cell in [*row, *[None] * (width - len(row))])
             source += f"\n\n#table(columns: {width}, {cells})\n"
-        offline = {name: self.NOWHERE for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy")}
         with tempfile.TemporaryDirectory(prefix="galaius-typst-") as root:
             main = Path(root) / "main.typ"
             main.write_text(source, encoding="utf-8")
             try:
                 done = subprocess.run([sys.executable, "-I", "-c", self.COMPILE, str(main), root, str(self.MEMORY)], capture_output=True,
-                                      timeout=self.SECONDS, env={**os.environ, **offline, "NO_PROXY": "", "no_proxy": ""})
+                                      timeout=self.SECONDS, env=offline_environment())
             except subprocess.TimeoutExpired:
                 raise ValueError(f"the PDF did not compile within {self.SECONDS:.0f} s") from None
         if done.returncode == 3:
@@ -439,18 +437,28 @@ def writable(path: str) -> tuple[str, Caller, "reg.AgentRun | None", Path]:
     return path, caller, run, target
 
 
-def save(path: str, data: bytes, *, replace: bool) -> Written:
-    """`data` saved at `path` (`kept_path`: one of `FILE_TYPES`) in the caller's working folder: only where the caller's
+def save(path: str, data: bytes | Path, *, replace: bool) -> Written:
+    """`data` (its bytes, or a private file a tool made them in, copied in parts and hashed as they are written, never read
+    whole) saved at `path` (`kept_path`: one of `FILE_TYPES`) in the caller's working folder: only where the caller's
     run may write (its fence's `write` / `sandbox` levels, its project folder; anywhere in that folder for a run with no
     fence, which writes there itself), every folder on the way reached without a link and made when missing, a file
     already there only when `replace`, written whole or not at all; then kept for the web (`reg.RunFiles`) under the run
-    asking (`_asking`). What `create_file` and every media tool write (`galaius.media`)."""
+    asking (`_asking`), refused before anything is written when larger than it keeps (`RunFiles.fits`). What `create_file`
+    and every file tool write (`galaius.media`, `galaius.video`)."""
     path, caller, run, target = writable(path)
     *folders, name = PurePosixPath(path).parts
+    suffix, size = PurePosixPath(path).suffix.lower(), len(data) if isinstance(data, bytes) else data.stat().st_size
+    if run is not None:
+        reg.RunFiles.fits(size)
     with PinnedDirectory.open(caller.cwd.resolve(), *folders, create=True) as folder:
         staged = f".{name}.{os.urandom(6).hex()}.new"
         with os.fdopen(folder.file(staged, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644), "wb") as handle:
-            handle.write(data)
+
+            def written() -> Iterator[bytes]:
+                for part in (data,) if isinstance(data, bytes) else reg.file_parts(data):
+                    handle.write(part)
+                    yield part
+            key = file_key(written(), suffix)
         try:
             if replace:
                 folder.replace(staged, folder, name)
@@ -461,7 +469,7 @@ def save(path: str, data: bytes, *, replace: bool) -> Written:
         finally:
             with suppress(FileNotFoundError):
                 folder.unlink(staged)
-    return Written(target, len(data), reg.RunFiles.keep(run.run_id, data, PurePosixPath(path).suffix.lower()) if run is not None else None)
+    return Written(target, size, reg.RunFiles.keep(run.run_id, data, suffix, key) if run is not None else None)
 
 
 #: The most a mail draft's attachments weigh together: the draft stays under what its chat card downloads
@@ -493,10 +501,31 @@ READ_LEVELS: frozenset[str] = frozenset({"read", "write_on_review", "sandbox", "
 
 
 def read_working(path: str, max_bytes: int) -> bytes:
-    """File `path` of the caller's working folder, read whole: a plain path below it (`kept_path`, any suffix), reached
-    without a link, a plain file, at most `max_bytes`; for a fenced run only where its levels let agents read
-    (`READ_LEVELS`, its project folder). ValueError / PermissionError: why not. What a mail draft attaches and what a
-    media job reads (`galaius.media`)."""
+    """File `path` of the caller's working folder, read whole (`_working`), at most `max_bytes`. What a mail draft attaches
+    and what a media job reads (`galaius.media`)."""
+    with _working(path) as handle:
+        data = handle.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise ValueError(f"{path} weighs more than the {max_bytes / (1024 * 1024):g} MiB it may")
+    return data
+
+
+def copy_working(path: str, into: Path, max_bytes: int) -> int:
+    """File `path` of the caller's working folder (`_working`) copied in parts to the new file `into`, at most
+    `max_bytes`; its size. What a video edit reads (`galaius.video`): a clip is never held whole."""
+    with _working(path) as handle:
+        if os.fstat(handle.fileno()).st_size > max_bytes:
+            raise ValueError(f"{path} weighs more than the {max_bytes / (1024 * 1024):g} MiB it may")
+        with open(into, "xb") as target:
+            shutil.copyfileobj(handle, target, 8 * 1024 * 1024)
+            return target.tell()
+
+
+@contextmanager
+def _working(path: str) -> Iterator[BinaryIO]:
+    """File `path` of the caller's working folder, open to read: a plain path below it (`kept_path`, any suffix), reached
+    without a link, a plain file; for a fenced run only where its levels let agents read (`READ_LEVELS`, its project
+    folder). ValueError / PermissionError: why not."""
     path = kept_path(path, None)
     root = Caller.current().cwd.resolve()
     run = _asking()
@@ -507,12 +536,20 @@ def read_working(path: str, max_bytes: int) -> bytes:
         with PinnedDirectory.open(root, *folders) as folder, os.fdopen(folder.file(name, os.O_RDONLY | PinnedDirectory.NONBLOCK), "rb") as handle:
             if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
                 raise ValueError(f"{path} is not a plain file")
-            data = handle.read(max_bytes + 1)
+            yield handle
     except FileNotFoundError:
         raise ValueError(f"{path}: no such file in your working folder") from None
-    if len(data) > max_bytes:
-        raise ValueError(f"{path} weighs more than the {max_bytes / (1024 * 1024):g} MiB it may")
-    return data
+
+
+#: The address every proxy variable names for a program run offline (`offline_environment`): nothing listens there.
+NOWHERE = "http://127.0.0.1:9"
+
+
+def offline_environment() -> dict[str, str]:
+    """This process's environment for a program run on an agent's input with no network: every proxy names `NOWHERE`,
+    so a fetch (a Typst package, a font, a model) fails at once."""
+    return {**os.environ, **dict.fromkeys(("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"), NOWHERE),
+            "NO_PROXY": "", "no_proxy": ""}
 
 
 def _reachable(fence, target: Path, levels: frozenset[str], verb: str) -> None:

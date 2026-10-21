@@ -20,7 +20,7 @@
    "listChanged": false
   }
  },
- "instructions": "galaius v{version} — drives a browser and desktop windows by vision/refs over MCP. Act by `ref` (from get_interactive_elements / get_page_state / screenshot), a CSS `selector`, accessible `name`, or `x,y` — whichever fits. Browser automation works on Linux, macOS and Windows. THE DESKTOP ITSELF works on all three too (Linux = X11): target=\"screen\", or one monitor target=\"screen:<n>\" (list_desktop_windows lists monitors with geometry, and windows). On it, run_actions key_press sends OS keys and chords — \"super\" (the Windows key; the Linux launcher), \"cmd+space\" (Spotlight), \"alt+tab\", \"Escape\" — type_text types into whatever has focus, click/scroll act at x,y; screenshot takes region=[x,y,w,h] and max_width= to keep one area of one monitor at a readable size; wait_for window=\"<title>\" or text=\"<words>\" (READ by OCR in the ACTIVE window by default, region=\"screen\" or [x,y,w,h] to widen or narrow; whole words only, never the echo of what you just typed; state visible/hidden) waits for a window or a launcher's result row instead of a sleep. Per-window targets and launch_app's sandbox are Linux-only. SEEING & MEDIA — pick the cheapest tool that answers your question: a FACT about the page (element present, text, count, attribute, URL) → get_page_state / get_interactive_elements / evaluate_js, no pixels needed. How it LOOKS → screenshot (add query= only when you need an interpretation, it costs a VLM call). Judging quality → review_ui (find defects) / verify_ui (PASS-FAIL your requirements) / measure_ui (deterministic contrast, free). BATCHING — reading or clicking over MANY elements is ONE run_actions evaluate_js step (a JS program run against the live page: query → filter → loop → read/act, args + return value, browser-isolated), NOT N get_interactive_elements→act round-trips. MOTION & VIDEO — an animation, a transition, 'did it move smoothly', or WHAT HAPPENED over time is invisible to a still screenshot: record it (start=True → act → start=False, browser AND desktop; duration= for a fixed clip), then pass query= to have the video model EXPLAIN the sequence (a native video model watches it; others sample frames). HEARING — galaius can HEAR, not only see: transcribe(path, query=…) turns any local audio OR video file (a download_asset clip, a record(path=…) capture, any mp3/wav/mp4/mov) into text, or ANSWERS a question about the sound — speakers, tone, music, spoken words — acoustically when the audio model can listen (Gemini, gpt-4o-audio). Sandbox recordings carry the launched app's own audio, so record(path=…) then transcribe(path=…) hears what a native app said or played. DRAWING — a generated picture comes from generate_image (the company's image model on the Galaius platform, charged to the person you work for and shown in their Facturation), never from an image API called with a key found on this computer. FILES FOR THE PERSON — a document, a spreadsheet, a deck, a PDF or a mail draft they asked for comes from create_file (docx, xlsx, pptx, pdf, csv, md, json, txt, eml), never a script of your own: it writes the file in your working folder AND offers it in their chat as a file to download, which a file you write yourself never is. MEDIA JOBS — a translation comes from translate, a 3D model from generate_3d (the company's models on the Galaius platform, charged to the person you work for): ask once without max_cost_usd for the price, then again with it to make it; the files they make show in the person's chat like create_file's. SESSIONS: omit `session` and you get your OWN isolated browser session — every reply names it in its `[session: …]` prefix, and it stays yours for this whole connection, so there is no name to invent and nothing to remember. Pass `session=\"default\"` only when you deliberately want to SHARE tabs with other callers on this connection. DESKTOP: use galaius's own tools — never shell out to xdotool/wmctrl, crop with ImageMagick, or `sleep` between steps: each has an equivalent above. For an app that fights the window manager, runs in the background, or is GPU-rendered and screen-grabs black (Flutter/Electron/games/emulators), launch it with `launch_app(\"<cmd>\")` — just the binary/command, no env tricks needed (the sandbox forces software GL itself so a GPU app renders instead of capturing black) — and drive it via `target=\"nested:<title>\"`, an isolated, occlusion-proof display. If `launch_app` isn't in your tool list, your galaius server is out of date: it moves to the newest installed version by itself once no browser session or sandbox is open (`galaius upgrade` shows its state); don't fall back to raw shell automation. If sandbox launches start failing (e.g. rc=1 for every app after many launches), the display is respawned automatically on the next `launch_app`, or call `reset_sandbox` to force a clean one — keep using the sandbox, don't switch to driving the real desktop. If galaius itself errors in a way that blocks you, behaves unexpectedly, or is missing a capability you needed, call `report_issue` — it sends the problem to galaius's maintainers so it gets fixed. That's the channel for feedback about the tool (not about the site you automate). If its result says a prefilled issue page was opened in the browser, tell the user to press Submit there; never copy report files into repos.",
+ "instructions": "galaius v{version} — drives a browser and desktop windows by vision/refs over MCP. Act by `ref` (from get_interactive_elements / get_page_state / screenshot), a CSS `selector`, accessible `name`, or `x,y` — whichever fits. Browser automation works on Linux, macOS and Windows. THE DESKTOP ITSELF works on all three too (Linux = X11): target=\"screen\", or one monitor target=\"screen:<n>\" (list_desktop_windows lists monitors with geometry, and windows). On it, run_actions key_press sends OS keys and chords — \"super\" (the Windows key; the Linux launcher), \"cmd+space\" (Spotlight), \"alt+tab\", \"Escape\" — type_text types into whatever has focus, click/scroll act at x,y; screenshot takes region=[x,y,w,h] and max_width= to keep one area of one monitor at a readable size; wait_for window=\"<title>\" or text=\"<words>\" (READ by OCR in the ACTIVE window by default, region=\"screen\" or [x,y,w,h] to widen or narrow; whole words only, never the echo of what you just typed; state visible/hidden) waits for a window or a launcher's result row instead of a sleep. Per-window targets and launch_app's sandbox are Linux-only. SEEING & MEDIA — pick the cheapest tool that answers your question: a FACT about the page (element present, text, count, attribute, URL) → get_page_state / get_interactive_elements / evaluate_js, no pixels needed. How it LOOKS → screenshot (add query= only when you need an interpretation, it costs a VLM call). Judging quality → review_ui (find defects) / verify_ui (PASS-FAIL your requirements) / measure_ui (deterministic contrast, free). BATCHING — reading or clicking over MANY elements is ONE run_actions evaluate_js step (a JS program run against the live page: query → filter → loop → read/act, args + return value, browser-isolated), NOT N get_interactive_elements→act round-trips. MOTION & VIDEO — an animation, a transition, 'did it move smoothly', or WHAT HAPPENED over time is invisible to a still screenshot: record it (start=True → act → start=False, browser AND desktop; duration= for a fixed clip), then pass query= to have the video model EXPLAIN the sequence (a native video model watches it; others sample frames). HEARING — galaius can HEAR, not only see: transcribe(path, query=…) turns any local audio OR video file (a download_asset clip, a record(path=…) capture, any mp3/wav/mp4/mov) into text, or ANSWERS a question about the sound — speakers, tone, music, spoken words — acoustically when the audio model can listen (Gemini, gpt-4o-audio). Sandbox recordings carry the launched app's own audio, so record(path=…) then transcribe(path=…) hears what a native app said or played. DRAWING — a generated picture comes from generate_image (the company's image model on the Galaius platform, charged to the person you work for and shown in their Facturation), never from an image API called with a key found on this computer. FILES FOR THE PERSON — a document, a spreadsheet, a deck, a PDF or a mail draft they asked for comes from create_file (docx, xlsx, pptx, pdf, csv, md, json, txt, eml), never a script of your own: it writes the file in your working folder AND offers it in their chat as a file to download, which a file you write yourself never is. A video they asked to cut, join or caption comes from edit_video (on this PC, at no cost), never ffmpeg of your own: its result plays in their chat. MEDIA JOBS — a translation comes from translate, a 3D model from generate_3d (the company's models on the Galaius platform, charged to the person you work for): ask once without max_cost_usd for the price, then again with it to make it; the files they make show in the person's chat like create_file's. SESSIONS: omit `session` and you get your OWN isolated browser session — every reply names it in its `[session: …]` prefix, and it stays yours for this whole connection, so there is no name to invent and nothing to remember. Pass `session=\"default\"` only when you deliberately want to SHARE tabs with other callers on this connection. DESKTOP: use galaius's own tools — never shell out to xdotool/wmctrl, crop with ImageMagick, or `sleep` between steps: each has an equivalent above. For an app that fights the window manager, runs in the background, or is GPU-rendered and screen-grabs black (Flutter/Electron/games/emulators), launch it with `launch_app(\"<cmd>\")` — just the binary/command, no env tricks needed (the sandbox forces software GL itself so a GPU app renders instead of capturing black) — and drive it via `target=\"nested:<title>\"`, an isolated, occlusion-proof display. If `launch_app` isn't in your tool list, your galaius server is out of date: it moves to the newest installed version by itself once no browser session or sandbox is open (`galaius upgrade` shows its state); don't fall back to raw shell automation. If sandbox launches start failing (e.g. rc=1 for every app after many launches), the display is respawned automatically on the next `launch_app`, or call `reset_sandbox` to force a clean one — keep using the sandbox, don't switch to driving the real desktop. If galaius itself errors in a way that blocks you, behaves unexpectedly, or is missing a capability you needed, call `report_issue` — it sends the problem to galaius's maintainers so it gets fixed. That's the channel for feedback about the tool (not about the site you automate). If its result says a prefilled issue page was opened in the browser, tell the user to press Submit there; never copy report files into repos.",
  "lists": {
   "tools/list": {
    "tools": [
@@ -1375,6 +1375,369 @@
        "result"
       ],
       "title": "generate_3dOutput",
+      "type": "object"
+     },
+     "_meta": {
+      "category": "media"
+     }
+    },
+    {
+     "name": "edit_video",
+     "description": "Edit a video in your working folder — cut it, join clips, caption it, lay text over it, resize it, take its\nsound — on this PC, at no cost, and show the result in the person's chat as a video they can play and download.\n\nUse this for every video edit meant for the person, never ffmpeg or a script of your own. `input` and every path are\nrelative to your working folder; `steps` run in order, each on the result of the one before:\n\n- {\"op\": \"trim\", \"start\": 3}: keep from 3 s to the end (cut the first 3 seconds); \"end\": 10 stops at 10 s.\n- {\"op\": \"join\", \"clips\": [\"b.mp4\"], \"transition\": \"fade\"}: the video so far, then each clip (transition optional).\n- {\"op\": \"caption\", \"text\": \"bonjour\", \"start\": 0, \"end\": 2}: a subtitle burnt in at the bottom (end omitted: to the end).\n- {\"op\": \"add_text\", \"text\": \"Title\", \"position\": \"center\", \"size\": 48, \"color\": \"white\", \"start\": 0, \"duration\": 3}.\n- {\"op\": \"resize\", \"width\": 1280} or {\"op\": \"resize\", \"aspect\": \"9:16\"}.\n- {\"op\": \"extract_audio\"}: its sound alone, the last step, with an .mp3 or .wav `output`.\n\n`output`: where the result goes (.mp4 or .webm for a video; its suffix picks the format). replace: write over a file\nalready there (refused otherwise). Returns where it was written, its length and size, and what it cost ($0), or why\nnothing was written.",
+     "inputSchema": {
+      "$defs": {
+       "AddText": {
+        "additionalProperties": false,
+        "description": "`text` laid over the picture at `position`, `size` pixels, in `color`, from `start` for `duration` seconds\n(None: to the end).",
+        "properties": {
+         "op": {
+          "const": "add_text",
+          "title": "Op",
+          "type": "string"
+         },
+         "text": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+         },
+         "position": {
+          "default": "center",
+          "enum": [
+           "top-left",
+           "top-center",
+           "top-right",
+           "center-left",
+           "center",
+           "center-right",
+           "bottom-left",
+           "bottom-center",
+           "bottom-right"
+          ],
+          "title": "Position",
+          "type": "string"
+         },
+         "size": {
+          "default": 48,
+          "maximum": 400,
+          "minimum": 8,
+          "title": "Size",
+          "type": "integer"
+         },
+         "color": {
+          "default": "white",
+          "pattern": "^(?:[a-z]{3,20}|#[0-9a-fA-F]{6})$",
+          "title": "Color",
+          "type": "string"
+         },
+         "start": {
+          "default": 0,
+          "maximum": 86400,
+          "minimum": 0,
+          "title": "Start",
+          "type": "number"
+         },
+         "duration": {
+          "anyOf": [
+           {
+            "maximum": 86400,
+            "minimum": 0,
+            "type": "number"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Duration"
+         }
+        },
+        "required": [
+         "op",
+         "text"
+        ],
+        "title": "AddText",
+        "type": "object"
+       },
+       "Caption": {
+        "additionalProperties": false,
+        "description": "`text` burnt in as a subtitle from `start` to `end` seconds (None: to the end), at the bottom.",
+        "properties": {
+         "op": {
+          "const": "caption",
+          "title": "Op",
+          "type": "string"
+         },
+         "text": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+         },
+         "start": {
+          "default": 0,
+          "maximum": 86400,
+          "minimum": 0,
+          "title": "Start",
+          "type": "number"
+         },
+         "end": {
+          "anyOf": [
+           {
+            "maximum": 86400,
+            "minimum": 0,
+            "type": "number"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "End"
+         }
+        },
+        "required": [
+         "op",
+         "text"
+        ],
+        "title": "Caption",
+        "type": "object"
+       },
+       "ExtractAudio": {
+        "additionalProperties": false,
+        "description": "Its sound alone, in the format `output` names (.mp3, .wav): the last step.",
+        "properties": {
+         "op": {
+          "const": "extract_audio",
+          "title": "Op",
+          "type": "string"
+         }
+        },
+        "required": [
+         "op"
+        ],
+        "title": "ExtractAudio",
+        "type": "object"
+       },
+       "Join": {
+        "additionalProperties": false,
+        "description": "The video so far, then each of `clips` after it, in order (`transition` between each two, None: a straight cut).",
+        "properties": {
+         "op": {
+          "const": "join",
+          "title": "Op",
+          "type": "string"
+         },
+         "clips": {
+          "items": {
+           "type": "string"
+          },
+          "maxItems": 20,
+          "minItems": 1,
+          "title": "Clips",
+          "type": "array"
+         },
+         "transition": {
+          "anyOf": [
+           {
+            "enum": [
+             "fade",
+             "dissolve",
+             "wipe-left",
+             "wipe-right",
+             "wipe-up",
+             "wipe-down"
+            ],
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Transition"
+         }
+        },
+        "required": [
+         "op",
+         "clips"
+        ],
+        "title": "Join",
+        "type": "object"
+       },
+       "Resize": {
+        "additionalProperties": false,
+        "description": "To `width` × `height` pixels, or to an `aspect` ratio (a phone's 9:16).",
+        "properties": {
+         "op": {
+          "const": "resize",
+          "title": "Op",
+          "type": "string"
+         },
+         "width": {
+          "anyOf": [
+           {
+            "maximum": 7680,
+            "minimum": 16,
+            "type": "integer"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Width"
+         },
+         "height": {
+          "anyOf": [
+           {
+            "maximum": 4320,
+            "minimum": 16,
+            "type": "integer"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Height"
+         },
+         "aspect": {
+          "anyOf": [
+           {
+            "enum": [
+             "16:9",
+             "9:16",
+             "1:1",
+             "4:3",
+             "4:5",
+             "21:9"
+            ],
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Aspect"
+         }
+        },
+        "required": [
+         "op"
+        ],
+        "title": "Resize",
+        "type": "object"
+       },
+       "Trim": {
+        "additionalProperties": false,
+        "description": "Keep `start` to `end` seconds (`end` None: to its end): « cut the first 3 seconds » is `start` 3.",
+        "properties": {
+         "op": {
+          "const": "trim",
+          "title": "Op",
+          "type": "string"
+         },
+         "start": {
+          "default": 0,
+          "maximum": 86400,
+          "minimum": 0,
+          "title": "Start",
+          "type": "number"
+         },
+         "end": {
+          "anyOf": [
+           {
+            "maximum": 86400,
+            "minimum": 0,
+            "type": "number"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "End"
+         }
+        },
+        "required": [
+         "op"
+        ],
+        "title": "Trim",
+        "type": "object"
+       }
+      },
+      "properties": {
+       "input": {
+        "title": "Input",
+        "type": "string"
+       },
+       "steps": {
+        "items": {
+         "discriminator": {
+          "mapping": {
+           "add_text": "#/$defs/AddText",
+           "caption": "#/$defs/Caption",
+           "extract_audio": "#/$defs/ExtractAudio",
+           "join": "#/$defs/Join",
+           "resize": "#/$defs/Resize",
+           "trim": "#/$defs/Trim"
+          },
+          "propertyName": "op"
+         },
+         "oneOf": [
+          {
+           "$ref": "#/$defs/Trim"
+          },
+          {
+           "$ref": "#/$defs/Join"
+          },
+          {
+           "$ref": "#/$defs/Caption"
+          },
+          {
+           "$ref": "#/$defs/AddText"
+          },
+          {
+           "$ref": "#/$defs/Resize"
+          },
+          {
+           "$ref": "#/$defs/ExtractAudio"
+          }
+         ]
+        },
+        "title": "Steps",
+        "type": "array"
+       },
+       "output": {
+        "title": "Output",
+        "type": "string"
+       },
+       "replace": {
+        "default": false,
+        "title": "Replace",
+        "type": "boolean"
+       }
+      },
+      "required": [
+       "input",
+       "steps",
+       "output"
+      ],
+      "title": "edit_videoArguments",
+      "type": "object"
+     },
+     "outputSchema": {
+      "properties": {
+       "result": {
+        "title": "Result",
+        "type": "string"
+       }
+      },
+      "required": [
+       "result"
+      ],
+      "title": "edit_videoOutput",
       "type": "object"
      },
      "_meta": {
