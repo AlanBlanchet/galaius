@@ -560,8 +560,12 @@ def ensure_dispatcher_locked(run_id: str, *, cwd: str = ".", environment: Mappin
 def _drained_locked(run_id: str, token: str | None) -> None:
     """Run `run_id` is no longer the dispatcher `token`'s, while the caller owns the run lock: its queue stops naming it
     and it leaves the runs handed to it, both at once, so a message queued next hands it on again."""
+    # Circular layers: spawn_line imports run (its turns' inbox hook) and machine_agents (the web's runs), which import this module.
+    from galaius.agents.spawn_line import SpawnLine
+
     if _state(run_id).get("dispatcher_token") == token:
         _set_dispatcher_locked(run_id, None)
+    SpawnLine.here().let_go(run_id)  # a turn it waited a place for will not start: its place is free
     if token is not None:
         _hub_change(lambda hubs: hubs.model_copy(update={"runs": {
             key: tuple(run for run in runs if key != token or run != run_id) for key, runs in hubs.runs.items()}}))

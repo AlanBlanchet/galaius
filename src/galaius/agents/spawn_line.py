@@ -793,6 +793,13 @@ class SpawnLine(BaseModel):
         with self._places() as places:
             places[:] = [place for place in places if place.run_id != run_id]
 
+    def let_go(self, run_id: str) -> None:
+        """Run `run_id`'s resumed turn no longer waits: its queue is drained (`agent_queue.dispatch`), so its place, when
+        it holds one for a resumed turn (`spawn` None), goes. Its holder is the PC's dispatcher, which lives on: never left
+        to `_prune`, such a place would stay first in line, every resumed turn waiting behind it."""
+        with self._places() as places:
+            places[:] = [place for place in places if place.run_id != run_id or place.spawn is not None]
+
     def _settle(self, run_id: str, said: str) -> None:
         with self._places() as places:
             for index, place in enumerate(places):

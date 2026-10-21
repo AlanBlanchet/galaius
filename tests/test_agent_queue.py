@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import uuid
 
 import pytest
@@ -450,6 +451,28 @@ def test_two_runs_queued_at_once_are_drained_by_one_dispatcher_process(monkeypat
     assert sorted(drained) == [("r1", os.getpid()), ("r2", os.getpid())]
     assert [item.state for run_id in ("r1", "r2") for item in agent_queue.items(run_id)] == ["replied", "replied"]
     assert not any(agent_queue._state(run_id)["dispatcher_pid"] for run_id in ("r1", "r2")) and agent_queue._hub_change(lambda hubs: hubs) == agent_queue.Hubs()
+
+
+def test_a_run_its_dispatcher_drained_never_keeps_a_place_in_the_line(monkeypatch):
+    """2026-10-21: a deployer run whose queued turn was cancelled while it waited for a place kept that place, first in
+    line, held by the PC's dispatcher (which lives on): every resumed turn on the PC waited behind it, 2 places of 6 taken."""
+    from galaius.agents.spawn_line import Place, Spawn, SpawnLine
+    from galaius.processes import process_started
+
+    _setup(monkeypatch)
+    line = SpawnLine.here()
+    held = {"asked_at": time.time(), "state": "waiting", "holder": os.getpid(), "holder_started": process_started(os.getpid())}
+    with line._places() as places:
+        places.append(Place(run_id="r1", **held))
+        places.append(Place(run_id="r1-spawn", spawn=Spawn(task="t", cwd="."), **held))   # a spawn waiting: never the drain's
+    messaging.deliver_message("r1", "never read", sender="operator")
+    agent_queue.cancel_pending_locked("r1")
+
+    agent_queue.dispatch("r1")
+
+    agent_queue.dispatch("r1-spawn")
+    with line._places() as places:
+        assert [place.run_id for place in places] == ["r1-spawn"]
 
 
 def test_full_queue_refuses_before_recording_transcript_message(monkeypatch):
