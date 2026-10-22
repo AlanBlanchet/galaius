@@ -299,16 +299,21 @@ class AccountLogin(BaseModel):
         2026-10-08 « After install, everything should be done from the web »)."""
         return f"An error report is ready, not sent: answer on this computer's page: {self.page(http, machine)}" if MachineRunner.error_reports().asked() else None
 
+    def machines(self, machine: MachineConfig) -> tuple[MachineSummary, ...]:
+        """The PCs of `machine`'s workspace, read with the key this CLI signed in with (`key_path`); raises when it holds
+        none (FileNotFoundError), or the server refuses or cannot be asked (ValueError, OSError, httpx.HTTPError)."""
+        if not self.key_path.is_file():
+            raise FileNotFoundError(f"this computer's CLI is not signed in to {self.server} (galaius login --server {self.server})")
+        connection = CatalogConnection(endpoint=self.server, workspace_id=machine.workspace_id, auth_mode="token", token_file=self.key_path.absolute())
+        with connection.connect() as http:
+            payload = connection.authenticate(http).request(http, "GET", f"/v1/workspaces/{machine.workspace_id}/machines")
+        return TypeAdapter(tuple[MachineSummary, ...]).validate_json(payload)
+
     def connected_name(self, machine: MachineConfig) -> str:
         """This computer's name among the server's machines (asked as the CLI is signed in), its id
         when the server cannot be asked; LoginError when the server answers it no longer has it."""
-        if not self.key_path.is_file():
-            return f"machine {machine.machine_id}"
-        connection = CatalogConnection(endpoint=self.server, workspace_id=machine.workspace_id, auth_mode="token", token_file=self.key_path.absolute())
         try:
-            with connection.connect() as http:
-                payload = connection.authenticate(http).request(http, "GET", f"/v1/workspaces/{machine.workspace_id}/machines")
-            machines = TypeAdapter(tuple[MachineSummary, ...]).validate_json(payload)
+            machines = self.machines(machine)
         except (OSError, ValueError, httpx.HTTPError):  # a refused or broken catalog answer is a ValueError
             return f"machine {machine.machine_id}"
         found = next((item for item in machines if item.id == machine.machine_id and item.state != "revoked"), None)

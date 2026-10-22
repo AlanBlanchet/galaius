@@ -674,7 +674,7 @@ def inject(run_id: str) -> list[str]:
     # The person's words first and where it stands last: hook context opening with the person's own heading is theirs
     # (`inbox_hook.NOTE`), and the agents' messages after it keep the order they came in.
     persons = HEADING.format(who=OPERATOR)
-    return [*sorted((text for _, text in said), key=lambda text: not text.startswith(persons)), card(run)] if said else []
+    return [*sorted((text for _, text in said), key=lambda text: not text.startswith(persons)), card(run, mid_turn=True)] if said else []
 
 
 #: What a turn has read of the messages sent to it: handed to that turn, or a turn opened on it.

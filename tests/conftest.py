@@ -133,6 +133,13 @@ def _isolate_unit_configuration(
 
 
 @pytest.fixture(autouse=True)
+def _turn_facts_read_nothing_real(monkeypatch):
+    """A coordinator's card reads no real server, CLI or machine file in a test (`turn_facts.readers`)."""
+    from galaius.agents.turn_facts import Readers
+    monkeypatch.setattr("galaius.agents.turn_facts.readers", lambda: Readers(build=lambda: "a test build", pcs=lambda: "none", this_pc=lambda: "a test PC"))
+
+
+@pytest.fixture(autouse=True)
 def _in_no_run_scope(monkeypatch):
     """A test process lives in no run's scope whatever unit runs the suite (an agent's own run scope, a `systemd-run`
     unit): a test that means a scope sets its own (`galaius.caller.process_unit`)."""

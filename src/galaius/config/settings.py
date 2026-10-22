@@ -232,6 +232,17 @@ class RecordRecall(BaseModel):
     score: float = Field(default=2.5, ge=0)
 
 
+class TurnFacts(BaseModel):
+    """What a coordinator's card states as read at the turn the person's words start (`galaius.agents.turn_facts`): the
+    build the app runs and this PC's own state, each read within `seconds`, a value not read in time said so, never a
+    remembered one shown as current. 2026-10-22: three answers in a row quoted a PC's state from memory."""
+
+    model_config = ConfigDict(frozen=True)
+
+    enabled: bool = True
+    seconds: float = Field(default=8.0, gt=0)
+
+
 def _default_media_provider_order() -> tuple[str, ...]:
     """Registry order is the one default; adding a real provider makes it configurable at once."""
     return tuple(MEDIA_PROVIDERS)
@@ -369,6 +380,8 @@ class Config(BaseSettings):
     agent_turn_reviews: TurnReviews = Field(default_factory=lambda: TurnReviews())
     # What a coordinator's card recalls of what the person said before (`galaius.agents.record_recall`).
     agent_record_recall: RecordRecall = Field(default_factory=lambda: RecordRecall())
+    # What a coordinator's card reads at the turn his words start (`galaius.agents.turn_facts`).
+    agent_turn_facts: TurnFacts = Field(default_factory=lambda: TurnFacts())
     agent_memory_max_percent: Annotated[int, Field(ge=1, le=100)] = 45
     agent_run_memory_max_percent: Annotated[int, Field(ge=1, le=100)] = 20
     # The agents' soft memory limit, a share of that slice's cap: past it no agent turn starts here (a spawn, a resumed

@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
 
-from galaius.agents import record_recall, turn_review_marks
+from galaius.agents import record_recall, turn_facts, turn_review_marks
 from galaius.agents import registry as reg
 from galaius.config import Config
 from galaius.agents.events import AgentEvent, Relation, ending_of
@@ -392,7 +392,7 @@ def report_to(run: reg.AgentRun, name: Callable[[str], str] | None = None) -> st
 
 
 @one_read()
-def card(run: reg.AgentRun) -> str:
+def card(run: reg.AgentRun, *, mid_turn: bool = False) -> str:
     """Where `run` stands as a turn of it starts: whom it works for and on what, its agents and the conversation's still at
     work, the idle ones of a role it can hand a task to, and where its final message goes."""
     first, asked = _working_for(run)
@@ -425,8 +425,11 @@ def card(run: reg.AgentRun) -> str:
         lines.append("Idle, to reuse: " + ", ".join(placed(other.run_id) for other in sorted(idle.values(), key=lambda other: other.agent or "")) + ".")
     if rows := _left_open(run, conversation):
         lines.append(rows)
-    if recalled := _recalled(run):
-        lines.append(recalled)
+    if (words := _his_words(run)) and run.agent in Config().agent_turn_reviews.coordinators:
+        if recalled := _recalled(run, words):
+            lines.append(recalled)
+        if not mid_turn and (facts := turn_facts.lines(Config().agent_turn_facts)):   # read once, as the turn starts
+            lines.append(facts)
     goes_to = report_to(run, placed)
     lines.append(f"When this turn ends your final message goes to {goes_to} by itself: never send it, never ack a report." if goes_to
                  else "Every ask of you is answered: when this turn ends your final message goes to nobody; never ack a report.")
@@ -461,18 +464,23 @@ def _left_open(run: reg.AgentRun, conversation: Sequence[reg.AgentRun]) -> str:
     return "\n".join(said)
 
 
-def _recalled(run: reg.AgentRun) -> str:
-    """For a coordinator's turn carrying the person's words (his messages since its last turn ended, or the words that
-    started it), what the record at the root of its conversation's project (`project`; never one a cloned repository
-    inside it brings) says he said before about the same things (`record_recall`), quoted from that file."""
-    recall = Config().agent_record_recall
-    if run.agent not in Config().agent_turn_reviews.coordinators or (root := project(run.run_id)) is None:
-        return ""
+def _his_words(run: reg.AgentRun) -> str:
+    """What the person said that starts this turn of `run`: his messages since its last turn ended, or the words that
+    started it; "" when the turn is no answer to him."""
     since = run.finished_at or 0.0
     words = " ".join(event.text for event in reg.read_messages(run.run_id)
                      if event.from_run == reg.PERSON_SENDER and event.to_run == run.run_id and event.at > since)
     if run.finished_at is None and run.parent_run_id is None and not run.asked_by:
         words = f"{run.task} {words}"
+    return words.strip()
+
+
+def _recalled(run: reg.AgentRun, words: str) -> str:
+    """What the record at the root of `run`'s conversation's project (`project`; never one a cloned repository inside it
+    brings) says the person said before about the same things as `words` (`record_recall`), quoted from that file."""
+    recall = Config().agent_record_recall
+    if (root := project(run.run_id)) is None:
+        return ""
     record = root / recall.record
     said = record_recall.recalled(record, words, recall)
     return (f"What he said before about the same things (from {record}; what he said, not whether it is done):\n"
