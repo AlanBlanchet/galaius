@@ -77,7 +77,23 @@ def hand_back(run_id: str) -> list[messaging.Delivery]:
     child = reg.get_run(run_id)
     if child is None:
         return []
-    return [delivery for asker in dict.fromkeys(live(asker) for asker in owed(child)) if (delivery := _resume(asker, child)) is not None]
+    deliveries = [delivery for asker in dict.fromkeys(live(asker) for asker in owed(child)) if (delivery := _resume(asker)) is not None]
+    # Its own turn ended too: the reports its agents left while it worked, a hand-back refused then (it was at work), are
+    # carried now. 2026-10-22: a reviewer's verdict for its maker ended mid-turn and never reached it.
+    if (own := _resume(child.run_id)) is not None:
+        deliveries.append(own)
+    return deliveries
+
+
+def handback_since(*, now: float | None = None) -> float:
+    """From when this PC carries a report its asker was at work for (`_resume`): the first look of a watcher that does
+    (`#handback-since.state`, written once). A report that ended before stays as it was: taking this up never hands a
+    week of old reports to every run that once asked for them."""
+    with reg.shared_state("handback-since") as (raw, write, _keep):
+        if raw is None:
+            raw = repr(time.time() if now is None else now).encode()
+            write(raw)
+    return float(raw)
 
 
 def _agents_answering(asker_id: str, records: Sequence[reg.AgentRun]) -> list[reg.AgentRun]:
@@ -87,11 +103,12 @@ def _agents_answering(asker_id: str, records: Sequence[reg.AgentRun]) -> list[re
     return [run for run_id in found if (run := reg.get_run(run_id)) is not None and aliases.intersection(owed(run))]
 
 
-def _resume(asker_id: str, child: reg.AgentRun) -> messaging.Delivery | None:
+def _resume(asker_id: str) -> messaging.Delivery | None:
     """Resume run `asker_id` with the reports of every agent that owes it one (`owed`) once none is pending: the reports
     alone, its turn opening on where it stands (`relations.card`) and on whose reports they are (`relations.heading`).
 
-    Only a run whose own turn ended (`_ENDED_ITS_TURN`) before those agents did; one message per ended turn (its
+    Only a run whose own turn ended (`_ENDED_ITS_TURN`); every report not carried yet (`owed`), whenever its agent
+    ended (`handback_since` on): one that ended while it worked was never handed to it. One message per ended turn (its
     `message_id` names that turn), so every reader of the same ending queues it once. An agent still waiting on agents
     of its own holds it: its interim words (« dispatched the tester; waiting ») would answer the ask (`owed`)
     and cost `asker_id` a turn, while its final report comes once they end. So does one a cut stopped that resumes
@@ -104,12 +121,13 @@ def _resume(asker_id: str, child: reg.AgentRun) -> messaging.Delivery | None:
         agents = _agents_answering(asker_id, records)
         if any(_pending(run) or reg.self_resuming(run) or any(_pending(own) for own in _agents_answering(run.run_id, records)) for run in agents):
             return None
-    since = [run for run in agents if run.finished_at is not None and run.finished_at >= asker.finished_at]
-    if not since:
+    since = handback_since()
+    ended = [run for run in agents if run.finished_at is not None and run.finished_at >= since]
+    if not ended:
         return None
-    reports = [Report.of(run) for run in sorted(since, key=lambda run: run.finished_at or 0.0)]
+    reports = [Report.of(run) for run in sorted(ended, key=lambda run: run.finished_at or 0.0)]
     return messaging.deliver_message(
-        asker.run_id, "\n\n".join(report.section() for report in reports), sender=child.run_id,
+        asker.run_id, "\n\n".join(report.section() for report in reports), sender=reports[-1].run_id,
         message_id=f"handback-{asker.finished_at:.6f}", only_if_idle=True,
         turn=agent_queue.MessageTurn(reports=tuple(report.run_id for report in reports)),
     )
@@ -120,6 +138,8 @@ class EndWatch(BaseModel):
     started and ended between looks, or one settled late with its observed end)."""
 
     live: frozenset[str] = Field(default_factory=lambda: frozenset(run.run_id for run in reg.running_runs()))
+    #: From when it carries reports their asker was at work for (`handback_since`), read at its start.
+    since: float = Field(default_factory=lambda: handback_since())
     looked: float = Field(default_factory=time.time)
     #: Ended runs a cut stopped that resume by themselves (`registry.self_resuming`): their launcher was not woken with the
     #: cut (`_resume`). Each ends again here once that no longer holds and nothing resumed it (cut again by the same cause

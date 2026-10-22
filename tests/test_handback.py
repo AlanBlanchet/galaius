@@ -29,6 +29,12 @@ def _ended(run_id: str, at: float, *, status: str = "done", **rest) -> None:
     reg._merge_record_locked(run_id, {"status": status, "finished_at": at})
 
 
+@pytest.fixture(autouse=True)
+def _carried_since_ever(monkeypatch):
+    """These tests' runs end at fixed times: every report counts (`handback_since`)."""
+    monkeypatch.setattr(handback, "handback_since", lambda **_: 0.0)
+
+
 @pytest.fixture
 def sent(monkeypatch) -> list[dict]:
     calls: list[dict] = []
@@ -46,7 +52,7 @@ def sent(monkeypatch) -> list[dict]:
 @pytest.mark.parametrize("parent_status, before, woken", [
     pytest.param("done", False, True, id="ended-turn-resumed-with-both-reports"),
     pytest.param("stopped", False, False, id="stopped-by-a-person-left-alone"),
-    pytest.param("done", True, False, id="children-ended-within-its-turn-nothing-to-hand-back"),
+    pytest.param("done", True, True, id="children-ended-within-its-turn-handed-back-too"),   # never handed to it then
 ])
 def test_the_last_child_to_end_resumes_its_ended_parent_with_every_report(sent, parent_status, before, woken):
     _ended("lead", 100.0, status=parent_status, agent="main", provider_session_id="vendor-lead")
@@ -132,6 +138,7 @@ def test_an_ask_is_answered_by_one_hand_back(sent, next_turn, woken_again):
         _ended(ids[name], 100.0, agent="main")
     _ended(ids["eng"], 200.0, agent="backend-engineer", parent_run_id=ids["parent"])
     _ended(ids["helper"], 150.0, agent="tester", parent_run_id=ids["eng"])
+    handback.collected(ids["eng"], [handback.Report.of(reg.get_run(ids["helper"]))])   # eng read its helper's report inline
 
     def ask(sender: str, text: str, reports: tuple[str, ...] = ()) -> None:
         if sender == "coordinator" and not reports:
@@ -443,3 +450,22 @@ def test_no_run_is_woken_or_told_for_a_silence_that_is_not_one(told, at_work, ca
     handback.SilenceWatch().tick(LIMITS)
 
     assert told == []
+
+
+def test_a_verdict_that_ended_while_its_maker_worked_reaches_it_when_its_turn_ends(sent):
+    """2026-10-22: a reviewer spawned for e8092369 ended while e8092369 was at work (its hand-back refused then) and its
+    verdict never reached it: the maker's own turn end carries it."""
+    maker, reviewer, lead = (str(uuid.UUID(int=n)) for n in (41, 42, 43))
+    _ended(lead, 100.0, agent="main")
+    register_run(maker, agent="infra-engineer", provider_session_id="vendor-maker")
+    _ended(reviewer, 150.0, agent="code-reviewer", parent_run_id=lead)
+    with reg.record_lock(reviewer):
+        reg.note_asker_locked(reviewer, maker)                     # spawned `--for` the maker
+    _answered(reviewer, "Verdict: PASS, one SHOULD row.")
+    handback.hand_back(reviewer)                                   # the maker is at work: nothing handed to it yet
+    assert all(call["run_id"] != maker for call in sent)
+    reg.finish(maker, exit_code=0, first=0)
+    reg._merge_record_locked(maker, {"status": "done", "finished_at": 200.0})
+    sent.clear()
+    handback.hand_back(maker)                                      # its own turn ends
+    assert [call["run_id"] for call in sent] == [maker] and "Verdict: PASS, one SHOULD row." in sent[0]["message"]
