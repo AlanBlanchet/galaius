@@ -215,6 +215,23 @@ class TurnReviews(BaseModel):
         return next((review for review in self.reviews if review.role == role), None)
 
 
+class RecordRecall(BaseModel):
+    """What a coordinator's card quotes from the project's record of what the person said (`record`, a path from the
+    root of the conversation's project; entries `## <date> — <title>` with « SAID: » lines) when a turn carries his words:
+    the entries sharing at least `shared` content words (`letters` letters or more, plurals folded) with them, weighed by
+    how rare each word is in the record (1: in one entry only), scoring `score` or more, best first, at most `shown`. Context, never a status:
+    the record says what he said, not what is done. 2026-10-22: an ask recorded days before was answered as new."""
+
+    model_config = ConfigDict(frozen=True)
+
+    enabled: bool = True
+    record: str = ".github/memory/decisions.md"
+    shown: int = Field(default=3, ge=1)
+    shared: int = Field(default=2, ge=1)
+    letters: int = Field(default=4, ge=1)
+    score: float = Field(default=2.5, ge=0)
+
+
 def _default_media_provider_order() -> tuple[str, ...]:
     """Registry order is the one default; adding a real provider makes it configurable at once."""
     return tuple(MEDIA_PROVIDERS)
@@ -350,6 +367,8 @@ class Config(BaseSettings):
     agent_critic_cap: CriticCap = Field(default_factory=lambda: CriticCap())
     # The reviews asked after a coordinator answered the person (`galaius.agents.turn_reviews`).
     agent_turn_reviews: TurnReviews = Field(default_factory=lambda: TurnReviews())
+    # What a coordinator's card recalls of what the person said before (`galaius.agents.record_recall`).
+    agent_record_recall: RecordRecall = Field(default_factory=lambda: RecordRecall())
     agent_memory_max_percent: Annotated[int, Field(ge=1, le=100)] = 45
     agent_run_memory_max_percent: Annotated[int, Field(ge=1, le=100)] = 20
     # The agents' soft memory limit, a share of that slice's cap: past it no agent turn starts here (a spawn, a resumed

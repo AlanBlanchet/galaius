@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
 
-from galaius.agents import turn_review_marks
+from galaius.agents import record_recall, turn_review_marks
 from galaius.agents import registry as reg
 from galaius.config import Config
 from galaius.agents.events import AgentEvent, Relation, ending_of
@@ -425,6 +425,8 @@ def card(run: reg.AgentRun) -> str:
         lines.append("Idle, to reuse: " + ", ".join(placed(other.run_id) for other in sorted(idle.values(), key=lambda other: other.agent or "")) + ".")
     if rows := _left_open(run, conversation):
         lines.append(rows)
+    if recalled := _recalled(run):
+        lines.append(recalled)
     goes_to = report_to(run, placed)
     lines.append(f"When this turn ends your final message goes to {goes_to} by itself: never send it, never ack a report." if goes_to
                  else "Every ask of you is answered: when this turn ends your final message goes to nobody; never ack a report.")
@@ -457,6 +459,24 @@ def _left_open(run: reg.AgentRun, conversation: Sequence[reg.AgentRun]) -> str:
     said = [f"Open rows {_tag(other)} left on your answer to the person (do them now):\n{rows}"
             for other in ended if (rows := report_section(report_of(other.run_id), "REDO"))]
     return "\n".join(said)
+
+
+def _recalled(run: reg.AgentRun) -> str:
+    """For a coordinator's turn carrying the person's words (his messages since its last turn ended, or the words that
+    started it), what the record at the root of its conversation's project (`project`; never one a cloned repository
+    inside it brings) says he said before about the same things (`record_recall`), quoted from that file."""
+    recall = Config().agent_record_recall
+    if run.agent not in Config().agent_turn_reviews.coordinators or (root := project(run.run_id)) is None:
+        return ""
+    since = run.finished_at or 0.0
+    words = " ".join(event.text for event in reg.read_messages(run.run_id)
+                     if event.from_run == reg.PERSON_SENDER and event.to_run == run.run_id and event.at > since)
+    if run.finished_at is None and run.parent_run_id is None and not run.asked_by:
+        words = f"{run.task} {words}"
+    record = root / recall.record
+    said = record_recall.recalled(record, words, recall)
+    return (f"What he said before about the same things (from {record}; what he said, not whether it is done):\n"
+            + "\n".join(f"- He said on {entry.date}: {entry.said}" for entry in said)) if said else ""
 
 
 def context_full(run: reg.AgentRun) -> bool:
