@@ -276,7 +276,8 @@ def agent_events(run_id: str, limit: int = 20) -> str:
             return f"ERROR: no agent run {run_id!r}. Use agent_list to see the run ids."
         return f"{run_id[:8]}: no events yet (it may still be starting)."
     shown = events[-max(1, limit):]
-    return "\n".join(f"  {e.kind}: {e.summary(viewer=resolved)}" for e in shown)
+    lines = "\n".join(f"  {e.kind}: {e.summary(viewer=resolved)}" for e in shown)
+    return f"{lines}\n\n{report}" if (report := handback.read_inline(resolved, shown)) else lines
 
 
 @mcp.tool(category="agents")

@@ -452,7 +452,8 @@ def test_no_run_is_woken_or_told_for_a_silence_that_is_not_one(told, at_work, ca
     assert told == []
 
 
-def test_a_verdict_that_ended_while_its_maker_worked_reaches_it_when_its_turn_ends(sent):
+@pytest.mark.parametrize("read_mid_turn", [False, True], ids=["unread-handed-at-its-turn-end", "read-through-its-events-never-again"])
+def test_a_verdict_that_ended_while_its_maker_worked_reaches_it_when_its_turn_ends(sent, monkeypatch, read_mid_turn):
     """2026-10-22: a reviewer spawned for e8092369 ended while e8092369 was at work (its hand-back refused then) and its
     verdict never reached it: the maker's own turn end carries it."""
     maker, reviewer, lead = (str(uuid.UUID(int=n)) for n in (41, 42, 43))
@@ -461,11 +462,19 @@ def test_a_verdict_that_ended_while_its_maker_worked_reaches_it_when_its_turn_en
     _ended(reviewer, 150.0, agent="code-reviewer", parent_run_id=lead)
     with reg.record_lock(reviewer):
         reg.note_asker_locked(reviewer, maker)                     # spawned `--for` the maker
-    _answered(reviewer, "Verdict: PASS, one SHOULD row.")
+    verdict = "Verdict: PASS, one SHOULD row: " + " ".join(["the deploy line's name lives in three places; keep it in one file."] * 4)
+    _answered(reviewer, verdict)
     handback.hand_back(reviewer)                                   # the maker is at work: nothing handed to it yet
     assert all(call["run_id"] != maker for call in sent)
+    if read_mid_turn:   # the maker reads its reviewer's events (`agent_events`, `galaius agents events`) while it works
+        from galaius.server import tools_agents
+        monkeypatch.setenv("GALAIUS_RUN_ID", maker)
+        assert verdict in asyncio.run(tools_agents.agent_events(reviewer))   # the whole verdict, past the events' cut lines
     reg.finish(maker, exit_code=0, first=0)
     reg._merge_record_locked(maker, {"status": "done", "finished_at": 200.0})
     sent.clear()
     handback.hand_back(maker)                                      # its own turn ends
-    assert [call["run_id"] for call in sent] == [maker] and "Verdict: PASS, one SHOULD row." in sent[0]["message"]
+    if read_mid_turn:
+        assert sent == []
+        return
+    assert [call["run_id"] for call in sent] == [maker] and verdict in sent[0]["message"]

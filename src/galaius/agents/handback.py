@@ -17,6 +17,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from galaius.agents import agent_queue, messaging
+from galaius.agents.events import AgentEvent
 from galaius.agents import registry as reg
 from galaius.agents.relations import final_words, live, one_read, owed
 from galaius.agents.spawn_line import SpawnLine
@@ -138,14 +139,15 @@ class EndWatch(BaseModel):
     started and ended between looks, or one settled late with its observed end)."""
 
     live: frozenset[str] = Field(default_factory=lambda: frozenset(run.run_id for run in reg.running_runs()))
-    #: From when it carries reports their asker was at work for (`handback_since`), read at its start.
-    since: float = Field(default_factory=lambda: handback_since())
     looked: float = Field(default_factory=time.time)
     #: Ended runs a cut stopped that resume by themselves (`registry.self_resuming`): their launcher was not woken with the
     #: cut (`_resume`). Each ends again here once that no longer holds and nothing resumed it (cut again by the same cause
     #: right after its resume). Read from the store at start, every run a cut ended (`registry.recently_cut`): one that
     #: stopped coming back while this watcher was down ends on its first look (a report already carried is never carried twice).
     held: frozenset[str] = Field(default_factory=lambda: frozenset(run.run_id for run in reg.recently_cut() if run.askers))
+
+    def model_post_init(self, _context) -> None:
+        handback_since()   # from its first look on, a report its asker was at work for is carried (`_resume`)
 
     def ended(self) -> list[str]:
         now, live = time.time(), frozenset(run.run_id for run in reg.running_runs())
@@ -225,6 +227,20 @@ def collected(asker: str | None, reports: Sequence[Report]) -> None:
         if reg.message_for(asker, message_id) is None:
             reg.record_message_event(from_run=run.run_id, to_run=asker, text=report.section(), event_id=message_id,
                                      reports=(run.run_id,), fyi=True)
+
+
+def read_inline(run_id: str, shown: Sequence[AgentEvent]) -> str:
+    """What the run asking from this process (`messaging.asking_run`) reads after `shown`, run `run_id`'s events (each cut
+    short), when they hold its ending and it owes that run its report: the whole report, as a hand-back carries it, then
+    counted as read (`collected`), never handed back to it again. "" otherwise."""
+    run = reg.get_run(run_id)
+    asker = messaging.asking_run()
+    if (run is None or asker is None or run.finished_at is None or _pending(run)
+            or not any(event.kind in ("done", "error") for event in shown) or live(asker) not in {live(other) for other in owed(run)}):
+        return ""
+    report = Report.of(run)
+    collected(asker, [report])
+    return report.section(limit=None)
 
 
 class Waited(BaseModel):

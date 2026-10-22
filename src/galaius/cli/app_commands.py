@@ -929,8 +929,11 @@ def agents_events(run_id: str, limit: int = 30, machine: str | None = None) -> N
         waiting = SpawnLine.here().describe(run_id)
         print(f"  {'queued':11} {waiting}" if waiting else f"No events for {run_id!r}.")
         return
-    for event in events[-max(1, limit):]:
+    shown = events[-max(1, limit):]
+    for event in shown:
         print(f"  {event.kind:11} {event.summary(viewer=resolved)}")
+    if report := handback.read_inline(resolved, shown):
+        print(f"\n{report}")
 
 
 @agents_app.command(name="wait")
