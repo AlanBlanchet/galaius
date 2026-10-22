@@ -25,7 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from galaius.agents import handback, relations, turn_review_marks
 from galaius.agents import registry as reg
-from galaius.agents.relations import final_words, report_section
+from galaius.agents.relations import report_of, report_section
 from galaius.agents.turn_review_marks import Marks
 from galaius.caller import RUN_VARIABLES
 from galaius.config.settings import TurnReview, TurnReviews
@@ -136,7 +136,7 @@ class TurnReviewWatch(BaseModel):
                     or run.finished_at <= marks.forwarded.get(run.run_id, self.started) or handback._pending(run)):
                 continue
             marks.forwarded[run.run_id] = run.finished_at
-            if rows := report_section(final_words(run.run_id), "DURABLE CHANGE"):
+            if rows := report_section(report_of(run.run_id), "DURABLE CHANGE"):
                 asks.append(Ask(role=reviews.librarian, parent=coordinator.run_id, cwd=coordinator.cwd or ".",
                                 task=f"Durable changes {run.agent} {run.run_id[:8]} found in coordinator {coordinator.run_id[:8]}'s answer "
                                      f"to the person. Make each one, generic, never fitted to the one case:\n\n{rows}"))

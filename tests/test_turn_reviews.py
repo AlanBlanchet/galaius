@@ -113,3 +113,27 @@ def test_a_signal_is_configuration():
     custom = TurnReviews(reviews=(TurnReview(role="frustration-analyzer", ask="{signal}",
                                               signal={"patterns": [r"\bfeu\b"], "exclamations": None}),))
     assert custom.reviews[0].signal.matched("au feu") == "« feu »" and custom.reviews[0].signal.matched("Ça marche !!!") is None
+
+
+@pytest.mark.parametrize(("after_hook", "durable"), [
+    ("The hook does not apply: I read the file this turn.", "D1 hook: refuse kill by pattern"),          # dismissed
+    (REPORT.replace("D1 hook: refuse kill by pattern", "D2 hook: read before claiming"), "D2 hook: read before claiming"),  # rewritten
+])
+def test_a_reviews_report_is_read_past_its_answer_to_a_stop_hook(asked, after_hook, durable):
+    """2026-10-22: a frustration analysis answered a Stop hook after its report; that answer was read as the report."""
+    watch = turn_reviews.TurnReviewWatch(started=time.time() - 1)
+    register_run(MAIN, agent="main", name="main", asked_by=(str(uuid.uuid4()),))
+    _ended(MAIN)
+    register_run(REFLECTION, agent="reflection", name="reflection", parent_run_id=MAIN)
+    said = lambda text: {"type": "assistant", "session_id": "s", "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}}
+    reg.raw_events_path(REFLECTION).write_text("".join(json.dumps(line) + "\n" for line in (
+        {"type": "system", "subtype": "init", "session_id": "s"}, said(REPORT),
+        {"type": "user", "isSynthetic": True, "session_id": "s", "message": {"role": "user", "content": [{"type": "text", "text": "Stop hook feedback:\nA close line says it works."}]}},
+        said(after_hook),
+        {"type": "result", "subtype": "success", "is_error": False, "session_id": "s", "stop_reason": "end_turn", "result": after_hook})))
+    reg.finish(REFLECTION, exit_code=0, first=0)
+    reg._merge_record_locked(REFLECTION, {"status": "done", "finished_at": time.time()})
+    turn_reviews.turn_review_marks.update(lambda stored: stored.with_(turn_reviews.Marks(asked={REFLECTION: time.time()})))
+    watch.tick(REFLECTION_ONLY)
+    assert asked[-1]["--agent"] == "librarian" and durable in asked[-1]["--task"]
+    assert "R1 rerun the visual check" in relations.card(reg.get_run(MAIN))

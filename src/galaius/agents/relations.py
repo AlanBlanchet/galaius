@@ -285,6 +285,17 @@ def final_words(run_id: str) -> str:
     return (said or "").strip()
 
 
+def report_of(run_id: str) -> str:
+    """Run `run_id`'s report on its latest ask: the newest of its texts since that ask that lists a report's sections
+    (`REPORT_SECTIONS`), else its final words. 2026-10-22: a review's answer to a Stop hook (« the hook does not apply »)
+    came after its report and was read in its place, its durable and open rows lost."""
+    events = reg.read_events(run_id)
+    asked = next((index for index in range(len(events) - 1, -1, -1) if events[index].kind == "prompt"), -1)
+    sectioned = next((event.text for event in reversed(events[asked + 1:]) if event.kind == "text"
+                      and any(report_section(event.text or "", name) for name in REPORT_SECTIONS)), None)
+    return (sectioned or "").strip() or final_words(run_id)
+
+
 @one_read()
 def owed(run: reg.AgentRun) -> tuple[str, ...]:
     """The runs its ended turn reports to: each run it answers (`askers`) whose latest ask no hand-back has carried its
@@ -444,7 +455,7 @@ def _left_open(run: reg.AgentRun, conversation: Sequence[reg.AgentRun]) -> str:
         return ""
     turn_review_marks.update(lambda stored: stored.with_(turn_review_marks.Marks(shown={other.run_id: other.finished_at or 0.0 for other in ended})))
     said = [f"Open rows {_tag(other)} left on your answer to the person (do them now):\n{rows}"
-            for other in ended if (rows := report_section(final_words(other.run_id), "REDO"))]
+            for other in ended if (rows := report_section(report_of(other.run_id), "REDO"))]
     return "\n".join(said)
 
 
