@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
 
-from galaius.agents import reflection_marks
+from galaius.agents import turn_review_marks
 from galaius.agents import registry as reg
 from galaius.config import Config
 from galaius.agents.events import AgentEvent, Relation, ending_of
@@ -431,19 +431,19 @@ def report_section(report: str, name: str) -> str:
 
 
 def _left_open(run: reg.AgentRun, conversation: Sequence[reg.AgentRun]) -> str:
-    """The rows each reflection the runtime asked about a coordinator's answers to the person left open
-    (`Config.agent_reflection`), on the first card drawn after that reflection's turn ended, however many of the
-    coordinator's turns started meanwhile; each written down as shown (`reflection_marks`), never shown again."""
-    cadence = Config().agent_reflection
-    if run.agent not in cadence.coordinators:
+    """The rows each review the runtime asked about a coordinator's answers to the person left open
+    (`Config.agent_turn_reviews`), on the first card drawn after that review's turn ended, however many of the
+    coordinator's turns started meanwhile; each written down as shown (`turn_review_marks`), never shown again."""
+    reviews = Config().agent_turn_reviews
+    if run.agent not in reviews.coordinators:
         return ""
-    marks = reflection_marks.read()
+    marks = turn_review_marks.read()
     ended = [other for other in conversation if other.parent_run_id == run.run_id and other.run_id in marks.asked
              and other.finished_at is not None and other.finished_at > marks.shown.get(other.run_id, 0.0) and not _working(other)]
     if not ended:
         return ""
-    reflection_marks.update(lambda stored: stored.with_(reflection_marks.Marks(shown={other.run_id: other.finished_at or 0.0 for other in ended})))
-    said = [f"Open rows reflection {_tag(other)} left on your answer to the person (do them now):\n{rows}"
+    turn_review_marks.update(lambda stored: stored.with_(turn_review_marks.Marks(shown={other.run_id: other.finished_at or 0.0 for other in ended})))
+    said = [f"Open rows {_tag(other)} left on your answer to the person (do them now):\n{rows}"
             for other in ended if (rows := report_section(final_words(other.run_id), "REDO"))]
     return "\n".join(said)
 

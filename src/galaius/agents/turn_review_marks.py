@@ -1,5 +1,5 @@
-"""What the runtime's reflection asks did (`reflection.ReflectionWatch`) and what coordinators were shown of them
-(`relations.card`): one registry-wide state file (`#reflection-cadence.state`), read by both, imported by both."""
+"""What the runtime's review asks did (`turn_reviews.TurnReviewWatch`) and what coordinators were shown of them
+(`relations.card`): one registry-wide state file (`#turn-reviews.state`), read by both, imported by both."""
 
 from __future__ import annotations
 
@@ -12,20 +12,24 @@ from galaius.agents import registry as reg
 
 #: How long a mark is kept: work weeks old is never asked about, nor shown, again.
 KEPT_DAYS = 14
-STATE = "reflection-cadence"
+STATE = "turn-reviews"
 
 
 class Marks(BaseModel):
-    """Per coordinator run, the time up to which its turns were reflected on (`reflected`); per reflection run the runtime
-    asked, when (`asked`), the end of the turn whose durable rows went to the librarian (`forwarded`), and the end of the
-    turn whose open rows a coordinator's card showed (`shown`)."""
+    """Per review role and coordinator run (`key`), the time up to which its answers were looked at (`reviewed`); per
+    review run the runtime asked, when (`asked`), the end of the turn whose durable rows went to the librarian
+    (`forwarded`), and the end of the turn whose open rows a coordinator's card showed (`shown`)."""
 
     model_config = ConfigDict(extra="ignore")
 
-    reflected: dict[str, float] = Field(default_factory=dict)
+    reviewed: dict[str, float] = Field(default_factory=dict)
     asked: dict[str, float] = Field(default_factory=dict)
     forwarded: dict[str, float] = Field(default_factory=dict)
     shown: dict[str, float] = Field(default_factory=dict)
+
+    @staticmethod
+    def key(role: str, coordinator: str) -> str:
+        return f"{role}:{coordinator}"
 
     @classmethod
     def read(cls, raw: bytes | None) -> Marks:

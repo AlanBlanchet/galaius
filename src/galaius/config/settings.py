@@ -4,6 +4,7 @@ import json
 import re
 from datetime import datetime
 from pathlib import Path
+from collections.abc import Sequence
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -109,18 +110,109 @@ class CriticCap(BaseModel):
     kept_days: float = Field(default=14.0, gt=0)
 
 
-class ReflectionCadence(BaseModel):
-    """Who reflects on a coordinator's work, and when: once a root run of a `coordinators` role has ended the turns that
-    answered the person (its agents back too), an instance of `role` in its conversation is asked about them; the rows
-    of its report naming a durable change go to `librarian` (the prompts' owner) in the same conversation. 2026-10-21:
-    the step lived only as prompt text, and the coordinator skipped it on nearly every turn."""
+class Repeats(BaseModel):
+    """When a message raises again an ask made earlier: it refers back to it (one of `cues`, case-insensitive: shared
+    words alone are a follow-up on the same subject) and shares at least `shared` content words (`letters` letters or more)
+    with one earlier message of the person in the conversation, those making at least `share` of the shorter one's; a
+    word in more than `common` of his messages there (a name of the project, a greeting) counts for none."""
+
+    model_config = ConfigDict(frozen=True)
+
+    shared: int = Field(default=2, ge=1)
+    share: float = Field(default=0.6, gt=0, le=1)
+    letters: int = Field(default=4, ge=1)
+    common: float = Field(default=0.5, gt=0, le=1)
+    cues: tuple[str, ...] = ("asked", "said", "told", "again", "still", "yesterday", "already",
+                             "demandé", "dit", "déjà", "encore", "toujours", "hier")
+
+    def words(self, text: str) -> frozenset[str]:
+        return frozenset(word.lower() for word in re.findall(rf"[^\W\d_]{{{self.letters},}}", text))
+
+    def matched(self, text: str, earlier: Sequence[str]) -> str | None:
+        """The words `text` shares with the earlier message it raises again, quoted; None when it raises none."""
+        if not re.search(rf"\b({'|'.join(map(re.escape, self.cues))})\b", text, re.I):
+            return None
+        said = [self.words(other) for other in earlier]
+        frequent = {word for word in set().union(*said) if sum(word in other for other in said) > self.common * len(said)} if len(said) >= 4 else set()
+        mine = self.words(text) - frequent
+        for other in said:
+            shared = mine & (other - frequent)
+            if len(shared) >= self.shared and len(shared) >= self.share * min(len(mine), len(other - frequent)):
+                return "raised again: « " + " ".join(sorted(shared)) + " »"
+        return None
+
+
+class MessageSignal(BaseModel):
+    """What in the person's message calls for a review (`TurnReview.signal`): any of `patterns` (regular expressions,
+    case-insensitive), at least `exclamations` « ! » in his own words (never inside code, nor `!=` or `![`), or an ask
+    raised again (`repeats`); None: not looked for."""
+
+    model_config = ConfigDict(frozen=True)
+
+    patterns: tuple[str, ...] = ()
+    exclamations: int | None = Field(default=None, ge=1)
+    repeats: Repeats | None = None
+
+    @field_validator("patterns")
+    @classmethod
+    def _compiles(cls, patterns: tuple[str, ...]) -> tuple[str, ...]:
+        for pattern in patterns:
+            re.compile(pattern)
+        return patterns
+
+    def matched(self, text: str, earlier: Sequence[str] = ()) -> str | None:
+        """What in `text` calls for the review, quoted (the brief names it), `earlier` being what the person said before
+        in the conversation; None when nothing does."""
+        prose = re.sub(r"```.*?```|`[^`\n]*`", " ", text, flags=re.S)
+        for pattern in self.patterns:
+            if (found := re.search(pattern, prose, re.I)) is not None:
+                return f"« {found.group(0)} »"
+        if self.exclamations is not None and (count := len(re.findall(r"!(?![=\[])", prose))) >= self.exclamations:
+            return f"{count} « ! »"
+        return self.repeats.matched(prose, earlier) if self.repeats is not None else None
+
+
+class TurnReview(BaseModel):
+    """One review the runtime asks of a coordinator's answer to the person (`galaius.agents.turn_reviews`): an instance
+    of `role` in its conversation, asked `ask` (`{signal}`: what in his message called for it), after every answer, or
+    only after one to a message `signal` matches."""
+
+    model_config = ConfigDict(frozen=True)
+
+    role: str
+    ask: str
+    signal: MessageSignal | None = None
+
+
+#: What in his message reads as frustration (owner 2026-10-21: « why are you putting these shit limits everywhere ? »):
+#: an ask raised again (`Repeats`, the same in every language), several « ! », and the clear cases in the two languages
+#: he writes.
+FRUSTRATION = MessageSignal(exclamations=2, repeats=Repeats(), patterns=(
+    r"\bwhy (are|is) (you|it)\b|\bwhy (aren'?t|isn'?t|don'?t|doesn'?t|didn'?t|won'?t|can'?t) (you|it)\b",
+    r"\bstill (broken|failing|wrong|not working|doesn'?t work)\b|\btoujours pas\b|\bça (ne )?marche (toujours|encore) pas\b",
+    r"\b(wtf|bullshit|shit|merde|putain)\b",
+))
+
+
+class TurnReviews(BaseModel):
+    """The reviews the runtime asks once a root run of a `coordinators` role has ended its answer to the person (its
+    agents back too); the rows of their reports naming a durable change go to `librarian` (the prompts' owner) in the
+    same conversation. 2026-10-21: both steps lived only as prompt text, skipped on nearly every turn."""
 
     model_config = ConfigDict(frozen=True)
 
     enabled: bool = True
     coordinators: frozenset[str] = frozenset({"main"})
-    role: str = "reflection"
     librarian: str = "librarian"
+    reviews: tuple[TurnReview, ...] = (
+        TurnReview(role="reflection", ask="Reflect on it as your role says: done right, done wrong, could upgrade."),
+        TurnReview(role="frustration-analyzer", signal=FRUSTRATION,
+                   ask="His message reads as frustration or an ask he raises again ({signal}): find, as your role says, what "
+                       "made it so and the change to the process that stops it."),
+    )
+
+    def of(self, role: str | None) -> TurnReview | None:
+        return next((review for review in self.reviews if review.role == role), None)
 
 
 def _default_media_provider_order() -> tuple[str, ...]:
@@ -256,8 +348,8 @@ class Config(BaseSettings):
     # How many rounds a critic role may take on one maker's work before an agent asking for another is refused
     # (`galaius.agents.critic_rounds`). The person is never refused.
     agent_critic_cap: CriticCap = Field(default_factory=lambda: CriticCap())
-    # The reflection asked after a coordinator answered the person (`galaius.agents.reflection`).
-    agent_reflection: ReflectionCadence = Field(default_factory=lambda: ReflectionCadence())
+    # The reviews asked after a coordinator answered the person (`galaius.agents.turn_reviews`).
+    agent_turn_reviews: TurnReviews = Field(default_factory=lambda: TurnReviews())
     agent_memory_max_percent: Annotated[int, Field(ge=1, le=100)] = 45
     agent_run_memory_max_percent: Annotated[int, Field(ge=1, le=100)] = 20
     # The agents' soft memory limit, a share of that slice's cap: past it no agent turn starts here (a spawn, a resumed

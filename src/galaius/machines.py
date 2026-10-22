@@ -52,7 +52,7 @@ from galaius_core.sealing import SecretsSeal
 from galaius_core.wire import fitted, internals, readable
 from galaius.agents.events import AgentEvent
 from galaius.agents.handback import EndWatch, SilenceWatch
-from galaius.agents.reflection import ReflectionWatch
+from galaius.agents.turn_reviews import TurnReviewWatch
 from galaius.config import Config
 from galaius.agents.run import load_policy, run_agent
 from galaius.agents.followup import FollowUps
@@ -1010,7 +1010,7 @@ class MachineRunner:
         settler = asyncio.create_task(self._settle_runs())
         handing = asyncio.create_task(self._hand_back())
         silences = asyncio.create_task(self._tell_silences())
-        reflecting = asyncio.create_task(self._reflect())
+        reviewing = asyncio.create_task(self._review_turns())
         reports = asyncio.create_task(self._deliver_reports(config))
         followed = asyncio.create_task(self._follow_up(config))
         resumed = asyncio.create_task(self._resume_paused(config))
@@ -1038,8 +1038,8 @@ class MachineRunner:
             watched.cancel()
             handing.cancel()
             silences.cancel()
-            reflecting.cancel()
-            await asyncio.gather(settler, handing, silences, reflecting, reports, followed, resumed, watched, return_exceptions=True)
+            reviewing.cancel()
+            await asyncio.gather(settler, handing, silences, reviewing, reports, followed, resumed, watched, return_exceptions=True)
             for ahead in (self.warm, self.followups):  # a child started ahead never outlives its runner; ended on the loop it lives on
                 AgentSpawns.loop().call_soon_threadsafe(ahead.close)
         if swapped:
@@ -1133,17 +1133,17 @@ class MachineRunner:
             except Exception:  # one unreadable record never stops the watch
                 logger.exception("handing agents' reports back failed")
 
-    async def _reflect(self) -> None:
-        """Every `settle_seconds`, ask a reflection about each coordinator's answer to the person that ended, and hand each
-        reflection's durable rows to the prompts' owner (`reflection.ReflectionWatch`)."""
-        watch = ReflectionWatch()
+    async def _review_turns(self) -> None:
+        """Every `settle_seconds`, ask the reviews each coordinator's answer to the person that ended owes, and hand each
+        review's durable rows to the prompts' owner (`turn_reviews.TurnReviewWatch`)."""
+        watch = TurnReviewWatch()
         while True:
             await asyncio.sleep(self.settle_seconds)
             try:
-                for ask in await asyncio.to_thread(watch.tick, Config().agent_reflection):
+                for ask in await asyncio.to_thread(watch.tick, Config().agent_turn_reviews):
                     logger.info("asked %s about run %s", ask.role, ask.parent[:8])
             except Exception:  # one unreadable record never stops the watch
-                logger.exception("asking for reflections failed")
+                logger.exception("asking for turn reviews failed")
 
     async def _tell_silences(self) -> None:
         """Every `settle_seconds`, tell the run that asked each run silent too long at work, once (`handback.SilenceWatch`):
