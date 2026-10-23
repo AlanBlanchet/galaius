@@ -22,6 +22,33 @@ from tests.support import browser_manager
 UNIX_ONLY = ("fcntl", "termios", "pwd", "grp", "resource", "tty", "pty", "syslog")
 
 
+def test_the_cli_imports_on_this_platform():
+    """The import chain the owner's `galaius install` runs. On the Windows CI job this fails on any Unix-only import
+    wherever it sits, which the scan below cannot see (`import os, fcntl`, a module outside its list)."""
+    assert importlib.import_module("galaius.cli.app") is not None
+
+
+def test_the_relay_imports_where_fcntl_does_not_exist():
+    """Windows, as the owner's PC meets it: `fcntl` absent and `sys.platform` win32. Checked here because a Windows
+    runner needs GitHub Actions minutes, which his account refused on 2026-10-23 (payment / spending limit)."""
+    program = (
+        "import galaius, shutil, socket, subprocess, json, queue, stat, threading, time, contextlib\n"  # the standard
+        "import sys\n"                                            # library loads its own fcntl users first (shutil)
+        "sys.platform = 'win32'\n"
+        "class Absent:\n"
+        "    def find_spec(self, name, path=None, target=None):\n"
+        "        if name == 'fcntl':\n"
+        "            raise ModuleNotFoundError(\"No module named 'fcntl'\")\n"
+        "        return None\n"
+        "sys.meta_path.insert(0, Absent())\n"
+        "sys.modules.pop('fcntl', None)\n"
+        "import galaius.mcp_relay as relay\n"
+        "print('relay imported', relay.HELLO)\n"
+    )
+    done = subprocess.run([sys.executable, "-c", program], capture_output=True, text=True)
+    assert done.returncode == 0 and "relay imported" in done.stdout, done.stderr[-1500:]
+
+
 def test_no_module_imports_a_unix_only_module_at_its_top_level():
     source = Path(importlib.import_module("galaius").__file__).parent
     offenders = [f"{path.relative_to(source)}:{number}: {line}"

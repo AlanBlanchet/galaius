@@ -31,39 +31,26 @@ import sys
 import threading
 import time
 
-# Whatever this system locks a file with, from the standard library alone. `galaius.file_lock` owns every other
-# lock in galaius and cannot serve here: it imports pydantic, and pywin32 on Windows, while this file runs as a
-# file under `python -I -S` with neither on its path. 2026-10-23: `import fcntl` at this level killed the whole
-# CLI on Windows (`galaius install` → ModuleNotFoundError), since `galaius.cli.app` imports this module.
-if sys.platform == "win32":
-    import msvcrt
-else:
+# POSIX only, and imported as such: this relay serves no Windows client (`mcp_endpoint` keeps one server per client
+# there, l.61), and it runs as a file under `python -I -S`, where `galaius.file_lock` — which owns every other lock in
+# galaius, and takes the Windows one — has neither its pydantic nor its pywin32 on the path. 2026-10-23: imported at
+# this level instead, `fcntl` killed the whole CLI on Windows (`galaius install` → ModuleNotFoundError), since
+# `galaius.cli.app` imports this module.
+if sys.platform != "win32":
     import fcntl
 
 
 @contextlib.contextmanager
 def locked(path: str):
-    """Hold the exclusive lock on `path` for the block (the file is made when missing), so one process at a time
-    runs what follows. A lock this system refuses to give (Windows waits ~10 s, then raises) is left behind and the
-    block runs anyway: every caller here is safe to run twice, and waiting forever would be worse."""
+    """Hold the exclusive lock on `path` for the block (the file is made when missing), so one process at a time runs
+    what follows. A lock this system refuses is said on stderr (never stdout: the client reads the protocol there) and
+    the block runs anyway: every caller here is safe to run twice, and waiting forever would be worse."""
     with open(path, "a") as handle:
-        taken = False
         try:
-            if sys.platform == "win32":
-                handle.seek(0)  # the first byte, as `file_lock.WindowsFileLock` locks
-                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
-            else:
-                fcntl.flock(handle, fcntl.LOCK_EX)
-            taken = True
-        except OSError:
-            pass
-        try:
-            yield
-        finally:
-            if taken and sys.platform == "win32":
-                handle.seek(0)
-                with contextlib.suppress(OSError):
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            fcntl.flock(handle, fcntl.LOCK_EX)
+        except OSError as error:
+            print(f"galaius relay: {path} could not be locked ({error}); going on without it", file=sys.stderr, flush=True)
+        yield
 
 #: The relay's first line on a connection: who calls (environment, cwd, pid).
 HELLO = "galaius/hello"
