@@ -19,6 +19,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from galaius.config.settings import Config
+from galaius.server_address import ServerAddress
 from galaius.config.user import UserConfig
 from galaius.file_lock import exclusive
 from galaius.machines import MachineRunner
@@ -51,13 +52,11 @@ class UpgradeCheck(BaseModel):
         """The Galaius server this computer signed in to: the one `galaius login` remembers,
         else the one its machine connection is enrolled with (a computer set up before logins
         were remembered)."""
-        path = MachineRunner.default_config_path()
+        remembered = ServerAddress.remembered()
+        if remembered is not None:
+            return remembered.server
         try:
-            return (path.parent / "login-server").read_text(encoding="utf-8").strip() or None
-        except FileNotFoundError:
-            pass
-        try:
-            return MachineRunner.read(path).server_url
+            return MachineRunner.read(MachineRunner.default_config_path()).server_url
         except (OSError, ValueError, KeyError):
             return None
 

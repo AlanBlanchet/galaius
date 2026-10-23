@@ -43,6 +43,7 @@ from galaius.agents import providers as agent_providers
 from galaius.file_lock import exclusive
 from galaius.private_files import PRIVATE_FILES
 from galaius.server_tls import server_tls
+from galaius.server_address import ServerAddress
 from galaius.error_reports import MachineErrorReports
 from galaius.machine_places import PlaceDesk
 from galaius.machine_agents import AgentSpawns, LogRing, MachineAgents, MachineSessions, UnderWay, WebFull, WebRuns, redact, secret_values
@@ -1001,6 +1002,9 @@ class MachineRunner:
         return MachineConfig.model_validate(values)
 
     async def connect(self, config: MachineConfig) -> None:
+        # Never through an address only this computer has: a tunnel down after a reboot kept this
+        # PC offline for six minutes while its server answered all along (2026-10-23).
+        config = await asyncio.to_thread(self.public_enrollment, config)
         # Exact secrets masked in every kept log line from the first one on (`LogRing`).
         self._log_ring.secrets = self._secrets(config)
         self._workspace_jobs.settle_interrupted()
@@ -1044,6 +1048,34 @@ class MachineRunner:
                 AgentSpawns.loop().call_soon_threadsafe(ahead.close)
         if swapped:
             await self.connect(self.load())
+
+    def public_enrollment(self, config: MachineConfig) -> MachineConfig:
+        """`config` with the address every computer reaches its server at (`ServerAddress.reachable`).
+
+        An enrollment made through an SSH tunnel holds that tunnel's `127.0.0.1`, which exists only
+        while the tunnel is up: after a reboot the link retried it for minutes though the server was
+        reachable the whole time. The swap is the same on every computer, needs no setting, and is
+        WRITTEN BACK once the server itself named the public address — so the next boot starts on it
+        — while an address only remembered here carries this run alone (the tunnel may be the only
+        way in to a server that is not published)."""
+        address = ServerAddress.parsed(config.server_url)
+        if not address.local:
+            return config
+        named = address.public()  # the server's own answer, already proven to answer (`public`)
+        remembered = ServerAddress.remembered()
+        public = named if named is not None else remembered
+        if public is None or public.local or public.server == address.server:
+            return config
+        logger.info("enrolled through %s, which only this computer has; connecting to %s",
+                    config.server_url, public.server, extra={"machine_id": config.machine_id})
+        connecting = config.model_copy(update={"server_url": public.server})
+        if named is None:
+            return connecting
+        try:
+            return self.update(lambda current: current.model_copy(update={"server_url": public.server}))
+        except (OSError, ValidationError):  # an unwritable file never stops the link: this run connects anyway
+            logger.warning("could not write %s back to the machine file", public.server, extra={"machine_id": config.machine_id})
+            return connecting
 
     def _secrets(self, config: MachineConfig) -> tuple[str, ...]:
         """Exact values masked in every kept log line (and so in error reports): the token, the ones it

@@ -41,6 +41,7 @@ from galaius.cli.prompts import PromptMode
 from galaius.server_prompts import ServerPrompts
 from galaius.machine_service import MACHINE_SERVICE, ServiceUnavailable
 from galaius.machines import MachineConfig, MachineRunner
+from galaius.server_address import ServerAddress, ServerAddressError
 from galaius.machine_workspaces import unusable
 from galaius.paths import UserPaths
 from galaius.private_files import PRIVATE_FILES
@@ -48,72 +49,30 @@ from galaius.processes import process_started
 from galaius.windowless import console_python
 
 
-class LoginError(Exception):
-    """Something the person can act on, said in their words."""
+class LoginError(ServerAddressError):
+    """Something the person can act on, said in their words — a refused address included
+    (`ServerAddress.parsed` raises it), so one `except LoginError` still answers the person."""
 
 
-class AccountLogin(BaseModel):
-    """One server this computer signs in to; every path it writes is derived here."""
+class AccountLogin(ServerAddress):
+    """One server this computer signs in to; every path it writes is derived here. Which address
+    reaches it is `ServerAddress`, shared with this computer's machine link."""
 
-    model_config = ConfigDict(frozen=True)
-    server: str
     #: The poll gives up after this long (the server's own code lifetime is shorter).
     patience: ClassVar[float] = 15 * 60
     platforms: ClassVar[dict[str, Literal["linux", "macos", "windows"]]] = {"Linux": "linux", "Darwin": "macos", "Windows": "windows"}
-
-    @staticmethod
-    def remembered_path() -> Path:
-        """Written by the server's install script."""
-        return MachineRunner.default_config_path().parent / "login-server"
 
     @classmethod
     def at(cls, server: str | None) -> "AccountLogin":
         """`server`, else the one remembered (by the server's installer or an earlier login); a
         bare host means https."""
         if server is None:
-            try:
-                remembered = cls.parsed(cls.remembered_path().read_text(encoding="utf-8"))
-            except (FileNotFoundError, LoginError):
-                remembered = None
+            remembered = cls.remembered()
             account = None if remembered is None else remembered.public()
             if account is None:
                 raise LoginError("which Galaius server? Pass --server https://… (the install line from your Galaius page sets it)")
             return account
         return cls.parsed(server)
-
-    def public(self) -> "AccountLogin | None":
-        """A remembered server as another computer reaches it: an address on this computer only (an
-        SSH tunnel's 127.0.0.1) is swapped for the public address it names, and dropped when it does
-        not answer; a public address is kept as is."""
-        if urlsplit(self.server).hostname not in {"127.0.0.1", "localhost", "::1"}:
-            return self
-        try:
-            with self.client() as http:
-                named = http.get("/v1/install").json().get("server")
-                public = None if not named else self.parsed(named)
-                if public is not None and urlsplit(public.server).hostname not in {"127.0.0.1", "localhost", "::1"} and public.answers():
-                    return public
-                return self if http.get("/v1/version").status_code == 200 else None
-        except (httpx.HTTPError, ValueError, AttributeError, LoginError):
-            return None
-
-    def answers(self) -> bool:
-        try:
-            with self.client() as http:
-                return http.get("/v1/version").status_code == 200
-        except httpx.HTTPError:
-            return False
-
-    @classmethod
-    def parsed(cls, server: str) -> "AccountLogin":
-        server = server.strip()
-        if "://" not in server:
-            server = f"https://{server}"
-        parts = urlsplit(server)
-        loopback = parts.hostname in {"127.0.0.1", "localhost", "::1"}
-        if parts.scheme not in ({"https", "http"} if loopback else {"https"}) or not parts.hostname or parts.username or parts.path not in {"", "/"}:
-            raise LoginError(f"{server} is not a Galaius server address (https://…)")
-        return cls(server=f"{parts.scheme}://{parts.netloc}")
 
     @property
     def key_path(self) -> Path:
@@ -151,9 +110,6 @@ class AccountLogin(BaseModel):
         except (OSError, ValueError, httpx.HTTPError) as error:
             done.append(f"prompts not synced ({error or type(error).__name__}; then run: galaius prompts sync)")
         return "Synced: " + ", ".join(done)
-
-    def client(self) -> httpx.Client:
-        return httpx.Client(base_url=self.server, headers={"User-Agent": USER_AGENT}, timeout=httpx.Timeout(15, connect=10), trust_env=False, follow_redirects=False)
 
     # ---- sign in ---------------------------------------------------------------------------
 

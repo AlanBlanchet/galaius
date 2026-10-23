@@ -32,6 +32,10 @@ from galaius.private_files import PRIVATE_FILES
 from tests.support.private_files import loosen
 from galaius.server_tls import server_tls
 from galaius.machines import CommandFiles, CommandLogs, MachineConfig, MachineFiles, MachineRunner, SCRIPT_RUNTIMES, ScriptRuntime
+from galaius.server_address import ServerAddress
+
+PUBLIC_SERVER = "https://galaius.example.org"
+TUNNEL = "http://127.0.0.1:8817"
 
 
 @pytest.mark.parametrize(("server", "verified"), [("https://galaius.example", True), ("http://127.0.0.1:8817", False)])
@@ -1200,3 +1204,39 @@ def test_a_report_from_the_service_log_keeps_only_what_galaius_wrote() -> None:
     assert kept[0] == "2026-10-08T17:44:05+00:00 error galaius.machines: connection crashed (RuntimeError: gone)"
     assert kept[1:] == tuple(raised), "galaius's own traceback, whole: head, frames, the raised error"
     assert "customer 4411" not in "\n".join(kept) and "/srv/clients.csv" not in "\n".join(kept)
+
+
+@pytest.mark.parametrize("enrolled, answering, remembered, expected, saved", [
+    # The tunnel is up: the server names its public address, which answers -> connected there, written back.
+    (TUNNEL, {TUNNEL, PUBLIC_SERVER}, PUBLIC_SERVER, PUBLIC_SERVER, PUBLIC_SERVER),
+    # Reboot, tunnel not up yet: nothing can be asked, so the remembered address carries this run only.
+    (TUNNEL, set(), PUBLIC_SERVER, PUBLIC_SERVER, TUNNEL),
+    # No public address anywhere: a server reachable only through the tunnel keeps it.
+    (TUNNEL, set(), None, TUNNEL, TUNNEL),
+    # Already enrolled publicly: nothing is asked, nothing changes.
+    (PUBLIC_SERVER, set(), PUBLIC_SERVER, PUBLIC_SERVER, PUBLIC_SERVER),
+])
+def test_the_link_never_connects_through_an_address_only_this_computer_has(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, enrolled: str, answering: set[str], remembered: str | None, expected: str, saved: str,
+) -> None:
+    """A tunnel's 127.0.0.1 exists only while the tunnel is up: after a reboot the link retried it
+    for six minutes while its server answered all along (2026-10-23)."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    if remembered is not None:
+        path = ServerAddress.remembered_path()
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path.write_text(remembered + "\n", encoding="utf-8")
+
+    def client(self: ServerAddress) -> httpx.Client:
+        def answer(request: httpx.Request) -> httpx.Response:
+            if self.server not in answering:
+                raise httpx.ConnectError("refused", request=request)
+            return httpx.Response(200, json={"server": PUBLIC_SERVER} if request.url.path == "/v1/install" else {})
+        return httpx.Client(base_url=self.server, transport=httpx.MockTransport(answer))
+
+    monkeypatch.setattr(ServerAddress, "client", client)
+    runner = MachineRunner()
+    runner._save(_config(tmp_path, "full_access").model_copy(update={"server_url": enrolled}))
+    public = runner.public_enrollment(runner.load())
+    assert public.server_url == expected, "the address this run connects to"
+    assert runner.load().server_url == saved, "the address the next boot starts on"
