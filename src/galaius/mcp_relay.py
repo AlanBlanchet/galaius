@@ -21,7 +21,6 @@ This module is also the one place the wire between relay and server is defined (
 `Endpoint`): the server imports it."""
 
 import contextlib
-import fcntl
 import json
 import os
 import queue
@@ -31,6 +30,40 @@ import subprocess
 import sys
 import threading
 import time
+
+# Whatever this system locks a file with, from the standard library alone. `galaius.file_lock` owns every other
+# lock in galaius and cannot serve here: it imports pydantic, and pywin32 on Windows, while this file runs as a
+# file under `python -I -S` with neither on its path. 2026-10-23: `import fcntl` at this level killed the whole
+# CLI on Windows (`galaius install` → ModuleNotFoundError), since `galaius.cli.app` imports this module.
+if sys.platform == "win32":
+    import msvcrt
+else:
+    import fcntl
+
+
+@contextlib.contextmanager
+def locked(path: str):
+    """Hold the exclusive lock on `path` for the block (the file is made when missing), so one process at a time
+    runs what follows. A lock this system refuses to give (Windows waits ~10 s, then raises) is left behind and the
+    block runs anyway: every caller here is safe to run twice, and waiting forever would be worse."""
+    with open(path, "a") as handle:
+        taken = False
+        try:
+            if sys.platform == "win32":
+                handle.seek(0)  # the first byte, as `file_lock.WindowsFileLock` locks
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                fcntl.flock(handle, fcntl.LOCK_EX)
+            taken = True
+        except OSError:
+            pass
+        try:
+            yield
+        finally:
+            if taken and sys.platform == "win32":
+                handle.seek(0)
+                with contextlib.suppress(OSError):
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
 
 #: The relay's first line on a connection: who calls (environment, cwd, pid).
 HELLO = "galaius/hello"
@@ -89,8 +122,7 @@ class Endpoint:
             return self.dial()
         except OSError:
             pass
-        with open(self.socket + ".lock", "a") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
+        with locked(self.socket + ".lock"):
             try:
                 return self.dial()
             except OSError:

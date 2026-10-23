@@ -4,9 +4,46 @@ leaking a cryptic evdev/maim error. These are pure (no display, no browser, no k
 the whole ubuntu/macos/windows CI matrix and keep the promise honest."""
 
 import importlib
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import pytest
 
 from galaius.desktop import backend as db
+from galaius.mcp_relay import locked
 from tests.support import browser_manager
+
+#: Standard modules Windows does not ship. Each import of one sits under `sys.platform` or in a `try`, never at a
+#: module's top level: 2026-10-23 `galaius/mcp_relay.py` imported `fcntl` there, and the owner's Windows PC could
+#: not run `galaius install` at all (« ModuleNotFoundError: No module named 'fcntl' » out of `galaius.cli.app`).
+UNIX_ONLY = ("fcntl", "termios", "pwd", "grp", "resource", "tty", "pty", "syslog")
+
+
+def test_no_module_imports_a_unix_only_module_at_its_top_level():
+    source = Path(importlib.import_module("galaius").__file__).parent
+    offenders = [f"{path.relative_to(source)}:{number}: {line}"
+                 for path in source.rglob("*.py")
+                 for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+                 if line.startswith(("import ", "from ")) and line.split()[1].split(".")[0] in UNIX_ONLY]
+    assert offenders == [], offenders
+
+
+def test_the_relay_lock_lets_one_process_at_a_time_through(tmp_path):
+    """`mcp_relay.locked`, the relay's own stdlib-only lock (it runs under `python -I -S`: no pydantic, no pywin32,
+    so `galaius.file_lock` cannot serve it). Here: a held lock makes the next taker wait."""
+    path = str(tmp_path / "endpoint.lock")
+    program = f"import sys; sys.path.insert(0, {str(Path(importlib.import_module('galaius').__file__).parents[1])!r});\nfrom galaius.mcp_relay import locked\nimport time\nwith locked({path!r}):\n    time.sleep(1.5)\n"
+    holder = subprocess.Popen([sys.executable, "-c", program])
+    time.sleep(0.4)
+    started = time.monotonic()
+    with locked(path):
+        waited = time.monotonic() - started
+    holder.wait(timeout=10)
+    assert waited > 0.5, waited
+    assert os.path.exists(path)
 
 
 def test_server_module_imports_on_any_platform():
