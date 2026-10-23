@@ -28,6 +28,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from galaius_core import StopActor
 from galaius.agents import quota, registry as reg
 from galaius.agents.events import TOKEN_FIELDS, AgentEvent
 from galaius.pinned_directory import DescriptorDirectory
@@ -2257,6 +2258,38 @@ def test_only_a_lost_login_pauses_a_run_and_its_sub_run_until_signed_in_again(re
     _ended_on("login1", said, pid=411)
     _ended_on("login1-sub", said, pid=412, parent="login1")
     assert [run.run_id for run, cut in reg.schedule_resumes() if cut.resumes == "sign_in"] == (["login1-sub", "login1"] if paused else [])
+
+
+#: A pid no process of this machine holds: a test that stops a run never signals one that lives (2026-10-23: 421 and 422
+#: were kernel workers here, and `stop` ends a run's whole process tree).
+_FAKE_PID = 2 ** 22 - 2
+#: Each cut that brings a run back by itself, with how (`CutOwed.resumes`) and what makes it due.
+_COMES_BACK = {"usage limit": (_SESSION_LIMIT, "itself"), "lost login": (_LOGIN_EXPIRED, "sign_in")}
+
+
+@pytest.mark.parametrize(("said", "resumes"), _COMES_BACK.values(), ids=_COMES_BACK.keys())
+def test_a_run_a_person_stopped_never_comes_back_by_itself_nor_at_the_next_sign_in(resuming, monkeypatch, said, resumes):
+    """Owner 2026-10-23: « i would have liked to be able to STOP all agents in the conversation ! » — what he stopped
+    stays stopped. A run paused by a cut that does come back (a usage limit at its reset, a lost login once signed in
+    again), stopped by him while it waited, has no `resumes` left, is scheduled no more, and a later sign-in claims it
+    for nothing: `cut_cause` is never a stop someone recorded."""
+    # No process of this machine is ever signalled by a test: these runs ended, and `stop` reads an ending of its own.
+    monkeypatch.setattr(reg, "_alive", lambda _pid: False)
+    tree = ("stopped-root", "stopped-sub")
+    run = _ended_on(tree[0], said, pid=_FAKE_PID)
+    _ended_on(tree[1], said, pid=_FAKE_PID + 1, parent=tree[0])
+    assert [(item.run_id, cut.resumes) for item, cut in reg.schedule_resumes()] == [(tree[1], resumes), (tree[0], resumes)]
+
+    for run_id in tree:
+        assert reg.stop(run_id, by=StopActor(kind="person", name="Alan", account_id=uuid.uuid4())) is True
+
+    due = run.finished_at + 4 * 86400
+    assert reg.schedule_resumes(now=due) == []
+    for run_id in tree:
+        stored = reg.get_run(run_id)
+        assert (stored.resumes, stored.resume_at, stored.stopped_by is None) == (None, None, False)
+        assert reg.claim_resume(run_id, signed_in=True, now=due) is None
+        assert reg.self_resuming(stored, now=due) is False
 
 
 def test_a_run_its_lost_login_stopped_is_claimed_once_and_a_second_loss_at_once_is_left_to_continuer(resuming, monkeypatch):
