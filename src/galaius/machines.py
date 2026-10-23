@@ -871,6 +871,13 @@ class ScriptExecution(BaseModel):
         return " ".join((self.interpreter if self.program == "custom" else {"runner_python": "galaius's own Python", "uv": "uv"}[self.program], *self.options))
 
 
+#: The refusals an agent request from the web is ANSWERED with (`MachineRunner._answer_agent_request`): each
+#: says why it could not be performed, and the asker gets those words. Anything outside this tuple is answered
+#: all the same — as a failure, with its words — because a request left unanswered reads at the server as a PC
+#: that never confirmed, which is neither true nor actionable.
+ANSWERED_REFUSALS: tuple[type[BaseException], ...] = (PermissionError, OSError, ValueError, RuntimeError, subprocess.TimeoutExpired)
+
+
 class MachineRunner:
     heartbeat_seconds = 3
     #: How often this PC checks whether the prompts it runs changed (a company granted or withdrew
@@ -1536,10 +1543,17 @@ class MachineRunner:
                                                                  ("run", str(run_id)[:8] if run_id else None), ("provider", getattr(request, "provider", None) if request.op == "provider" else None),
                                                                  ("answer", answer.detail if request.op in {"answer", "send", "provider"} else None)) if value)
             logger.log(logging.INFO if request.action else logging.DEBUG, "agent %s %s", request.op, said)
-        except (PermissionError, OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
+        except ANSWERED_REFUSALS as error:
             answer = MachineAgentAnswer(request_id=request.id, error=fitted(MachineAgentAnswer, "error", said_of(error)), code=error.code if isinstance(error, (WorkspaceRefused, WebFull, UnderWay)) else None,
                                         subscription_refusal=error.refusal if isinstance(error, SubscriptionRefused) else None)
             logger.warning("agent %s refused: %s", request.op, answer.error)
+        except Exception as error:  # noqa: BLE001 — the asker is never left with no answer at all
+            # Whatever this was, the server is waiting on an answer to THIS request: without one it
+            # cannot tell a refusal from a frozen PC and tells him the PC « n'a pas confirmé le
+            # lancement » minutes later (2026-10-23 16:29, his new conversation: `admission.Paused`
+            # derived from bare `Exception`, so the only trace was this runner's own log line).
+            answer = MachineAgentAnswer(request_id=request.id, error=fitted(MachineAgentAnswer, "error", said_of(error)))
+            logger.error("agent %s failed: %s", request.op, answer.error, exc_info=error)
         if request.action:
             # The whole brief / message stays HERE, in the owner's local log; the server keeps a digest.
             asked = request.model_dump(mode="json", exclude={"type", "id", "machine", "workspace_id", "expires_at", "signature"})

@@ -20,6 +20,7 @@ from galaius.agents.events import Relation
 from galaius.agents.policy import PolicyError
 from galaius.agents.providers import AgentProvider, provider_for
 from galaius.agents.run import ModelUnavailable, load_policy, resolve_continuable_model
+from galaius.agents.subscriptions import SubscriptionRefused
 
 DeliveryState = Literal["queued", "replied", "error"]
 
@@ -133,7 +134,7 @@ def policy_for_continuation(run, provider: AgentProvider, environment: Mapping[s
                 f"{provider.name!r}; refusing continuation"
             ) from error
         model = resolve_continuable_model(criterion, dict(Caller.environ(environment)), provider=provider, weights=policy.weights_for(run.agent), role=run.agent,
-                                          subscription=run.subscription_id)[1]
+                                          subscription=run.subscription_id, floor=run.model)[1]
         return policy, criterion, model, policy.reasoning_for(run.agent)
     except (ModelUnavailable, PolicyError, ValueError) as error:
         raise ModelUnavailable(str(error)) from error
@@ -217,8 +218,15 @@ def queue_message(
         if only_if_idle and (run.working() or any(item.state in {"pending", "running"} for item in agent_queue.items_locked(run.run_id))):
             return Delivery(state="error", text=f"ERROR: {run.name} is busy.", run_id=run.run_id)
         try:
+            # A PERSON writing to a run that no longer runs IS his « Continuer » (`prepare_continue`): the
+            # vendor answers the turn itself, instead of what this PC remembers of an earlier refusal
+            # answering for it. Only a person's — an agent's message would ask again on every send
+            # (2026-10-23 16:17: he switched his Claude account, typed « continue », and the button's path
+            # was the only one that dropped the memory; his message was refused « … is in quota cooldown »).
+            if reg.get_run(speaker) is None:
+                run.prepare_continue()
             _, criterion, model, reasoning = policy_for_continuation(run, provider, environment)
-        except ModelUnavailable as policy_error:
+        except (ModelUnavailable, SubscriptionRefused) as policy_error:
             return Delivery(state="error", text=f"ERROR: {policy_error}", run_id=run.run_id)
         if _session_id(run) is None:
             return Delivery(

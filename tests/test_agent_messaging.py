@@ -382,6 +382,11 @@ def test_a_resumed_turn_skips_a_cooled_model_and_uses_the_next_ranked_one(monkey
     register_run("r1", name="reviewer", provider="resume-fake", task="t", pid=99999,
                 agent="tester", provider_session_id="vendor-thread", model="fable")
     reg._merge_record_locked("r1", {"status": "crashed", "exit_code": None})
+    # Sent by a PEER RUN, not by him: his own message to a cut run is his « Continuer » and asks
+    # the vendor again whatever this PC remembers (`AgentRun.prepare_continue`), so only an agent's
+    # message is still answered from the cooldown memory this test is about.
+    register_run("r2", name="peer", provider="resume-fake", task="t", pid=99998, agent="tester",
+                 provider_session_id="other-thread", model="fable")
     monkeypatch.setattr(reg, "_alive", lambda pid: False)
     monkeypatch.setattr(agent_queue, "ensure_dispatcher_locked", lambda *args, **kwargs: 1)
 
@@ -392,7 +397,7 @@ def test_a_resumed_turn_skips_a_cooled_model_and_uses_the_next_ranked_one(monkey
         # "fable" is the cheaper, normally-preferred candidate for "cap.llm" — exactly the
         # dead-model-gets-replayed shape from the bug report.
         quota.record_refusal("resume-fake", "fable")
-        delivery = messaging.deliver_message("r1", "keep going", sender="operator")
+        delivery = messaging.deliver_message("r1", "keep going", sender="r2")
         agent_queue.dispatch("r1")
         reply = asyncio.run(messaging.wait_for_reply(delivery))
 
@@ -418,6 +423,11 @@ def test_a_resumed_turn_refuses_when_every_candidate_for_its_provider_is_cooled(
     register_run("r1", name="reviewer", provider="resume-fake", task="t", pid=99999,
                 agent="tester", provider_session_id="vendor-thread", model="fable")
     reg._merge_record_locked("r1", {"status": "crashed", "exit_code": None})
+    # Sent by a PEER RUN, not by him: his own message to a cut run is his « Continuer » and asks
+    # the vendor again whatever this PC remembers (`AgentRun.prepare_continue`), so only an agent's
+    # message is still answered from the cooldown memory this test is about.
+    register_run("r2", name="peer", provider="resume-fake", task="t", pid=99998, agent="tester",
+                 provider_session_id="other-thread", model="fable")
     monkeypatch.setattr(reg, "_alive", lambda pid: False)
     monkeypatch.setattr(agent_queue, "ensure_dispatcher_locked", lambda *args, **kwargs: 1)
 
@@ -429,7 +439,7 @@ def test_a_resumed_turn_refuses_when_every_candidate_for_its_provider_is_cooled(
         quota.record_refusal("resume-fake", "opus")
         # Refused eagerly at delivery time — never even enqueued, so nothing here should reach
         # a "resend explicitly" or "uncertain" outcome; the caller learns the reason immediately.
-        delivery = messaging.deliver_message("r1", "keep going", sender="operator")
+        delivery = messaging.deliver_message("r1", "keep going", sender="r2")
 
     assert delivery.state == "error" and delivery.queue_id is None
     assert "cooldown" in delivery.text and "agent_spawn" in delivery.text
@@ -741,3 +751,127 @@ def test_the_id_its_sender_gives_a_message_is_the_one_its_run_records(monkeypatc
     agents_send("r1", "hello", message_id=message_id)
     assert [event.event_id for event in reg.read_messages("r1")] == [message_id]
     assert [item.message_id for item in agent_queue.items("r1")] == [message_id]
+
+
+# ── A resume never moves the conversation DOWN the capability ranking ──────────────────────────
+# 2026-10-23, the owner's main conversation: one context overflow benched opus-5.5, the resume walked
+# the ranked list down to haiku-5.5, and Claude Code then refused to compact a 1M-token conversation
+# with it (`[claude-code:unrecognized_model] {"model":"claude-haiku-5-5","query_source":"compact"}`).
+# A smaller model cannot hold what the bigger one was already too small for.
+
+
+def _ranked_policy(monkeypatch, criterion: str = "aa.intelligence >= 0"):
+    use_policy(monkeypatch, messaging, agents={"tester": criterion},
+               reasoning={"tester": "high"}, providers={"resume-fake": True})
+
+
+def _ranked_catalog():
+    from galaius.models import ModelCapability
+    from tests.support import catalog_of, model as fixture_model
+
+    return catalog_of(
+        fixture_model("opus", provider="fixture", caps={ModelCapability.LLM}, input_cost=5.0, output_cost=5.0, score=70.0),
+        fixture_model("haiku", provider="fixture", caps={ModelCapability.LLM}, input_cost=0.1, output_cost=0.1, score=30.0),
+    )
+
+
+def _cut_run_on(monkeypatch, provider, model: str):
+    register_run("r1", name="reviewer", provider="resume-fake", task="t", pid=99999,
+                 agent="tester", provider_session_id="vendor-thread", model=model)
+    reg._merge_record_locked("r1", {"status": "crashed", "exit_code": None})
+    monkeypatch.setattr(reg, "_alive", lambda pid: False)
+
+
+def test_a_resumed_turn_never_moves_its_conversation_to_a_smaller_model(monkeypatch):
+    """Its own model cooled and only a SMALLER one live: refuse and say so, never hand the session to a
+    model that cannot hold it."""
+    from galaius.agents import agent_queue, quota
+
+    provider = _FixtureCatalogProvider()
+    provider.calls = []
+    _ranked_policy(monkeypatch)
+    monkeypatch.setattr(messaging, "provider_for", lambda _: provider)
+    install_provider(monkeypatch, provider)
+    _cut_run_on(monkeypatch, provider, "opus")
+    register_run("r2", name="peer", provider="resume-fake", task="t", pid=99998, agent="tester",
+                 provider_session_id="other-thread", model="opus")
+    monkeypatch.setattr(agent_queue, "ensure_dispatcher_locked", lambda *args, **kwargs: 1)
+
+    with _ranked_catalog():
+        quota.record_refusal("resume-fake", "opus")
+        delivery = messaging.deliver_message("r1", "keep going", sender="r2")
+
+    assert delivery.state == "error" and delivery.queue_id is None
+    assert "smaller" in delivery.text
+    assert not any(call[0] == "resume" for call in provider.calls)
+
+
+def test_a_resumed_turn_may_still_move_its_conversation_to_a_bigger_model(monkeypatch):
+    """The floor is one-way: a run cut on the small model takes the big one when the criterion prefers it."""
+    from galaius.agents import agent_queue
+
+    provider = _FixtureCatalogProvider()
+    provider.calls = []
+    _ranked_policy(monkeypatch, "aa.intelligence >= 60")
+    monkeypatch.setattr(messaging, "provider_for", lambda _: provider)
+    install_provider(monkeypatch, provider)
+    _cut_run_on(monkeypatch, provider, "haiku")
+    monkeypatch.setattr(agent_queue, "ensure_dispatcher_locked", lambda *args, **kwargs: 1)
+
+    with _ranked_catalog():
+        delivery = messaging.deliver_message("r1", "keep going", sender="operator")
+        agent_queue.dispatch("r1")
+        asyncio.run(messaging.wait_for_reply(delivery))
+
+    assert [call for call in provider.calls if call[0] == "resume"][-1][3]["model"] == "opus"
+
+
+# ── His message to a cut run asks the vendor again, as « Continuer » does ──────────────────────
+# 2026-10-23 16:17: he switched the Claude account, typed « continue » into the cut conversation, and
+# got « every model 'claude' can run for 'aa.intelligence' is in quota cooldown » — only the Continue
+# BUTTON dropped what this PC remembered against the login; a typed message never asked at all.
+
+
+def test_his_message_to_a_cut_run_asks_the_vendor_again(monkeypatch):
+    """A person's message to a run that is no longer running is his « Continuer »: the vendor answers
+    the turn itself, instead of this PC's memory of an earlier refusal answering for it."""
+    from galaius.agents import agent_queue, quota
+
+    provider = _FixtureCatalogProvider()
+    provider.calls = []
+    _ranked_policy(monkeypatch)
+    monkeypatch.setattr(messaging, "provider_for", lambda _: provider)
+    install_provider(monkeypatch, provider)
+    _cut_run_on(monkeypatch, provider, "opus")
+    monkeypatch.setattr(agent_queue, "ensure_dispatcher_locked", lambda *args, **kwargs: 1)
+
+    with _ranked_catalog():
+        quota.record_refusal("resume-fake", "opus", said="You've hit your session limit · resets 9pm (Europe/Paris)")
+        delivery = messaging.deliver_message("r1", "continue", sender="operator")
+        agent_queue.dispatch("r1")
+        asyncio.run(messaging.wait_for_reply(delivery))
+
+    assert delivery.state == "replied"
+    assert [call for call in provider.calls if call[0] == "resume"][-1][3]["model"] == "opus"
+
+
+def test_an_agents_message_to_a_cut_run_asks_nothing_again(monkeypatch):
+    """Only a PERSON's message is his « Continuer ». An agent's would make a run whose model the vendor
+    just refused ask it again on every message it is sent."""
+    from galaius.agents import agent_queue, quota
+
+    provider = _FixtureCatalogProvider()
+    provider.calls = []
+    _ranked_policy(monkeypatch)
+    monkeypatch.setattr(messaging, "provider_for", lambda _: provider)
+    install_provider(monkeypatch, provider)
+    _cut_run_on(monkeypatch, provider, "opus")
+    register_run("r2", name="peer", provider="resume-fake", task="t", pid=99998, agent="tester",
+                 provider_session_id="other-thread", model="opus")
+    monkeypatch.setattr(agent_queue, "ensure_dispatcher_locked", lambda *args, **kwargs: 1)
+
+    with _ranked_catalog():
+        quota.record_refusal("resume-fake", "opus", said="You've hit your session limit · resets 9pm (Europe/Paris)")
+        delivery = messaging.deliver_message("r1", "keep going", sender="r2")
+
+    assert delivery.state == "error" and "cooldown" in delivery.text

@@ -357,3 +357,118 @@ def test_his_continue_ends_the_blocks_of_one_login_only(key, ended):
     quota.forget_login("claude", now=now)
 
     assert (quota._read(now)[key].until == now) is ended
+
+
+# ── A conversation too long to compact is no model's quota ─────────────────────────────────────
+# 2026-10-23, a long-lived coordinator conversation: the CLI could not compact it and said so
+# in the same breath as the pool whose window that compaction call spent. Read as a quota refusal, it
+# benched opus-5.5, opus-5 and haiku-5.5 an hour each, walked the resume down to haiku — which Claude
+# Code then refused to compact with (`{"model":"claude-haiku-5-5","query_source":"compact"}`) — and
+# left his typed « continue » answered « every model 'claude' can run … is in quota cooldown ».
+
+#: The line that ended it, as `stream_digest.ending_text` kept it.
+CONTEXT_FULL_LINE = ("Prompt is too long · automatic compaction failed: You've hit your session "
+                     "limit · resets 5:20pm (Europe/Paris)")
+#: 2026-10-23 16:17:23 Europe/Paris — when it was heard, so « resets 5:20pm » reads as that hour.
+HEARD_AT = 1_792_765_043.0
+
+
+@pytest.mark.parametrize("said", [
+    CONTEXT_FULL_LINE,
+    "API Error: 400 {\"message\":\"Prompt is too long: 1050000 tokens > 1000000 maximum\"}",
+    "automatic compaction failed: You've hit your weekly limit · resets Oct 6, 12am (Europe/Paris)",
+])
+def test_a_conversation_too_long_to_compact_is_no_models_quota(said):
+    """What refused is the SIZE, not the account's pool for one model: every other model has the same
+    window or a smaller one, so benching this one and walking down the ranking is the wrong answer."""
+    assert quota.classify(said) == "context_exhausted"
+
+    quota.remember("context_exhausted", "claude", "claude-opus-5-5", said=said, login="0123abcd", now=HEARD_AT)
+
+    assert quota.blocked_until("claude", "claude-opus-5-5", now=HEARD_AT) is None
+    assert quota.unsupported_until("claude", "claude-opus-5-5", login="0123abcd", now=HEARD_AT) is None
+
+
+def test_a_conversation_too_long_to_compact_still_holds_the_window_the_vendor_named():
+    """The pool the compaction call spent IS a fact about the account: that login takes no new turn
+    until the instant it named, which is when the cut run's automatic resume comes back (it did, 16:43)."""
+    quota.remember("context_exhausted", "claude", "claude-opus-5-5", said=CONTEXT_FULL_LINE,
+                   login="0123abcd", now=HEARD_AT)
+
+    pause = quota.login_pause("claude", now=HEARD_AT)
+
+    assert pause is not None and pause.reason == "usage_limit"
+    assert pause.until is not None and pause.until > HEARD_AT
+
+
+# ── A block belongs to the account that was refused ────────────────────────────────────────────
+# He switched the Claude account of his login folder at 16:20 and typed « continue »: the blocks are
+# keyed on (provider, model), never on who was logged in, so another account's refusals answered him.
+
+
+def test_switching_the_logged_in_account_voids_what_the_old_one_was_refused():
+    """A refusal is a fact about ONE account's pool. Signing the login folder into another account
+    makes every block and hold remembered under the old one say nothing about this one."""
+    quota.note_login("claude", "0123abcd", now=HEARD_AT)
+    quota.record_refusal("claude", "claude-opus-5-5", said=CONTEXT_FULL_LINE.split("·", 1)[1], now=HEARD_AT)
+    assert quota.blocked_until("claude", "claude-opus-5-5", now=HEARD_AT) is not None
+    assert quota.login_pause("claude", now=HEARD_AT) is not None
+
+    changed = quota.note_login("claude", "99887766", now=HEARD_AT + 180)
+
+    assert changed is True
+    assert quota.blocked_until("claude", "claude-opus-5-5", now=HEARD_AT + 180) is None
+    assert quota.login_pause("claude", now=HEARD_AT + 180) is None
+
+
+def test_the_same_account_signing_in_again_voids_nothing():
+    """Only a CHANGE voids: every launch notes the login it authenticated as, and the usual answer is
+    the same account — which must leave what the vendor refused it standing."""
+    quota.note_login("claude", "0123abcd", now=HEARD_AT)
+    quota.record_refusal("claude", "claude-opus-5-5", said="You've reached your limit", now=HEARD_AT)
+
+    assert quota.note_login("claude", "0123abcd", now=HEARD_AT + 180) is False
+    assert quota.blocked_until("claude", "claude-opus-5-5", now=HEARD_AT + 180) is not None
+
+
+def test_a_login_no_launch_ever_noted_voids_nothing():
+    """The first launch to authenticate has nothing to compare against: it notes the account and
+    leaves the memory alone (voiding there would drop every block on each PC restart)."""
+    quota.record_refusal("claude", "claude-opus-5-5", said="You've reached your limit", now=HEARD_AT)
+
+    assert quota.note_login("claude", "0123abcd", now=HEARD_AT + 10) is False
+    assert quota.blocked_until("claude", "claude-opus-5-5", now=HEARD_AT + 10) is not None
+
+
+def test_his_continue_also_lifts_the_hold_the_same_refusal_put_on_his_login():
+    """`forget_login` ended the per-model blocks and left the login's own usage hold standing, so his
+    « Continuer » still met « en pause : limite d'usage claude jusqu'à 17:21 » (2026-10-23 16:29)."""
+    quota.record_refusal("claude", "claude-opus-5-5", said=CONTEXT_FULL_LINE, now=HEARD_AT)
+    assert quota.login_pause("claude", now=HEARD_AT) is not None
+
+    quota.forget_login("claude", now=HEARD_AT + 60)
+
+    assert quota.login_pause("claude", now=HEARD_AT + 60) is None
+
+
+def test_his_continue_never_lifts_a_lost_login():
+    """A login the program said was lost comes back by signing in again, never by asking the vendor again."""
+    quota.pause_login("claude", "login_lost", said="OAuth token revoked", now=HEARD_AT)
+
+    quota.forget_login("claude", now=HEARD_AT + 60)
+
+    pause = quota.login_pause("claude", now=HEARD_AT + 60)
+    assert pause is not None and pause.reason == "login_lost"
+
+
+def test_a_conversation_too_long_to_compact_is_still_a_usage_LIMIT_cut_that_resumes_itself():
+    """What saved the owner's conversation at 16:43 was its own automatic resume, scheduled because its
+    ending read as a usage-limit CUT naming an instant (`registry.limit_resume_at`). That reading comes
+    from `AgentProvider.cut_words`, not from `classify`: making the line no model's quota must not take
+    the resume away with it."""
+    from galaius.agents.events import RunCut
+    from galaius.agents.providers import ClaudeCodeProvider
+
+    assert ClaudeCodeProvider.cut_of(CONTEXT_FULL_LINE) is RunCut.usage_limit
+    refusal = quota.Refusal.read(CONTEXT_FULL_LINE, now=HEARD_AT)
+    assert refusal is not None and refusal.reopens_at is not None and refusal.reopens_at > HEARD_AT

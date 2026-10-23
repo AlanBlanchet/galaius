@@ -145,9 +145,28 @@ UNSUPPORTED_RECHECK = 86400.0
 #: when it reopens (`usage_limit`), or its program said the login was lost (`login_lost`).
 PauseReason = Literal["usage_limit", "login_lost"]
 
-#: What a vendor refusal IS, as `classify` reads it: a fact about the account's quota, or about this
-#: login's access to that model. Each is recorded in its own place and for its own length.
-RefusalKind = Literal["quota_exceeded", "model_capability_unsupported"]
+#: The vendor refusing the CONVERSATION'S OWN SIZE, not the account: the prompt is past the model's
+#: window, or the compaction that would have cut it down did not go through. A fact about THIS run's
+#: context and about no model at all — every other model has the same window or a smaller one, so the
+#: ranked walk a quota refusal earns is exactly the wrong answer to it (2026-10-23, the owner's main
+#: conversation: « Prompt is too long · automatic compaction failed: You've hit your session limit ·
+#: resets 5:20pm » benched opus-5.5, opus-5 and haiku-5.5 an hour each and resumed the conversation on
+#: haiku, which Claude Code then refused to compact with — `{"model":"claude-haiku-5-5",
+#: "query_source":"compact"}`). Read BEFORE `REFUSAL`, whose words such a line also carries: what the
+#: vendor refused is the size, whatever pool it names in the same breath.
+CONTEXT_FULL = re.compile(
+    r"prompt is too long"
+    r"|automatic compaction failed"
+    r"|input length and `?max_tokens`? exceed"
+    r"|exceeds? the (?:maximum|model's) context"
+    r"|context (?:window|length) (?:is )?(?:full|exceeded)",
+    re.IGNORECASE,
+)
+
+#: What a vendor refusal IS, as `classify` reads it: a fact about the account's quota, about this
+#: login's access to that model, or about this conversation's own size. Each is recorded in its own
+#: place and for its own length — the last in no place at all, there being no model to remember it against.
+RefusalKind = Literal["quota_exceeded", "model_capability_unsupported", "context_exhausted"]
 
 #: Every key any of these vendors uses to say WHEN the exhausted period reopens, as an absolute
 #: instant. Verified against primary sources 2026-09-22 (`.github/research/
@@ -497,8 +516,25 @@ def record_refusal(provider: str, model: str | None, *, said: str = "", subscrip
         until = max(until, previous.until)
     entries[key] = Block(until=until, count=count, at=max(moment, previous.at) if previous else moment)
     _write(entries)
-    if refusal is not None and refusal.reopens_at is not None:
-        pause_login(provider, "usage_limit", subscription=subscription, said=said, now=moment, until=refusal.reopens_at + RESET_SLACK)
+    hold_named_window(provider, said, subscription=subscription, now=moment)
+    return until
+
+
+def hold_named_window(provider: str, said: str, *, subscription: UUID | None = None, now: float | None = None) -> float | None:
+    """Hold this LOGIN's new turns until the instant the vendor named its window reopens at
+    (`pause_login`), and return that instant; None when it named none.
+
+    A fact about the ACCOUNT, not about any model — so the hold is taken the same whether those
+    words refused a model's quota (`record_refusal`) or only the size of one conversation
+    (`CONTEXT_FULL`, whose line names the same pool in the same breath). It is also what the cut
+    run's automatic resume comes back on (`registry.limit_resume_at`).
+    """
+    moment = time.time() if now is None else now
+    refusal = Refusal.read(said, now=moment)
+    if refusal is None or refusal.reopens_at is None:
+        return None
+    until = refusal.reopens_at + RESET_SLACK
+    pause_login(provider, "usage_limit", subscription=subscription, said=said, now=moment, until=until)
     return until
 
 
@@ -524,11 +560,15 @@ def record_unsupported(provider: str, model: str | None, *, login: str, now: flo
 
 
 def classify(said: str) -> RefusalKind | None:
-    """What a vendor's words refuse, if anything, read in one place: this model for this LOGIN
-    (`UNSUPPORTED`, checked first — it is the narrower fact, and no cooldown length answers it), else
-    this account's quota or rate limit (`REFUSAL`). Every caller — the launch probe, the three late
-    sites a run's own stream reaches (`registry`) — asks here, so one vendor line can never be a
-    different refusal depending on who heard it."""
+    """What a vendor's words refuse, if anything, read in one place: this CONVERSATION'S SIZE
+    (`CONTEXT_FULL`, read first — its line also names the pool the refused call spent, and reading
+    that pool instead benches a model that never refused), then this model for this LOGIN
+    (`UNSUPPORTED` — the narrower fact, and no cooldown length answers it), else this account's quota
+    or rate limit (`REFUSAL`). Every caller — the launch probe, the three late sites a run's own
+    stream reaches (`registry`) — asks here, so one vendor line can never be a different refusal
+    depending on who heard it."""
+    if CONTEXT_FULL.search(said):
+        return "context_exhausted"
     if UNSUPPORTED.search(said):
         return "model_capability_unsupported"
     if REFUSAL.search(said):
@@ -540,9 +580,14 @@ def remember(kind: RefusalKind, provider: str, model: str | None, *, login: str,
              subscription: UUID | None = None, now: float | None = None) -> float:
     """Record what `classify` read against what it is a fact about, and return when this model may be
     asked again: the subscription for a quota (`record_refusal`), the login for a model it cannot run
-    (`record_unsupported`)."""
+    (`record_unsupported`), NOTHING for a conversation too long for its own window (`context_exhausted`:
+    its only durable fact is the hold on the login, `hold_named_window`)."""
     if kind == "model_capability_unsupported":
         return record_unsupported(provider, model, login=login, now=now)
+    if kind == "context_exhausted":
+        # No model to remember it against: every other one has the same window or a smaller one.
+        # Only the pool those words named is held, and only against the login (`hold_named_window`).
+        return hold_named_window(provider, said, subscription=subscription, now=now) or (time.time() if now is None else now)
     return record_refusal(provider, model, said=said, subscription=subscription, now=now)
 
 
@@ -610,14 +655,58 @@ def lifted_after(provider: str, since: float, *, subscription: UUID | None = Non
 
 
 def forget_login(provider: str, *, subscription: UUID | None = None, now: float | None = None) -> None:
-    """End now every block remembered against `provider`'s models under one login: his « Continuer » asks the vendor
-    again. Ended, never dropped: the answer that follows still notes the login's lift (`served`) for its other paused runs."""
+    """End now every block remembered against `provider`'s models under one login, and the usage hold the same
+    refusals put on the login itself (`pause_login`): his « Continuer » asks the vendor again, and a hold left
+    standing refuses that question before it is asked (2026-10-23 16:29, « en pause : limite d'usage claude
+    jusqu'à 17:21 » — his blocks were ended by hand and the hold still stopped his next conversation). A login
+    its program said was LOST is not lifted here: only signing in again, or an answer, brings that one back.
+
+    Blocks are ended, never dropped: the answer that follows still notes the login's lift (`served`) for its
+    other paused runs."""
     moment = time.time() if now is None else now
     entries = _read(moment)
     ended = {key: block.model_copy(update={"until": moment}) for key, block in entries.items()
              if _of_login(key, provider, subscription) and block.until > moment}
     if ended:
         _write({**entries, **ended})
+    login = _login(provider, subscription)
+    if "usage_limit" not in _read_paused(moment).get(login, {}):   # the lock only when there is a hold to lift
+        return
+    with _paused(moment) as paused:
+        paused.get(login, {}).pop("usage_limit", None)
+
+
+def _logins_path() -> Path:
+    return UserPaths.agents() / "quota-logins.json"
+
+
+def note_login(provider: str, login: str, *, subscription: UUID | None = None, now: float | None = None) -> bool:
+    """Record which ACCOUNT this PC is authenticated as for one provider login (`LoginStatus.login`: a digest
+    of what its own status command says, never a token), and return whether that changed.
+
+    What a vendor refuses is a fact about the account it refused, and the blocks are keyed on
+    (provider, model[, subscription]) — on who was logged in, never. So signing the login folder into
+    another account left another account's refusals answering his turns (2026-10-23: the Claude account
+    of `~/.claude` changed at 16:20 and his typed « continue » was still refused « every model 'claude'
+    can run for 'aa.intelligence' is in quota cooldown »). A CHANGE voids them exactly as his
+    « Continuer » does (`forget_login`); the first launch to authenticate has nothing to compare against
+    and voids nothing — a PC restart must not drop a live block.
+    """
+    moment = time.time() if now is None else now
+    if not login:
+        return False
+    key = _login(provider, subscription)
+    known: dict[str, str] = {}
+    with suppress(Exception):
+        raw = json.loads(_logins_path().read_text(encoding="utf-8"))
+        known = {str(name): str(value) for name, value in raw.items() if isinstance(value, str)}
+    if known.get(key) == login:
+        return False
+    changed = key in known
+    _write_json(_logins_path(), {**known, key: login})
+    if changed:
+        forget_login(provider, subscription=subscription, now=moment)
+    return changed
 
 
 class Pause(BaseModel):

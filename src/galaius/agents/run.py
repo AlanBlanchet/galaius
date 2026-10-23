@@ -313,9 +313,21 @@ def _apply_provider_constraint(
     return tuple(sorted(filtered, key=lambda c: c.provider != prefer))
 
 
+def _capability_of(model: str, candidates: Sequence[reg.LaunchCandidate]) -> float | None:
+    """The catalog's capability score for `model`, as the ranking that produced `candidates` names it;
+    None when the catalog carries no score for it, or does not know it at all.
+
+    Read through the candidate list first because a CLI's own name for a model is not the catalog's
+    (`claude-opus-5-5` is `anthropic/claude-opus-5.5`), and only a candidate carries both.
+    """
+    named = next((entry.catalog_id for entry in candidates if entry.model == model and entry.catalog_id), None)
+    row = Model.named(named) if named else Model.by_id(model)
+    return None if row is None else row.intelligence_score
+
+
 def resolve_continuable_model(
     model: str, env: dict[str, str], *, provider: AgentProvider, weights: str = "", role: str | None = None,
-    subscription: UUID | None = None,
+    subscription: UUID | None = None, floor: str | None = None,
 ) -> tuple[dict[str, str], str]:
     """Re-resolve a criterion for a RESUMED turn exactly like a fresh spawn does — walk the same
     ranked candidate list, skip anything still in quota cooldown — instead of replaying whatever
@@ -330,10 +342,23 @@ def resolve_continuable_model(
     ignores the cooldown the way a fresh spawn's own escape valve does (that valve exists so a
     first-time launch is never blocked by a stale note; a resume already failed once for this
     exact reason, so retrying the same dead model a second time is not the safer default here).
+
+    `floor` is the model the conversation is ON (its record's own): the walk never hands it to a
+    candidate the catalog scores BELOW that one. A resume may move UP — the criterion's own order
+    decides, and a bigger model holds what a smaller one held — but down it cannot, because what cut
+    the conversation is as often its SIZE as the account's pool, and the smaller model is then the one
+    certainty of failure (2026-10-23: a 1M-token conversation walked down to haiku-5.5, which Claude
+    Code refused to compact with at all). No `floor`, or no score for it, leaves the walk as it was.
     """
     candidates = rank_candidates(model, env, providers=[provider], weights=weights, role=role)
+    least = _capability_of(floor, candidates) if floor else None
     cooled: dict[str, float] = {}
+    smaller: dict[str, float] = {}
     for candidate in candidates:
+        score = _capability_of(candidate.model, candidates)
+        if least is not None and score is not None and score < least:
+            smaller[candidate.model] = score
+            continue
         until = quota.blocked_until(candidate.provider, candidate.model, subscription=subscription)
         if until is None:
             return resolve_model(candidate.model, env, provider=provider, weights=weights)
@@ -342,8 +367,11 @@ def resolve_continuable_model(
         f"{model_id} until {time.strftime('%H:%M:%S', time.localtime(until))}"
         for model_id, until in cooled.items()
     )
+    held = f"every model {provider.name!r} can run for {model!r} is in quota cooldown ({detail})" if cooled else ""
+    passed = (f"{', '.join(smaller)} passed over as smaller than the model this conversation runs on "
+              f"({floor}): a conversation is never moved down") if smaller else ""
     raise ModelUnavailable(
-        f"every model {provider.name!r} can run for {model!r} is in quota cooldown ({detail}) — "
+        f"{' — and '.join(part for part in (held, passed) if part)} — "
         "wait for one to clear and resend, or start a fresh run with agent_spawn, which can pick "
         "a different provider"
     )
@@ -906,7 +934,7 @@ class ResumeLaunch(AheadLaunch):
             if not criterion:
                 raise ModelUnavailable(f"No model criterion for {run.agent!r}")
             routed, model = resolve_continuable_model(criterion, environment, provider=provider, weights=policy.weights_for(run.agent), role=run.agent,
-                                                      subscription=run.subscription_id)
+                                                      subscription=run.subscription_id, floor=run.model)
             reasoning = policy.reasoning_for(run.agent, f"{provider.name}/{model}" if model else None)
         coarse_accepted = policy.accepts_coarse_tool_policy(run.agent, provider.name) if run.agent else False
         provider.validate_tool_policy(policy.tools_for(run.agent), run.denied_tools, coarse_accepted=coarse_accepted)
@@ -1577,7 +1605,11 @@ async def run_agent(
         )
         login = auth_cache.get((candidate_provider.name, route_key), (None, ""))[1]
         # Its login as just checked (`_unavailable`): signed in ends a lost-login pause, signed out pauses its resumed turns.
+        # Which ACCOUNT it is signed in as is noted here too: another one than the last launch saw voids what the
+        # vendor refused the old one (`quota.note_login` — the walk's own cooled set was read before this loop, so a
+        # change noticed here clears from the next candidate on, and wholly for every later launch).
         if reason is None:
+            quota.note_login(candidate.provider, login, subscription=candidate_pin_id)
             quota.login_back(candidate.provider, subscription=candidate_pin_id)
         elif reason.code == "unauthenticated":
             quota.pause_login(candidate.provider, "login_lost", subscription=candidate_pin_id, said=reason.message)

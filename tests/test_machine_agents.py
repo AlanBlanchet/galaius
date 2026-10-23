@@ -28,9 +28,14 @@ from galaius.agents.subscriptions import RunSubscription, Subscription, Subscrip
 from galaius.machine_agents import LogRing, MachineAgents, MachineSessions, UnderWay, WebFull, WebRun, WebRuns, interaction_digest, redact
 from galaius.fence import FenceSpec
 from galaius.config import UserConfig
+from galaius import machines
 from galaius.machines import MachineConfig, MachineRunner
+from galaius.agents import admission
+from galaius.agents.policy import PolicyError
+from galaius.agents.providers import UnsupportedToolPolicy
+from galaius.agents.subscriptions import SubscriptionCapped
 from galaius.machine_workspaces import KeptJob, MachineWorkspaces, WorkspaceJobs
-from galaius.workspace_git import CloneFailure, Git
+from galaius.workspace_git import CloneFailure, Git, WorkspaceRefused
 from galaius.workspace_copy import WorkspaceTransfers
 from galaius.agents.providers import PROJECT_SETTINGS_OFF, UNTRUSTED_FOLDERS, ClaudeCodeProvider
 from galaius.place_reviews import PlaceReviews
@@ -1399,3 +1404,27 @@ def test_a_pasted_code_reaches_its_sign_in_through_the_web_request(base: Path, t
     attempt, subscription, sealed = uuid4(), uuid4(), "Q" * 342 + "=="
     answer = _answer(agents, _request("sign_in_code", provider="claude", subscription_id=str(subscription), attempt=str(attempt), sealed=sealed))
     assert (handed, answer.providers[0].step) == ([("claude", subscription, attempt, sealed)], "signing_in")
+
+
+# ── Every refusal a launch raises is one the machine channel ANSWERS ───────────────────────────
+# 2026-10-23 16:29: his new conversation was sent to this PC and the server recorded
+# `held_code=start_unanswered` — « n'a pas confirmé le lancement ». The PC had answered nothing
+# because `run_agent` raised `admission.Paused` (« en pause : limite d'usage claude jusqu'à 17:21 »)
+# and that class derived from bare `Exception`, outside the refusals `machines.py` turns into an
+# answer. An unanswered start is the worst of the two: the server cannot tell a refusal from a
+# frozen PC, and he is told to look at the list instead of being told why.
+
+
+@pytest.mark.parametrize("refusal", [
+    admission.Paused,            # every login this spawn could run on is held
+    SubscriptionCapped,          # the run's own subscription is at one of HIS caps
+    SubscriptionRefused,         # its subscription is not signed in here
+    ModelUnavailable,            # no ranked candidate can start on this PC
+    UnsupportedToolPolicy,       # this CLI cannot express the role's tool restrictions
+    PolicyError,                 # the agent policy itself refuses it
+    WorkspaceRefused, WebFull, UnderWay,
+])
+def test_every_refusal_a_launch_raises_is_one_the_machine_channel_answers(refusal):
+    """`machines.py` answers an agent request it could not perform by catching this one tuple; a
+    refusal outside it leaves the asker with no answer at all."""
+    assert issubclass(refusal, machines.ANSWERED_REFUSALS)

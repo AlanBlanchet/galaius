@@ -94,9 +94,14 @@ class Hold(BaseModel):
                 + (f", reprise sous {memory.release_percent} %" if promise else ""))
 
 
-class Paused(Exception):
+class Paused(PermissionError):
     """A spawn none of whose candidates may start now (`run.run_agent`): each login it could run on is held (`holds`).
-    It waits in line, said why, and starts once one of them lifts (`SpawnLine.launch`)."""
+    It waits in line, said why, and starts once one of them lifts (`SpawnLine.launch`).
+
+    A refusal of the request for now, so a `PermissionError` like every other refusal the machine
+    channel answers the web with (`machines.ANSWERED_REFUSALS`): raised out of a start nobody queued,
+    bare `Exception` left the server waiting and recording « the PC never confirmed the launch »
+    instead of saying which login is held until when (2026-10-23 16:29)."""
 
     def __init__(self, holds: tuple[Hold, ...]) -> None:
         super().__init__("; ".join(hold.line(promise=False) for hold in holds))
