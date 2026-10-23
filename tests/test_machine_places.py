@@ -18,7 +18,7 @@ from pydantic import ValidationError
 
 from galaius_core import MACHINE_AGENT_REQUESTS, MachineFence
 from galaius_core.wire import internals
-from galaius.machines import OWN_FAULT, MachineConfig, MachineRunner, said_of
+from galaius.machines import OWN_FAULT, MachineConfig, MachineRunner, own_fault, said_of
 from galaius.place_reviews import PlaceReviews
 
 pytestmark = pytest.mark.usefixtures("directory_backend")
@@ -149,7 +149,16 @@ def test_a_fault_of_this_pcs_own_making_never_travels_to_the_web() -> None:
     try:
         MachineFence(platform="linux", available=False, on=False, reason="x" * 401)
     except ValidationError as error:
-        assert said_of(error) == OWN_FAULT and not internals(said_of(error))
+        # What it was DOING and the KIND of fault — the web reader is a continent from this PC and could act on
+        # neither « son journal, sur ce PC, dit pourquoi » alone (product-critic 2026-10-23, Lenovo run fe4bf2c5).
+        said = said_of(error, doing="starting or driving an agent")
+        assert said == own_fault("starting or driving an agent", "its answer did not fit what Galaius expects")
+        assert said.startswith(OWN_FAULT) and not internals(said)
+        # No field, no class, no file, no path of the dump; short enough for one line of a status.
+        assert not {"MachineFence", "reason", "string_too_long", "validation"} & set(said.split()) and len(said) < 160
+        # A traceback or a bare `KeyError` is the other kind: its code failed, said so, its text left in the log.
+        gone = said_of(KeyError("token"), doing="reading its data")
+        assert gone == own_fault("reading its data", "its own code failed") and not internals(gone)
     assert said_of(PermissionError("file query targets another machine")) == "file query targets another machine"
     assert said_of(FileNotFoundError(2, "No such file or directory"), "docs/report.md") == "docs/report.md: No such file or directory"
     timed_out = said_of(subprocess.TimeoutExpired(["bwrap", "--ro-bind", "/srv/private-folder"], 5.0))

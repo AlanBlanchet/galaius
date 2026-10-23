@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Annotated, ClassVar, Literal, Self
 
 from galaius_core import AGENT_IMAGES_MAX, MEDIA_KEY, AgentRevisionRef
+from galaius_core.wire import readable
 from pydantic import BaseModel, ConfigDict, Field
 
 from galaius.agents import quota
@@ -720,6 +721,22 @@ def _classify_attempt(item: QueueItem, attempt_events: list[AgentEvent]) -> tupl
     return "uncertain", "resumed turn acceptance was not confirmed; resend explicitly"
 
 
+def _said_line(said: AgentEvent | None) -> str:
+    """An attempt's own last words as one line a reader can act on: the text of the event it ENDED on (its `error`, or
+    the `done` carrying its result), newlines folded, text written for a program dropped (`readable`), credentials
+    redacted and clipped (`_safe_process_detail`). "" when that event said nothing, or when the attempt ended on no
+    event of its own — the exit code and the child's stderr are then all there is.
+
+    A turn that died saying « Prompt is too long · automatic compaction failed » recorded « resumed provider exited 1 »
+    alone, and a page reading that said the tool had stopped at once without a word (product-critic 2026-10-23, ~25
+    items): what the provider itself said last outranks the number its CLI exited with.
+    """
+    if said is None or said.kind not in ("error", "done"):
+        return ""
+    words = readable(" ".join((said.text or "").split()))
+    return _safe_process_detail(words) if words else ""
+
+
 def settle(run_id: str, item: QueueItem, code: int) -> None:
     """Record how the attempt `item` ended once its provider child exited with `code`: replied, failed or uncertain.
     One whose CLI exited non-zero is replied when its turn answered all the same; sent once more (`RETRIES`) when it
@@ -728,13 +745,14 @@ def settle(run_id: str, item: QueueItem, code: int) -> None:
     events = _attempt_events(run_id, item)
     attempt_state, attempt_error = _classify_attempt(item, events)
     if code and attempt_state != "replied":
-        detail = reg.read_stderr(run_id, 500)
-        error = f"resumed provider exited {code}"
-        if detail:
-            error += f": {_safe_process_detail(detail)}"
-        # The provider's own last word in this attempt (a quota refusal, a vendor error) outranks the exit code; a child
-        # that died saying nothing gets the exit code and its stderr as the run's last line.
+        # The provider's own last word in this attempt (a quota refusal, a vendor error, a compaction that failed)
+        # outranks the exit code; a child that died saying nothing gets the exit code and its stderr as the run's last line.
         said = events[-1] if events else None
+        error = f"resumed provider exited {code}"
+        if words := _said_line(said):
+            error += f": {words}"
+        elif detail := reg.read_stderr(run_id, 500):
+            error += f": {_safe_process_detail(detail)}"
         stopped = code in (-signal.SIGTERM, 128 + signal.SIGTERM)
         # A turn that answered, or acted (a commit, a message, a deploy) before it died, is never sent again: its
         # tool calls would run twice.

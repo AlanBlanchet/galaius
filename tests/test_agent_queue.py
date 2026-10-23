@@ -424,6 +424,44 @@ def test_a_message_is_sent_once_more_only_when_its_turn_died_before_answering(mo
     assert item.attempts == launched - 1 and delivery.state == "queued"
 
 
+def test_a_failed_resume_records_the_providers_own_last_words(monkeypatch):
+    """« resumed provider exited 1 » alone, 25 items of it, while the turns themselves ended « Prompt is too long ·
+    automatic compaction failed » — a page reading the number said the tool had stopped at once saying nothing
+    (product-critic 2026-10-23). The item now carries what the provider said LAST; its stderr only when it said
+    nothing at all, and nothing written for a program ever (`readable`)."""
+    words = "Prompt is too long \u00b7 automatic compaction failed"
+    script = "import sys\nsys.stderr.write('api_key=test-secret-value\\n')\n" + _stream({**_DONE, "is_error": True, "result": words}, code=1)
+
+    class Provider(_Provider):
+        def resume_command(self, session_id, message, **kwargs):
+            self.messages.append(said(message))
+            return [sys.executable, "-c", script]
+
+    _setup(monkeypatch, Provider())
+    messaging.deliver_message("r1", "continue", sender="operator")
+    agent_queue.dispatch("r1")
+
+    [item] = agent_queue.items("r1")
+    assert item.state == "failed"
+    assert item.error == f"resumed provider exited 1: {words}"
+    assert "test-secret-value" not in item.error
+
+
+def test_a_resume_that_died_saying_nothing_still_records_its_stderr(monkeypatch):
+    """The fallback the words above do not replace: a child that wrote no event of its own."""
+    class Provider(_Provider):
+        def resume_command(self, session_id, message, **kwargs):
+            self.messages.append(said(message))
+            return [sys.executable, "-c", "import sys; sys.stderr.write('claude: command not found\\n'); sys.exit(127)"]
+
+    _setup(monkeypatch, Provider())
+    messaging.deliver_message("r1", "continue", sender="operator")
+    agent_queue.dispatch("r1")
+
+    [item] = agent_queue.items("r1")
+    assert item.state == "failed" and item.error.startswith("resumed provider exited 127: claude: command not found")
+
+
 def test_two_runs_queued_at_once_are_drained_by_one_dispatcher_process(monkeypatch, request):
     """Each message hands its run to the PC's one dispatcher (started once), which drains every run handed to it, each
     in a thread of its own, then ends once nothing is left."""
