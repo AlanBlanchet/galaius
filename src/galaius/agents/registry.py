@@ -1234,6 +1234,17 @@ TAKEOVER_WINDOW = 3600.0
 _REFUSABLE_ENDINGS = TERMINAL_STATUSES - {"done"}
 
 
+def task_taken(run_id: str, task: str) -> AgentRun | None:
+    """`run_id` took `task` as its next turn (`spawn_line.Spawn.hand_over`): from now on its record says THAT
+    task, never only the one it was first launched with. Everything that reads a run's task reads the current
+    one — its row on the web (`machine_agents`), the card its own children start on (`relations.card`), the
+    brief a compaction hands its agent back (`galaius.brief_hook`), and a relaunch of its brief elsewhere
+    (`spawn_line.Spawn.of_run`). Returns the record as it now stands, None when there is none.
+    """
+    with record_lock(run_id):
+        return _merge_record_locked(run_id, {"task": task}) if get_run(run_id) is not None else None
+
+
 def take_over_refused(run: AgentRun, *, parent: str | None = None, at: float | None = None,
                       window: float = TAKEOVER_WINDOW) -> str | None:
     """Record `run` as the replacement of its role's newest earlier launch under `parent` (its own parent run when None),

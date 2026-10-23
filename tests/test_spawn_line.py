@@ -437,3 +437,79 @@ def test_a_spawn_from_a_runs_process_never_leaves_its_tree(monkeypatch, capsys, 
         assert refused.value.code == 2 and "caller" in capsys.readouterr().err
     else:
         assert Spawn.asked(task="review it", cwd=".", agent="code-reviewer", parent_run_id="").parent_run_id is None
+
+
+def test_the_run_that_takes_a_spawns_task_records_THAT_task(at_work, monkeypatch, tmp_path):
+    """A spawn handed to the agent already holding its role in the conversation leaves that run's
+    record saying what it was FIRST launched with — weeks ago, for a long-lived coordinator or
+    librarian. Everything that reads a run's task then reads the wrong one: its row on the web
+    (`machine_agents`), the card its own children start on (`relations`), and the brief a compaction
+    hands its agent back as « the task your run was launched with » (`galaius.brief_hook`).
+    2026-10-23: a spawn's task went to the librarian of the conversation and its recorded task was
+    still a brief it had finished on 2026-10-06."""
+    from galaius_core import AgentRevisionRef
+
+    from galaius.agents.policy import Policy
+
+    monkeypatch.setattr(spawn_line, "load_policy",
+                        lambda: Policy(agents={"backend-engineer": "m"}, providers={"claude": True}, defaults={"touch": "read_only"}))
+    current = AgentRevisionRef(id=uuid.UUID(int=1), revision=uuid.UUID(int=3))
+    monkeypatch.setattr(spawn_line, "resolve_role", lambda policy, agent, **_: (policy, agent, current))
+    monkeypatch.setattr(spawn_line.messaging, "deliver_message",
+                        lambda run_id, task, **_: spawn_line.messaging.Delivery(state="queued", text="Queued.", run_id=run_id, queue_id="q"))
+    monkeypatch.setattr(spawn_line.messaging, "wait_for_start", lambda delivery: None)
+    monkeypatch.setattr(spawn_line.messaging, "read_by_agent", lambda delivery: False)
+    _ended("lead", agent="main", session_id="s1", parent_run_id=None)
+    _ended("eng1", agent="backend-engineer", session_id="s1", parent_run_id="lead", cwd=str(tmp_path),
+           model="m", agent_ref=current, permission_mode="read_only", task="the task of a fortnight ago")
+
+    spawn = Spawn(task="add the endpoint", cwd=str(tmp_path), agent="backend-engineer", parent_run_id="lead", session_id="s1")
+    handover = spawn.hand_over()
+
+    assert isinstance(handover, spawn_line.Continued) and handover.run.run_id == "eng1"
+    assert reg.get_run("eng1").task == "add the endpoint"
+    assert handover.run.task == "add the endpoint"
+
+
+def test_a_child_that_never_got_its_task_is_ended_instead_of_run(monkeypatch, tmp_path):
+    """Handing a started-ahead child its task can fail on its stdin, and the failure was swallowed: the
+    child then ran as if briefed — the role prompt and its card, no task — burning a whole run to answer
+    « no task given ». Its launch fails instead, so its caller spawns again."""
+    from galaius.agents.providers import ClaudeCodeProvider
+    from galaius.agents.run import ChildLaunch, TaskNotHanded
+
+    class _Deaf:
+        """A child whose stdin is already gone."""
+
+        def __init__(self) -> None:
+            self.pid, self.returncode, self.killed = 4242, None, False
+            self.stdin = self
+
+        def write(self, _data: bytes) -> None:
+            raise BrokenPipeError(32, "Broken pipe")
+
+        async def drain(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+        def kill(self) -> None:
+            self.killed = True
+
+        async def wait(self) -> int:
+            self.returncode = -9
+            return -9
+
+    deaf = _Deaf()
+    launch = ChildLaunch(provider=ClaudeCodeProvider(), cwd=str(tmp_path), environment={}, arguments={},
+                         meshed=False, role="backend-engineer")
+    monkeypatch.setattr(ChildLaunch, "_ahead", lambda self, run_id, session: _answer(deaf))
+
+    with pytest.raises(TaskNotHanded):
+        asyncio.run(launch.launch("r1", "r1", "do the thing"))
+    assert deaf.killed
+
+
+async def _answer(value):
+    return value

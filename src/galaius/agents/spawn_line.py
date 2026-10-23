@@ -341,6 +341,11 @@ class Spawn(BaseModel):
         return self.task if Path(run.cwd or ".").resolve() == Path(self.cwd).resolve() else \
             f"Work in {self.cwd} for this task (your session started in {run.cwd}).\n\n{self.task}"
 
+    def _continued(self, run: reg.AgentRun, delivery: messaging.Delivery, doubt: str = "") -> "Continued":
+        """`run` took this spawn's task as its next turn: its record says THAT task from now on
+        (`registry.task_taken`) — a reader must never be shown the task it was first launched with."""
+        return Continued(run=reg.task_taken(run.run_id, self.task) or run, delivery=delivery, doubt=doubt)
+
     def hand_over(self) -> Continued | StartNew:
         """Give the task to the agent of its conversation already holding its role, between turns, as its next turn
         (`messaging.deliver_message`: its own session, everything it did still in context) instead of starting
@@ -362,7 +367,7 @@ class Spawn(BaseModel):
             delivery = messaging.deliver_message(run.run_id, self._brief(run), only_if_idle=False, turn=turn,
                                                  for_run=self.for_run)
             if delivery.state != "error":
-                return Continued(run=run, delivery=delivery)
+                return self._continued(run, delivery)
             why.append(f"{run.run_id[:8]} {delivery.text}")
         fit = [run for run in fit if not self._busy(run)]
         for run in sorted(fit, key=lambda run: (run.parent_run_id == self.parent_run_id, run.finished_at or run.started_at), reverse=True):
@@ -371,7 +376,7 @@ class Spawn(BaseModel):
             refused = delivery.text if delivery.state == "error" else messaging.wait_for_start(delivery)
             if refused is None or messaging.read_by_agent(delivery):
                 reg.take_over_refused(run, parent=self.parent_run_id, at=time.time())  # the launch of its role refused before it
-                return Continued(run=run, delivery=delivery, doubt=refused or "")
+                return self._continued(run, delivery, doubt=refused or "")
             why.append(f"{run.run_id[:8]} {refused}")
         return StartNew(why=f"{role} already here, not continued: {'; '.join(why)}" if peers else "")
 

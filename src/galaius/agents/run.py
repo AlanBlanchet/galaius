@@ -487,6 +487,15 @@ def check_provider_active(provider: str) -> None:
         )
 
 
+class TaskNotHanded(RuntimeError):
+    """A child started before its task (`AgentProvider.starts_ahead`) could not be given it: its stdin was gone.
+
+    Raised instead of swallowed, and the child is ended first. A child that keeps running having heard only its
+    role prompt and its card answers « no task given » — one whole run spent, its caller told nothing and shown
+    a record whose task field looks right (2026-10-23).
+    """
+
+
 class ModelUnavailable(RuntimeError):
     """A criterion nothing currently clears. Raised rather than falling back: silently resolving
     to some other model is worse than none — it looks like it worked."""
@@ -825,6 +834,19 @@ class AheadLaunch(BaseModel):
             if not later:
                 stderr.close()
 
+    async def hand_or_end(self, process: asyncio.subprocess.Process, text: str, images: tuple[Path, ...] = ()) -> None:
+        """`hand`, and END the child when its stdin is gone (`TaskNotHanded`): a child that heard no task is never
+        left running — it answers « no task given » and spends a whole run while its caller is told nothing."""
+        try:
+            await self.hand(process, text, images)
+        except (BrokenPipeError, ConnectionResetError) as error:
+            with suppress(ProcessLookupError):
+                process.kill()
+            with suppress(Exception):
+                await process.wait()
+            raise TaskNotHanded(f"{self.provider.name} child {process.pid} could not be given its task ({error}); "
+                                "it was ended — spawn it again") from error
+
     async def hand(self, process: asyncio.subprocess.Process, text: str, images: tuple[Path, ...] = ()) -> None:
         """Give a child started ahead what it is to do: its first and only stdin message (with `images`, for a CLI
         whose stdin message carries them: `AgentProvider.stdin_images`)."""
@@ -874,10 +896,7 @@ class ChildLaunch(AheadLaunch):
                     process.stdin.close()
             return process
         process = await self._ahead(run_id, session)
-        try:
-            await self.hand(process, task)
-        except (BrokenPipeError, ConnectionResetError):
-            pass  # it ended before reading its task: its stream and exit status say how
+        await self.hand_or_end(process, task)
         return process
 
     async def _ahead(self, run_id: str, session: str) -> asyncio.subprocess.Process:
@@ -1731,7 +1750,7 @@ async def run_agent(
                 candidate_process = held.process
         if candidate_process is None and stdin_images:
             candidate_process = await launch.start_ahead(run_id, vendor_session)
-            await launch.hand(candidate_process, brief_as(run_id), kept)
+            await launch.hand_or_end(candidate_process, brief_as(run_id), kept)
         if candidate_process is None:
             candidate_process = await launch.launch(run_id, vendor_session, brief_as(run_id))
         # The child resolves its owning conversation from this run's record, so the record must
