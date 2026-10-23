@@ -1234,9 +1234,20 @@ def test_a_long_stop_hook_block_keeps_its_verdict():
     (None, "Failed to authenticate: invalid x-api-key", None),  # a key refused says no status here: its own failure
     (429, "Rate limited, retry shortly", None),  # a short rate limit is no usage window
     (429, "You've hit your weekly limit · resets 9pm (Europe/Paris)", "usage_limit"),
+    # Its API was never reached: the vendor said nothing about the turn, so the run is cut, not failed, and comes back
+    # by itself (`registry.network_resume_at`). The first line is verbatim from the runs the owner lost on 22-23 Oct.
+    (None, "API Error: Can't reach the API server — check your internet or DNS (ENOTFOUND)", "network_lost"),
+    (None, "TypeError: fetch failed", "network_lost"),
+    (None, "connect ECONNREFUSED 160.79.104.10:443", "network_lost"),
+    (None, "getaddrinfo EAI_AGAIN api.anthropic.com", "network_lost"),
+    (None, "You've hit your session limit · resets 5:20pm (Europe/Paris)\nENOTFOUND", "usage_limit"),  # answered: its window spoke
+    (None, "Request timed out after 600s", None),  # a slow or unanswered request may have reached the model: its own failure
+    (None, "Error: the build failed", None),
 ])
 def test_a_failed_turn_says_its_cut_by_its_api_status_else_its_words(status, said, cut):
     assert PROVIDERS["claude"].cut_of(said, status) == cut
+    if cut == "network_lost":
+        assert PROVIDERS["codex"].cut_of(said, status) == cut, "an unreachable API reads the same on every CLI"
 
 
 @pytest.mark.parametrize(("provider", "given", "wait", "expected"), [

@@ -2368,3 +2368,28 @@ def test_a_run_keeps_the_size_its_last_compaction_left_once_its_context_grows_ba
         reg.append_event("r1", event)
     assert (reg.get_run("r1").compacted_to, reg.get_run("r1").context_tokens) == (15_000, 180_000)
     assert reg.StreamDigest.of("events", reg.read_events("r1"), "r1").compacted_to == 15_000
+
+
+#: What Claude Code 2.1.288 ends a turn on when it never reached the vendor, verbatim: 3 of 17 runs recorded on one
+#: computer over 22-23 Oct 2026 died on this line, none of them retried.
+_DNS_BLIP = "API Error: Can't reach the API server — check your internet or DNS (ENOTFOUND)"
+
+
+def test_a_run_a_network_failure_cut_comes_back_by_itself_until_its_backoff_runs_out(resuming):
+    """A turn ending on `_DNS_BLIP` used to end its run. The vendor
+    never saw that turn, so it is a CUT, not the run's answer: the run comes back by itself, each try
+    `NETWORK_RESUME_BACKOFF` further from its end, and only a failure outlasting the whole backoff is left to a person
+    — the shared loop guard (`RESUME_GRACE`) must not read the backoff as a resume that did not come back."""
+    run = _ended_on("net1", _DNS_BLIP, pid=501)
+    assert reg.cut_cause(run) == "network_lost"
+    ended_at = run.finished_at
+    for pause in reg.NETWORK_RESUME_BACKOFF:
+        written = reg.schedule_resumes(now=ended_at + 1)
+        assert [(value.run_id, value.resumes, value.resume_at) for value, _ in written] == [("net1", "itself", ended_at + pause)]
+        assert reg.claim_resume("net1", now=ended_at + pause - 1) is None, "never before its pause has passed"
+        assert reg.claim_resume("net1", now=ended_at + pause) is not None
+        ended_at += pause + 2  # the blip is still on: its resumed turn fails on the same words
+        reg._update_fields("net1", {"finished_at": ended_at})
+    assert reg.schedule_resumes(now=ended_at + 1) == [], "a failure longer than the whole backoff is left to a person"
+    assert reg.get_run("net1").resume_at is None and reg.claim_resume("net1", now=ended_at + 10**4) is None
+    assert reg.get_run("net1").resumed_cuts == len(reg.NETWORK_RESUME_BACKOFF)

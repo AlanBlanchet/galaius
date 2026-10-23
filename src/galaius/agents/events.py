@@ -51,6 +51,9 @@ class RunCut(StrEnum):
     login_lost = "login_lost"
     #: Its provider's usage window refused the turn: back at the reset it named.
     usage_limit = "usage_limit"
+    #: Its program could not reach its provider's API at all (DNS, connect, the connection dropped): the vendor said
+    #: nothing about the turn, so this is no answer — back after a bounded backoff (`registry.network_resume_at`).
+    network_lost = "network_lost"
 
 
 #: Kinds that say nothing about what the AGENT did — the harness's own bookkeeping, kept in the

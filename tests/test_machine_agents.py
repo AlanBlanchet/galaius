@@ -1428,3 +1428,15 @@ def test_every_refusal_a_launch_raises_is_one_the_machine_channel_answers(refusa
     """`machines.py` answers an agent request it could not perform by catching this one tuple; a
     refusal outside it leaves the asker with no answer at all."""
     assert issubclass(refusal, machines.ANSWERED_REFUSALS)
+
+
+def test_every_cut_has_a_resume_sender_and_words():
+    """`MachineAgents.resume_paused` reads this map by the cut's own name: a cut missing a row raises `KeyError`
+    mid-pass, which would leave every OTHER run that pass claimed unresumed with nothing said: swept, not read once,
+    because its sibling (`machines.ANSWERED_REFUSALS`) failed exactly that way."""
+    from typing import get_args
+
+    from galaius.machine_agents import _RESUMED_AFTER
+
+    assert set(_RESUMED_AFTER) == set(get_args(reg.CutCause))
+    assert all(sender in reg.SYSTEM_SENDERS and words for sender, words in _RESUMED_AFTER.values())

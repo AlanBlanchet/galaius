@@ -75,6 +75,11 @@ class CatalogConnection(BaseModel):
     #: message reads the catalog and the tool list several times (policy, revision pin, model
     #: ranking). Also how long a rule changed on the web can go unseen by a process that read it.
     REUSE_SECONDS: ClassVar[float] = 5.0
+    #: How long each retry of one catalog request waits before it is sent again (`_request_retried`), a try having
+    #: reached no server at all. Its length bounds the retries; `connect`'s own timeout bounds each try. Short on
+    #: purpose: a start and a message both read the catalog, and what outlasts this is ridden out by the snapshot
+    #: already held (`AgentCatalog.refresh`, `AgentCatalog.at_revision`) rather than by waiting here.
+    RETRY_BACKOFF: ClassVar[tuple[float, ...]] = (0.3, 1.0, 3.0)
     _recent: ClassVar[dict[tuple[str, Any, UUID], tuple[float, Any]]] = {}
     #: Set inside `renewing`: every `recent` read asks the server again, whatever its age.
     _renewing: ClassVar[ContextVar[bool]] = ContextVar("catalog_renewing", default=False)
@@ -339,16 +344,28 @@ class CatalogConnection(BaseModel):
         """GET `path`, or None when the server answers that its entity is still `etag` (304)."""
         return self._send(client, "GET", path, etag=etag)
 
+    def _request_retried(self, client: httpx.Client, method: Literal["GET", "POST"], path: str, *, etag: str | None = None) -> bytes | None:
+        """`_request_once`, sent again after each `RETRY_BACKOFF` pause while it reaches no server at all
+        (`httpx.TransportError`: DNS, connect, or the answer dropped — a resolver blinking, a service restarting). The
+        last try's failure is the caller's: one holding a validated snapshot of what it asked for falls back to it then
+        (`AgentCatalog.refresh`, `AgentCatalog.at_revision`), so no blip of seconds reaches a run or a message."""
+        for pause in self.RETRY_BACKOFF:
+            try:
+                return self._request_once(client, method, path, etag=etag)
+            except httpx.TransportError:
+                time.sleep(pause)
+        return self._request_once(client, method, path, etag=etag)
+
     def _send(self, client: httpx.Client, method: Literal["GET", "POST"], path: str, *, etag: str | None) -> bytes | None:
         try:
-            return self._request_once(client, method, path, etag=etag)
+            return self._request_retried(client, method, path, etag=etag)
         except _Refused as refused:
             status = refused.status
             # A cached preview session can stop being honoured (expired, signed out elsewhere);
             # the loopback preview grants a fresh one, so ask once more before calling it a denial.
             if self.auth_mode == "preview" and path != _PREVIEW_SIGN_IN and self._sign_in_again(client):
                 try:
-                    return self._request_once(client, method, path, etag=etag)
+                    return self._request_retried(client, method, path, etag=etag)
                 except _Refused as again:
                     status = again.status
             self.invalidate_access(client)

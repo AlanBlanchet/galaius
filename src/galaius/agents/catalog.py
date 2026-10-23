@@ -5,7 +5,7 @@ import re
 import sys
 from datetime import UTC, datetime
 from pathlib import Path, PurePath, PurePosixPath
-from typing import Self
+from typing import ClassVar, Self
 from uuid import UUID
 
 import httpx
@@ -60,6 +60,14 @@ class AgentInstructionSet(BaseModel):
 
     def prompt(self, reference: PromptExecutionRef) -> PromptRevision:
         return self.find_prompt(self.prompts, reference)
+
+    def narrowed(self) -> Self:
+        """This set carrying only the instruction revisions its own agent references: a head snapshot hands over every
+        role's prompts, so a copy kept per revision (`AgentCatalog.pin_path`) would keep the whole catalog once per
+        agent."""
+        agent = self.agent
+        wanted = dict.fromkeys((agent.prompt, *agent.paradigms, *agent.skill_paradigms))
+        return type(self)(agent=agent, prompts=tuple(self.prompt(reference) for reference in wanted))
 
     @model_validator(mode="after")
     def complete(self) -> Self:
@@ -162,22 +170,67 @@ class CatalogSnapshot(AgentCatalogSnapshot):
         return "\n\n".join(fragments)
 
 
+#: How many revisions of ONE agent this computer keeps as pins (`AgentCatalog.pin_path`), the most recently read first:
+#: a run and its queued messages ask for the revision they were launched at, never for a whole history of them.
+PINS_PER_AGENT = 8
 #: How the tool lists of a cached catalog read: 2 since galaius-core 0.58 (`AgentRevision.harness_tools` [] = no tool, a
 #: left-out list = every tool). A cache file with no mark was written when [] meant every tool: never read again.
 TOOL_LISTS = 2
 
 
-class AgentCatalog(BaseModel):
-    """One connection-bound snapshot; refresh before use, never merge with local authoring."""
+class CachedRecord(BaseModel):
+    """What this computer keeps of a server answer in one private file, to work from while the service cannot be
+    reached: read back only when this galaius reads its content the way it was written (`TOOL_LISTS`), bounded by the
+    size a catalog answer may have, and tagged with the connection and access it was granted under — a caller
+    compares both before using it, so a revoked access is never worked around by a file."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     connection: CatalogConnection
-    snapshot: CatalogSnapshot
     fetched_at: datetime
     access_generation: UUID = UUID(int=0)
-    #: `TOOL_LISTS` when written; a cache file without it predates it (`written_now`).
+    #: `TOOL_LISTS` when written; a file without it predates it (`written_now`).
     tool_lists: int = TOOL_LISTS
+    #: What one of these files may weigh: the catalog response limit (`CatalogConnection._request_once`).
+    LIMIT: ClassVar[int] = 16 * 1024 * 1024
+
+    @staticmethod
+    def written_now(payload: bytes) -> bool:
+        """A file whose tool lists read as this galaius reads them (`TOOL_LISTS`)."""
+        try:
+            return json.loads(payload).get("tool_lists") == TOOL_LISTS
+        except (ValueError, AttributeError):
+            return False
+
+    @classmethod
+    def cached(cls, target: Path) -> Self | None:
+        """What was last written to `target`, None when there is none this galaius reads."""
+        try:
+            with target.open("rb") as source:
+                payload = source.read(cls.LIMIT + 1)
+            if len(payload) > cls.LIMIT:
+                return None
+            return cls.model_validate_json(payload) if cls.written_now(payload) else None
+        except (OSError, ValueError):
+            return None
+
+    def usable_by(self, connection: CatalogConnection, generation: UUID) -> bool:
+        """This file may be worked from by a reader on `connection` holding access `generation`."""
+        return self.connection == connection and self.access_generation == generation
+
+
+class PinnedRevision(CachedRecord):
+    """One exact agent revision as the server answered for it, kept for launching and messaging it again while the
+    service cannot be reached (`AgentCatalog.pin_path`). Its `AgentInstructionSet` validates every instruction
+    reference again on read, so a truncated or edited file is no launch."""
+
+    instructions: AgentInstructionSet
+
+
+class AgentCatalog(CachedRecord):
+    """One connection-bound snapshot; refresh before use, never merge with local authoring."""
+
+    snapshot: CatalogSnapshot
     stale: bool = Field(default=False, exclude=True)
     selection: AgentInstructionSet | None = Field(default=None, exclude=True)
 
@@ -213,8 +266,68 @@ class AgentCatalog(BaseModel):
         return CatalogConnection.path().with_name("agent-catalog-cache.json")
 
     @classmethod
+    def pins_path(cls) -> Path:
+        """Where every exact revision this computer has been answered for is kept (`pin_path`), beside the head
+        cache: the same access is granted for all of them, so one sweep drops them together."""
+        return cls.cache_path().parent / "agent-catalog-pins"
+
+    @classmethod
+    def pin_path(cls, reference: AgentRevisionRef) -> Path:
+        """Where the one exact revision `reference` names is kept once the server has answered for it
+        (`at_revision`): its own file, in the same validated form as the head cache — a snapshot of that agent alone
+        with the prompts it references, so reading it back validates every reference again and costs no new format.
+        Its own file per revision: a pin resolved for one launch is still there for the next, and a catalog that moved
+        on never overwrites it."""
+        # Both are server-issued UUIDs, so neither can name a path component of its own.
+        return cls.pins_path() / str(reference.id) / f"{reference.revision}.json"
+
+    def pinned_offline(self, reference: AgentRevisionRef) -> Self | None:
+        """This catalog with the last revision `reference` the server answered for as its selection, read from
+        `pin_path`; None when this computer holds none it may use (`CachedRecord.usable_by`). The pin itself, never
+        the latest in its place: what was launched before is what is launched now, which is the whole point of a
+        pin."""
+        held = PinnedRevision.cached(self.pin_path(reference))
+        if held is None or not held.usable_by(self.connection, self.access_generation):
+            return None
+        agent = held.instructions.agent
+        if agent.id != reference.id or agent.revision != reference.revision:
+            return None
+        with self.connection.access_guard(self.access_generation):
+            return self.model_copy(update={"selection": held.instructions, "stale": True})
+
+    def remember_pin(self, selection: AgentInstructionSet) -> None:
+        """Keep `selection` as answered, for `pinned_offline` to work from while the service cannot be reached — every
+        resolution of a pin, the one the head catalog already held included: a revision current at a run's start is a
+        historical one by the time a message reaches that run, which is where 9 queued messages were dropped during
+        one catalog outage (2026-10-23). Tagged with the connection this catalog was read through, the one `pinned_offline`
+        compares against: the authenticated copy of it is never the tag, since a failure before authentication is
+        exactly when the pin is read back."""
+        instructions = selection.narrowed()
+        reference = AgentRevisionRef(id=selection.agent.id, revision=selection.agent.revision)
+        target = self.pin_path(reference)
+        held = PinnedRevision.cached(target)
+        if held is not None and held.usable_by(self.connection, self.access_generation) and (
+                held.instructions == instructions):
+            target.touch()  # read again, so keeping the newest `PINS_PER_AGENT` keeps the ones in use
+            return
+        value = PinnedRevision(connection=self.connection, instructions=instructions, fetched_at=datetime.now(UTC),
+                               access_generation=self.access_generation)
+        with self.connection.access_guard(self.access_generation):
+            PRIVATE_FILES.replace_text(target, value.model_dump_json())
+            # One agent's history is unbounded; what a run or a message still asks for is what was read most recently.
+            for old in sorted(target.parent.glob("*.json"), key=lambda path: path.stat().st_mtime, reverse=True)[PINS_PER_AGENT:]:
+                old.unlink(missing_ok=True)
+
+    @classmethod
     def discard_invalidated_cache(cls, connection: CatalogConnection, target: Path) -> None:
+        """Every snapshot this computer may no longer read is dropped: the head cache at `target` and the exact
+        revisions remembered beside it (`pin_path`), which the same access was granted for."""
         with connection.access_guard() as generation:
+            pins = cls.pins_path()
+            for path in sorted(pins.glob("*/*.json")) if pins.is_dir() else ():
+                pin = PinnedRevision.cached(path)
+                if pin is None or (pin.connection == connection and pin.access_generation != generation):
+                    path.unlink(missing_ok=True)
             try:
                 payload = target.read_bytes()
                 cached = cls.model_validate_json(payload)
@@ -225,26 +338,6 @@ class AgentCatalog(BaseModel):
                 return
             if not cls.written_now(payload) or (cached.connection == connection and cached.access_generation != generation):
                 target.unlink(missing_ok=True)
-
-    @staticmethod
-    def written_now(payload: bytes) -> bool:
-        """A cache file whose tool lists read as this galaius reads them (`TOOL_LISTS`)."""
-        try:
-            return json.loads(payload).get("tool_lists") == TOOL_LISTS
-        except (ValueError, AttributeError):
-            return False
-
-    @classmethod
-    def cached(cls, target: Path) -> Self | None:
-        """The catalog last written to `target`, None when there is none this galaius reads."""
-        try:
-            with target.open("rb") as source:
-                payload = source.read(16 * 1024 * 1024 + 1)
-            if len(payload) > 16 * 1024 * 1024:
-                return None
-            return cls.model_validate_json(payload) if cls.written_now(payload) else None
-        except (OSError, ValueError):
-            return None
 
     @classmethod
     def refresh(
@@ -317,9 +410,12 @@ class AgentCatalog(BaseModel):
         with self.connection.access_guard(self.access_generation):
             if self.selection is not None and self.selection.agent.id == reference.id and self.selection.agent.revision == reference.revision:
                 return self
-            for agent in self.snapshot.agents:
-                if agent.id == reference.id and agent.revision == reference.revision:
-                    return self.model_copy(update={"selection": AgentInstructionSet(agent=agent, prompts=self.snapshot.paradigms)})
+            held = next((agent for agent in self.snapshot.agents
+                         if agent.id == reference.id and agent.revision == reference.revision), None)
+        if held is not None:
+            selection = AgentInstructionSet(agent=held, prompts=self.snapshot.paradigms)
+            self.remember_pin(selection)
+            return self.model_copy(update={"selection": selection})
         try:
             with self.connection.connect() as client:
                 connection = self.connection.authenticate(client)
@@ -340,6 +436,7 @@ class AgentCatalog(BaseModel):
                         AgentInstructionSet.find_prompt((prompt,), ref)
                     prompts.append(prompt)
             selection = AgentInstructionSet(agent=agent, prompts=tuple(prompts))
+            self.remember_pin(selection)
             with self.connection.access_guard(self.access_generation):
                 return self.model_copy(update={"selection": selection})
         except CatalogAuthenticationError:
@@ -348,6 +445,12 @@ class AgentCatalog(BaseModel):
         except CatalogConnectionError:
             raise
         except httpx.TransportError as error:  # unreachable, timed out, or dropped mid-answer (a restarting server)
+            # Retried already (`CatalogConnection.RETRY_BACKOFF`), so the service is down for longer than a blip. THIS
+            # revision as this computer last read it still launches it; the latest in its place never would.
+            if (held := self.pinned_offline(reference)) is not None:
+                print(f"STALE agent revision: service unreachable; using the pin as last read "
+                      f"({reference.id} {reference.revision})", file=sys.stderr)
+                return held
             raise CatalogConnectionError("pinned agent revision is unavailable during network failure; latest revision is not a fallback") from error
         except ValueError as error:
             raise CatalogConnectionError("invalid exact agent or prompt revision received from server") from error

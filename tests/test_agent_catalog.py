@@ -70,6 +70,9 @@ def catalog_home(monkeypatch, tmp_path):
     monkeypatch.setattr(AgentProvider, "authenticated", AsyncMock(return_value=True))
     monkeypatch.setattr(UserConfig, "PATH", tmp_path / "config.env")
     monkeypatch.delenv("GALAIUS_PARENT_RUN_ID", raising=False)
+    # Each retry of a failed request still happens, and waits nothing: a mock transport answers at once, so the real
+    # pauses would only add their seconds to every outage test here (`CatalogConnection.RETRY_BACKOFF`).
+    monkeypatch.setattr(CatalogConnection, "RETRY_BACKOFF", (0.0,) * len(CatalogConnection.RETRY_BACKOFF))
     return tmp_path
 
 
@@ -1430,3 +1433,58 @@ def test_a_stale_preview_session_gets_one_fresh_sign_in_not_a_refusal(catalog_ho
 
     assert refreshed.snapshot.cursor == value.cursor
     assert "second" in connection.session_path().read_text()
+
+
+def test_a_pin_once_read_still_launches_while_the_service_is_unreachable(advanced_catalogs, historical_http, monkeypatch, capsys):
+    """One short catalog outage (22-23 Oct 2026) dropped 9 queued messages between agents and every automatic resume
+    due in it, each « pinned agent revision is unavailable during network failure ».
+    A revision the server has already answered for is
+    kept as read (`pin_path`), so launching or messaging it again needs no service at all. The pin stays the pin: one
+    this computer never read is still refused, and the head catalog is never put in its place."""
+    _, current, worker_ref, _ = advanced_catalogs
+    online = current.at_revision(worker_ref)
+    assert AgentCatalog.pin_path(worker_ref).exists(), "the answer for an exact revision is kept"
+    asked = len(historical_http)
+
+    def offline(request):
+        raise httpx.ConnectError("fixture outage")
+
+    connect = CatalogConnection.connect
+    monkeypatch.setattr(CatalogConnection, "connect", lambda self, **kwargs: connect(self, transport=httpx.MockTransport(offline)))
+    held = current.at_revision(worker_ref)
+    assert held.stale and held.revision(worker_ref).revision == worker_ref.revision
+    assert held.instructions("fixture-worker") == online.instructions("fixture-worker")
+    assert "STALE agent revision" in capsys.readouterr().err
+    assert len(historical_http) == asked, "the outage reached no server"
+    unread = AgentRevisionRef(id=worker_ref.id, revision=uuid4())
+    with pytest.raises(CatalogConnectionError, match="latest revision is not a fallback"):
+        current.at_revision(unread)
+
+
+def test_a_catalog_request_rides_out_a_blip_shorter_than_its_backoff(advanced_catalogs, catalog_home, monkeypatch):
+    """A DNS resolver or a restarting service that blinks for under `RETRY_BACKOFF` must reach nothing above
+    the request itself. The last try's failure is still the caller's, so a longer outage falls back to the snapshot
+    already held rather than looping here."""
+    _, current, worker_ref, _ = advanced_catalogs
+    tries: list[str] = []
+    fail_first = len(CatalogConnection.RETRY_BACKOFF)
+
+    def flaky(request):
+        if request.url.path == "/v1/auth/local-preview":
+            return httpx.Response(200, headers={"Set-Cookie": "session=fixture-cookie; Path=/"}, json={})
+        tries.append(request.url.path)
+        if len(tries) <= fail_first:
+            raise httpx.ConnectError("fixture blip")
+        return httpx.Response(200, content=current.snapshot.model_dump_json())
+
+    connect = CatalogConnection.connect
+    monkeypatch.setattr(CatalogConnection, "connect", lambda self, **kwargs: connect(self, transport=httpx.MockTransport(flaky)))
+    fetched = AgentCatalog.refresh(current.connection)
+    assert fetched.snapshot.cursor == current.snapshot.cursor and not fetched.stale
+    assert len(tries) == fail_first + 1, "every pause was used once, then the answer: nothing above the request saw it"
+
+    tries.clear()
+    fail_first = len(CatalogConnection.RETRY_BACKOFF) + 1  # one blip longer than the whole backoff
+    with pytest.raises(CatalogConnectionError, match="unreachable"):
+        AgentCatalog.refresh(current.connection)
+    assert len(tries) == len(CatalogConnection.RETRY_BACKOFF) + 1, "bounded: the last try's failure is the caller's"

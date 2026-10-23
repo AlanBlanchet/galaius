@@ -511,8 +511,20 @@ class AgentProvider(ABC):
     #: What a 401 says when an API key was refused, not a login (`cut_of`): its words decide then (« Invalid API key ·
     #: Please run /login » is a login to sign in again).
     KEY_REFUSED: ClassVar[re.Pattern[str]] = re.compile(r"\bAPI[ _-]?key\b", re.IGNORECASE)
-    #: The words a failed turn says each cut in when its program gives no status (`cut_of`), checked in order.
-    cut_words: ClassVar[Mapping[RunCut, re.Pattern[str]]] = {RunCut.usage_limit: REFUSAL}
+    #: What a turn says when its program never reached its provider's API — provider-neutral by construction: the CLI's
+    #: own sentence (Claude Code 2.1.288, recorded verbatim 2026-10-22/23: « API Error: Can't reach the
+    #: API server — check your internet or DNS (ENOTFOUND) »), else the operating system's own name for the failure, which
+    #: every one of these CLIs passes through from its HTTP library. No word here is an answer about the TURN: the vendor
+    #: never saw it, so the run is cut, never failed (`RunCut.network_lost`). A timeout is left out on purpose — a request
+    #: that was answered slowly, or not at all, may have reached the model.
+    NETWORK_LOST: ClassVar[re.Pattern[str]] = re.compile(
+        r"can'?t reach the API server|could not (?:reach|connect to) the API"
+        r"|\b(?:ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENETUNREACH|ENETDOWN)\b"
+        r"|getaddrinfo|\bdns (?:failure|lookup failed)\b|\bfetch failed\b",
+        re.IGNORECASE)
+    #: The words a failed turn says each cut in when its program gives no status (`cut_of`), checked in order: a usage
+    #: refusal first — one is answered by the vendor's own server, so it reached it.
+    cut_words: ClassVar[Mapping[RunCut, re.Pattern[str]]] = {RunCut.usage_limit: REFUSAL, RunCut.network_lost: NETWORK_LOST}
 
     @classmethod
     def cut_of(cls, text: str, status: object = None) -> RunCut | None:

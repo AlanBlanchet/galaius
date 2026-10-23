@@ -90,9 +90,13 @@ MODELS_PER_PROVIDER = 12
 #: A release date closing a model id: -20260416 or -2026-04-16.
 _DATED = re.compile(r"-(?:\d{8}|\d{4}-\d{2}-\d{2})$")
 #: Who each cut's automatic resume is from (`registry.SYSTEM_SENDERS`) and what it came back after, as its failure says it.
+#: Every cut has a row: one missing is a `KeyError` in `resume_paused`, which would leave every OTHER cut run of that
+#: pass unresumed (a parametrized sweep over `CutCause` pins it). A cause the web has no wording of its own for sends
+#: from `CUT_RESUME_SENDER`, the sender it already reads as « reprise automatique après la coupure ».
 _RESUMED_AFTER: dict[reg.CutCause, tuple[str, str]] = {
     "usage_limit": (reg.LIMIT_RESUME_SENDER, "the usage limit"),
     "login_lost": (reg.LOGIN_RESUME_SENDER, "signing in again"),
+    "network_lost": (reg.CUT_RESUME_SENDER, "its provider's API could not be reached"),
     "process_gone": (reg.CUT_RESUME_SENDER, "its process went away"),
     "killed": (reg.CUT_RESUME_SENDER, "its process was killed"),
 }

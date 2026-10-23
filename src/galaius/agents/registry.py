@@ -77,7 +77,7 @@ TERMINAL_STATUSES: frozenset[str] = frozenset(
 RunKind = Literal["process", "conversation", "provider_child"]
 #: What cut a run from outside its work (`cut_cause`): its program's word (`RunCut`), its process gone with no word of
 #: its own, or a signal nobody it answers to sent.
-CutCause = Literal["login_lost", "usage_limit", "process_gone", "killed"]
+CutCause = Literal["login_lost", "usage_limit", "network_lost", "process_gone", "killed"]
 #: How a cut run comes back (`cut_resume`): `itself` with no one's action, `sign_in` once its login is signed in again.
 CutResumes = Literal["itself", "sign_in", "relaunch"]
 ConnectionMode = Literal["local_session", "api"]
@@ -2693,6 +2693,14 @@ RESUME_GRACE = 300.0
 #: itself before it is left to a person (`cut_resume`): a cut that comes back later than `RESUME_GRACE` each time (an
 #: OOM at the same peak, a time limit) never loops paid turns.
 AUTO_RESUMES_PER_CUT = 2
+#: How long after its end each automatic resume of a run cut by a network failure waits (`network_resume_at`), one step
+#: further per resume already made: a DNS or connect failure of seconds is waited out and costs one turn, one that
+#: outlasts the whole backoff is no blip and the run is left to a person. Its length bounds the retries.
+NETWORK_RESUME_BACKOFF: tuple[float, ...] = (5.0, 20.0, 60.0, 180.0)
+#: The cuts that time their own automatic resume and count their own retries (`limit_resume_at`, `network_resume_at`):
+#: the shared loop guards (`RESUME_GRACE`, `AUTO_RESUMES_PER_CUT`) would read their backoff as a resume that did not
+#: come back, since each is EXPECTED to be heard again within it while the cause lasts.
+SELF_TIMED_CUTS: frozenset[CutCause] = frozenset({"usage_limit", "network_lost"})
 #: Exit codes of a signal sent from outside the program (SIGHUP, SIGKILL, SIGTERM; `-N` as the launcher records them,
 #: `128 + N` through a shell): a kill. Any other (SIGABRT, SIGSEGV…) is the program's own crash, never resumed by itself.
 _KILLED_EXITS = frozenset(code for sig in (signal.SIGHUP, signal.SIGKILL, signal.SIGTERM) for code in (-sig, 128 + sig))
@@ -2747,10 +2755,22 @@ def limit_resume_at(run: AgentRun, *, now: float | None = None) -> float | None:
     return min(reset, lifted) if lifted is not None and moment <= lifted + RESUME_GRACE else reset
 
 
+def network_resume_at(run: AgentRun, *, now: float | None = None) -> float | None:
+    """When `run`, whose last turn its program ended saying it never reached its provider's API
+    (`RunCut.network_lost`), is resumed by itself: `NETWORK_RESUME_BACKOFF` after that end, one step further per
+    automatic resume already made for that cut. None past the last step: the failure outlasted the whole backoff,
+    so it is no passing blip and the run is left to a person. `now` is unread — the moment is its own end plus the
+    backoff, never when a runner happens to look (one looking late resumes it at once, as it is already due)."""
+    if run.finished_at is None:
+        return None
+    made = run.resumed_cuts if run.resumed_cut == "network_lost" else 0
+    return None if made >= len(NETWORK_RESUME_BACKOFF) else run.finished_at + NETWORK_RESUME_BACKOFF[made]
+
+
 def cut_cause(run: AgentRun) -> CutCause | None:
     """What cut `run` from outside its work, None when nothing did: its program's word (`RunCut`: a lost login, a
-    usage limit), its process gone without a word of its own (`process_gone`: a crash, the memory killer, the PC
-    restarted or switched off), or a signal nobody it answers to sent (`killed`: an external SIGTERM / SIGKILL, a time
+    usage limit, its provider's API never reached), its process gone without a word of its own (`process_gone`: a
+    crash, the memory killer, the PC restarted or switched off), or a signal nobody it answers to sent (`killed`: an external SIGTERM / SIGKILL, a time
     limit). Never a stop someone recorded (`stopped_by`), its own subscription cap, its own program error, a launch
     another run took over (`replaced_by`, `successor`), nor a run galaius did not launch here."""
     if (run.foreign or run.kind != "process" or run.finished_at is None or run.stopped_by is not None
@@ -2811,23 +2831,24 @@ class CutOwed(NamedTuple):
 def cut_resume(run: AgentRun, *, now: float | None = None) -> CutOwed | None:
     """How `run` comes back with no one's click (owner 2026-10-20: « Shouldn't things continue on their own ? »): every
     cut (`cut_cause`) that ended since this PC resumes cuts (`cut_resume_since`), once per cut, whatever time since —
-    a process cut at once, a usage limit at its reset (`limit_resume_at`), a lost login once signed in again. None
-    when nothing resumes it but a person: no cut, resumed for it already, or cut again by the same cause within
-    `RESUME_GRACE` of its last automatic resume (it did not come back)."""
+    a process cut at once, a usage limit at its reset (`limit_resume_at`), a network failure after a bounded backoff
+    (`network_resume_at`), a lost login once signed in again. None when nothing resumes it but a person: no cut,
+    resumed for it already, or cut again by the same cause within `RESUME_GRACE` of its last automatic resume (it did
+    not come back) — a cut that times its own resume (`SELF_TIMED_CUTS`) counts its own retries instead."""
     cause = cut_cause(run)
     if cause is None or run.finished_at is None or run.finished_at < _cut_since():
         return None
     if relaunch_owed(run, now=now):
         return CutOwed(cause, "relaunch", run.finished_at)
     if run.resumed_at is not None and (run.resumed_at >= run.finished_at or (
-            cause != "usage_limit" and run.resumed_cut in (None, cause) and run.finished_at - run.resumed_at <= RESUME_GRACE)):
+            cause not in SELF_TIMED_CUTS and run.resumed_cut in (None, cause) and run.finished_at - run.resumed_at <= RESUME_GRACE)):
         return None
-    if cause != "usage_limit" and run.resumed_cut == cause and run.resumed_cuts >= AUTO_RESUMES_PER_CUT:
+    if cause not in SELF_TIMED_CUTS and run.resumed_cut == cause and run.resumed_cuts >= AUTO_RESUMES_PER_CUT:
         return None
     if cause == "login_lost":
         return CutOwed(cause, "sign_in", None)
-    if cause == "usage_limit":
-        at = limit_resume_at(run, now=now)
+    if cause in SELF_TIMED_CUTS:
+        at = limit_resume_at(run, now=now) if cause == "usage_limit" else network_resume_at(run, now=now)
         return None if at is None else CutOwed(cause, "itself", at)
     return CutOwed(cause, "itself", run.finished_at)
 
