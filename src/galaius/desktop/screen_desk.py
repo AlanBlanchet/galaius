@@ -38,6 +38,7 @@ from galaius.desktop.screen import FrameGrabber, ScreenSession, ScreenStreamer
 from galaius.desktop.screen_switch import ScreenSwitch
 from galaius.desktop.screen_trust import (
     Admitted,
+    ScreenGap,
     ScreenGate,
     ScreenIdentity,
     ScreenRefused,
@@ -112,9 +113,15 @@ class LiveScreen:
     def take(self, sealed: ScreenSealed) -> None:
         """One sealed viewer message: its ack frees the stream, its acts (control only) are taken
         off the loop. A replay, a forgery or a malformed message is dropped and logged — never
-        acted on, never a reason to end what the owner is watching."""
+        acted on. A gap (a message before it lost or withheld on the way) ends the view: what
+        follows a missing act is never acted on out of order."""
         try:
             message = ScreenViewerMessage.model_validate_json(self.admitted.keys.open(sealed))
+        except ScreenGap as gap:
+            logger.warning("screen: %s; the view ends", gap)
+            self.why = f"A message from the viewer was lost on the way ({gap}), so the view ended rather than act out of order."
+            self.task.cancel()
+            return
         except (ScreenRefused, ValidationError, ValueError) as error:
             logger.warning("screen: a viewer message was dropped: %s", error)
             return

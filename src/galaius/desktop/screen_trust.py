@@ -55,6 +55,11 @@ class ScreenRefused(PermissionError):
     """An offer or a message this computer will not take, in words its owner reads on the web page."""
 
 
+class ScreenGap(ScreenRefused):
+    """A viewer message arrived after one that never did: the relay lost or withheld an act, and
+    acting on what follows it (typed text after a dropped Escape) is acting out of order."""
+
+
 class ScreenTrustFile:
     """The passkeys this computer trusts, in this user's own private file. Nothing the server sends
     adds a trusted key once there is one: a new passkey waits in `pending` for `trust` typed here."""
@@ -144,6 +149,15 @@ class ScreenIdentity:
     def public(self) -> str:
         return b64url(self.key.public_key().public_bytes(serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint))
 
+    @property
+    def fingerprint(self) -> str:
+        """The identity as its owner compares it once, by eye: the first 16 bytes of SHA-256 of the
+        raw public key, hex in groups of four. `galaius screen on` prints it here and the browser
+        shows it when it first pins `public` — the one check a server answering as this computer
+        at first contact cannot pass."""
+        digest = hashlib.sha256(unb64url(self.public)).hexdigest()[:32]
+        return " ".join(digest[index:index + 4] for index in range(0, 32, 4))
+
     def prove(self, challenge: bytes, pc_key: bytes, session: UUID) -> str:
         """ECDSA P-256 SHA-256 over the answer, as raw r||s (WebCrypto's form, not DER)."""
         der = self.key.sign(SCREEN_PROOF_LABEL + challenge + pc_key + session.bytes, ec.ECDSA(hashes.SHA256()))
@@ -154,7 +168,8 @@ class ScreenIdentity:
 class ScreenKeys:
     """One session's end-to-end keys: ECDH P-256 between the viewer's ephemeral key (in the signed
     offer) and this computer's, HKDF-SHA256 salted with the offer's challenge, one AES-256-GCM key
-    per direction. `seal` numbers what leaves; `open` refuses anything not newer than the last."""
+    per direction. `seal` numbers what leaves; `open` takes the viewer's messages strictly in turn
+    (each the last + 1): a replay is refused, a gap raises `ScreenGap`."""
 
     def __init__(self, session: UUID, viewer_key: bytes, challenge: bytes) -> None:
         self.session = session
@@ -180,13 +195,16 @@ class ScreenKeys:
         return sealed.model_copy(update={"data": self._send.encrypt(sealed.iv("pc"), plain, self.session.bytes)})
 
     def open(self, sealed: ScreenSealed) -> bytes:
-        """The viewer's plaintext; ScreenRefused for another session, a replay or a forgery."""
+        """The viewer's plaintext; ScreenRefused for another session, a replay or a forgery,
+        ScreenGap (once it is genuine) when one before it never arrived."""
         if sealed.session != self.session or sealed.seq <= self.received:
             raise ScreenRefused("a viewer message was replayed or reordered")
         try:
             plain = self._receive.decrypt(sealed.iv("viewer"), sealed.data, self.session.bytes)
         except InvalidTag as error:
             raise ScreenRefused("a viewer message was not sealed by the viewer") from error
+        if sealed.seq != self.received + 1:
+            raise ScreenGap(f"viewer messages {self.received + 1}-{sealed.seq - 1} were lost on the way")
         self.received = sealed.seq
         return plain
 

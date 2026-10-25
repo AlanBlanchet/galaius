@@ -8,6 +8,7 @@ way the server could bend one is refused, and both ends derive the same session 
 server relays it can neither read, forge nor replay.
 """
 
+import hashlib
 from uuid import uuid4
 
 import pytest
@@ -24,6 +25,7 @@ from galaius_core import (
 )
 
 from galaius.desktop.screen_trust import (
+    ScreenGap,
     ScreenGate,
     ScreenIdentity,
     ScreenRefused,
@@ -55,6 +57,11 @@ def test_a_first_passkey_pairs_and_both_ends_hold_the_same_keys_that_refuse_a_re
     forged = ScreenSealed(session=admitted.session, seq=2, data=act.data)
     with pytest.raises(ScreenRefused, match="not sealed"):
         admitted.keys.open(forged)
+    # Threat review r2: a relay that drops ONE act (an Escape before typed text) must not go unseen.
+    skipped = ScreenSealed(session=admitted.session, seq=3, data=b"")
+    skipped = skipped.model_copy(update={"data": to_pc.encrypt(skipped.iv("viewer"), b'{"ack":2}', admitted.session.bytes)})
+    with pytest.raises(ScreenGap):
+        admitted.keys.open(skipped)
 
     # The browser pins `identity` and checks the proof as WebCrypto does (raw r||s).
     identity = ScreenIdentity(tmp_path / "screen-identity.pem")
@@ -63,6 +70,8 @@ def test_a_first_passkey_pairs_and_both_ends_hold_the_same_keys_that_refuse_a_re
     public.verify(encode_dss_signature(int.from_bytes(proof[:32], "big"), int.from_bytes(proof[32:], "big")),
                   SCREEN_PROOF_LABEL + admitted.challenge + admitted.keys.pc_key + admitted.session.bytes, ec.ECDSA(hashes.SHA256()))
     assert ScreenIdentity(tmp_path / "screen-identity.pem").public == identity.public  # kept, never re-made
+    # What `galaius screen on` prints and the browser shows at its first pin, so he compares them once.
+    assert identity.fingerprint == " ".join(hashlib.sha256(unb64url(identity.public)).hexdigest()[i:i + 4] for i in range(0, 32, 4))
 
 
 def _bent(case: str, phone: SoftPasskey, viewer: Viewer) -> tuple[str, ScreenAssertion, bool]:

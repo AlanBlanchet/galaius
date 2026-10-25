@@ -14,7 +14,7 @@ from galaius.desktop.screen import FrameGrabber
 from galaius.desktop.screen_badge import STOPPED
 from galaius.desktop.screen_marker import ScreenMarker
 from galaius.desktop.screen_switch import ScreenSwitch
-from galaius.desktop.screen_trust import ScreenTrustFile
+from galaius.desktop.screen_trust import ScreenIdentity, ScreenTrustFile
 
 screen_app = App(name="screen", help="Let this computer's screen be watched from the web, or stop it.")
 
@@ -32,6 +32,7 @@ def screen_status() -> None:
     switch, trust = ScreenSwitch(), ScreenTrustFile().read()
     print(f"screen sharing: {_said(switch)}")
     print(f"setting: {switch.path}")
+    print(f"this computer's key: {ScreenIdentity().fingerprint}  (a browser shows the same the first time it connects)")
     print(f"passkeys trusted: {len(trust.trusted) or 'none yet (the first one offered while sharing is on pairs)'}")
     for key in trust.trusted:
         print(f"  {key.credential_id[:12]}  {key.label or 'passkey'}  since {key.added_at:%Y-%m-%d}" if key.added_at else f"  {key.credential_id[:12]}")
@@ -56,6 +57,8 @@ def screen_on(hours: Annotated[int | None, Parameter(name="--hours")] = None) ->
     switch.turn_on(hours)
     print(f"screen sharing: {_said(switch)}")
     print("A badge on this screen says when someone is watching; its Stop, or Ctrl+Alt+Shift+S, ends the view at once.")
+    print(f"This computer's key: {ScreenIdentity().fingerprint}")
+    print("The first time a browser connects it shows a key: it must read the same, else close that page.")
 
 
 @screen_app.command(name="off")

@@ -145,3 +145,14 @@ async def test_a_session_ends_when_its_signed_minutes_are_over(desk, monkeypatch
     _, opened = await _open(desk, relay, phone, new=True, minutes=0.02)
     _, ended = await relay.next("screen_ended")
     assert ended["session"] == str(opened.session) and "minutes" in ended["why"]
+
+
+async def test_a_viewer_message_lost_on_the_way_ends_the_view_rather_than_act_out_of_order(desk) -> None:
+    relay, phone = Relay(), SoftPasskey()
+    viewer, opened = await _open(desk, relay, phone, mode="control", new=True)
+    _, sealed = await relay.next("screen_frame")
+    header, _ = _frame(viewer, sealed)
+    escape = {"type": "key_press", "key": "Escape"}
+    desk.take(viewer.seal(opened.session, 2, json.dumps({"ack": header["sequence"], "acts": [escape]}).encode()))  # seq 1 never arrived
+    _, ended = await relay.next("screen_ended")
+    assert "lost" in ended["why"] and desk.backend.done == [] and desk.live is None
