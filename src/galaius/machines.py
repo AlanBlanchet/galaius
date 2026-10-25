@@ -31,7 +31,7 @@ import httpx
 import websockets
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, ValidationError, field_validator, model_validator
 
-from galaius_core import AGENT_FILES_FEATURE, AGENT_IMAGES_FEATURE, MACHINE_TOOLS_FEATURE, AGENT_IMAGES_WIRE, MACHINE_AGENT_REQUESTS, PROJECTS_DIR, PROJECTS_ROOT, PROJECTS_ROOT_FEATURE, SUBSCRIPTIONS_FEATURE, WEB_LIMIT_FEATURE, AgentCompactRequest, AgentMoveRequest, AgentSendRequest, AgentSignInCodeRequest, AgentStartRequest, MACHINE_MODELS, MachineProblem, MachineProblemCode, MachineAgentSettings, MachineAgentSettingsState, MachineAgentSettingsUpdate, PlacePath, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, MachineAgentAnswer, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachineRuntime, MachineTokenSwap, PlaceLevel, ScriptFile, ScriptLanguage, UserModelOrigin
+from galaius_core import AGENT_FILES_FEATURE, AGENT_IMAGES_FEATURE, MACHINE_TOOLS_FEATURE, SCREEN_FEATURE, AGENT_IMAGES_WIRE, MACHINE_AGENT_REQUESTS, PROJECTS_DIR, PROJECTS_ROOT, PROJECTS_ROOT_FEATURE, SUBSCRIPTIONS_FEATURE, WEB_LIMIT_FEATURE, AgentCompactRequest, AgentMoveRequest, AgentSendRequest, AgentSignInCodeRequest, AgentStartRequest, MACHINE_MODELS, MachineProblem, MachineProblemCode, MachineAgentSettings, MachineAgentSettingsState, MachineAgentSettingsUpdate, PlacePath, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, MachineAgentAnswer, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachineRuntime, MachineTokenSwap, PlaceLevel, ScriptFile, ScriptLanguage, UserModelOrigin
 from galaius import USER_AGENT
 from galaius import prompt_mirror, prompt_projection
 from galaius.agents.subscription_watch import SubscriptionWatch
@@ -60,6 +60,7 @@ from galaius.agents.followup import FollowUps
 from galaius.agents.warm import WarmStart
 from galaius.agents import registry as reg
 from galaius.agents.profiles import ALLOWED_ENV
+from galaius.desktop.screen_desk import ScreenDesk
 from galaius.functions import FunctionRegistry, PermissionLevel, invoke as invoke_function
 from galaius.vision_env import ModelWorker, Report, ensure_speech_env, ensure_vision_env
 from galaius import gpu_scrub, user_models
@@ -932,6 +933,8 @@ class MachineRunner:
         self._workers: dict[str, ModelWorker] = {}
         #: File queries being answered (held so the loop does not drop them mid-answer).
         self._queries: set[asyncio.Task] = set()
+        #: This computer's screen sessions (`ScreenDesk`), made for the enrollment that first asks.
+        self._screen_desk: ScreenDesk | None = None
         #: Agent actions already accepted (id -> expiry): each is taken once (`_answer_agent_request`).
         self._agent_requests: dict[UUID, datetime] = {}
         #: The answer of each accepted action the server may ask again (`idempotent_feature`), by its id,
@@ -1308,6 +1311,8 @@ class MachineRunner:
             for query in self._queries:
                 query.cancel()
             await asyncio.gather(receiver, heartbeat, usage, asked, upgrade, prompts, policy, *self._queries, return_exceptions=True)
+            if self._screen_desk is not None:  # its frames rode this connection: the viewer opens it again
+                await self._screen_desk.close_all("the link to the server dropped")
             await asyncio.shield(worker)
 
     async def _command_worker(self, socket, config: MachineConfig, commands: asyncio.Queue[MachineCommand | None]) -> None:
@@ -1324,7 +1329,8 @@ class MachineRunner:
         between the look and the connection closing)."""
         if self._quiet is None:
             await asyncio.Event().wait()
-        await self._quiet.watch(lambda: not commands.empty() or bool(self._executing) or bool(self._queries) or (self._sessions is not None and self._sessions.busy) or MachineWorkspaces.busy(), every=1)
+        await self._quiet.watch(lambda: not commands.empty() or bool(self._executing) or bool(self._queries) or (self._sessions is not None and self._sessions.busy) or MachineWorkspaces.busy()
+                                or (self._screen_desk is not None and self._screen_desk.live is not None), every=1)
 
     async def _receive(self, socket, config: MachineConfig, commands: asyncio.Queue[MachineCommand | None]) -> bool:
         async for payload in socket:
@@ -1344,6 +1350,12 @@ class MachineRunner:
                 task.add_done_callback(self._query_finished)
             elif response.get("type") == "agent_request":
                 task = asyncio.create_task(self._answer_agent_request(socket, config, response["request"]))
+                self._queries.add(task)
+                task.add_done_callback(self._query_finished)
+            elif response.get("type") == "screen_input" and self._screen_desk is not None:
+                self._screen_desk.take_raw(response)
+            elif response.get("type") == "screen_close" and self._screen_desk is not None:
+                task = asyncio.create_task(self._screen_desk.close(str(response.get("session", "")), str(response.get("why") or "the viewer left")[:400]))
                 self._queries.add(task)
                 task.add_done_callback(self._query_finished)
             elif response.get("type") == "token_swap":
@@ -1394,9 +1406,12 @@ class MachineRunner:
     #: `WEB_LIMIT_FEATURE`: a start, a continued conversation and the runs list honour the web's `WebLimited.web_limit`.
     #: `PROJECTS_ROOT_FEATURE`: `PROJECTS_ROOT` names the projects folder (`MachineConfig.projects_root`); kept ahead of the
     #: `script:*` entries, past which a server keeps no more.
+    #: `SCREEN_FEATURE`: its screen can be watched, and driven, from the web (`ScreenDesk`). With Windows' four
+    #: `script:*` languages this makes 32, the server's whole budget: a further feature retires one first.
     FEATURES: ClassVar[tuple[str, ...]] = ("file_query", "script_file", "file_read", "agent_control", "agent_settings", "web_settings", "workspaces", "start_permission", "project_secrets", "places", "agent_media", "tool_gateway", "token_swap",
                                            "workspace_copy", "places_direct", "agent_programs", SUBSCRIPTIONS_FEATURE, AgentMoveRequest.feature, str(AgentSendRequest.idempotent_feature), str(AgentStartRequest.idempotent_feature), WEB_LIMIT_FEATURE,
-                                           AgentSignInCodeRequest.feature, AgentCompactRequest.feature, PROJECTS_ROOT_FEATURE, AGENT_IMAGES_FEATURE, AGENT_FILES_FEATURE, MACHINE_TOOLS_FEATURE)
+                                           AgentSignInCodeRequest.feature, AgentCompactRequest.feature, PROJECTS_ROOT_FEATURE, AGENT_IMAGES_FEATURE, AGENT_FILES_FEATURE, MACHINE_TOOLS_FEATURE,
+                                           SCREEN_FEATURE)
 
     @classmethod
     def features(cls) -> list[str]:
@@ -1548,6 +1563,10 @@ class MachineRunner:
                     if (task := asyncio.current_task()) is not None:
                         task.add_done_callback(lambda _, key=request.id, answer=answered: self._release(key, answer))
             current = self._current_config(config)
+            if request.feature == SCREEN_FEATURE:
+                answer = await self._screen(current).answer(request, lambda message: socket.send(json.dumps(message)))
+                await socket.send(json.dumps({"type": "agent_answer", "result": answer.model_dump(mode="json")}))
+                return
             if request.feature == "places":
                 answer = await asyncio.to_thread(PlaceDesk(self).answer, request)
                 await socket.send(json.dumps({"type": "agent_answer", "result": answer.model_dump(mode="json")}))
@@ -1582,6 +1601,12 @@ class MachineRunner:
         if answered is not None:
             answered.set_result(answer)
         await socket.send(json.dumps({"type": "agent_answer", "result": answer.model_dump(mode="json")}))
+
+    def _screen(self, config: MachineConfig) -> ScreenDesk:
+        """The screen desk of this enrollment (a re-linked machine gets a new one: its id is in every offer)."""
+        if self._screen_desk is None or self._screen_desk.gate.machine_id != config.machine_id:
+            self._screen_desk = ScreenDesk(config.machine_id, config.server_url)
+        return self._screen_desk
 
     def _release(self, request_id: UUID, answer: asyncio.Future[MachineAgentAnswer]) -> None:
         """A first answer that never came (its task cancelled with the connection): its id is free

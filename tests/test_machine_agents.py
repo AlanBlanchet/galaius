@@ -18,7 +18,8 @@ import hmac
 import logging
 import time
 
-from galaius_core import MACHINE_AGENT_REQUESTS, PROJECTS_ROOT, PROJECTS_ROOT_FEATURE, AgentProviderState, MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentSettings, MachineAgentSettingsUpdate, MachineWorkspaceJob, SubscriptionLimits, WebLoad
+from galaius_core import MACHINE_AGENT_REQUESTS, PROJECTS_ROOT, PROJECTS_ROOT_FEATURE, AgentProviderState, MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentSettings, MachineAgentSettingsUpdate, MachineRef, MachineWorkspaceJob, ScreenAssertion, ScreenOpenRequest, ScreenReadiness, ScreenStatusRequest, SubscriptionLimits, WebLoad
+from galaius.desktop.screen_desk import ScreenDesk
 from galaius.machine_programs import AgentPrograms
 from galaius.agents import agent_queue, messaging
 from galaius.agents import registry as reg
@@ -1440,3 +1441,20 @@ def test_every_cut_has_a_resume_sender_and_words():
 
     assert set(_RESUMED_AFTER) == set(get_args(reg.CutCause))
     assert all(sender in reg.SYSTEM_SENDERS and words for sender, words in _RESUMED_AFTER.values())
+
+
+def test_a_screen_request_rides_the_signed_channel_and_its_passkey_decides(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The server's signature lets a screen request in; only the owner's passkey opens a view (`ScreenDesk`)."""
+    runner = MachineRunner(config_path=tmp_path / "machine.json")
+    config = _config(base)
+    runner.save(config)
+    monkeypatch.setattr(ScreenDesk, "readiness", lambda self: ScreenReadiness(origin=self.gate.origin))
+    asked = dict(machine=MachineRef(id=config.machine_id), workspace_id=config.workspace_id, initiator_account=uuid4(),
+                 expires_at=datetime.now(UTC) + timedelta(seconds=20), signature="0" * 64)
+    socket = _Socket()
+    asyncio.run(runner._answer_agent_request(socket, config, _signed(config, ScreenStatusRequest(id=uuid4(), **asked))))
+    assert socket.sent[0]["screen"]["origin"] == "http://127.0.0.1:8817"
+    offer = '{"version":1}'
+    stranger = ScreenAssertion(credential_id="AAAA", authenticator_data="AAAA", client_data_json="AAAA", signature="AAAA")
+    asyncio.run(runner._answer_agent_request(socket, config, _signed(config, ScreenOpenRequest(id=uuid4(), offer=offer, assertion=stranger, **asked))))
+    assert socket.sent[1]["error"] == "the session offer is malformed" and runner._screen_desk.live is None

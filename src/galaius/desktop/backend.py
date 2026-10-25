@@ -233,6 +233,12 @@ class DesktopBackend(ABC):
         """The window keyboard input goes to (the launcher that just opened), or None."""
         raise NotImplementedError(f"{type(self).__name__} cannot tell the active window")
 
+    def pointer(self) -> tuple[int, int] | None:
+        """Where the pointer is, in this desktop's input units — None when the OS will not say.
+        Every capture API leaves the cursor out of the picture, so a watcher of this screen
+        (`galaius.desktop.screen`) draws it from here."""
+        return None
+
     @abstractmethod
     def move(self, x: float, y: float) -> None: ...
 
@@ -486,6 +492,11 @@ class PortableBackend(DesktopBackend):
 
     def move(self, x: float, y: float) -> None:
         self._mouse.position = (int(x), int(y))
+
+    def pointer(self) -> tuple[int, int] | None:
+        """pynput's own read of the cursor: ``GetCursorPos`` on Windows, Quartz on macOS."""
+        spot = self._mouse.position
+        return (int(spot[0]), int(spot[1])) if spot is not None else None
 
     def _button(self, name: str):
         return getattr(self._Button, name if name in self._BUTTONS else "left")

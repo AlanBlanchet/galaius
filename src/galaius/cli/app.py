@@ -102,6 +102,10 @@ app.command(
     help="Author and synchronize prompts through a local Git worktree.",
 )
 app.command(
+    "galaius.cli.screen_command:screen_app", name="screen",
+    help="Let this computer's screen be watched from the web, or stop it.",
+)
+app.command(
     "galaius.cli.workspace:workspace_app", name="workspace",
     help="Inspect and edit the connected server workspace.",
 )
