@@ -93,6 +93,7 @@ class LiveScreen:
         finally:
             for waiting in self.acks.values():
                 waiting.cancel()
+            self.session_view.stop_acting()
             self._acting.shutdown(wait=False, cancel_futures=True)
             await self._ended(self)
 

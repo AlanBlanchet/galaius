@@ -5,6 +5,7 @@ The user's own X session (``host_desktop()`` on Linux) and the nested sandbox
 drive: this class is that one implementation, scoped to its ``DISPLAY`` through ``env``."""
 
 import contextlib
+import logging
 import os
 import re
 import subprocess
@@ -19,6 +20,8 @@ from galaius.desktop.input import (
     check_xdotool_key_output,
     to_xdotool_key,
 )
+
+_log = logging.getLogger("galaius")
 
 # `xrandr --listmonitors` line: " 0: +*DP-1 2560/598x1440/336+0+0  DP-1". The token after the
 # index is the MONITOR name behind its flags (+ active, * primary); the trailing outputs are absent
@@ -215,8 +218,10 @@ class X11Display(DesktopBackend):
             return
         self._xdotool("mousemove", str(target[0]), str(target[1]))
         deadline = time.monotonic() + self._MOVE_SETTLE_SECONDS
-        while self.pointer() not in (target, None) and time.monotonic() < deadline:
+        while (spot := self.pointer()) not in (target, None) and time.monotonic() < deadline:
             time.sleep(0.002)
+        if spot not in (target, None):  # the press that follows lands where the pointer is: say so
+            _log.info("x11: pointer at %s after %.1f s, asked %s", spot, self._MOVE_SETTLE_SECONDS, target)
 
     def mouse_down(self, button: str = "left") -> None:
         self._xdotool("mousedown", str(_BUTTONS[button]))

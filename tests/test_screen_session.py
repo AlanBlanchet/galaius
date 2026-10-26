@@ -18,7 +18,12 @@ import pytest
 from galaius_core import ScreenAllowance, ScreenSpec
 from PIL import Image
 
-from galaius.desktop.screen import FrameGrabber, ScreenSession, ScreenStreamer
+from galaius.desktop.screen import (
+    FrameGrabber,
+    QualityLadder,
+    ScreenSession,
+    ScreenStreamer,
+)
 from galaius.desktop.screen_switch import ScreenSwitch
 from tests.support.screen import FakeBackend, FakeGrabber, FakeMarker
 
@@ -136,13 +141,13 @@ class _Clock:
         return self.now
 
 
-def _rounds(session: ScreenSession, ms: float, n: int) -> None:
+def _rounds(ladder: QualityLadder, ms: float, n: int) -> None:
     for _ in range(n):
-        session.measured(ms)
+        ladder.measured(ms)
 
 
-def _level(session: ScreenSession) -> tuple[int, int]:
-    return (session.spec.width, session.spec.quality)
+def _level(ladder: QualityLadder) -> tuple[int, int]:
+    return (ladder.spec.width, ladder.spec.quality)
 
 
 @pytest.fixture
@@ -152,65 +157,79 @@ def clock(monkeypatch) -> _Clock:
     return clock
 
 
-def test_a_full_link_narrows_the_picture_and_gets_it_back_once_it_clears(tmp_path, clock):
+@pytest.fixture
+def ladder(clock) -> QualityLadder:
+    return QualityLadder(ScreenSpec(width=1280, quality=55, max_fps=10))
+
+
+def test_a_full_link_narrows_the_picture_and_gets_it_back_once_it_clears(ladder, clock):
     """Bytes are what make this link slow (300 ms rounds at 1280, 110 ms at 960): it narrows, holds
     the narrower level while that is what fits, and sharpens once the link clears and the refused
     level's wait is over — never before."""
-    session = _session(tmp_path, spec=ScreenSpec(width=1280, quality=55, max_fps=10))
+    _rounds(ladder, 300, QualityLadder.STEP_ROUNDS)
+    assert _level(ladder) == (960, 45) and ladder.lightened == 1
+    _rounds(ladder, 110, QualityLadder.STEP_ROUNDS * 3)
+    assert _level(ladder) == (960, 45), "a narrower picture that came back faster stays"
 
-    _rounds(session, 300, ScreenSession.STEP_ROUNDS)
-    assert _level(session) == (960, 45) and session.stats.lightened == 1
-    _rounds(session, 110, ScreenSession.STEP_ROUNDS * 3)
-    assert _level(session) == (960, 45), "a narrower picture that came back faster stays"
-
-    _rounds(session, 40, ScreenSession.EASY_FRAMES * 2)
-    assert _level(session) == (960, 45), "the level the link refused waits out its retry"
-    clock.now += ScreenSession.RETRY_SECONDS + 1
-    _rounds(session, 40, ScreenSession.EASY_FRAMES)
-    assert _level(session) == (1280, 55) and session.stats.sharpened == 1
-    _rounds(session, 1, ScreenSession.EASY_FRAMES * 2)
-    assert _level(session) == (1280, 55), "never sharper than the viewer asked for"
+    _rounds(ladder, 40, QualityLadder.EASY_FRAMES * 2)
+    assert _level(ladder) == (960, 45), "the level the link refused waits out its retry"
+    clock.now += QualityLadder.RETRY_SECONDS + 1
+    _rounds(ladder, 40, QualityLadder.EASY_FRAMES)
+    assert _level(ladder) == (1280, 55) and ladder.sharpened == 1
+    _rounds(ladder, 1, QualityLadder.EASY_FRAMES * 2)
+    assert _level(ladder) == (1280, 55), "never sharper than the viewer asked for"
 
 
 @pytest.mark.parametrize("round_ms", [113, 220], ids=["phone-35ms-each-way", "far-link-220ms"])
-def test_a_link_slow_by_distance_keeps_the_sharp_picture(tmp_path, clock, round_ms):
+def test_a_link_slow_by_distance_keeps_the_sharp_picture(ladder, round_ms):
     """A phone's link costs ~70 ms of distance before a byte of picture: narrowing buys nothing
     there. Under the round budget the picture never moves; over it, one narrowing is tried, seen
     to come back no faster, and undone — the 1280 view no longer sinks to 427 px."""
-    session = _session(tmp_path, spec=ScreenSpec(width=1280, quality=55, max_fps=10))
-
-    _rounds(session, round_ms, ScreenSession.STEP_ROUNDS * 10)
-    _rounds(session, round_ms - 5, ScreenSession.STEP_ROUNDS)  # what a narrower picture saves there
-    _rounds(session, round_ms, ScreenSession.STEP_ROUNDS * 10)
-    assert _level(session) == (1280, 55)
-    assert session.stats.lightened <= 1
+    _rounds(ladder, round_ms, QualityLadder.STEP_ROUNDS * 10)
+    _rounds(ladder, round_ms - 5, QualityLadder.STEP_ROUNDS)  # what a narrower picture saves there
+    _rounds(ladder, round_ms, QualityLadder.STEP_ROUNDS * 10)
+    assert _level(ladder) == (1280, 55)
+    assert ladder.lightened <= 1
 
 
-def test_one_late_frame_is_jitter_not_a_slow_link(tmp_path, clock):
-    session = _session(tmp_path, spec=ScreenSpec(width=1280, quality=55, max_fps=10))
+def test_one_late_frame_is_jitter_not_a_slow_link(ladder):
     for _ in range(20):
-        _rounds(session, 60, ScreenSession.STEP_ROUNDS - 1)
-        session.measured(900)
-    assert _level(session) == (1280, 55) and session.stats.lightened == 0
+        _rounds(ladder, 60, QualityLadder.STEP_ROUNDS - 1)
+        ladder.measured(900)
+    assert _level(ladder) == (1280, 55) and ladder.lightened == 0
 
 
-def test_a_link_on_the_edge_of_a_level_stops_flipping(tmp_path, clock):
+def test_a_link_on_the_edge_of_a_level_stops_flipping(ladder, clock):
     """960 fits, 1280 does not: each try at 1280 it refuses doubles the wait before the next one
     (5, 10, 20 s…), where the old ladder flipped 960 ↔ 1280 about once a second."""
-    session = _session(tmp_path, spec=ScreenSpec(width=1280, quality=55, max_fps=10))
-    _rounds(session, 300, ScreenSession.STEP_ROUNDS)
+    _rounds(ladder, 300, QualityLadder.STEP_ROUNDS)
     waits = []
     for _ in range(4):
         waited = 0.0
-        while _level(session) != (1280, 55):
+        while _level(ladder) != (1280, 55):
             clock.now += 0.1
             waited += 0.1
-            session.measured(40)
+            ladder.measured(40)
         waits.append(round(waited))
-        _rounds(session, 300, ScreenSession.STEP_ROUNDS)
-        assert _level(session) == (960, 45)
+        _rounds(ladder, 300, QualityLadder.STEP_ROUNDS)
+        assert _level(ladder) == (960, 45)
     assert waits == sorted(waits) and waits[-1] >= 4 * waits[0], waits
-    assert session.stats.send.worst == 300
+
+
+def test_stop_ends_text_being_typed_at_its_next_chunk(tmp_path):
+    """Stop pressed while a long paste is typed: what is left is not typed (it ran on for minutes)."""
+    typed: list[str] = []
+    session = _session(tmp_path)
+    session.frame()
+
+    def type_text(text: str) -> None:
+        typed.append(text)
+        session.stop_acting()  # Stop arrives while this first chunk is being typed
+
+    session.backend.type_text = type_text
+    with pytest.raises(PermissionError, match="ended"):
+        session.perform([{"type": "type_text", "text": "x" * ScreenSession.TYPE_CHUNK * 4}])
+    assert typed == ["x" * ScreenSession.TYPE_CHUNK]
 
 
 def test_a_session_reports_what_it_cost(tmp_path):
