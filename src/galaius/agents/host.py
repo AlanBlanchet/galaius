@@ -15,7 +15,7 @@ from pydantic import (
     PrivateAttr,
     ValidationError,
 )
-from galaius_core import PromptExecutionRef
+from galaius_core import PromptExecutionRef, Refused
 
 from galaius.agents import registry as reg
 from galaius.agents.assembly import _TransportRegistry, build_transport_registry
@@ -43,7 +43,6 @@ from galaius.agents.protocol import (
     StartCommand,
 )
 from galaius.agents.transport import CompactionUnsupported, _ConversationTransport
-from galaius.refused import Refused
 from galaius.criteria import Variables
 from galaius.config import Config
 from galaius.prompt_cache import _PromptCache

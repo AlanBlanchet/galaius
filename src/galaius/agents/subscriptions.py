@@ -17,12 +17,11 @@ from typing import ClassVar, Self
 from uuid import UUID, uuid4
 
 from galaius_core import AgentProvider as ProviderName, RunSubscription as WireRunSubscription, SubscriptionAllowance, SubscriptionCap, SubscriptionLimits
-from galaius_core import SubscriptionChoice, SubscriptionRefusal, SubscriptionUsage, SubscriptionUsageReport, UsageWindow
+from galaius_core import Refused, SubscriptionChoice, SubscriptionRefusal, SubscriptionUsage, SubscriptionUsageReport, UsageWindow
 from pydantic import BaseModel, ConfigDict
 
 from galaius.agents.providers import PROVIDERS, AgentProvider
 from galaius.paths import UserPaths
-from galaius.refused import Refused
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +37,6 @@ class SubscriptionCapped(SubscriptionRefused):
         reopens = f"; it reopens {cap.resets_at.isoformat(timespec='minutes')}" if cap.resets_at is not None else ""
         super().__init__(SubscriptionRefusal(reason="capped", cap=cap),
                          f"this subscription is at {cap.used_percent:g}% of its {cap.window.replace('_', ' ')} window, its cap is {cap.cap_percent}%{reopens}")
-        self.cap = cap
 
 
 class SubscriptionState(BaseModel):
@@ -351,7 +349,7 @@ class RunSubscription(WireRunSubscription):
             try:
                 return option, option.bound(environment, provider), PassedOver()
             except SubscriptionCapped as capped:
-                caps.append(capped.cap)
+                caps.append(capped.refusal.cap)
                 said.append(str(capped))
             except SubscriptionRefused as refused:
                 said.append(str(refused))
