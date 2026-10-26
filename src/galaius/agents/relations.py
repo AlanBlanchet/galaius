@@ -296,6 +296,20 @@ def report_of(run_id: str) -> str:
     return (sectioned or "").strip() or final_words(run_id)
 
 
+def report_between(run_id: str, start: int, end: int | None) -> str | None:
+    """Run `run_id`'s report written from raw stream line `start` up to `end` (None: its end): the newest of its texts
+    there listing a report's sections (`REPORT_SECTIONS`), else the newest ending's text, else its newest text; None when
+    nothing there ended yet."""
+    events = [event for event in reg.read_events(run_id)
+              if event.raw_index is not None and event.raw_index >= start and (end is None or event.raw_index < end)]
+    endings = [event for event in events if event.kind in ("done", "error")]
+    if not endings:
+        return None
+    texts = [event.text or "" for event in events if event.kind == "text" and (event.raw_index or 0) <= (endings[-1].raw_index or 0)]
+    sectioned = [text for text in texts if any(report_section(text, name) for name in REPORT_SECTIONS)]
+    return (sectioned[-1] if sectioned else endings[-1].text or (texts[-1] if texts else "")).strip()
+
+
 @one_read()
 def owed(run: reg.AgentRun) -> tuple[str, ...]:
     """The runs its ended turn reports to: each run it answers (`askers`) whose latest ask no hand-back has carried its
@@ -321,15 +335,26 @@ def _open(run: reg.AgentRun) -> dict[str, float | None]:
 
 
 def _asks(run: reg.AgentRun) -> dict[str, float | None]:
-    """Each run it answers that asked it something, with when it last did (`owed`): first its boss (`boss`, for a run
-    continuing its parent's work the boss of its lineage); never a run of its own lineage (`lineage`), nor one it is the
-    boss of (`_commands`)."""
+    """Each run it answers that asked it something, with when it last did (`owed`, `_ask_marks`)."""
+    return {asker: at for asker, (at, _message) in _ask_marks(run).items()}
+
+
+def ask_message(run: reg.AgentRun, asker: str) -> str | None:
+    """The message (`event_id`) holding `asker`'s latest ask of `run`; None when that ask is its start (its task, a spawn
+    `--for` it) or no message of this computer carries it."""
+    return _ask_marks(run).get(asker, (None, None))[1]
+
+
+def _ask_marks(run: reg.AgentRun) -> dict[str, tuple[float | None, str | None]]:
+    """Each run it answers that asked it something, with when it last did and the message that did (None: its start):
+    first its boss (`boss`, for a run continuing its parent's work the boss of its lineage); never a run of its own
+    lineage (`lineage`), nor one it is the boss of (`_commands`)."""
     # Each run it works for asked it from its start (a spawn `--for` a maker), or when it asked the run this one took over
     # from (`inherited`); a message it sent later moves that to the message.
     start = run.started_at or None
     top = _working_for(run)[1].parent_run_id
-    asked: dict[str, float | None] = {top: start} if top else {}
-    asked |= {asker: run.inherited_asks.get(asker, start) for asker in run.asked_by if asker not in asked}
+    asked: dict[str, tuple[float | None, str | None]] = {top: (start, None)} if top else {}
+    asked |= {asker: (run.inherited_asks.get(asker, start), None) for asker in run.asked_by if asker not in asked}
     reached = {live(asker): asker for asker in asked}
     for event in reg.read_messages(run.run_id):
         if event.to_run != run.run_id or event.fyi or event.reports:
@@ -338,9 +363,9 @@ def _asks(run: reg.AgentRun) -> dict[str, float | None]:
         if said_by == reg.PERSON_SENDER and event.text != reg.RESUME_BRIEF:
             said_by = boss(run)  # the person's words to it: its boss hears the outcome
         if (asker := said_by if said_by in asked else reached.get(live(said_by or ""))) is not None:
-            asked[asker] = event.at
+            asked[asker] = (event.at, event.event_id or None)
     own = {link.run_id for link in lineage(run)}
-    return {asker: at for asker, at in asked.items()
+    return {asker: mark for asker, mark in asked.items()
             if asker not in own and ((other := _get(asker)) is None or not _commands(run.run_id, other))}
 
 

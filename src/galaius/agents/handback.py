@@ -16,7 +16,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from galaius.agents import agent_queue, messaging
+from galaius.agents import agent_queue, messaging, relations
 from galaius.agents.events import AgentEvent
 from galaius.agents import registry as reg
 from galaius.agents.relations import final_words, live, one_read, owed
@@ -59,10 +59,41 @@ class Report(BaseModel):
                        silent_for=None if said is None else max(0.0, time.time() - said))
         return cls(run_id=run.run_id, agent=run.agent, status=run.status, pending=False, text=final_words(run.run_id), relaunched=relaunched)
 
+    @classmethod
+    def answering(cls, run: reg.AgentRun, asker: str) -> "Report":
+        """`run`'s report to `asker`'s latest ask, never to another run's: what it wrote from the turn that read that ask
+        (its queue item, `ask_message`; its start when the ask is its task) up to the turn the next ask from another run
+        started (`_asks_read`). 2026-10-25: a reviewer kept for several makers handed one maker's verdict to an earlier
+        maker whose ask it had answered days before. Its latest report (`of`) when no later ask came, or this computer
+        kept no turn start for the ask."""
+        report = cls.of(run)
+        if report.pending:
+            return report
+        read = _asks_read(run)
+        message = relations.ask_message(run, asker)
+        start = 0 if message is None else next((line for line, said in read if said == message), None)
+        if start is None:
+            return report
+        end = next((line for line, said in read if line > start and said != message), None)
+        if end is None:
+            return report
+        said = relations.report_between(run.run_id, start, end)
+        return report if said is None else report.model_copy(update={"text": said})
+
     def section(self, limit: int | None = REPORT_MAX) -> str:
         text = self.text if limit is None or len(self.text) <= limit else f"{self.text[:limit]}\n… (clipped; `galaius agents events {self.run_id}`)"
         lead = f"{self.relaunched}\n" if self.relaunched else ""
         return f"## {self.agent or 'agent'} {self.run_id[:8]} — {self.status}\n{lead}{text or '(it ended without a final message)'}"
+
+
+def _asks_read(run: reg.AgentRun) -> list[tuple[int, str]]:
+    """Each ask of `run` its turns read, as (raw stream line its turn started at, its message): its queue items carrying a
+    message that asks (not a one-way note, a hand-back or this computer's own resume), oldest first."""
+    asks = {event.event_id for event in reg.read_messages(run.run_id)
+            if event.to_run == run.run_id and event.event_id and not event.fyi and not event.reports
+            and event.from_run not in reg.SYSTEM_SENDERS and event.text != reg.RESUME_BRIEF}
+    return sorted((item.raw_index, item.message_id) for item in agent_queue.items(run.run_id)
+                  if item.raw_index is not None and item.message_id in asks)
 
 
 def _pending(run: reg.AgentRun) -> bool:
@@ -126,7 +157,7 @@ def _resume(asker_id: str) -> messaging.Delivery | None:
     ended = [run for run in agents if run.finished_at is not None and run.finished_at >= since]
     if not ended:
         return None
-    reports = [Report.of(run) for run in sorted(ended, key=lambda run: run.finished_at or 0.0)]
+    reports = [Report.answering(run, asker_id) for run in sorted(ended, key=lambda run: run.finished_at or 0.0)]
     return messaging.deliver_message(
         asker.run_id, "\n\n".join(report.section() for report in reports), sender=reports[-1].run_id,
         message_id=f"handback-{asker.finished_at:.6f}", only_if_idle=True,

@@ -478,3 +478,30 @@ def test_a_verdict_that_ended_while_its_maker_worked_reaches_it_when_its_turn_en
         assert sent == []
         return
     assert [call["run_id"] for call in sent] == [maker] and verdict in sent[0]["message"]
+
+
+def test_a_reviewer_kept_for_two_makers_hands_each_its_own_verdict(sent):
+    """2026-10-25: a reviewer kept for several makers ended its turn for a second maker while the first maker's ask, which
+    an earlier turn had answered, was still counted; the first maker was handed the second maker's verdict."""
+    first, second, lead, reviewer = (str(uuid.UUID(int=n)) for n in (51, 52, 53, 54))
+    _ended(lead, 100.0, agent="main")
+    _ended(first, 100.0, agent="backend-engineer")
+    register_run(second, agent="app-engineer")                          # still at work when the second verdict lands
+    _ended(reviewer, 300.0, agent="code-reviewer", parent_run_id=lead)
+    for maker in (first, second):
+        with reg.record_lock(reviewer):
+            reg.note_asker_locked(reviewer, maker)
+    asks = [reg.record_message_event(from_run=maker, to_run=reviewer, text=f"review {maker[-2:]}") for maker in (first, second)]
+    reg.raw_events_path(reviewer).write_text("".join(json.dumps(line) + "\n" for line in (
+        {"type": "system", "subtype": "init", "session_id": "s"},
+        {"type": "result", "subtype": "success", "is_error": False, "session_id": "s", "stop_reason": "end_turn", "result": "Verdict for the first: PASS."},
+        {"type": "system", "subtype": "init", "session_id": "s"},
+        {"type": "result", "subtype": "success", "is_error": False, "session_id": "s", "stop_reason": "end_turn", "result": "Verdict for the second: FAIL, one row."})))
+    for message, (maker, line) in zip(asks, ((first, 0), (second, 2))):
+        item = agent_queue.enqueue(reviewer, message_id=message, sender=maker)
+        with reg.record_lock(reviewer):
+            agent_queue._replace_item_locked(reviewer, item.id, state="replied", started_at=200.0 + line, finished_at=201.0 + line, raw_index=line)
+    assert handback.Report.answering(reg.get_run(reviewer), first).text == "Verdict for the first: PASS."
+    assert handback.Report.answering(reg.get_run(reviewer), second).text == "Verdict for the second: FAIL, one row."
+    handback.hand_back(reviewer)                                        # its turn for the second ends: the first is idle
+    assert all("Verdict for the second" not in call["message"] for call in sent if call["run_id"] == first)
