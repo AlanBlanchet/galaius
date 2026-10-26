@@ -40,9 +40,10 @@ from galaius_core import (
     MODEL_ID_MAX,
     PROJECTS_ROOT, AGENT_TOUCH_SCOPES, AgentCompactRequest, ContextGauge, MACHINE_AGENT_MEDIA, MACHINE_AGENT_READ, MACHINE_AGENT_TAIL, AgentAnswerRequest, AgentMedia, AgentMediaRequest, AgentFile, media_kind, image_type, AgentContinueRequest, AgentFoldersRequest, AgentInteraction, AgentLogsRequest, AgentOptionsRequest,
     AgentAllowanceRequest, AgentMoveRequest, AgentProgramInstallRequest, AgentProgramsRequest, AgentToolInstallRequest, AgentToolsRequest, AgentProviderState, AgentSignInCodeRequest, AgentSignOutRequest, SubscriptionAllowance, Lent, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
-    MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, PassedOverCandidate, ReadsAt, AgentRefusalCode, WebLimited, WebLoad, media_key, media_paths, MachineAgentSession, MachineFileEntry, StopActor, WorkspaceCreateRequest, WorkspacePack, WorkspacePackRequest, WorkspacePrepareRequest, WorkspaceRefresh, WorkspacesRequest,
+    MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, PassedOverCandidate, ReadsAt, AgentRefusal, WebLimited, WebLoad, media_key, media_paths, MachineAgentSession, MachineFileEntry, StopActor, WorkspaceCreateRequest, WorkspacePack, WorkspacePackRequest, WorkspacePrepareRequest, WorkspaceRefresh, WorkspacesRequest,
 )
 from galaius.agents import agent_queue, quota
+from galaius.refused import Refused
 from galaius.agents import registry as reg
 from galaius.agents.assembly import _TransportRegistry
 from galaius.agents.host import ConversationHost, ConversationRefused
@@ -176,21 +177,14 @@ class WebRun(BaseModel):
     request_id: UUID | None = None
 
 
-class UnderWay(RuntimeError):
-    """A request asked again under its id while its first delivery still works here: typed (`under_way`), so the
-    server asks once more later and gets that one act's answer."""
-
-    code: AgentRefusalCode = "under_way"
+class UnderWay(Refused[AgentRefusal]):
+    """A request asked again under its id while its first delivery still works here (`under_way`): the server asks once
+    more later and gets that one act's answer."""
 
 
-class WebFull(PermissionError):
-    """One more start refused while as many conversations started from the web as the web allows work here: typed
-    (`MachineAgentAnswer.code`) for a web that sent its number, so knows the code, and holds the launch until one ends;
-    an older web reads the sentence."""
-
-    def __init__(self, message: str, request: WebLimited) -> None:
-        super().__init__(message)
-        self.code: AgentRefusalCode | None = "web_full" if request.web_limit is not None else None
+class WebFull(Refused[AgentRefusal]):
+    """One more start refused while as many conversations started from the web as the web allows work here (`web_full`):
+    the web holds the launch until one ends."""
 
 
 class WebRuns(BaseModel):
@@ -249,7 +243,7 @@ class WebRuns(BaseModel):
         run of a tool of the web's own UI (a question to the blob: no conversation of his, `UI_ROLES`). Nothing here caps how
         many of those start at once but the web's start rate limit: the blob role has no tools and runs read_only."""
         if listed_role(request.role if isinstance(request, AgentStartRequest) else None) and (load := self.load(request)).full:
-            raise WebFull(f"{load.working} conversations started from the web are already working on this computer (at most {load.limit}); stop one first", request)
+            raise WebFull("web_full", f"{load.working} conversations started from the web are already working on this computer (at most {load.limit}); stop one first")
 
     def working(self) -> bool:
         """One of these runs, or a run it launched, is starting or running now (waiting for its owner is not working)."""
@@ -344,7 +338,7 @@ class MachineSessions:
             await self._hand(run_id, text, message_id, media)
             return "sent"
         except ConversationRefused as error:
-            if error.code != "conflict":
+            if error.refusal != "conflict":
                 raise
         self._queued.setdefault(run_id, []).append((message_id, text, media))
         if run_id not in self._deliveries:
@@ -361,7 +355,7 @@ class MachineSessions:
                 try:
                     await self._hand(run_id, text, message_id, media)
                 except ConversationRefused as error:
-                    if error.code == "conflict":
+                    if error.refusal == "conflict":
                         continue  # still on its turn
                     logger.warning("queued message to session %s not delivered: %s", run_id, error)
                     self._queued.pop(run_id, None)
@@ -938,7 +932,7 @@ class MachineAgents(BaseModel):
         try:
             return await asyncio.wait_for(asyncio.shield(starting), START_SECONDS)
         except TimeoutError:
-            raise UnderWay(f"the agent is still starting after {START_SECONDS:.0f} s; it appears in the list once it runs") from None
+            raise UnderWay("under_way", f"the agent is still starting after {START_SECONDS:.0f} s; it appears in the list once it runs") from None
 
     async def _answered(self, request: AgentStartRequest, run_id: UUID, fenced: bool, refresh: WorkspaceRefresh | None = None, written: int = 0) -> MachineAgentAnswer:
         started = await asyncio.to_thread(reg.get_run, str(run_id))
