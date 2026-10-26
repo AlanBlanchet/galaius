@@ -7,6 +7,7 @@ good, reports read as asks and acknowledged (each acknowledgement a turn), verdi
 run unknown to the runs still writing to the old one."""
 
 import re
+import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -329,9 +330,46 @@ def open_asks(run: reg.AgentRun) -> dict[str, float | None]:
 
 
 def _open(run: reg.AgentRun) -> dict[str, float | None]:
-    """Each ask of `run` no report has answered yet (`_reported`); never one of a run `run` took over itself."""
-    return {asker: at for asker, at in _asks(run).items()
-            if live(asker) != run.run_id and (at is None or not _reported(run.run_id, to=asker, since=at))}
+    """Each ask of `run` no report has answered yet (`_reported`), nor a turn that ended before this computer carried
+    reports (`handback_since`, `_answered_before`); never one of a run `run` took over itself. 2026-10-25: two asks of a
+    reviewer answered on 10-22, before hand-backs were carried, stayed open; its later verdicts for other makers woke
+    their sender."""
+    since = handback_since()
+    return {asker: at for asker, (at, message) in _ask_marks(run).items()
+            if live(asker) != run.run_id and (at is None or not _reported(run.run_id, to=asker, since=at))
+            and not (at is not None and at < since and _answered_before(run, message, since))}
+
+
+def handback_since(*, now: float | None = None) -> float:
+    """From when this PC carries a report its asker was at work for (`handback._resume`): the first look of a watcher
+    that does (`#handback-since.state`, written once). A report that ended before stays as it was: taking this up never
+    hands a week of old reports to every run that once asked for them."""
+    with reg.shared_state("handback-since") as (raw, write, _keep):
+        if raw is None:
+            raw = repr(time.time() if now is None else now).encode()
+            write(raw)
+    return float(raw)
+
+
+def ask_lines(run: reg.AgentRun) -> list[tuple[int, str]]:
+    """Each ask of `run` its turns read, as (raw stream line its turn started at, its message): its queue items carrying a
+    message that asks (not a one-way note, a hand-back or this computer's own resume), oldest first."""
+    from galaius.agents import agent_queue  # agent_queue imports this module (card, heading)
+    asks = {event.event_id for event in reg.read_messages(run.run_id)
+            if event.to_run == run.run_id and event.event_id and not event.fyi and not event.reports
+            and event.from_run not in reg.SYSTEM_SENDERS and event.text != reg.RESUME_BRIEF}
+    return sorted((item.raw_index, item.message_id) for item in agent_queue.items(run.run_id)
+                  if item.raw_index is not None and item.message_id in asks)
+
+
+def _answered_before(run: reg.AgentRun, message: str | None, moment: float) -> bool:
+    """The turn that read the ask held by `message` (None: its task, read by its first turn) ended before `moment`."""
+    start = 0 if message is None else next((line for line, said in ask_lines(run) if said == message), None)
+    if start is None:
+        return False
+    ended = next((event for event in reg.read_events(run.run_id)
+                  if event.kind in ("done", "error") and event.raw_index is not None and event.raw_index >= start), None)
+    return ended is not None and ended.at is not None and ended.at < moment
 
 
 def _asks(run: reg.AgentRun) -> dict[str, float | None]:

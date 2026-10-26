@@ -63,13 +63,13 @@ class Report(BaseModel):
     def answering(cls, run: reg.AgentRun, asker: str) -> "Report":
         """`run`'s report to `asker`'s latest ask, never to another run's: what it wrote from the turn that read that ask
         (its queue item, `ask_message`; its start when the ask is its task) up to the turn the next ask from another run
-        started (`_asks_read`). 2026-10-25: a reviewer kept for several makers handed one maker's verdict to an earlier
+        started (`relations.ask_lines`). 2026-10-25: a reviewer kept for several makers handed one maker's verdict to an earlier
         maker whose ask it had answered days before. Its latest report (`of`) when no later ask came, or this computer
         kept no turn start for the ask."""
         report = cls.of(run)
         if report.pending:
             return report
-        read = _asks_read(run)
+        read = relations.ask_lines(run)
         message = relations.ask_message(run, asker)
         start = 0 if message is None else next((line for line, said in read if said == message), None)
         if start is None:
@@ -84,16 +84,6 @@ class Report(BaseModel):
         text = self.text if limit is None or len(self.text) <= limit else f"{self.text[:limit]}\n… (clipped; `galaius agents events {self.run_id}`)"
         lead = f"{self.relaunched}\n" if self.relaunched else ""
         return f"## {self.agent or 'agent'} {self.run_id[:8]} — {self.status}\n{lead}{text or '(it ended without a final message)'}"
-
-
-def _asks_read(run: reg.AgentRun) -> list[tuple[int, str]]:
-    """Each ask of `run` its turns read, as (raw stream line its turn started at, its message): its queue items carrying a
-    message that asks (not a one-way note, a hand-back or this computer's own resume), oldest first."""
-    asks = {event.event_id for event in reg.read_messages(run.run_id)
-            if event.to_run == run.run_id and event.event_id and not event.fyi and not event.reports
-            and event.from_run not in reg.SYSTEM_SENDERS and event.text != reg.RESUME_BRIEF}
-    return sorted((item.raw_index, item.message_id) for item in agent_queue.items(run.run_id)
-                  if item.raw_index is not None and item.message_id in asks)
 
 
 def _pending(run: reg.AgentRun) -> bool:
@@ -117,17 +107,6 @@ def hand_back(run_id: str) -> list[messaging.Delivery]:
     return deliveries
 
 
-def handback_since(*, now: float | None = None) -> float:
-    """From when this PC carries a report its asker was at work for (`_resume`): the first look of a watcher that does
-    (`#handback-since.state`, written once). A report that ended before stays as it was: taking this up never hands a
-    week of old reports to every run that once asked for them."""
-    with reg.shared_state("handback-since") as (raw, write, _keep):
-        if raw is None:
-            raw = repr(time.time() if now is None else now).encode()
-            write(raw)
-    return float(raw)
-
-
 def _agents_answering(asker_id: str, records: Sequence[reg.AgentRun]) -> list[reg.AgentRun]:
     """The runs among `records` that owe run `asker_id`, or a run it took over from (`live`), their report (`owed`)."""
     aliases = {asker_id} | {stored.run_id for stored in records if stored.successor and live(stored.run_id) == asker_id}
@@ -140,7 +119,7 @@ def _resume(asker_id: str) -> messaging.Delivery | None:
     alone, its turn opening on where it stands (`relations.card`) and on whose reports they are (`relations.heading`).
 
     Only a run whose own turn ended (`_ENDED_ITS_TURN`); every report not carried yet (`owed`), whenever its agent
-    ended (`handback_since` on): one that ended while it worked was never handed to it. One message per ended turn (its
+    ended (`relations.handback_since` on): one that ended while it worked was never handed to it. One message per ended turn (its
     `message_id` names that turn), so every reader of the same ending queues it once. An agent still waiting on agents
     of its own holds it: its interim words (« dispatched the tester; waiting ») would answer the ask (`owed`)
     and cost `asker_id` a turn, while its final report comes once they end. So does one a cut stopped that resumes
@@ -153,7 +132,7 @@ def _resume(asker_id: str) -> messaging.Delivery | None:
         agents = _agents_answering(asker_id, records)
         if any(_pending(run) or reg.self_resuming(run) or any(_pending(own) for own in _agents_answering(run.run_id, records)) for run in agents):
             return None
-    since = handback_since()
+    since = relations.handback_since()
     ended = [run for run in agents if run.finished_at is not None and run.finished_at >= since]
     if not ended:
         return None
@@ -178,7 +157,7 @@ class EndWatch(BaseModel):
     held: frozenset[str] = Field(default_factory=lambda: frozenset(run.run_id for run in reg.recently_cut() if run.askers))
 
     def model_post_init(self, _context) -> None:
-        handback_since()   # from its first look on, a report its asker was at work for is carried (`_resume`)
+        relations.handback_since()   # from its first look on, a report its asker was at work for is carried (`_resume`)
 
     def ended(self) -> list[str]:
         now, live = time.time(), frozenset(run.run_id for run in reg.running_runs())
