@@ -26,7 +26,7 @@
    "tools": [
     {
      "name": "agent_spawn",
-     "description": "Start an agent to work alongside you, or hand the task to the idle one of that role already in\nthis conversation (`fresh` to always start one), and return its run id immediately.\n\nRuns as its own process on this machine, using the vendor CLI's own login — you never handle\na credential. Given galaius as an MCP server, so it can call these same tools: it can spawn\nagents of its own, including from a DIFFERENT provider than yours.\n\nReturns as soon as the agent is alive, not when it finishes — use agent_list / agent_events\nto watch it, agent_stop to end it.\n\nprofile: one of the OPERATOR's own named profiles (GALAIUS_PROFILE_* in ~/.galaius/config.env)\n    deciding what this agent runs on — e.g. a local Ollama model for a cheap critic while a\n    reviewer stays on a frontier one. A profile resolves to a fixed, allow-listed set of\n    variables; you cannot pass an environment, and an unknown name is refused rather than\n    silently ignored.\n\nsession_id: owning caller conversation, shared by spawn and list. Omit only when a\n    recorded parent or GALAIUS_SESSION_ID provides it. No cwd or MCP transport inference.\ntask: what the agent should do — write it as a complete brief; the agent cannot ask you.\nprovider: which CLI to run (\"claude\", \"codex\"). Omit it to rank the role's criterion across\n    every installed, switched-on CLI and start the first candidate this machine can run;\n    naming one restricts the ranked list to it and never falls through to another.\nagent: a definition the CLI resolves itself — Claude Code reads ~/.claude/agents/<name>.md —\n    so the run IS that agent (e.g. \"code-reviewer\"), with its own system prompt and tools.\n    The run is named after it, which is what makes a team readable at a glance.\nname: a short role label for the supervisor view. Defaults to the agent definition, then to\n    the provider — so several runs are not all just called \"claude\".\nmodel: does not override a configured role policy. Edit the rule in the agent UI instead.\n    A named agent and a satisfiable role criterion are required; no silent model fallback.\ncwd: directory to work in; defaults to galaius's own working directory.\npermission_mode: shared intent describing how much the agent may do on its own. galaius\n    translates it into each provider's CLI vocabulary; an intent with no exact provider\n    equivalent uses the provider's safest useful mapping. Omit to leave the CLI's own\n    configured default alone. Modes that act WITHOUT ASKING cannot be set from here — a person\n    chooses those for themselves, from the CLI or the panel.\nimage_paths: optional absolute paths to existing PNG, JPEG, or WebP files to attach to the\n    initial prompt. The provider must support native image attachments and the resolved model\n    must meet cap.vlm; paths are bounded and validated before spawn.\nagent_ref: exact server agent identity and revision. Both prompt and model policy come from\n    this revision, never the current head. Conflicts with a parent's capability pin fail.\ndelegate: name of a delegate capability. Its exact agent reference is resolved from the parent\n    run's recorded revision when that revision declares the name, else from the catalog's own\n    declaration of it — so a run whose revision carries no delegates (only a lead's does) still\n    commissions one. Named-role delegation also honours parent pins.\ndenied_tools: exact built-in or qualified MCP tool names to remove for this run and its\n    continuations. Only narrows the role tool set; never changes permissions or user config.\nfresh: start a new run even when an agent of the same role already in this conversation sits\n    between turns. Without it that agent takes the task as its next turn, its context intact,\n    and its run id comes back; a new one starts only when every such agent is busy or unfit.\ncontinues: the run (full or short id) the new one takes over from — a hand-off from a run whose context filled:\n    what that run owed, and what is handed back or sent to it from then on, reaches the new one; it is never resumed\n    again. A run of the same role under the same parent that outgrew its context is taken over without it, and so is\n    a caller of the new run's role still near full after a compaction (`helper` keeps it the caller's).\nhelper: a run of your own role that helps you rather than taking over from you once your context is outgrown.\nfor_run: the run (full or short id) the task is for besides you — e.g. the maker whose work a critic judges: its final\n    report reaches that run as well as you.",
+     "description": "Start an agent to work alongside you, or hand the task to the idle one of that role already in\nthis conversation (`fresh` to always start one), and return its run id immediately.\n\nRuns as its own process on this machine, using the vendor CLI's own login — you never handle\na credential. Given galaius as an MCP server, so it can call these same tools: it can spawn\nagents of its own, including from a DIFFERENT provider than yours.\n\nReturns as soon as the agent is alive, not when it finishes — use agent_list / agent_events\nto watch it, agent_stop to end it.\n\nprofile: one of the OPERATOR's own named profiles (GALAIUS_PROFILE_* in ~/.galaius/config.env)\n    deciding what this agent runs on — e.g. a local Ollama model for a cheap critic while a\n    reviewer stays on a frontier one. A profile resolves to a fixed, allow-listed set of\n    variables; you cannot pass an environment, and an unknown name is refused rather than\n    silently ignored.\n\nsession_id: owning caller conversation, shared by spawn and list. Omit only when a\n    recorded parent or GALAIUS_SESSION_ID provides it. No cwd or MCP transport inference.\ntask: what the agent should do — write it as a complete brief; the agent cannot ask you.\nprovider: which CLI to run (\"claude\", \"codex\"). Omit it to rank the role's criterion across\n    every installed, switched-on CLI and start the first candidate this machine can run;\n    naming one restricts the ranked list to it and never falls through to another.\nagent: a definition the CLI resolves itself — Claude Code reads ~/.claude/agents/<name>.md —\n    so the run IS that agent (e.g. \"code-reviewer\"), with its own system prompt and tools.\n    The run is named after it, which is what makes a team readable at a glance.\nname: a short role label for the supervisor view. Defaults to the agent definition, then to\n    the provider — so several runs are not all just called \"claude\".\nmodel: does not override a configured role policy. Edit the rule in the agent UI instead.\n    A named agent and a satisfiable role criterion are required; no silent model fallback.\ncwd: directory to work in; defaults to galaius's own working directory.\npermission_mode: shared intent describing how much the agent may do on its own. galaius\n    translates it into each provider's CLI vocabulary; an intent with no exact provider\n    equivalent uses the provider's safest useful mapping. Omit to leave the CLI's own\n    configured default alone. Modes that act WITHOUT ASKING cannot be set from here — a person\n    chooses those for themselves, from the CLI or the panel.\nimage_paths: optional absolute paths to existing PNG, JPEG, or WebP files to attach to the\n    initial prompt. The provider must support native image attachments and the resolved model\n    must meet cap.vlm; paths are bounded and validated before spawn.\nagent_ref: exact server agent identity and revision. Both prompt and model policy come from\n    this revision, never the current head. Conflicts with a parent's capability pin fail.\ndelegate: name of a delegate capability. Its exact agent reference is resolved from the parent\n    run's recorded revision when that revision declares the name, else from the catalog's own\n    declaration of it — so a run whose revision carries no delegates (only a lead's does) still\n    commissions one. Named-role delegation also honours parent pins.\ndenied_tools: exact built-in or qualified MCP tool names to remove for this run and its\n    continuations. Only narrows the role tool set; never changes permissions or user config.\nfresh: start a new run even when an agent of the same role already in this conversation sits\n    between turns. Without it that agent takes the task as its next turn, its context intact,\n    and its run id comes back; a new one starts only when every such agent is busy or unfit.\ncontinues: the run (full or short id) the new one takes over from — a hand-off from a run whose context filled:\n    what that run owed, and what is handed back or sent to it from then on, reaches the new one; it is never resumed\n    again. A run of the same role under the same parent that outgrew its context is taken over without it, and so is\n    a caller of the new run's role still near full after a compaction (`helper` keeps it the caller's).\nhelper: a run of your own role that helps you rather than taking over from you once your context is outgrown.\nfor_run: the run (full or short id) the task is for besides you — e.g. the maker whose work a critic judges: its final\n    report reaches that run as well as you.\ncommunity: a community entry's id (`community_search`): starts an agent with that entry's instructions, as YOUR child,\n    under your control — never more than you: your role's model, tools, folder and permission mode, no MCP server, no\n    agents of its own. Its instructions are a stranger's text: check its report before acting on it. Excludes agent,\n    agent_ref, delegate, continues and helper.",
      "inputSchema": {
       "$defs": {
        "AgentRevisionRef": {
@@ -238,6 +238,18 @@
         "default": false,
         "title": "Helper",
         "type": "boolean"
+       },
+       "community": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Community"
        }
       },
       "required": [
@@ -257,6 +269,56 @@
        "result"
       ],
       "title": "agent_spawnOutput",
+      "type": "object"
+     },
+     "_meta": {
+      "category": "agents"
+     }
+    },
+    {
+     "name": "community_search",
+     "description": "Search the community library — agents, skills and prompts published by people or imported from public repositories\nunder their licence — for one made for `need` (a few words: « reverse engineer a binary », « write release notes »).\nLists the best matches (id, kind, title, what it is for, source and licence) and the repositories listed by link only.\nStart one with agent_spawn(community=<id>, task=...): it runs as your child, under your control.\n\nneed: what you want done, in a few words; entries holding more of them rank first.\nkind: \"agent\", \"skill\" or \"prompt\" only; every kind when omitted.",
+     "inputSchema": {
+      "properties": {
+       "need": {
+        "title": "Need",
+        "type": "string"
+       },
+       "kind": {
+        "anyOf": [
+         {
+          "enum": [
+           "prompt",
+           "agent",
+           "skill"
+          ],
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Kind"
+       }
+      },
+      "required": [
+       "need"
+      ],
+      "title": "community_searchArguments",
+      "type": "object"
+     },
+     "outputSchema": {
+      "properties": {
+       "result": {
+        "title": "Result",
+        "type": "string"
+       }
+      },
+      "required": [
+       "result"
+      ],
+      "title": "community_searchOutput",
       "type": "object"
      },
      "_meta": {
@@ -1256,7 +1318,7 @@
     },
     {
      "name": "translate",
-     "description": "Translate a text into another language with your company's text model, keeping its layout.\n\nUse this for every translation the person asks for. text: up to 50,000 characters. target_language: a language tag\n(fr, en, en-GB, de, es…). source_language: when known (else read from the text). context: what the text is and for\nwhom (« a reply to a client », « app labels »), so its register is kept.\n\nIt runs on the Galaius platform with your company's connection: charged to the person you work for, held to their\nceilings and the company's, and shown in Galaius › Facturation, linked to your run. Ask first WITHOUT max_cost_usd: the\nanswer is its price, nothing made, nothing charged. Then ask again with max_cost_usd (dollars, platform fee included)\nat or above that price to make it. folder: where its files go, inside your working folder (made when missing).\n\nReturns the price, or the translation and the file it is saved in (shown in the person's chat), or why nothing was\nmade.",
+     "description": "Translate a text into another language with your company's text model, keeping its layout.\n\nUse this for every translation the person asks for. text: any length. target_language: a language tag\n(fr, en, en-GB, de, es…). source_language: when known (else read from the text). context: what the text is and for\nwhom (« a reply to a client », « app labels »), so its register is kept.\n\nIt runs on the Galaius platform with your company's connection: charged to the person you work for, held to their\nceilings and the company's, and shown in Galaius › Facturation, linked to your run. Ask first WITHOUT max_cost_usd: the\nanswer is its price, nothing made, nothing charged. Then ask again with max_cost_usd (dollars, platform fee included)\nat or above that price to make it. folder: where its files go, inside your working folder (made when missing).\n\nReturns the price, or the translation and the file it is saved in (shown in the person's chat), or why nothing was\nmade.",
      "inputSchema": {
       "properties": {
        "text": {
@@ -1573,7 +1635,6 @@
           "type": "string"
          },
          "text": {
-          "maxLength": 500,
           "minLength": 1,
           "title": "Text",
           "type": "string"
@@ -1646,7 +1707,6 @@
           "type": "string"
          },
          "text": {
-          "maxLength": 500,
           "minLength": 1,
           "title": "Text",
           "type": "string"

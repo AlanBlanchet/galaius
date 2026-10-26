@@ -19,11 +19,13 @@ from cyclopts import App, Parameter
 from pydantic import ValidationError
 
 from galaius import feedback, live_sources, model_catalog, ollama
-from galaius_core import AGENT_TOUCH_SCOPES, ASKED_BY_MAX, IMAGE_TYPES
+from galaius_core import AGENT_TOUCH_SCOPES, ASKED_BY_MAX, IMAGE_TYPES, CommunityKind
 
 from galaius.agents import agent_queue, handback, messaging, relations
 from galaius.agents import providers as agent_providers
 from galaius.agents import registry as reg
+from galaius.agents import community as community_agents
+from galaius.agents.community import CommunityAgent
 from galaius.agents.conversations import ConversationAnswers
 from galaius.agents.subscriptions import SubscriptionRefused
 from galaius.agents.catalog import AgentCatalog
@@ -853,6 +855,13 @@ def agents_console(workspace_root: Path) -> None:
     run_console(workspace_root)
 
 
+@agents_app.command(name="community")
+def agents_community(need: str, kind: CommunityKind | None = None) -> None:
+    """Search the community library for an agent, skill or prompt made for NEED; start one with
+    `galaius agents spawn --community <id> "<task>"`."""
+    print(CommunityAgent.search(need, kind))
+
+
 @agents_app.command(name="list")
 def agents_list(foreign: bool = False, session_id: str | None = None, all_sessions: bool = False) -> None:
     """Show launched runs belonging to this conversation, including nested children.
@@ -930,8 +939,7 @@ def agents_events(run_id: str, limit: int = 30, machine: str | None = None) -> N
         print(f"  {'queued':11} {waiting}" if waiting else f"No events for {run_id!r}.")
         return
     shown = events[-max(1, limit):]
-    for event in shown:
-        print(f"  {event.kind:11} {event.summary(viewer=resolved)}")
+    print(community_agents.shown(reg.get_run(resolved), "\n".join(f"  {event.kind:11} {event.summary(viewer=resolved)}" for event in shown)))
     if report := handback.read_inline(resolved, shown):
         print(f"\n{report}")
 
@@ -1644,8 +1652,12 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
                  fence: Annotated[Path | None, Parameter(name="--fence")] = None,
                  for_run: Annotated[str | None, Parameter(name="--for")] = None,
                  continues: str | None = None, fresh: bool = False, single: bool = False, helper: bool = False,
-                 cross_project: Annotated[bool, Parameter(name="--cross-project")] = False) -> None:
+                 cross_project: Annotated[bool, Parameter(name="--cross-project")] = False,
+                 community: str | None = None) -> None:
     """Start an agent and return its id immediately, without waiting for it to finish.
+
+    --community <entry id> starts the community library's entry (`galaius agents community "<need>"` lists them) as the
+    child of the agent run asking, under its control: its role, tools, folder and permission mode, no MCP server.
 
     --machine <name or id> starts it on another of your computers instead, through the server, in
     --folder (an agent folder of that computer, or a folder beneath one); --permission-mode there
@@ -1707,6 +1719,11 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
     if machine is not None:
         _spawn_on_machine(machine, folder, task, agent=agent, provider=provider, model=model, permission=permission_mode)
         return
+    try:
+        started_from = CommunityAgent.read(community) if community is not None else None
+    except (ValueError, CatalogConnectionError) as error:
+        print(f"ERROR: community entry {community!r} cannot start: {error}", file=sys.stderr)
+        raise SystemExit(2) from None
     if folder is not None:
         print("ERROR: --folder names a folder on another computer: pass --machine too (here, use --cwd)", file=sys.stderr)
         raise SystemExit(2)
@@ -1726,6 +1743,7 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
                 quota_window=quota_window,
                 fence=FenceSpec.model_validate_json(fence.read_text()) if fence is not None else None,
                 for_run=for_run, single=single, continues=continues, helper=helper, cross_project=cross_project,
+                community=started_from,
             )
             if (refused := spawn.naming_refusal()) is not None:
                 print(f"ERROR: {refused}", file=sys.stderr)

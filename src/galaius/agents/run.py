@@ -36,6 +36,8 @@ from galaius.agents import registry as reg
 from galaius.agents import quota, relations
 from galaius.agents import run_folder
 from galaius.agents.catalog import AgentCatalog
+from galaius.agents import community as community_agents
+from galaius.agents.community import CommunityAgent
 from galaius.agents.ceiling import contained
 from galaius.agents.events import model_spoke, stream_lines
 from galaius.fence import FenceSpec, fenced
@@ -784,17 +786,19 @@ class AheadLaunch(BaseModel):
     fence: FenceSpec | None = None
 
     @staticmethod
-    def turn_arguments(provider: AgentProvider, run_id: str, fence: FenceSpec | None, *, role: str | None) -> dict[str, ClaudeTurnSettings]:
+    def turn_arguments(provider: AgentProvider, run_id: str, fence: FenceSpec | None, *, role: str | None, isolated: bool = False) -> dict[str, ClaudeTurnSettings]:
         """What each turn of agent run `run_id` playing `role` runs under where `provider` takes it (`takes_turn_settings`): the
         name peers message it by, its role then the id `galaius agents list` prints (`app-engineer-0f9576d3`: unique on the
         machine; a peer naming only the role gets each running one back to pick from); the configured compaction window and Bash output; the messages sent to it while it works where it reads them
         (`agent_queue.inbox_hook`); its launch task once a compaction replaced its conversation (`reg.brief_hook`),
-        except inside a `fence`, where the run's record and galaius's interpreter are out of reach (its home is empty)."""
+        except inside a `fence`, where the run's record and galaius's interpreter are out of reach (its home is empty). `isolated`:
+        a community agent's (`ClaudeTurnSettings.isolated`), named `community-<short id>` so no peer takes it for its caller's role."""
         if not provider.takes_turn_settings:
             return {}
         return {"turn": ClaudeTurnSettings(compact_window=config.claude_compact_window, bash_output_chars=config.claude_bash_output_chars,
                                      inbox_hook=agent_queue.inbox_hook(run_id) if provider.reads_mid_turn else None,
-                                     brief_hook=None if fence else reg.brief_hook(run_id), name=f"{role or 'agent'}-{reg.short_id(run_id)}")}
+                                     brief_hook=None if fence else reg.brief_hook(run_id), isolated=isolated,
+                                     name=f"{'community' if isolated else role or 'agent'}-{reg.short_id(run_id)}")}
 
     def digest(self, environment: Mapping[str, str], *parts: str) -> str:
         """`parts`, today's date (the one a prompt states), which folder it is (`_folder_identity`) and
@@ -868,6 +872,8 @@ class ChildLaunch(AheadLaunch):
     meshed: bool
     #: The role the child plays (`GatewayServed.ROLE`); None: none, even one its parent's environment holds.
     role: str | None
+    #: A community agent's child (`ClaudeTurnSettings.isolated`).
+    isolated: bool = False
 
     #: The run id launches are compared under (`key`).
     _ANY_RUN: ClassVar[str] = str(uuid.UUID(int=0))
@@ -880,7 +886,7 @@ class ChildLaunch(AheadLaunch):
     def command_arguments(self, run_id: str, session: str) -> dict[str, object]:
         arguments = {**self.arguments, "run_id": session, "environment": self.env(run_id),
                      "mcp_config": mesh_config(run_id=run_id, role=self.role) if self.meshed else None}
-        return arguments | self.turn_arguments(self.provider, run_id, self.fence, role=self.role)
+        return arguments | self.turn_arguments(self.provider, run_id, self.fence, role=self.role, isolated=self.isolated)
 
     async def launch(self, run_id: str, session: str, task: str) -> asyncio.subprocess.Process:
         """Run `run_id`'s child doing `task` (as vendor session `session`): handed on its stdin as to a child started
@@ -959,14 +965,16 @@ class ResumeLaunch(AheadLaunch):
         provider.validate_tool_policy(policy.tools_for(run.agent), run.denied_tools, coarse_accepted=coarse_accepted)
         if refusal := provider.sandbox_refusal():
             raise ModelUnavailable(f"{provider.name} cannot continue this run on this PC: {refusal}")
-        env = {**GatewayServed.environment(environment, run.agent), **routed, "GALAIUS_RUN_ID": run.run_id, "GALAIUS_PARENT_RUN_ID": run.run_id}
+        env = {**GatewayServed.environment(environment, None if run.community else run.agent), **routed, "GALAIUS_RUN_ID": run.run_id,
+               "GALAIUS_PARENT_RUN_ID": run.run_id}
         arguments = dict(
             model=model, permission_mode=run.permission_mode, reasoning=reasoning, agent=run.agent,
             allowed_tools=policy.tools_for(run.agent), denied_tools=run.denied_tools,
-            agent_prompt=_role_prompt(catalog, run.agent, provider, env) if catalog is not None else None,
+            agent_prompt=(run.community.prompt(run.agent, run.parent_run_id or "") if run.community is not None
+                          else _role_prompt(catalog, run.agent, provider, env) if catalog is not None else None),
             mcp_config=mesh_config(run_id=run.run_id, role=run.agent) if run.mesh_enabled and not already_meshed(provider.name) else None,
             coarse_accepted=coarse_accepted, base_url=routed.get("OPENAI_BASE_URL"),
-            **AheadLaunch.turn_arguments(provider, run.run_id, run.fence, role=run.agent),
+            **AheadLaunch.turn_arguments(provider, run.run_id, run.fence, role=run.agent, isolated=run.community is not None),
         )
         if provider.name == "claude" and reasoning is not None:
             env["CLAUDE_CODE_EFFORT_LEVEL"] = reasoning
@@ -1399,6 +1407,7 @@ async def run_agent(
     asked_by: tuple[str, ...] = (),
     inherited_asks: Mapping[str, float] | None = None,
     passed_over: tuple[tuple[str, str | None], ...] = (),
+    community: CommunityAgent | None = None,
 ) -> RunHandle:
     """Spawn an agent run and register it, returning as soon as it is alive.
 
@@ -1420,6 +1429,11 @@ async def run_agent(
     ``environment`` is the one the run's CLI starts in and its candidates are judged against
     (credentials, the folder-settings switch, a parent run's tag); this process's own when None.
     A long-lived caller serving others (the machine runner) passes the scrubbed one it owns.
+
+    ``community`` starts a community agent (`galaius.agents.community`) as the child of the run asking: as that run's role,
+    revision, permission mode and denied tools (plus `community.DENIED_TOOLS`), with no MCP server, inside its own fence
+    working in its own folder, its prompt the entry's delimited text, named after the entry. Refused for a caller that is
+    not an agent run playing a role, and where this PC cannot build the fence.
 
     ``passed_over`` names candidates (provider, model) it never starts on: each model whose limit refused the brief it
     relaunches (`registry.Relaunch.passed_over`). Skipped in the ranked walk as refused for quota, never re-ranked.
@@ -1476,6 +1490,18 @@ async def run_agent(
             if provider is not None and provider.name != program.name:
                 raise SubscriptionRefused("pinned_elsewhere", f"this subscription is a {program.name} login; it never runs {provider.name}")
             provider = program
+    if community is not None:
+        if parent_run is None or not parent_run.agent:
+            raise ModelUnavailable("A community agent works for the agent run that starts it: start it from an agent run playing a role")
+        if provider is not None and provider.name != community_agents.PROVIDER:
+            raise ModelUnavailable(f"A community agent runs on {community_agents.PROVIDER} only: {provider.name} cannot switch off its shell, web search and MCP servers")
+        provider = PROVIDERS[community_agents.PROVIDER]
+        # Less than its caller: its role, revision and permission mode, its denials and ours, no MCP server (`isolated`), in
+        # the community fence (`CommunityAgent.fence`), working in its own folder.
+        agent, agent_ref, delegate, mesh, name = parent_run.agent, parent_run.agent_ref, None, False, community.label()
+        permission_mode, denied_tools = parent_run.permission_mode, tuple(dict.fromkeys((*parent_run.denied_tools, *denied_tools, *community_agents.DENIED_TOOLS)))
+        community, fence = community.fence(cwd, pinned)
+        cwd = str(community.work)
     validated_images = validate_image_paths(image_paths)
     validate_denied_tools(denied_tools)
     for provider_name, mode in (provider_modes or {}).items():
@@ -1691,7 +1717,7 @@ async def run_agent(
                  if policy.catalog is not None and policy.catalog.stale else "")
         brief = (
             f"{LAUNCH_STAMP}{agent}; model={candidate_model}; reasoning={candidate_effort}; criterion={required_model}.\n{stale}"
-            f"First progress message: [{agent}] followed by your concrete task; then start immediately.\n"
+            f"First progress message: [{'community' if community else agent}] followed by your concrete task; then start immediately.\n"
             "You run headless: ending your turn ends this run, and a background job's completion notice never "
             "reaches it. Wait for a job you started (tests, deploy, generation) with a bounded foreground poll "
             "loop of at most 10 minutes per call. Waiting on another agent: send your request and end your turn; "
@@ -1720,7 +1746,9 @@ async def run_agent(
         )
         if candidate_routed.get("OPENAI_BASE_URL"):
             command_kwargs["base_url"] = candidate_routed["OPENAI_BASE_URL"]
-        if policy.catalog is not None:
+        if community is not None:
+            command_kwargs["agent_prompt"] = community.prompt(agent, parent or "")
+        elif policy.catalog is not None:
             command_kwargs["agent_prompt"] = _role_prompt(policy.catalog, agent, candidate_provider, env)
         if denied_tools:
             command_kwargs["denied_tools"] = denied_tools
@@ -1732,7 +1760,8 @@ async def run_agent(
             provider=candidate_provider, cwd=cwd, environment=env, arguments=command_kwargs,
             # Once, never twice: skip the mesh when the provider's own config already registers
             # galaius — else the child would carry two registrations of the same server.
-            meshed=mesh and not already_meshed(candidate_provider.name), fence=candidate_fence, role=agent,
+            meshed=mesh and not already_meshed(candidate_provider.name), fence=candidate_fence, role=None if community else agent,
+            isolated=community is not None,
         )
         # A child started ahead for this very launch skips its CLI's own startup. Its run id is the
         # vendor session id, so it serves only the first child handed to that vendor.
@@ -1765,7 +1794,7 @@ async def run_agent(
             candidates=candidates, skipped=tuple(skipped), denied_tools=denied_tools,
             provider_session_id=vendor_session if candidate_provider.name == "claude" else None,
             agent_ref=selected_ref, definition_path=definition_path, fence=candidate_fence, subscription=candidate_pin, media=shown,
-            login=login, asked_by=asked_by, inherited_asks=inherited_asks,
+            login=login, asked_by=asked_by, inherited_asks=inherited_asks, community=community,
         )
         # A model coming off a block is the re-check: it gets long enough to say "still refused"
         # that the answer falls through to the next candidate instead of killing this run.
@@ -1843,7 +1872,7 @@ async def run_agent(
         candidates=candidates, skipped=tuple(skipped), denied_tools=denied_tools,
         provider_session_id=run_id if provider.name == "claude" else None,
         agent_ref=selected_ref, definition_path=definition_path, fence=fence, subscription=pinned, media=shown,
-        login=chosen_login, asked_by=asked_by, inherited_asks=inherited_asks,
+        login=chosen_login, asked_by=asked_by, inherited_asks=inherited_asks, community=community,
     )
     # This launch takes over its role's earlier ones under the same launcher that its vendor refused before a turn.
     reg.take_over_refused(registered)

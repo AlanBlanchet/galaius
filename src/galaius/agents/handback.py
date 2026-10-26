@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from galaius.agents import agent_queue, messaging, relations
 from galaius.agents.events import AgentEvent
 from galaius.agents import registry as reg
+from galaius.agents.community import CommunityAgent, quote
 from galaius.agents.relations import final_words, live, one_read, owed
 from galaius.agents.spawn_line import SpawnLine
 from galaius.config import Config
@@ -45,6 +46,8 @@ class Report(BaseModel):
     #: The run whose brief it took, refused by its plan's limit before it started (`reg.Relaunch.line`), and why its own
     #: relaunch could not start; "" for neither.
     relaunched: str = ""
+    #: The community entry it ran: its words are quoted to its reader (`community.quote`), never read as its own.
+    community: CommunityAgent | None = None
 
     @classmethod
     def of(cls, run: reg.AgentRun) -> "Report":
@@ -56,8 +59,9 @@ class Report(BaseModel):
         if _pending(run) or reg.relaunch_pending(run):
             said = reg.vendor_said_at(run) if run.process_running() else None  # a queued item alone: no turn to be silent
             return cls(run_id=run.run_id, agent=run.agent, status=run.status, pending=True, text="", relaunched=relaunched,
-                       silent_for=None if said is None else max(0.0, time.time() - said))
-        return cls(run_id=run.run_id, agent=run.agent, status=run.status, pending=False, text=final_words(run.run_id), relaunched=relaunched)
+                       silent_for=None if said is None else max(0.0, time.time() - said), community=run.community)
+        return cls(run_id=run.run_id, agent=run.agent, status=run.status, pending=False, text=final_words(run.run_id), relaunched=relaunched,
+                   community=run.community)
 
     @classmethod
     def answering(cls, run: reg.AgentRun, asker: str) -> "Report":
@@ -81,6 +85,9 @@ class Report(BaseModel):
         return report if said is None else report.model_copy(update={"text": said})
 
     def section(self, limit: int | None = REPORT_MAX) -> str:
+        if self.community is not None:
+            text = quote(self.text or "(it ended without a final message)")
+            return f"## {self.community.label()} {self.run_id[:8]} — {self.status}\n{text}"
         text = self.text if limit is None or len(self.text) <= limit else f"{self.text[:limit]}\n… (clipped; `galaius agents events {self.run_id}`)"
         lead = f"{self.relaunched}\n" if self.relaunched else ""
         return f"## {self.agent or 'agent'} {self.run_id[:8]} — {self.status}\n{lead}{text or '(it ended without a final message)'}"

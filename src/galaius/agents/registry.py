@@ -50,6 +50,7 @@ from galaius.caller import Caller
 from galaius.agents.ceiling import contained, end_run_scope, is_run_scope
 from galaius.agents.providers import PROVIDERS, AgentProvider, DeniedTool
 from galaius.agents.subscriptions import RunSubscription, Subscription, SubscriptionRefused
+from galaius.agents.community import CommunityAgent
 from galaius.fence import FenceSpec
 from galaius.paths import UserPaths
 from galaius.file_lock import LockTimeout, SoleHolder, exclusive
@@ -447,6 +448,9 @@ class AgentRun(ContextGauge):
     replaced_by: RunReplacement | None = None
     #: The run whose brief it took, refused by its plan's limit before its first turn did anything (`Relaunch`).
     relaunched_from: Relaunch | None = None
+    #: The community entry it runs (`galaius.agents.community`): every turn's prompt is rebuilt from it. Its `agent` is
+    #: its caller's role, for what a launch decides alone: it plays no role (`plays`).
+    community: CommunityAgent | None = None
     #: When its brief was relaunched on another model (`claim_resume`): once per run; a relaunch that could not start leaves
     #: it to its reset (`limit_resume_at`).
     relaunched_at: float | None = None
@@ -466,6 +470,11 @@ class AgentRun(ContextGauge):
     inherited_asks: dict[str, float] = Field(default_factory=dict, exclude_if=lambda value: not value)
 
     status: RunStatus = "running"
+
+    def plays(self, role: str | None) -> bool:
+        """Whether its team hands it `role`'s work (takes it over, gives it the role's next task): a community agent plays
+        none, whatever `agent` it runs as."""
+        return bool(role) and self.community is None and self.agent == role
 
     @property
     def askers(self) -> frozenset[str]:
@@ -1290,7 +1299,7 @@ def register(*, run_id: str, pid: int | None, provider: str, name: str, task: st
              denied_tools: tuple[DeniedTool, ...] = (), fence: FenceSpec | None = None,
              subscription: RunSubscription | None = None, media: tuple[str, ...] = (),
              login: str = "", asked_by: tuple[str, ...] = (),
-             inherited_asks: Mapping[str, float] | None = None) -> AgentRun:
+             inherited_asks: Mapping[str, float] | None = None, community: CommunityAgent | None = None) -> AgentRun:
     provider_impl = PROVIDERS.get(provider)
     definition = definition_path
     if definition is None and agent_ref is None:
@@ -1304,7 +1313,7 @@ def register(*, run_id: str, pid: int | None, provider: str, name: str, task: st
                    reasoning=reasoning,
                    candidates=candidates, skipped=skipped, denied_tools=denied_tools, fence=fence,
                    provider_session_id=provider_session_id, subscription=subscription, login=login,
-                   asked_by=asked_by, inherited_asks=dict(inherited_asks or {}),
+                   asked_by=asked_by, inherited_asks=dict(inherited_asks or {}), community=community,
                    lifecycle_token=secrets.token_hex(16),
                    started_at=time.time())
     _write(run)
@@ -1345,11 +1354,11 @@ def take_over_refused(run: AgentRun, *, parent: str | None = None, at: float | N
     (« The 'gpt-6-astra' model is not supported when using Codex with a ChatGPT account. », 2026-10-16) read as a cut run
     to continue on every surface. A run with no parent takes over nothing: the session id it shares is a whole PC's web
     conversations. Returns the run id it took over."""
-    if run.agent is None or (launcher := parent or run.parent_run_id) is None:
+    if not run.plays(run.agent) or (launcher := parent or run.parent_run_id) is None:
         return None
     since = run.started_at if at is None else at
     candidates = sorted((stored for stored in _stored_records()
-                         if stored.run_id != run.run_id and stored.agent == run.agent and stored.replaced_by is None
+                         if stored.run_id != run.run_id and stored.plays(run.agent) and stored.replaced_by is None
                          and since - window <= stored.started_at < since
                          and stored.status in _REFUSABLE_ENDINGS and stored.parent_run_id == launcher),
                         key=lambda stored: stored.started_at, reverse=True)

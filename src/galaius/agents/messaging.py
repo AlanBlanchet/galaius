@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict
 from galaius.caller import Caller
 from galaius_core import ReadsAt
 
-from galaius.agents import agent_queue, relations
+from galaius.agents import agent_queue, community, relations
 from galaius.agents.critic_rounds import CriticRounds, turn_of
 from galaius.agents import registry as reg
 from galaius.agents.catalog_connection import CatalogOffline
@@ -404,7 +404,7 @@ async def wait_for_reply(delivery: Delivery) -> str:
     delivery.state = "replied"
     origin = reg.get_run(delivery.run_id)
     header = origin.handoff_header() if origin is not None else ""
-    return f"{delivery.text}\n{header}{replies[-1]}"
+    return f"{delivery.text}\n{header}{community.shown(origin, replies[-1])}"
 
 
 #: Why a process `systemd-run` started may not send or spawn as no run (`Caller.unowned`).

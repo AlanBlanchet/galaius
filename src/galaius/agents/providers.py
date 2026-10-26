@@ -939,6 +939,9 @@ class ClaudeTurnSettings(BaseModel):
     #: The name a peer session's SendMessage addresses it by (`-n`): `<role>-<short run id>`. Unnamed, the CLI names a session
     #: after its folder (`<folder>-<2 hex>`) and a resume without `-n` drops the name: no peer finds a run by its role.
     name: str
+    #: No MCP server but the one galaius hands it (`--strict-mcp-config`): none the person configured for himself, so no
+    #: credential of his reaches it through one (a community agent, `galaius.agents.community`).
+    isolated: bool = False
 
     def arguments(self) -> list[str]:
         hooks = {
@@ -947,7 +950,8 @@ class ClaudeTurnSettings(BaseModel):
         }
         settings = {"autoCompactWindow": self.compact_window, "bashOutputMaxChars": self.bash_output_chars, **({"hooks": hooks} if hooks else {})}
         notes = [note for hook, note in ((self.inbox_hook, INBOX_NOTE), (self.brief_hook, BRIEF_NOTE)) if hook]
-        return ["-n", self.name, "--settings", json.dumps(settings)] + (["--append-system-prompt", "\n\n".join(notes)] if notes else [])
+        return (["-n", self.name, "--settings", json.dumps(settings)] + (["--append-system-prompt", "\n\n".join(notes)] if notes else [])
+                + (["--strict-mcp-config"] if self.isolated else []))
 
 
 class ClaudeCodeProvider(AgentProvider):
