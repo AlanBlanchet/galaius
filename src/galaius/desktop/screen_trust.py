@@ -35,6 +35,7 @@ from galaius_core import (
     ScreenAssertion,
     ScreenEndReason,
     ScreenOffer,
+    Refused,
     ScreenRefusal,
     ScreenPasskey,
     ScreenSealed,
@@ -46,7 +47,6 @@ from pydantic import ValidationError
 
 from galaius.paths import UserPaths
 from galaius.private_files import PRIVATE_FILES
-from galaius.refused import Refused
 
 logger = logging.getLogger("galaius")
 

@@ -18,7 +18,7 @@ import hmac
 import logging
 import time
 
-from galaius_core import MACHINE_AGENT_REQUESTS, PROJECTS_ROOT, PROJECTS_ROOT_FEATURE, AgentProviderState, AgentRefusal, MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentSettings, MachineAgentSettingsUpdate, MachineRef, MachineWorkspaceJob, ScreenAssertion, ScreenOpenRequest, ScreenReadiness, ScreenStatusRequest, SubscriptionLimits, WebLoad
+from galaius_core import MACHINE_AGENT_REQUESTS, PROJECTS_ROOT, PROJECTS_ROOT_FEATURE, AgentProviderState, AgentRefusal, Refused, MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentSettings, MachineAgentSettingsUpdate, MachineRef, MachineWorkspaceJob, ScreenAssertion, ScreenOpenRequest, ScreenReadiness, ScreenStatusRequest, SubscriptionLimits, WebLoad
 from galaius.desktop.screen_desk import ScreenDesk
 from galaius.machine_programs import AgentPrograms
 from galaius.agents import agent_queue, messaging
@@ -26,7 +26,8 @@ from galaius.agents import registry as reg
 from galaius.agents.host import ConversationRefused
 from galaius.agents.run import ModelUnavailable
 from galaius.agents.subscriptions import RunSubscription, Subscription, SubscriptionRefused
-from galaius.machine_agents import LogRing, MachineAgents, MachineSessions, UnderWay, WebFull, WebRun, WebRuns, interaction_digest, redact
+from galaius.machine_agents import LogRing, MachineAgents, MachineSessions, WebRun, WebRuns, interaction_digest, redact
+from galaius.workspace_git import AgentRefused
 from galaius.fence import FenceSpec
 from galaius.config import UserConfig
 from galaius import machines
@@ -873,7 +874,7 @@ def test_a_start_asked_again_under_its_id_is_never_a_second_agent(base: Path, tm
             first.cancel()
             return (await _agents(base, tmp_path).answer(request),)
         if cut == "outlived":
-            with pytest.raises(UnderWay):
+            with pytest.raises(AgentRefused, match="still starting"):
                 await first
             monkeypatch.setattr("galaius.machine_agents.START_SECONDS", 5.0)  # asked again while its agent still launches
             return (await _agents(base, tmp_path).answer(request),)
@@ -1094,10 +1095,10 @@ def test_the_web_cap_counts_conversations_never_the_agents_they_launched(base: P
     assert agents.runs.live() == 2
     run(parent_run_id=started(kind="conversation", status="waiting"))  # idle itself, one of its agents working: it counts
     started()
-    with pytest.raises(WebFull, match=r"^4 conversations started from the web are already working on this computer \(at most 4\)") as refused:
+    with pytest.raises(AgentRefused, match=r"^4 conversations started from the web are already working on this computer \(at most 4\)") as refused:
         agents._prepare_start(start, None)
-    assert refused.value.answered == AgentRefusal(reason="web_full")   # typed for every web: an older one reads only the sentence
-    with pytest.raises(WebFull) as refused:
+    assert Refused.refusal_of(refused.value) == AgentRefusal(reason="web_full")   # typed for every web: an older one reads only the sentence
+    with pytest.raises(AgentRefused) as refused:
         agents._prepare_start(start.model_copy(update={"web_limit": 4}), None)
     assert refused.value.refusal.reason == "web_full"
     listed = _answer(agents, _request("runs"))
@@ -1423,7 +1424,7 @@ def test_a_pasted_code_reaches_its_sign_in_through_the_web_request(base: Path, t
     ModelUnavailable,            # no ranked candidate can start on this PC
     UnsupportedToolPolicy,       # this CLI cannot express the role's tool restrictions
     PolicyError,                 # the agent policy itself refuses it
-    WorkspaceRefused, WebFull, UnderWay,
+    AgentRefused,                # web_full, under_way, a project folder's failure (WorkspaceRefused)
 ])
 def test_every_refusal_a_launch_raises_is_one_the_machine_channel_answers(refusal):
     """`machines.py` answers an agent request it could not perform by catching this one tuple; a

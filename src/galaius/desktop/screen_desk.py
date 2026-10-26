@@ -28,6 +28,7 @@ from galaius_core import (
     ScreenOpened,
     ScreenOpenRequest,
     ScreenReadiness,
+    Refused,
     ScreenRefusal,
     ScreenSealed,
     ScreenStatusRequest,
@@ -40,7 +41,6 @@ from pydantic import ValidationError
 from galaius.desktop.backend import DesktopUnsupportedError
 from galaius.desktop.screen import FrameGrabber, ScreenSession, ScreenStreamer
 from galaius.desktop.screen_switch import ScreenSwitch
-from galaius.refused import Refused
 from galaius.desktop.screen_trust import (
     Admitted,
     ScreenEnd,
@@ -192,10 +192,9 @@ class ScreenDesk:
             if isinstance(request, ScreenOpenRequest):
                 return MachineAgentAnswer(request_id=request.id, screen_opened=await self._open(request, send))
             return MachineAgentAnswer(request_id=request.id, screen=await asyncio.to_thread(self.readiness))
-        except PermissionError as refused:  # one the gate did not name is said as refused, never as a reason it is not
+        except Refused as refused:  # one the gate did not name is said as refused, never as a reason it is not
             logger.warning("screen %s refused: %s", request.op, refused)
-            return MachineAgentAnswer(request_id=request.id, error=str(refused)[:400],
-                                      refusal=(refused.answered if isinstance(refused, Refused) else None) or ScreenRefusal(reason="refused"))
+            return MachineAgentAnswer(request_id=request.id, error=str(refused)[:400], refusal=Refused.refusal_of(refused) or ScreenRefusal(reason="refused"))
 
     def readiness(self) -> ScreenReadiness:
         trust = self.gate.trust.read()
