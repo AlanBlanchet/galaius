@@ -39,7 +39,7 @@ from uuid import UUID
 
 from pydantic import ConfigDict, BaseModel, Field, PrivateAttr, ValidationInfo, field_validator
 from galaius.agents import quota
-from galaius_core import ASKED_BY_MAX, FILE_KEY, KEPT_FILE_MAX, MACHINE_AGENT_MEDIA, MEDIA_KEY, file_key, MODEL_ID_MAX, AgentMedia, AgentRevisionRef, ContextGauge, PromptExecutionRef, RunReplacement, StopActor
+from galaius_core import ASKED_BY_MAX, ReasoningLevel, RecordedReasoning, FILE_KEY, KEPT_FILE_MAX, MACHINE_AGENT_MEDIA, MEDIA_KEY, file_key, MODEL_ID_MAX, AgentMedia, AgentRevisionRef, ContextGauge, PromptExecutionRef, RunReplacement, StopActor
 
 from galaius.agents.events import (
     CONTEXT_FIELDS, PERSON_SENDER, TOKEN_FIELDS, AgentEvent, MessageFields, RunCut, TokenUsage, UsageLedger, answered_line, its_work, model_spoke,
@@ -395,6 +395,8 @@ class AgentRun(ContextGauge):
     requested_model: str | None = None
     requested_criterion: str | None = None
     reasoning: str | None = None
+    #: The effort a person set on this conversation (`AgentMessageSpec.reasoning`): its turns run at it over its role's.
+    reasoning_set: RecordedReasoning = None
     #: A policy resolved while this session was already active. The vendor queue keeps the
     #: current session settings, so this is deliberately separate from the effective fields above.
     pending_model: str | None = None
@@ -1290,7 +1292,7 @@ def register(*, run_id: str, pid: int | None, provider: str, name: str, task: st
              cwd: str = "", model: str | None = None, parent_run_id: str | None = None,
              agent: str | None = None, permission_mode: str | None = None,
              mesh_enabled: bool = False,
-             requested_criterion: str | None = None, reasoning: str | None = None,
+             requested_criterion: str | None = None, reasoning: str | None = None, reasoning_set: str | None = None,
              provider_session_id: str | None = None,
              agent_ref: AgentRevisionRef | None = None,
              definition_path: Path | None = None, session_id: str | None = None,
@@ -1310,7 +1312,7 @@ def register(*, run_id: str, pid: int | None, provider: str, name: str, task: st
                    agent=agent, agent_ref=agent_ref, definition_path=str(definition) if definition else None,
                    permission_mode=permission_mode, requested_criterion=requested_criterion,
                    mesh_enabled=mesh_enabled,
-                   reasoning=reasoning,
+                   reasoning=reasoning, reasoning_set=reasoning_set,
                    candidates=candidates, skipped=skipped, denied_tools=denied_tools, fence=fence,
                    provider_session_id=provider_session_id, subscription=subscription, login=login,
                    asked_by=asked_by, inherited_asks=dict(inherited_asks or {}), community=community,
@@ -1343,7 +1345,15 @@ def task_taken(run_id: str, task: str) -> AgentRun | None:
     (`spawn_line.Spawn.of_run`). Returns the record as it now stands, None when there is none.
     """
     with record_lock(run_id):
-        return _merge_record_locked(run_id, {"task": task}) if get_run(run_id) is not None else None
+        # A task handed on is not the conversation a person set an effort for: it runs at its role's.
+        return _merge_record_locked(run_id, {"task": task, "reasoning_set": None}) if get_run(run_id) is not None else None
+
+
+def reasoning_set(run_id: str, level: ReasoningLevel | None) -> AgentRun | None:
+    """A person set `run_id`'s effort (`AgentMessageSpec.reasoning`): its next turns run at `level` over its role's
+    (`Policy.effort_for`); None: at its role's again. The record as it now stands, None when there is none."""
+    with record_lock(run_id):
+        return _merge_record_locked(run_id, {"reasoning_set": level}) if get_run(run_id) is not None else None
 
 
 def take_over_refused(run: AgentRun, *, parent: str | None = None, at: float | None = None,

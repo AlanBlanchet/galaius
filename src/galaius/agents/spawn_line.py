@@ -303,8 +303,8 @@ class Spawn(BaseModel):
             return "never got a first turn"
         if not busy and revision is not None and (run.agent_ref is None or run.agent_ref.id != revision.id):
             return "runs another agent of that name"
-        if not busy and relations.context_full(run):
-            return f"has its context near full ({run.context_tokens}/{run.context_window})"
+        if not busy and (full := relations.too_full_for_a_task(run)):
+            return full
         if self.provider is not None and run.provider != self.provider:
             return f"runs on {run.provider}"
         # The run records the permission it got: never a wider run than this spawn would get, e.g. one a person started unrestricted.

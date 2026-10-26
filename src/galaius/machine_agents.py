@@ -948,6 +948,7 @@ class MachineAgents(BaseModel):
                         provider_for(request.provider) if request.provider is not None else None, request.text,
                         cwd=str(folder), agent=str(request.role), permission_mode=self.scope(request.permission), image_paths=images,
                         quota_window=4.0, fence=fence, environment=environment, warm=self.warm, subscription=pinned, choices=request,
+                        reasoning=request.reasoning,
                     )
             except BaseException:
                 if review is not None:
@@ -1039,6 +1040,8 @@ class MachineAgents(BaseModel):
 
     async def _send(self, request: AgentSendRequest) -> MachineAgentAnswer:
         run = await asyncio.to_thread(self._pinned_run, request)
+        if request.reasoning is not None and self._kind(request.run_id) != "agent":
+            raise PermissionError("an editor conversation runs at the effort its editor sets; only an agent's is set here")
         media = await asyncio.to_thread(reg.RunMedia.keep, run.run_id, request.images)
         if self._kind(request.run_id) == "continued":
             return await asyncio.to_thread(self._continue_turn, run, request.text, request_id=request.id, media=media)
@@ -1050,13 +1053,21 @@ class MachineAgents(BaseModel):
         # this point is that run's failure, in its events.
         environment = await asyncio.to_thread(self.launcher_environment_in, Path(run.cwd))
         turn = agent_queue.MessageTurn(media=media)
-        if self.followups is not None:
-            followups = self.followups
-            delivery = await AgentSpawns.run(lambda: followups.send(str(request.run_id), request.text, environment=environment, message_id=str(request.id), turn=turn))
-        else:
-            delivery = await asyncio.to_thread(deliver_message, str(request.run_id), request.text, sender=reg.PERSON_SENDER, environment=environment, message_id=str(request.id), turn=turn)
-        if delivery.state == "error":
-            raise RuntimeError(delivery.text.removeprefix("ERROR: ") or "not delivered")
+        # Set before the message is queued (the turn it starts reads it), back as it was if the message is not.
+        if request.reasoning is not None:
+            await asyncio.to_thread(reg.reasoning_set, run.run_id, request.reasoning)
+        try:
+            if self.followups is not None:
+                followups = self.followups
+                delivery = await AgentSpawns.run(lambda: followups.send(str(request.run_id), request.text, environment=environment, message_id=str(request.id), turn=turn))
+            else:
+                delivery = await asyncio.to_thread(deliver_message, str(request.run_id), request.text, sender=reg.PERSON_SENDER, environment=environment, message_id=str(request.id), turn=turn)
+            if delivery.state == "error":
+                raise RuntimeError(delivery.text.removeprefix("ERROR: ") or "not delivered")
+        except BaseException:
+            if request.reasoning is not None:
+                await asyncio.to_thread(reg.reasoning_set, run.run_id, run.reasoning_set)
+            raise
         return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=delivery.text, reads_at=delivery.reads_at)
 
     async def _compact(self, request: AgentCompactRequest) -> MachineAgentAnswer:

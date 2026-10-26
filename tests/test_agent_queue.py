@@ -672,17 +672,16 @@ def test_a_dispatcher_is_trusted_only_while_the_recorded_process_lives():
 
 
 def test_every_agent_turn_runs_under_galaius_settings_and_gets_its_task_back_after_a_compaction(monkeypatch, tmp_path):
-    """First turn and resumed turn alike: the configured compaction window and Bash output as `--settings` (which beat
+    """First turn and resumed turn alike: the role's compaction point and Bash output as `--settings` (which beat
     the user's own on 2.1.288), and a `SessionStart` hook that hands a compacted conversation its recorded task back
     (cut, saying so, past `LIMIT`) with the launch note saying what it is; a session that merely starts or resumes gets nothing. An editor conversation's
     turn carries none of it: the owner's own settings apply. A fenced run gets no brief: its record is out of reach there;
     an unreadable record says so and fails the hook, which the CLI records and goes past."""
     monkeypatch.setattr(reg, "active_interpreter", lambda: sys.executable)
-    monkeypatch.setattr(agent_run, "config", Config(claude_compact_window=300_000))
     task = "- fix the footer"
     reg.register(run_id="r3", pid=os.getpid(), provider="claude", name="worker", task=task, agent="tester")
     provider = ClaudeCodeProvider()
-    turn = agent_run.AheadLaunch.turn_arguments(provider, "r3", None, role="tester")
+    turn = agent_run.AheadLaunch.turn_arguments(provider, "r3", None, role="tester", compact_at=267_000)
     first = provider.command("t", cwd=str(tmp_path), model=None, mcp_config=None, run_id="r3", **turn)
     resumed = provider.resume_command("r3", "go on", **turn)
     settings = [json.loads(argv[argv.index("--settings") + 1]) for argv in (first, resumed)]
@@ -702,16 +701,17 @@ def test_every_agent_turn_runs_under_galaius_settings_and_gets_its_task_back_aft
     lost = session_start("compact", check=False)
     assert (lost.returncode, lost.stdout) == (1, "") and "unreadable" in lost.stderr
     fence = FenceSpec(working_directory=tmp_path, levels={"work": "write"}, start=tmp_path, state=tmp_path / "state")
-    assert agent_run.AheadLaunch.turn_arguments(provider, "r3", fence, role="tester")["turn"].brief_hook is None
+    assert agent_run.AheadLaunch.turn_arguments(provider, "r3", fence, role="tester", compact_at=267_000)["turn"].brief_hook is None
 
 
-def test_an_agent_turn_compacts_where_claude_code_itself_would(monkeypatch):
-    """Unconfigured, galaius sends `autoCompactWindow` 1000000: on 2.1.288 the CLI then compacts a 1M-token model at 967k and
-    a 200k one at 167k, as with no setting at all, while the owner's own `autoCompactWindow` stays out of agent runs."""
-    monkeypatch.setattr(agent_run, "config", Config())
-    reg.register(run_id="w1", pid=os.getpid(), provider="claude", name="worker", task="t", agent="app-engineer")
-    turn = agent_run.AheadLaunch.turn_arguments(ClaudeCodeProvider(), "w1", None, role="app-engineer")["turn"]
-    assert json.loads(turn.arguments()[turn.arguments().index("--settings") + 1])["autoCompactWindow"] == 1_000_000
+@pytest.mark.parametrize(("role", "compact_at"), [("visual-critic", 120_000), ("app-engineer", 200_000), (None, 200_000)])
+def test_an_agent_turn_compacts_at_its_role_s_point(role, compact_at):
+    """A role's catalog `compact_at` (a critic's 120k), else `Config.agent_compact_at` (200k; a run with no role too), becomes
+    Claude Code's `autoCompactWindow` plus the reserve it keeps: probed 2.1.288, window 153000 → `autoCompactThreshold`
+    120000. Never Claude Code's own 967k on a 1M model (2026-10-26: half a day's subscription in hours)."""
+    policy = Policy(compact_at={"visual-critic": 120_000})
+    turn = agent_run.AheadLaunch.turn_arguments(ClaudeCodeProvider(), "w1", None, role=role, compact_at=policy.compact_at_for(role))["turn"]
+    assert json.loads(turn.arguments()[turn.arguments().index("--settings") + 1])["autoCompactWindow"] == compact_at + 33_000
 
 
 @pytest.mark.parametrize(("role", "name"), [("app-engineer", "app-engineer-0f9576d3"), (None, "agent-0f9576d3")])
@@ -720,7 +720,7 @@ def test_every_agent_turn_is_named_for_peers_by_its_role_and_run(role, name, tmp
     'app-engineer' found no session: first and resumed turn alike carry `-n` (a resume without it drops the name)."""
     run_id = "0f9576d3-ac91-5243-a254-c2acf1aad6e6"
     provider = ClaudeCodeProvider()
-    turn = agent_run.AheadLaunch.turn_arguments(provider, run_id, None, role=role)
+    turn = agent_run.AheadLaunch.turn_arguments(provider, run_id, None, role=role, compact_at=200_000)
     first = provider.command("t", cwd=str(tmp_path), model=None, mcp_config=None, run_id=run_id, **turn)
     resumed = provider.resume_command(run_id, "go on", **turn)
     assert [argv[argv.index("-n") + 1] for argv in (first, resumed)] == [name, name]
@@ -750,7 +750,7 @@ def test_a_message_to_a_working_run_is_read_after_its_next_own_tool_call_and_set
     # The person's heading opens the context (the trust anchor); where the run stands follows the messages.
     message, card = said["additionalContext"].split("\n\n---\n\n")
     assert said["hookEventName"] == "PostToolUse" and message == f"{heading}\n\nalso check the footer" and card.startswith(CARD_HEADING)
-    assert f"\n{heading}\n" in ClaudeTurnSettings(compact_window=200_000, bash_output_chars=15_000, inbox_hook=hook, name="tester-r2").arguments()[-1] == inbox_hook.NOTE
+    assert f"\n{heading}\n" in ClaudeTurnSettings(compact_at=200_000, bash_output_chars=15_000, inbox_hook=hook, name="tester-r2").arguments()[-1] == inbox_hook.NOTE
     assert tool_call() == "" and [item.state for item in agent_queue.items("r2")] == ["running"] and agent_queue.read_ids("r2") == [sent]
 
     with reg.open_raw_events("r2", append=True) as stream:
