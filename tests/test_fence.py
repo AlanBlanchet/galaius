@@ -445,6 +445,8 @@ def test_a_turn_is_fenced_for_its_own_cli_alone(home: Path, tmp_path: Path, cli:
     assert [program.name for program in own.programs] == [cli, "galaius"]
     assert set(own.egress) == {*EGRESS[cli], "galaius.ai"}
     assert spec.providers == ("claude", "codex")   # the recorded spec is unchanged: a later turn may run the other CLI
+    with pytest.raises(ValueError, match="not a CLI this run's fence was built for"):
+        spec.only("gemini")
     if not available()[0]:
         pytest.skip(f"no fence on this PC to start it in: {available()[1]}")
     probe = f"import json, os; print(json.dumps([os.environ.get(name, '') for name in {(kept, dropped)!r}] + [os.path.isdir(os.path.expanduser('~/.{other}'))]))"

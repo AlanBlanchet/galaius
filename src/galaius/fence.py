@@ -331,10 +331,15 @@ class FenceSpec(BaseModel):
         own program and its model's hosts (`EGRESS`) — none of another CLI's. The spec a run records names every CLI it
         may fall through to (a quota refusal moves a start from claude to codex), so each turn narrows it here; a claude
         turn kept codex's OPENAI_API_KEY, its ~/.codex and api.openai.com, and the other way round (2026-10-26)."""
+        if not self.providers:
+            return self   # a fence naming no CLI carries none of their state: nothing to narrow
+        if provider not in self.providers:  # an empty fence would fail as a sign-in error, far from its cause
+            raise ValueError(f"{provider} is not a CLI this run's fence was built for ({', '.join(self.providers) or 'none'})")
         others = {name for name in self.providers if name != provider}
-        hosts = {host for name in others for host in EGRESS.get(name, ())}
-        return self.model_copy(update={"providers": tuple(name for name in self.providers if name == provider),
-                                       "programs": tuple(program for program in self.programs if program.name not in others),
+        hosts = {host for name in others for host in EGRESS.get(name, ())} - set(EGRESS.get(provider, ()))
+        return self.model_copy(update={"providers": (provider,),
+                                       # by stem: an npm entry `codex.js` is codex's program too
+                                       "programs": tuple(program for program in self.programs if program.name.split(".")[0] not in others),
                                        "egress": tuple(host for host in self.egress if host not in hosts),
                                        "homes": {name: folder for name, folder in self.homes.items() if name not in others}})
 
