@@ -2525,6 +2525,51 @@ class StreamMirror:
             os.close(descriptor)
 
 
+#: How long after a turn's ending is recorded its run still reads as coming back while its queue holds the message being
+#: delivered: the reaper records the ending (`finish`) a moment before the dispatcher decides to try the turn again
+#: (`agent_queue.settle`), and a read in between would show his message failed before its last try.
+SETTLE_GAP_SECONDS = 30.0
+
+
+def begin_resume_locked(run_id: str) -> AgentRun | None:
+    """Run `run_id` reads at work (`starting`) from the moment this PC takes a message for it between turns until its
+    turn starts (`begin_turn`) or its last try fails (`fail_turn_locked`), while the caller owns its lock: every reader
+    of the record (the web through the PC's run list or its mirror, a reload included) sees it start at once, and
+    through every try. Its previous ending (`exit_code`) stays: a resume that ends with no turn and no failure of its
+    own reads that ending again (`_resuming`). Nothing for a run that is no agent process or whose turn runs now."""
+    run = _read_record(run_id)
+    if run is None or run.kind != "process" or run.process_running():
+        return run
+    return run if run.status == "starting" else _merge_record_locked(run_id, {"status": "starting", "finished_at": None})
+
+
+def end_resume_locked(run_id: str) -> AgentRun | None:
+    """After a message's delivery ended with no turn of its own and no failure written on the run, while the caller owns
+    its lock: a run still marked `starting` and no longer coming back reads how it stands again (`_derive`), at once
+    rather than at the next listing or `settle_gone`."""
+    run = _read_record(run_id)
+    return _derive(run) if run is not None and run.status == "starting" and not _resuming(run) else run
+
+
+def _resuming(run: AgentRun, *, now: float | None = None) -> bool:
+    """`run` is coming back for a message this PC holds (`agent_queue.resuming`): marked so (`begin_resume_locked`), its
+    turn's process gone before its reaper recorded the ending (`running`: read from its stream, the try's own error
+    read as the run failed), or ended within `SETTLE_GAP_SECONDS`, its message still in flight. Reads its queue only
+    for those few runs."""
+    if run.kind != "process":
+        return False
+    ended_now = run.status in TERMINAL_STATUSES and run.finished_at is not None and (time.time() if now is None else now) - run.finished_at < SETTLE_GAP_SECONDS
+    if (run.status not in ("starting", "running") and not ended_now) or run.process_running():
+        return False
+    return _in_flight(run)
+
+
+def _in_flight(run: AgentRun) -> bool:
+    """A message to `run` is still being delivered by a live dispatcher of this PC (`agent_queue.resuming`)."""
+    from galaius.agents import agent_queue  # imports this module: a top-level import would be circular
+    return run.kind == "process" and agent_queue.resuming(run.run_id)
+
+
 def _status_for(run: AgentRun, *, depth: int = 0) -> RunStatus:
     """The one thing a file cannot assert about itself: whether it is still running.
 
@@ -2532,7 +2577,9 @@ def _status_for(run: AgentRun, *, depth: int = 0) -> RunStatus:
     CLI, the editor panel, and any mirror of these records). A pid alone is not enough: a
     pid the system has since handed to another process is a DEAD run (`process_running`), and a
     child the provider ran inside a session has no pid of its own — it lives exactly as long as
-    the session that hosts it."""
+    the session that hosts it. A run this PC is bringing back for a message reads `starting` (`_resuming`)."""
+    if _resuming(run):
+        return "starting"
     if run.kind == "provider_child":
         if run.status in TERMINAL_STATUSES or depth > 4:
             return run.status
@@ -2596,11 +2643,14 @@ def _derive(run: AgentRun) -> AgentRun:
     # work is an ending, the run finished — even if nothing was watching to record an exit code.
     # Without this, a run whose supervisor died reports "interrupted" while its transcript
     # plainly says it completed.
-    ending = digest.ending if run.exit_code is None else None
+    ending = digest.ending if run.exit_code is None and run.status != "starting" else None  # its previous turn's ending is no longer how it stands
     if ending is not None:
         run.status = (
             "waiting" if run.kind == "conversation" and ending == "done"
             else "done" if ending == "done"
+            # A try that ended on an error while its message is still in flight is that try's, not the run's: this PC
+            # may try again (`agent_queue.settle`), and the CLI writes that line before it exits.
+            else "starting" if run.status in ("starting", "running") and _in_flight(run)
             else "failed"
         )
     # A process that dies never calls finish(), so an ended run routinely has no end TIME — and a
@@ -2622,7 +2672,9 @@ def _derive(run: AgentRun) -> AgentRun:
     # A run whose own scope is not on record yet (launched moments before `systemd-run` moved it) learns it while it runs.
     if run.status == "running" and run.unit is None and run.pid:
         run.unit = _run_unit(run.pid, run.run_id)
-    if run.finished_at is None and run.status != "running":
+    if run.status == "starting":
+        run.finished_at = None   # coming back: no end yet, as `begin_resume_locked` writes it
+    elif run.finished_at is None and run.status != "running":
         # Whichever of its two streams was written last: a run whose ending is known only from the
         # normalised copy (or that never wrote a raw byte) still has to carry WHEN it stopped, or
         # every surface listing it draws its length as "—".
@@ -3245,7 +3297,7 @@ def forget(run_id: str) -> bool:
     if resolved is None:
         return False
     run = _read_record(resolved)
-    if run is None or _status_for(run) == "running":
+    if run is None or _status_for(run) in ("starting", "running"):
         return False
     for path in (_record_path(resolved), events_path(resolved),
                  messages_path(resolved), raw_events_path(resolved), stderr_path(resolved),
