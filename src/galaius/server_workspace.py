@@ -104,14 +104,16 @@ class ServerWorkspace(ServerPrompts):
                 raise CatalogConnectionError(f"Invalid server {what} response.") from error
 
     def community(self, query: CommunityQuery, *, transport=None) -> CommunityPage:
-        """A page of the community library, as this connection's account reads it (`galaius_core.community`)."""
-        return self._read(f"/v1/community/prompts?{urlencode(query.model_dump(mode='json', exclude_defaults=True))}", CommunityPage, "community", transport=transport)
+        """A page of the community library, read through this connection's workspace as the account behind it
+        (`galaius_core.community`): a PC's own token is enough."""
+        return self._read(f"{self.workspace_endpoint}/community/prompts?{urlencode(query.model_dump(mode='json', exclude_defaults=True))}", CommunityPage,
+                          "community", transport=transport)
 
     def community_entry(self, entry: UUID, *, transport=None) -> CommunityPrompt:
-        return self._read(f"/v1/community/prompts/{entry}", CommunityPrompt, "community entry", transport=transport)
+        return self._read(f"{self.workspace_endpoint}/community/prompts/{entry}", CommunityPrompt, "community entry", transport=transport)
 
     def community_sources(self, *, transport=None) -> CommunitySources:
-        return self._read("/v1/community/sources", CommunitySources, "community sources", transport=transport)
+        return self._read(f"{self.workspace_endpoint}/community/sources", CommunitySources, "community sources", transport=transport)
 
     def graph(self, *, transport=None):
         return self.read_record("agent-graph", AgentGraph, transport=transport)

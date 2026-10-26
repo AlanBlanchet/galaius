@@ -859,7 +859,11 @@ def agents_console(workspace_root: Path) -> None:
 def agents_community(need: str, kind: CommunityKind | None = None) -> None:
     """Search the community library for an agent, skill or prompt made for NEED; start one with
     `galaius agents spawn --community <id> "<task>"`."""
-    print(CommunityAgent.search(need, kind))
+    try:
+        print(CommunityAgent.search(need, kind))
+    except CatalogConnectionError as error:
+        print(f"ERROR: the community library could not be read: {error}", file=sys.stderr)
+        raise SystemExit(2) from None
 
 
 @agents_app.command(name="list")
