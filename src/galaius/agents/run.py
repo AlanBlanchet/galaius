@@ -826,7 +826,7 @@ class AheadLaunch(BaseModel):
         stderr = stderr if later else reg.open_stderr(run_id, append=False)
         try:
             return await asyncio.create_subprocess_exec(
-                *contained(fenced(spawnable(argv, env), self.fence), run_id=run_id), cwd=self.cwd, env=env,
+                *contained(fenced(spawnable(argv, env), self.fence, self.provider.name), run_id=run_id), cwd=self.cwd, env=env,
                 # Never the launcher's own stdin: Claude Code waits 3 s for input on one that is no
                 # terminal, and an MCP server's stdin carries its protocol.
                 stdin=asyncio.subprocess.PIPE if ahead else asyncio.subprocess.DEVNULL,
@@ -1181,7 +1181,7 @@ def _spawn_turn(
     stderr_file = tempfile.TemporaryFile()
     try:
         process = subprocess.Popen(
-            contained(fenced(spawnable(argv, env), run.fence), run_id=run.run_id), cwd=run.cwd or ".", env=env,
+            contained(fenced(spawnable(argv, env), run.fence, provider.name), run_id=run.run_id), cwd=run.cwd or ".", env=env,
             stdin=subprocess.DEVNULL if stdin is None else subprocess.PIPE, stdout=sink, stderr=stderr_file,  # never the launcher's stdin (`AheadLaunch.start`)
             **process_group_options(),
         )

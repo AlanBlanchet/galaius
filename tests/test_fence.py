@@ -23,7 +23,7 @@ from galaius_core import MachineFence
 from galaius_core.wire import fitted
 
 from galaius import fence
-from galaius.fence import Confinement, EgressProxy, FenceSpec, available, confinement_refusal, userns_refusal
+from galaius.fence import EGRESS, Confinement, EgressProxy, FenceSpec, available, confinement_refusal, fenced, userns_refusal
 
 AGENT_HOSTS = ("api.anthropic.com",)
 
@@ -72,7 +72,7 @@ def _spec(home: Path, tmp_path: Path, start: str = "work", levels: dict | None =
     staging.mkdir(exist_ok=True)
     (staging / "draft.txt").write_text("draft")
     return FenceSpec(working_directory=home, levels=LEVELS if levels is None else levels, start=home / start, staging={"review": staging},
-                     state=tmp_path / "state", egress=AGENT_HOSTS, reviews=tmp_path / "reviews", **{"providers": ("claude",), **fields})
+                     state=tmp_path / "state", reviews=tmp_path / "reviews", **{"providers": ("claude",), "egress": AGENT_HOSTS, **fields})
 
 
 def test_binds_follow_the_levels_and_nothing_else_of_home(home: Path, tmp_path: Path) -> None:
@@ -428,3 +428,27 @@ def test_a_routed_codex_keeps_the_token_galaius_hands_it_and_no_other_key_the_ru
                           env={**os.environ, **{name: f"{name.lower()}-value" for name in names}})
     assert done.returncode == 0, done.stderr
     assert json.loads(done.stdout) == ["galaius_openai_compat_key-value", "", ""]
+
+
+@pytest.mark.parametrize("cli, kept, dropped", [("claude", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"), ("codex", "OPENAI_API_KEY", "ANTHROPIC_API_KEY")])
+def test_a_turn_is_fenced_for_its_own_cli_alone(home: Path, tmp_path: Path, cli: str, kept: str, dropped: str) -> None:
+    """A PC run's fence is recorded for every CLI it may fall through to (`MachineAgents._fence`); each turn is fenced
+    for the CLI that runs it: its keys, its login and tool state, its program and its model's hosts — never the other
+    CLI's (a claude turn kept codex's OPENAI_API_KEY, its ~/.codex and api.openai.com, and the other way round)."""
+    for folder in (".claude", ".codex"):
+        (home / folder).mkdir(exist_ok=True)
+    spec = _spec(home, tmp_path, providers=("claude", "codex"), programs=(Path("/usr/bin/claude"), Path("/usr/bin/codex"), Path("/usr/bin/galaius")),
+                 egress=(*EGRESS["claude"], *EGRESS["codex"], "galaius.ai"))
+    own = spec.only(cli)
+    other = "codex" if cli == "claude" else "claude"
+    assert own.providers == (cli,)
+    assert [program.name for program in own.programs] == [cli, "galaius"]
+    assert set(own.egress) == {*EGRESS[cli], "galaius.ai"}
+    assert spec.providers == ("claude", "codex")   # the recorded spec is unchanged: a later turn may run the other CLI
+    if not available()[0]:
+        pytest.skip(f"no fence on this PC to start it in: {available()[1]}")
+    probe = f"import json, os; print(json.dumps([os.environ.get(name, '') for name in {(kept, dropped)!r}] + [os.path.isdir(os.path.expanduser('~/.{other}'))]))"
+    done = subprocess.run(fenced([sys.executable, "-c", probe], spec, cli), cwd=own.build().cwd, capture_output=True, text=True, timeout=60,
+                          env={**os.environ, kept: "own-key", dropped: "other-key"})
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout) == ["own-key", "", False]
