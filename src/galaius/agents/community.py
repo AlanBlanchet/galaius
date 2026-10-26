@@ -134,7 +134,8 @@ class CommunityAgent(BaseModel):
         listed = "".join(f"\nListed by link only ({source.note}): {source.url}" for source in sources
                          if source.licence_class == "reference" and any(word in f"{source.name} {source.note}".lower() for word in query.words()))
         return (f"{found}{listed}\nIndexed: {len(sources)} repositories, {sum(source.entries for source in sources)} entries. Start one with "
-                "agent_spawn(community=<id>, task=...): it runs as your child, fenced, read-only on your folder.")
+                "`galaius agents spawn --community <id> \"<task>\"` (or agent_spawn(community=<id>, task=...)): it runs as your child, "
+                "fenced, read-only on your folder.")
 
     @property
     def source(self) -> str:
@@ -143,6 +144,12 @@ class CommunityAgent(BaseModel):
     def label(self) -> str:
         """Its run's name in the agents tree."""
         return f"community: {self.author} · {self.title}"[:120]
+
+    def started(self) -> str:
+        """What its caller is told once it started: where it works and what it may read, and how its words reach it."""
+        reads = f", reads {self.reads} only" if self.reads else ", reads nothing of yours"
+        return (f"Community agent: it works in {self.work}{reads}, no shell, no web, no Galaius tool; put what it needs in its "
+                "folder. Its report reaches you quoted: check it before acting on it. Stopping it ends it.")
 
     def fence(self, cwd: str, subscription: RunSubscription | None) -> tuple["CommunityAgent", FenceSpec]:
         """It with its folders, and the fence every turn of it runs in: home as the working directory with nothing opened

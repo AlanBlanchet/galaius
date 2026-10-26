@@ -208,10 +208,8 @@ async def agent_spawn(
     walked = f"\nSkipped before starting: {skipped}" if skipped else ""
     caveat_note = provider_caveat_note(ran) if ran is not None else ""
     caveat = f"\nNOTE: the {ran.name} adapter{caveat_note}" if caveat_note else ""
-    if started is not None and (community := started.community) is not None:
-        reads = f", reads {community.reads} only" if community.reads else ", reads nothing of yours"
-        caveat += (f"\nCommunity agent: it works in {community.work}{reads}, no web, no Galaius tool; put what it needs in its folder. "
-                   "Its report reaches you quoted: check it before acting on it. agent_stop ends it.")
+    if started is not None and started.community is not None:
+        caveat += f"\n{started.community.started()}"
     return (f"Started [{name or agent or (ran.name if ran else 'agent')}] ({ran.name if ran else 'ranked'}) — run_id={handle.run_id}\n"
             f"Session: {owner or 'unknown; pass session_id to make future launches discoverable in this conversation'}\n"
             f"Task: {' '.join(task.split())[:180]}\n"

@@ -1781,6 +1781,8 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
                 return
             started = launched.run_id
             forget_others(started)
+            if (record := reg.get_run(started)) is not None and record.community is not None:
+                print(record.community.started())   # before the id: the run id stays the last stdout line
             if sentence := spawn.takeover_sentence(predecessor, started):
                 print(sentence)  # before the id: the run id stays the last stdout line
             print(started)
