@@ -159,8 +159,9 @@ class Fence(BaseModel):
     #: for new `STEERING` names, held in the review store `reviews`.
     guards: tuple[tuple[Path, str, Path], ...] = ()
     reviews: Path | None = None
-    #: Variables unset inside besides `UNSET`: secrets that are not the run's own CLI key.
-    secrets: tuple[str, ...] = ()
+    #: The secret-looking variables (`SECRET_SUFFIXES`) the run keeps: its CLIs' own keys. `outer` drops every other one
+    #: from the environment the fence is started with, whoever built it (a key the runner adds for one child included).
+    keys: tuple[str, ...] = ()
     MODULE: ClassVar[str] = "galaius.fence"
 
     def command(self, argv: list[str]) -> list[str]:
@@ -183,12 +184,12 @@ class Fence(BaseModel):
         for link, target in self.links:
             view += ["--symlink", str(target), str(link)]
         view += ["--setenv", "HOME", str(self.home)]
-        for name in (*UNSET, *self.secrets):
+        for name in UNSET:
             view += ["--unsetenv", name]
         view += ["--chdir", str(self.cwd)]
         inner = [sys.executable, "-I", "-c", INNER, f"{EGRESS_MOUNT}/egress.sock", *argv]
         guard = json.dumps({"reviews": str(self.reviews) if self.reviews else None, "guards": [[str(top), place, str(folder)] for top, place, folder in self.guards]})
-        return [sys.executable, "-m", self.MODULE, "outer", ",".join(self.egress), guard, "--", bwrap, *view, "--", *inner]
+        return [sys.executable, "-m", self.MODULE, "outer", ",".join(self.egress), guard, ",".join(self.keys), "--", bwrap, *view, "--", *inner]
 
 
 class Scan(BaseModel):
@@ -319,13 +320,8 @@ class FenceSpec(BaseModel):
         links = tuple({link: target for path in reached for link, target in _links(path)
                        if not any(link.is_relative_to(folder) or folder.is_relative_to(link) for folder in shown)}.items())
         return Fence(home=home, cwd=self.start.resolve(), binds=tuple(binds), emptied=tuple(emptied), blanked=tuple(blanked), links=links, egress=self.egress,
-                     guards=tuple(guards), reviews=self.reviews, secrets=self._foreign_secrets())
-
-    def _foreign_secrets(self) -> tuple[str, ...]:
-        """Variables of the launching environment that look like secrets and are not the key of a
-        CLI this run uses (a model key of another provider, a cloud token): unset inside."""
-        own = {name for provider in self.providers for name in KEYS.get(provider, ())}
-        return tuple(sorted(name for name in os.environ if name.upper().endswith(SECRET_SUFFIXES) and name not in own))
+                     guards=tuple(guards), reviews=self.reviews,
+                     keys=tuple(sorted({name for provider in self.providers for name in KEYS.get(provider, ())})))
 
     def rehomed(self, homes: dict[str, Path]) -> Self:
         """This fence on other login folders (a run moved to another subscription, contract A9): the private copies a CLI
@@ -584,14 +580,16 @@ class SteeringGuard(BaseModel):
                 print(f"galaius fence: could not hold {path}: {error}", file=sys.stderr)
 
 
-def outer(hosts: tuple[str, ...], guard: SteeringGuard, argv: list[str]) -> int:
+def outer(hosts: tuple[str, ...], guard: SteeringGuard, keys: tuple[str, ...], argv: list[str]) -> int:
     """Outside the view: scopes, the egress proxy on a fresh socket, bwrap as a child (signals
-    passed on), steering names swept while it runs and once it ended; its exit code returned."""
+    passed on) with no secret of this environment but `keys`, steering names swept while it runs
+    and once it ended; its exit code returned."""
     scope_self()
     before = guard.candidates() | guard.nested()
     with tempfile.TemporaryDirectory(prefix="ifence-") as folder:
         threading.Thread(target=EgressProxy(hosts=hosts).serve, args=(os.path.join(folder, "egress.sock"),), daemon=True).start()
-        child = subprocess.Popen([part.replace("{egress}", folder) for part in argv])
+        env = {name: value for name, value in os.environ.items() if name in keys or not name.upper().endswith(SECRET_SUFFIXES)}
+        child = subprocess.Popen([part.replace("{egress}", folder) for part in argv], env=env)
         for number in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
             signal.signal(number, lambda received, _frame: child.send_signal(received))
         while True:
@@ -934,7 +932,7 @@ def available() -> tuple[bool, str]:
         return False, refusal
     if (abi := landlock_abi()) < _SCOPE_ABI:
         return False, f"this kernel's Landlock (ABI {abi}) cannot scope sockets and signals: Linux 6.12 or later is needed"
-    trial = subprocess.run([sys.executable, "-m", Fence.MODULE, "outer", "", "{}", "--", bwrap, "--unshare-user", "--unshare-pid", "--unshare-net", "--die-with-parent",
+    trial = subprocess.run([sys.executable, "-m", Fence.MODULE, "outer", "", "{}", "", "--", bwrap, "--unshare-user", "--unshare-pid", "--unshare-net", "--die-with-parent",
                             "--ro-bind", "/", "/", "true"], capture_output=True, text=True, timeout=20, check=False)
     if trial.returncode != 0:
         return False, f"bubblewrap cannot start here: {(trial.stderr.strip().splitlines() or ['exit ' + str(trial.returncode)])[-1][:200]}"
@@ -945,6 +943,6 @@ if __name__ == "__main__":
     mode, *rest = sys.argv[1:]
     if mode == "confine" and len(rest) >= 3 and rest[1] == "--":
         raise SystemExit(Confinement.model_validate_json(rest[0]).run(rest[2:]))
-    if mode != "outer" or len(rest) < 3 or rest[2] != "--":
-        raise SystemExit("usage: python -m galaius.fence outer <hosts> <guard json> -- <bwrap argv> | confine <confinement json> -- <argv>")
-    raise SystemExit(outer(tuple(host for host in rest[0].split(",") if host), SteeringGuard.model_validate_json(rest[1]), rest[3:]))
+    if mode != "outer" or len(rest) < 4 or rest[3] != "--":
+        raise SystemExit("usage: python -m galaius.fence outer <hosts> <guard json> <kept keys> -- <bwrap argv> | confine <confinement json> -- <argv>")
+    raise SystemExit(outer(tuple(host for host in rest[0].split(",") if host), SteeringGuard.model_validate_json(rest[1]), tuple(key for key in rest[2].split(",") if key), rest[4:]))
