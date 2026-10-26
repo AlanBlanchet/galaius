@@ -58,6 +58,70 @@ def test_no_module_imports_a_unix_only_module_at_its_top_level():
     assert offenders == [], offenders
 
 
+#: Ways to start a program that never pass through `subprocess.Popen`, so `galaius.windowless.hide_child_consoles`
+#: cannot keep their console hidden on Windows (owner 2026-10-25: a console window kept opening on a Windows PC running
+#: galaius). Each site allowed keeps its reason: never run on Windows, or no console program started.
+BYPASSING = {"os.system", "os.popen", "os.spawnl", "os.spawnle", "os.spawnlp", "os.spawnlpe", "os.spawnv", "os.spawnve",
+             "os.spawnvp", "os.spawnvpe", "os.execl", "os.execle", "os.execlp", "os.execlpe", "os.execv", "os.execve",
+             "os.execvp", "os.execvpe", "os.startfile", "asyncio.create_subprocess_shell"}
+BYPASS_ALLOWED = {
+    ("mcp_endpoint.py", "os.execv"): "the shared relay, turned off on win32 a few lines above",
+    ("upgrade/handoff.py", "os.execv"): "POSIX only: Windows hands over through a child (`continue_in`, `replace`)",
+    ("sign_in_browser.py", "os.startfile"): "opens the person's browser, a windowed program, no console",
+    ("feedback.py", "os.startfile"): "opens the person's browser, a windowed program, no console",
+}
+#: Spawn flags that give a child a console of its own (`CREATE_NEW_CONSOLE`) or none to share with what IT starts
+#: (`DETACHED_PROCESS`: each console program it runs then opens a window): `hide_child_consoles` keeps either as asked.
+CONSOLE_FLAGS = {"CREATE_NEW_CONSOLE", "DETACHED_PROCESS"}
+
+
+def _calls_and_names(path):
+    """Each call `module.name(...)` of `path` by the module's real name (`import os as _os` reads as `os`), each name
+    imported straight from a module (`from os import startfile`, called by itself), and each console flag it reads."""
+    import ast
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    modules, names = {}, {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules.update({alias.asname or alias.name: alias.name for alias in node.names})
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            names.update({alias.asname or alias.name: f"{node.module}.{alias.name}" for alias in node.names})
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
+            yield node.lineno, f"{modules.get(node.func.value.id, node.func.value.id)}.{node.func.attr}", node
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in names:
+            yield node.lineno, names[node.func.id], node
+        elif isinstance(node, ast.Attribute) and node.attr in CONSOLE_FLAGS:
+            yield node.lineno, node.attr, node
+        elif isinstance(node, ast.Name) and node.id in CONSOLE_FLAGS and names.get(node.id, "").startswith("subprocess."):
+            yield node.lineno, node.id, node
+
+
+def test_every_program_galaius_starts_goes_through_popen_where_windows_hides_its_console():
+    """Owner 2026-10-25 (dictated): « elle aura un CMD qui va s'ouvrir … C'est vraiment un red flag de fou. » Every spawn
+    passes through `subprocess.Popen`, where a galaius process with no console window gives each child none either
+    (`galaius.windowless`, pinned on Windows by tests/test_processes_windows.py). A call that bypasses it, `shell=True`
+    (cmd.exe in between), or a flag asking for a console of the child's own is named here with its file and line."""
+    import ast
+    source = Path(importlib.import_module("galaius").__file__).parent
+    offenders = []
+    for path in sorted(source.rglob("*.py")):
+        where = path.relative_to(source).as_posix()
+        if where == "windowless.py":  # the one place that reads those flags, to keep a console a caller asked for
+            continue
+        for line, name, node in _calls_and_names(path):
+            if name in BYPASSING and (where, name) not in BYPASS_ALLOWED:
+                offenders.append(f"{where}:{line}: {name}")
+            elif name in CONSOLE_FLAGS:
+                offenders.append(f"{where}:{line}: subprocess.{name}")
+            elif isinstance(node, ast.Call) and any(keyword.arg == "shell" and not (isinstance(keyword.value, ast.Constant) and keyword.value.value is False)
+                                                    for keyword in node.keywords):
+                offenders.append(f"{where}:{line}: {name}(shell=…)")
+    assert offenders == [], offenders
+    present = {(path.relative_to(source).as_posix(), name) for path in source.rglob("*.py") for _line, name, _node in _calls_and_names(path)}
+    assert set(BYPASS_ALLOWED) <= present, f"allowed but gone, take them out: {sorted(set(BYPASS_ALLOWED) - present)}"
+
+
 def test_the_relay_lock_lets_one_process_at_a_time_through(tmp_path):
     """`mcp_relay.locked`, the relay's own stdlib-only lock (it runs under `python -I -S`: no pydantic, no pywin32,
     so `galaius.file_lock` cannot serve it). Here: a held lock makes the next taker wait."""

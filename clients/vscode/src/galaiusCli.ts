@@ -25,12 +25,15 @@ const TIMEOUT_MS = 10_000;
  *  truncates silently, which reads as corrupt output rather than as too much of it. */
 const MAX_BUFFER = 8 << 20;
 
-export function galaiusCli(args: readonly string[]): Promise<CliResult> {
+/** `windowsHide` on every call: the extension host has no console, so on Windows a console program it starts
+ *  without it opens a cmd window on the person's desktop (owner 2026-10-25: « elle aura un CMD qui va s'ouvrir … C'est
+ *  vraiment un red flag de fou »). `timeoutMs`: a longer bound for a call known to take longer (a catalog refresh). */
+export function galaiusCli(args: readonly string[], timeoutMs: number = TIMEOUT_MS): Promise<CliResult> {
   return new Promise<CliResult>((resolve) => {
     try {
       execFile(
         "galaius", [...args],
-        { timeout: TIMEOUT_MS, maxBuffer: MAX_BUFFER, windowsHide: true },
+        { timeout: timeoutMs, maxBuffer: MAX_BUFFER, windowsHide: true },
         (err, stdout, stderr) => {
           resolve({
             stdout: stdout ?? "",

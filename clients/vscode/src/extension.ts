@@ -728,14 +728,8 @@ export async function activate(
         "Send",
       );
       if (confirm !== "Send") return;
-      const { execFile } = await import("child_process");
-      let failed = 0;
-      await Promise.all(running.map((r) => new Promise<void>((done) => {
-        execFile("galaius", ["agents", "send", r.run_id, text], (err) => {
-          if (err) failed++;
-          done();
-        });
-      })));
+      const failed = (await Promise.all(running.map((r) => galaiusCli(["agents", "send", r.run_id, text]))))
+        .filter((result) => result.error).length;
       void vscode.window.showInformationMessage(
         failed
           ? `Sent to ${running.length - failed} of ${running.length} — ${failed} could not be reached.`
@@ -938,17 +932,15 @@ export async function activate(
         ignoreFocusOut: true,
       });
       if (!message) return;
-      const { execFile } = await import("child_process");
-      execFile("galaius", ["agents", "send", run.run_id, message], (err, stdout, stderr) => {
-        const said = (stdout || stderr || "").trim();
-        if (err || said.startsWith("ERROR")) {
-          vscode.window.showErrorMessage(said || `Could not reach ${run.name}.`);
-          return;
-        }
-        vscode.window.showInformationMessage(said || `Sent to ${run.name}.`);
-        agentsProvider.refresh();
-        refreshWorkplace();
-      });
+      const { stdout, error } = await galaiusCli(["agents", "send", run.run_id, message]);
+      const said = (stdout || error || "").trim();
+      if (error || said.startsWith("ERROR")) {
+        vscode.window.showErrorMessage(said || `Could not reach ${run.name}.`);
+        return;
+      }
+      vscode.window.showInformationMessage(said || `Sent to ${run.name}.`);
+      agentsProvider.refresh();
+      refreshWorkplace();
     }),
     vscode.commands.registerCommand("galaius.agents.openConversation", async (arg?: string | { run?: { run_id: string } }) => {
       const runId = typeof arg === "string" ? arg : arg?.run?.run_id;
@@ -971,12 +963,10 @@ export async function activate(
       const run = node?.run;
       if (!run) return;
       // Stopping is Python's job (it owns the process group); the extension only asks.
-      const { execFile } = await import("child_process");
-      execFile("galaius", ["agents", "stop", run.run_id], (err) => {
-        if (err) vscode.window.showErrorMessage(`Could not stop ${run.name}: ${err.message}`);
-        agentsProvider.refresh();
-        refreshWorkplace();
-      });
+      const { error } = await galaiusCli(["agents", "stop", run.run_id]);
+      if (error) vscode.window.showErrorMessage(`Could not stop ${run.name}: ${error}`);
+      agentsProvider.refresh();
+      refreshWorkplace();
     }),
     vscode.commands.registerCommand("galaius.agents.showEvents", async (node?: { run?: { run_id: string; name: string } }) => {
       const run = node?.run;
