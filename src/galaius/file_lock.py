@@ -4,6 +4,7 @@ Windows `LockFileEx` on the file's first byte, waiting as long as another holder
 
 import os
 import sys
+import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 
@@ -79,11 +80,48 @@ class WindowsFileLock(FileLock):
 FILE_LOCK: FileLock = WindowsFileLock() if sys.platform == "win32" else PosixFileLock()
 
 
+class LockTimeout(TimeoutError):
+    """The lock was not taken within the waiter's `patience` (`exclusive`)."""
+
+
+#: The longest a bounded waiter (`exclusive` with `patience` or `long_wait`) sleeps between two tries: a holder letting go
+#: is seen within it.
+RETRY_CAP = 0.025
+
+
+def _wait_for(descriptor: int, *, patience: float | None, long_wait: float | None,
+              on_long_wait: Callable[[float], None] | None) -> None:
+    """Take the lock trying again and again, backing off to `RETRY_CAP`: past `long_wait` seconds call `on_long_wait` once
+    with the time waited; past `patience` raise `LockTimeout`. A blocking `acquire` cannot be cut short from the thread
+    waiting in it, which is what left one wedged run's every caller waiting for good."""
+    started, pause, told = time.monotonic(), 0.001, False
+    while not FILE_LOCK.try_acquire(descriptor):
+        waited = time.monotonic() - started
+        if long_wait is not None and not told and waited >= long_wait:
+            told = True
+            if on_long_wait is not None:
+                on_long_wait(waited)
+        if patience is not None and waited >= patience:
+            raise LockTimeout(f"lock not taken within {patience:g} s")
+        time.sleep(pause)
+        pause = min(pause * 2, RETRY_CAP)
+
+
 @contextmanager
-def exclusive(descriptor: int) -> Iterator[None]:
-    """Hold an exclusive lock on `descriptor` for the block, then release it and close it."""
+def exclusive(descriptor: int, *, patience: float | None = None, long_wait: float | None = None,
+              on_long_wait: Callable[[float], None] | None = None) -> Iterator[None]:
+    """Hold an exclusive lock on `descriptor` for the block, then release it and close it. With neither `patience` nor
+    `long_wait` it waits in the system's own blocking call; else as `_wait_for` says. A lock never taken still closes
+    `descriptor` (`LockTimeout`)."""
     try:
-        FILE_LOCK.acquire(descriptor)
+        if patience is None and long_wait is None:
+            FILE_LOCK.acquire(descriptor)
+        else:
+            _wait_for(descriptor, patience=patience, long_wait=long_wait, on_long_wait=on_long_wait)
+    except BaseException:
+        os.close(descriptor)
+        raise
+    try:
         yield
     finally:
         try:

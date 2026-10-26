@@ -875,3 +875,25 @@ def test_an_agents_message_to_a_cut_run_asks_nothing_again(monkeypatch):
         delivery = messaging.deliver_message("r1", "keep going", sender="r2")
 
     assert delivery.state == "error" and "cooldown" in delivery.text
+
+
+def test_a_message_waits_while_the_catalog_is_unreachable_and_is_never_refused(monkeypatch):
+    """Owner 2026-10-23, his PC up, its link down for six minutes: « Non transmis : votre PC a refusé » on a message he
+    dictated. The policy read before recording resolves the run's pinned revision over the network; unreachable, the
+    message is kept and waits for the link (`CatalogOffline`), and the dispatcher keeps it pending instead of failing
+    the turn."""
+    from galaius.agents.catalog_connection import CatalogOffline
+    _continuation_policy(monkeypatch)
+    register_run("galaius-run", name="reviewer", provider="fake", task="t", pid=1234, agent="tester", provider_session_id="vendor-thread")
+    monkeypatch.setattr(agent_queue, "ensure_dispatcher_locked", lambda *args, **kwargs: 1)
+    offline = CatalogOffline("this computer cannot be reached by the agent catalog service just now")
+    monkeypatch.setattr(messaging, "policy_for_continuation", lambda *args, **kwargs: (_ for _ in ()).throw(offline))
+
+    delivery = messaging.deliver_message("galaius-run", "ce que je viens de dicter", sender="operator", message_id="press-1")
+
+    assert delivery.state == "queued" and "waits" in delivery.text.lower()
+    (item,) = agent_queue.items("galaius-run")
+    assert (item.state, item.message_id) == ("pending", "press-1")
+    # Its transcript holds it once: the same press again records and enqueues nothing new.
+    again = messaging.deliver_message("galaius-run", "ce que je viens de dicter", sender="operator", message_id="press-1")
+    assert again.state == "queued" and len(agent_queue.items("galaius-run")) == 1

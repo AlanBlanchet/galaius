@@ -10,7 +10,7 @@ from urllib.parse import quote, urlencode
 from uuid import UUID, uuid4
 
 import httpx
-from galaius_core import AgentGraph, AgentGraphUpdate, ImageAnswer, ImageRequest, MediaAnswer, MediaRequest, AgentRevision, AgentRevisionRef, AgentStartSpec, AgentTouchScope, ArtifactRef, CompanyProfile, ConfiguredModelRef, MachineRunEvents, MachineSummary, ReasoningLevel, ReleaseInfo, TriggerInvocation, WorkflowEvent, WorkflowRevision, WorkflowRevisionRef, WorkflowRun
+from galaius_core import CommunityPage, CommunityPrompt, CommunityQuery, CommunitySources, AgentGraph, AgentGraphUpdate, ImageAnswer, ImageRequest, MediaAnswer, MediaRequest, AgentRevision, AgentRevisionRef, AgentStartSpec, AgentTouchScope, ArtifactRef, CompanyProfile, ConfiguredModelRef, MachineRunEvents, MachineSummary, ReasoningLevel, ReleaseInfo, TriggerInvocation, WorkflowEvent, WorkflowRevision, WorkflowRevisionRef, WorkflowRun
 from galaius_core.accounts import Bootstrap
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
@@ -93,13 +93,27 @@ class ServerWorkspace(ServerPrompts):
         return f"/v1/workspaces/{self.connection.workspace_id}"
 
     def read_record(self, suffix: Literal["agent-graph", "agent-catalog", "workflows", "company", "version", "models"], schema, *, transport=None):
-        path = "/v1/version" if suffix == "version" else f"{self.workspace_endpoint}/{suffix}"
+        return self._read("/v1/version" if suffix == "version" else f"{self.workspace_endpoint}/{suffix}", schema, suffix, transport=transport)
+
+    def _read(self, path: str, schema, what: str, *, transport=None):
         with self.session(transport=transport) as client:
             payload = self.connection.request(client, "GET", path)
             try:
                 return TypeAdapter(schema).validate_json(payload)
             except ValueError as error:
-                raise CatalogConnectionError(f"Invalid server {suffix} response.") from error
+                raise CatalogConnectionError(f"Invalid server {what} response.") from error
+
+    def community(self, query: CommunityQuery, *, transport=None) -> CommunityPage:
+        """A page of the community library, read through this connection's workspace as the account behind it
+        (`galaius_core.community`): a PC's own token is enough."""
+        return self._read(f"{self.workspace_endpoint}/community/prompts?{urlencode(query.model_dump(mode='json', exclude_defaults=True))}", CommunityPage,
+                          "community", transport=transport)
+
+    def community_entry(self, entry: UUID, *, transport=None) -> CommunityPrompt:
+        return self._read(f"{self.workspace_endpoint}/community/prompts/{entry}", CommunityPrompt, "community entry", transport=transport)
+
+    def community_sources(self, *, transport=None) -> CommunitySources:
+        return self._read(f"{self.workspace_endpoint}/community/sources", CommunitySources, "community sources", transport=transport)
 
     def graph(self, *, transport=None):
         return self.read_record("agent-graph", AgentGraph, transport=transport)

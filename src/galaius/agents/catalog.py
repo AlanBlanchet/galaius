@@ -16,6 +16,7 @@ from galaius.agents.catalog_connection import (
     CatalogAuthenticationError,
     CatalogConnection,
     CatalogConnectionError,
+    CatalogOffline,
 )
 from galaius.criteria import Criteria
 from galaius.private_files import PRIVATE_FILES
@@ -383,7 +384,7 @@ class AgentCatalog(CachedRecord):
             if linked is None or linked.endpoint != connection.endpoint.rstrip("/"):
                 raise
             return cls.refresh(linked, allow_stale=allow_stale, cache_path=cache_path, transport=transport)
-        except httpx.TransportError as error:  # unreachable, timed out, or dropped mid-answer (a restarting server)
+        except (CatalogOffline, httpx.TransportError) as error:  # unreachable, dropped mid-answer, or a front with no app (5xx)
             if not allow_stale:
                 raise CatalogConnectionError("agent catalog service is unreachable; sync was not applied") from error
             with connection.access_guard(generation):
@@ -442,16 +443,20 @@ class AgentCatalog(CachedRecord):
         except CatalogAuthenticationError:
             self.discard_invalidated_cache(self.connection, self.cache_path())
             raise
-        except CatalogConnectionError:
-            raise
-        except httpx.TransportError as error:  # unreachable, timed out, or dropped mid-answer (a restarting server)
+        except (CatalogOffline, httpx.TransportError) as error:
+            # Unreachable, timed out, dropped mid-answer, or a front with no app behind it (502 / 503 / 504 on every deploy
+            # cutover: `SERVICE_DOWN`, code-reviewer r1 B1) — the service is down JUST NOW.
             # Retried already (`CatalogConnection.RETRY_BACKOFF`), so the service is down for longer than a blip. THIS
             # revision as this computer last read it still launches it; the latest in its place never would.
             if (held := self.pinned_offline(reference)) is not None:
                 print(f"STALE agent revision: service unreachable; using the pin as last read "
                       f"({reference.id} {reference.revision})", file=sys.stderr)
                 return held
-            raise CatalogConnectionError("pinned agent revision is unavailable during network failure; latest revision is not a fallback") from error
+            # A pin this computer never read: nothing to start it from yet. Raised as `CatalogOffline`, so his message is kept
+            # and waits instead of being refused (`messaging.queue_message`, the dispatcher's `SERVICE_WAIT_SECONDS`).
+            raise CatalogOffline("pinned agent revision is unavailable during network failure; latest revision is not a fallback") from error
+        except CatalogConnectionError:
+            raise
         except ValueError as error:
             raise CatalogConnectionError("invalid exact agent or prompt revision received from server") from error
 

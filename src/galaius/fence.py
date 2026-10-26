@@ -26,6 +26,7 @@ files or repositories; a steering file created by the agent exists in the folder
 before it is moved out (an instruction file in a subfolder: until the turn ends); macOS and Windows have no fence here yet."""
 
 import ctypes
+import errno
 import fnmatch
 import functools
 import json
@@ -52,6 +53,7 @@ from galaius_core import PlaceLevel
 from galaius.paths import UserPaths
 from galaius.pinned_directory import PinnedDirectory
 from galaius.places import DEPENDENCY_FOLDERS, LEVEL_RANK, NEVER_GRANTABLE, PlaceMap, split
+from galaius.upgrade.store import active_interpreter
 
 #: Per CLI: its state folder under home, what of it the agent reads (sign-in, settings, the
 #: owner's instructions: read-only), the folders it keeps sessions in (a private per-run folder:
@@ -76,7 +78,10 @@ STEERING = frozenset({".claude", ".mcp.json", ".vscode", ".envrc", ".githooks", 
 INSTRUCTIONS = frozenset({"claude.md", "claude.local.md", "agents.md", "gemini.md", ".envrc"})
 #: Per CLI: the variables holding its own key (the only secrets from the environment it keeps);
 #: every other variable that looks like a secret (`SECRET_SUFFIXES`) is unset inside.
-KEYS: dict[str, tuple[str, ...]] = {"claude": ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"), "codex": ("OPENAI_API_KEY", "CODEX_API_KEY")}
+#: The one variable galaius hands Codex the token of a self-hosted model it routes it to in (`agents.profiles`): its own key.
+COMPAT_KEY = "GALAIUS_OPENAI_COMPAT_KEY"
+KEYS: dict[str, tuple[str, ...]] = {"claude": ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"),
+                                    "codex": ("OPENAI_API_KEY", "CODEX_API_KEY", COMPAT_KEY)}
 SECRET_SUFFIXES = ("_API_KEY", "_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_PASS", "_CREDENTIALS")
 SCAN_DEPTH, SCAN_ENTRIES = 8, 200_000
 #: Variables that point at the desktop or the user's session: gone inside (their sockets are too).
@@ -157,8 +162,9 @@ class Fence(BaseModel):
     #: for new `STEERING` names, held in the review store `reviews`.
     guards: tuple[tuple[Path, str, Path], ...] = ()
     reviews: Path | None = None
-    #: Variables unset inside besides `UNSET`: secrets that are not the run's own CLI key.
-    secrets: tuple[str, ...] = ()
+    #: The secret-looking variables (`SECRET_SUFFIXES`) the run keeps: its CLIs' own keys. `outer` drops every other one
+    #: from the environment the fence is started with, whoever built it (a key the runner adds for one child included).
+    keys: tuple[str, ...] = ()
     MODULE: ClassVar[str] = "galaius.fence"
 
     def command(self, argv: list[str]) -> list[str]:
@@ -181,12 +187,12 @@ class Fence(BaseModel):
         for link, target in self.links:
             view += ["--symlink", str(target), str(link)]
         view += ["--setenv", "HOME", str(self.home)]
-        for name in (*UNSET, *self.secrets):
+        for name in UNSET:
             view += ["--unsetenv", name]
         view += ["--chdir", str(self.cwd)]
         inner = [sys.executable, "-I", "-c", INNER, f"{EGRESS_MOUNT}/egress.sock", *argv]
         guard = json.dumps({"reviews": str(self.reviews) if self.reviews else None, "guards": [[str(top), place, str(folder)] for top, place, folder in self.guards]})
-        return [sys.executable, "-m", self.MODULE, "outer", ",".join(self.egress), guard, "--", bwrap, *view, "--", *inner]
+        return [sys.executable, "-m", self.MODULE, "outer", ",".join(self.egress), guard, ",".join(self.keys), "--", bwrap, *view, "--", *inner]
 
 
 class Scan(BaseModel):
@@ -303,19 +309,22 @@ class FenceSpec(BaseModel):
         emptied += [base.joinpath(*split(path)) for path, level in sorted(places.levels.items())
                     if LEVEL_RANK[level] < LEVEL_RANK["read"] and LEVEL_RANK[places.inherited(split(path))] >= LEVEL_RANK["read"]]
         binds += self._tool_state(home)
-        links = tuple((program, program.resolve()) for program in self.programs if program.is_symlink() and not any(program.is_relative_to(folder) for folder in SYSTEM))
-        for program in (*self.programs, Path(sys.prefix), Path(sys.base_prefix)):
-            root = _install_root(program.resolve())
-            if not any(root.is_relative_to(folder) for folder in SYSTEM) and not home.is_relative_to(root) and not any(bind.target == root for bind in binds):
+        reached, roots = list(self.programs), [_install_root(program.resolve()) for program in self.programs]
+        for python in _interpreters():
+            paths, folders = _runs_from(python)
+            reached += paths
+            roots += folders
+        for root in roots:
+            # A root gone (the runtime an upgrade pruned under a process still running from it) would stop bwrap.
+            if root.is_dir() and not any(root.is_relative_to(folder) for folder in SYSTEM) and not home.is_relative_to(root) and not any(bind.target == root for bind in binds):
                 binds.append(FenceBind(source=root, target=root, writable=False))
+        # The links on the way to each program, re-made inside unless the view already holds their place.
+        shown = (*(Path(folder) for folder in (*SYSTEM, *MERGED)), *(bind.target for bind in binds))
+        links = tuple({link: target for path in reached for link, target in _links(path)
+                       if not any(link.is_relative_to(folder) or folder.is_relative_to(link) for folder in shown)}.items())
         return Fence(home=home, cwd=self.start.resolve(), binds=tuple(binds), emptied=tuple(emptied), blanked=tuple(blanked), links=links, egress=self.egress,
-                     guards=tuple(guards), reviews=self.reviews, secrets=self._foreign_secrets())
-
-    def _foreign_secrets(self) -> tuple[str, ...]:
-        """Variables of the launching environment that look like secrets and are not the key of a
-        CLI this run uses (a model key of another provider, a cloud token): unset inside."""
-        own = {name for provider in self.providers for name in KEYS.get(provider, ())}
-        return tuple(sorted(name for name in os.environ if name.upper().endswith(SECRET_SUFFIXES) and name not in own))
+                     guards=tuple(guards), reviews=self.reviews,
+                     keys=tuple(sorted({name for provider in self.providers for name in KEYS.get(provider, ())})))
 
     def rehomed(self, homes: dict[str, Path]) -> Self:
         """This fence on other login folders (a run moved to another subscription, contract A9): the private copies a CLI
@@ -369,6 +378,55 @@ def _install_root(program: Path) -> Path:
         if (candidate / "package.json").is_file():
             return candidate
     return folder
+
+
+def _links(path: Path) -> list[tuple[Path, Path]]:
+    """Every symbolic link met resolving `path`, its folders' included, as (the link at its real place, what it says): a
+    view holding only the file at the end misses the links on the way (a runtime's `bin/python` -> uv's
+    `cpython-3.14-…` folder link -> the interpreter), and exec there finds nothing."""
+    found, resolved, pending = [], Path(path.anchor or "/"), list(path.absolute().parts[1:])
+    while pending:
+        name = pending.pop(0)
+        if name == "..":
+            resolved = resolved.parent
+            continue
+        candidate = resolved / name
+        if not candidate.is_symlink():
+            resolved = candidate
+            continue
+        if len(found) > 40:
+            raise OSError(errno.ELOOP, "more than 40 links on the way", str(path))
+        target = Path(os.readlink(candidate))
+        found.append((candidate, target))
+        if target.is_absolute():
+            resolved = Path(target.anchor)
+        pending[:0] = target.parts[1:] if target.is_absolute() else target.parts
+    return found
+
+
+def _interpreters() -> tuple[Path, ...]:
+    """The interpreters a fenced turn starts: this one (`INNER`) and the active runtime's (its agent's hooks,
+    `participant_argv`), two while a process started before an upgrade still runs."""
+    return tuple(dict.fromkeys(Path(found) for found in (sys.executable, active_interpreter()) if found))
+
+
+def _runs_from(python: Path) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+    """What starting `python` goes through (itself, the base installation its venv's `pyvenv.cfg` names) and the
+    folders it runs from (that venv, the installation its executable is in, the base one), read-only inside."""
+    venv = Path(os.path.realpath(python.parent)).parent
+    reached, roots = [python], [_prefix(python.resolve())]
+    if (venv / "pyvenv.cfg").is_file():
+        roots.append(venv)
+        settings = {key.strip(): value.strip() for key, _, value in (line.partition("=") for line in (venv / "pyvenv.cfg").read_text(encoding="utf-8").splitlines())}
+        if base := settings.get("home"):
+            reached.append(Path(base))
+            roots.append(_prefix(Path(base).resolve() / python.name))
+    return tuple(reached), tuple(roots)
+
+
+def _prefix(executable: Path) -> Path:
+    """The installation an interpreter belongs to: the folder holding its `bin`, else its own folder."""
+    return executable.parent.parent if executable.parent.name == "bin" else executable.parent
 
 
 def fenced(argv: list[str], fence: FenceSpec | None) -> list[str]:
@@ -525,14 +583,16 @@ class SteeringGuard(BaseModel):
                 print(f"galaius fence: could not hold {path}: {error}", file=sys.stderr)
 
 
-def outer(hosts: tuple[str, ...], guard: SteeringGuard, argv: list[str]) -> int:
+def outer(hosts: tuple[str, ...], guard: SteeringGuard, keys: tuple[str, ...], argv: list[str]) -> int:
     """Outside the view: scopes, the egress proxy on a fresh socket, bwrap as a child (signals
-    passed on), steering names swept while it runs and once it ended; its exit code returned."""
+    passed on) with no secret of this environment but `keys`, steering names swept while it runs
+    and once it ended; its exit code returned."""
     scope_self()
     before = guard.candidates() | guard.nested()
     with tempfile.TemporaryDirectory(prefix="ifence-") as folder:
         threading.Thread(target=EgressProxy(hosts=hosts).serve, args=(os.path.join(folder, "egress.sock"),), daemon=True).start()
-        child = subprocess.Popen([part.replace("{egress}", folder) for part in argv])
+        env = {name: value for name, value in os.environ.items() if name in keys or not name.upper().endswith(SECRET_SUFFIXES)}
+        child = subprocess.Popen([part.replace("{egress}", folder) for part in argv], env=env)
         for number in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
             signal.signal(number, lambda received, _frame: child.send_signal(received))
         while True:
@@ -875,7 +935,7 @@ def available() -> tuple[bool, str]:
         return False, refusal
     if (abi := landlock_abi()) < _SCOPE_ABI:
         return False, f"this kernel's Landlock (ABI {abi}) cannot scope sockets and signals: Linux 6.12 or later is needed"
-    trial = subprocess.run([sys.executable, "-m", Fence.MODULE, "outer", "", "{}", "--", bwrap, "--unshare-user", "--unshare-pid", "--unshare-net", "--die-with-parent",
+    trial = subprocess.run([sys.executable, "-m", Fence.MODULE, "outer", "", "{}", "", "--", bwrap, "--unshare-user", "--unshare-pid", "--unshare-net", "--die-with-parent",
                             "--ro-bind", "/", "/", "true"], capture_output=True, text=True, timeout=20, check=False)
     if trial.returncode != 0:
         return False, f"bubblewrap cannot start here: {(trial.stderr.strip().splitlines() or ['exit ' + str(trial.returncode)])[-1][:200]}"
@@ -886,6 +946,6 @@ if __name__ == "__main__":
     mode, *rest = sys.argv[1:]
     if mode == "confine" and len(rest) >= 3 and rest[1] == "--":
         raise SystemExit(Confinement.model_validate_json(rest[0]).run(rest[2:]))
-    if mode != "outer" or len(rest) < 3 or rest[2] != "--":
-        raise SystemExit("usage: python -m galaius.fence outer <hosts> <guard json> -- <bwrap argv> | confine <confinement json> -- <argv>")
-    raise SystemExit(outer(tuple(host for host in rest[0].split(",") if host), SteeringGuard.model_validate_json(rest[1]), rest[3:]))
+    if mode != "outer" or len(rest) < 4 or rest[3] != "--":
+        raise SystemExit("usage: python -m galaius.fence outer <hosts> <guard json> <kept keys> -- <bwrap argv> | confine <confinement json> -- <argv>")
+    raise SystemExit(outer(tuple(host for host in rest[0].split(",") if host), SteeringGuard.model_validate_json(rest[1]), tuple(key for key in rest[2].split(",") if key), rest[4:]))

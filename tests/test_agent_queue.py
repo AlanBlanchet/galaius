@@ -794,3 +794,55 @@ def test_one_message_id_records_and_queues_one_message(monkeypatch, queue_kept):
     assert (first.repeated, again.state, again.repeated) == (False, "queued", True)
     assert [event.event_id for event in reg.read_messages("r1")] == ["outbox-7b44f970"]
     assert len(agent_queue.items("r1")) == (1 if queue_kept else 0)
+
+
+def test_a_turn_whose_service_is_unreachable_keeps_its_message_pending_and_tries_again(monkeypatch):
+    """Owner 2026-10-23: a six-minute link outage made « Non transmis : votre PC a refusé » of what he dictated. The
+    dispatcher reads the run's pinned revision through that link: unreachable, the item keeps its place (`pending`) and
+    the run is not failed — a later pass delivers it."""
+    from galaius.agents.catalog_connection import CatalogOffline
+    provider = _setup(monkeypatch)
+    messaging.deliver_message("r1", "ce que je viens de dicter", sender="operator", message_id="press-1")
+    tries: list[str] = []
+    fresh = agent_queue._fresh_policy
+
+    def offline(run):
+        tries.append(run.run_id)
+        if len(tries) < 2:   # the link comes back: the same item is then delivered, never refused
+            raise CatalogOffline("this computer cannot be reached by the agent catalog service just now")
+        return fresh(run)
+
+    monkeypatch.setattr(agent_queue, "_fresh_policy", offline)
+    monkeypatch.setattr(agent_queue, "SERVICE_POLL_SECONDS", 0.01)
+
+    agent_queue.dispatch("r1")
+
+    assert tries == ["r1", "r1"] and provider.messages == ["ce que je viens de dicter"]
+    (item,) = agent_queue.items("r1")
+    # Nothing of the wait is left on the item once its turn ran: the web reads `waiting` to say what it waits for.
+    assert (item.state, item.message_id, item.error, item.waiting) == ("replied", "press-1", "", None)
+    assert reg.get_run("r1").last != "resume refused"
+
+
+def test_a_turn_waiting_for_a_service_that_never_comes_back_fails_with_its_reason(monkeypatch):
+    """Code-reviewer r1 S4: a cause that is not passing (a wrong address, DNS) must not hold his message for ever. While
+    it waits, the item says what it waits for (`waiting`), and past `SERVICE_WAIT_SECONDS` it fails with the reason."""
+    from galaius.agents.catalog_connection import CatalogOffline
+    _setup(monkeypatch)
+    messaging.deliver_message("r1", "ce que je viens de dicter", sender="operator", message_id="press-2")
+    seen: list[str | None] = []
+
+    def offline(run):
+        seen.append(agent_queue.items_locked("r1")[0].waiting)   # called under the run lock the dispatcher holds
+        raise CatalogOffline("the Galaius service cannot be reached from this computer just now")
+
+    monkeypatch.setattr(agent_queue, "_fresh_policy", offline)
+    monkeypatch.setattr(agent_queue, "SERVICE_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(agent_queue, "SERVICE_WAIT_SECONDS", 0.05)
+
+    agent_queue.dispatch("r1")
+
+    (item,) = agent_queue.items("r1")
+    assert seen[0] is None and seen[1:] == ["service"] * (len(seen) - 1) and len(seen) >= 2
+    assert (item.state, item.waiting) == ("failed", None) and "cannot be reached" in item.error
+    assert reg.get_run("r1").last.startswith("resume refused")

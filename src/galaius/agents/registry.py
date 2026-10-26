@@ -11,10 +11,12 @@ Status is DERIVED from the pid on every read. A record cannot assert it is still
 killed agent reports as interrupted instead of spinning forever in the UI.
 """
 
+import faulthandler
 import functools
 import hashlib
 import inspect
 import json
+import logging
 import math
 import os
 import re
@@ -25,6 +27,7 @@ import signal
 import stat
 import subprocess
 import sys
+import threading
 import time
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
@@ -47,9 +50,10 @@ from galaius.caller import Caller
 from galaius.agents.ceiling import contained, end_run_scope, is_run_scope
 from galaius.agents.providers import PROVIDERS, AgentProvider, DeniedTool
 from galaius.agents.subscriptions import RunSubscription, Subscription, SubscriptionRefused
+from galaius.agents.community import CommunityAgent
 from galaius.fence import FenceSpec
 from galaius.paths import UserPaths
-from galaius.file_lock import SoleHolder, exclusive
+from galaius.file_lock import LockTimeout, SoleHolder, exclusive
 from galaius.file_stamp import FileStamp
 from galaius.models import TokenMix
 from galaius.pinned_directory import DescriptorDirectory, PinnedDirectory
@@ -444,6 +448,9 @@ class AgentRun(ContextGauge):
     replaced_by: RunReplacement | None = None
     #: The run whose brief it took, refused by its plan's limit before its first turn did anything (`Relaunch`).
     relaunched_from: Relaunch | None = None
+    #: The community entry it runs (`galaius.agents.community`): every turn's prompt is rebuilt from it. Its `agent` is
+    #: its caller's role, for what a launch decides alone: it plays no role (`plays`).
+    community: CommunityAgent | None = None
     #: When its brief was relaunched on another model (`claim_resume`): once per run; a relaunch that could not start leaves
     #: it to its reset (`limit_resume_at`).
     relaunched_at: float | None = None
@@ -463,6 +470,11 @@ class AgentRun(ContextGauge):
     inherited_asks: dict[str, float] = Field(default_factory=dict, exclude_if=lambda value: not value)
 
     status: RunStatus = "running"
+
+    def plays(self, role: str | None) -> bool:
+        """Whether its team hands it `role`'s work (takes it over, gives it the role's next task): a community agent plays
+        none, whatever `agent` it runs as."""
+        return bool(role) and self.community is None and self.agent == role
 
     @property
     def askers(self) -> frozenset[str]:
@@ -1041,11 +1053,100 @@ def lock_path(run_id: str) -> Path:
     return agents_dir() / f"{_safe_run_id(run_id)}.lock"
 
 
+log = logging.getLogger(__name__)
+
+#: How long a run's record lock is waited for before the waiting process writes every one of its threads' stacks, and the
+#: processes holding the lock, beside the run's files (`wedge_path`): one wedged lock had to be read through `ptrace`,
+#: which this PC refuses (2026-10-26).
+WEDGE_SECONDS = 60.0
+
+#: The record locks this thread holds, by run, with how many times it entered each (`record_lock` re-enters).
+_HELD = threading.local()
+
+#: How long a record lock is waited for in this context before `RecordBusy` (`lock_patience`); None: as long as it takes.
+_PATIENCE: ContextVar[float | None] = ContextVar("record_lock_patience", default=None)
+
+
+class RecordBusy(TimeoutError):
+    """A run's record lock not taken within the caller's patience (`lock_patience`): what holds it, said."""
+
+
+@contextmanager
+def lock_patience(seconds: float | None) -> Iterator[None]:
+    """Within the block (and the threads it hands work to: `asyncio.to_thread` copies the context), a record lock is
+    waited for at most `seconds`, then `RecordBusy`. For a caller someone waits on — a person's send, the machine
+    answering the web — that must answer with a reason rather than wait out a wedged run for good."""
+    token = _PATIENCE.set(seconds)
+    try:
+        yield
+    finally:
+        _PATIENCE.reset(token)
+
+
+def wedge_path(run_id: str) -> Path:
+    """Where a process that waited `WEDGE_SECONDS` for `run_id`'s record lock writes what it saw (`record_lock`)."""
+    return agents_dir() / f"{_safe_run_id(run_id)}.wedge.txt"
+
+
+def _lock_holders(path: Path) -> list[str]:
+    """The processes holding the lock on `path`, each with its command line, as `/proc/locks` says; [] where it says none."""
+    try:
+        inode = path.stat().st_ino
+        lines = Path("/proc/locks").read_text().splitlines()
+    except OSError:
+        return []
+    holders = []
+    for line in lines:
+        fields = line.split()
+        if "->" in fields or len(fields) < 6 or not fields[5].endswith(f":{inode}"):
+            continue
+        pid = fields[4]
+        with suppress(OSError):
+            pid += " " + Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")[:160].strip()
+        holders.append(pid)
+    return holders
+
+
+@functools.cache
+def _wedged(run_id: str, waited: float) -> None:
+    """Write, once per run in this process, every thread's stack and the lock's holders beside the run's files."""
+    with suppress(OSError), open(wedge_path(run_id), "w", encoding="utf-8") as dump:
+        dump.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}: pid {os.getpid()} waited {waited:.0f} s for the record lock of {run_id}\n"
+                   f"held by: {'; '.join(_lock_holders(lock_path(run_id))) or 'not said'}\n\n")
+        dump.flush()
+        faulthandler.dump_traceback(dump, all_threads=True)
+    log.warning("record lock of %s waited for %.0f s; every thread's stack: %s", run_id, waited, wedge_path(run_id))
+
+
 @contextmanager
 def record_lock(run_id: str):
-    """Serialize registry writers across CLI, MCP, dispatcher and provider processes."""
-    with exclusive(_open_private(lock_path(run_id), os.O_RDWR)):
-        yield
+    """Serialize registry writers across CLI, MCP, dispatcher and provider processes.
+
+    The thread already holding it re-enters: a second `flock` on a second descriptor of the same file waits on the first,
+    so a nested take of one run's lock deadlocked its own thread for good. Waited for past `WEDGE_SECONDS`, the waiter
+    writes what holds it (`_wedged`); past the context's patience (`lock_patience`), `RecordBusy` says what holds it."""
+    held: dict[str, int] = _HELD.__dict__.setdefault("runs", {})
+    if run_id in held:
+        held[run_id] += 1
+        try:
+            yield
+        finally:
+            held[run_id] -= 1
+        return
+    patience = _PATIENCE.get()
+    with ExitStack() as stack:
+        try:
+            stack.enter_context(exclusive(_open_private(lock_path(run_id), os.O_RDWR), patience=patience, long_wait=WEDGE_SECONDS,
+                                          on_long_wait=lambda waited: _wedged(run_id, round(waited))))
+        except LockTimeout as error:
+            holders = _lock_holders(lock_path(run_id))
+            raise RecordBusy(f"the record of run {run_id} is held by {'; '.join(holders) or 'another process'}: "
+                             f"not taken within {patience:g} s") from error
+        held[run_id] = 1
+        try:
+            yield
+        finally:
+            del held[run_id]
 
 
 @contextmanager
@@ -1198,7 +1299,7 @@ def register(*, run_id: str, pid: int | None, provider: str, name: str, task: st
              denied_tools: tuple[DeniedTool, ...] = (), fence: FenceSpec | None = None,
              subscription: RunSubscription | None = None, media: tuple[str, ...] = (),
              login: str = "", asked_by: tuple[str, ...] = (),
-             inherited_asks: Mapping[str, float] | None = None) -> AgentRun:
+             inherited_asks: Mapping[str, float] | None = None, community: CommunityAgent | None = None) -> AgentRun:
     provider_impl = PROVIDERS.get(provider)
     definition = definition_path
     if definition is None and agent_ref is None:
@@ -1212,7 +1313,7 @@ def register(*, run_id: str, pid: int | None, provider: str, name: str, task: st
                    reasoning=reasoning,
                    candidates=candidates, skipped=skipped, denied_tools=denied_tools, fence=fence,
                    provider_session_id=provider_session_id, subscription=subscription, login=login,
-                   asked_by=asked_by, inherited_asks=dict(inherited_asks or {}),
+                   asked_by=asked_by, inherited_asks=dict(inherited_asks or {}), community=community,
                    lifecycle_token=secrets.token_hex(16),
                    started_at=time.time())
     _write(run)
@@ -1253,11 +1354,11 @@ def take_over_refused(run: AgentRun, *, parent: str | None = None, at: float | N
     (« The 'gpt-6-astra' model is not supported when using Codex with a ChatGPT account. », 2026-10-16) read as a cut run
     to continue on every surface. A run with no parent takes over nothing: the session id it shares is a whole PC's web
     conversations. Returns the run id it took over."""
-    if run.agent is None or (launcher := parent or run.parent_run_id) is None:
+    if not run.plays(run.agent) or (launcher := parent or run.parent_run_id) is None:
         return None
     since = run.started_at if at is None else at
     candidates = sorted((stored for stored in _stored_records()
-                         if stored.run_id != run.run_id and stored.agent == run.agent and stored.replaced_by is None
+                         if stored.run_id != run.run_id and stored.plays(run.agent) and stored.replaced_by is None
                          and since - window <= stored.started_at < since
                          and stored.status in _REFUSABLE_ENDINGS and stored.parent_run_id == launcher),
                         key=lambda stored: stored.started_at, reverse=True)

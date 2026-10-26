@@ -23,6 +23,7 @@ from galaius.agents.catalog_connection import (
     CatalogAuthenticationError,
     CatalogConnection,
     CatalogConnectionError,
+    CatalogOffline,
 )
 from galaius.agents.policy import Policy
 from galaius.agents.tool_gateway import CONVERSATION_TOOLS
@@ -1461,10 +1462,12 @@ def test_a_pin_once_read_still_launches_while_the_service_is_unreachable(advance
         current.at_revision(unread)
 
 
-def test_a_catalog_request_rides_out_a_blip_shorter_than_its_backoff(advanced_catalogs, catalog_home, monkeypatch):
+@pytest.mark.parametrize("blip", ["connect", 502])
+def test_a_catalog_request_rides_out_a_blip_shorter_than_its_backoff(advanced_catalogs, catalog_home, monkeypatch, blip):
     """A DNS resolver or a restarting service that blinks for under `RETRY_BACKOFF` must reach nothing above
-    the request itself. The last try's failure is still the caller's, so a longer outage falls back to the snapshot
-    already held rather than looping here."""
+    the request itself — a front with no app behind it for the 2 s of a deploy cutover (502) as well (code-reviewer r2).
+    The last try's failure is still the caller's, so a longer outage falls back to the snapshot already held rather than
+    looping here."""
     _, current, worker_ref, _ = advanced_catalogs
     tries: list[str] = []
     fail_first = len(CatalogConnection.RETRY_BACKOFF)
@@ -1474,7 +1477,9 @@ def test_a_catalog_request_rides_out_a_blip_shorter_than_its_backoff(advanced_ca
             return httpx.Response(200, headers={"Set-Cookie": "session=fixture-cookie; Path=/"}, json={})
         tries.append(request.url.path)
         if len(tries) <= fail_first:
-            raise httpx.ConnectError("fixture blip")
+            if blip == "connect":
+                raise httpx.ConnectError("fixture blip")
+            return httpx.Response(blip)
         return httpx.Response(200, content=current.snapshot.model_dump_json())
 
     connect = CatalogConnection.connect
@@ -1488,3 +1493,20 @@ def test_a_catalog_request_rides_out_a_blip_shorter_than_its_backoff(advanced_ca
     with pytest.raises(CatalogConnectionError, match="unreachable"):
         AgentCatalog.refresh(current.connection)
     assert len(tries) == len(CatalogConnection.RETRY_BACKOFF) + 1, "bounded: the last try's failure is the caller's"
+
+
+@pytest.mark.parametrize("status", [502, 503, 504, 429])
+def test_a_service_with_no_app_behind_its_front_is_down_like_an_unreachable_one(advanced_catalogs, historical_http, monkeypatch, capsys, status):
+    """A front answering for an app that is not there (502 / 503 / 504 on every deploy cutover) or asking to slow down
+    is the service being down JUST NOW, as an unreachable one is: the pin as last read launches, and a pin never read is
+    `CatalogOffline` — whoever asked waits (`messaging.queue_message`) instead of being refused. A 404 or 403 still refuses."""
+    _, current, worker_ref, _ = advanced_catalogs
+    current.at_revision(worker_ref)
+    connect = CatalogConnection.connect
+    monkeypatch.setattr(CatalogConnection, "connect", lambda self, **kwargs: connect(self, transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, headers={"Set-Cookie": "session=fixture-cookie; Path=/"}, json={})
+        if request.url.path == "/v1/auth/local-preview" else httpx.Response(status))))
+    held = current.at_revision(worker_ref)
+    assert held.stale and held.revision(worker_ref).revision == worker_ref.revision
+    with pytest.raises(CatalogOffline):
+        current.at_revision(AgentRevisionRef(id=worker_ref.id, revision=uuid4()))

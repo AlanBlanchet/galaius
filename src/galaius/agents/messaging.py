@@ -13,9 +13,10 @@ from pydantic import BaseModel, ConfigDict
 from galaius.caller import Caller
 from galaius_core import ReadsAt
 
-from galaius.agents import agent_queue, relations
+from galaius.agents import agent_queue, community, relations
 from galaius.agents.critic_rounds import CriticRounds, turn_of
 from galaius.agents import registry as reg
+from galaius.agents.catalog_connection import CatalogOffline
 from galaius.agents.events import Relation
 from galaius.agents.policy import PolicyError
 from galaius.agents.providers import AgentProvider, provider_for
@@ -38,17 +39,19 @@ class Delivery(BaseModel):
     repeated: bool = False
 
     @classmethod
-    def queued(cls, run: reg.AgentRun, item: agent_queue.QueueItem, *, repeated: bool = False) -> "Delivery":
+    def queued(cls, run: reg.AgentRun, item: agent_queue.QueueItem, *, repeated: bool = False, waits: str = "") -> "Delivery":
         """`item`, queued for `run` (its lock held), and when its agent reads it: `now` a turn starts on
         it (or, `repeated`, it has read it already), `next_step` the turn running (or the one starting
         on a message ahead of it) reads it after its current tool call, `turn_end` once that turn ends:
         its CLI reads nothing mid-turn, or the run is fenced (the hook cannot claim the message from
-        inside the fence)."""
+        inside the fence). `waits`: what it waits for before its turn can start, said after the delivery line (a link
+        to the Galaius service that is down: the message is kept, nothing is refused)."""
         waiting = [other.id for other in agent_queue.items_locked(run.run_id) if other.state in {"pending", "running"}]
         working = item.state == "pending" and ((item.id in waiting and waiting.index(item.id) > 0) or run.working())
         mid_turn = item.turn.mid_turn and agent_queue.reads_next_step(run)
         reads_at: ReadsAt = "now" if not working else "next_step" if mid_turn else "turn_end"
-        return cls(state="queued", text=f"Queued for {run.name} ({run.run_id[:8]}), delivery {item.id[:8]}.", run_id=run.run_id,
+        said = f"Queued for {run.name} ({run.run_id[:8]}), delivery {item.id[:8]}."
+        return cls(state="queued", text=f"{said} {waits}".strip(), run_id=run.run_id,
                    queue_id=item.id, reads_at=reads_at, repeated=repeated)
 
     @classmethod
@@ -112,10 +115,18 @@ def check_deliverable(run_id: str, *, sender: str | None = None):
     return run, None
 
 
+#: What a queued message waits for when this computer's link to the Galaius service is down (`CatalogOffline`): said on
+#: the delivery line, so whoever sent it reads that it waits, never that it was refused.
+OFFLINE_WAIT = "It waits for this computer's link to the Galaius service, and goes as soon as it is back."
+
+
 def policy_for_continuation(run, provider: AgentProvider, environment: Mapping[str, str] | None = None):
     """Resolve current policy; dispatcher calls this again immediately before each resume.
     `environment`: the one the resumed turn runs in (credentials decide what can run), this
-    process's own when None."""
+    process's own when None. `CatalogOffline` passes through: the service holding the run's pinned revision cannot be
+    reached JUST NOW, which refuses nothing — its caller waits (`queue_message`, the run's dispatcher).
+
+    ModelUnavailable is the policy's own no: a provider switched off, no criterion, a permission this CLI refuses."""
     try:
         policy = load_policy()
         policy, _ = policy.for_launch(run.agent, reference=run.agent_ref)
@@ -136,6 +147,8 @@ def policy_for_continuation(run, provider: AgentProvider, environment: Mapping[s
         model = resolve_continuable_model(criterion, dict(Caller.environ(environment)), provider=provider, weights=policy.weights_for(run.agent), role=run.agent,
                                           subscription=run.subscription_id, floor=run.model)[1]
         return policy, criterion, model, policy.reasoning_for(run.agent)
+    except CatalogOffline:
+        raise
     except (ModelUnavailable, PolicyError, ValueError) as error:
         raise ModelUnavailable(str(error)) from error
 
@@ -178,6 +191,12 @@ def start_dispatcher(run_id: str, environment: Mapping[str, str]) -> str | None:
     return None
 
 
+#: The longest a PERSON's message waits for its run's record lock before `registry.RecordBusy` says what holds it: he
+#: waits on the answer (the web gives a send 60 s), and a run wedged by something else must never hold his words without
+#: a word (2026-10-26 09:39: never recorded, cut off at 60 s as « send timed out »). An agent's message keeps no bound.
+PERSON_PATIENCE = 20.0
+
+
 def queue_message(
     run_id: str, message: str, *, sender: str | None = None, environment: Mapping[str, str] | None = None, message_id: str | None = None,
     turn: agent_queue.QueuedTurn = agent_queue.MessageTurn(), only_if_idle: bool = False, for_run: str | None = None,
@@ -192,11 +211,21 @@ def queue_message(
     `for_run`: the run it is sent for (`galaius agents spawn --for`), kept on its transcript entry and listed among
     the recipient's `asked_by` as a message from that run would be."""
     environment = dict(Caller.environ(environment))
+    speaker = sender or sender_id(environment)
+    with reg.lock_patience(PERSON_PATIENCE if reg.get_run(speaker) is None else None):
+        return _queue_message(run_id, message, speaker=speaker, environment=environment, message_id=message_id, turn=turn,
+                              only_if_idle=only_if_idle, for_run=for_run)
+
+
+def _queue_message(
+    run_id: str, message: str, *, speaker: str, environment: dict[str, str], message_id: str | None,
+    turn: agent_queue.QueuedTurn, only_if_idle: bool, for_run: str | None,
+) -> Delivery:
+    """`queue_message`, its sender resolved and its patience for the run's lock set."""
     if message_id is not None:
         with reg.record_lock(recipient := reg.resolve_run_id(run_id) or run_id):
             if (repeat := Delivery.repeat(recipient, message_id)) is not None:
                 return repeat
-    speaker = sender or sender_id(environment)
     if reg.get_run(speaker) is not None:
         named = reg.resolve_run_id(run_id) or run_id
         run_id = relations.live(named)  # a run handed off: its successor reads it
@@ -217,6 +246,7 @@ def queue_message(
             return Delivery(state="error", text=f"ERROR: no agent run {run_id!r}.", run_id=run_id)
         if only_if_idle and (run.working() or any(item.state in {"pending", "running"} for item in agent_queue.items_locked(run.run_id))):
             return Delivery(state="error", text=f"ERROR: {run.name} is busy.", run_id=run.run_id)
+        offline = ""
         try:
             # A PERSON writing to a run that no longer runs IS his « Continuer » (`prepare_continue`): the
             # vendor answers the turn itself, instead of what this PC remembers of an earlier refusal
@@ -228,6 +258,11 @@ def queue_message(
             _, criterion, model, reasoning = policy_for_continuation(run, provider, environment)
         except (ModelUnavailable, SubscriptionRefused) as policy_error:
             return Delivery(state="error", text=f"ERROR: {policy_error}", run_id=run.run_id)
+        except CatalogOffline:
+            # His words are never lost to a link that is down: the message is recorded and waits, and the dispatcher
+            # resolves the model again when it starts the turn (`_fresh_policy`, which waits the same way).
+            criterion = model = reasoning = None
+            offline = OFFLINE_WAIT
         if _session_id(run) is None:
             return Delivery(
                 state="error", text="ERROR: provider session identity is unavailable; not queued.",
@@ -279,7 +314,7 @@ def queue_message(
                 state="error", text=f"ERROR: could not record the message to {run_id!r}.",
                 run_id=run.run_id,
             )
-        if run.working():
+        if run.working() and model is not None:
             if run.model != model or run.requested_criterion != criterion or run.reasoning != reasoning:
                 # Informational only. Effective values change when dispatcher starts the turn.
                 reg._merge_record_locked(run.run_id, {
@@ -287,7 +322,7 @@ def queue_message(
                     "pending_criterion": criterion,
                     "pending_reasoning": reasoning,
                 })
-        return Delivery.queued(run, item)
+        return Delivery.queued(run, item, waits=offline)
 
 
 def wait_for_start(delivery: Delivery, *, timeout: float = 10.0, interval: float = 0.2, grace: float = 1.5) -> str | None:
@@ -307,7 +342,7 @@ def wait_for_start(delivery: Delivery, *, timeout: float = 10.0, interval: float
     deadline = time.monotonic() + timeout
     alive_since: float | None = None
     while True:
-        item = next((i for i in agent_queue.items(delivery.run_id) if i.id == delivery.queue_id), None)
+        item = next((i for i in agent_queue.items_seen(delivery.run_id) if i.id == delivery.queue_id), None)
         if item is None:
             return "queued delivery disappeared"
         if item.state in ("failed", "cancelled", "uncertain"):
@@ -369,7 +404,7 @@ async def wait_for_reply(delivery: Delivery) -> str:
     delivery.state = "replied"
     origin = reg.get_run(delivery.run_id)
     header = origin.handoff_header() if origin is not None else ""
-    return f"{delivery.text}\n{header}{replies[-1]}"
+    return f"{delivery.text}\n{header}{community.shown(origin, replies[-1])}"
 
 
 #: Why a process `systemd-run` started may not send or spawn as no run (`Caller.unowned`).

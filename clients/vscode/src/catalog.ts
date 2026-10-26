@@ -10,6 +10,7 @@
  *  goes false for anything stale. Serving old data offline is fine; serving it as today's truth
  *  is the bug.
  */
+import { galaiusCli } from "./galaiusCli";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -65,13 +66,6 @@ export async function loadCatalog(): Promise<Catalog | null> {
 }
 
 /** Run galaius refresh, best-effort: a panel must render whatever it has even with no CLI. */
-function refreshViaCli(): Promise<void> {
-  return new Promise((resolve) => {
-    import("child_process")
-      .then(({ execFile }) => {
-        const child = execFile("galaius", ["refresh"], { timeout: 20000 }, () => resolve());
-        child.on("error", () => resolve());
-      })
-      .catch(() => resolve());
-  });
+async function refreshViaCli(): Promise<void> {
+  await galaiusCli(["refresh"], 20_000);
 }

@@ -48,6 +48,7 @@ from galaius.agents import agent_queue, messaging, relations
 from galaius.agents.critic_rounds import CriticRounds, turn_of
 from galaius.agents.admission import Hold, Paused, SoftMemory, turn_hold
 from galaius.agents import registry as reg
+from galaius.agents.community import CommunityAgent
 from galaius.agents.policy import Policy, PolicyError
 from galaius.agents.providers import provider_for
 from galaius.agents.vocabulary import TouchScope
@@ -119,6 +120,9 @@ class Spawn(BaseModel):
     #: Never on the model that refused (`run_agent`'s `passed_over`); each run records the other (`relaunched_from`,
     #: `replaced_by`).
     relaunches: reg.Relaunch | None = None
+    #: The community entry it starts as its caller's child (`run_agent`'s `community`): it names no role, so it hands
+    #: over to no peer and takes over from none.
+    community: CommunityAgent | None = None
     #: Its fields `start` passes to `run_agent` other than by their own names.
     NOT_RUN_ARGUMENTS: ClassVar[frozenset[str]] = frozenset({"task", "provider", "session_id", "for_run", "single", "continues", "helper",
                                                              "cross_project", "relaunches"})
@@ -131,14 +135,17 @@ class Spawn(BaseModel):
         return cls(task=run.task, cwd=run.cwd or ".", agent=run.agent, name=run.name, permission_mode=run.permission_mode,
                    image_paths=tuple(reg.RunMedia.path(run.run_id, name) for name in run.media), agent_ref=run.agent_ref,
                    parent_run_id=run.parent_run_id, session_id=run.session_id, denied_tools=tuple(run.denied_tools), fence=run.fence,
-                   continues=run.run_id, relaunches=reg.Relaunch.of(run))
+                   continues=run.run_id, relaunches=reg.Relaunch.of(run), community=run.community)
 
     @classmethod
     def asked(cls, *, parent_run_id: str | None = None, **fields) -> Spawn:
         """A spawn as its caller asks it: its parent the run asking (`GALAIUS_PARENT_RUN_ID`) unless one is named. A process
         of a run at work (`reg.ancestor_run`) never starts a run outside its tree: an empty parent, or the variable cleared
         from its environment, is refused (`ValueError`; 2026-10-17: 282 such spawns in 68 transcripts started runs nobody's
-        report reached). The person's terminal, and a queue's process its run let go of, descend from no run."""
+        report reached). The person's terminal, and a queue's process its run let go of, descend from no run. A community
+        spawn names no role, no run to take over and no helper: it runs as its caller's child (`run.run_agent`)."""
+        if fields.get("community") is not None and any(fields.get(name) for name in ("agent", "agent_ref", "delegate", "continues", "helper")):
+            raise ValueError("a community spawn starts its entry as your child: name no agent, agent_ref, delegate, continues or helper with it")
         parent = parent_run_id or Caller.environ().get("GALAIUS_PARENT_RUN_ID") or None
         if parent is None and Caller.current().unowned():
             raise ValueError(messaging.UNOWNED)
@@ -196,7 +203,7 @@ class Spawn(BaseModel):
         if self.continues is not None and self.continues != caller.run_id:
             predecessor = reg.get_run(self.continues)
             role = self._role_name()
-            if predecessor is None or predecessor.run_id not in here or predecessor.agent != role or self._busy(predecessor):
+            if predecessor is None or predecessor.run_id not in here or not predecessor.plays(role) or self._busy(predecessor):
                 return f"continues names {self.continues[:8]}: only your own run, or an ended {role or 'agent'} of your conversation, is yours to hand off"
         if self.for_run is not None and self.for_run not in here:
             target = reg.get_run(self.for_run)
@@ -242,7 +249,7 @@ class Spawn(BaseModel):
             return peer
         parent = reg.get_run(self.parent_run_id) if self.parent_run_id else None
         role = self._role_name()
-        return parent if parent is not None and role and parent.agent == role and parent.successor is None \
+        return parent if parent is not None and parent.plays(role) and parent.successor is None \
             and relations.outgrown(parent) else None
 
     def takeover_sentence(self, predecessor: reg.AgentRun | None, run_id: str) -> str:
@@ -260,7 +267,7 @@ class Spawn(BaseModel):
         asks: its CLI compacts it on its next turn."""
         role = self._role_name()
         return next((peer for peer in self._conversation()
-                     if role and peer.agent == role and peer.parent_run_id == self.parent_run_id
+                     if peer.plays(role) and peer.parent_run_id == self.parent_run_id
                      and peer.successor is None and relations.outgrown(peer) and not self._busy(peer)), None)
 
     def _role_name(self) -> str | None:
@@ -316,7 +323,7 @@ class Spawn(BaseModel):
         return run.working() or any(item.state in {"pending", "running"} for item in agent_queue.items(run.run_id))
 
     def _peers(self, role: str) -> list[reg.AgentRun]:
-        return [run for run in self._conversation() if run.agent == role]
+        return [run for run in self._conversation() if run.plays(role)]
 
     def forget_peers(self, keep: str) -> list[str]:
         """`single`: every other run of its role in its conversation, none busy (`_busy`), forgotten (`reg.forget`); their ids."""

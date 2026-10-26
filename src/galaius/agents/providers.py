@@ -44,7 +44,7 @@ from galaius.agents.quota import REFUSAL
 from galaius.agents.profiles import overlay_for
 from galaius.agents.vocabulary import ApprovalIntent, TouchScope, ThinkingLevel, vocabulary_for
 from galaius.brief_hook import NOTE as BRIEF_NOTE
-from galaius.fence import KEYS, RELAY, RELAY_PORT, Confinement, RelayedServer, SignIn, confinement_refusal, userns_refusal
+from galaius.fence import COMPAT_KEY, KEYS, RELAY, RELAY_PORT, Confinement, RelayedServer, SignIn, confinement_refusal, userns_refusal
 from galaius.inbox_hook import NOTE as INBOX_NOTE
 from galaius.models import Model
 from galaius.processes import ask_process, run_isolated_process
@@ -939,6 +939,9 @@ class ClaudeTurnSettings(BaseModel):
     #: The name a peer session's SendMessage addresses it by (`-n`): `<role>-<short run id>`. Unnamed, the CLI names a session
     #: after its folder (`<folder>-<2 hex>`) and a resume without `-n` drops the name: no peer finds a run by its role.
     name: str
+    #: No MCP server but the one galaius hands it (`--strict-mcp-config`): none the person configured for himself, so no
+    #: credential of his reaches it through one (a community agent, `galaius.agents.community`).
+    isolated: bool = False
 
     def arguments(self) -> list[str]:
         hooks = {
@@ -947,7 +950,8 @@ class ClaudeTurnSettings(BaseModel):
         }
         settings = {"autoCompactWindow": self.compact_window, "bashOutputMaxChars": self.bash_output_chars, **({"hooks": hooks} if hooks else {})}
         notes = [note for hook, note in ((self.inbox_hook, INBOX_NOTE), (self.brief_hook, BRIEF_NOTE)) if hook]
-        return ["-n", self.name, "--settings", json.dumps(settings)] + (["--append-system-prompt", "\n\n".join(notes)] if notes else [])
+        return (["-n", self.name, "--settings", json.dumps(settings)] + (["--append-system-prompt", "\n\n".join(notes)] if notes else [])
+                + (["--strict-mcp-config"] if self.isolated else []))
 
 
 class ClaudeCodeProvider(AgentProvider):
@@ -2121,7 +2125,7 @@ class CodexProvider(AgentProvider):
             # `/v1/responses` (research store, 2026-09-22), so this is not a narrowing of what it
             # can reach.
             "-c", f"{prefix}.wire_api={json.dumps('responses')}",
-            "-c", f"{prefix}.env_key={json.dumps('GALAIUS_OPENAI_COMPAT_KEY')}",
+            "-c", f"{prefix}.env_key={json.dumps(COMPAT_KEY)}",
             "-c", f"model_provider={json.dumps(self._OPENAI_COMPAT_PROVIDER_ID)}",
         ]
 

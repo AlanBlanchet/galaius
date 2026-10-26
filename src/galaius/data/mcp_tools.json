@@ -43,6 +43,12 @@
  },
  {
   "server": "galaius",
+  "name": "community_search",
+  "category": "agents",
+  "description": "Search the community library \u2014 agents, skills and prompts published by people or imported from public repositories under their licence \u2014 for one made for `need` (a few words: \u00ab reverse engineer a binary \u00bb, \u00ab write release notes \u00bb). Lists the best matches (id, kind, title, what it is for, source and licence) and the repositories listed by link only. Start one with agent_spawn(community=<id>, task=...): it runs as your child, under your control."
+ },
+ {
+  "server": "galaius",
   "name": "conversation_read",
   "category": "agents",
   "description": "Read one conversation this computer holds, `limit` lines at a time (what was asked, answered, said between agents, each tool call by its leading argument; never tool output; credentials masked)."

@@ -45,7 +45,7 @@ def test_the_install_script_comes_only_from_its_vendor(tmp_path: Path, hops: dic
     else:
         with pytest.raises(ProgramFailed, match="left its vendor") as refused:
             programs(tmp_path, answer).download(installer)
-        assert refused.value.code == "download_failed"
+        assert refused.value.refusal == "download_failed"
 
 
 def test_an_answer_larger_than_any_script_is_refused(tmp_path: Path) -> None:

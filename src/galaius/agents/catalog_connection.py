@@ -38,6 +38,17 @@ class CatalogAuthenticationError(CatalogConnectionError):
     """Authentication or workspace access was refused; cached access is forbidden."""
 
 
+#: What the service answers while it is not there (a front with no app behind it: each deploy cutover) or asks to be left
+#: alone: not a refusal of what was asked (`CatalogOffline`).
+SERVICE_DOWN: frozenset[int] = frozenset({429, 502, 503, 504})
+
+
+class CatalogOffline(CatalogConnectionError):
+    """The catalog service could not be reached just now: nothing is wrong with this computer's configuration, and
+    whatever was asked waits instead of being refused (owner 2026-10-23: his message was refused while his PC was up,
+    its link down for six minutes)."""
+
+
 T = TypeVar("T")
 
 _PREVIEW_SIGN_IN = "/v1/auth/local-preview"
@@ -352,7 +363,7 @@ class CatalogConnection(BaseModel):
         for pause in self.RETRY_BACKOFF:
             try:
                 return self._request_once(client, method, path, etag=etag)
-            except httpx.TransportError:
+            except (httpx.TransportError, CatalogOffline):  # nothing reached, or a front with no app behind it (`SERVICE_DOWN`)
                 time.sleep(pause)
         return self._request_once(client, method, path, etag=etag)
 
@@ -391,6 +402,10 @@ class CatalogConnection(BaseModel):
             workspace_refused = response.status_code == 404 and path.startswith("/v1/workspaces/")
             if response.status_code in {401, 403} or workspace_refused:
                 raise _Refused(response.status_code)
+            if response.status_code in SERVICE_DOWN:
+                # The front answered for an app that is not there (every deploy cutover, every restart) or asked to wait:
+                # the service is down JUST NOW, which refuses nothing — the caller waits (code-reviewer r1 B1).
+                raise CatalogOffline(f"the Galaius service is not answering just now (HTTP {response.status_code})")
             if response.status_code < 200 or response.status_code >= 300:
                 raise CatalogConnectionError(f"catalog request failed (HTTP {response.status_code})")
             payload = bytearray()

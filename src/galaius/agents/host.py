@@ -43,6 +43,7 @@ from galaius.agents.protocol import (
     StartCommand,
 )
 from galaius.agents.transport import CompactionUnsupported, _ConversationTransport
+from galaius.refused import Refused
 from galaius.criteria import Variables
 from galaius.config import Config
 from galaius.prompt_cache import _PromptCache
@@ -661,12 +662,8 @@ class _ConversationHost(BaseModel):
             sys.stdout.buffer.write(message.model_dump_json().encode() + b"\n")
             sys.stdout.buffer.flush()
 
-class ConversationRefused(RuntimeError):
-    """The host answered a command with an error: `code` is its ConversationErrorCode."""
-
-    def __init__(self, code: str, message: str) -> None:
-        super().__init__(message)
-        self.code = code
+class ConversationRefused(Refused[ConversationErrorCode]):
+    """The host answered a command with an error: its reason a `ConversationErrorCode`."""
 
 
 class ConversationHost:

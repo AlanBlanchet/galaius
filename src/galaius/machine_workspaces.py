@@ -216,7 +216,7 @@ class MachineWorkspaces(BaseModel):
             try:
                 finished = work(job, *arguments)
             except WorkspaceRefused as failure:
-                finished = job.model_copy(update={"state": "failed", "code": failure.code, "detail": str(failure)[:600]})
+                finished = job.model_copy(update={"state": "failed", "code": failure.refusal.reason, "detail": str(failure)[:600]})
             except (subprocess.TimeoutExpired, TimeoutError):
                 finished = job.model_copy(update={"state": "failed", "code": "timeout", "detail": f"it took longer than {int(self.timeout // 60)} min and was stopped"})
             except Exception as error:  # the thread's boundary: whatever stopped it, its job says so
@@ -452,7 +452,7 @@ class MachineWorkspaces(BaseModel):
             WorkspaceFiles(folder=folder, environment=self.environment).write(files, packed)
             self.transfers.upload(transfer, packed, len(files))
         except Exception as error:  # the thread's boundary: whatever stopped it, the server hears it
-            code = error.code if isinstance(error, WorkspaceRefused) else "disk_full" if getattr(error, "errno", None) == errno.ENOSPC else "failed"
+            code = error.refusal.reason if isinstance(error, WorkspaceRefused) else "disk_full" if getattr(error, "errno", None) == errno.ENOSPC else "failed"
             logger.exception("sending folder for transfer %s failed", transfer)
             try:
                 self.transfers.ended(transfer, WorkspaceUpload(outcome=WorkspaceFailure(code=code, detail=str(error)[:600] or type(error).__name__)))

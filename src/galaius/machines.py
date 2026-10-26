@@ -31,11 +31,11 @@ import httpx
 import websockets
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, ValidationError, field_validator, model_validator
 
-from galaius_core import AGENT_FILES_FEATURE, AGENT_IMAGES_FEATURE, MACHINE_TOOLS_FEATURE, SCREEN_FEATURE, AGENT_IMAGES_WIRE, MACHINE_AGENT_REQUESTS, PROJECTS_DIR, PROJECTS_ROOT, PROJECTS_ROOT_FEATURE, SUBSCRIPTIONS_FEATURE, WEB_LIMIT_FEATURE, AgentCompactRequest, AgentMoveRequest, AgentSendRequest, AgentSignInCodeRequest, AgentStartRequest, MACHINE_MODELS, MachineProblem, MachineProblemCode, MachineAgentSettings, MachineAgentSettingsState, MachineAgentSettingsUpdate, PlacePath, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, MachineAgentAnswer, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachineRuntime, MachineTokenSwap, PlaceLevel, ScriptFile, ScriptLanguage, UserModelOrigin
+from galaius_core import AGENT_FILES_FEATURE, AGENT_IMAGES_FEATURE, MACHINE_TOOLS_FEATURE, SCREEN_FEATURE, AGENT_IMAGES_WIRE, MACHINE_AGENT_REQUESTS, PROJECTS_DIR, PROJECTS_ROOT, PROJECTS_ROOT_FEATURE, SUBSCRIPTIONS_FEATURE, WEB_LIMIT_FEATURE, AgentCompactRequest, AgentMoveRequest, AgentSendRequest, AgentSignInCodeRequest, AgentStartRequest, MACHINE_MODELS, MachineProblem, MachineProblemCode, MachineAgentSettings, MachineAgentSettingsState, MachineAgentSettingsUpdate, PlacePath, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, AgentRefusal, MachineAgentAnswer, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachineRuntime, MachineTokenSwap, PlaceLevel, ScriptFile, ScriptLanguage, UserModelOrigin
 from galaius import USER_AGENT
 from galaius import prompt_mirror, prompt_projection
 from galaius.agents.subscription_watch import SubscriptionWatch
-from galaius.agents.subscriptions import Subscription, SubscriptionRefused
+from galaius.agents.subscriptions import Subscription
 from galaius.agents.catalog import AgentCatalog
 from galaius.agents.catalog_connection import CatalogConnection
 from galaius.cli.prompts import PromptMode
@@ -46,7 +46,7 @@ from galaius.server_tls import server_tls
 from galaius.server_address import ServerAddress
 from galaius.error_reports import MachineErrorReports
 from galaius.machine_places import PlaceDesk
-from galaius.machine_agents import AgentSpawns, LogRing, MachineAgents, MachineSessions, UnderWay, WebFull, WebRuns, redact, secret_values
+from galaius.machine_agents import AgentSpawns, LogRing, MachineAgents, MachineSessions, UnderWay, WebRuns, redact, secret_values
 from galaius.machine_programs import AgentPrograms
 from galaius.machine_workspaces import MachineWorkspaces, WorkspaceJobs
 from galaius_core.sealing import SecretsSeal
@@ -72,7 +72,8 @@ from galaius.pinned_directory import PinnedDirectory
 from galaius.fence import EGRESS, FenceSpec, available
 from galaius.places import BrowseBudget, IN_PLACE_WRITES, INSTRUCTION_NAMES, LEVEL_RANK, PlaceMap, split
 from galaius.place_reviews import PlaceReviews, write_plain
-from galaius.workspace_copy import WorkspaceRefused, WorkspaceTransfers
+from galaius.refused import Refused
+from galaius.workspace_copy import WorkspaceTransfers
 from galaius.windowless import console_python
 
 if sys.platform == "win32":
@@ -1543,12 +1544,12 @@ class MachineRunner:
                     try:
                         answer = await asyncio.wait_for(asyncio.shield(first), request.seconds)
                     except TimeoutError:
-                        raise UnderWay("its first delivery is still under way on this computer") from None
+                        raise UnderWay("under_way", "its first delivery is still under way on this computer") from None
                     except asyncio.CancelledError:
                         if not first.cancelled() or ((task := asyncio.current_task()) is not None and task.cancelling()):
                             raise
                     else:
-                        if answer.code != "under_way":
+                        if not (isinstance(answer.refusal, AgentRefusal) and answer.refusal.reason == "under_way"):
                             await socket.send(json.dumps({"type": "agent_answer", "result": answer.model_dump(mode="json")}))
                             return
                         # The first answered while its act still worked here: this one delivers it again, which answers that act.
@@ -1584,8 +1585,7 @@ class MachineRunner:
                                                                  ("answer", answer.detail if request.op in {"answer", "send", "provider"} else None)) if value)
             logger.log(logging.INFO if request.action else logging.DEBUG, "agent %s %s", request.op, said)
         except ANSWERED_REFUSALS as error:
-            answer = MachineAgentAnswer(request_id=request.id, error=fitted(MachineAgentAnswer, "error", said_of(error, doing="starting or driving an agent")), code=error.code if isinstance(error, (WorkspaceRefused, WebFull, UnderWay)) else None,
-                                        subscription_refusal=error.refusal if isinstance(error, SubscriptionRefused) else None)
+            answer = MachineAgentAnswer(request_id=request.id, error=fitted(MachineAgentAnswer, "error", said_of(error, doing="starting or driving an agent")), refusal=error.answered if isinstance(error, Refused) else None)
             logger.warning("agent %s refused: %s", request.op, answer.error)
         except Exception as error:  # noqa: BLE001 — the asker is never left with no answer at all
             # Whatever this was, the server is waiting on an answer to THIS request: without one it

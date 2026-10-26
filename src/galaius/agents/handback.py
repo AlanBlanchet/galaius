@@ -16,9 +16,10 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from galaius.agents import agent_queue, messaging
+from galaius.agents import agent_queue, messaging, relations
 from galaius.agents.events import AgentEvent
 from galaius.agents import registry as reg
+from galaius.agents.community import CommunityAgent, quote
 from galaius.agents.relations import final_words, live, one_read, owed
 from galaius.agents.spawn_line import SpawnLine
 from galaius.config import Config
@@ -45,6 +46,8 @@ class Report(BaseModel):
     #: The run whose brief it took, refused by its plan's limit before it started (`reg.Relaunch.line`), and why its own
     #: relaunch could not start; "" for neither.
     relaunched: str = ""
+    #: The community entry it ran: its words are quoted to its reader (`community.quote`), never read as its own.
+    community: CommunityAgent | None = None
 
     @classmethod
     def of(cls, run: reg.AgentRun) -> "Report":
@@ -56,10 +59,35 @@ class Report(BaseModel):
         if _pending(run) or reg.relaunch_pending(run):
             said = reg.vendor_said_at(run) if run.process_running() else None  # a queued item alone: no turn to be silent
             return cls(run_id=run.run_id, agent=run.agent, status=run.status, pending=True, text="", relaunched=relaunched,
-                       silent_for=None if said is None else max(0.0, time.time() - said))
-        return cls(run_id=run.run_id, agent=run.agent, status=run.status, pending=False, text=final_words(run.run_id), relaunched=relaunched)
+                       silent_for=None if said is None else max(0.0, time.time() - said), community=run.community)
+        return cls(run_id=run.run_id, agent=run.agent, status=run.status, pending=False, text=final_words(run.run_id), relaunched=relaunched,
+                   community=run.community)
+
+    @classmethod
+    def answering(cls, run: reg.AgentRun, asker: str) -> "Report":
+        """`run`'s report to `asker`'s latest ask, never to another run's: what it wrote from the turn that read that ask
+        (its queue item, `ask_message`; its start when the ask is its task) up to the turn the next ask from another run
+        started (`relations.ask_lines`). 2026-10-25: a reviewer kept for several makers handed one maker's verdict to an earlier
+        maker whose ask it had answered days before. Its latest report (`of`) when no later ask came, or this computer
+        kept no turn start for the ask."""
+        report = cls.of(run)
+        if report.pending:
+            return report
+        read = relations.ask_lines(run)
+        message = relations.ask_message(run, asker)
+        start = 0 if message is None else next((line for line, said in read if said == message), None)
+        if start is None:
+            return report
+        end = next((line for line, said in read if line > start and said != message), None)
+        if end is None:
+            return report
+        said = relations.report_between(run.run_id, start, end)
+        return report if said is None else report.model_copy(update={"text": said})
 
     def section(self, limit: int | None = REPORT_MAX) -> str:
+        if self.community is not None:
+            text = quote(self.text or "(it ended without a final message)")
+            return f"## {self.community.label()} {self.run_id[:8]} — {self.status}\n{text}"
         text = self.text if limit is None or len(self.text) <= limit else f"{self.text[:limit]}\n… (clipped; `galaius agents events {self.run_id}`)"
         lead = f"{self.relaunched}\n" if self.relaunched else ""
         return f"## {self.agent or 'agent'} {self.run_id[:8]} — {self.status}\n{lead}{text or '(it ended without a final message)'}"
@@ -86,17 +114,6 @@ def hand_back(run_id: str) -> list[messaging.Delivery]:
     return deliveries
 
 
-def handback_since(*, now: float | None = None) -> float:
-    """From when this PC carries a report its asker was at work for (`_resume`): the first look of a watcher that does
-    (`#handback-since.state`, written once). A report that ended before stays as it was: taking this up never hands a
-    week of old reports to every run that once asked for them."""
-    with reg.shared_state("handback-since") as (raw, write, _keep):
-        if raw is None:
-            raw = repr(time.time() if now is None else now).encode()
-            write(raw)
-    return float(raw)
-
-
 def _agents_answering(asker_id: str, records: Sequence[reg.AgentRun]) -> list[reg.AgentRun]:
     """The runs among `records` that owe run `asker_id`, or a run it took over from (`live`), their report (`owed`)."""
     aliases = {asker_id} | {stored.run_id for stored in records if stored.successor and live(stored.run_id) == asker_id}
@@ -109,7 +126,7 @@ def _resume(asker_id: str) -> messaging.Delivery | None:
     alone, its turn opening on where it stands (`relations.card`) and on whose reports they are (`relations.heading`).
 
     Only a run whose own turn ended (`_ENDED_ITS_TURN`); every report not carried yet (`owed`), whenever its agent
-    ended (`handback_since` on): one that ended while it worked was never handed to it. One message per ended turn (its
+    ended (`relations.handback_since` on): one that ended while it worked was never handed to it. One message per ended turn (its
     `message_id` names that turn), so every reader of the same ending queues it once. An agent still waiting on agents
     of its own holds it: its interim words (« dispatched the tester; waiting ») would answer the ask (`owed`)
     and cost `asker_id` a turn, while its final report comes once they end. So does one a cut stopped that resumes
@@ -122,11 +139,11 @@ def _resume(asker_id: str) -> messaging.Delivery | None:
         agents = _agents_answering(asker_id, records)
         if any(_pending(run) or reg.self_resuming(run) or any(_pending(own) for own in _agents_answering(run.run_id, records)) for run in agents):
             return None
-    since = handback_since()
+    since = relations.handback_since()
     ended = [run for run in agents if run.finished_at is not None and run.finished_at >= since]
     if not ended:
         return None
-    reports = [Report.of(run) for run in sorted(ended, key=lambda run: run.finished_at or 0.0)]
+    reports = [Report.answering(run, asker_id) for run in sorted(ended, key=lambda run: run.finished_at or 0.0)]
     return messaging.deliver_message(
         asker.run_id, "\n\n".join(report.section() for report in reports), sender=reports[-1].run_id,
         message_id=f"handback-{asker.finished_at:.6f}", only_if_idle=True,
@@ -147,7 +164,7 @@ class EndWatch(BaseModel):
     held: frozenset[str] = Field(default_factory=lambda: frozenset(run.run_id for run in reg.recently_cut() if run.askers))
 
     def model_post_init(self, _context) -> None:
-        handback_since()   # from its first look on, a report its asker was at work for is carried (`_resume`)
+        relations.handback_since()   # from its first look on, a report its asker was at work for is carried (`_resume`)
 
     def ended(self) -> list[str]:
         now, live = time.time(), frozenset(run.run_id for run in reg.running_runs())
