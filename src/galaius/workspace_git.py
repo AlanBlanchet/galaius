@@ -8,16 +8,13 @@ from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict
 
-from galaius_core import WorkspaceFailureCode
+from galaius_core import AgentRefusal, WorkspaceFailureCode
+
+from galaius.refused import Refused
 
 
-class WorkspaceRefused(PermissionError):
-    """A project folder that cannot be put in place, refreshed or sent, with the code the server
-    words for the owner (`WorkspaceFailureCode`)."""
-
-    def __init__(self, code: WorkspaceFailureCode, said: str) -> None:
-        super().__init__(said)
-        self.code = code
+class WorkspaceRefused(Refused[AgentRefusal]):
+    """A project folder that cannot be put in place, refreshed or sent: its reason a `WorkspaceFailureCode`."""
 
 
 class CloneFailure(BaseModel):

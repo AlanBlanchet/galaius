@@ -18,7 +18,7 @@ import hmac
 import logging
 import time
 
-from galaius_core import MACHINE_AGENT_REQUESTS, PROJECTS_ROOT, PROJECTS_ROOT_FEATURE, AgentProviderState, MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentSettings, MachineAgentSettingsUpdate, MachineWorkspaceJob, SubscriptionLimits, WebLoad
+from galaius_core import MACHINE_AGENT_REQUESTS, PROJECTS_ROOT, PROJECTS_ROOT_FEATURE, AgentProviderState, AgentRefusal, MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentSettings, MachineAgentSettingsUpdate, MachineWorkspaceJob, SubscriptionLimits, WebLoad
 from galaius.machine_programs import AgentPrograms
 from galaius.agents import agent_queue, messaging
 from galaius.agents import registry as reg
@@ -918,7 +918,7 @@ def test_a_clone_is_refused_before_git_runs(base: Path, tmp_path: Path, url: str
 ])
 def test_a_failed_clone_says_why_as_a_code_and_in_plain_words(output: str, code: str, said: str) -> None:
     failure = CloneFailure.explain(output, "github.com")
-    assert failure.code == code and said in str(failure)
+    assert failure.refusal.reason == code and said in str(failure)
 
 
 def test_the_submodule_walk_never_leaves_the_clone(base: Path, tmp_path: Path) -> None:
@@ -1095,10 +1095,10 @@ def test_the_web_cap_counts_conversations_never_the_agents_they_launched(base: P
     started()
     with pytest.raises(WebFull, match=r"^4 conversations started from the web are already working on this computer \(at most 4\)") as refused:
         agents._prepare_start(start, None)
-    assert refused.value.code is None   # a web that sent no number may not know the typed code: it reads the sentence
+    assert refused.value.answered == AgentRefusal(reason="web_full")   # typed for every web: an older one reads only the sentence
     with pytest.raises(WebFull) as refused:
         agents._prepare_start(start.model_copy(update={"web_limit": 4}), None)
-    assert refused.value.code == "web_full"
+    assert refused.value.refusal.reason == "web_full"
     listed = _answer(agents, _request("runs"))
     assert listed.web == WebLoad(working=4, limit=4)  # what the web's Auto reads to pass over a full PC
     # A question to the blob (a tool of the web's own UI) is none of his conversations: it takes no place, nor is it refused.

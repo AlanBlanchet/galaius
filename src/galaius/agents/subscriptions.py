@@ -17,26 +17,18 @@ from typing import ClassVar, Self
 from uuid import UUID, uuid4
 
 from galaius_core import AgentProvider as ProviderName, RunSubscription as WireRunSubscription, SubscriptionAllowance, SubscriptionCap, SubscriptionLimits
-from galaius_core import SubscriptionChoice, SubscriptionRefusal, SubscriptionRefusalReason, SubscriptionUsage, SubscriptionUsageReport, UsageWindow
+from galaius_core import SubscriptionChoice, SubscriptionRefusal, SubscriptionUsage, SubscriptionUsageReport, UsageWindow
 from pydantic import BaseModel, ConfigDict
 
 from galaius.agents.providers import PROVIDERS, AgentProvider
 from galaius.paths import UserPaths
+from galaius.refused import Refused
 
 logger = logging.getLogger(__name__)
 
 
-class SubscriptionRefused(PermissionError):
-    """A start, turn or child a subscription cannot take: `reason` typed for the server to word (`refusal`, sent on the
-    answer), its message in English for this PC's log."""
-
-    def __init__(self, reason: SubscriptionRefusalReason, message: str) -> None:
-        super().__init__(message)
-        self.reason = reason
-
-    @property
-    def refusal(self) -> SubscriptionRefusal:
-        return SubscriptionRefusal(reason=self.reason)
+class SubscriptionRefused(Refused[SubscriptionRefusal]):
+    """A start, turn or child a subscription cannot take: its reason a `SubscriptionRefusalReason`."""
 
 
 class SubscriptionCapped(SubscriptionRefused):
@@ -44,12 +36,9 @@ class SubscriptionCapped(SubscriptionRefused):
 
     def __init__(self, cap: SubscriptionCap) -> None:
         reopens = f"; it reopens {cap.resets_at.isoformat(timespec='minutes')}" if cap.resets_at is not None else ""
-        super().__init__("capped", f"this subscription is at {cap.used_percent:g}% of its {cap.window.replace('_', ' ')} window, its cap is {cap.cap_percent}%{reopens}")
+        super().__init__(SubscriptionRefusal(reason="capped", cap=cap),
+                         f"this subscription is at {cap.used_percent:g}% of its {cap.window.replace('_', ' ')} window, its cap is {cap.cap_percent}%{reopens}")
         self.cap = cap
-
-    @property
-    def refusal(self) -> SubscriptionRefusal:
-        return SubscriptionRefusal(reason="capped", cap=self.cap)
 
 
 class SubscriptionState(BaseModel):

@@ -41,17 +41,14 @@ from galaius.agents.providers import PROVIDERS, LoginStatus, ProgramInstaller
 from galaius.agents.providers import AgentProvider as Program
 from galaius.agents.subscriptions import Subscription, SubscriptionRefused
 from galaius.processes import end_process_tree, process_group_options
+from galaius.refused import Refused
 from galaius.sign_in_browser import SignInHandoff
 
 logger = logging.getLogger(__name__)
 
 
-class ProgramFailed(Exception):
-    """An install or sign-in stopped; `code` is what the server words for the owner."""
-
-    def __init__(self, code: AgentProgramFailure, detail: str) -> None:
-        super().__init__(detail)
-        self.code = code
+class ProgramFailed(Refused[AgentProgramFailure]):
+    """An install or sign-in stopped: its reason what the server words for the owner."""
 
 
 class AgentPrograms(BaseModel):
@@ -210,8 +207,8 @@ class AgentPrograms(BaseModel):
                 self._install(provider, key)
             self._sign_in(provider, subscription)
         except ProgramFailed as failed:
-            logger.warning("%s program: %s (%s)", provider.name, failed.code, failed)
-            self._update(key, step="failed", failure=failed.code, detail=str(failed)[:400], sign_in=None)
+            logger.warning("%s program: %s (%s)", provider.name, failed.refusal, failed)
+            self._update(key, step="failed", failure=failed.refusal, detail=str(failed)[:400], sign_in=None)
         except Exception as error:  # one job's crash is its own failure, never the runner's, never a stuck step
             logger.exception("%s program job crashed", provider.name)
             self._update(key, step="failed", failure="install_failed", detail=f"{type(error).__name__}: {error}"[:400], sign_in=None)
