@@ -22,10 +22,13 @@ from galaius_core import (
     SCREEN_PLAIN_FRAME,
     SCREEN_PLAIN_STATS,
     MachineAgentAnswer,
+    ScreenEnded,
+    ScreenEndReason,
     ScreenFrame,
     ScreenOpened,
     ScreenOpenRequest,
     ScreenReadiness,
+    ScreenRefusal,
     ScreenSealed,
     ScreenStatusRequest,
     ScreenViewerMessage,
@@ -37,8 +40,10 @@ from pydantic import ValidationError
 from galaius.desktop.backend import DesktopUnsupportedError
 from galaius.desktop.screen import FrameGrabber, ScreenSession, ScreenStreamer
 from galaius.desktop.screen_switch import ScreenSwitch
+from galaius.refused import Refused
 from galaius.desktop.screen_trust import (
     Admitted,
+    ScreenEnd,
     ScreenGap,
     ScreenGate,
     ScreenIdentity,
@@ -70,7 +75,8 @@ class LiveScreen:
         self.acks: dict[int, asyncio.Future[float]] = {}
         self._drawn: list[float] = []
         self._stats_at = 0.0
-        self.why = ""
+        #: Why it ended (sentence + typed reason), set once by whatever ended it first.
+        self.ending: ScreenEnd | None = None
         self.streamer = ScreenStreamer(session, self._deliver)
         #: The one thread a view's acts run on, in the order their messages came: a worker per
         #: message let the text typed after a tap land before the tap.
@@ -85,12 +91,13 @@ class LiveScreen:
         seconds = max((self.admitted.ends_at - datetime.now(UTC)).total_seconds(), 0.0)
         try:
             await asyncio.wait_for(self.streamer.run(), timeout=seconds)
-            self.why = self.why or self.streamer.ended or "the stream ended"
+            self.ending = self.ending or self.streamer.ended
         except TimeoutError:
-            self.why = "The minutes this view was opened for are over: open it again."
+            self.ending = ScreenEnd("minutes_over", "The minutes this view was opened for are over: open it again.")
         except asyncio.CancelledError:
-            self.why = self.why or "this view was ended"
+            pass  # `end` or `take` cancelled it, its ending already named
         finally:
+            self.ending = self.ending or ScreenEnd("ended", "this view was ended")
             for waiting in self.acks.values():
                 waiting.cancel()
             self.session_view.stop_acting()
@@ -135,7 +142,7 @@ class LiveScreen:
             message = ScreenViewerMessage.model_validate_json(self.admitted.keys.open(sealed))
         except ScreenGap as gap:
             logger.warning("screen: %s; the view ends", gap)
-            self.why = f"A message from the viewer was lost on the way ({gap}), so the view ended rather than act out of order."
+            self.ending = ScreenEnd(gap.refusal, f"A message from the viewer was lost on the way ({gap}), so the view ended rather than act out of order.")
             self.task.cancel()
             return
         except (ScreenRefused, ValidationError, ValueError) as error:
@@ -159,8 +166,8 @@ class LiveScreen:
         elif error is not None:
             logger.warning("screen: an act failed", exc_info=error)
 
-    async def end(self, why: str) -> None:
-        self.why = self.why or why
+    async def end(self, why: str, reason: ScreenEndReason) -> None:
+        self.ending = self.ending or ScreenEnd(reason, why)
         self.task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await self.task
@@ -185,9 +192,10 @@ class ScreenDesk:
             if isinstance(request, ScreenOpenRequest):
                 return MachineAgentAnswer(request_id=request.id, screen_opened=await self._open(request, send))
             return MachineAgentAnswer(request_id=request.id, screen=await asyncio.to_thread(self.readiness))
-        except PermissionError as refusal:
-            logger.warning("screen %s refused: %s", request.op, refusal)
-            return MachineAgentAnswer(request_id=request.id, error=str(refusal)[:400])
+        except PermissionError as refused:  # one the gate did not name is said as refused, never as a reason it is not
+            logger.warning("screen %s refused: %s", request.op, refused)
+            return MachineAgentAnswer(request_id=request.id, error=str(refused)[:400],
+                                      refusal=(refused.answered if isinstance(refused, Refused) else None) or ScreenRefusal(reason="refused"))
 
     def readiness(self) -> ScreenReadiness:
         trust = self.gate.trust.read()
@@ -209,7 +217,7 @@ class ScreenDesk:
     async def _open(self, request: ScreenOpenRequest, send: Send) -> ScreenOpened:
         admitted = await asyncio.to_thread(self.gate.admit, request.offer, request.assertion, self.switch.live())
         if self.live is not None:
-            await self.live.end("a newer view of this computer was opened")
+            await self.live.end("a newer view of this computer was opened", "newer_view")
         offer = admitted.offer
         session = self.make_session(spec=offer.spec, viewer=request.viewer, ends_at=admitted.ends_at, control=offer.mode == "control", switch=self.switch)
         self.live = LiveScreen(admitted, session, send, self._ended)
@@ -221,9 +229,9 @@ class ScreenDesk:
     async def _ended(self, live: LiveScreen) -> None:
         if self.live is live:
             self.live = None
-        logger.warning("screen %s ended (%s): %s", live.session, live.why, live.session_view.stats.said)
+        logger.warning("screen %s ended (%s): %s", live.session, live.ending, live.session_view.stats.said)
         with contextlib.suppress(Exception):  # the link may be the thing that ended it
-            await live.send_message({"type": "screen_ended", "session": str(live.session), "why": live.why[:400]})
+            await live.send_message(ScreenEnded(session=live.session, reason=live.ending.refusal, why=str(live.ending)[:400]).model_dump(mode="json"))
 
     def take(self, sealed: ScreenSealed) -> None:
         """A relayed viewer message (`screen_input`); one for no live session is dropped."""
@@ -240,9 +248,9 @@ class ScreenDesk:
     async def close(self, session: UUID | str, why: str) -> None:
         """End `session` (the viewer left, the server says so): ending never needs a passkey."""
         if self.live is not None and str(self.live.session) == str(session):
-            await self.live.end(why)
+            await self.live.end(why, "ended")
 
-    async def close_all(self, why: str) -> None:
+    async def close_all(self, why: str, reason: ScreenEndReason) -> None:
         if self.live is not None:
-            await self.live.end(why)
+            await self.live.end(why, reason)
 

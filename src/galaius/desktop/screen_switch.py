@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import ClassVar
 
-from galaius_core import ScreenAllowance
+from galaius_core import ScreenAllowance, ScreenOffReason
 from pydantic import ValidationError
 
 from galaius.paths import UserPaths
@@ -41,14 +41,14 @@ class ScreenSwitch:
         try:
             value = json.loads(self.path.read_bytes())
         except FileNotFoundError:
-            return ScreenAllowance(why="Screen sharing is off on this computer (galaius screen on).")
+            return ScreenAllowance(reason="sharing_off", why="Screen sharing is off on this computer (galaius screen on).")
         except (OSError, ValueError):
             logger.warning("screen allowance unreadable; treated as off", exc_info=True)
-            return ScreenAllowance(why="This computer's screen setting could not be read, so it stays off.")
+            return ScreenAllowance(reason="sharing_off", why="This computer's screen setting could not be read, so it stays off.")
         try:
             return ScreenAllowance.model_validate(value)
         except ValidationError:
-            return ScreenAllowance(why="This computer's screen setting is malformed, so it stays off.")
+            return ScreenAllowance(reason="sharing_off", why="This computer's screen setting is malformed, so it stays off.")
 
     def write(self, allowance: ScreenAllowance) -> ScreenAllowance:
         """Save the owner's decision, owner-readable only, written whole (temp + rename)."""
@@ -70,8 +70,9 @@ class ScreenSwitch:
         span = ScreenAllowance.DEFAULT_HOURS if hours is None else hours
         return self.write(ScreenAllowance(allowed=True, until=datetime.now(UTC) + timedelta(hours=span) if span else None))
 
-    def turn_off(self, why: str = "Screen sharing was switched off on this computer.") -> ScreenAllowance:
-        return self.write(ScreenAllowance(allowed=False, why=why))
+    def turn_off(self, why: str = "Screen sharing was switched off on this computer.",
+                 reason: ScreenOffReason = "sharing_off") -> ScreenAllowance:
+        return self.write(ScreenAllowance(allowed=False, reason=reason, why=why))
 
     def live(self) -> bool:
         return self.read().live()

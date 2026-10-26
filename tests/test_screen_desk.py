@@ -13,6 +13,7 @@ from uuid import uuid4
 
 import pytest
 from galaius_core import (
+    ScreenRefusal,
     SCREEN_PLAIN_FRAME,
     SCREEN_PLAIN_STATS,
     MachineRef,
@@ -122,7 +123,7 @@ async def test_a_passkey_opens_a_sealed_stream_the_relay_cannot_read_and_control
     assert len(desk.backend.done) == 1
     await desk.close(opened.session, "the viewer closed the page")
     _, ended = await relay.next("screen_ended")
-    assert ended["session"] == str(opened.session) and desk.live is None
+    assert ended["session"] == str(opened.session) and ended["reason"] == "ended" and desk.live is None
 
 
 async def test_a_view_session_takes_no_act_and_a_newer_open_replaces_it(desk) -> None:
@@ -136,15 +137,22 @@ async def test_a_view_session_takes_no_act_and_a_newer_open_replaces_it(desk) ->
 
     _, second = await _open(desk, relay, phone)
     _, ended = await relay.next("screen_ended")
-    assert ended["session"] == str(first.session) and desk.live.session == second.session
-    await desk.close_all("the link to the server dropped")
+    assert ended["session"] == str(first.session) and ended["reason"] == "newer_view" and desk.live.session == second.session
+    await desk.close_all("the link to the server dropped", "link_lost")
+
+    # A passkey this computer has not pinned is refused with its reason typed: the French page words
+    # it (« tapez galaius screen trust sur ce PC »), where it printed the PC's English sentence.
+    stranger, viewer = SoftPasskey(), Viewer()
+    text = viewer.offer()
+    refused = await desk.answer(_request(ScreenOpenRequest, offer=text, assertion=stranger.assert_(text, new=True), viewer="Alan"), relay.send)
+    assert refused.refusal == ScreenRefusal(reason="passkey_new") and "galaius screen trust" in refused.error
 
 
 async def test_a_session_ends_when_its_signed_minutes_are_over(desk, monkeypatch) -> None:
     relay, phone = Relay(), SoftPasskey()
     _, opened = await _open(desk, relay, phone, new=True, minutes=0.02)
     _, ended = await relay.next("screen_ended")
-    assert ended["session"] == str(opened.session) and "minutes" in ended["why"]
+    assert ended["session"] == str(opened.session) and ended["reason"] == "minutes_over" and "minutes" in ended["why"]
 
 
 async def test_a_viewer_message_lost_on_the_way_ends_the_view_rather_than_act_out_of_order(desk) -> None:
@@ -155,7 +163,7 @@ async def test_a_viewer_message_lost_on_the_way_ends_the_view_rather_than_act_ou
     escape = {"type": "key_press", "key": "Escape"}
     desk.take(viewer.seal(opened.session, 2, json.dumps({"ack": header["sequence"], "acts": [escape]}).encode()))  # seq 1 never arrived
     _, ended = await relay.next("screen_ended")
-    assert "lost" in ended["why"] and desk.backend.done == [] and desk.live is None
+    assert ended["reason"] == "message_lost" and "lost" in ended["why"] and desk.backend.done == [] and desk.live is None
 
 
 async def test_acts_from_successive_messages_land_in_the_order_they_were_sent(desk, monkeypatch) -> None:
@@ -177,4 +185,4 @@ async def test_acts_from_successive_messages_land_in_the_order_they_were_sent(de
             break
         await asyncio.sleep(0.01)
     assert [step[0] for step in desk.backend.done] == ["click", "type"]
-    await desk.close_all("the test ended")
+    await desk.close_all("the test ended", "ended")

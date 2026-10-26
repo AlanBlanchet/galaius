@@ -50,6 +50,7 @@ from galaius.desktop.backend import DesktopBackend, DesktopUnsupportedError
 from galaius.desktop.host import host_desktop
 from galaius.desktop.screen_marker import ScreenMarker
 from galaius.desktop.screen_switch import ScreenSwitch
+from galaius.desktop.screen_trust import ScreenEnd
 
 logger = logging.getLogger("galaius")
 
@@ -151,14 +152,14 @@ class QualityLadder:
             if (median := statistics.median(self._at_level)) > wider_ms * self.NARROWING_GAIN:
                 logger.info("screen: %dpx came back no faster than %dpx (%.0f ms against %.0f): the link is far, not full",
                             self.spec.width, wider.width, median, wider_ms)
-                self._floor = (self._level(wider), now + self.RETRY_MAX_SECONDS)
-                self._refused.pop(self._level(wider), None)
+                self._floor = (wider.level, now + self.RETRY_MAX_SECONDS)
+                self._refused.pop(wider.level, None)
                 self._move_to(wider, lighter=False)
                 return
         if full and min(self._at_level) > self.ROUND_BUDGET_MS:
-            level = self._level(self.spec)
+            level = self.spec.level
             held = self._floor is not None and self._floor[0] == level and now < self._floor[1]
-            if held or self._level(self.spec.lighter()) == level:
+            if held or self.spec.lighter().level == level:
                 return  # nothing lighter helps, or there is nothing lighter: no refusal to count
             again = now - self._stepped_at < self.RETRY_MAX_SECONDS and self._sharpened_last
             self._retry = min(self._retry * 2, self.RETRY_MAX_SECONDS) if again else self.RETRY_SECONDS
@@ -170,7 +171,7 @@ class QualityLadder:
             self._easy += 1
             if self._easy >= self.EASY_FRAMES:
                 self._easy = 0
-                if self._refused.get(self._level(self.spec.sharper()), 0.0) <= now:
+                if self._refused.get(self.spec.sharper(cap=self.asked).level, 0.0) <= now:
                     self._step(lighter=False)
         else:
             self._easy = 0
@@ -179,16 +180,10 @@ class QualityLadder:
         """One step narrower now (a frame too big to send, or a slow link); False at the lightest."""
         return self._step(lighter=True)
 
-    @staticmethod
-    def _level(spec: ScreenSpec) -> tuple[int, int]:
-        return (spec.width, spec.quality)
-
     def _step(self, lighter: bool) -> bool:
-        stepped = self.spec.lighter() if lighter else self.spec.sharper()
-        if self._level(stepped) == self._level(self.spec):
-            return False
-        if not lighter and (stepped.width > self.asked.width or stepped.quality > self.asked.quality):
-            return False  # never sharper than the viewer asked for
+        stepped = self.spec.lighter() if lighter else self.spec.sharper(cap=self.asked)
+        if stepped.level == self.spec.level:
+            return False  # the end of the ladder, or what the viewer asked for
         self._move_to(stepped, lighter)
         return True
 
@@ -285,13 +280,13 @@ class ScreenSession:
         being watched. Checked before every frame and every act, never once at the start."""
         allowance = self.allowed()
         if not allowance.live():
-            raise PermissionError(allowance.why or "This computer's screen sharing is off.")
+            raise ScreenEnd(allowance.reason or "sharing_off", allowance.why or "This computer's screen sharing is off.")
         if self.ends_at is not None and datetime.now(UTC) >= self.ends_at:
-            raise PermissionError("The minutes this view was opened for are over: open it again.")
+            raise ScreenEnd("minutes_over", "The minutes this view was opened for are over: open it again.")
         if self.marker.ended_itself():
-            raise PermissionError("Stop was pressed on this computer.")
+            raise ScreenEnd("stopped_here", "Stop was pressed on this computer.")
         if not self.marker.show(self.viewer):
-            raise PermissionError("This computer could not show that its screen is being watched, so it is not.")
+            raise ScreenEnd("no_badge", "This computer could not show that its screen is being watched, so it is not.")
 
     def frame(self) -> ScreenFrame | None:
         """The next frame, or None while the screen has not changed since the last one (and the
@@ -475,7 +470,8 @@ class ScreenStreamer:
     def __init__(self, session: ScreenSession, send: Callable[[ScreenFrame], Awaitable[None]]) -> None:
         self.session = session
         self.send = send
-        self.ended = ""
+        #: Why it ended (its sentence and its typed reason, `ScreenEnd`); None: asked to.
+        self.ended: ScreenEnd | None = None
         #: The one thread that grabs and encodes: the event loop stays free for the link, and mss
         #: stays on the thread it opened on.
         self._grabbing = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="galaius-screen")
@@ -497,14 +493,14 @@ class ScreenStreamer:
                 if frame is None:
                     await asyncio.sleep(min(1.0 / self.session.spec.max_fps, self.session.IDLE_SECONDS))
                     if time.monotonic() - taken > self.VIEWER_GONE_SECONDS:
-                        self.ended = "the viewer went away"
+                        self.ended = ScreenEnd("viewer_gone", "the viewer went away")
                         break
                     continue
                 started = time.perf_counter()
                 try:
                     await asyncio.wait_for(self.send(frame), timeout=self.SEND_TIMEOUT_SECONDS)
                 except TimeoutError:
-                    self.ended = "the link stopped carrying frames"
+                    self.ended = ScreenEnd("link_lost", "the link stopped carrying frames")
                     break
                 self.session.measured((time.perf_counter() - started) * 1000)
                 taken = time.monotonic()
@@ -512,10 +508,12 @@ class ScreenStreamer:
                 # WHOLE cycle (grab, encode and link): pacing from the link alone paid the grab
                 # twice and held a 30 fps stream to 17.
                 await asyncio.sleep(max(1.0 / self.session.spec.max_fps - (time.perf_counter() - cycle), 0))
-        except PermissionError as refusal:
-            self.ended = str(refusal)
-        except (ConnectionError, OSError) as error:
-            self.ended = f"the connection ended: {error}"
+        except ScreenEnd as end:
+            self.ended = end
+        except ConnectionError as error:
+            self.ended = ScreenEnd("link_lost", f"the connection ended: {error}")
+        except OSError as error:  # this computer's display or capture failed under the view
+            self.ended = ScreenEnd("failed", f"this computer failed: {error}")
         finally:
             # The session closes on the grabbing thread (mss's handles live there), even when this
             # task is cancelled: the badge comes down whatever ended the stream.

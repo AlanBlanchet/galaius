@@ -305,7 +305,7 @@ async def test_a_stream_ends_by_itself_and_says_why(tmp_path, monkeypatch, endin
 
     await asyncio.gather(asyncio.wait_for(streamer.run(), timeout=5), interfere())
 
-    assert ending in streamer.ended
+    assert ending in str(streamer.ended)
     assert link.frames, "frames flowed before it ended"
     assert marker.stopped == 1 and grabber.closed, "a stream that ends takes its badge down"
 
@@ -320,7 +320,7 @@ async def test_a_viewer_that_went_away_ends_the_stream_without_the_server(tmp_pa
 
     stats = await asyncio.wait_for(streamer.run(), timeout=5)
 
-    assert streamer.ended == "the viewer went away"
+    assert str(streamer.ended) == "the viewer went away" and streamer.ended.refusal == "viewer_gone"
     assert link.frames == [1] and stats.unchanged >= 1
 
 

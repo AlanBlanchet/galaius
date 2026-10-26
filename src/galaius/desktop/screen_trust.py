@@ -33,7 +33,9 @@ from galaius_core import (
     SCREEN_PROOF_LABEL,
     SCREEN_SESSION_MAX,
     ScreenAssertion,
+    ScreenEndReason,
     ScreenOffer,
+    ScreenRefusal,
     ScreenPasskey,
     ScreenSealed,
     ScreenTrust,
@@ -44,6 +46,7 @@ from pydantic import ValidationError
 
 from galaius.paths import UserPaths
 from galaius.private_files import PRIVATE_FILES
+from galaius.refused import Refused
 
 logger = logging.getLogger("galaius")
 
@@ -51,13 +54,21 @@ logger = logging.getLogger("galaius")
 USER_PRESENT, USER_VERIFIED = 0x01, 0x04
 
 
-class ScreenRefused(PermissionError):
-    """An offer or a message this computer will not take, in words its owner reads on the web page."""
+class ScreenRefused(Refused[ScreenRefusal]):
+    """An offer or a viewer message this computer will not take: its reason a `ScreenOpenRefusal`."""
 
 
-class ScreenGap(ScreenRefused):
+class ScreenEnd(Refused[ScreenEndReason]):
+    """A view this computer ends (its switch, its badge, its minutes): its reason a `ScreenEndReason`, told to the page
+    in `ScreenEnded`."""
+
+
+class ScreenGap(ScreenEnd):
     """A viewer message arrived after one that never did: the relay lost or withheld an act, and
     acting on what follows it (typed text after a dropped Escape) is acting out of order."""
+
+    def __init__(self, sentence: str) -> None:
+        super().__init__("message_lost", sentence)
 
 
 class ScreenTrustFile:
@@ -177,7 +188,7 @@ class ScreenKeys:
         try:
             viewer = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), viewer_key)
         except ValueError as error:
-            raise ScreenRefused("the viewer's session key is not a P-256 point") from error
+            raise ScreenRefused("refused", "the viewer's session key is not a P-256 point") from error
         shared = own.exchange(ec.ECDH(), viewer)
         self.pc_key = own.public_key().public_bytes(serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
         self._send = AESGCM(self._derive(shared, challenge, "pc"))
@@ -198,11 +209,11 @@ class ScreenKeys:
         """The viewer's plaintext; ScreenRefused for another session, a replay or a forgery,
         ScreenGap (once it is genuine) when one before it never arrived."""
         if sealed.session != self.session or sealed.seq <= self.received:
-            raise ScreenRefused("a viewer message was replayed or reordered")
+            raise ScreenRefused("refused", "a viewer message was replayed or reordered")
         try:
             plain = self._receive.decrypt(sealed.iv("viewer"), sealed.data, self.session.bytes)
         except InvalidTag as error:
-            raise ScreenRefused("a viewer message was not sealed by the viewer") from error
+            raise ScreenRefused("refused", "a viewer message was not sealed by the viewer") from error
         if sealed.seq != self.received + 1:
             raise ScreenGap(f"viewer messages {self.received + 1}-{sealed.seq - 1} were lost on the way")
         self.received = sealed.seq
@@ -248,18 +259,18 @@ class ScreenGate:
         try:
             offer = ScreenOffer.model_validate_json(offer_text)
         except ValidationError as error:
-            raise ScreenRefused("the session offer is malformed") from error
+            raise ScreenRefused("refused", "the session offer is malformed") from error
         if not switch_on:
-            raise ScreenRefused("Screen sharing is off on this computer: its owner runs `galaius screen on` there.")
+            raise ScreenRefused("sharing_off", "Screen sharing is off on this computer: its owner runs `galaius screen on` there.")
         if offer.machine_id != self.machine_id:
-            raise ScreenRefused("the offer names another computer")
+            raise ScreenRefused("refused", "the offer names another computer")
         if offer.origin != self.origin:
-            raise ScreenRefused(f"the offer comes from {offer.origin}, not from {self.origin}")
+            raise ScreenRefused("wrong_site", f"the offer comes from {offer.origin}, not from {self.origin}")
         if offer.expires_at.tzinfo is None or offer.expires_at <= now or offer.expires_at > now + SCREEN_SESSION_MAX + SCREEN_CLOCK_SKEW:
-            raise ScreenRefused("the offer has expired or asks for longer than 30 minutes")
+            raise ScreenRefused("offer_expired", "the offer has expired or asks for longer than 30 minutes")
         self._nonces = {nonce: until for nonce, until in self._nonces.items() if until > now}
         if offer.nonce in self._nonces:
-            raise ScreenRefused("this offer was already used")
+            raise ScreenRefused("offer_used", "this offer was already used")
         challenge = ScreenOffer.challenge(offer_text)
         passkey, paired = self._passkey(assertion)
         counter = self._verify(assertion, passkey, challenge)
@@ -282,12 +293,12 @@ class ScreenGate:
             return found, False
         offered = assertion.passkey
         if offered is None or offered.credential_id != assertion.credential_id:
-            raise ScreenRefused("this passkey is not one this computer trusts")
+            raise ScreenRefused("passkey_unknown", "this passkey is not one this computer trusts")
         if offered.algorithm not in SCREEN_PASSKEY_ALGORITHMS:
-            raise ScreenRefused("this passkey's algorithm is not one a screen session accepts")
+            raise ScreenRefused("refused", "this passkey's algorithm is not one a screen session accepts")
         if trust.trusted:
             self.trust.offered(offered)
-            raise ScreenRefused("This passkey is new to this computer: run `galaius screen trust` on it to let it watch.")
+            raise ScreenRefused("passkey_new", "This passkey is new to this computer: run `galaius screen trust` on it to let it watch.")
         return offered, True
 
     def _verify(self, assertion: ScreenAssertion, passkey: ScreenPasskey, challenge: bytes) -> int:
@@ -298,21 +309,21 @@ class ScreenGate:
             data = unb64url(assertion.authenticator_data)
             signature = unb64url(assertion.signature)
         except (ValueError, UnicodeDecodeError) as error:
-            raise ScreenRefused("the passkey's answer is malformed") from error
+            raise ScreenRefused("refused", "the passkey's answer is malformed") from error
         if not isinstance(client, dict) or client.get("type") != "webauthn.get":
-            raise ScreenRefused("the passkey's answer is not a sign-in assertion")
+            raise ScreenRefused("refused", "the passkey's answer is not a sign-in assertion")
         if client.get("challenge") != b64url(challenge):
-            raise ScreenRefused("the passkey signed another offer")
+            raise ScreenRefused("refused", "the passkey signed another offer")
         if client.get("origin") != self.origin or client.get("crossOrigin") is True:
-            raise ScreenRefused(f"the passkey was used on {client.get('origin')}, not {self.origin}")
+            raise ScreenRefused("wrong_site", f"the passkey was used on {client.get('origin')}, not {self.origin}")
         if len(data) < 37 or data[:32] != hashlib.sha256(self.rp_id.encode()).digest():
-            raise ScreenRefused(f"the passkey belongs to another site than {self.rp_id}")
+            raise ScreenRefused("wrong_site", f"the passkey belongs to another site than {self.rp_id}")
         flags = data[32]
         if not flags & USER_PRESENT or not flags & USER_VERIFIED:
-            raise ScreenRefused("the passkey was used without its owner verified on the device")
+            raise ScreenRefused("not_verified", "the passkey was used without its owner verified on the device")
         counter = int.from_bytes(data[33:37], "big")
         if counter and passkey.counter and counter <= passkey.counter:
-            raise ScreenRefused("the passkey's counter went back: it may have been copied")
+            raise ScreenRefused("refused", "the passkey's counter went back: it may have been copied")
         signed = data + hashlib.sha256(client_raw).digest()
         try:
             public = serialization.load_der_public_key(unb64url(passkey.public_key))
@@ -323,9 +334,9 @@ class ScreenGate:
             elif passkey.algorithm == -257 and isinstance(public, rsa.RSAPublicKey):
                 public.verify(signature, signed, padding.PKCS1v15(), hashes.SHA256())
             else:
-                raise ScreenRefused("the passkey's key does not match its algorithm")
+                raise ScreenRefused("refused", "the passkey's key does not match its algorithm")
         except (InvalidSignature, ValueError) as error:
-            raise ScreenRefused("the passkey's signature does not verify") from error
+            raise ScreenRefused("refused", "the passkey's signature does not verify") from error
         return counter
 
 

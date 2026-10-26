@@ -112,5 +112,5 @@ class ScreenMarker:
         if self.process is None or self.process.poll() is None:
             return False
         if self.process.returncode == STOPPED and self.switch.live():
-            self.switch.turn_off("Stop was pressed on this computer's screen badge.")
+            self.switch.turn_off("Stop was pressed on this computer's screen badge.", "stopped_here")
         return True
