@@ -358,7 +358,9 @@ def ask_lines(run: reg.AgentRun) -> list[tuple[int, str]]:
     asks = {event.event_id for event in reg.read_messages(run.run_id)
             if event.to_run == run.run_id and event.event_id and not event.fyi and not event.reports
             and event.from_run not in reg.SYSTEM_SENDERS and event.text != reg.RESUME_BRIEF}
-    return sorted((item.raw_index, item.message_id) for item in agent_queue.items(run.run_id)
+    # Read without the run's lock (`items_seen`): its card is drawn under that lock, by its dispatcher starting its turn and
+    # by the PC's follow-ups, and taking it again here deadlocked that thread on itself (2026-10-26 09:35, 45 minutes).
+    return sorted((item.raw_index, item.message_id) for item in agent_queue.items_seen(run.run_id)
                   if item.raw_index is not None and item.message_id in asks)
 
 

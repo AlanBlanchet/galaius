@@ -326,6 +326,23 @@ class FenceSpec(BaseModel):
                      guards=tuple(guards), reviews=self.reviews,
                      keys=tuple(sorted({name for provider in self.providers for name in KEYS.get(provider, ())})))
 
+    def only(self, provider: str) -> Self:
+        """This fence for one turn of `provider`'s CLI: its own keys, login and tool state (`KEYS`, `TOOLS`, `homes`), its
+        own program and its model's hosts (`EGRESS`) — none of another CLI's. The spec a run records names every CLI it
+        may fall through to (a quota refusal moves a start from claude to codex), so each turn narrows it here; a claude
+        turn kept codex's OPENAI_API_KEY, its ~/.codex and api.openai.com, and the other way round (2026-10-26)."""
+        if not self.providers:
+            return self   # a fence naming no CLI carries none of their state: nothing to narrow
+        if provider not in self.providers:  # an empty fence would fail as a sign-in error, far from its cause
+            raise ValueError(f"{provider} is not a CLI this run's fence was built for ({', '.join(self.providers) or 'none'})")
+        others = {name for name in self.providers if name != provider}
+        hosts = {host for name in others for host in EGRESS.get(name, ())} - set(EGRESS.get(provider, ()))
+        return self.model_copy(update={"providers": (provider,),
+                                       # by stem: an npm entry `codex.js` is codex's program too
+                                       "programs": tuple(program for program in self.programs if program.name.split(".")[0] not in others),
+                                       "egress": tuple(host for host in self.egress if host not in hosts),
+                                       "homes": {name: folder for name, folder in self.homes.items() if name not in others}})
+
     def rehomed(self, homes: dict[str, Path]) -> Self:
         """This fence on other login folders (a run moved to another subscription, contract A9): the private copies a CLI
         rewrites (`TOOLS` copies, Claude's `.claude.json`: its account) of every CLI whose folder changed are dropped, so
@@ -429,9 +446,10 @@ def _prefix(executable: Path) -> Path:
     return executable.parent.parent if executable.parent.name == "bin" else executable.parent
 
 
-def fenced(argv: list[str], fence: FenceSpec | None) -> list[str]:
-    """`argv` inside the fence `fence` builds now (from the current levels), or unchanged."""
-    return argv if fence is None else fence.build().command(argv)
+def fenced(argv: list[str], fence: FenceSpec | None, provider: str) -> list[str]:
+    """`argv`, a turn of `provider`'s CLI, inside the fence `fence` builds now for that CLI alone (`FenceSpec.only`,
+    from the current levels), or unchanged."""
+    return argv if fence is None else fence.only(provider).build().command(argv)
 
 
 class EgressProxy(BaseModel):
