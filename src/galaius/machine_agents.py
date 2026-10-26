@@ -46,6 +46,7 @@ from galaius.agents import agent_queue, quota
 from galaius.agents import registry as reg
 from galaius.agents.assembly import _TransportRegistry
 from galaius.agents.host import ConversationHost, ConversationRefused
+from galaius.agents.session_stops import SessionStops
 from galaius.agents.followup import FollowUps
 from galaius.agents.messaging import deliver_message
 from galaius.agents.providers import PROJECT_SETTINGS_OFF, PROVIDERS, UNTRUSTED_FOLDERS, provider_for
@@ -1266,12 +1267,33 @@ class MachineAgents(BaseModel):
             await AgentSpawns.run(lambda run_id=run_id: followups.ready(run_id, environment=environments[run_id]))
 
     def _stop(self, request: AgentStopRequest) -> MachineAgentAnswer:
+        if (stopping := self._stop_editor_session(request)) is not None:
+            return stopping
         run = self._require_run(request.run_id)
         if run.status not in {"running", "waiting"}:
             return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail="already ended")
         if not reg.stop(str(request.run_id), by=request.by):
             raise RuntimeError("the run could not be stopped")
         return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail="stopped")
+
+    def _stop_editor_session(self, request: AgentStopRequest) -> MachineAgentAnswer | None:
+        """`request` for one of HIS live editor sessions (no run of the web's): its turn ends at its next tool call
+        (`SessionStops`), never by typing into it. None when the id is not such a session. PermissionError when this
+        session cannot be stopped: the hook is not installed, or the session started before it was (Claude Code
+        reads its hooks when a session starts)."""
+        if any(item.run_id == str(request.run_id) for item in self._allowed()[1]):
+            return None
+        session = next((run for run in reg.list_runs(include_foreign=True) if run.foreign and run.run_id == str(request.run_id)), None)
+        if session is None:
+            return None
+        stops = SessionStops()
+        since = stops.installed_at() if stops.installed() else None
+        if since is None:
+            raise PermissionError("this computer has not installed the hook that stops an editor session")
+        if session.started_at and session.started_at < since:
+            raise PermissionError("this editor session was opened before this computer could stop it: it can be stopped once opened again")
+        stops.ask(request.run_id, request.by)
+        return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail="stopping")
 
     # ---- what can start here ---------------------------------------------------------------
 

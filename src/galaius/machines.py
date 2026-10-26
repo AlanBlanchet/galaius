@@ -58,6 +58,7 @@ from galaius.config import Config
 from galaius.agents.run import load_policy, run_agent
 from galaius.agents.followup import FollowUps
 from galaius.agents.warm import WarmStart
+from galaius.agents.session_stops import SessionStops
 from galaius.agents import registry as reg
 from galaius.agents.profiles import ALLOWED_ENV
 from galaius.functions import FunctionRegistry, PermissionLevel, invoke as invoke_function
@@ -1039,6 +1040,10 @@ class MachineRunner:
         self._workspace_jobs.settle_interrupted()
         # Before anything reads which cut runs come back by themselves (`EndWatch`, `_resume_paused`): from when they do.
         await asyncio.to_thread(reg.cut_resume_since)
+        # The hook that lets the web stop his editor sessions, in place before he opens the next one: Claude Code reads
+        # its hooks when a session starts (`SessionStops`). Settings that are not JSON are left as they are.
+        if not await asyncio.to_thread(SessionStops().install):
+            logger.warning("the Claude Code settings are not JSON: the web cannot stop an editor session on this computer")
         # Local and independent of the server: a run killed while the PC is offline is settled too.
         settler = asyncio.create_task(self._settle_runs())
         handing = asyncio.create_task(self._hand_back())
