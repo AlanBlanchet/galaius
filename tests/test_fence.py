@@ -72,7 +72,7 @@ def _spec(home: Path, tmp_path: Path, start: str = "work", levels: dict | None =
     staging.mkdir(exist_ok=True)
     (staging / "draft.txt").write_text("draft")
     return FenceSpec(working_directory=home, levels=LEVELS if levels is None else levels, start=home / start, staging={"review": staging},
-                     providers=("claude",), state=tmp_path / "state", egress=AGENT_HOSTS, reviews=tmp_path / "reviews", **fields)
+                     state=tmp_path / "state", egress=AGENT_HOSTS, reviews=tmp_path / "reviews", **{"providers": ("claude",), **fields})
 
 
 def test_binds_follow_the_levels_and_nothing_else_of_home(home: Path, tmp_path: Path) -> None:
@@ -415,3 +415,16 @@ print(json.dumps({{"links": [[str(a), str(b)] for a, b in fence.links], "binds":
     code, out, err = seen["inside"]
     assert code == 0, err
     assert json.loads(out) == [str(runtime), False, False, False]
+
+
+@live
+def test_a_routed_codex_keeps_the_token_galaius_hands_it_and_no_other_key_the_runner_adds(home: Path, tmp_path: Path) -> None:
+    """A codex run routed to a self-hosted model gets its token as `GALAIUS_OPENAI_COMPAT_KEY` in the child's environment
+    only: it reaches the agent; the endpoint's source key and another provider's key added the same way do not."""
+    fence = _spec(home, tmp_path, providers=("codex",)).build()
+    names = ("GALAIUS_OPENAI_COMPAT_KEY", "VLLM_API_KEY", "GEMINI_API_KEY")
+    probe = f"import json, os; print(json.dumps([os.environ.get(name, '') for name in {names!r}]))"
+    done = subprocess.run(fence.command([sys.executable, "-c", probe]), cwd=fence.cwd, capture_output=True, text=True, timeout=60,
+                          env={**os.environ, **{name: f"{name.lower()}-value" for name in names}})
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout) == ["galaius_openai_compat_key-value", "", ""]
