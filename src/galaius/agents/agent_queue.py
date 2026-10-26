@@ -30,6 +30,7 @@ from galaius_core.wire import readable
 from pydantic import BaseModel, ConfigDict, Field
 
 from galaius.agents import quota
+from galaius.agents.catalog_connection import CatalogOffline
 from galaius.agents import registry as reg
 from galaius.caller import RUN_VARIABLES, Caller
 from galaius.agents.events import AgentEvent, MessageFields
@@ -251,6 +252,12 @@ class QueueItem(BaseModel):
     #: one was: a dispatcher of an older galaius cannot read an item carrying it (`_entries`), so it never claims it;
     #: the dispatcher that sent it again delivers it.
     attempts: int = Field(default=0, ge=0, exclude_if=lambda value: value == 0)
+    #: What its turn waits for before it can start, when it waits for anything: `service` (this computer's link to the
+    #: Galaius service is down, so the run's pinned revision cannot be read). Written only while it waits, cleared when
+    #: the turn starts, so every reader of the queue (the web through its mirror) says what it waits for in its own words.
+    waiting: Literal["service"] | None = Field(default=None, exclude_if=lambda value: value is None)
+    #: Since when it has waited that way (epoch s): past `SERVICE_WAIT_SECONDS` the item fails with what the service said.
+    waiting_since: float | None = Field(default=None, exclude_if=lambda value: value is None)
     error: str = ""
 
     @property
@@ -688,6 +695,14 @@ def read_ids(run_id: str) -> list[str]:
     return [item.message_id for item in sorted(read, key=lambda item: item.started_at or item.enqueued_at, reverse=True)]
 
 
+#: How long a dispatcher waits before trying a turn again whose pinned revision its service could not be reached for
+#: (`CatalogOffline`): the link is back in seconds to minutes, and nothing is refused meanwhile.
+SERVICE_POLL_SECONDS = 10.0
+#: How long one turn may wait that way before the cause counts as no passing one and the item fails with it: a link that
+#: never comes back (a wrong address, DNS) must say so rather than hold his message for ever.
+SERVICE_WAIT_SECONDS = 30 * 60.0
+
+
 def _fresh_policy(run: reg.AgentRun):
     # Circular layers: messaging imports this module (enqueue), and run imports it too (the inbox
     # hook); imported only in the detached child.
@@ -836,6 +851,8 @@ def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
                                 try:
                                     run = item.turn.begin_locked(run)
                                     provider, criterion, model, reasoning = _fresh_policy(run)
+                                    if item.waiting is not None:   # it waited for the service: its turn starts now
+                                        item = _replace_item_locked(run_id, item.id, waiting=None, waiting_since=None) or item
                                     # Circular layers: run imports this module (its turns' inbox hook).
                                     from galaius.agents.run import launch_continuation
                                     lifecycle = launch_continuation(
@@ -844,6 +861,24 @@ def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
                                         reasoning=reasoning, raw_index=item.raw_index or 0,
                                         record_locked=True,
                                     )
+                                except CatalogOffline as offline:
+                                    # This computer's link to the Galaius service is down, so the run's pinned revision
+                                    # cannot be read JUST NOW: his message keeps its place and this dispatcher tries it
+                                    # again (owner 2026-10-23: a six-minute link outage refused what he wrote). Past
+                                    # `SERVICE_WAIT_SECONDS` of it the cause is no longer a passing one: the item fails
+                                    # with what the service said, so nothing waits for ever (code-reviewer r1 S4).
+                                    since = item.waiting_since or time.time()
+                                    if time.time() - since >= SERVICE_WAIT_SECONDS:
+                                        detail = _safe_process_detail(str(offline))
+                                        _replace_item_locked(run_id, item.id, state="failed", finished_at=time.time(), error=detail,
+                                                             waiting=None, waiting_since=None)
+                                        reg.fail_turn_locked(run_id, f"resume refused: {detail}")
+                                        item = None
+                                    else:
+                                        log.info("agent queue %s: waiting for the Galaius service before the turn: %s", path(run_id), offline)
+                                        _replace_item_locked(run_id, item.id, state="pending", started_at=None, attempt_token=None,
+                                                             waiting="service", waiting_since=since)
+                                        item, pause = None, SERVICE_POLL_SECONDS
                                 except Exception as error:
                                     # The run itself reads failed, with the reason: a message to an
                                     # ended run whose resume cannot start otherwise leaves it "done"
