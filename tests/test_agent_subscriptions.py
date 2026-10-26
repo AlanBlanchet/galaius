@@ -176,7 +176,7 @@ async def test_each_candidate_runs_on_its_own_providers_subscription_and_the_run
     claude.observe((UsageWindow(window="weekly", used_percent=85, observed_at=datetime.now(UTC)),))
     with pytest.raises(SubscriptionCapped) as capped:  # its only provider is capped: never its default login instead
         await launch((choice(codex), choice(claude, weekly_percent=80)))
-    assert (capped.value.refusal.reason, capped.value.cap.cap_percent) == ("capped", 80)
+    assert (capped.value.refusal.reason, capped.value.refusal.cap.cap_percent) == ("capped", 80)
     spare = Subscription.create(uuid4(), "claude")  # his second Claude subscription: the walk falls back to it, never to the default login
     handle = await launch((choice(codex), choice(claude, weekly_percent=80), choice(spare)))
     await asyncio.wait_for(handle.wait(), timeout=30)

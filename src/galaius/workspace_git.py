@@ -8,12 +8,17 @@ from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict
 
-from galaius_core import AgentRefusal, WorkspaceFailureCode
-
-from galaius.refused import Refused
+from galaius_core import AgentRefusal, Refused, WorkspaceFailureCode
 
 
-class WorkspaceRefused(Refused[AgentRefusal]):
+
+class AgentRefused(Refused[AgentRefusal]):
+    """An agent request this computer refuses (`AgentRefusalCode`): a start while the web's conversations work at their most
+    (`web_full`, the web holds the launch until one ends), one asked again while its first delivery still works here
+    (`under_way`, the server asks once more later), a project folder's failure (`WorkspaceRefused`)."""
+
+
+class WorkspaceRefused(AgentRefused):
     """A project folder that cannot be put in place, refreshed or sent: its reason a `WorkspaceFailureCode`."""
 
 

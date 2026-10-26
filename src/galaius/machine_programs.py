@@ -25,6 +25,7 @@ import httpx
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from galaius_core import (
+    Refused,
     DEVICE_CODE,
     SIGN_IN_CODE,
     AgentProgramFailure,
@@ -41,7 +42,6 @@ from galaius.agents.providers import PROVIDERS, LoginStatus, ProgramInstaller
 from galaius.agents.providers import AgentProvider as Program
 from galaius.agents.subscriptions import Subscription, SubscriptionRefused
 from galaius.processes import end_process_tree, process_group_options
-from galaius.refused import Refused
 from galaius.sign_in_browser import SignInHandoff
 
 logger = logging.getLogger(__name__)
