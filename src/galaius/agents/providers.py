@@ -44,7 +44,7 @@ from galaius.agents.quota import REFUSAL
 from galaius.agents.profiles import overlay_for
 from galaius.agents.vocabulary import ApprovalIntent, TouchScope, ThinkingLevel, vocabulary_for
 from galaius.brief_hook import NOTE as BRIEF_NOTE
-from galaius.fence import KEYS, RELAY, RELAY_PORT, Confinement, RelayedServer, SignIn, confinement_refusal, userns_refusal
+from galaius.fence import COMPAT_KEY, KEYS, RELAY, RELAY_PORT, Confinement, RelayedServer, SignIn, confinement_refusal, userns_refusal
 from galaius.inbox_hook import NOTE as INBOX_NOTE
 from galaius.models import Model
 from galaius.processes import ask_process, run_isolated_process
@@ -2121,7 +2121,7 @@ class CodexProvider(AgentProvider):
             # `/v1/responses` (research store, 2026-09-22), so this is not a narrowing of what it
             # can reach.
             "-c", f"{prefix}.wire_api={json.dumps('responses')}",
-            "-c", f"{prefix}.env_key={json.dumps('GALAIUS_OPENAI_COMPAT_KEY')}",
+            "-c", f"{prefix}.env_key={json.dumps(COMPAT_KEY)}",
             "-c", f"model_provider={json.dumps(self._OPENAI_COMPAT_PROVIDER_ID)}",
         ]
 

@@ -39,6 +39,7 @@ import re
 from urllib.parse import urlsplit
 
 from galaius.agents.vocabulary import ModelSource
+from galaius.fence import COMPAT_KEY
 
 PROFILE_PREFIX = "GALAIUS_PROFILE_"
 
@@ -56,7 +57,7 @@ ALLOWED_ENV = frozenset({
     "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
     "OPENAI_BASE_URL",
     "OPENAI_MODEL",
-    "GALAIUS_OPENAI_COMPAT_KEY",
+    COMPAT_KEY,
 })
 
 #: Where each provider's endpoint is read FROM — the operator's own environment, never the caller's
@@ -189,7 +190,7 @@ def overlay_for(model: str, env: dict[str, str]) -> dict[str, str]:
         token_key = _KEY_FROM.get(provider)
         token = (env.get(token_key) or "").strip() if token_key else ""
         if token:
-            out["GALAIUS_OPENAI_COMPAT_KEY"] = token
+            out[COMPAT_KEY] = token
     assert set(out) <= ALLOWED_ENV  # structural, not defensive: the set is fixed above
     return out
 

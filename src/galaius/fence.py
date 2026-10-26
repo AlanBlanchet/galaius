@@ -78,9 +78,10 @@ STEERING = frozenset({".claude", ".mcp.json", ".vscode", ".envrc", ".githooks", 
 INSTRUCTIONS = frozenset({"claude.md", "claude.local.md", "agents.md", "gemini.md", ".envrc"})
 #: Per CLI: the variables holding its own key (the only secrets from the environment it keeps);
 #: every other variable that looks like a secret (`SECRET_SUFFIXES`) is unset inside.
-#: Codex's `GALAIUS_OPENAI_COMPAT_KEY`: the token galaius hands it for a self-hosted model it routes it to (`agents.profiles`).
+#: The one variable galaius hands Codex the token of a self-hosted model it routes it to in (`agents.profiles`): its own key.
+COMPAT_KEY = "GALAIUS_OPENAI_COMPAT_KEY"
 KEYS: dict[str, tuple[str, ...]] = {"claude": ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"),
-                                    "codex": ("OPENAI_API_KEY", "CODEX_API_KEY", "GALAIUS_OPENAI_COMPAT_KEY")}
+                                    "codex": ("OPENAI_API_KEY", "CODEX_API_KEY", COMPAT_KEY)}
 SECRET_SUFFIXES = ("_API_KEY", "_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_PASS", "_CREDENTIALS")
 SCAN_DEPTH, SCAN_ENTRIES = 8, 200_000
 #: Variables that point at the desktop or the user's session: gone inside (their sockets are too).
