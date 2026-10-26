@@ -20,6 +20,7 @@ import hashlib
 import io
 import logging
 import math
+import statistics
 import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -110,8 +111,24 @@ class ScreenSession:
     IDLE_SECONDS: ClassVar[float] = 2.0
     #: How many timings each step keeps for its percentiles (~30 s at 10 fps).
     SAMPLES: ClassVar[int] = 300
-    #: Frames that must fit in half the budget before the picture sharpens again.
+    #: The round (a frame out → its ack back) the picture is kept under: half the owner's « ≤300 ms
+    #: p95 » on a mobile link, as a change waits up to one round for its grab and then rides the next.
+    #: A round, not the frame budget of `max_fps`: on a phone a round is ~70 ms of distance before a
+    #: byte of picture, and judged against 100 ms it walked a 1280 view down to 427 px for nothing.
+    ROUND_BUDGET_MS: ClassVar[float] = 150.0
+    #: Rounds a level is judged on: this many in a row over the budget narrow the picture (one late
+    #: frame is jitter), and this many after a narrowing say whether it helped.
+    STEP_ROUNDS: ClassVar[int] = 4
+    #: A narrower picture must come back at least this much faster than the wider one, or the link is
+    #: slow by distance, not by bytes: the wider picture returns and stays (`RETRY_MAX_SECONDS`).
+    NARROWING_GAIN: ClassVar[float] = 0.85
+    #: Frames in a row within `EASY_SHARE` of the budget before the picture sharpens again.
     EASY_FRAMES: ClassVar[int] = 5
+    EASY_SHARE: ClassVar[float] = 0.6
+    #: A level the link refused is not tried again for this long, doubled each time it is refused
+    #: again within `RETRY_MAX_SECONDS` of reaching it: what made 960 ↔ 1280 flip every second.
+    RETRY_SECONDS: ClassVar[float] = 5.0
+    RETRY_MAX_SECONDS: ClassVar[float] = 60.0
     #: A grab this close to the asked width is sent as it is (see `narrowed`).
     NEAR_ENOUGH: ClassVar[float] = 1.2
 
@@ -141,6 +158,17 @@ class ScreenSession:
         self._grabs: list[float] = []
         self._encodes: list[float] = []
         self._sends: list[float] = []
+        #: Rounds since the picture last changed level, what `measured` judges a level on.
+        self._at_level: list[float] = []
+        self._stepped_at = time.monotonic()
+        #: The wider level a narrowing left and its rounds then, until the narrower one is judged.
+        self._narrowed_from: tuple[ScreenSpec, float] | None = None
+        #: Levels the link refused, by (width, quality), and until when; the wait for the next refusal.
+        self._refused: dict[tuple[int, int], float] = {}
+        self._retry = self.RETRY_SECONDS
+        self._sharpened_last = False
+        #: The level below which narrowing was seen not to help, and until when.
+        self._floor: tuple[tuple[int, int], float] | None = None
 
     @property
     def grabber(self) -> FrameGrabber:
@@ -258,38 +286,70 @@ class ScreenSession:
                                        for row in range(0, image.height, self.DIGEST_ROWS)), digest_size=16).digest()
 
     def measured(self, send_ms: float) -> None:
-        """What the link really took for the last frame, from the transport that sent it: the only
-        number that includes the network. The stream steps down the moment a frame misses its
-        budget, and back up only after `EASY_FRAMES` frames fit in half of it — a link that
-        recovers for one frame and fails again must not flap the picture every second."""
+        """What the link really took for the last frame (out → its ack back), from the transport that
+        sent it: the only number that includes the network. The picture narrows after `STEP_ROUNDS`
+        rounds in a row over `ROUND_BUDGET_MS`, keeps the narrower level only if it came back faster
+        (`NARROWING_GAIN`), and sharpens after `EASY_FRAMES` easy rounds — never back to a level
+        the link refused within its retry wait, so a link on the edge of one level does not flip."""
         self._sends.append(send_ms)
-        budget = self.spec.frame_budget_ms
-        if send_ms > budget:
-            self._easy = 0
-            self._step(lighter=True)
-        elif send_ms <= budget / 2:
+        self._at_level.append(send_ms)
+        self.stats = self.stats.model_copy(update={"send": Timing.of(self._sends[-self.SAMPLES:])})
+        now = time.monotonic()
+        judged = self._at_level[-self.STEP_ROUNDS:]
+        if self._narrowed_from is not None and len(judged) == self.STEP_ROUNDS:
+            wider, wider_ms = self._narrowed_from
+            self._narrowed_from = None
+            if statistics.median(judged) > wider_ms * self.NARROWING_GAIN:
+                logger.info("screen: %dpx came back no faster than %dpx (%.0f ms against %.0f): the link is far, not full",
+                            self.spec.width, wider.width, statistics.median(judged), wider_ms)
+                self._floor = (self._level(wider), now + self.RETRY_MAX_SECONDS)
+                self._refused.pop(self._level(wider), None)
+                self._move_to(wider, lighter=False)
+                return
+        if len(judged) == self.STEP_ROUNDS and min(judged) > self.ROUND_BUDGET_MS:
+            if self._floor is not None and self._floor[0] == self._level(self.spec) and now < self._floor[1]:
+                return
+            level = self._level(self.spec)
+            again = now - self._stepped_at < self.RETRY_MAX_SECONDS and self._sharpened_last
+            self._retry = min(self._retry * 2, self.RETRY_MAX_SECONDS) if again else self.RETRY_SECONDS
+            self._refused[level] = now + self._retry
+            wider = self.spec
+            if self._step(lighter=True):
+                self._narrowed_from = (wider, statistics.median(judged))
+        elif send_ms <= self.ROUND_BUDGET_MS * self.EASY_SHARE:
             self._easy += 1
             if self._easy >= self.EASY_FRAMES:
                 self._easy = 0
-                self._step(lighter=False)
+                sharper = self.spec.sharper()
+                if self._refused.get(self._level(sharper), 0.0) <= now:
+                    self._step(lighter=False)
         else:
             self._easy = 0
-        self.stats = self.stats.model_copy(update={"send": Timing.of(self._sends[-self.SAMPLES:])})
 
-    def _step(self, lighter: bool) -> None:
-        """Walk the ladder one step; `stats` counts each move so a review can see the link's shape."""
+    @staticmethod
+    def _level(spec: ScreenSpec) -> tuple[int, int]:
+        return (spec.width, spec.quality)
+
+    def _step(self, lighter: bool) -> bool:
+        """Walk the ladder one step; False when there is no step that way (or none the viewer allows)."""
         stepped = self.spec.lighter() if lighter else self.spec.sharper()
-        if (stepped.width, stepped.quality) == (self.spec.width, self.spec.quality):
-            return
+        if self._level(stepped) == self._level(self.spec):
+            return False
         if not lighter and (stepped.width > self.asked.width or stepped.quality > self.asked.quality):
-            return  # never sharper than the viewer asked for
-        self.spec = stepped
+            return False  # never sharper than the viewer asked for
+        self._move_to(stepped, lighter)
+        return True
+
+    def _move_to(self, spec: ScreenSpec, lighter: bool) -> None:
+        """`spec` from the next frame on; `stats` counts each move so a review can see the link's shape."""
+        self.spec = spec
+        self._at_level, self._easy, self._stepped_at, self._sharpened_last = [], 0, time.monotonic(), not lighter
         self.stats = self.stats.model_copy(update={
             "lightened": self.stats.lightened + (1 if lighter else 0),
             "sharpened": self.stats.sharpened + (0 if lighter else 1),
-            "width": stepped.width, "quality": stepped.quality,
+            "width": spec.width, "quality": spec.quality,
         })
-        logger.info("screen: %s to %dpx q%d", "narrowed" if lighter else "sharpened", stepped.width, stepped.quality)
+        logger.info("screen: %s to %dpx q%d", "narrowed" if lighter else "sharpened", spec.width, spec.quality)
 
     def perform(self, acts: list[object]) -> int:
         """Take what a viewer sent — moves, clicks, scrolls, keys, text, in the galaius action
@@ -362,6 +422,9 @@ class ScreenStreamer:
     VIEWER_GONE_SECONDS: ClassVar[float] = 20.0
     #: How long a transport may take for one frame before the stream treats the link as gone.
     SEND_TIMEOUT_SECONDS: ClassVar[float] = 15.0
+    #: Grabbing and encoding one frame this long is logged: a stall the viewer sees must be placed
+    #: on this computer or on the link (the transport logs its own slow rounds).
+    SLOW_FRAME_MS: ClassVar[float] = 200.0
 
     def __init__(self, session: ScreenSession, send: Callable[[ScreenFrame], Awaitable[None]]) -> None:
         self.session = session
@@ -379,6 +442,8 @@ class ScreenStreamer:
             while True:
                 cycle = time.perf_counter()
                 frame = await loop.run_in_executor(self._grabbing, self.session.frame)
+                if (made_ms := (time.perf_counter() - cycle) * 1000) >= self.SLOW_FRAME_MS:
+                    logger.info("screen: %s took %.0f ms on this computer", f"frame {frame.sequence}" if frame else "an unchanged grab", made_ms)
                 if frame is None:
                     await asyncio.sleep(min(1.0 / self.session.spec.max_fps, self.session.IDLE_SECONDS))
                     if time.monotonic() - taken > self.VIEWER_GONE_SECONDS:

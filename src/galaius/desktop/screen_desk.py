@@ -9,6 +9,7 @@ a newer verified offer ends the older one (a phone that reconnected), never runs
 """
 
 import asyncio
+import concurrent.futures
 import contextlib
 import logging
 import time
@@ -57,6 +58,9 @@ class LiveScreen:
 
     #: The stream's numbers go to the viewer this often (sealed like a frame).
     STATS_SECONDS: ClassVar[float] = 2.0
+    #: A frame whose ack takes this long is logged with where its time went (`_deliver`): a stall
+    #: the viewer sees must be placed on this computer, the link out, or the way back.
+    SLOW_ROUND_MS: ClassVar[float] = 400.0
 
     def __init__(self, admitted: Admitted, session: ScreenSession, send: Send, ended: Callable[["LiveScreen"], Awaitable[None]]) -> None:
         self.admitted = admitted
@@ -68,6 +72,9 @@ class LiveScreen:
         self._stats_at = 0.0
         self.why = ""
         self.streamer = ScreenStreamer(session, self._deliver)
+        #: The one thread a view's acts run on, in the order their messages came: a worker per
+        #: message let the text typed after a tap land before the tap.
+        self._acting = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="galaius-screen-acts")
         self.task = asyncio.create_task(self._run())
 
     @property
@@ -86,6 +93,7 @@ class LiveScreen:
         finally:
             for waiting in self.acks.values():
                 waiting.cancel()
+            self._acting.shutdown(wait=False, cancel_futures=True)
             await self._ended(self)
 
     async def _sealed(self, plain: bytes) -> None:
@@ -100,11 +108,18 @@ class LiveScreen:
         says it drew it — so the stream's measured time is the whole round, link included."""
         header = frame.model_dump_json(exclude={"jpeg"}).encode()
         waiting = self.acks[frame.sequence] = asyncio.get_running_loop().create_future()
+        started = time.perf_counter()
         try:
             await self._sealed(bytes([SCREEN_PLAIN_FRAME]) + len(header).to_bytes(4, "big") + header + frame.jpeg)
-            await waiting
+            handed = time.perf_counter()
+            drawn_ms = await waiting
         finally:
             self.acks.pop(frame.sequence, None)
+        if (round_ms := (time.perf_counter() - started) * 1000) >= self.SLOW_ROUND_MS:
+            logger.info("screen: frame %d (%d KB) came back after %.0f ms: %.0f ms handing it to the link, %.0f ms waiting for its ack "
+                        "(the viewer drew it in %.0f ms; frame made %.0f ms before it left)", frame.sequence, len(frame.jpeg) // 1024, round_ms,
+                        (handed - started) * 1000, (time.perf_counter() - handed) * 1000, drawn_ms,
+                        (datetime.now(UTC) - frame.at).total_seconds() * 1000 - round_ms)
         if time.monotonic() - self._stats_at >= self.STATS_SECONDS:
             self._stats_at = time.monotonic()
             stats = self.session_view.stats.model_copy(update={"drawn": Timing.of(self._drawn[-ScreenSession.SAMPLES:])})
@@ -112,9 +127,9 @@ class LiveScreen:
 
     def take(self, sealed: ScreenSealed) -> None:
         """One sealed viewer message: its ack frees the stream, its acts (control only) are taken
-        off the loop. A replay, a forgery or a malformed message is dropped and logged — never
-        acted on. A gap (a message before it lost or withheld on the way) ends the view: what
-        follows a missing act is never acted on out of order."""
+        off the loop, one message after another. A replay, a forgery or a malformed message is
+        dropped and logged — never acted on. A gap (a message before it lost or withheld on the way)
+        ends the view: what follows a missing act is never acted on out of order."""
         try:
             message = ScreenViewerMessage.model_validate_json(self.admitted.keys.open(sealed))
         except ScreenGap as gap:
@@ -132,13 +147,13 @@ class LiveScreen:
                 if sequence <= message.ack and not waiting.done():
                     waiting.set_result(message.drawn_ms or 0.0)
         if message.acts:
-            task = asyncio.create_task(asyncio.to_thread(self.session_view.perform, message.acts))
-            task.add_done_callback(self._performed)
+            done = asyncio.get_running_loop().run_in_executor(self._acting, self.session_view.perform, message.acts)
+            done.add_done_callback(self._performed)
 
-    def _performed(self, task: asyncio.Task) -> None:
-        if task.cancelled():
+    def _performed(self, done: asyncio.Future) -> None:
+        if done.cancelled():
             return
-        if isinstance(error := task.exception(), PermissionError):
+        if isinstance(error := done.exception(), PermissionError):
             logger.warning("screen: acts refused: %s", error)
         elif error is not None:
             logger.warning("screen: an act failed", exc_info=error)

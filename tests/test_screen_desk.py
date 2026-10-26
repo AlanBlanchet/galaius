@@ -156,3 +156,25 @@ async def test_a_viewer_message_lost_on_the_way_ends_the_view_rather_than_act_ou
     desk.take(viewer.seal(opened.session, 2, json.dumps({"ack": header["sequence"], "acts": [escape]}).encode()))  # seq 1 never arrived
     _, ended = await relay.next("screen_ended")
     assert "lost" in ended["why"] and desk.backend.done == [] and desk.live is None
+
+
+async def test_acts_from_successive_messages_land_in_the_order_they_were_sent(desk, monkeypatch) -> None:
+    """A tap then the text typed after it arrive as two sealed messages: the text must wait for the
+    click, as on the viewer's screen — two worker threads let the typing land first."""
+    import time
+
+    relay, phone = Relay(), SoftPasskey()
+    viewer, opened = await _open(desk, relay, phone, mode="control", new=True)
+    _, sealed = await relay.next("screen_frame")
+    header, _ = _frame(viewer, sealed)
+    slow_click = desk.backend.click
+    monkeypatch.setattr(desk.backend, "click", lambda *a, **k: (time.sleep(0.1), slow_click(*a, **k)))
+    tap = {"type": "click", "x": 10, "y": 10, "frame": header["sequence"]}
+    desk.take(viewer.seal(opened.session, 1, json.dumps({"ack": header["sequence"], "acts": [tap]}).encode()))
+    desk.take(viewer.seal(opened.session, 2, json.dumps({"acts": [{"type": "type_text", "text": "ls"}]}).encode()))
+    for _ in range(100):
+        if len(desk.backend.done) == 2:
+            break
+        await asyncio.sleep(0.01)
+    assert [step[0] for step in desk.backend.done] == ["click", "type"]
+    await desk.close_all("the test ended")

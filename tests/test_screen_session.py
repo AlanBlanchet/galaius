@@ -128,25 +128,89 @@ def test_a_switch_turned_off_mid_session_ends_it_within_a_second(tmp_path, monke
         session.frame()
 
 
-def test_a_slow_link_narrows_the_picture_and_a_fast_one_gives_it_back(tmp_path):
-    """The only measurement that includes the network is the time the transport took, so that is
-    what the stream adapts on — never a guess from the frame's size."""
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _rounds(session: ScreenSession, ms: float, n: int) -> None:
+    for _ in range(n):
+        session.measured(ms)
+
+
+def _level(session: ScreenSession) -> tuple[int, int]:
+    return (session.spec.width, session.spec.quality)
+
+
+@pytest.fixture
+def clock(monkeypatch) -> _Clock:
+    clock = _Clock()
+    monkeypatch.setattr(time, "monotonic", clock)
+    return clock
+
+
+def test_a_full_link_narrows_the_picture_and_gets_it_back_once_it_clears(tmp_path, clock):
+    """Bytes are what make this link slow (300 ms rounds at 1280, 110 ms at 960): it narrows, holds
+    the narrower level while that is what fits, and sharpens once the link clears and the refused
+    level's wait is over — never before."""
     session = _session(tmp_path, spec=ScreenSpec(width=1280, quality=55, max_fps=10))
-    budget = session.spec.frame_budget_ms  # 100 ms
 
-    session.measured(budget + 50)
-    assert (session.spec.width, session.spec.quality) == (960, 45) and session.stats.lightened == 1
+    _rounds(session, 300, ScreenSession.STEP_ROUNDS)
+    assert _level(session) == (960, 45) and session.stats.lightened == 1
+    _rounds(session, 110, ScreenSession.STEP_ROUNDS * 3)
+    assert _level(session) == (960, 45), "a narrower picture that came back faster stays"
 
-    for _ in range(ScreenSession.EASY_FRAMES - 1):
-        session.measured(10)
-    assert session.spec.width == 960, "one easy frame is not a recovered link"
-    session.measured(10)
-    assert (session.spec.width, session.spec.quality) == (1280, 55) and session.stats.sharpened == 1
+    _rounds(session, 40, ScreenSession.EASY_FRAMES * 2)
+    assert _level(session) == (960, 45), "the level the link refused waits out its retry"
+    clock.now += ScreenSession.RETRY_SECONDS + 1
+    _rounds(session, 40, ScreenSession.EASY_FRAMES)
+    assert _level(session) == (1280, 55) and session.stats.sharpened == 1
+    _rounds(session, 1, ScreenSession.EASY_FRAMES * 2)
+    assert _level(session) == (1280, 55), "never sharper than the viewer asked for"
 
-    for _ in range(ScreenSession.EASY_FRAMES * 2):
-        session.measured(1)
-    assert (session.spec.width, session.spec.quality) == (1280, 55), "never sharper than the viewer asked for"
-    assert session.stats.send.count == ScreenSession.EASY_FRAMES * 3 + 1 and session.stats.send.worst == budget + 50
+
+@pytest.mark.parametrize("round_ms", [113, 220], ids=["phone-35ms-each-way", "far-link-220ms"])
+def test_a_link_slow_by_distance_keeps_the_sharp_picture(tmp_path, clock, round_ms):
+    """A phone's link costs ~70 ms of distance before a byte of picture: narrowing buys nothing
+    there. Under the round budget the picture never moves; over it, one narrowing is tried, seen
+    to come back no faster, and undone — the 1280 view no longer sinks to 427 px."""
+    session = _session(tmp_path, spec=ScreenSpec(width=1280, quality=55, max_fps=10))
+
+    _rounds(session, round_ms, ScreenSession.STEP_ROUNDS * 10)
+    _rounds(session, round_ms - 5, ScreenSession.STEP_ROUNDS)  # what a narrower picture saves there
+    _rounds(session, round_ms, ScreenSession.STEP_ROUNDS * 10)
+    assert _level(session) == (1280, 55)
+    assert session.stats.lightened <= 1
+
+
+def test_one_late_frame_is_jitter_not_a_slow_link(tmp_path, clock):
+    session = _session(tmp_path, spec=ScreenSpec(width=1280, quality=55, max_fps=10))
+    for _ in range(20):
+        _rounds(session, 60, ScreenSession.STEP_ROUNDS - 1)
+        session.measured(900)
+    assert _level(session) == (1280, 55) and session.stats.lightened == 0
+
+
+def test_a_link_on_the_edge_of_a_level_stops_flipping(tmp_path, clock):
+    """960 fits, 1280 does not: each try at 1280 it refuses doubles the wait before the next one
+    (5, 10, 20 s…), where the old ladder flipped 960 ↔ 1280 about once a second."""
+    session = _session(tmp_path, spec=ScreenSpec(width=1280, quality=55, max_fps=10))
+    _rounds(session, 300, ScreenSession.STEP_ROUNDS)
+    waits = []
+    for _ in range(4):
+        waited = 0.0
+        while _level(session) != (1280, 55):
+            clock.now += 0.1
+            waited += 0.1
+            session.measured(40)
+        waits.append(round(waited))
+        _rounds(session, 300, ScreenSession.STEP_ROUNDS)
+        assert _level(session) == (960, 45)
+    assert waits == sorted(waits) and waits[-1] >= 4 * waits[0], waits
+    assert session.stats.send.worst == 300
 
 
 def test_a_session_reports_what_it_cost(tmp_path):

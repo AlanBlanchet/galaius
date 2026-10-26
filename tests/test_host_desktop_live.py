@@ -244,3 +244,26 @@ def test_os_launcher_search_shows_a_result(live_display):
     finally:
         _run([KeyPressAction(key="Escape")])
     assert "gone" in _run([WaitForAction(text=result, state="hidden", timeout=15000)])
+
+
+@pytest.mark.parametrize("again", [True, False], ids=["same-pixel", "new-pixel"])
+def test_a_click_where_the_pointer_already_is_lands_at_once(live_display, again):
+    """A remote viewer's tap is a click at a point, and the pointer is often already there (a tap
+    after a hover, a second tap on one button). xdotool's ``mousemove --sync`` to the pixel the
+    pointer sits on waits for a move that never comes: the press hung until the NEXT move."""
+    import threading
+    import time
+
+    desk = host.host_desktop()
+    # A private Xvfb resets (pointer back to the centre) each time its last client leaves, and
+    # every xdotool call is a client that leaves: the kept connection `pointer` opens holds it.
+    desk.pointer()
+    desk.move(300, 200)
+    assert desk.pointer() == (300, 200)
+    target = (300, 200) if again else (420, 260)
+    done = threading.Event()
+    started = time.monotonic()
+    threading.Thread(target=lambda: (desk.click(*target), done.set()), daemon=True).start()
+    assert done.wait(2.0), f"the click at {target} was still waiting after 2 s"
+    assert time.monotonic() - started < 1.0
+    assert desk.pointer() == target

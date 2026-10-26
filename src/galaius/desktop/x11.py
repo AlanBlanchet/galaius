@@ -8,6 +8,8 @@ import contextlib
 import os
 import re
 import subprocess
+import threading
+import time
 
 from galaius.desktop.backend import DesktopBackend
 from galaius.desktop.geometry import HostWindow, Monitor
@@ -33,12 +35,16 @@ class X11Display(DesktopBackend):
     # ordered and evenly spaced.
     _WHEEL_DELAY_MS = 25
     _TYPE_DELAY_MS = 20
+    #: How long `move` waits for the pointer to read where it was sent (see `move`).
+    _MOVE_SETTLE_SECONDS = 0.1
 
     def __init__(self, display: str):
         self.display = display
         self.env = {**os.environ, "DISPLAY": display}
-        #: Kept open for `pointer` only (see it); every other query opens its own.
+        #: Kept open for `pointer` only (see it); every other query opens its own. The lock: a
+        #: watched screen reads it from its grabbing thread while a viewer's acts move it from another.
         self._pointer_display = None
+        self._pointer_lock = threading.Lock()
 
     def _xdotool(self, *args: str) -> None:
         subprocess.run(["xdotool", *args], env=self.env, check=True)
@@ -121,17 +127,22 @@ class X11Display(DesktopBackend):
         budget spent on a handshake. `close` drops it."""
         from Xlib import display as xdisplay  # noqa: PLC0415 — Linux-only dependency
 
-        if self._pointer_display is None:
-            self._pointer_display = xdisplay.Display(self.display)
-        try:
-            spot = self._pointer_display.screen().root.query_pointer()
-        except OSError:  # the X server went away (a session that ended): reopen on the next read
-            self.close()
-            return None
+        with self._pointer_lock:
+            try:
+                if self._pointer_display is None:
+                    self._pointer_display = xdisplay.Display(self.display)
+                spot = self._pointer_display.screen().root.query_pointer()
+            except OSError:  # the X server went away (a session that ended): reopen on the next read
+                self._drop_pointer_display()
+                return None
         return (int(spot.root_x), int(spot.root_y))
 
     def close(self) -> None:
         """Drop the kept pointer connection (nothing else here holds one)."""
+        with self._pointer_lock:
+            self._drop_pointer_display()
+
+    def _drop_pointer_display(self) -> None:
         if self._pointer_display is not None:
             with contextlib.suppress(OSError):
                 self._pointer_display.close()
@@ -191,7 +202,21 @@ class X11Display(DesktopBackend):
     # --- input ---------------------------------------------------------------------------------
 
     def move(self, x: float, y: float) -> None:
-        self._xdotool("mousemove", "--sync", str(round(x)), str(round(y)))
+        """The pointer to (x, y), returning once it reads there — the press that follows must land
+        on that pixel, not the one before.
+
+        Never ``xdotool mousemove --sync``: it waits for the pointer to LEAVE where it was, so a move
+        to the pixel it already sits on (a second tap on one button) blocked until the next move —
+        3 s and more before a viewer's click landed. Here a pointer already there is not moved, and
+        any other move waits at most `_MOVE_SETTLE_SECONDS` (a point past the screen's edge, which
+        X clamps, never reads as asked)."""
+        target = (round(x), round(y))
+        if self.pointer() == target:
+            return
+        self._xdotool("mousemove", str(target[0]), str(target[1]))
+        deadline = time.monotonic() + self._MOVE_SETTLE_SECONDS
+        while self.pointer() not in (target, None) and time.monotonic() < deadline:
+            time.sleep(0.002)
 
     def mouse_down(self, button: str = "left") -> None:
         self._xdotool("mousedown", str(_BUTTONS[button]))
