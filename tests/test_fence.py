@@ -384,7 +384,8 @@ def test_a_runtime_whose_python_links_through_a_folder_link_starts_inside_and_st
     python = Path(os.path.realpath(sys.executable))
     uv = home / ".local/share/uv/python"
     uv.mkdir(parents=True)
-    (uv / "cpython-3-linux").symlink_to(python.parent.parent, target_is_directory=True)
+    (uv / "cpython-3.x-linux").symlink_to(python.parent.parent, target_is_directory=True)
+    (uv / "cpython-3-linux").symlink_to("cpython-3.x-linux", target_is_directory=True)  # uv's minor-version link: relative
     runtimes = home / ".local/share/galaius/runtimes"
     runtime, other = runtimes / "0.1-new", runtimes / "0.1-old"
     (runtime / "bin").mkdir(parents=True)
@@ -407,9 +408,10 @@ print(json.dumps({{"links": [[str(a), str(b)] for a, b in fence.links], "binds":
                           env={**os.environ, "HOME": str(home), "PYTHONPATH": os.pathsep.join(path for path in sys.path if path)})
     assert done.returncode == 0, done.stderr
     seen = json.loads(done.stdout)
-    assert [str(uv / "cpython-3-linux"), str(python.parent.parent)] in seen["links"]
+    assert [str(uv / "cpython-3-linux"), "cpython-3.x-linux"] in seen["links"] and [str(uv / "cpython-3.x-linux"), str(python.parent.parent)] in seen["links"]
     assert [str(runtime), False] in seen["binds"] and not any(target.startswith((str(other), str(runtimes.parent / "machine.json"))) for target, _ in seen["binds"])
-    if seen["inside"] is not None:
-        code, out, err = seen["inside"]
-        assert code == 0, err
-        assert json.loads(out) == [str(runtime), False, False, False]
+    if seen["inside"] is None:
+        pytest.skip(f"no fence on this PC to start it in: {available()[1]}")
+    code, out, err = seen["inside"]
+    assert code == 0, err
+    assert json.loads(out) == [str(runtime), False, False, False]

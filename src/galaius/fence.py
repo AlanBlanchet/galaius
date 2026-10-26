@@ -26,6 +26,7 @@ files or repositories; a steering file created by the agent exists in the folder
 before it is moved out (an instruction file in a subfolder: until the turn ends); macOS and Windows have no fence here yet."""
 
 import ctypes
+import errno
 import fnmatch
 import functools
 import json
@@ -310,7 +311,8 @@ class FenceSpec(BaseModel):
             reached += paths
             roots += folders
         for root in roots:
-            if not any(root.is_relative_to(folder) for folder in SYSTEM) and not home.is_relative_to(root) and not any(bind.target == root for bind in binds):
+            # A root gone (the runtime an upgrade pruned under a process still running from it) would stop bwrap.
+            if root.is_dir() and not any(root.is_relative_to(folder) for folder in SYSTEM) and not home.is_relative_to(root) and not any(bind.target == root for bind in binds):
                 binds.append(FenceBind(source=root, target=root, writable=False))
         # The links on the way to each program, re-made inside unless the view already holds their place.
         shown = (*(Path(folder) for folder in (*SYSTEM, *MERGED)), *(bind.target for bind in binds))
@@ -394,7 +396,7 @@ def _links(path: Path) -> list[tuple[Path, Path]]:
             resolved = candidate
             continue
         if len(found) > 40:
-            raise PermissionError(f"{path} goes through more than 40 links")
+            raise OSError(errno.ELOOP, "more than 40 links on the way", str(path))
         target = Path(os.readlink(candidate))
         found.append((candidate, target))
         if target.is_absolute():
@@ -413,14 +415,19 @@ def _runs_from(python: Path) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
     """What starting `python` goes through (itself, the base installation its venv's `pyvenv.cfg` names) and the
     folders it runs from (that venv, the installation its executable is in, the base one), read-only inside."""
     venv = Path(os.path.realpath(python.parent)).parent
-    reached, roots = [python], [python.resolve().parent.parent]
+    reached, roots = [python], [_prefix(python.resolve())]
     if (venv / "pyvenv.cfg").is_file():
         roots.append(venv)
         settings = {key.strip(): value.strip() for key, _, value in (line.partition("=") for line in (venv / "pyvenv.cfg").read_text(encoding="utf-8").splitlines())}
         if base := settings.get("home"):
             reached.append(Path(base))
-            roots.append(Path(base).resolve().parent)
+            roots.append(_prefix(Path(base).resolve() / python.name))
     return tuple(reached), tuple(roots)
+
+
+def _prefix(executable: Path) -> Path:
+    """The installation an interpreter belongs to: the folder holding its `bin`, else its own folder."""
+    return executable.parent.parent if executable.parent.name == "bin" else executable.parent
 
 
 def fenced(argv: list[str], fence: FenceSpec | None) -> list[str]:
