@@ -52,6 +52,7 @@ from galaius_core import PlaceLevel
 from galaius.paths import UserPaths
 from galaius.pinned_directory import PinnedDirectory
 from galaius.places import DEPENDENCY_FOLDERS, LEVEL_RANK, NEVER_GRANTABLE, PlaceMap, split
+from galaius.upgrade.store import active_interpreter
 
 #: Per CLI: its state folder under home, what of it the agent reads (sign-in, settings, the
 #: owner's instructions: read-only), the folders it keeps sessions in (a private per-run folder:
@@ -303,11 +304,18 @@ class FenceSpec(BaseModel):
         emptied += [base.joinpath(*split(path)) for path, level in sorted(places.levels.items())
                     if LEVEL_RANK[level] < LEVEL_RANK["read"] and LEVEL_RANK[places.inherited(split(path))] >= LEVEL_RANK["read"]]
         binds += self._tool_state(home)
-        links = tuple((program, program.resolve()) for program in self.programs if program.is_symlink() and not any(program.is_relative_to(folder) for folder in SYSTEM))
-        for program in (*self.programs, Path(sys.prefix), Path(sys.base_prefix)):
-            root = _install_root(program.resolve())
+        reached, roots = list(self.programs), [_install_root(program.resolve()) for program in self.programs]
+        for python in _interpreters():
+            paths, folders = _runs_from(python)
+            reached += paths
+            roots += folders
+        for root in roots:
             if not any(root.is_relative_to(folder) for folder in SYSTEM) and not home.is_relative_to(root) and not any(bind.target == root for bind in binds):
                 binds.append(FenceBind(source=root, target=root, writable=False))
+        # The links on the way to each program, re-made inside unless the view already holds their place.
+        shown = (*(Path(folder) for folder in (*SYSTEM, *MERGED)), *(bind.target for bind in binds))
+        links = tuple({link: target for path in reached for link, target in _links(path)
+                       if not any(link.is_relative_to(folder) or folder.is_relative_to(link) for folder in shown)}.items())
         return Fence(home=home, cwd=self.start.resolve(), binds=tuple(binds), emptied=tuple(emptied), blanked=tuple(blanked), links=links, egress=self.egress,
                      guards=tuple(guards), reviews=self.reviews, secrets=self._foreign_secrets())
 
@@ -369,6 +377,50 @@ def _install_root(program: Path) -> Path:
         if (candidate / "package.json").is_file():
             return candidate
     return folder
+
+
+def _links(path: Path) -> list[tuple[Path, Path]]:
+    """Every symbolic link met resolving `path`, its folders' included, as (the link at its real place, what it says): a
+    view holding only the file at the end misses the links on the way (a runtime's `bin/python` -> uv's
+    `cpython-3.14-…` folder link -> the interpreter), and exec there finds nothing."""
+    found, resolved, pending = [], Path(path.anchor or "/"), list(path.absolute().parts[1:])
+    while pending:
+        name = pending.pop(0)
+        if name == "..":
+            resolved = resolved.parent
+            continue
+        candidate = resolved / name
+        if not candidate.is_symlink():
+            resolved = candidate
+            continue
+        if len(found) > 40:
+            raise PermissionError(f"{path} goes through more than 40 links")
+        target = Path(os.readlink(candidate))
+        found.append((candidate, target))
+        if target.is_absolute():
+            resolved = Path(target.anchor)
+        pending[:0] = target.parts[1:] if target.is_absolute() else target.parts
+    return found
+
+
+def _interpreters() -> tuple[Path, ...]:
+    """The interpreters a fenced turn starts: this one (`INNER`) and the active runtime's (its agent's hooks,
+    `participant_argv`), two while a process started before an upgrade still runs."""
+    return tuple(dict.fromkeys(Path(found) for found in (sys.executable, active_interpreter()) if found))
+
+
+def _runs_from(python: Path) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+    """What starting `python` goes through (itself, the base installation its venv's `pyvenv.cfg` names) and the
+    folders it runs from (that venv, the installation its executable is in, the base one), read-only inside."""
+    venv = Path(os.path.realpath(python.parent)).parent
+    reached, roots = [python], [python.resolve().parent.parent]
+    if (venv / "pyvenv.cfg").is_file():
+        roots.append(venv)
+        settings = {key.strip(): value.strip() for key, _, value in (line.partition("=") for line in (venv / "pyvenv.cfg").read_text(encoding="utf-8").splitlines())}
+        if base := settings.get("home"):
+            reached.append(Path(base))
+            roots.append(Path(base).resolve().parent)
+    return tuple(reached), tuple(roots)
 
 
 def fenced(argv: list[str], fence: FenceSpec | None) -> list[str]:

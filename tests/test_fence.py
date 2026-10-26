@@ -375,3 +375,41 @@ def test_the_longest_fence_reason_keeps_its_root_command_in_the_field_the_web_sh
     shown = fitted(MachineFence, "reason", refusal)
     assert "sudo apt install apparmor-profiles" in shown and "sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict" in shown
     assert MachineFence(platform="linux", available=False, on=False, reason=shown).reason == shown
+
+
+def test_a_runtime_whose_python_links_through_a_folder_link_starts_inside_and_stays_read_only(home: Path, tmp_path: Path) -> None:
+    """An installed runtime (a uv venv): `bin/python` -> uv's `cpython-3.x` folder link -> the interpreter. The fence,
+    built by that runtime's own process (a PC runner, a resume dispatcher), re-makes the link and binds this runtime
+    read-only, never another runtime or the runner's data beside it."""
+    python = Path(os.path.realpath(sys.executable))
+    uv = home / ".local/share/uv/python"
+    uv.mkdir(parents=True)
+    (uv / "cpython-3-linux").symlink_to(python.parent.parent, target_is_directory=True)
+    runtimes = home / ".local/share/galaius/runtimes"
+    runtime, other = runtimes / "0.1-new", runtimes / "0.1-old"
+    (runtime / "bin").mkdir(parents=True)
+    (other / "bin").mkdir(parents=True)
+    (runtimes.parent / "machine.json").write_text("{\"key\": 1}")
+    (runtime / "bin/python").symlink_to(uv / "cpython-3-linux/bin" / python.name)
+    (runtime / "pyvenv.cfg").write_text(f"home = {uv / 'cpython-3-linux/bin'}\ninclude-system-site-packages = false\n")
+    build = f"""
+import json, os, subprocess, sys
+from pathlib import Path
+from galaius.fence import FenceSpec, available
+spec = FenceSpec(working_directory=Path({str(home)!r}), levels={{"work": "write"}}, start=Path({str(home / "work")!r}), state=Path({str(tmp_path / "state")!r}))
+fence = spec.build()
+probe = "import json, os, sys; print(json.dumps([sys.prefix, os.path.exists({str(other)!r}), os.path.exists({str(runtimes.parent / 'machine.json')!r}), os.access({str(runtime)!r}, os.W_OK)]))"
+inside = subprocess.run(fence.command([sys.executable, "-c", probe]), capture_output=True, text=True, timeout=60) if available()[0] else None
+print(json.dumps({{"links": [[str(a), str(b)] for a, b in fence.links], "binds": [[str(b.target), b.writable] for b in fence.binds],
+                  "inside": None if inside is None else [inside.returncode, inside.stdout, inside.stderr[-300:]]}}))
+"""
+    done = subprocess.run([str(runtime / "bin/python"), "-c", build], capture_output=True, text=True, timeout=90,
+                          env={**os.environ, "HOME": str(home), "PYTHONPATH": os.pathsep.join(path for path in sys.path if path)})
+    assert done.returncode == 0, done.stderr
+    seen = json.loads(done.stdout)
+    assert [str(uv / "cpython-3-linux"), str(python.parent.parent)] in seen["links"]
+    assert [str(runtime), False] in seen["binds"] and not any(target.startswith((str(other), str(runtimes.parent / "machine.json"))) for target, _ in seen["binds"])
+    if seen["inside"] is not None:
+        code, out, err = seen["inside"]
+        assert code == 0, err
+        assert json.loads(out) == [str(runtime), False, False, False]
