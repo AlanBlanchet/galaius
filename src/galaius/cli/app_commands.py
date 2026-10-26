@@ -1040,8 +1040,16 @@ def agents_send(run_id: str, message: str, *, fyi: Annotated[bool, Parameter(nam
     except (OSError, ValueError) as error:
         print(f"ERROR: --image takes an image file ({', '.join(kind.removeprefix('image/').upper() for _, kind, _ in IMAGE_TYPES)}): {error}")
         raise SystemExit(1)
-    delivery = messaging.deliver_message(run_id, message, message_id=message_id, turn=agent_queue.MessageTurn(fyi=fyi, media=media))
-    if (refused := messaging.wait_for_start(delivery)) is not None:
+    try:
+        # A person's send waits a bounded time for the run (`messaging.PERSON_PATIENCE`) and watches its turn start without
+        # its lock: the web runs this command and gives it 60 s, past which it tells him « send timed out » with no reason
+        # (2026-10-26: his run's record lock was wedged since 09:35).
+        delivery = messaging.deliver_message(run_id, message, message_id=message_id, turn=agent_queue.MessageTurn(fyi=fyi, media=media))
+        refused = messaging.wait_for_start(delivery)
+    except reg.RecordBusy as busy:
+        print(f"ERROR: {busy}; the message was not recorded, send it again.")
+        raise SystemExit(1) from None
+    if refused is not None:
         print(f"ERROR: the resumed turn did not start: {refused}")
         raise SystemExit(1)
     waiting = SpawnLine.here().waits(delivery.run_id) if delivery.state == "queued" else None

@@ -191,6 +191,12 @@ def start_dispatcher(run_id: str, environment: Mapping[str, str]) -> str | None:
     return None
 
 
+#: The longest a PERSON's message waits for its run's record lock before `registry.RecordBusy` says what holds it: he
+#: waits on the answer (the web gives a send 60 s), and a run wedged by something else must never hold his words without
+#: a word (2026-10-26 09:39: never recorded, cut off at 60 s as « send timed out »). An agent's message keeps no bound.
+PERSON_PATIENCE = 20.0
+
+
 def queue_message(
     run_id: str, message: str, *, sender: str | None = None, environment: Mapping[str, str] | None = None, message_id: str | None = None,
     turn: agent_queue.QueuedTurn = agent_queue.MessageTurn(), only_if_idle: bool = False, for_run: str | None = None,
@@ -205,11 +211,21 @@ def queue_message(
     `for_run`: the run it is sent for (`galaius agents spawn --for`), kept on its transcript entry and listed among
     the recipient's `asked_by` as a message from that run would be."""
     environment = dict(Caller.environ(environment))
+    speaker = sender or sender_id(environment)
+    with reg.lock_patience(PERSON_PATIENCE if reg.get_run(speaker) is None else None):
+        return _queue_message(run_id, message, speaker=speaker, environment=environment, message_id=message_id, turn=turn,
+                              only_if_idle=only_if_idle, for_run=for_run)
+
+
+def _queue_message(
+    run_id: str, message: str, *, speaker: str, environment: dict[str, str], message_id: str | None,
+    turn: agent_queue.QueuedTurn, only_if_idle: bool, for_run: str | None,
+) -> Delivery:
+    """`queue_message`, its sender resolved and its patience for the run's lock set."""
     if message_id is not None:
         with reg.record_lock(recipient := reg.resolve_run_id(run_id) or run_id):
             if (repeat := Delivery.repeat(recipient, message_id)) is not None:
                 return repeat
-    speaker = sender or sender_id(environment)
     if reg.get_run(speaker) is not None:
         named = reg.resolve_run_id(run_id) or run_id
         run_id = relations.live(named)  # a run handed off: its successor reads it
@@ -326,7 +342,7 @@ def wait_for_start(delivery: Delivery, *, timeout: float = 10.0, interval: float
     deadline = time.monotonic() + timeout
     alive_since: float | None = None
     while True:
-        item = next((i for i in agent_queue.items(delivery.run_id) if i.id == delivery.queue_id), None)
+        item = next((i for i in agent_queue.items_seen(delivery.run_id) if i.id == delivery.queue_id), None)
         if item is None:
             return "queued delivery disappeared"
         if item.state in ("failed", "cancelled", "uncertain"):

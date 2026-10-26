@@ -471,6 +471,14 @@ def items(run_id: str) -> list[QueueItem]:
         return items_locked(run_id)
 
 
+def items_seen(run_id: str) -> list[QueueItem]:
+    """The run's queue as last written, read WITHOUT its lock: for a caller that only watches it (`messaging.wait_for_start`).
+    Safe because the file is only ever replaced whole (`_write_state`): a reader sees the queue before a write or after it,
+    never half of one — and a watcher must never wait on a holder that may never let go (2026-10-26: a send queued, then
+    waited on its run's wedged lock until its caller cut it off)."""
+    return _items(_state(run_id))
+
+
 def item(run_id: str, item_id: str | None) -> QueueItem | None:
     with reg.record_lock(run_id):
         return item_locked(run_id, item_id)
