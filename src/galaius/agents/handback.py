@@ -96,7 +96,7 @@ class Report(BaseModel):
 def _pending(run: reg.AgentRun) -> bool:
     """Still to end: its process is on a turn (or starting one), or a message waits for it."""
     return (run.status in ("starting", "running", "waiting") and run.process_running()) \
-        or any(item.state in {"pending", "running"} for item in agent_queue.items(run.run_id))
+        or any(item.state in {"pending", "running"} for item in agent_queue.items_seen(run.run_id))   # a look, never a wait on its lock
 
 
 def hand_back(run_id: str) -> list[messaging.Delivery]:
