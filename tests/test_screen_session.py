@@ -151,15 +151,13 @@ def _level(ladder: QualityLadder) -> tuple[int, int]:
 
 
 @pytest.fixture
-def clock(monkeypatch) -> _Clock:
-    clock = _Clock()
-    monkeypatch.setattr(time, "monotonic", clock)
-    return clock
+def clock() -> _Clock:
+    return _Clock()
 
 
 @pytest.fixture
 def ladder(clock) -> QualityLadder:
-    return QualityLadder(ScreenSpec(width=1280, quality=55, max_fps=10))
+    return QualityLadder(ScreenSpec(width=1280, quality=55, max_fps=10), clock=clock)
 
 
 def test_a_full_link_narrows_the_picture_and_gets_it_back_once_it_clears(ladder, clock):

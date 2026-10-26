@@ -123,14 +123,15 @@ class QualityLadder:
     RETRY_SECONDS: ClassVar[float] = 5.0
     RETRY_MAX_SECONDS: ClassVar[float] = 60.0
 
-    def __init__(self, asked: ScreenSpec) -> None:
+    def __init__(self, asked: ScreenSpec, clock: Callable[[], float] = time.monotonic) -> None:
+        self.clock = clock
         self.asked = asked
         self.spec = asked
         self.lightened = self.sharpened = 0
         self._easy = 0
         #: The last rounds at the current level, what a level is judged on.
         self._at_level: deque[float] = deque(maxlen=self.STEP_ROUNDS)
-        self._stepped_at = time.monotonic()
+        self._stepped_at = self.clock()
         self._sharpened_last = False
         #: The wider level a narrowing left and its rounds then, until the narrower one is judged.
         self._narrowed_from: tuple[ScreenSpec, float] | None = None
@@ -142,7 +143,7 @@ class QualityLadder:
 
     def measured(self, round_ms: float) -> None:
         self._at_level.append(round_ms)
-        now = time.monotonic()
+        now = self.clock()
         full = len(self._at_level) == self.STEP_ROUNDS
         if self._narrowed_from is not None and full:
             wider, wider_ms = self._narrowed_from
@@ -194,7 +195,7 @@ class QualityLadder:
     def _move_to(self, spec: ScreenSpec, lighter: bool) -> None:
         self.spec = spec
         self._at_level.clear()
-        self._easy, self._stepped_at, self._sharpened_last = 0, time.monotonic(), not lighter
+        self._easy, self._stepped_at, self._sharpened_last = 0, self.clock(), not lighter
         self.lightened += 1 if lighter else 0
         self.sharpened += 0 if lighter else 1
         logger.info("screen: %s to %dpx q%d", "narrowed" if lighter else "sharpened", spec.width, spec.quality)
