@@ -18,6 +18,7 @@ import asyncio
 import concurrent.futures
 import hashlib
 import io
+import itertools
 import logging
 import math
 import statistics
@@ -33,6 +34,7 @@ from galaius_core import (
     SCREEN_ACTS,
     SCREEN_ACTS_MAX,
     SCREEN_FRAME_MAX,
+    SCREEN_WIDTHS,
     ScreenAct,
     ScreenAllowance,
     ScreenFrame,
@@ -44,7 +46,7 @@ from galaius_core import (
     Timing,
 )
 from PIL import Image
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from galaius.desktop.backend import DesktopBackend, DesktopUnsupportedError
 from galaius.desktop.host import host_desktop
@@ -98,102 +100,193 @@ class FrameGrabber:
         return Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
 
 
-class QualityLadder:
-    """The width and quality frames are made at, walked from the rounds the link really takes (a frame
-    out → its ack back): narrower after `STEP_ROUNDS` rounds in a row over `ROUND_BUDGET_MS`, kept
-    narrower only if it came back faster (`NARROWING_GAIN`), sharper after `EASY_FRAMES` easy rounds —
-    never back to a level the link refused within its retry wait, so a link on the edge of one level
-    does not flip, and never sharper than the viewer asked (`asked`)."""
+class LadderSettings(BaseModel):
+    """How `QualityLadder` judges the link: one budget, the rounds a judgment rests on, and the
+    margins that keep it from flipping between two levels."""
 
+    model_config = ConfigDict(frozen=True)
     #: The round (a frame out → its ack back) the picture is kept under: half the owner's « ≤300 ms
     #: p95 » on a mobile link, as a change waits up to one round for its grab and then rides the next.
-    #: A round, not the frame budget of `max_fps`: on a phone a round is ~70 ms of distance before a
-    #: byte of picture, and judged against 100 ms it walked a 1280 view down to 427 px for nothing.
-    ROUND_BUDGET_MS: ClassVar[float] = 150.0
-    #: Rounds a level is judged on: this many in a row over the budget narrow the picture (one late
-    #: frame is jitter), and this many after a narrowing say whether it helped.
-    STEP_ROUNDS: ClassVar[int] = 4
-    #: A narrower picture must come back at least this much faster than the wider one, or the link is
-    #: slow by distance, not by bytes: the wider picture returns and stays (`RETRY_MAX_SECONDS`).
-    NARROWING_GAIN: ClassVar[float] = 0.85
-    #: Frames in a row within `EASY_SHARE` of the budget before the picture sharpens again.
-    EASY_FRAMES: ClassVar[int] = 5
-    EASY_SHARE: ClassVar[float] = 0.6
-    #: A level the link refused is not tried again for this long, doubled each time it is refused
-    #: again within `RETRY_MAX_SECONDS` of reaching it: what made 960 ↔ 1280 flip every second.
-    RETRY_SECONDS: ClassVar[float] = 5.0
-    RETRY_MAX_SECONDS: ClassVar[float] = 60.0
+    budget_ms: float = 150.0
+    #: Rounds a level is judged on: all of them over the budget narrow the picture (one late frame is
+    #: jitter), their median says what the level costs.
+    judged_rounds: int = Field(default=4, ge=2)
+    #: A narrower picture must come back at least this much faster than the wider one — predicted
+    #: before narrowing, seen after it — or the link is slow by distance, not by bytes.
+    gain: float = Field(default=0.85, gt=0, lt=1)
+    #: A sharper picture is taken once its own time (its predicted round less the floor) fits this
+    #: share of what the budget leaves past the floor: room for the quality step that rides with the
+    #: width, and for the jitter a median does not show.
+    headroom: float = Field(default=0.85, gt=0, le=1)
+    #: The link's floor (its distance: the fastest round any picture made) is the minimum over this
+    #: long — long enough to hold through a congested spell, short enough to follow a move to another
+    #: network; on a far link it is also how often one narrowing is tried again.
+    floor_seconds: float = Field(default=60.0, gt=0)
+    #: A level the link refused right after the ladder sharpened to it waits this long before the next
+    #: try, doubled on each refusal within `retry_max_seconds` of reaching it.
+    retry_seconds: float = Field(default=5.0, gt=0)
+    retry_max_seconds: float = Field(default=60.0, gt=0)
 
-    def __init__(self, asked: ScreenSpec, clock: Callable[[], float] = time.monotonic) -> None:
+
+class QualityLadder:
+    """The width and quality frames are made at, walked from the rounds the link really takes (a frame
+    out → its ack back).
+
+    A round is the link's distance (its `floor`, the fastest round seen lately) plus the picture's own
+    time, which scales with its pixels: that is how the ladder predicts another level's round from the
+    current one (`predicted`). It narrows once `judged_rounds` rounds in a row are over the budget and
+    a narrower picture is predicted to come back faster (`LadderSettings.gain`), and sharpens once the
+    sharper picture is predicted to fit (`LadderSettings.headroom`) or would not be narrowed again — so
+    a phone 90 ms away climbs back to its sharpest level as soon as the bytes fit, where a fixed « fast
+    enough » held it narrow. A
+    narrowing that came back no faster is undone and teaches the ladder the link's new distance; a
+    level refused right after sharpening to it waits out a doubling retry, so a link on the edge of one
+    level does not flip. Never sharper than the viewer asked (`asked`)."""
+
+    #: A screen this close above a rung is sent as it is, or by whole-number reduction when that lands
+    #: this close above it: the geometric middle between the two nearest rungs (√1.2 ≈ 1.095), so two
+    #: rungs never send one picture and every rung is reachable both ways.
+    NEAR_ENOUGH: ClassVar[float] = min(wider / narrower for narrower, wider in itertools.pairwise(SCREEN_WIDTHS)) ** 0.5
+
+    def __init__(self, asked: ScreenSpec, settings: LadderSettings | None = None,
+                 clock: Callable[[], float] = time.monotonic) -> None:
+        self.settings = settings or LadderSettings()
         self.clock = clock
         self.asked = asked
-        self.spec = asked
+        #: Every level from what the viewer asked down to the lightest, one `ScreenSpec.lighter` step
+        #: apart: walked by index, so a rung is the same level on the way down and on the way up.
+        self.levels = [asked]
+        while (lighter := self.levels[-1].lighter()).level != self.levels[-1].level:
+            self.levels.append(lighter)
+        self._at = 0
         self.lightened = self.sharpened = 0
-        self._easy = 0
+        #: The width of the screen the last measured round's frame was cut from: what `predicted`
+        #: sizes every level from (the asked width until the first round says).
+        self.screen_width = asked.width
         #: The last rounds at the current level, what a level is judged on.
-        self._at_level: deque[float] = deque(maxlen=self.STEP_ROUNDS)
+        self._at_level: deque[float] = deque(maxlen=self.settings.judged_rounds)
+        #: Every round of the last `floor_seconds`: when it ended, what it took, the width it carried.
+        self._recent: deque[tuple[float, float, int]] = deque()
         self._stepped_at = self.clock()
         self._sharpened_last = False
-        #: The wider level a narrowing left and its rounds then, until the narrower one is judged.
-        self._narrowed_from: tuple[ScreenSpec, float] | None = None
-        #: Levels the link refused, by (width, quality), and until when; the wait for the next refusal.
-        self._refused: dict[tuple[int, int], float] = {}
-        self._retry = self.RETRY_SECONDS
-        #: The level below which narrowing was seen not to help, and until when.
-        self._floor: tuple[tuple[int, int], float] | None = None
+        #: The wider level a narrowing left (its index) and its last round, until the narrower one is judged:
+        #: the last, not the median, as a link filling up mixes rounds from before it filled into the median.
+        self._narrowed_from: tuple[int, float] | None = None
+        #: Levels the link refused, by index in `levels`, and until when; the wait for the next refusal.
+        self._refused: dict[int, float] = {}
+        self._retry = self.settings.retry_seconds
 
-    def measured(self, round_ms: float) -> None:
-        self._at_level.append(round_ms)
+    @property
+    def spec(self) -> ScreenSpec:
+        """The level frames are made at now."""
+        return self.levels[self._at]
+
+    @property
+    def floor(self) -> float:
+        """The link's distance: the fastest round of the last `floor_seconds`. 0 while every one of them
+        carried the current width: from one picture size distance and bytes cannot be told apart, so
+        the whole round counts as picture — a narrowing is tried, and `_far` learns the distance if it
+        did not help."""
+        width = self.sizing(self.screen_width)[0]
+        if all(sent == width for _, _, sent in self._recent):
+            return 0.0
+        return min(round_ms for _, round_ms, _ in self._recent)
+
+    def sizing(self, screen_width: int, spec: ScreenSpec | None = None) -> tuple[int, int | None]:
+        """The width `spec` (default: the current level) sends from a `screen_width`-wide grab, and the whole number
+        that reduces the grab to it (1: sent as it is), or None when only a resize lands on its rung.
+
+        Whole-number reduction is ~1-2 ms a frame against ~7-18 ms for a resize (measured 2026-10-27,
+        Pillow 12.2, a 1280- and a 1920-wide grab), so it is taken whenever it lands within
+        `NEAR_ENOUGH` of the rung; a resize only where it would not — 960 on a 1280 screen, which
+        reduction sent as 640, the same picture as 720. Never wider than the screen itself."""
+        rung = (spec or self.spec).width
+        factor = max(screen_width // rung, 1)
+        reduced = math.ceil(screen_width / factor)
+        if reduced <= rung * self.NEAR_ENOUGH:
+            return reduced, factor
+        return rung, None
+
+    def predicted(self, spec: ScreenSpec, round_ms: float) -> float:
+        """The round `spec` would take, from `round_ms` at the current level: the same distance, and
+        the picture's own time in proportion to its pixels. The quality step that rides with the width
+        is left to `LadderSettings.headroom` and to the refusal of a level that proves slower."""
+        floor = self.floor
+        return floor + (round_ms - floor) * (self.sizing(self.screen_width, spec)[0] / self.sizing(self.screen_width)[0]) ** 2
+
+    def measured(self, round_ms: float, screen_width: int) -> None:
+        """One round the link took for a frame cut from a `screen_width`-wide grab; may move a level."""
         now = self.clock()
-        full = len(self._at_level) == self.STEP_ROUNDS
-        if self._narrowed_from is not None and full:
+        self.screen_width = screen_width
+        self._recent.append((now, round_ms, self.sizing(screen_width)[0]))
+        while self._recent[0][0] < now - self.settings.floor_seconds:
+            self._recent.popleft()
+        self._at_level.append(round_ms)
+        if len(self._at_level) < self.settings.judged_rounds:
+            return
+        typical = statistics.median(self._at_level)
+        if self._narrowed_from is not None:
             wider, wider_ms = self._narrowed_from
             self._narrowed_from = None
-            if (median := statistics.median(self._at_level)) > wider_ms * self.NARROWING_GAIN:
-                logger.info("screen: %dpx came back no faster than %dpx (%.0f ms against %.0f): the link is far, not full",
-                            self.spec.width, wider.width, median, wider_ms)
-                self._floor = (wider.level, now + self.RETRY_MAX_SECONDS)
-                self._refused.pop(wider.level, None)
-                self._move_to(wider, lighter=False)
+            if typical > wider_ms * self.settings.gain:
+                self._far(wider, wider_ms, typical)
                 return
-        if full and min(self._at_level) > self.ROUND_BUDGET_MS:
-            level = self.spec.level
-            held = self._floor is not None and self._floor[0] == level and now < self._floor[1]
-            if held or self.spec.lighter().level == level:
-                return  # nothing lighter helps, or there is nothing lighter: no refusal to count
-            again = now - self._stepped_at < self.RETRY_MAX_SECONDS and self._sharpened_last
-            self._retry = min(self._retry * 2, self.RETRY_MAX_SECONDS) if again else self.RETRY_SECONDS
-            self._refused[level] = now + self._retry
-            wider, median = self.spec, statistics.median(self._at_level)
-            if self.lighten():
-                self._narrowed_from = (wider, median)
-        elif round_ms <= self.ROUND_BUDGET_MS * self.EASY_SHARE:
-            self._easy += 1
-            if self._easy >= self.EASY_FRAMES:
-                self._easy = 0
-                if self._refused.get(self.spec.sharper(cap=self.asked).level, 0.0) <= now:
-                    self._step(lighter=False)
-        else:
-            self._easy = 0
+        if min(self._at_level) > self.settings.budget_ms and self._narrow(typical, now):
+            return
+        if self._at > 0 and self._refused.get(self._at - 1, 0.0) <= now and self._pays(self.levels[self._at - 1], typical):
+            self._move_to(self._at - 1)
 
-    def lighten(self) -> bool:
-        """One step narrower now (a frame too big to send, or a slow link); False at the lightest."""
-        return self._step(lighter=True)
+    def _pays(self, sharper: ScreenSpec, typical: float) -> bool:
+        """Whether `sharper` is worth its bytes: its picture fits what the budget leaves past the floor;
+        or the link's distance alone is over the budget and narrowing back from it would not pay
+        (`_narrow`'s own test), so a far link still climbs back to the sharpest picture."""
+        floor, round_ms = self.floor, self.predicted(sharper, typical)
+        if floor >= self.settings.budget_ms:
+            return typical > round_ms * self.settings.gain
+        return round_ms - floor <= self.settings.headroom * (self.settings.budget_ms - floor)
 
-    def _step(self, lighter: bool) -> bool:
-        stepped = self.spec.lighter() if lighter else self.spec.sharper(cap=self.asked)
-        if stepped.level == self.spec.level:
-            return False  # the end of the ladder, or what the viewer asked for
-        self._move_to(stepped, lighter)
+    def _narrow(self, typical: float, now: float) -> bool:
+        """Every judged round over the budget: to the next level that really sends a narrower picture
+        (a screen narrower than a rung sends one picture for several), if that is predicted to help;
+        False when none is lighter, or the link is far, not full, and a narrower picture buys nothing."""
+        width = self.sizing(self.screen_width)[0]
+        narrower = next((at for at in range(self._at + 1, len(self.levels))
+                         if self.sizing(self.screen_width, self.levels[at])[0] < width), None)
+        if narrower is None or self.predicted(self.levels[narrower], typical) > typical * self.settings.gain:
+            return False
+        again = now - self._stepped_at < self.settings.retry_max_seconds and self._sharpened_last
+        self._retry = min(self._retry * 2, self.settings.retry_max_seconds) if again else self.settings.retry_seconds
+        self._refused[self._at] = now + self._retry
+        self._narrowed_from = (self._at, self._at_level[-1])
+        self._move_to(narrower)
         return True
 
-    def _move_to(self, spec: ScreenSpec, lighter: bool) -> None:
-        self.spec = spec
+    def _far(self, wider: int, wider_ms: float, typical: float) -> None:
+        """A narrower picture came back no faster: the link moved farther than the floor knew. The
+        wider picture returns, and the floor restarts from these rounds, so the next judgment
+        predicts with the link's new distance instead of narrowing again."""
+        logger.info("screen: %dpx came back no faster than %dpx (%.0f ms against %.0f): the link is far, not full",
+                    self.sizing(self.screen_width)[0], self.sizing(self.screen_width, self.levels[wider])[0], typical, wider_ms)
+        now, width = self.clock(), self.sizing(self.screen_width)[0]
+        self._recent = deque((now, round_ms, width) for round_ms in self._at_level)
+        self._refused.pop(wider, None)
+        self._move_to(wider)
+
+    def lighten(self) -> bool:
+        """One step narrower now (a frame too big to send); False at the lightest."""
+        if self._at == len(self.levels) - 1:
+            return False
+        self._move_to(self._at + 1)
+        return True
+
+    def _move_to(self, at: int) -> None:
+        lighter = at > self._at
+        self._at = at
         self._at_level.clear()
-        self._easy, self._stepped_at, self._sharpened_last = 0, self.clock(), not lighter
+        self._stepped_at, self._sharpened_last = self.clock(), not lighter
         self.lightened += 1 if lighter else 0
         self.sharpened += 0 if lighter else 1
-        logger.info("screen: %s to %dpx q%d", "narrowed" if lighter else "sharpened", spec.width, spec.quality)
+        logger.info("screen: %s to %dpx q%d", "narrowed" if lighter else "sharpened", self.sizing(self.screen_width)[0], self.spec.quality)
 
 
 class ScreenSession:
@@ -212,8 +305,6 @@ class ScreenSession:
     IDLE_SECONDS: ClassVar[float] = 2.0
     #: How many timings each step keeps for its percentiles (~30 s at 10 fps).
     SAMPLES: ClassVar[int] = 300
-    #: A grab this close to the asked width is sent as it is (see `narrowed`).
-    NEAR_ENOUGH: ClassVar[float] = 1.2
     #: Typed text goes out this many characters at a time, the view's end checked between them: a
     #: long paste (8,000 characters at 20 ms each) kept typing for minutes after Stop.
     TYPE_CHUNK: ClassVar[int] = 16
@@ -239,6 +330,8 @@ class ScreenSession:
         self.frames: dict[int, ScreenFrame] = {}
         self._allowance: ScreenAllowance | None = None
         self._digest = b""
+        #: The width of the last grab: what the ladder sizes every level from.
+        self._screen_width = self.spec.width
         self._sent_at = 0.0
         self._checked_switch = 0.0
         self._grabs: deque[float] = deque(maxlen=self.SAMPLES)
@@ -306,6 +399,7 @@ class ScreenSession:
         if digest == self._digest and idle:
             self.stats = self.stats.model_copy(update={"unchanged": self.stats.unchanged + 1})
             return None
+        self._screen_width = image.width
         narrowed = self.narrowed(image)
         scale = narrowed.width / image.width
         image = narrowed
@@ -335,16 +429,14 @@ class ScreenSession:
         return frame
 
     def narrowed(self, image: Image.Image) -> Image.Image:
-        """`image` no wider than the spec asks, by whole-number reduction (`Image.reduce`): on this
-        machine a 1920-wide grab for a 1280 ceiling costs 4.1 ms this way against 19.2 ms for a
-        resize to exactly 1280 — and the smaller picture is 31 KB against 47 KB. The frame carries
-        the size and scale it really has, so a viewer never assumes the width it asked for.
-
-        A grab already within `NEAR_ENOUGH` of the ceiling is sent as it is: reducing a 1366-wide
-        screen for a 1280 ceiling would halve it to 683 to save a few kilobytes."""
-        if image.width <= self.spec.width * self.NEAR_ENOUGH:
-            return image
-        return image.reduce(math.ceil(image.width / self.spec.width))
+        """`image` at the width the ladder's level sends from it (`QualityLadder.sizing`): reduced by a
+        whole number where that lands on the rung, else resized to it. The frame carries the size and
+        scale it really has, so a viewer never assumes the width it asked for."""
+        width, factor = self.ladder.sizing(image.width)
+        if factor is not None:
+            return image if factor == 1 else image.reduce(factor)
+        # Bilinear with a reducing gap: Pillow reduces by whole numbers first, then filters the rest.
+        return image.resize((width, round(image.height * width / image.width)), Image.Resampling.BILINEAR, reducing_gap=2.0)
 
     def _pointer(self, rect: dict[str, int], scale: float) -> dict[str, int | None]:
         """Where this computer's pointer is, in the frame's own pixels — the capture APIs leave the
@@ -372,7 +464,7 @@ class ScreenSession:
         """What the link really took for the last frame (out → its ack back), from the transport that
         sent it: the only number that includes the network. The ladder decides the next step."""
         self._sends.append(send_ms)
-        self.ladder.measured(send_ms)
+        self.ladder.measured(send_ms, self._screen_width)
         self.stats = self.stats.model_copy(update={"send": Timing.of(list(self._sends))})
         self._count_steps()
 

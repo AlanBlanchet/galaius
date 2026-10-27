@@ -11,6 +11,7 @@ computer for real is marked `desktop`.
 """
 
 import asyncio
+import math
 import time
 from datetime import UTC, datetime, timedelta
 
@@ -141,9 +142,28 @@ class _Clock:
         return self.now
 
 
+class _Link:
+    """A link as the ladder meets it: `floor_ms` of distance every round plus the picture's own time,
+    `picture_ms` for a 1280-wide one and in proportion to its pixels. The clock moves by each round,
+    paced to the 10 frames a second the viewer asks for; `rounds` returns the widths sent."""
+
+    def __init__(self, ladder: QualityLadder, clock: _Clock, floor_ms: float, picture_ms: float, screen: int = 1920) -> None:
+        self.ladder, self.clock, self.floor_ms, self.picture_ms, self.screen = ladder, clock, floor_ms, picture_ms, screen
+
+    def rounds(self, n: int) -> list[int]:
+        sent = []
+        for _ in range(n):
+            width = self.ladder.sizing(self.screen)[0]
+            round_ms = self.floor_ms + self.picture_ms * (width / 1280) ** 2
+            self.clock.now += max(round_ms, 100) / 1000
+            self.ladder.measured(round_ms, self.screen)
+            sent.append(width)
+        return sent
+
+
 def _rounds(ladder: QualityLadder, ms: float, n: int) -> None:
     for _ in range(n):
-        ladder.measured(ms)
+        ladder.measured(ms, 1920)
 
 
 def _level(ladder: QualityLadder) -> tuple[int, int]:
@@ -160,56 +180,75 @@ def ladder(clock) -> QualityLadder:
     return QualityLadder(ScreenSpec(width=1280, quality=55, max_fps=10), clock=clock)
 
 
-def test_a_full_link_narrows_the_picture_and_gets_it_back_once_it_clears(ladder, clock):
-    """Bytes are what make this link slow (300 ms rounds at 1280, 110 ms at 960): it narrows, holds
-    the narrower level while that is what fits, and sharpens once the link clears and the refused
-    level's wait is over — never before."""
-    _rounds(ladder, 300, QualityLadder.STEP_ROUNDS)
-    assert _level(ladder) == (960, 45) and ladder.lightened == 1
-    _rounds(ladder, 110, QualityLadder.STEP_ROUNDS * 3)
-    assert _level(ladder) == (960, 45), "a narrower picture that came back faster stays"
+@pytest.mark.parametrize("floor_ms, fits_while_full", [(10, 720), (70, 480), (90, 480), (220, 480)],
+                         ids=["lan-10ms", "phone-70ms", "phone-under-load-90ms", "far-link-220ms"])
+def test_a_full_link_narrows_and_climbs_back_to_the_top_once_it_clears(ladder, clock, floor_ms, fits_while_full):
+    """Bytes are what make this link slow while it is full (a 1280 picture costs 400 ms on it): the
+    picture narrows rung by rung to one that fits, and once the link clears it climbs back to 1280
+    within the refused levels' retry wait — 960 on the way both ways. A phone's distance used to hold it
+    narrow: « easy » was a fixed 90 ms, which a picture 90 ms away never is; and a far link, whose
+    distance alone is over the budget, climbs back too, as narrowing does not pay there."""
+    link = _Link(ladder, clock, floor_ms, picture_ms=40)
+    assert link.rounds(50)[-4:] == [1280] * 4, "a clear link keeps the sharpest picture"
 
-    _rounds(ladder, 40, QualityLadder.EASY_FRAMES * 2)
-    assert _level(ladder) == (960, 45), "the level the link refused waits out its retry"
-    clock.now += QualityLadder.RETRY_SECONDS + 1
-    _rounds(ladder, 40, QualityLadder.EASY_FRAMES)
-    assert _level(ladder) == (1280, 55) and ladder.sharpened == 1
-    _rounds(ladder, 1, QualityLadder.EASY_FRAMES * 2)
-    assert _level(ladder) == (1280, 55), "never sharper than the viewer asked for"
+    link.picture_ms = 400
+    down = link.rounds(40)
+    assert ladder.spec.width == fits_while_full and 960 in down
+
+    link.picture_ms = 40
+    up = link.rounds(100)  # 10 s at 10 frames a second: the first retry wait, then a rung per judgment
+    assert up[-1] == 1280 and 960 in up, up
+    assert up.index(1280) <= ladder.settings.retry_seconds * 10 + 3 * ladder.settings.judged_rounds
 
 
-@pytest.mark.parametrize("round_ms", [113, 220], ids=["phone-35ms-each-way", "far-link-220ms"])
-def test_a_link_slow_by_distance_keeps_the_sharp_picture(ladder, round_ms):
-    """A phone's link costs ~70 ms of distance before a byte of picture: narrowing buys nothing
-    there. Under the round budget the picture never moves; over it, one narrowing is tried, seen
-    to come back no faster, and undone — the 1280 view no longer sinks to 427 px."""
-    _rounds(ladder, round_ms, QualityLadder.STEP_ROUNDS * 10)
-    _rounds(ladder, round_ms - 5, QualityLadder.STEP_ROUNDS)  # what a narrower picture saves there
-    _rounds(ladder, round_ms, QualityLadder.STEP_ROUNDS * 10)
+def test_a_screen_narrower_than_the_rungs_still_narrows_on_a_full_link(ladder, clock):
+    """On a 1024-wide screen the 1280 and 960 rungs send one 1024 picture: a full link skips to the
+    first rung that is really narrower instead of stopping at the one that changes nothing."""
+    link = _Link(ladder, clock, 70, picture_ms=400, screen=1024)
+    assert 720 in link.rounds(40)
+
+
+@pytest.mark.parametrize("floor_ms", [70, 113, 220], ids=["phone-35ms-each-way", "phone-under-load", "far-link-220ms"])
+def test_a_link_slow_by_distance_keeps_the_sharp_picture(ladder, clock, floor_ms):
+    """Distance before a byte of picture is what makes these rounds long: narrowing buys nothing, so
+    the 1280 view stays — over the budget, one narrowing a minute is tried and undone (the old ladder
+    walked it down to 427 px)."""
+    _Link(ladder, clock, floor_ms, picture_ms=30).rounds(200)
     assert _level(ladder) == (1280, 55)
-    assert ladder.lightened <= 1
+    assert ladder.lightened <= math.ceil((clock.now - 1000) / ladder.settings.floor_seconds), ladder.lightened
+
+
+def test_a_link_that_moved_farther_is_narrowed_once_and_given_back(ladder, clock):
+    """A phone hands over from Wi-Fi (10 ms) to a far cell (220 ms): the floor still remembers 10 ms,
+    so one narrowing is tried, seen to come back no faster, undone — and not tried again."""
+    link = _Link(ladder, clock, 10, picture_ms=30)
+    link.rounds(50)
+    link.floor_ms = 220
+    link.rounds(200)  # ~50 s: within the minute the learned distance holds
+    assert _level(ladder) == (1280, 55) and ladder.lightened == 1
 
 
 def test_one_late_frame_is_jitter_not_a_slow_link(ladder):
     for _ in range(20):
-        _rounds(ladder, 60, QualityLadder.STEP_ROUNDS - 1)
-        ladder.measured(900)
+        _rounds(ladder, 60, ladder.settings.judged_rounds - 1)
+        ladder.measured(900, 1920)
     assert _level(ladder) == (1280, 55) and ladder.lightened == 0
 
 
 def test_a_link_on_the_edge_of_a_level_stops_flipping(ladder, clock):
-    """960 fits, 1280 does not: each try at 1280 it refuses doubles the wait before the next one
-    (5, 10, 20 s…), where the old ladder flipped 960 ↔ 1280 about once a second."""
-    _rounds(ladder, 300, QualityLadder.STEP_ROUNDS)
+    """960 fits, 1280 does not, and by far more than its pixels say (the prediction is wrong for this
+    link): each try at 1280 it refuses doubles the wait before the next one (5, 10, 20 s…), where the
+    old ladder flipped 960 ↔ 1280 about once a second."""
+    _rounds(ladder, 300, ladder.settings.judged_rounds)
     waits = []
     for _ in range(4):
         waited = 0.0
         while _level(ladder) != (1280, 55):
             clock.now += 0.1
             waited += 0.1
-            ladder.measured(40)
+            ladder.measured(40, 1920)
         waits.append(round(waited))
-        _rounds(ladder, 300, QualityLadder.STEP_ROUNDS)
+        _rounds(ladder, 300, ladder.settings.judged_rounds)
         assert _level(ladder) == (960, 45)
     assert waits == sorted(waits) and waits[-1] >= 4 * waits[0], waits
 
@@ -325,16 +364,21 @@ async def test_a_viewer_that_went_away_ends_the_stream_without_the_server(tmp_pa
 
 
 @pytest.mark.parametrize("native, asked, sent, scale", [
-    pytest.param(1920, 1280, 960, 0.5, id="a-1080p-screen-for-a-1280-ceiling"),
+    pytest.param(1920, 1280, 1280, 2 / 3, id="a-1080p-screen-resized-to-the-rung"),
+    pytest.param(1920, 960, 960, 0.5, id="a-1080p-screen-halved-onto-960"),
     pytest.param(2560, 1280, 1280, 0.5, id="a-1440p-screen-hits-it-exactly"),
     pytest.param(3840, 1280, 1280, 1 / 3, id="a-4k-screen-thirds"),
     pytest.param(1366, 1280, 1366, 1.0, id="already-near-enough-is-sent-as-it-is"),
     pytest.param(1280, 1920, 1280, 1.0, id="never-stretched-past-its-own-pixels"),
+    pytest.param(1280, 960, 960, 0.75, id="960-on-a-1280-screen-not-640"),
+    pytest.param(1280, 720, 720, 0.5625, id="720-on-a-1280-screen-its-own-picture"),
+    pytest.param(1280, 480, 480, 0.375, id="480-on-a-1280-screen-not-427"),
 ])
-def test_a_frame_is_narrowed_by_whole_numbers_and_says_the_size_it_really_is(tmp_path, native, asked, sent, scale):
-    """Whole-number reduction instead of a resize to the exact width asked: 4.1 ms against 19.2 ms
-    per frame on this machine. Nothing downstream assumes the width it asked for — the frame
-    carries its own size and scale, and a click maps through those."""
+def test_every_rung_sends_its_own_width_and_the_frame_says_the_size_it_really_is(tmp_path, native, asked, sent, scale):
+    """Each rung of the ladder is its own picture, so each is reachable both ways: whole-number
+    reduction where it lands on the rung (~1-2 ms), a resize where it would not (reduction sent 960
+    and 720 on a 1280 screen as one 640 picture). Nothing downstream assumes the width it asked for —
+    the frame carries its own size and scale, and a click maps through those."""
     grabber = FakeGrabber(rect={"left": 0, "top": 0, "width": native, "height": round(native * 9 / 16)})
     session = _session(tmp_path, spec=ScreenSpec(width=asked), grabber=grabber)
 
