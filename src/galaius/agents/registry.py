@@ -437,6 +437,9 @@ class AgentRun(ContextGauge):
     #: The subscription every turn and child of this run runs on (`galaius.agents.subscriptions`);
     #: None: this PC's default login.
     subscription: RunSubscription | None = None
+    #: A move asked while a turn worked (his pick in a conversation, `RunMove.resume` False): made once that turn ended,
+    #: before its next one starts (`carry_held`); None once made, refused or asked back.
+    pending_move: RunSubscription | None = None
     #: The vendor login this run's provider authenticated as, as the launch read it (`run.py`'s auth
     #: cache); "" when that CLI tells none apart. Recorded because a model the vendor refuses is a fact
     #: about the LOGIN, and a refusal heard after the launch (`_remember_vendor_refusal`) has nothing
@@ -1644,8 +1647,50 @@ def repin(run_id: str, subscription: RunSubscription, fence: FenceSpec | None, u
         stored = _read_record(run_id)
         if stored is None or stored.subscription is None or stored.subscription.subscription_id is None or stored.status in {"running", "waiting"}:
             return None
-        return _merge_record_locked(run_id, {"subscription": subscription.model_dump(mode="json"),
+        return _merge_record_locked(run_id, {"subscription": subscription.model_dump(mode="json"), "pending_move": None,
                                              "fence": fence.model_dump(mode="json") if fence is not None else None, "usage_from": usage_from})
+
+
+def carry(run: AgentRun, pinned: RunSubscription) -> AgentRun:
+    """Stopped `run`'s session carried to subscription `pinned`'s folder and the run pinned to it from now on (contract A9);
+    a fenced run's session already sits in its own state folder. Refused: on this PC's own login, at a cap, another
+    provider's login, or started again meanwhile."""
+    if run.subscription is None or run.subscription.subscription_id is None:
+        raise SubscriptionRefused("pinned_elsewhere", "this run runs on this PC's own login (or lent): it never moves to a subscription")
+    pinned.check()
+    source, target = Subscription.of(run.subscription.subscription_id), Subscription.of(pinned.subscription_id)
+    if target.provider != source.provider:
+        raise SubscriptionRefused("pinned_elsewhere", f"subscription {target.id} is a {target.provider} login, not {source.provider}: a session never moves between them")
+    session = run.provider_session_id or run.run_id
+    if run.fence is None:
+        source.carry_session(target, Path(run.cwd), session)
+    fence = run.fence.rehomed(pinned.homes()) if run.fence is not None else None
+    # Its usage is read on from here only: the readings already in its stream and session record are the old login's.
+    home = run.fence.state / target.provider if run.fence is not None else target.folder
+    files = (raw_events_path(run.run_id), *target.program.session_files(home, Path(run.cwd), session))
+    moved = repin(run.run_id, pinned, fence, {str(path): path.stat().st_size for path in files if path.is_file()})
+    if moved is None:
+        raise PermissionError("this run started again meanwhile: it stays on its subscription")
+    return moved
+
+
+def hold_move(run_id: str, pinned: RunSubscription | None) -> AgentRun | None:
+    """The move `carry_held` makes once run `run_id`'s turn ended (None: the one held, dropped)."""
+    return _update_fields(run_id, {"pending_move": pinned.model_dump(mode="json") if pinned is not None else None})
+
+
+def carry_held(run_id: str) -> AgentRun | None:
+    """Run `run_id` between turns, with the move held for it made (`hold_move`); one refused now is dropped and said in
+    the log, the run staying where it was."""
+    with record_lock(run_id):  # read and carried whole: its turn's end and its dispatcher never both copy the session
+        run = get_run(run_id)
+        if run is None or run.pending_move is None or run.status in {"running", "waiting"}:
+            return run
+        try:
+            return carry(run, run.pending_move)
+        except (SubscriptionRefused, PermissionError, OSError) as error:
+            log.warning("held move of %s to subscription %s refused: %s", run_id[:8], run.pending_move.subscription_id, error)
+            return hold_move(run_id, None) or run
 
 
 def ancestor_run() -> AgentRun | None:

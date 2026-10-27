@@ -126,8 +126,9 @@ class FollowUps(BaseModel):
         """Once a turn of run `run_id` ended: a message still waiting (sent while it worked, and not
         handed to that turn) opens the next turn now, never left waiting for a dispatcher that may
         not run; else keep its next turn started ahead, when it can be (`_resumable`), while no
-        other turn of it begins (another sender's message, through its dispatcher)."""
-        run = await asyncio.to_thread(reg.get_run, run_id)
+        other turn of it begins (another sender's message, through its dispatcher). A move held for it while it worked
+        (his pick in a conversation) is made first: that next turn runs on the subscription he picked."""
+        run = await asyncio.to_thread(reg.carry_held, run_id)
         if run is None:
             return
         if (waiting := await asyncio.to_thread(self._waiting, run_id)) is not None:

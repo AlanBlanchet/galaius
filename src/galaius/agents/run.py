@@ -1139,7 +1139,9 @@ def launch_continuation(
     raw_index: int,
     record_locked: bool = False,
 ) -> ContinuationHandle:
-    """Spawn one resumed turn and start its reaper before returning to a caller."""
+    """Spawn one resumed turn and start its reaper before returning to a caller; a move held for `run` while its last
+    turn worked (`registry.hold_move`) is made first."""
+    run = reg.carry_held(run.run_id) or run
     restore_folder(run, provider, session_id, {**Caller.environ(), **(run.subscription.overlay() if run.subscription is not None else {})}, record_locked=record_locked)
     launch = ResumeLaunch.of(provider, run, session_id, model=model, criterion=criterion, reasoning=reasoning)
     argv, stdin = carried(provider, message, launch.command, lambda: provider.resume_ahead_command(session_id, **launch.arguments))
