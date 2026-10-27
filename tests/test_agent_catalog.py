@@ -40,7 +40,7 @@ from galaius.cli import app_commands
 CONVERSATIONS = [f"mcp__galaius__{name}" for name in CONVERSATION_TOOLS]
 
 
-def snapshot(version=1, tools=None, unrestricted=False):
+def snapshot(version=1, tools=None, unrestricted=False, **worker_fields):
     prompts = tuple(PromptRevision(
         key=PromptKey(namespace="fixture", slug=slug), revision=uuid4(),
         content=f"{slug} instruction revision {version}",
@@ -53,7 +53,7 @@ def snapshot(version=1, tools=None, unrestricted=False):
         prompt=refs[0], paradigms=(refs[1], refs[2]), skill_paradigms=(refs[3],),
         criteria=f"price.in >= {version}", reasoning="high" if version == 1 else "low",
         criteria_weights="gui.screenspot=1", harness_tools=None if unrestricted else tools if tools is not None else (("Read",) if version == 1 else ("Write",)),
-        resources=(), created_at=datetime.now(UTC),
+        resources=(), created_at=datetime.now(UTC), **worker_fields,
     )
     lead = AgentRevision(
         id=uuid4(), revision=uuid4(), name="Fixture lead", role_key="fixture-lead", prompt=refs[0],
@@ -120,6 +120,21 @@ def catalog_transport(value, status=200):
         assert request.headers["Cookie"] == "session=fixture-cookie"
         return httpx.Response(status, content=value.model_dump_json())
     return httpx.MockTransport(respond)
+
+
+@pytest.mark.parametrize(("department", "own", "compact_at"), [
+    ("quality", None, 120_000),       # a critic: its department's point
+    ("quality", 150_000, 150_000),    # its catalog revision's own value wins
+    ("engineering", None, 200_000),   # a maker: Config.agent_compact_at
+    (None, None, 200_000),
+])
+def test_a_role_compacts_at_its_own_point_else_its_department_s(catalog_home, department, own, compact_at):
+    """Critics and reviewers (catalog department `quality`) compact at 120k with no value set on each role
+    (owner 2026-10-26: makers around 200k, critics around 120k)."""
+    value = snapshot(1, department=department, compact_at=own)
+    connection = CatalogConnection(endpoint="http://127.0.0.1:8767", auth_mode="preview", workspace_id=uuid4())
+    policy = Policy.from_catalog(AgentCatalog.refresh(connection, transport=catalog_transport(value)))
+    assert policy.compact_at_for("fixture-worker") == compact_at
 
 
 def test_server_revisions_replace_prompt_policy_skills_and_team(catalog_home):

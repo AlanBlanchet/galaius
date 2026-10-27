@@ -15,6 +15,7 @@ from galaius import brief_hook, inbox_hook
 from galaius.agents import agent_queue, messaging
 from galaius.agents import run as agent_run
 from galaius.agents import registry as reg
+from galaius.agents.catalog_connection import CatalogAuthenticationError, CatalogConnectionError
 from galaius.agents.policy import Policy
 from galaius.agents.providers import ClaudeCodeProvider, ClaudeTurnSettings
 from galaius.cli.app_commands import agents_work_for
@@ -59,6 +60,7 @@ def _setup(monkeypatch, provider=None):
     # Delivery tests run the same dispatcher entry point in-process. The child process itself is
     # still real: launch_continuation uses Popen and its reaper owns waitpid/finish.
     monkeypatch.setattr(agent_queue, "ensure_dispatcher_locked", lambda *args, **kwargs: 1)
+    monkeypatch.setattr(agent_queue, "RESUME_BACKOFF", (0.01, 0.02))
     reg.register(
         run_id="r1", pid=999999, provider=provider.name, name="worker", task="t",
         agent="tester", provider_session_id="vendor",
@@ -155,7 +157,7 @@ def test_a_turn_handed_over_on_another_revision_starts_on_it_and_the_run_stays_t
 
     def fresh_policy(run):
         resolved.append(run.agent_ref)
-        raise ValueError("stop at the launch")
+        raise agent_run.ModelUnavailable("stop at the launch")
 
     monkeypatch.setattr(agent_queue, "_fresh_policy", fresh_policy)
     messaging.deliver_message("r1", "the task", sender="operator", turn=agent_queue.MessageTurn(agent_ref=revision))
@@ -202,30 +204,73 @@ def test_failed_resume_records_bounded_redacted_stderr(monkeypatch):
     assert "exited 7" in (messaging.wait_for_start(delivery, timeout=1) or "")
 
 
-def test_a_resume_the_dispatcher_cannot_start_fails_the_run_and_the_sender_hears_why(monkeypatch):
-    """A message to an ENDED run used to be accepted ("Queued", exit 0) while the detached dispatcher's
-    policy / catalog / provider step failed in silence: the queue item alone read failed, the run stayed
-    done, the web showed the message as delivered forever. Now the run itself fails with the reason and
-    the sender, waiting a few seconds for the start, hears it."""
+def _listed(run_id: str) -> str:
+    return next(item for item in reg.list_runs() if item.run_id == run_id).status
+
+
+def _dispatched_here(run_id: str) -> None:
+    """Record this test process as the run's live dispatcher, as `ensure_dispatcher_locked` records the PC's hub."""
+    from galaius.processes import process_started
+    with reg.record_lock(run_id):
+        agent_queue._set_dispatcher_locked(run_id, os.getpid(), "test-hub", process_started(os.getpid()))
+
+
+@pytest.mark.parametrize(("error", "tries"), [
+    (RuntimeError("the provider CLI could not be started: Resource temporarily unavailable"), 3),  # passing: tried 3 times
+    (agent_run.ModelUnavailable("catalog access refused (HTTP 401); cached access is disabled"), 1),  # waiting changes nothing
+], ids=["passing", "permanent"])
+def test_a_resume_the_dispatcher_cannot_start_fails_the_run_once_after_its_last_try(monkeypatch, error, tries):
+    """A message to an ENDED run used to be accepted while the dispatcher's policy / catalog / provider step failed in
+    silence (the run stayed done), then failed the run at the FIRST refusal (owner 2026-10-26: « i should have no buttons
+    to press and it sohuld simply work »). This PC now tries again by itself, the run reading at work through every try;
+    it fails, once, with the reason the sender hears, only after its last try — at once for a refusal waiting cannot change."""
     _setup(monkeypatch)
+    seen: list[str] = []
 
     def refused(run):
-        raise RuntimeError("catalog access refused (HTTP 401); cached access is disabled")
+        seen.append(_listed("r1"))
+        raise error
 
     monkeypatch.setattr(agent_queue, "_fresh_policy", refused)
     delivery = messaging.deliver_message("r1", "wake up", sender="operator")
-    assert delivery.state == "queued"
+    _dispatched_here("r1")
 
     agent_queue.dispatch("r1")
 
+    assert seen == ["starting"] * tries
     run = reg.get_run("r1")
     assert run is not None and run.status == "failed" and run.exit_code == 1
-    assert run.last == "resume refused: catalog access refused (HTTP 401); cached access is disabled"
-    assert reg.read_events("r1")[-1].text == run.last
+    assert run.last == f"resume refused: {error}"
+    assert [event.text for event in reg.read_events("r1") if event.kind == "error"] == [run.last]
     assert agent_queue.items("r1")[0].state == "failed"
-    assert "catalog access refused" in (messaging.wait_for_start(delivery, timeout=1) or "")
+    assert str(error) in (messaging.wait_for_start(delivery, timeout=1) or "")
     # The failure is the run's own now: a later list read (`_derive`) keeps it failed.
-    assert next(item for item in reg.list_runs() if item.run_id == "r1").status == "failed"
+    assert _listed("r1") == "failed"
+
+
+def test_a_resume_that_could_not_start_twice_starts_on_its_third_try_and_the_run_never_fails(monkeypatch):
+    """Two refused starts, then one that starts: ONE turn, the message replied, the run never read failed or ended in
+    between — at work from the message on (`starting`), through both pauses."""
+    provider = _setup(monkeypatch)
+    fresh, seen = agent_queue._fresh_policy, []
+
+    def flaky(run):
+        seen.append(_listed("r1"))
+        if len(seen) < 3:
+            raise OSError("fork: Resource temporarily unavailable")
+        return fresh(run)
+
+    monkeypatch.setattr(agent_queue, "_fresh_policy", flaky)
+    messaging.deliver_message("r1", "wake up", sender="operator")
+    _dispatched_here("r1")
+
+    agent_queue.dispatch("r1")
+
+    assert seen == ["starting"] * 3 and provider.messages == ["wake up"]
+    (item,) = agent_queue.items("r1")
+    assert (item.state, item.attempts, item.not_before) == ("replied", 2, None)
+    assert not [event for event in reg.read_events("r1") if event.kind == "error"]
+    assert _listed("r1") == "done"
 
 
 def test_separate_process_enqueue_calls_are_serialized(monkeypatch, tmp_path):
@@ -305,6 +350,7 @@ def test_crash_after_queue_intent_leaves_recoverable_bounded_failure(monkeypatch
     script = """
 import os
 from galaius.agents import messaging, registry
+from galaius.agents.catalog_connection import CatalogAuthenticationError, CatalogConnectionError
 from galaius.agents.policy import Policy
 from tests.support.agents import ScriptedProvider
 
@@ -390,9 +436,10 @@ _DONE = {"type": "result", "subtype": "success", "is_error": False, "session_id"
 _LIMIT = "You've hit your session limit · resets 11pm (Europe/Paris)"
 #: How resumed turns ended in this PC's queue files (2026-10-13..20), and what their message reads once settled.
 ATTEMPTS = {
-    # 32 « resumed provider exited 1 » with nothing said, 7 of them before any result: sent once more, once.
+    # 32 « resumed provider exited 1 » with nothing said, 7 of them before any result: tried again, three tries in all.
     "died saying nothing, then replied": ([_stream(code=1), _stream(_TEXT, _DONE)], "replied", 2),
-    "died twice": ([_stream(code=1), _stream(code=1)], "failed", 2),
+    "died twice, then replied": ([_stream(code=1), _stream(code=1), _stream(_TEXT, _DONE)], "replied", 3),
+    "died three times": ([_stream(code=1)] * 3, "failed", 3),
     # 13 refused by the plan's limit: sending again before the reset is refused again.
     "usage limit": ([_stream({"type": "assistant", "session_id": "vendor", "message": {"model": "<synthetic>", "content": [{"type": "text", "text": _LIMIT}]}},
                              {**_DONE, "is_error": True, "result": _LIMIT}, code=1)], "failed", 1),
@@ -417,11 +464,17 @@ def test_a_message_is_sent_once_more_only_when_its_turn_died_before_answering(mo
 
     provider = _setup(monkeypatch, Provider())
     delivery = messaging.deliver_message("r1", "do it", sender="operator")
+    _dispatched_here("r1")
+    between, hand_on = [], agent_queue._hand_on_locked
+    monkeypatch.setattr(agent_queue, "_hand_on_locked", lambda run_id: between.append(_listed(run_id)) or hand_on(run_id))
     agent_queue.dispatch("r1")
 
     [item] = agent_queue.items("r1")
     assert (item.state, len(provider.messages)) == (state, launched), item.error
     assert item.attempts == launched - 1 and delivery.state == "queued"
+    # At work between tries, never failed before the last one; how the last one ended is the run's.
+    assert between == ["starting"] * (launched - 1)
+    assert _listed("r1") != "starting" and (state != "failed" or _listed("r1") == "failed")
 
 
 def test_a_failed_resume_records_the_providers_own_last_words(monkeypatch):
@@ -619,17 +672,16 @@ def test_a_dispatcher_is_trusted_only_while_the_recorded_process_lives():
 
 
 def test_every_agent_turn_runs_under_galaius_settings_and_gets_its_task_back_after_a_compaction(monkeypatch, tmp_path):
-    """First turn and resumed turn alike: the configured compaction window and Bash output as `--settings` (which beat
+    """First turn and resumed turn alike: the role's compaction point and Bash output as `--settings` (which beat
     the user's own on 2.1.288), and a `SessionStart` hook that hands a compacted conversation its recorded task back
     (cut, saying so, past `LIMIT`) with the launch note saying what it is; a session that merely starts or resumes gets nothing. An editor conversation's
     turn carries none of it: the owner's own settings apply. A fenced run gets no brief: its record is out of reach there;
     an unreadable record says so and fails the hook, which the CLI records and goes past."""
     monkeypatch.setattr(reg, "active_interpreter", lambda: sys.executable)
-    monkeypatch.setattr(agent_run, "config", Config(claude_compact_window=300_000))
     task = "- fix the footer"
     reg.register(run_id="r3", pid=os.getpid(), provider="claude", name="worker", task=task, agent="tester")
     provider = ClaudeCodeProvider()
-    turn = agent_run.AheadLaunch.turn_arguments(provider, "r3", None, role="tester")
+    turn = agent_run.AheadLaunch.turn_arguments(provider, "r3", None, role="tester", compact_at=267_000)
     first = provider.command("t", cwd=str(tmp_path), model=None, mcp_config=None, run_id="r3", **turn)
     resumed = provider.resume_command("r3", "go on", **turn)
     settings = [json.loads(argv[argv.index("--settings") + 1]) for argv in (first, resumed)]
@@ -649,16 +701,17 @@ def test_every_agent_turn_runs_under_galaius_settings_and_gets_its_task_back_aft
     lost = session_start("compact", check=False)
     assert (lost.returncode, lost.stdout) == (1, "") and "unreadable" in lost.stderr
     fence = FenceSpec(working_directory=tmp_path, levels={"work": "write"}, start=tmp_path, state=tmp_path / "state")
-    assert agent_run.AheadLaunch.turn_arguments(provider, "r3", fence, role="tester")["turn"].brief_hook is None
+    assert agent_run.AheadLaunch.turn_arguments(provider, "r3", fence, role="tester", compact_at=267_000)["turn"].brief_hook is None
 
 
-def test_an_agent_turn_compacts_where_claude_code_itself_would(monkeypatch):
-    """Unconfigured, galaius sends `autoCompactWindow` 1000000: on 2.1.288 the CLI then compacts a 1M-token model at 967k and
-    a 200k one at 167k, as with no setting at all, while the owner's own `autoCompactWindow` stays out of agent runs."""
-    monkeypatch.setattr(agent_run, "config", Config())
-    reg.register(run_id="w1", pid=os.getpid(), provider="claude", name="worker", task="t", agent="app-engineer")
-    turn = agent_run.AheadLaunch.turn_arguments(ClaudeCodeProvider(), "w1", None, role="app-engineer")["turn"]
-    assert json.loads(turn.arguments()[turn.arguments().index("--settings") + 1])["autoCompactWindow"] == 1_000_000
+@pytest.mark.parametrize(("role", "compact_at"), [("visual-critic", 120_000), ("app-engineer", 200_000), (None, 200_000)])
+def test_an_agent_turn_compacts_at_its_role_s_point(role, compact_at):
+    """A role's own or its department's `compact_at` (a critic's 120k), else `Config.agent_compact_at` (200k; a run with no role too), becomes
+    Claude Code's `autoCompactWindow` plus the reserve it keeps: probed 2.1.288, window 153000 → `autoCompactThreshold`
+    120000. Never Claude Code's own 967k on a 1M model (2026-10-26: half a day's subscription in hours)."""
+    policy = Policy(compact_at={"visual-critic": 120_000})
+    turn = agent_run.AheadLaunch.turn_arguments(ClaudeCodeProvider(), "w1", None, role=role, compact_at=policy.compact_at_for(role))["turn"]
+    assert json.loads(turn.arguments()[turn.arguments().index("--settings") + 1])["autoCompactWindow"] == compact_at + 33_000
 
 
 @pytest.mark.parametrize(("role", "name"), [("app-engineer", "app-engineer-0f9576d3"), (None, "agent-0f9576d3")])
@@ -667,7 +720,7 @@ def test_every_agent_turn_is_named_for_peers_by_its_role_and_run(role, name, tmp
     'app-engineer' found no session: first and resumed turn alike carry `-n` (a resume without it drops the name)."""
     run_id = "0f9576d3-ac91-5243-a254-c2acf1aad6e6"
     provider = ClaudeCodeProvider()
-    turn = agent_run.AheadLaunch.turn_arguments(provider, run_id, None, role=role)
+    turn = agent_run.AheadLaunch.turn_arguments(provider, run_id, None, role=role, compact_at=200_000)
     first = provider.command("t", cwd=str(tmp_path), model=None, mcp_config=None, run_id=run_id, **turn)
     resumed = provider.resume_command(run_id, "go on", **turn)
     assert [argv[argv.index("-n") + 1] for argv in (first, resumed)] == [name, name]
@@ -697,7 +750,7 @@ def test_a_message_to_a_working_run_is_read_after_its_next_own_tool_call_and_set
     # The person's heading opens the context (the trust anchor); where the run stands follows the messages.
     message, card = said["additionalContext"].split("\n\n---\n\n")
     assert said["hookEventName"] == "PostToolUse" and message == f"{heading}\n\nalso check the footer" and card.startswith(CARD_HEADING)
-    assert f"\n{heading}\n" in ClaudeTurnSettings(compact_window=200_000, bash_output_chars=15_000, inbox_hook=hook, name="tester-r2").arguments()[-1] == inbox_hook.NOTE
+    assert f"\n{heading}\n" in ClaudeTurnSettings(compact_at=200_000, bash_output_chars=15_000, inbox_hook=hook, name="tester-r2").arguments()[-1] == inbox_hook.NOTE
     assert tool_call() == "" and [item.state for item in agent_queue.items("r2")] == ["running"] and agent_queue.read_ids("r2") == [sent]
 
     with reg.open_raw_events("r2", append=True) as stream:
@@ -846,3 +899,42 @@ def test_a_turn_waiting_for_a_service_that_never_comes_back_fails_with_its_reaso
     assert seen[0] is None and seen[1:] == ["service"] * (len(seen) - 1) and len(seen) >= 2
     assert (item.state, item.waiting) == ("failed", None) and "cannot be reached" in item.error
     assert reg.get_run("r1").last.startswith("resume refused")
+
+
+def test_a_resume_stopped_in_its_pause_ends_there_and_never_reads_at_work(monkeypatch):
+    """A stop during the pause before another try cancels the message: the run reads its ending, never `starting`."""
+    import threading
+    _setup(monkeypatch)
+    monkeypatch.setattr(agent_queue, "RESUME_BACKOFF", (0.5, 0.5))
+    tries = []
+
+    def refused(run):
+        tries.append(run.run_id)
+        threading.Timer(0.1, reg.stop, args=("r1",), kwargs={"by": None}).start()
+        raise OSError("fork: Resource temporarily unavailable")
+
+    monkeypatch.setattr(agent_queue, "_fresh_policy", refused)
+    messaging.deliver_message("r1", "wake up", sender="operator")
+    _dispatched_here("r1")
+
+    agent_queue.dispatch("r1")
+
+    assert tries == ["r1"] and agent_queue.items("r1")[0].state == "cancelled"
+    assert _listed("r1") in ("done", "stopped")
+
+
+def _wrapped(cause: Exception) -> Exception:
+    """As `policy_for_continuation` raises a catalog or policy error: a `ModelUnavailable` caused by it."""
+    error = agent_run.ModelUnavailable(str(cause))
+    error.__cause__ = cause
+    return error
+
+
+@pytest.mark.parametrize(("error", "permanent"), [
+    (agent_run.ModelUnavailable("No model criterion for 'tester'"), True),
+    (_wrapped(CatalogAuthenticationError("catalog access refused (HTTP 401); cached access is disabled")), True),
+    (_wrapped(CatalogConnectionError("catalog request failed (HTTP 500)")), False),
+    (OSError("fork: Resource temporarily unavailable"), False),
+], ids=["policy-no", "access-refused", "catalog-5xx", "os"])
+def test_only_a_refusal_waiting_cannot_change_is_never_tried_again(error, permanent):
+    assert agent_queue._permanent(error) is permanent

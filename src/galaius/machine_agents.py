@@ -46,6 +46,7 @@ from galaius.agents import agent_queue, quota
 from galaius.agents import registry as reg
 from galaius.agents.assembly import _TransportRegistry
 from galaius.agents.host import ConversationHost, ConversationRefused
+from galaius.agents.session_stops import SessionStops
 from galaius.agents.followup import FollowUps
 from galaius.agents.messaging import deliver_message
 from galaius.agents.providers import PROJECT_SETTINGS_OFF, PROVIDERS, UNTRUSTED_FOLDERS, provider_for
@@ -948,6 +949,7 @@ class MachineAgents(BaseModel):
                         provider_for(request.provider) if request.provider is not None else None, request.text,
                         cwd=str(folder), agent=str(request.role), permission_mode=self.scope(request.permission), image_paths=images,
                         quota_window=4.0, fence=fence, environment=environment, warm=self.warm, subscription=pinned, choices=request,
+                        reasoning=request.reasoning,
                     )
             except BaseException:
                 if review is not None:
@@ -1039,25 +1041,40 @@ class MachineAgents(BaseModel):
 
     async def _send(self, request: AgentSendRequest) -> MachineAgentAnswer:
         run = await asyncio.to_thread(self._pinned_run, request)
+        if request.reasoning is not None and self._kind(request.run_id) != "agent":
+            raise PermissionError("an editor conversation runs at the effort its editor sets; only an agent's is set here")
         media = await asyncio.to_thread(reg.RunMedia.keep, run.run_id, request.images)
         if self._kind(request.run_id) == "continued":
             return await asyncio.to_thread(self._continue_turn, run, request.text, request_id=request.id, media=media)
         if request.text == reg.RESUME_BRIEF:  # his « Continuer »; a message he types waits for the turn it starts
             run.prepare_continue()
+        run = await asyncio.to_thread(reg.carry_held, run.run_id) or run  # a move held for it, its turn ended: made first
         # Answered once the message is durably queued, under the request's id (the same request
         # again finds it there and queues nothing): this runner starts the turn when the run is
         # between turns (`FollowUps`), else its dispatcher resumes the agent; a resume refused after
         # this point is that run's failure, in its events.
         environment = await asyncio.to_thread(self.launcher_environment_in, Path(run.cwd))
         turn = agent_queue.MessageTurn(media=media)
-        if self.followups is not None:
-            followups = self.followups
-            delivery = await AgentSpawns.run(lambda: followups.send(str(request.run_id), request.text, environment=environment, message_id=str(request.id), turn=turn))
-        else:
-            delivery = await asyncio.to_thread(deliver_message, str(request.run_id), request.text, sender=reg.PERSON_SENDER, environment=environment, message_id=str(request.id), turn=turn)
-        if delivery.state == "error":
-            raise RuntimeError(delivery.text.removeprefix("ERROR: ") or "not delivered")
-        return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=delivery.text, reads_at=delivery.reads_at)
+        # Set before the message is queued (the turn it starts reads it), back as it was if the message is not.
+        if request.reasoning is not None:
+            await asyncio.to_thread(reg.reasoning_set, run.run_id, request.reasoning)
+        try:
+            if self.followups is not None:
+                followups = self.followups
+                delivery = await AgentSpawns.run(lambda: followups.send(str(request.run_id), request.text, environment=environment, message_id=str(request.id), turn=turn))
+            else:
+                delivery = await asyncio.to_thread(deliver_message, str(request.run_id), request.text, sender=reg.PERSON_SENDER, environment=environment, message_id=str(request.id), turn=turn)
+            if delivery.state == "error":
+                raise RuntimeError(delivery.text.removeprefix("ERROR: ") or "not delivered")
+        except BaseException:
+            if request.reasoning is not None:
+                await asyncio.to_thread(reg.reasoning_set, run.run_id, run.reasoning_set)
+            raise
+        # The account that turn runs on (a move held for it included): the server's pin follows it.
+        current = await asyncio.to_thread(reg.get_run, run.run_id) or run
+        runs_on = current.pending_move or current.subscription
+        return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=delivery.text, reads_at=delivery.reads_at,
+                                  subscription_id=runs_on.subscription_id if runs_on is not None else None)
 
     async def _compact(self, request: AgentCompactRequest) -> MachineAgentAnswer:
         """Refused by `compact_refusal`, the rule its row says; a session compacts through its host, a queued run as a
@@ -1091,10 +1108,15 @@ class MachineAgents(BaseModel):
         return run
 
     async def _move(self, request: AgentMoveRequest) -> MachineAgentAnswer:
-        """`RunMove`: the stopped run's session carried to the other subscription's folder and resumed there, the run
-        pinned to it from now on (contract A9); a fenced run's session already sits in its own state folder."""
+        """`RunMove`: the run pinned to the other subscription from now on (contract A9), its session carried there
+        (`registry.carry`) and resumed, unless the request does not `resume`: his pick in a conversation, the switch
+        before a turn, made at once on a stopped run, at the end of the turn at work on one working (`_carry`)."""
         run = await asyncio.to_thread(self._require_run, request.run_id)
         moved = await asyncio.to_thread(self._carry, run, request)
+        if not request.resume:
+            said = "its next turn runs there" if moved.pending_move is None else "its next turn runs there, once the one at work ended"
+            return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=f"moved to subscription {request.subscription_id}; {said}",
+                                      subscription_id=request.subscription_id)
         # Moved from here on, whatever the resume does: the answer names the new pin so the server records it too.
         try:
             environment = await asyncio.to_thread(self.launcher_environment_in, Path(moved.cwd))
@@ -1107,28 +1129,23 @@ class MachineAgents(BaseModel):
 
     @staticmethod
     def _carry(run: reg.AgentRun, request: AgentMoveRequest) -> reg.AgentRun:
+        """The move made on stopped `run`. One that waits (not `resume`): asked for the subscription the run is on, the
+        move held for it dropped; on a run at work, checked now and held for that turn's end (`registry.hold_move`)."""
+        pinned = RunSubscription(subscription_id=request.subscription_id, limits=request.limits)
         if run.subscription is None or run.subscription.subscription_id is None:
             raise SubscriptionRefused("pinned_elsewhere", "this run runs on this PC's own login (or lent): it never moves to a subscription")
-        if run.status in {"running", "waiting"}:
-            raise PermissionError("a run moves to another subscription only once it stopped")
         if request.subscription_id == run.subscription.subscription_id:
-            raise PermissionError("this run is on that subscription already: continue it there")
-        source, target = Subscription.of(run.subscription.subscription_id), Subscription.of(request.subscription_id)
-        pinned = RunSubscription(subscription_id=target.id, limits=request.limits)
+            if request.resume:
+                raise PermissionError("this run is on that subscription already: continue it there")
+            return reg.hold_move(run.run_id, None) or run
+        if run.status not in {"running", "waiting"}:
+            return reg.carry(run, pinned)
+        if request.resume:
+            raise PermissionError("a run moves to another subscription only once it stopped")
         pinned.check()
-        if target.provider != source.provider:
+        if (target := Subscription.of(pinned.subscription_id)).provider != (source := Subscription.of(run.subscription.subscription_id)).provider:
             raise SubscriptionRefused("pinned_elsewhere", f"subscription {target.id} is a {target.provider} login, not {source.provider}: a session never moves between them")
-        session = run.provider_session_id or run.run_id
-        if run.fence is None:
-            source.carry_session(target, Path(run.cwd), session)
-        fence = run.fence.rehomed(pinned.homes()) if run.fence is not None else None
-        # Its usage is read on from here only: the readings already in its stream and session record are the old login's.
-        home = run.fence.state / target.provider if run.fence is not None else target.folder
-        files = (reg.raw_events_path(run.run_id), *target.program.session_files(home, Path(run.cwd), session))
-        moved = reg.repin(run.run_id, pinned, fence, {str(path): path.stat().st_size for path in files if path.is_file()})
-        if moved is None:
-            raise PermissionError("this run started again meanwhile: it stays on its subscription")
-        return moved
+        return reg.hold_move(run.run_id, pinned) or run
 
     async def _allow(self, request: AgentAllowanceRequest) -> MachineAgentAnswer:
         """`RunAllowance`: the run may go on its subscription up to `up_to_percent` of the window it is
@@ -1250,12 +1267,33 @@ class MachineAgents(BaseModel):
             await AgentSpawns.run(lambda run_id=run_id: followups.ready(run_id, environment=environments[run_id]))
 
     def _stop(self, request: AgentStopRequest) -> MachineAgentAnswer:
+        if (stopping := self._stop_editor_session(request)) is not None:
+            return stopping
         run = self._require_run(request.run_id)
         if run.status not in {"running", "waiting"}:
             return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail="already ended")
         if not reg.stop(str(request.run_id), by=request.by):
             raise RuntimeError("the run could not be stopped")
         return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail="stopped")
+
+    def _stop_editor_session(self, request: AgentStopRequest) -> MachineAgentAnswer | None:
+        """`request` for one of HIS live editor sessions (no run of the web's): its turn ends at its next tool call
+        (`SessionStops`), never by typing into it. None when the id is not such a session. Refused when this session
+        cannot be stopped: `hook_missing` the hook is not installed, `opened_before` the session started before it
+        was (Claude Code reads its hooks when a session starts: reopened, it can be)."""
+        if any(item.run_id == str(request.run_id) for item in self._allowed()[1]):
+            return None
+        session = next((run for run in reg.list_runs(include_foreign=True) if run.foreign and run.run_id == str(request.run_id)), None)
+        if session is None:
+            return None
+        stops = SessionStops()
+        since = stops.installed_at() if stops.installed() else None
+        if since is None:
+            raise AgentRefused("hook_missing", "this computer has not installed the hook that stops an editor session")
+        if session.started_at and session.started_at < since:
+            raise AgentRefused("opened_before", "this editor session was opened before this computer could stop it: it can be stopped once opened again")
+        stops.ask(request.run_id, request.by)
+        return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail="stopping")
 
     # ---- what can start here ---------------------------------------------------------------
 

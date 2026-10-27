@@ -37,6 +37,7 @@ from pydantic import BaseModel, ConfigDict, SecretStr, TypeAdapter
 from galaius import USER_AGENT, __version__
 from galaius.agents.catalog import AgentCatalog
 from galaius.agents.catalog_connection import CatalogConnection
+from galaius.agents.session_stops import SETTINGS_OK, SessionStops
 from galaius.cli.prompts import PromptMode
 from galaius.server_prompts import ServerPrompts
 from galaius.machine_service import MACHINE_SERVICE, ServiceUnavailable
@@ -787,6 +788,9 @@ def logout() -> None:
     except ServiceUnavailable as refused:
         # Already signed out on the server: the rest is removed here all the same.
         print(f"The background service could not be removed ({refused}); it can no longer connect.", file=sys.stderr)
+    # The hook that let the web stop his editor sessions goes with the computer's place in the account.
+    if (unhooked := SessionStops().uninstall()) not in SETTINGS_OK:
+        print(f"The hook that stops an editor session from the web stays in your Claude Code settings ({unhooked}).", file=sys.stderr)
     MachineRunner.default_config_path().unlink(missing_ok=True)
     account.key_path.unlink(missing_ok=True)
     CatalogConnection.path().unlink(missing_ok=True)

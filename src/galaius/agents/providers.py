@@ -920,13 +920,18 @@ _STOP_HOOK_FEEDBACK = "Stop hook feedback:"
 
 class ClaudeTurnSettings(BaseModel):
     """What galaius sets in each agent turn of Claude Code it launches, as `--settings`: on 2.1.288 they win over the
-    user's own settings files, whatever `--setting-sources` loads. Values: `Config.claude_compact_window`,
-    `claude_bash_output_chars`."""
+    user's own settings files, whatever `--setting-sources` loads. Values: the role's `compact_at` (`Policy.compact_at_for`),
+    `Config.claude_bash_output_chars`."""
 
     model_config = ConfigDict(frozen=True)
 
-    #: The size it compacts the conversation below (`autoCompactWindow`).
-    compact_window: int
+    #: What Claude Code keeps free below its `autoCompactWindow`: it compacts at the window minus this. Probed 2.1.288
+    #: (`get_context_usage`): window 153000 → `autoCompactThreshold` 120000; a window under 100000 is ignored (the user's
+    #: own setting applies), which `CompactAt`'s floor keeps clear of.
+    COMPACT_RESERVE: ClassVar[int] = 33_000
+
+    #: The context, in tokens, it compacts the conversation at.
+    compact_at: int
     #: The characters of a Bash command's output kept in the conversation (`bashOutputMaxChars`); the rest goes to a
     #: file the agent is pointed at.
     bash_output_chars: int
@@ -948,7 +953,7 @@ class ClaudeTurnSettings(BaseModel):
             **({"PostToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": self.inbox_hook}]}]} if self.inbox_hook else {}),
             **({"SessionStart": [{"matcher": "compact", "hooks": [{"type": "command", "command": self.brief_hook}]}]} if self.brief_hook else {}),
         }
-        settings = {"autoCompactWindow": self.compact_window, "bashOutputMaxChars": self.bash_output_chars, **({"hooks": hooks} if hooks else {})}
+        settings = {"autoCompactWindow": self.compact_at + self.COMPACT_RESERVE, "bashOutputMaxChars": self.bash_output_chars, **({"hooks": hooks} if hooks else {})}
         notes = [note for hook, note in ((self.inbox_hook, INBOX_NOTE), (self.brief_hook, BRIEF_NOTE)) if hook]
         return (["-n", self.name, "--settings", json.dumps(settings)] + (["--append-system-prompt", "\n\n".join(notes)] if notes else [])
                 + (["--strict-mcp-config"] if self.isolated else []))

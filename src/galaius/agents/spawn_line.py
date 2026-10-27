@@ -195,6 +195,8 @@ class Spawn(BaseModel):
             return None
         if (caller := reg.get_run(self.parent_run_id)) is None:
             return f"the run asking ({self.parent_run_id}) has no record on this computer" if self.continues or self.for_run else None
+        if (nested := self._nested_coordinator()) is not None:
+            return nested
         # A critic's round on a maker's work past the cap (`CriticRounds`): asked by an agent, refused.
         asker = self._asker()
         if (capped := CriticRounds.here().refusal(self._role_name(), self.for_run, asker=asker, turn=turn_of(asker))) is not None:
@@ -210,6 +212,19 @@ class Spawn(BaseModel):
             if target is None or (target.run_id not in caller.askers and caller.run_id not in target.askers):
                 return f"for_run names {self.for_run[:8]}: outside your conversation, it neither asked you nor works for you"
         return None
+
+    def _nested_coordinator(self) -> str | None:
+        """Why a coordinator role (`agent_turn_reviews.coordinators`) an agent run asks for (`messaging.asking_run`) may not
+        start inside that run's conversation: a coordinator heads a conversation, and one nested in it lists a second
+        coordinator among its agents (owner 2026-10-27 « Why is there another Coordinator in your list of agents ? »: 25
+        probe runs had joined conversations so). Taking over its own role's work (`taking_over`) and the person's own
+        spawn pass; None then."""
+        role = self._role_name()
+        if role not in Config().agent_turn_reviews.coordinators or messaging.asking_run() is None or self.taking_over() is not None:
+            return None
+        return (f"{role} heads a conversation of its own, never one inside yours: to try it as the person would, spawn it with "
+                f"{UserPaths.AGENTS_OVERRIDE} set to a probe folder, which keeps it out of the person's runs; to hand your own work "
+                "on, name the run it continues")
 
     def _asker(self) -> str | None:
         """The run asking this spawn: the one this process descends from (`messaging.asking_run`, which no flag changes),
@@ -303,8 +318,8 @@ class Spawn(BaseModel):
             return "never got a first turn"
         if not busy and revision is not None and (run.agent_ref is None or run.agent_ref.id != revision.id):
             return "runs another agent of that name"
-        if not busy and relations.context_full(run):
-            return f"has its context near full ({run.context_tokens}/{run.context_window})"
+        if not busy and (full := relations.too_full_for_a_task(run)):
+            return full
         if self.provider is not None and run.provider != self.provider:
             return f"runs on {run.provider}"
         # The run records the permission it got: never a wider run than this spawn would get, e.g. one a person started unrestricted.

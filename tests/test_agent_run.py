@@ -650,7 +650,7 @@ async def test_the_next_start_of_the_same_launch_runs_on_the_child_started_ahead
 
 def _launch(folder: Path, home: Path, *, arguments: dict | None = None, env: dict | None = None, role: str | None = "tester") -> ChildLaunch:
     return ChildLaunch(
-        provider=ClaudeCodeProvider(), cwd=str(folder), environment={"HOME": str(home), **(env or {})}, meshed=True, role=role,
+        provider=ClaudeCodeProvider(), cwd=str(folder), environment={"HOME": str(home), **(env or {})}, meshed=True, role=role, compact_at=200_000,
         arguments={"cwd": str(folder), "model": "claude-opus-5-5", "agent": "tester", "permission_mode": "manual",
                    "reasoning": "medium", **(arguments or {})},
     )
@@ -752,7 +752,7 @@ async def test_a_community_agent_runs_fenced_with_less_than_its_caller_and_plays
     assert record.community.work.parent == tmp_path / ".galaius-community" and record.community.reads == project
     assert not stale.exists(), "a community agent's folder untouched for a week is removed as the next one starts"
     assert not record.plays("tester") and reg.get_run(caller.run_id).plays("tester")
-    turn = AheadLaunch.turn_arguments(ClaudeCodeProvider(), child.run_id, None, role="tester", isolated=True)["turn"].arguments()
+    turn = AheadLaunch.turn_arguments(ClaudeCodeProvider(), child.run_id, None, role="tester", compact_at=200_000, isolated=True)["turn"].arguments()
     assert "--strict-mcp-config" in turn and turn[1] == f"community-{reg.short_id(child.run_id)}"
     with pytest.raises(ModelUnavailable):
         await run_agent(_CommandRecorder(), "map its protocol", cwd=str(project), community=entry)

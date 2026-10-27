@@ -146,7 +146,7 @@ def policy_for_continuation(run, provider: AgentProvider, environment: Mapping[s
             ) from error
         model = resolve_continuable_model(criterion, dict(Caller.environ(environment)), provider=provider, weights=policy.weights_for(run.agent), role=run.agent,
                                           subscription=run.subscription_id, floor=run.model)[1]
-        return policy, criterion, model, policy.reasoning_for(run.agent)
+        return policy, criterion, model, policy.effort_for(run.agent, chosen=run.reasoning_set)
     except CatalogOffline:
         raise
     except (ModelUnavailable, PolicyError, ValueError) as error:

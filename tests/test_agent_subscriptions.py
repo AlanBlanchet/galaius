@@ -7,10 +7,12 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
+from types import SimpleNamespace
 
 import pytest
 from galaius_core import AgentMoveRequest, MachineRef, SubscriptionAllowance, SubscriptionChoice, UsageWindow, SubscriptionChoices, SubscriptionLimits
@@ -25,6 +27,7 @@ from galaius.agents.subscription_watch import SubscriptionWatch
 from galaius.agents.subscriptions import RunSubscription, Subscription, SubscriptionCapped, SubscriptionRefused
 from galaius.fence import FenceBind, FenceSpec
 from galaius.machine_programs import AgentPrograms
+from galaius import machine_agents
 from galaius.machine_agents import MachineAgents
 from galaius.cli.app_commands import agents_resume
 from tests.support.agents import ScriptedProvider, install_fake_cli, install_provider, use_policy
@@ -397,6 +400,45 @@ def test_continuing_on_another_subscription_carries_the_session_never_a_credenti
     quota.record_refusal(unpinned.provider, unpinned.model, said="You've hit your session limit · resets 1:40pm (Europe/Paris)")
     unpinned.prepare_continue()
     assert quota.blocked_until(unpinned.provider, unpinned.model) is None
+
+
+@pytest.mark.parametrize("status", ["done", "running"])
+def test_a_move_that_waits_pins_the_run_and_starts_no_turn(status: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """His pick of another account in a conversation (`RunMove.resume` False): the session is carried and the run pinned
+    there, no resume turn is spent on it; on a run at work, held until that turn ended, then made before the next one
+    (a message he sent meanwhile runs there); picked back before then, nothing moves."""
+    a, b = Subscription.create(uuid4(), "claude"), Subscription.create(uuid4(), "claude")
+    run_id, cwd, session = str(uuid4()), tmp_path / "project", str(uuid4())
+    transcript = ClaudeCodeProvider.project_folder(a.folder, cwd) / f"{session}.jsonl"
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text('{"type":"user","message":"go"}\n', encoding="utf-8")
+    reg.save_run(reg.AgentRun(run_id=run_id, provider="claude", name="r", cwd=str(cwd), started_at=1.0, finished_at=2.0, status=status, provider_session_id=session,
+                              subscription=RunSubscription(subscription_id=a.id, limits=SubscriptionLimits())))
+    monkeypatch.setattr(machine_agents, "deliver_message", lambda *args, **kwargs: pytest.fail("a move that waits starts no turn"))
+    agents = SimpleNamespace(_require_run=lambda run: reg.get_run(str(run)), _carry=MachineAgents._carry)
+
+    def move(to: Subscription) -> None:
+        request = AgentMoveRequest(id=uuid4(), machine=MachineRef(id=uuid4()), workspace_id=uuid4(), initiator_account=uuid4(), expires_at=datetime.now(UTC),
+                                   signature="0" * 64, run_id=UUID(run_id), subscription_id=to.id, limits=SubscriptionLimits(), resume=False)
+        assert (answer := asyncio.run(MachineAgents._move(agents, request))).subscription_id == to.id and answer.reads_at is None
+
+    move(b)
+    if status == "running":
+        assert (reg.get_run(run_id).subscription.subscription_id, reg.get_run(run_id).pending_move.subscription_id) == (a.id, b.id)
+        move(a)  # picked back while it works: nothing held
+        assert reg.get_run(run_id).pending_move is None
+        move(b)
+        reg._update_fields(run_id, {"status": "done"})  # its turn ended: its runner and its dispatcher both make the move
+        carried, carry = [], Subscription.carry_session
+        monkeypatch.setattr(Subscription, "carry_session", lambda self, *args: (carried.append(self.id), carry(self, *args))[1])
+        both = [threading.Thread(target=reg.carry_held, args=(run_id,)) for _ in range(2)]
+        for thread in both:
+            thread.start()
+        for thread in both:
+            thread.join()
+        assert carried == [a.id], "its session carried once"
+    run = reg.get_run(run_id)
+    assert (run.subscription.subscription_id, run.pending_move) == (b.id, None)
 
 
 def test_each_login_here_says_its_own_usage_and_a_subscriptions_never_mixes_with_the_default_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

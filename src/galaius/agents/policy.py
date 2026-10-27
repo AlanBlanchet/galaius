@@ -28,13 +28,14 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, get_args
-from galaius_core import AgentRevisionRef, ReasoningLevel
+from galaius_core import AgentRevisionRef, CompactAt, ReasoningLevel
+from pydantic import TypeAdapter
 
 from galaius.agents.catalog import AgentCatalog
 from galaius.agents.catalog_connection import CatalogConnectionError
 from galaius.agents.tool_gateway import AgentToolList, ToolGateway
 from galaius.agents.vocabulary import TouchScope
-from galaius.config import UserConfig
+from galaius.config import Config, UserConfig
 from galaius.criteria import ValueRule
 
 #: The two altitudes a paradigm can be projected at for one agent. Closed on purpose: a third
@@ -58,6 +59,10 @@ class PolicyError(ValueError):
 #: How vendor CLIs address an MCP server's tools. galaius's own tools are the ones named here,
 #: so the prefix is added rather than typed forty times.
 TOOL_PREFIX = "mcp__galaius__"
+
+
+#: A local policy file's `compact_at` value, held to the catalog's own bounds.
+CompactAtValue: TypeAdapter[int] = TypeAdapter(CompactAt)
 
 
 def policy_path() -> Path:
@@ -89,6 +94,14 @@ class Policy:
     #: is applied after candidate selection, so one role can keep a cheaper model shallow and a
     #: stronger model deep without teaching the caller a vendor flag.
     reasoning_models: dict[str, str] = field(default_factory=dict)
+    #: Each role's context, in tokens, its conversation compacts at: its catalog revision's `compact_at`, else its
+    #: department's (`Config.agent_compact_at_by_department`); a role absent from it compacts at `Config.agent_compact_at`.
+    compact_at: dict[str, int] = field(default_factory=dict)
+    #: What a role absent from `compact_at` compacts at (`Config.agent_compact_at`).
+    default_compact_at: int = field(default_factory=lambda: Config().agent_compact_at)
+    #: What a role whose catalog revision names no `compact_at` compacts at, by its catalog department
+    #: (`Config.agent_compact_at_by_department`).
+    compact_at_by_department: dict[str, int] = field(default_factory=lambda: dict(Config().agent_compact_at_by_department))
     #: Per-agent providers explicitly ALLOWED to run it under COARSE (sandbox-scope, not per-tool)
     #: enforcement — a machine-local acceptance, same footing as `providers` (a role's own
     #: allowed/denied tool list stays catalog- or file-owned; this only says whether a provider
@@ -137,6 +150,7 @@ class Policy:
             defaults=dict(raw.get("defaults") or {}),
             reasoning=dict(raw.get("reasoning") or {}),
             reasoning_models=dict(raw.get("reasoning_models") or {}),
+            compact_at={agent: CompactAtValue.validate_python(value) for agent, value in (raw.get("compact_at") or {}).items()},
             coarse_tool_policy={k: list(v) for k, v in (raw.get("coarse_tool_policy") or {}).items()},
             value=_value_rule(raw, path),
         )
@@ -176,6 +190,9 @@ class Policy:
             elif agent.model is not None:
                 policy.agents[agent.role_key] = agent.model.id
             policy.reasoning[agent.role_key] = agent.reasoning
+            compact_at = agent.compact_at if agent.compact_at is not None else policy.compact_at_by_department.get(agent.department)
+            if compact_at is not None:
+                policy.compact_at[agent.role_key] = compact_at
             if agent.harness_tools is not None:
                 policy.agent_tools[agent.role_key] = list(agent.harness_tools)
             policy.paradigms[agent.role_key] = [
@@ -300,6 +317,16 @@ class Policy:
         if self.catalog is not None:
             return self.catalog.role(agent).reasoning
         return self.reasoning.get(agent, self.defaults.get("reasoning", "medium"))
+
+    def compact_at_for(self, agent: str | None) -> int:
+        """The context, in tokens, a run of `agent` compacts at: its role's or its department's, else `Config.agent_compact_at`, read when the
+        policy loads. Claude Code only (`ClaudeTurnSettings`): a Codex run compacts where its own CLI does."""
+        return self.compact_at.get(agent or "", self.default_compact_at)
+
+    def effort_for(self, agent: str, model: str | None = None, *, chosen: ReasoningLevel | None = None) -> str:
+        """The effort a run of `agent` works at: the one a person set on its conversation (`chosen`,
+        `AgentRun.reasoning_set`), else its role's for `model` (`reasoning_for`)."""
+        return chosen or self.reasoning_for(agent, model)
 
     def rule(self, text: str, *, wearer: str | None = None) -> str:
         """`@name` → that profile's criterion; anything else is returned as written.

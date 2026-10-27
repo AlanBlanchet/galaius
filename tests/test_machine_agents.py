@@ -439,6 +439,24 @@ def test_a_message_is_answered_once_durably_queued_and_its_dispatcher_gets_the_m
         _answer(agents, request)
 
 
+def test_a_message_setting_its_conversation_s_effort_holds_for_the_agent_s_next_turns(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Owner 2026-10-26 « Can we chose the effort ? »: a message naming an effort records it on the agent's run, which its
+    next turns run at over its role's; an editor's continued conversation runs at its editor's, refused rather than ignored."""
+    agents = _agents(base, tmp_path)
+    run_id, continued = str(uuid4()), str(uuid4())
+    for identity, kind in ((run_id, "agent"), (continued, "continued")):
+        reg.save_run(reg.AgentRun(run_id=identity, provider="claude", agent="tester" if kind == "agent" else None, name="r",
+                                  cwd=str(base / "project"), started_at=1.0, exit_code=0, reasoning="high"))
+        agents.runs.add(WebRun(run_id=identity, root="project", kind=kind))
+    monkeypatch.setattr(messaging, "policy_for_continuation", lambda run, provider, environment: (None, "criterion", "model", "high"))
+    monkeypatch.setattr(agent_queue, "ensure_dispatcher_locked", lambda *args, **kwargs: 1)
+    _answer(agents, _request("send", run_id=run_id, text="- go on, lighter", reasoning="medium"))
+    assert (reg.get_run(run_id).reasoning_set, reg.get_run(run_id).reasoning) == ("medium", "high")
+    with pytest.raises(PermissionError, match="editor"):
+        _answer(agents, _request("send", run_id=continued, text="- go on", reasoning="low"))
+    assert reg.get_run(continued).reasoning_set is None
+
+
 def test_the_web_reads_a_runs_context_gauge_and_whether_it_compacts_by_the_rule_its_compaction_obeys(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The runs list carries the gauge as the run's record has it, and whether the run compacts before any press: a
     Claude run compacts as a queued turn under the request's id; a Codex run of its CLI cannot (only its app-server
@@ -1459,3 +1477,34 @@ def test_a_screen_request_rides_the_signed_channel_and_its_passkey_decides(base:
     stranger = ScreenAssertion(credential_id="AAAA", authenticator_data="AAAA", client_data_json="AAAA", signature="AAAA")
     asyncio.run(runner._answer_agent_request(socket, config, _signed(config, ScreenOpenRequest(id=uuid4(), offer=offer, assertion=stranger, **asked))))
     assert socket.sent[1]["error"] == "the session offer is malformed" and runner._screen_desk.live is None
+
+
+@pytest.mark.parametrize(("installed", "opened", "refused"), [
+    (True, "after", None),               # stopped: the hook in that session ends its turn
+    (False, "after", "hook_missing"),    # no hook on this computer: refused, nothing promised
+    (True, "before", "opened_before"),   # Claude Code read its hooks before the hook was there: reopened, it can be
+], ids=["stopped", "no-hook", "opened-before-the-hook"])
+def test_his_editor_session_is_stopped_through_its_hook_never_typed_into(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                                         installed: bool, opened: str, refused: str | None) -> None:
+    """The web's stop for one of HIS editor sessions (a session galaius did not start, so not a run of the web's): the
+    PC leaves the stop for the hook every Claude Code session runs (`SessionStops`) — it never types into his session."""
+    from galaius.agents.session_stops import SessionStops
+
+    agents = _agents(base, tmp_path)
+    session = uuid4()
+    stops = SessionStops()
+    if installed:
+        assert stops.install() == "written"
+    since = stops.installed_at() or time.time()
+    his = reg.AgentRun.from_foreign({"sessionId": str(session), "cwd": str(base / "project"), "kind": "interactive",
+                                     "startedAt": (since + (60 if opened == "after" else -60)) * 1000})
+    listed = reg.list_runs
+    monkeypatch.setattr(reg, "list_runs", lambda **kw: [*listed(**kw), his] if kw.get("include_foreign") else listed(**kw))
+    stop = _request("stop", run_id=str(session), by={"kind": "person", "name": "Alan"})
+    if refused is not None:
+        with pytest.raises(AgentRefused) as raised:
+            _answer(agents, stop)
+        assert raised.value.refusal == AgentRefusal(reason=refused) and not (stops.folder / f"{session}.json").exists()
+        return
+    assert _answer(agents, stop).detail == "stopping"
+    assert json.loads((stops.folder / f"{session}.json").read_text())["by"]["name"] == "Alan"

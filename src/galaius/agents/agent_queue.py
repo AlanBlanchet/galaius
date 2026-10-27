@@ -25,12 +25,12 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Annotated, ClassVar, Literal, Self
 
-from galaius_core import AGENT_IMAGES_MAX, MEDIA_KEY, AgentRevisionRef
+from galaius_core import AGENT_IMAGES_MAX, MEDIA_KEY, AgentRevisionRef, Refused
 from galaius_core.wire import readable
 from pydantic import BaseModel, ConfigDict, Field
 
 from galaius.agents import quota
-from galaius.agents.catalog_connection import CatalogOffline
+from galaius.agents.catalog_connection import CatalogAuthenticationError, CatalogConnectionError, CatalogOffline
 from galaius.agents import registry as reg
 from galaius.caller import RUN_VARIABLES, Caller
 from galaius.agents.events import AgentEvent, MessageFields
@@ -41,8 +41,11 @@ from galaius.processes import process_started, share_malloc_arenas
 from galaius.upgrade.store import Runtime, RuntimeStore, active_interpreter
 
 MAX_PENDING = 128
-#: How many times a message is sent again after its turn's CLI died before answering it (`settle`).
-RETRIES = 1
+#: How long a message to an ended run waits before each further try at its turn, when the last one did not start
+#: (`launch_continuation` raised) or its CLI died having answered and done nothing (`settle`); its length bounds the tries
+#: (three in all). This PC tries again by itself: owner 2026-10-26 « i should have no buttons to press and it sohuld
+#: simply work ». A refusal waiting cannot change (`_permanent`) is not tried again.
+RESUME_BACKOFF: tuple[float, ...] = (5.0, 20.0)
 _POLL_SECONDS = 0.1
 _DISPATCHER_RECOVERY_TIMEOUT = 30.0
 
@@ -248,10 +251,12 @@ class QueueItem(BaseModel):
     finished_at: float | None = None
     raw_index: int | None = None
     attempt_token: str | None = Field(default=None, min_length=1, max_length=80)
-    #: Attempts sent again after their CLI died before answering (`settle`: at most `RETRIES`). Written only once
-    #: one was: a dispatcher of an older galaius cannot read an item carrying it (`_entries`), so it never claims it;
-    #: the dispatcher that sent it again delivers it.
+    #: Tries made again after one did not start or died before answering (`_again_locked`: at most
+    #: `len(RESUME_BACKOFF)`). Written only once one was: a dispatcher of an older galaius cannot read an item carrying it
+    #: (`_entries`), so it never claims it; the dispatcher that tries it again delivers it.
     attempts: int = Field(default=0, ge=0, exclude_if=lambda value: value == 0)
+    #: Not claimed before this instant (epoch s): the pause before its next try (`RESUME_BACKOFF`). Cleared at its claim.
+    not_before: float | None = Field(default=None, exclude_if=lambda value: value is None)
     #: What its turn waits for before it can start, when it waits for anything: `service` (this computer's link to the
     #: Galaius service is down, so the run's pinned revision cannot be read). Written only while it waits, cleared when
     #: the turn starts, so every reader of the queue (the web through its mirror) says what it waits for in its own words.
@@ -400,15 +405,20 @@ def _replace_item_locked(run_id: str, item_id: str, **updates) -> QueueItem | No
     return changed[0] if changed else None
 
 
+def _due(item: QueueItem, now: float | None = None) -> bool:
+    """Whether `item`'s pause before its next try (`not_before`) is over."""
+    return item.not_before is None or item.not_before <= (time.time() if now is None else now)
+
+
 def claim_next_locked(run_id: str) -> QueueItem | None:
-    """Claim the oldest pending item while the caller owns the run lock."""
+    """Claim the oldest pending item while the caller owns the run lock, once its pause is over (`_due`)."""
     state = _state(run_id)
     item = next((item for item in _items(state) if item.state == "pending"), None)
-    if item is None:
+    if item is None or not _due(item):
         return None
     return _replace_item_locked(
         run_id, item.id, state="running", started_at=time.time(),
-        raw_index=reg.raw_line_count(run_id), attempt_token=uuid.uuid4().hex, error="",
+        raw_index=reg.raw_line_count(run_id), attempt_token=uuid.uuid4().hex, error="", not_before=None,
     )
 
 
@@ -421,10 +431,10 @@ def claim_locked(run_id: str, item_id: str) -> QueueItem | None:
     """Claim `item_id` while the caller owns the run lock, when it is the first item waiting or
     running (one ahead of it is delivered first)."""
     first = first_active_locked(run_id)
-    if first is None or first.id != item_id or first.state != "pending":
+    if first is None or first.id != item_id or first.state != "pending" or not _due(first):
         return None
     return _replace_item_locked(run_id, item_id, state="running", started_at=time.time(),
-                                raw_index=reg.raw_line_count(run_id), attempt_token=uuid.uuid4().hex, error="")
+                                raw_index=reg.raw_line_count(run_id), attempt_token=uuid.uuid4().hex, error="", not_before=None)
 
 
 def release_locked(run_id: str, item_id: str) -> QueueItem | None:
@@ -502,6 +512,29 @@ def _set_dispatcher_locked(
     state["dispatcher_token"] = token
     state["dispatcher_started"] = started
     _write_state(run_id, state)
+
+
+def resuming(run_id: str) -> bool:
+    """Whether this PC is bringing run `run_id` back for a message it holds: an item waiting or in flight in its queue
+    (`ACTIVE`, as written), and the dispatcher that drains it alive (`_dispatcher_matches`) or that item in its pause
+    before another try (`not_before`). Read without the run lock
+    (the queue file is replaced whole): what a reader of the run says (`registry._status_for`), never a claim. A queue
+    holding nothing active costs one read of its bytes."""
+    payload = reg._read_private(path(run_id))
+    if payload is None or (b'"pending"' not in payload and b'"running"' not in payload):
+        return False
+    try:
+        state = json.loads(payload)
+    except ValueError:
+        return False
+    if not isinstance(state, dict) or not isinstance(items := state.get("items"), list):
+        return False
+    active = [raw for raw in items if isinstance(raw, dict) and raw.get("state") in ACTIVE]
+    # One in its pause before another try is coming back whoever delivers it: a galaius restarted meanwhile has no
+    # dispatcher for it until its runner recovers the queue (`FollowUps.recover`), and the try that failed is not the run's
+    # ending. Past its pause and `SETTLE_GAP_SECONDS`, only a live dispatcher says so.
+    pausing = any(isinstance(after := raw.get("not_before"), (int, float)) and time.time() < after + reg.SETTLE_GAP_SECONDS for raw in active)
+    return bool(active) and (pausing or _dispatcher_matches(state))
 
 
 def dispatcher_running_locked(run_id: str) -> bool:
@@ -685,7 +718,7 @@ def inject(run_id: str) -> list[str]:
             if text is None:
                 _replace_item_locked(run_id, item.id, state="failed", finished_at=time.time(), error="message transcript entry is missing")
                 continue
-            _replace_item_locked(run_id, item.id, state="running", started_at=time.time(), raw_index=anchor, attempt_token=uuid.uuid4().hex, error="")
+            _replace_item_locked(run_id, item.id, state="running", started_at=time.time(), raw_index=anchor, attempt_token=uuid.uuid4().hex, error="", not_before=None)
             said.append((item, text))
     # The person's words first and where it stands last: hook context opening with the person's own heading is theirs
     # (`inbox_hook.NOTE`), and the agents' messages after it keep the order they came in.
@@ -760,9 +793,44 @@ def _said_line(said: AgentEvent | None) -> str:
     return _safe_process_detail(words) if words else ""
 
 
+def _permanent(error: Exception) -> bool:
+    """A resume refused for a reason waiting cannot change, so never tried again (`dispatch`): the policy's own no
+    (`ModelUnavailable`: a provider switched off, no criterion, no definition, a permission this CLI refuses, no model
+    clearing the criterion, the catalog refusing this computer's access), a coded refusal (`Refused`: a subscription
+    refused or at its cap), a folder that cannot be put back (`FolderUnrecoverable`). A catalog request that failed
+    otherwise (an HTTP 5xx) is a passing cause, whatever wraps it; every other error is tried again."""
+    # Circular layers: run imports this module (its turns' inbox hook).
+    from galaius.agents.run import ModelUnavailable
+    from galaius.agents.run_folder import FolderUnrecoverable
+
+    chain: list[BaseException] = []
+    cause: BaseException | None = error
+    while cause is not None and cause not in chain:
+        chain.append(cause)
+        cause = cause.__cause__ or cause.__context__
+    if any(isinstance(cause, CatalogConnectionError) and not isinstance(cause, CatalogAuthenticationError) for cause in chain):
+        return False
+    return isinstance(error, (ModelUnavailable, Refused, FolderUnrecoverable))
+
+
+def _again_locked(run_id: str, item: QueueItem, why: str) -> bool:
+    """Put `item` back in the queue for another try once its pause (`RESUME_BACKOFF`) is over, while the caller owns the
+    run lock; the run keeps reading at work (`registry.begin_resume_locked`). False once its tries are spent."""
+    if item.attempts >= len(RESUME_BACKOFF):
+        return False
+    pause = RESUME_BACKOFF[item.attempts]
+    _replace_item_locked(run_id, item.id, state="pending", started_at=None, raw_index=None, attempt_token=None, error="",
+                         attempts=item.attempts + 1, not_before=time.time() + pause)
+    reg.begin_resume_locked(run_id)
+    log.warning("agent queue %s: item %s tried again in %g s (try %d of %d): %s", path(run_id), item.id, pause,
+                item.attempts + 2, len(RESUME_BACKOFF) + 1, why)
+    _hand_on_locked(run_id)
+    return True
+
+
 def settle(run_id: str, item: QueueItem, code: int) -> None:
     """Record how the attempt `item` ended once its provider child exited with `code`: replied, failed or uncertain.
-    One whose CLI exited non-zero is replied when its turn answered all the same; sent once more (`RETRIES`) when it
+    One whose CLI exited non-zero is replied when its turn answered all the same; tried again (`_again_locked`) when it
     died having answered and done nothing, unless it was stopped or refused by its plan's limit (sent again before
     the reset, it is refused again); else failed, and a child that died saying nothing fails the run's turn."""
     events = _attempt_events(run_id, item)
@@ -785,20 +853,18 @@ def settle(run_id: str, item: QueueItem, code: int) -> None:
             current = item_locked(run_id, item.id)
             if current is None or current.state != "running":
                 return
-            if not (stopped or answered or limited) and current.attempts < RETRIES:
-                _replace_item_locked(run_id, item.id, state="pending", started_at=None, raw_index=None, attempt_token=None,
-                                     error="", attempts=current.attempts + 1)
-                log.warning("agent queue %s: item %s sent again: %s", path(run_id), item.id, error)
-                _hand_on_locked(run_id)
+            if not (stopped or answered or limited) and _again_locked(run_id, current, error):
                 return
             _replace_item_locked(run_id, item.id, state="failed", finished_at=time.time(), error=error)
             if not stopped and (said is None or said.kind != "error" or not said.text.strip()):
                 reg.fail_turn_locked(run_id, error, exit_code=code)
+            reg.end_resume_locked(run_id)
         return
     with reg.record_lock(run_id):
         current = item_locked(run_id, item.id)
         if current is not None and current.state == "running":
             _replace_item_locked(run_id, item.id, state=attempt_state, finished_at=time.time(), error=attempt_error)
+        reg.end_resume_locked(run_id)
 
 
 def _hand_on_locked(run_id: str) -> None:
@@ -838,11 +904,17 @@ def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
                     # before replaying the message.
                     recover = (running, run)
                     item = None
+                elif not _due(pending):
+                    # Its pause before the next try (`RESUME_BACKOFF`); the run reads at work meanwhile (`_again_locked`).
+                    item, pause = None, min(max(pending.not_before - time.time(), _POLL_SECONDS), 1.0)
                 else:
                     # Circular layers: spawn_line imports run (its turns' inbox hook) and machine_agents (the web's runs),
                     # both of which import this module.
                     from galaius.agents.spawn_line import POLL_SECONDS, SpawnLine
 
+                    # His message is this PC's from now: the run reads at work through its wait for a place or for the
+                    # service and every try, until its turn starts or its last try fails.
+                    run = reg.begin_resume_locked(run_id) or run
                     # A resumed turn is a run at work like a spawn: it waits for a place on this computer.
                     with SpawnLine.here().resuming(run) as admitted:
                         pause = _POLL_SECONDS if admitted else POLL_SECONDS
@@ -854,6 +926,7 @@ def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
                                     run_id, item.id, state="failed", finished_at=time.time(),
                                     error="message transcript entry is missing",
                                 )
+                                reg.end_resume_locked(run_id)
                                 item = None
                             else:
                                 try:
@@ -888,15 +961,17 @@ def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
                                                              waiting="service", waiting_since=since)
                                         item, pause = None, SERVICE_POLL_SECONDS
                                 except Exception as error:
-                                    # The run itself reads failed, with the reason: a message to an
-                                    # ended run whose resume cannot start otherwise leaves it "done"
-                                    # and its sender watching a message "delivered" forever.
+                                    # Tried again by this PC after a pause, unless waiting cannot change it (`_permanent`).
+                                    # Its tries spent, the run itself reads failed, with the reason: a message to an ended
+                                    # run whose resume cannot start otherwise leaves it "done" and its sender watching a
+                                    # message "delivered" forever.
                                     detail = _safe_process_detail(str(error))
-                                    _replace_item_locked(
-                                        run_id, item.id, state="failed", finished_at=time.time(),
-                                        error=detail,
-                                    )
-                                    reg.fail_turn_locked(run_id, f"resume refused: {detail}")
+                                    if _permanent(error) or not _again_locked(run_id, item, f"resume refused: {detail}"):
+                                        _replace_item_locked(
+                                            run_id, item.id, state="failed", finished_at=time.time(),
+                                            error=detail,
+                                        )
+                                        reg.fail_turn_locked(run_id, f"resume refused: {detail}")
                                     item = None
             if recover is not None:
                 recovered_item, _ = recover
@@ -908,6 +983,7 @@ def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
                             run_id, current.id, state=attempt_state,
                             finished_at=time.time(), error=attempt_error,
                         )
+                    reg.end_resume_locked(run_id)
                 continue
             if item is None:
                 time.sleep(pause)

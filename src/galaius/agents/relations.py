@@ -19,8 +19,8 @@ from galaius.config import Config
 from galaius.agents.events import AgentEvent, Relation, ending_of
 from galaius.inbox_hook import HEADING, OPERATOR
 
-#: Share of its context window past which a run is not handed a new task (`spawn_line.Spawn._misfit`), and, left by a
-#: compaction, past which it hands its work to the first run of its role it spawns (`outgrown`).
+#: Share of its context window a compaction may leave a run at, past which it hands its work to the first run of its role
+#: it spawns (`outgrown`).
 CONTEXT_NEAR_FULL = 0.8
 #: The other runs at work a card names, newest first.
 CARD_RUNS_MAX = 8
@@ -485,7 +485,9 @@ def card(run: reg.AgentRun, *, mid_turn: bool = False) -> str:
     others = [other for other in conversation if _working(other) and other not in mine and other.run_id not in run.askers][:CARD_RUNS_MAX]
     if others:
         lines.append("At work in this conversation: " + "; ".join(f"{placed(other.run_id)} — « {_first_line(other.task)} »" for other in others) + ".")
-    idle = {other.agent: other for other in reversed(conversation) if other.agent and _reusable(other)}
+    # A coordinator heads its conversation and is handed no task by another run (`Spawn._nested_coordinator`).
+    coordinators = Config().agent_turn_reviews.coordinators
+    idle = {other.agent: other for other in reversed(conversation) if other.agent and other.agent not in coordinators and _reusable(other)}
     if idle:
         lines.append("Idle, to reuse: " + ", ".join(placed(other.run_id) for other in sorted(idle.values(), key=lambda other: other.agent or "")) + ".")
     if rows := _left_open(run, conversation):
@@ -552,15 +554,18 @@ def _recalled(run: reg.AgentRun, words: str) -> str:
             + "\n".join(f"- He said on {entry.date}: {entry.said}" for entry in said)) if said else ""
 
 
-def context_full(run: reg.AgentRun) -> bool:
-    """Its conversation holds `CONTEXT_NEAR_FULL` of its context window or more, as its CLI last reported."""
-    return bool(run.context_window) and (run.context_tokens or 0) >= CONTEXT_NEAR_FULL * (run.context_window or 0)
+def too_full_for_a_task(run: reg.AgentRun) -> str | None:
+    """Why `run` takes no new task (`spawn_line.Spawn._misfit`), as its CLI last reported its context; None when it may.
+    Past `Config.agent_reuse_context_max` every call of that task would re-read the old work it inherits (2026-10-26: runs
+    at 500k-905k handed new tasks billed half a day's subscription in hours)."""
+    held, ceiling = run.context_tokens or 0, Config().agent_reuse_context_max
+    return f"holds {held} tokens of context, past the {ceiling} a new task may inherit" if held > ceiling else None
 
 
 def _reusable(run: reg.AgentRun) -> bool:
     """An ended run a spawn of its role would hand its task to (`spawn_line.Spawn._misfit`, all but its checks against the
     spawn's own revision, provider and permissions)."""
-    return (run.status in REUSABLE and live(run.run_id) == run.run_id and run.replaced_by is None and not context_full(run)
+    return (run.status in REUSABLE and live(run.run_id) == run.run_id and run.replaced_by is None and too_full_for_a_task(run) is None
             and not _working(run) and reg.model_spoke_in(run.run_id))
 
 

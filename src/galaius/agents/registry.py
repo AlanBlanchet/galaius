@@ -39,7 +39,7 @@ from uuid import UUID
 
 from pydantic import ConfigDict, BaseModel, Field, PrivateAttr, ValidationInfo, field_validator
 from galaius.agents import quota
-from galaius_core import ASKED_BY_MAX, FILE_KEY, KEPT_FILE_MAX, MACHINE_AGENT_MEDIA, MEDIA_KEY, file_key, MODEL_ID_MAX, AgentMedia, AgentRevisionRef, ContextGauge, PromptExecutionRef, RunReplacement, StopActor
+from galaius_core import ASKED_BY_MAX, ReasoningLevel, RecordedReasoning, FILE_KEY, KEPT_FILE_MAX, MACHINE_AGENT_MEDIA, MEDIA_KEY, file_key, MODEL_ID_MAX, AgentMedia, AgentRevisionRef, ContextGauge, PromptExecutionRef, RunReplacement, StopActor
 
 from galaius.agents.events import (
     CONTEXT_FIELDS, PERSON_SENDER, TOKEN_FIELDS, AgentEvent, MessageFields, RunCut, TokenUsage, UsageLedger, answered_line, its_work, model_spoke,
@@ -395,6 +395,8 @@ class AgentRun(ContextGauge):
     requested_model: str | None = None
     requested_criterion: str | None = None
     reasoning: str | None = None
+    #: The effort a person set on this conversation (`AgentMessageSpec.reasoning`): its turns run at it over its role's.
+    reasoning_set: RecordedReasoning = None
     #: A policy resolved while this session was already active. The vendor queue keeps the
     #: current session settings, so this is deliberately separate from the effective fields above.
     pending_model: str | None = None
@@ -435,6 +437,9 @@ class AgentRun(ContextGauge):
     #: The subscription every turn and child of this run runs on (`galaius.agents.subscriptions`);
     #: None: this PC's default login.
     subscription: RunSubscription | None = None
+    #: A move asked while a turn worked (his pick in a conversation, `RunMove.resume` False): made once that turn ended,
+    #: before its next one starts (`carry_held`); None once made, refused or asked back.
+    pending_move: RunSubscription | None = None
     #: The vendor login this run's provider authenticated as, as the launch read it (`run.py`'s auth
     #: cache); "" when that CLI tells none apart. Recorded because a model the vendor refuses is a fact
     #: about the LOGIN, and a refusal heard after the launch (`_remember_vendor_refusal`) has nothing
@@ -1290,7 +1295,7 @@ def register(*, run_id: str, pid: int | None, provider: str, name: str, task: st
              cwd: str = "", model: str | None = None, parent_run_id: str | None = None,
              agent: str | None = None, permission_mode: str | None = None,
              mesh_enabled: bool = False,
-             requested_criterion: str | None = None, reasoning: str | None = None,
+             requested_criterion: str | None = None, reasoning: str | None = None, reasoning_set: str | None = None,
              provider_session_id: str | None = None,
              agent_ref: AgentRevisionRef | None = None,
              definition_path: Path | None = None, session_id: str | None = None,
@@ -1310,7 +1315,7 @@ def register(*, run_id: str, pid: int | None, provider: str, name: str, task: st
                    agent=agent, agent_ref=agent_ref, definition_path=str(definition) if definition else None,
                    permission_mode=permission_mode, requested_criterion=requested_criterion,
                    mesh_enabled=mesh_enabled,
-                   reasoning=reasoning,
+                   reasoning=reasoning, reasoning_set=reasoning_set,
                    candidates=candidates, skipped=skipped, denied_tools=denied_tools, fence=fence,
                    provider_session_id=provider_session_id, subscription=subscription, login=login,
                    asked_by=asked_by, inherited_asks=dict(inherited_asks or {}), community=community,
@@ -1343,7 +1348,15 @@ def task_taken(run_id: str, task: str) -> AgentRun | None:
     (`spawn_line.Spawn.of_run`). Returns the record as it now stands, None when there is none.
     """
     with record_lock(run_id):
-        return _merge_record_locked(run_id, {"task": task}) if get_run(run_id) is not None else None
+        # A task handed on is not the conversation a person set an effort for: it runs at its role's.
+        return _merge_record_locked(run_id, {"task": task, "reasoning_set": None}) if get_run(run_id) is not None else None
+
+
+def reasoning_set(run_id: str, level: ReasoningLevel | None) -> AgentRun | None:
+    """A person set `run_id`'s effort (`AgentMessageSpec.reasoning`): its next turns run at `level` over its role's
+    (`Policy.effort_for`); None: at its role's again. The record as it now stands, None when there is none."""
+    with record_lock(run_id):
+        return _merge_record_locked(run_id, {"reasoning_set": level}) if get_run(run_id) is not None else None
 
 
 def take_over_refused(run: AgentRun, *, parent: str | None = None, at: float | None = None,
@@ -1634,8 +1647,50 @@ def repin(run_id: str, subscription: RunSubscription, fence: FenceSpec | None, u
         stored = _read_record(run_id)
         if stored is None or stored.subscription is None or stored.subscription.subscription_id is None or stored.status in {"running", "waiting"}:
             return None
-        return _merge_record_locked(run_id, {"subscription": subscription.model_dump(mode="json"),
+        return _merge_record_locked(run_id, {"subscription": subscription.model_dump(mode="json"), "pending_move": None,
                                              "fence": fence.model_dump(mode="json") if fence is not None else None, "usage_from": usage_from})
+
+
+def carry(run: AgentRun, pinned: RunSubscription) -> AgentRun:
+    """Stopped `run`'s session carried to subscription `pinned`'s folder and the run pinned to it from now on (contract A9);
+    a fenced run's session already sits in its own state folder. Refused: on this PC's own login, at a cap, another
+    provider's login, or started again meanwhile."""
+    if run.subscription is None or run.subscription.subscription_id is None:
+        raise SubscriptionRefused("pinned_elsewhere", "this run runs on this PC's own login (or lent): it never moves to a subscription")
+    pinned.check()
+    source, target = Subscription.of(run.subscription.subscription_id), Subscription.of(pinned.subscription_id)
+    if target.provider != source.provider:
+        raise SubscriptionRefused("pinned_elsewhere", f"subscription {target.id} is a {target.provider} login, not {source.provider}: a session never moves between them")
+    session = run.provider_session_id or run.run_id
+    if run.fence is None:
+        source.carry_session(target, Path(run.cwd), session)
+    fence = run.fence.rehomed(pinned.homes()) if run.fence is not None else None
+    # Its usage is read on from here only: the readings already in its stream and session record are the old login's.
+    home = run.fence.state / target.provider if run.fence is not None else target.folder
+    files = (raw_events_path(run.run_id), *target.program.session_files(home, Path(run.cwd), session))
+    moved = repin(run.run_id, pinned, fence, {str(path): path.stat().st_size for path in files if path.is_file()})
+    if moved is None:
+        raise PermissionError("this run started again meanwhile: it stays on its subscription")
+    return moved
+
+
+def hold_move(run_id: str, pinned: RunSubscription | None) -> AgentRun | None:
+    """The move `carry_held` makes once run `run_id`'s turn ended (None: the one held, dropped)."""
+    return _update_fields(run_id, {"pending_move": pinned.model_dump(mode="json") if pinned is not None else None})
+
+
+def carry_held(run_id: str) -> AgentRun | None:
+    """Run `run_id` between turns, with the move held for it made (`hold_move`); one refused now is dropped and said in
+    the log, the run staying where it was."""
+    with record_lock(run_id):  # read and carried whole: its turn's end and its dispatcher never both copy the session
+        run = get_run(run_id)
+        if run is None or run.pending_move is None or run.status in {"running", "waiting"}:
+            return run
+        try:
+            return carry(run, run.pending_move)
+        except (SubscriptionRefused, PermissionError, OSError) as error:
+            log.warning("held move of %s to subscription %s refused: %s", run_id[:8], run.pending_move.subscription_id, error)
+            return hold_move(run_id, None) or run
 
 
 def ancestor_run() -> AgentRun | None:
@@ -2525,6 +2580,51 @@ class StreamMirror:
             os.close(descriptor)
 
 
+#: How long after a turn's ending is recorded its run still reads as coming back while its queue holds the message being
+#: delivered: the reaper records the ending (`finish`) a moment before the dispatcher decides to try the turn again
+#: (`agent_queue.settle`), and a read in between would show his message failed before its last try.
+SETTLE_GAP_SECONDS = 30.0
+
+
+def begin_resume_locked(run_id: str) -> AgentRun | None:
+    """Run `run_id` reads at work (`starting`) from the moment this PC takes a message for it between turns until its
+    turn starts (`begin_turn`) or its last try fails (`fail_turn_locked`), while the caller owns its lock: every reader
+    of the record (the web through the PC's run list or its mirror, a reload included) sees it start at once, and
+    through every try. Its previous ending (`exit_code`) stays: a resume that ends with no turn and no failure of its
+    own reads that ending again (`_resuming`). Nothing for a run that is no agent process or whose turn runs now."""
+    run = _read_record(run_id)
+    if run is None or run.kind != "process" or run.process_running():
+        return run
+    return run if run.status == "starting" else _merge_record_locked(run_id, {"status": "starting", "finished_at": None})
+
+
+def end_resume_locked(run_id: str) -> AgentRun | None:
+    """After a message's delivery ended with no turn of its own and no failure written on the run, while the caller owns
+    its lock: a run still marked `starting` and no longer coming back reads how it stands again (`_derive`), at once
+    rather than at the next listing or `settle_gone`."""
+    run = _read_record(run_id)
+    return _derive(run) if run is not None and run.status == "starting" and not _resuming(run) else run
+
+
+def _resuming(run: AgentRun, *, now: float | None = None) -> bool:
+    """`run` is coming back for a message this PC holds (`agent_queue.resuming`): marked so (`begin_resume_locked`), its
+    turn's process gone before its reaper recorded the ending (`running`: read from its stream, the try's own error
+    read as the run failed), or ended within `SETTLE_GAP_SECONDS`, its message still in flight. Reads its queue only
+    for those few runs."""
+    if run.kind != "process":
+        return False
+    ended_now = run.status in TERMINAL_STATUSES and run.finished_at is not None and (time.time() if now is None else now) - run.finished_at < SETTLE_GAP_SECONDS
+    if (run.status not in ("starting", "running") and not ended_now) or run.process_running():
+        return False
+    return _in_flight(run)
+
+
+def _in_flight(run: AgentRun) -> bool:
+    """A message to `run` is still being delivered by a live dispatcher of this PC (`agent_queue.resuming`)."""
+    from galaius.agents import agent_queue  # imports this module: a top-level import would be circular
+    return run.kind == "process" and agent_queue.resuming(run.run_id)
+
+
 def _status_for(run: AgentRun, *, depth: int = 0) -> RunStatus:
     """The one thing a file cannot assert about itself: whether it is still running.
 
@@ -2532,7 +2632,9 @@ def _status_for(run: AgentRun, *, depth: int = 0) -> RunStatus:
     CLI, the editor panel, and any mirror of these records). A pid alone is not enough: a
     pid the system has since handed to another process is a DEAD run (`process_running`), and a
     child the provider ran inside a session has no pid of its own — it lives exactly as long as
-    the session that hosts it."""
+    the session that hosts it. A run this PC is bringing back for a message reads `starting` (`_resuming`)."""
+    if _resuming(run):
+        return "starting"
     if run.kind == "provider_child":
         if run.status in TERMINAL_STATUSES or depth > 4:
             return run.status
@@ -2596,11 +2698,14 @@ def _derive(run: AgentRun) -> AgentRun:
     # work is an ending, the run finished — even if nothing was watching to record an exit code.
     # Without this, a run whose supervisor died reports "interrupted" while its transcript
     # plainly says it completed.
-    ending = digest.ending if run.exit_code is None else None
+    ending = digest.ending if run.exit_code is None and run.status != "starting" else None  # its previous turn's ending is no longer how it stands
     if ending is not None:
         run.status = (
             "waiting" if run.kind == "conversation" and ending == "done"
             else "done" if ending == "done"
+            # A try that ended on an error while its message is still in flight is that try's, not the run's: this PC
+            # may try again (`agent_queue.settle`), and the CLI writes that line before it exits.
+            else "starting" if run.status in ("starting", "running") and _in_flight(run)
             else "failed"
         )
     # A process that dies never calls finish(), so an ended run routinely has no end TIME — and a
@@ -2622,7 +2727,9 @@ def _derive(run: AgentRun) -> AgentRun:
     # A run whose own scope is not on record yet (launched moments before `systemd-run` moved it) learns it while it runs.
     if run.status == "running" and run.unit is None and run.pid:
         run.unit = _run_unit(run.pid, run.run_id)
-    if run.finished_at is None and run.status != "running":
+    if run.status == "starting":
+        run.finished_at = None   # coming back: no end yet, as `begin_resume_locked` writes it
+    elif run.finished_at is None and run.status != "running":
         # Whichever of its two streams was written last: a run whose ending is known only from the
         # normalised copy (or that never wrote a raw byte) still has to carry WHEN it stopped, or
         # every surface listing it draws its length as "—".
@@ -3245,7 +3352,7 @@ def forget(run_id: str) -> bool:
     if resolved is None:
         return False
     run = _read_record(resolved)
-    if run is None or _status_for(run) == "running":
+    if run is None or _status_for(run) in ("starting", "running"):
         return False
     for path in (_record_path(resolved), events_path(resolved),
                  messages_path(resolved), raw_events_path(resolved), stderr_path(resolved),

@@ -10,6 +10,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode
 from galaius.caller import Caller
+from galaius_core import CompactAt
 from galaius_core.tool_settings import VLM_MIN_DIM_DEFAULT, VLM_MAX_DIM_DEFAULT
 
 from galaius.agents.providers import MEDIA_PROVIDERS
@@ -278,17 +279,20 @@ class Config(BaseSettings):
     prompt_token_file: Path | None = None
     prompt_cache: Path = Path.home() / ".galaius" / "prompts.sqlite3"
     claude_media_criteria: str = ""
-    # Every Claude Code agent turn galaius launches (its first and each resumed one; never the owner's own
-    # editor conversation) gets these as `--settings`, which win over the user's own settings files.
-    # Window (`autoCompactWindow`, 100k-1M): the CLI compacts at `window - 33k`, capped at the model's own
-    # window. Default 1000000 = Claude Code's own behaviour: a 1M-token model compacts at 967k, a 200k one
-    # at 167k. A top-level "auto" would let the owner's own setting leak in (2.1.288; recheck: the
-    # `get_context_usage` control request on `claude -p --input-format stream-json` answers `maxTokens`
-    # and `autocompactThreshold`). Each call re-reads the whole conversation: a lower window bills less
-    # per call but makes long runs compact repeatedly.
-    # Bash output: characters a command's output may put in the conversation; the rest goes to a file the
-    # agent is pointed at. Override: GALAIUS_CLAUDE_COMPACT_WINDOW, GALAIUS_CLAUDE_BASH_OUTPUT_CHARS.
-    claude_compact_window: Annotated[int, Field(ge=100_000, le=1_000_000)] = 1_000_000
+    # Every model call of an agent re-reads its whole conversation, so the context it compacts at bounds what each call
+    # costs (2026-10-26: runs left to Claude Code's own 967k on 1M models burnt half a day's subscription in hours).
+    # `agent_compact_at_by_department`: what a role whose catalog revision names no `compact_at` compacts at, by its
+    # catalog department (critics and reviewers sit in `quality`: they judge one artifact, 120k holds it).
+    # `agent_compact_at`: what every other run (a run with no role too) compacts at. Both: Claude Code runs only (a Codex
+    # run compacts where its CLI does). `agent_reuse_context_max`: a run of a role holding more context than this is never
+    # handed a new task by a spawn; a fresh run of the role takes it (`spawn_line.Spawn._misfit`).
+    # `claude_bash_output_chars`: characters a Claude Code command's output may put in the conversation; the rest goes to
+    # a file the agent is pointed at.
+    # Overrides: GALAIUS_AGENT_COMPACT_AT, GALAIUS_AGENT_COMPACT_AT_BY_DEPARTMENT (JSON, replaces the whole mapping),
+    # GALAIUS_AGENT_REUSE_CONTEXT_MAX, GALAIUS_CLAUDE_BASH_OUTPUT_CHARS.
+    agent_compact_at: CompactAt = 200_000
+    agent_compact_at_by_department: dict[str, CompactAt] = {"quality": 120_000}
+    agent_reuse_context_max: Annotated[int, Field(gt=0)] = 150_000
     claude_bash_output_chars: Annotated[int, Field(gt=0)] = 15_000
     # Sovereign-tier requirement (see QUALITY_TIERS); empty → cheapest VLM (self-hosted models
     # sort first on price with no key needed). Override: GALAIUS_TIER_SOVEREIGN_CRITERIA.

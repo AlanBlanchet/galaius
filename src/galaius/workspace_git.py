@@ -13,9 +13,7 @@ from galaius_core import AgentRefusal, Refused, WorkspaceFailureCode
 
 
 class AgentRefused(Refused[AgentRefusal]):
-    """An agent request this computer refuses (`AgentRefusalCode`): a start while the web's conversations work at their most
-    (`web_full`, the web holds the launch until one ends), one asked again while its first delivery still works here
-    (`under_way`, the server asks once more later), a project folder's failure (`WorkspaceRefused`)."""
+    """An agent request this computer refuses, its reason an `AgentRefusalCode` (the codes and what each means live there)."""
 
 
 class WorkspaceRefused(AgentRefused):

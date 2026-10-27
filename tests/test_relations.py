@@ -318,9 +318,25 @@ def test_a_conversation_works_for_the_project_its_first_coordinator_started_in(t
     (worktree / ".git").write_text(f"gitdir: {two_projects['shop'] / '.git' / 'worktrees' / 'ui'}\n")
     assert relations.folder_project(str(worktree)) == two_projects["shop"] and relations.folder_project(str(two_projects["slice"])) == two_projects["site"]
     cwd = {"shop-worktree": worktree, "override": two_projects["shop"]}.get(folder) or two_projects[folder]
-    said = Spawn(task="t", cwd=str(cwd), agent="main", parent_run_id=IDS["lead"], cross_project=folder == "override").naming_refusal()
+    said = Spawn(task="t", cwd=str(cwd), agent="librarian", parent_run_id=IDS["lead"], cross_project=folder == "override").naming_refusal()
     assert (said is not None) is refused
     assert not refused or f"project shop, and this conversation works for project site" in said
+
+
+@pytest.mark.parametrize("asker, agent, continues, refused", [
+    pytest.param("eng", "main", None, True, id="a-maker-starts-a-coordinator-in-its-conversation"),
+    pytest.param("lead", "main", "lead", False, id="a-coordinator-hands-its-own-work-on"),
+    pytest.param("eng", "librarian", None, False, id="a-maker-starts-another-role"),
+    pytest.param(None, "main", None, False, id="the-persons-own-spawn"),
+])
+def test_a_coordinator_never_starts_inside_an_agents_conversation(two_projects, monkeypatch, asker, agent, continues, refused):
+    """Owner 2026-10-27 « Why is there another Coordinator in your list of agents ? »: makers probing the product spawned
+    `main` in scratch folders as their own children; each joined his conversation's agent list."""
+    monkeypatch.setattr(messaging, "asking_run", lambda: asker and IDS[asker])
+    said = Spawn(task="t", cwd=str(two_projects["scratch"]), agent=agent, parent_run_id=IDS[asker or "lead"],
+                 continues=continues and IDS[continues]).naming_refusal()
+    assert (said is not None) is refused, said
+    assert not refused or "GALAIUS_AGENTS_DIR" in said
 
 
 def test_the_turn_card_names_the_project_of_each_run_it_lists(two_projects):

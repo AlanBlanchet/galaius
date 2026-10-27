@@ -31,7 +31,7 @@ import httpx
 import websockets
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, ValidationError, field_validator, model_validator
 
-from galaius_core import AGENT_FILES_FEATURE, AGENT_IMAGES_FEATURE, MACHINE_TOOLS_FEATURE, AGENT_IMAGES_WIRE, MACHINE_AGENT_REQUESTS, PROJECTS_DIR, PROJECTS_ROOT, PROJECTS_ROOT_FEATURE, SUBSCRIPTIONS_FEATURE, WEB_LIMIT_FEATURE, AgentCompactRequest, AgentMoveRequest, AgentSendRequest, AgentSignInCodeRequest, AgentStartRequest, MACHINE_MODELS, MachineProblem, MachineProblemCode, MachineAgentSettings, MachineAgentSettingsState, MachineAgentSettingsUpdate, PlacePath, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, AgentRefusal, MachineAgentAnswer, Refused, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachineRuntime, MachineTokenSwap, PlaceLevel, ScriptFile, ScriptLanguage, UserModelOrigin, SCREEN_FEATURE
+from galaius_core import AGENT_FILES_FEATURE, AGENT_IMAGES_FEATURE, AGENT_REASONING_FEATURE, MACHINE_TOOLS_FEATURE, AGENT_IMAGES_WIRE, MACHINE_AGENT_REQUESTS, PROJECTS_DIR, PROJECTS_ROOT, PROJECTS_ROOT_FEATURE, RUN_MOVE_WAITS_FEATURE, SUBSCRIPTIONS_FEATURE, WEB_LIMIT_FEATURE, AgentCompactRequest, AgentMoveRequest, AgentSendRequest, AgentSignInCodeRequest, AgentStartRequest, MACHINE_MODELS, MachineProblem, MachineProblemCode, MachineAgentSettings, MachineAgentSettingsState, MachineAgentSettingsUpdate, PlacePath, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, AgentRefusal, MachineAgentAnswer, Refused, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachineRuntime, MachineTokenSwap, PlaceLevel, ScriptFile, ScriptLanguage, UserModelOrigin, SCREEN_FEATURE
 from galaius import USER_AGENT
 from galaius import prompt_mirror, prompt_projection
 from galaius.agents.subscription_watch import SubscriptionWatch
@@ -58,6 +58,7 @@ from galaius.config import Config
 from galaius.agents.run import load_policy, run_agent
 from galaius.agents.followup import FollowUps
 from galaius.agents.warm import WarmStart
+from galaius.agents.session_stops import SETTINGS_OK, SessionStops
 from galaius.agents import registry as reg
 from galaius.agents.profiles import ALLOWED_ENV
 from galaius.desktop.screen_desk import ScreenDesk
@@ -1042,6 +1043,10 @@ class MachineRunner:
         self._workspace_jobs.settle_interrupted()
         # Before anything reads which cut runs come back by themselves (`EndWatch`, `_resume_paused`): from when they do.
         await asyncio.to_thread(reg.cut_resume_since)
+        # The hook that lets the web stop his editor sessions, in place before he opens the next one: Claude Code reads
+        # its hooks when a session starts (`SessionStops`). Settings that are not JSON are left as they are.
+        if (hooked := await asyncio.to_thread(SessionStops().install)) not in SETTINGS_OK:
+            logger.warning("the web cannot stop an editor session on this computer: its Claude Code settings are %s", hooked)
         # Local and independent of the server: a run killed while the PC is offline is settled too.
         settler = asyncio.create_task(self._settle_runs())
         handing = asyncio.create_task(self._hand_back())
@@ -1407,11 +1412,10 @@ class MachineRunner:
     #: `WEB_LIMIT_FEATURE`: a start, a continued conversation and the runs list honour the web's `WebLimited.web_limit`.
     #: `PROJECTS_ROOT_FEATURE`: `PROJECTS_ROOT` names the projects folder (`MachineConfig.projects_root`); kept ahead of the
     #: `script:*` entries, past which a server keeps no more.
-    #: `SCREEN_FEATURE`: its screen can be watched, and driven, from the web (`ScreenDesk`). With Windows' four
-    #: `script:*` languages this makes 32, the server's whole budget: a further feature retires one first.
+    #: `SCREEN_FEATURE`: its screen can be watched, and driven, from the web (`ScreenDesk`).
     FEATURES: ClassVar[tuple[str, ...]] = ("file_query", "script_file", "file_read", "agent_control", "agent_settings", "web_settings", "workspaces", "start_permission", "project_secrets", "places", "agent_media", "tool_gateway", "token_swap",
-                                           "workspace_copy", "places_direct", "agent_programs", SUBSCRIPTIONS_FEATURE, AgentMoveRequest.feature, str(AgentSendRequest.idempotent_feature), str(AgentStartRequest.idempotent_feature), WEB_LIMIT_FEATURE,
-                                           AgentSignInCodeRequest.feature, AgentCompactRequest.feature, PROJECTS_ROOT_FEATURE, AGENT_IMAGES_FEATURE, AGENT_FILES_FEATURE, MACHINE_TOOLS_FEATURE,
+                                           "workspace_copy", "places_direct", "agent_programs", SUBSCRIPTIONS_FEATURE, AgentMoveRequest.feature, RUN_MOVE_WAITS_FEATURE, str(AgentSendRequest.idempotent_feature), str(AgentStartRequest.idempotent_feature), WEB_LIMIT_FEATURE,
+                                           AgentSignInCodeRequest.feature, AgentCompactRequest.feature, PROJECTS_ROOT_FEATURE, AGENT_IMAGES_FEATURE, AGENT_REASONING_FEATURE, AGENT_FILES_FEATURE, MACHINE_TOOLS_FEATURE,
                                            SCREEN_FEATURE)
 
     @classmethod

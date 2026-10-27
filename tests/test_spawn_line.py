@@ -334,14 +334,19 @@ OLDER = {"id": str(uuid.UUID(int=1)), "revision": str(uuid.UUID(int=2))}
     pytest.param([("eng1", {"parent_run_id": "other-lead"})], {}, None, "", id="other-conversation-same-session"),
     pytest.param([("eng1", {"session_id": "s2", "parent_run_id": None})], {"parent_run_id": None}, None, "", id="no-parent-other-session"),
     pytest.param([("eng1", {"parent_run_id": None})], {"parent_run_id": None}, "eng1", "", id="no-parent-same-session-continued"),
+    # The effort a person set on its conversation stays with that conversation: the task handed on runs at its role's.
+    pytest.param([("eng1", {"reasoning_set": "max"})], {}, "eng1", "", id="reused-run-drops-the-effort-set-on-its-conversation"),
     pytest.param([("eng1", {})], {"task": "x" * 5000}, "eng1", "", id="long-brief-continued"),
-    pytest.param([("eng1", {"context": (170_000, 200_000)})], {}, None, "eng1 has its context near full (170000/200000)", id="context-near-full"),
+    pytest.param([("eng1", {"context": (150_000, 233_000)})], {}, "eng1", "", id="context-at-reuse-ceiling-continued"),
+    # 2026-10-26: runs at 500k-905k of a 1M window took new tasks and billed half a day's subscription in hours.
+    pytest.param([("eng1", {"context": (905_000, 1_000_000)})], {}, None, "eng1 holds 905000 tokens of context, past the 150000 a new task may inherit",
+                 id="context-past-reuse-ceiling-starts-fresh"),
     pytest.param([("eng1", {"context": (90_000, 200_000)})], {}, "eng1", "", id="context-with-room-continued"),
     # Owner 2026-10-17: « it should be 1 person for this project to be able to deploy, not 8 ».
     pytest.param([("eng1", {"busy": True}), ("eng2", {})], {"single": True}, "eng1", "", id="single-queues-the-one-at-work"),
     # One at a time: a busy one of another revision, agent or a full context still takes it behind its turn, never one beside it.
     pytest.param([("eng1", {"busy": True, "agent_ref": OLDER})], {"single": True}, "eng1", "", id="single-busy-other-revision-queued"),
-    pytest.param([("eng1", {"busy": True, "context": (170_000, 200_000)})], {"single": True}, "eng1", "", id="single-busy-context-near-full-queued"),
+    pytest.param([("eng1", {"busy": True, "context": (170_000, 233_000)})], {"single": True}, "eng1", "", id="single-busy-context-past-ceiling-queued"),
     pytest.param([("eng1", {"busy": True, "replaced_by": {"run_id": "eng9-relaunch", "provider": "claude"}})], {"single": True}, None,
                  "eng1 was refused at launch, relaunched as eng9-rel", id="single-busy-taken-over-starts-new"),
     pytest.param([("eng1", {"busy": True})], {}, None, "eng1 is working", id="busy-not-single-starts-new"),
@@ -404,6 +409,7 @@ def test_a_spawn_continues_its_conversations_idle_agent_of_that_role(at_work, mo
         # A run of another folder is told the task's: its session still starts in its own.
         elsewhere = reg.get_run(continued).cwd != spawn.cwd
         assert texts[-1].endswith(spawn.task) and (str(tmp_path) in texts[-1].removesuffix(spawn.task)) == elsewhere
+        assert reg.get_run(continued).reasoning_set is None
     if not continued:
         assert handover.why == (f"backend-engineer already here, not continued: {why}" if why else "")
 
@@ -503,7 +509,7 @@ def test_a_child_that_never_got_its_task_is_ended_instead_of_run(monkeypatch, tm
 
     deaf = _Deaf()
     launch = ChildLaunch(provider=ClaudeCodeProvider(), cwd=str(tmp_path), environment={}, arguments={},
-                         meshed=False, role="backend-engineer")
+                         meshed=False, role="backend-engineer", compact_at=200_000)
     monkeypatch.setattr(ChildLaunch, "_ahead", lambda self, run_id, session: _answer(deaf))
 
     with pytest.raises(TaskNotHanded):
