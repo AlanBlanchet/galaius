@@ -13,13 +13,13 @@ from uuid import uuid4
 
 import pytest
 from galaius_core import (
-    ScreenRefusal,
     SCREEN_PLAIN_FRAME,
     SCREEN_PLAIN_STATS,
     MachineRef,
     ScreenAllowance,
     ScreenOffer,
     ScreenOpenRequest,
+    ScreenRefusal,
     ScreenSealed,
     ScreenStatusRequest,
 )
@@ -104,10 +104,10 @@ async def test_a_passkey_opens_a_sealed_stream_the_relay_cannot_read_and_control
     index, sealed = await relay.next("screen_frame")
     assert b"\xff\xd8" not in json.dumps(sealed).encode(), "the relay holds only ciphertext"
     header, jpeg = _frame(viewer, sealed)
-    assert jpeg[:2] == b"\xff\xd8" and header["sequence"] == 1 and header["w"] == 960
+    assert jpeg[:2] == b"\xff\xd8" and header["sequence"] == 1 and header["w"] == 1280
 
-    # The viewer clicks at (480, 270) of the 960-wide frame it drew: the 1920-wide screen's centre.
-    act = {"type": "click", "x": 480, "y": 270, "frame": header["sequence"]}
+    # The viewer clicks at (640, 360) of the 1280-wide frame it drew: the 1920-wide screen's centre.
+    act = {"type": "click", "x": 640, "y": 360, "frame": header["sequence"]}
     desk.take(viewer.seal(opened.session, 1, json.dumps({"ack": header["sequence"], "drawn_ms": 4.0, "acts": [act]}).encode()))
     for _ in range(100):
         if desk.backend.done:

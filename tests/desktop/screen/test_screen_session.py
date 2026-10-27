@@ -11,6 +11,8 @@ computer for real is marked `desktop`.
 """
 
 import asyncio
+import collections
+import contextlib
 import math
 import time
 from datetime import UTC, datetime, timedelta
@@ -49,6 +51,18 @@ def test_an_unchanged_screen_sends_one_frame_and_then_nothing(tmp_path):
     grabber.fill = (200, 30, 40)
     changed = session.frame()
     assert changed is not None and changed.sequence == 2 and session.stats.frames == 2
+
+
+def test_a_pointer_that_moved_on_a_still_screen_is_sent(tmp_path):
+    """The grab leaves the cursor out (the viewer draws it): a tap on a still window moved only the
+    pointer, and the viewer kept the old one for up to `IDLE_SECONDS`."""
+    backend = FakeBackend()
+    session = _session(tmp_path, backend=backend)
+    session.frame()
+    backend.spot = (960, 540)
+    moved = session.frame()
+    assert moved is not None and (moved.pointer_x, moved.pointer_y) == (640, 360)
+    assert session.frame() is None
 
 
 def test_an_unchanged_screen_still_sends_after_its_idle_wait(tmp_path, monkeypatch):
@@ -148,22 +162,30 @@ class _Link:
     paced to the 10 frames a second the viewer asks for; `rounds` returns the widths sent."""
 
     def __init__(self, ladder: QualityLadder, clock: _Clock, floor_ms: float, picture_ms: float, screen: int = 1920) -> None:
-        self.ladder, self.clock, self.floor_ms, self.picture_ms, self.screen = ladder, clock, floor_ms, picture_ms, screen
+        self.ladder, self.clock, self.floor_ms, self.picture_ms = ladder, clock, floor_ms, picture_ms
+        ladder.screen_width = screen
 
     def rounds(self, n: int) -> list[int]:
         sent = []
         for _ in range(n):
-            width = self.ladder.sizing(self.screen)[0]
+            width, quality = self.ladder.sent
             round_ms = self.floor_ms + self.picture_ms * (width / 1280) ** 2
             self.clock.now += max(round_ms, 100) / 1000
-            self.ladder.measured(round_ms, self.screen)
+            self.ladder.measured(round_ms, width, quality)
             sent.append(width)
+        return sent
+
+    def during(self, seconds: float) -> list[int]:
+        """The widths sent over `seconds` of this link."""
+        sent, until = [], self.clock.now + seconds
+        while self.clock.now < until:
+            sent += self.rounds(1)
         return sent
 
 
 def _rounds(ladder: QualityLadder, ms: float, n: int) -> None:
     for _ in range(n):
-        ladder.measured(ms, 1920)
+        ladder.measured(ms, *ladder.sent)
 
 
 def _level(ladder: QualityLadder) -> tuple[int, int]:
@@ -177,28 +199,49 @@ def clock() -> _Clock:
 
 @pytest.fixture
 def ladder(clock) -> QualityLadder:
-    return QualityLadder(ScreenSpec(width=1280, quality=55, max_fps=10), clock=clock)
+    ladder = QualityLadder(ScreenSpec(width=1280, quality=55, max_fps=10), clock=clock)
+    ladder.screen_width = 1920
+    return ladder
 
 
-@pytest.mark.parametrize("floor_ms, fits_while_full", [(10, 720), (70, 480), (90, 480), (220, 480)],
-                         ids=["lan-10ms", "phone-70ms", "phone-under-load-90ms", "far-link-220ms"])
-def test_a_full_link_narrows_and_climbs_back_to_the_top_once_it_clears(ladder, clock, floor_ms, fits_while_full):
+@pytest.mark.parametrize("floor_ms, fits_while_full, full_seconds", [
+    pytest.param(10, 720, 6, id="lan-10ms"),
+    pytest.param(70, 480, 6, id="phone-70ms"),
+    pytest.param(90, 480, 6, id="phone-under-load-90ms"),
+    pytest.param(220, 480, 6, id="far-link-220ms"),
+    pytest.param(70, 480, 300, id="phone-70ms-full-for-5-minutes"),
+    pytest.param(90, 480, 300, id="phone-under-load-90ms-full-for-5-minutes"),
+])
+def test_a_full_link_narrows_and_climbs_back_to_the_top_once_it_clears(ladder, clock, floor_ms, fits_while_full, full_seconds):
     """Bytes are what make this link slow while it is full (a 1280 picture costs 400 ms on it): the
-    picture narrows rung by rung to one that fits, and once the link clears it climbs back to 1280
-    within the refused levels' retry wait — 960 on the way both ways. A phone's distance used to hold it
-    narrow: « easy » was a fixed 90 ms, which a picture 90 ms away never is; and a far link, whose
-    distance alone is over the budget, climbs back too, as narrowing does not pay there."""
+    picture narrows rung by rung to one that fits, and once the link clears it climbs back to 1280 a
+    rung per judgment — 960 on the way both ways, whatever wait the refused levels were left with. A
+    phone's distance used to hold it narrow: « easy » was a fixed 90 ms, which a picture 90 ms away
+    never is; a far link, whose distance alone is over the budget, climbs back too; and a link full for
+    longer than the floor remembers a wider picture climbs back by trying one (code-reviewer r1: it
+    stayed at 480 for good)."""
     link = _Link(ladder, clock, floor_ms, picture_ms=40)
     assert link.rounds(50)[-4:] == [1280] * 4, "a clear link keeps the sharpest picture"
 
     link.picture_ms = 400
-    down = link.rounds(40)
+    down = link.during(full_seconds)
     assert ladder.spec.width == fits_while_full and 960 in down
 
     link.picture_ms = 40
-    up = link.rounds(100)  # 10 s at 10 frames a second: the first retry wait, then a rung per judgment
+    up = link.rounds(100)
     assert up[-1] == 1280 and 960 in up, up
-    assert up.index(1280) <= ladder.settings.retry_seconds * 10 + 3 * ladder.settings.judged_rounds
+    assert up.index(1280) <= 4 * ladder.settings.judged_rounds, up
+
+
+@pytest.mark.parametrize("floor_ms", [70, 90], ids=["phone-70ms", "phone-under-load-90ms"])
+def test_a_link_full_from_its_first_frame_settles_on_a_picture_that_fits(ladder, clock, floor_ms):
+    """No clear round ever showed this link's distance: its fastest round is mostly picture. Taken as
+    the distance, it held the 960 picture at ~300 ms rounds, twice the budget; the narrowest and widest
+    rounds put the distance where it is, and the 480 picture that fits is where the ladder stays."""
+    link = _Link(ladder, clock, floor_ms, picture_ms=400)
+    link.during(30)
+    held = link.during(60)
+    assert sum(width == 480 for width in held) >= 0.9 * len(held), collections.Counter(held)
 
 
 def test_a_screen_narrower_than_the_rungs_still_narrows_on_a_full_link(ladder, clock):
@@ -213,9 +256,10 @@ def test_a_link_slow_by_distance_keeps_the_sharp_picture(ladder, clock, floor_ms
     """Distance before a byte of picture is what makes these rounds long: narrowing buys nothing, so
     the 1280 view stays — over the budget, one narrowing a minute is tried and undone (the old ladder
     walked it down to 427 px)."""
+    started = clock.now
     _Link(ladder, clock, floor_ms, picture_ms=30).rounds(200)
     assert _level(ladder) == (1280, 55)
-    assert ladder.lightened <= math.ceil((clock.now - 1000) / ladder.settings.floor_seconds), ladder.lightened
+    assert ladder.lightened <= math.ceil((clock.now - started) / ladder.settings.floor_seconds), ladder.lightened
 
 
 def test_a_link_that_moved_farther_is_narrowed_once_and_given_back(ladder, clock):
@@ -231,7 +275,7 @@ def test_a_link_that_moved_farther_is_narrowed_once_and_given_back(ladder, clock
 def test_one_late_frame_is_jitter_not_a_slow_link(ladder):
     for _ in range(20):
         _rounds(ladder, 60, ladder.settings.judged_rounds - 1)
-        ladder.measured(900, 1920)
+        ladder.measured(900, *ladder.sent)
     assert _level(ladder) == (1280, 55) and ladder.lightened == 0
 
 
@@ -246,7 +290,7 @@ def test_a_link_on_the_edge_of_a_level_stops_flipping(ladder, clock):
         while _level(ladder) != (1280, 55):
             clock.now += 0.1
             waited += 0.1
-            ladder.measured(40, 1920)
+            ladder.measured(40, *ladder.sent)
         waits.append(round(waited))
         _rounds(ladder, 300, ladder.settings.judged_rounds)
         assert _level(ladder) == (960, 45)
@@ -272,8 +316,7 @@ def test_stop_ends_text_being_typed_at_its_next_chunk(tmp_path):
 def test_a_session_reports_what_it_cost(tmp_path):
     """The numbers a performance review reads, per step and overall."""
     session = _session(tmp_path)
-    session.frame()
-    session.measured(42.0)
+    session.measured(42.0, session.frame())
 
     stats = session.readiness().stats
     assert stats.frames == 1 and stats.bytes_sent > 1000
@@ -347,6 +390,39 @@ async def test_a_stream_ends_by_itself_and_says_why(tmp_path, monkeypatch, endin
     assert ending in str(streamer.ended)
     assert link.frames, "frames flowed before it ended"
     assert marker.stopped == 1 and grabber.closed, "a stream that ends takes its badge down"
+
+
+async def test_a_tap_s_picture_leaves_beside_the_frame_in_flight(tmp_path):
+    """A tap's change goes out once the screen shows it, without waiting for the frame already out
+    to come back (up to a whole round, 134 ms at 1280 px on a phone link): it waited behind it and
+    behind the frame rate's pace. A frame nobody acted for still waits its turn."""
+    grabber = FakeGrabber()
+    session = _session(tmp_path, grabber=grabber)
+    link = FakeLink(delay_ms=2000)  # the first frame's round outlasts the test
+
+    async def sent(count: int) -> list[int]:
+        for _ in range(100):
+            if len(link.frames) >= count:
+                break
+            await asyncio.sleep(0.01)
+        return link.frames
+
+    streamer = ScreenStreamer(session, link.send)
+    stream = asyncio.create_task(streamer.run())
+    try:
+        assert await sent(1) == [1]
+        streamer.acted()
+        await asyncio.sleep(0.1)
+        assert link.frames == [1], "a tap that changed nothing sends nothing"
+        grabber.fill = (90, 90, 90)  # the tapped window repaints a moment after the tap
+        assert await sent(2) == [1, 2], "its picture left while the first was still out"
+        grabber.fill = (120, 120, 120)  # a change nobody acted for
+        await asyncio.sleep(0.3)
+        assert link.frames == [1, 2], "it waits for a round to come back"
+    finally:
+        stream.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await stream
 
 
 async def test_a_viewer_that_went_away_ends_the_stream_without_the_server(tmp_path, monkeypatch):

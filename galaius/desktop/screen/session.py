@@ -26,6 +26,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import ClassVar
 
@@ -46,7 +47,7 @@ from galaius_core import (
     Timing,
 )
 from PIL import Image
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from galaius.desktop.backend import DesktopBackend, DesktopUnsupportedError
 from galaius.desktop.host import host_desktop
@@ -106,8 +107,9 @@ class LadderSettings(BaseModel):
 
     model_config = ConfigDict(frozen=True)
     #: The round (a frame out → its ack back) the picture is kept under: half the owner's « ≤300 ms
-    #: p95 » on a mobile link, as a change waits up to one round for its grab and then rides the next.
-    budget_ms: float = 150.0
+    #: p95 » on a mobile link, as a change nobody acted for waits up to one round for its grab and then
+    #: rides the next (`ScreenStreamer` sends an act's picture beside the frame in flight).
+    budget_ms: float = Field(default=150.0, gt=0)
     #: Rounds a level is judged on: all of them over the budget narrow the picture (one late frame is
     #: jitter), their median says what the level costs.
     judged_rounds: int = Field(default=4, ge=2)
@@ -123,25 +125,43 @@ class LadderSettings(BaseModel):
     #: network; on a far link it is also how often one narrowing is tried again.
     floor_seconds: float = Field(default=60.0, gt=0)
     #: A level the link refused right after the ladder sharpened to it waits this long before the next
-    #: try, doubled on each refusal within `retry_max_seconds` of reaching it.
+    #: try, doubled on each refusal within `retry_max_seconds` of reaching it — shorter than
+    #: `floor_seconds`, so the retry comes due while the floor still holds the refused level's rounds.
     retry_seconds: float = Field(default=5.0, gt=0)
-    retry_max_seconds: float = Field(default=60.0, gt=0)
+    retry_max_seconds: float = Field(default=50.0, gt=0)
+
+    @model_validator(mode="after")
+    def _retries_inside_the_floor(self) -> "LadderSettings":
+        if not self.retry_seconds <= self.retry_max_seconds < self.floor_seconds:
+            raise ValueError("retry_seconds ≤ retry_max_seconds < floor_seconds")
+        return self
+
+
+@dataclass
+class Refusal:
+    """A level the link refused: tried again once `until` passes, or sooner once its round,
+    predicted from the level below and scaled by `excess` (how far its real round outran that
+    prediction when it was refused), fits — the link cleared. A level on its edge, whose real round
+    outran the prediction far, waits out its retry."""
+
+    until: float
+    excess: float | None = None
 
 
 class QualityLadder:
     """The width and quality frames are made at, walked from the rounds the link really takes (a frame
     out → its ack back).
 
-    A round is the link's distance (its `floor`, the fastest round seen lately) plus the picture's own
-    time, which scales with its pixels: that is how the ladder predicts another level's round from the
-    current one (`predicted`). It narrows once `judged_rounds` rounds in a row are over the budget and
-    a narrower picture is predicted to come back faster (`LadderSettings.gain`), and sharpens once the
-    sharper picture is predicted to fit (`LadderSettings.headroom`) or would not be narrowed again — so
-    a phone 90 ms away climbs back to its sharpest level as soon as the bytes fit, where a fixed « fast
-    enough » held it narrow. A
-    narrowing that came back no faster is undone and teaches the ladder the link's new distance; a
-    level refused right after sharpening to it waits out a doubling retry, so a link on the edge of one
-    level does not flip. Never sharper than the viewer asked (`asked`)."""
+    A round is the link's distance (its `floor`, read from the fastest rounds seen lately) plus the
+    picture's own time, which scales with its pixels: that is how the ladder predicts another level's
+    round from the current one (`predicted`). It narrows once `judged_rounds` rounds in a row are over
+    the budget and a narrower picture is predicted to come back faster (`LadderSettings.gain`), and
+    sharpens once the sharper picture is predicted to fit (`LadderSettings.headroom`) or would not be
+    narrowed again — so a phone 90 ms away climbs back to its sharpest level as soon as the bytes
+    fit, where a fixed « fast enough » held it narrow. A narrowing that came back no faster is undone
+    and teaches the ladder the link's new distance; a level refused right after sharpening to it
+    waits out a doubling retry, so a link on the edge of one level does not flip, unless the link
+    clears first (`Refusal`). Never sharper than the viewer asked (`asked`)."""
 
     #: A screen this close above a rung is sent as it is, or by whole-number reduction when that lands
     #: this close above it: the geometric middle between the two nearest rungs (√1.2 ≈ 1.095), so two
@@ -160,8 +180,8 @@ class QualityLadder:
             self.levels.append(lighter)
         self._at = 0
         self.lightened = self.sharpened = 0
-        #: The width of the screen the last measured round's frame was cut from: what `predicted`
-        #: sizes every level from (the asked width until the first round says).
+        #: The width of the last grab, set by whoever grabs: what every level is sized from (the asked
+        #: width until the first grab says).
         self.screen_width = asked.width
         #: The last rounds at the current level, what a level is judged on.
         self._at_level: deque[float] = deque(maxlen=self.settings.judged_rounds)
@@ -172,8 +192,8 @@ class QualityLadder:
         #: The wider level a narrowing left (its index) and its last round, until the narrower one is judged:
         #: the last, not the median, as a link filling up mixes rounds from before it filled into the median.
         self._narrowed_from: tuple[int, float] | None = None
-        #: Levels the link refused, by index in `levels`, and until when; the wait for the next refusal.
-        self._refused: dict[int, float] = {}
+        #: Levels the link refused, by index in `levels`; the wait the next refusal gets.
+        self._refused: dict[int, Refusal] = {}
         self._retry = self.settings.retry_seconds
 
     @property
@@ -182,15 +202,27 @@ class QualityLadder:
         return self.levels[self._at]
 
     @property
-    def floor(self) -> float:
-        """The link's distance: the fastest round of the last `floor_seconds`. 0 while every one of them
-        carried the current width: from one picture size distance and bytes cannot be told apart, so
-        the whole round counts as picture — a narrowing is tried, and `_far` learns the distance if it
-        did not help."""
+    def floor(self) -> tuple[float, float] | None:
+        """Where the link's distance lies, from the rounds of the last `floor_seconds`: no higher than
+        the fastest round of all, no lower than where the fastest rounds of the narrowest and the
+        widest picture put a picture of no pixels (a round is distance plus a time per pixel). The two
+        meet while the link holds steady; they part when it changed between the rounds — a link full
+        from its first frame, whose fastest round is still mostly picture (taken as the distance, it
+        held the ladder at twice its budget), or one that cleared since its widest picture went out.
+        Each move reads the end that favours it, as its outcome corrects it (`_far`, `_narrow`).
+
+        None while every round carried the current width: from one picture size distance and bytes
+        cannot be told apart, so either move is a trial — a narrowing counts the whole round as
+        picture, a sharpening counts it as distance."""
         width = self.sizing(self.screen_width)[0]
         if all(sent == width for _, _, sent in self._recent):
-            return 0.0
-        return min(round_ms for _, round_ms, _ in self._recent)
+            return None
+        fastest: dict[int, float] = {}
+        for _, round_ms, sent in self._recent:
+            fastest[sent] = min(fastest.get(sent, round_ms), round_ms)
+        highest, narrow, wide = min(fastest.values()), min(fastest), max(fastest)
+        per_pixel = (fastest[wide] - fastest[narrow]) / (wide ** 2 - narrow ** 2) if wide > narrow else 0.0
+        return max(min(highest, fastest[narrow] - per_pixel * narrow ** 2), 0.0), highest
 
     def sizing(self, screen_width: int, spec: ScreenSpec | None = None) -> tuple[int, int | None]:
         """The width `spec` (default: the current level) sends from a `screen_width`-wide grab, and the whole number
@@ -207,20 +239,27 @@ class QualityLadder:
             return reduced, factor
         return rung, None
 
-    def predicted(self, spec: ScreenSpec, round_ms: float) -> float:
-        """The round `spec` would take, from `round_ms` at the current level: the same distance, and
-        the picture's own time in proportion to its pixels. The quality step that rides with the width
-        is left to `LadderSettings.headroom` and to the refusal of a level that proves slower."""
-        floor = self.floor
+    def predicted(self, spec: ScreenSpec, round_ms: float, floor: float) -> float:
+        """The round `spec` would take, from `round_ms` at the current level, on a link `floor` away:
+        the same distance, and the picture's own time in proportion to its pixels. The quality step
+        that rides with the width is left to `LadderSettings.headroom` and to the refusal of a level
+        that proves slower."""
         return floor + (round_ms - floor) * (self.sizing(self.screen_width, spec)[0] / self.sizing(self.screen_width)[0]) ** 2
 
-    def measured(self, round_ms: float, screen_width: int) -> None:
-        """One round the link took for a frame cut from a `screen_width`-wide grab; may move a level."""
+    @property
+    def sent(self) -> tuple[int, int]:
+        """The width and quality a frame of the current level has, from the last grab."""
+        return self.sizing(self.screen_width)[0], self.spec.quality
+
+    def measured(self, round_ms: float, width: int, quality: int) -> None:
+        """One round the link took for a frame `width` wide at `quality`; may move a level. A frame
+        made at a level the ladder has left since (two can be out at once) teaches the floor only."""
         now = self.clock()
-        self.screen_width = screen_width
-        self._recent.append((now, round_ms, self.sizing(screen_width)[0]))
+        self._recent.append((now, round_ms, width))
         while self._recent[0][0] < now - self.settings.floor_seconds:
             self._recent.popleft()
+        if (width, quality) != self.sent:
+            return
         self._at_level.append(round_ms)
         if len(self._at_level) < self.settings.judged_rounds:
             return
@@ -231,16 +270,34 @@ class QualityLadder:
             if typical > wider_ms * self.settings.gain:
                 self._far(wider, wider_ms, typical)
                 return
+            if refusal := self._refused.get(wider):
+                refusal.excess = wider_ms / self.predicted(self.levels[wider], typical, self._distance())
         if min(self._at_level) > self.settings.budget_ms and self._narrow(typical, now):
             return
-        if self._at > 0 and self._refused.get(self._at - 1, 0.0) <= now and self._pays(self.levels[self._at - 1], typical):
+        if self._at > 0 and (excess := self._excess(self._at - 1, now)) is not None and self._pays(self.levels[self._at - 1], typical, excess):
             self._move_to(self._at - 1)
 
-    def _pays(self, sharper: ScreenSpec, typical: float) -> bool:
-        """Whether `sharper` is worth its bytes: its picture fits what the budget leaves past the floor;
-        or the link's distance alone is over the budget and narrowing back from it would not pay
-        (`_narrow`'s own test), so a far link still climbs back to the sharpest picture."""
-        floor, round_ms = self.floor, self.predicted(sharper, typical)
+    def _excess(self, at: int, now: float) -> float | None:
+        """How far level `at`'s rounds outrun their prediction: 1 unless it is refused (`Refusal`),
+        None while its refusal holds whatever the link does."""
+        refusal = self._refused.get(at)
+        return 1.0 if refusal is None or refusal.until <= now else refusal.excess
+
+    def _distance(self) -> float:
+        """The high end of `floor` (0 unknown): what a sharpening reads."""
+        return floors[1] if (floors := self.floor) else 0.0
+
+    def _pays(self, sharper: ScreenSpec, typical: float, excess: float) -> bool:
+        """Whether `sharper` is worth its bytes, its predicted round scaled by `excess` (`_excess`):
+        its picture fits what the budget leaves past the floor; or the link's distance alone is over
+        the budget and narrowing back from it would not pay (`_narrow`'s own test), so a far link
+        still climbs back to the sharpest picture; or the floor is unknown (`floor`) — only after a
+        level held longer than the floor remembers, so a trial at most once per `floor_seconds` on a
+        link still full."""
+        if (floors := self.floor) is None:
+            return True
+        floor = floors[1]
+        round_ms = self.predicted(sharper, typical, floor) * excess
         if floor >= self.settings.budget_ms:
             return typical > round_ms * self.settings.gain
         return round_ms - floor <= self.settings.headroom * (self.settings.budget_ms - floor)
@@ -252,11 +309,12 @@ class QualityLadder:
         width = self.sizing(self.screen_width)[0]
         narrower = next((at for at in range(self._at + 1, len(self.levels))
                          if self.sizing(self.screen_width, self.levels[at])[0] < width), None)
-        if narrower is None or self.predicted(self.levels[narrower], typical) > typical * self.settings.gain:
+        floor = floors[0] if (floors := self.floor) else 0.0
+        if narrower is None or self.predicted(self.levels[narrower], typical, floor) > typical * self.settings.gain:
             return False
         again = now - self._stepped_at < self.settings.retry_max_seconds and self._sharpened_last
         self._retry = min(self._retry * 2, self.settings.retry_max_seconds) if again else self.settings.retry_seconds
-        self._refused[self._at] = now + self._retry
+        self._refused[self._at] = Refusal(now + self._retry)
         self._narrowed_from = (self._at, self._at_level[-1])
         self._move_to(narrower)
         return True
@@ -329,9 +387,8 @@ class ScreenSession:
         self.sequence = 0
         self.frames: dict[int, ScreenFrame] = {}
         self._allowance: ScreenAllowance | None = None
-        self._digest = b""
-        #: The width of the last grab: what the ladder sizes every level from.
-        self._screen_width = self.spec.width
+        #: What the last frame sent showed: its sampled pixels and where the pointer was.
+        self._seen: tuple[bytes, tuple[int, int] | None] = (b"", None)
         self._sent_at = 0.0
         self._checked_switch = 0.0
         self._grabs: deque[float] = deque(maxlen=self.SAMPLES)
@@ -394,12 +451,13 @@ class ScreenSession:
         started = time.perf_counter()
         image = self.grabber.grab(rect)
         grabbed = time.perf_counter()
-        digest = self._sample_digest(image)
+        # The pointer is not in the grab (the viewer draws it): a tap that only moved it is a change too.
+        seen = (self._sample_digest(image), self._spot())
         idle = time.monotonic() - self._sent_at < self.IDLE_SECONDS
-        if digest == self._digest and idle:
+        if seen == self._seen and idle:
             self.stats = self.stats.model_copy(update={"unchanged": self.stats.unchanged + 1})
             return None
-        self._screen_width = image.width
+        self.ladder.screen_width = image.width
         narrowed = self.narrowed(image)
         scale = narrowed.width / image.width
         image = narrowed
@@ -412,13 +470,13 @@ class ScreenSession:
             self._count_steps()
             return None
         self.sequence += 1
-        self._digest, self._sent_at = digest, time.monotonic()
+        self._seen, self._sent_at = seen, time.monotonic()
         self._grabs.append((grabbed - started) * 1000)
         self._encodes.append((encoded - grabbed) * 1000)
         frame = ScreenFrame(
             sequence=self.sequence, at=datetime.now(UTC), origin_x=int(rect["left"]), origin_y=int(rect["top"]),
             w=image.width, h=image.height, scale=scale, quality=self.spec.quality, jpeg=jpeg,
-            **self._pointer(rect, scale),
+            **self._pointer(seen[1], rect, scale),
         )
         self.frames = {frame.sequence: frame, **{key: value for key, value in self.frames.items() if key > self.sequence - 8}}
         self.stats = self.stats.model_copy(update={
@@ -438,14 +496,17 @@ class ScreenSession:
         # Bilinear with a reducing gap: Pillow reduces by whole numbers first, then filters the rest.
         return image.resize((width, round(image.height * width / image.width)), Image.Resampling.BILINEAR, reducing_gap=2.0)
 
-    def _pointer(self, rect: dict[str, int], scale: float) -> dict[str, int | None]:
-        """Where this computer's pointer is, in the frame's own pixels — the capture APIs leave the
-        cursor out, so the viewer draws it. None when the OS will not say, or it is off this
-        rectangle."""
+    def _spot(self) -> tuple[int, int] | None:
+        """Where this computer's pointer is on its desktop; None when the OS will not say."""
         try:
-            spot = self.backend.pointer()
+            return self.backend.pointer()
         except (DesktopUnsupportedError, OSError, RuntimeError):
-            return {"pointer_x": None, "pointer_y": None}
+            return None
+
+    @staticmethod
+    def _pointer(spot: tuple[int, int] | None, rect: dict[str, int], scale: float) -> dict[str, int | None]:
+        """The pointer at desktop `spot`, in the frame's own pixels — the capture APIs leave the cursor
+        out, so the viewer draws it. None when the OS would not say, or it is off this rectangle."""
         if spot is None:
             return {"pointer_x": None, "pointer_y": None}
         x, y = round((spot[0] - rect["left"]) * scale), round((spot[1] - rect["top"]) * scale)
@@ -460,11 +521,11 @@ class ScreenSession:
         return hashlib.blake2b(b"".join(pixels[row * stride:(row + 1) * stride]
                                        for row in range(0, image.height, self.DIGEST_ROWS)), digest_size=16).digest()
 
-    def measured(self, send_ms: float) -> None:
-        """What the link really took for the last frame (out → its ack back), from the transport that
-        sent it: the only number that includes the network. The ladder decides the next step."""
+    def measured(self, send_ms: float, frame: ScreenFrame) -> None:
+        """What the link really took for `frame` (out → its ack back), from the transport that sent
+        it: the only number that includes the network. The ladder decides the next step."""
         self._sends.append(send_ms)
-        self.ladder.measured(send_ms, self._screen_width)
+        self.ladder.measured(send_ms, frame.w, frame.quality)
         self.stats = self.stats.model_copy(update={"send": Timing.of(list(self._sends))})
         self._count_steps()
 
@@ -550,7 +611,12 @@ class ScreenStreamer:
     measured time include the link); it belongs to whoever owns the connection, so this driver
     carries no transport and decides nothing about who may watch. The stream ends when the viewer
     stops asking (`VIEWER_GONE_SECONDS` with no frame taken), when the machine's own switch or
-    badge says stop (`ScreenEnd` out of the session), or when the transport closes."""
+    badge says stop (`ScreenEnd` out of the session), or when the transport closes.
+
+    An act the viewer sent (`acted`) is what he waits to see: the screen is grabbed every
+    `ACT_POLL_SECONDS` until its change goes out, and that frame leaves beside the one in flight,
+    past the frame rate's pace — a tap waited up to a whole round for the frame ahead of it (134 ms
+    at 1280 px on a phone link, perf-critic r1), on top of its own."""
 
     #: No frame taken for this long: the browser is gone (a phone locked, a tab closed) and the
     #: session ends by itself — nothing waits for the server to notice.
@@ -560,24 +626,55 @@ class ScreenStreamer:
     #: Grabbing and encoding one frame this long is logged: a stall the viewer sees must be placed
     #: on this computer or on the link (the transport logs its own slow rounds).
     SLOW_FRAME_MS: ClassVar[float] = 200.0
+    #: Frames out at once: one, and one more for an act's picture.
+    IN_FLIGHT: ClassVar[int] = 2
+    #: After an act, the screen is grabbed this often until it changes: one refresh of a 60 Hz display.
+    ACT_POLL_SECONDS: ClassVar[float] = 1 / 60
+    #: ...for this long at most: an act that changed nothing (a move over a still window) stops it.
+    ACT_WATCH_SECONDS: ClassVar[float] = 0.5
 
     def __init__(self, session: ScreenSession, send: Callable[[ScreenFrame], Awaitable[None]]) -> None:
         self.session = session
         self.send = send
         #: Why it ended (its sentence and its typed reason, `ScreenEnd`); None: asked to.
         self.ended: ScreenEnd | None = None
-        #: The one thread that grabs and encodes: the event loop stays free for the link, and mss
-        #: stays on the thread it opened on.
+        #: The one thread that grabs and encodes — and walks the ladder, so a session is only ever
+        #: touched from it: the event loop stays free for the link, and mss stays on the thread it
+        #: opened on.
         self._grabbing = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="galaius-screen")
+        #: When the last act landed and when the newest frame sent was grabbed (`time.monotonic`).
+        self._acted_at = self._grabbed_at = 0.0
+        self._woken = asyncio.Event()
+        #: When the viewer last took a frame (its ack came back).
+        self._taken = 0.0
+
+    def acted(self) -> None:
+        """An act the viewer sent landed on this computer (called on the stream's loop)."""
+        self._acted_at = time.monotonic()
+        self._woken.set()
+
+    @property
+    def _act_waiting(self) -> bool:
+        """An act landed after the newest frame sent was grabbed, lately enough to still watch for it."""
+        return self._acted_at > self._grabbed_at and time.monotonic() - self._acted_at < self.ACT_WATCH_SECONDS
 
     async def run(self) -> ScreenStats:
         """Stream until it ends, and say why (`ended`) and what it cost."""
-        taken = time.monotonic()
         slow, slow_said = 0, 0.0
         loop = asyncio.get_running_loop()
+        self._taken = time.monotonic()
+        in_flight: set[asyncio.Task[None]] = set()
+        # The viewer asked for no more than this many frames a second, counted over the WHOLE cycle
+        # (grab, encode and link): pacing from the link alone paid the grab twice and held a 30 fps
+        # stream to 17. `polled`: the next grab after one that found nothing new.
+        paced = polled = 0.0
         try:
             while True:
-                cycle = time.perf_counter()
+                self._settle(in_flight)
+                while (due := self._due(in_flight, paced, polled)) is None or due > time.perf_counter():
+                    await self._wait(in_flight, None if due is None else due - time.perf_counter())
+                    self._settle(in_flight)
+                cycle, grabbed_at = time.perf_counter(), time.monotonic()
                 frame = await loop.run_in_executor(self._grabbing, self.session.frame)
                 if (made_ms := (time.perf_counter() - cycle) * 1000) >= self.SLOW_FRAME_MS:
                     slow += 1
@@ -585,23 +682,15 @@ class ScreenStreamer:
                         logger.info("screen: %d frame(s) took ≥%.0f ms on this computer, the last %.0f ms", slow, self.SLOW_FRAME_MS, made_ms)
                         slow, slow_said = 0, time.monotonic()
                 if frame is None:
-                    await asyncio.sleep(min(1.0 / self.session.spec.max_fps, self.session.IDLE_SECONDS))
-                    if time.monotonic() - taken > self.VIEWER_GONE_SECONDS:
+                    polled = time.perf_counter() + (self.ACT_POLL_SECONDS if self._act_waiting
+                                                    else min(1.0 / self.session.spec.max_fps, self.session.IDLE_SECONDS))
+                    if not in_flight and time.monotonic() - self._taken > self.VIEWER_GONE_SECONDS:
                         self.ended = ScreenEnd("viewer_gone", "the viewer went away")
                         break
                     continue
-                started = time.perf_counter()
-                try:
-                    await asyncio.wait_for(self.send(frame), timeout=self.SEND_TIMEOUT_SECONDS)
-                except TimeoutError:
-                    self.ended = ScreenEnd("link_lost", "the link stopped carrying frames")
-                    break
-                self.session.measured((time.perf_counter() - started) * 1000)
-                taken = time.monotonic()
-                # The viewer asked for no more than this many frames a second, counted over the
-                # WHOLE cycle (grab, encode and link): pacing from the link alone paid the grab
-                # twice and held a 30 fps stream to 17.
-                await asyncio.sleep(max(1.0 / self.session.spec.max_fps - (time.perf_counter() - cycle), 0))
+                self._grabbed_at = grabbed_at
+                in_flight.add(asyncio.create_task(self._round(frame, loop)))
+                paced = cycle + 1.0 / self.session.spec.max_fps
         except ScreenEnd as end:
             self.ended = end
         except ConnectionError:  # the error's own text stays in the log: the page is told only what ended it
@@ -611,6 +700,8 @@ class ScreenStreamer:
             logger.exception("screen: capture failed under the view")
             self.ended = ScreenEnd("failed", "this computer failed under the view")
         finally:
+            for task in in_flight:
+                task.cancel()
             # The session closes on the grabbing thread (mss's handles live there), even when this
             # task is cancelled: the badge comes down whatever ended the stream.
             closing = loop.run_in_executor(self._grabbing, self.session.close)
@@ -618,3 +709,38 @@ class ScreenStreamer:
             await asyncio.shield(closing)
         logger.info("screen stream ended (%s): %s", self.ended or "asked to", self.session.stats.said)
         return self.session.stats
+
+    async def _round(self, frame: ScreenFrame, loop: asyncio.AbstractEventLoop) -> None:
+        """One frame out and back; what it took walks the ladder, on the grabbing thread."""
+        started = time.perf_counter()
+        try:
+            await asyncio.wait_for(self.send(frame), timeout=self.SEND_TIMEOUT_SECONDS)
+        except TimeoutError:
+            raise ScreenEnd("link_lost", "the link stopped carrying frames") from None
+        await loop.run_in_executor(self._grabbing, self.session.measured, (time.perf_counter() - started) * 1000, frame)
+        self._taken = time.monotonic()
+
+    def _due(self, in_flight: set[asyncio.Task[None]], paced: float, polled: float) -> float | None:
+        """When the next grab may start (`time.perf_counter`), or None while it waits for a round or an
+        act: an act's picture once a poll is due, past the pace and beside one frame in flight; any
+        other once nothing is in flight and both are due."""
+        if self._act_waiting and len(in_flight) < self.IN_FLIGHT:
+            return polled
+        return None if in_flight else max(paced, polled)
+
+    @staticmethod
+    def _settle(in_flight: set[asyncio.Task[None]]) -> None:
+        """Rounds that ended leave `in_flight`; one that failed raises what ended it."""
+        for task in [task for task in in_flight if task.done()]:
+            in_flight.discard(task)
+            task.result()
+
+    async def _wait(self, in_flight: set[asyncio.Task[None]], seconds: float | None) -> None:
+        """Until a round ends, an act lands, or `seconds` pass (None: no limit)."""
+        self._woken.clear()
+        woken = asyncio.ensure_future(self._woken.wait())
+        try:
+            await asyncio.wait({*in_flight, woken}, timeout=None if seconds is None else max(seconds, 0.0),
+                               return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            woken.cancel()

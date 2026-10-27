@@ -161,9 +161,11 @@ class LiveScreen:
     def _performed(self, done: asyncio.Future) -> None:
         if done.cancelled():
             return
-        if isinstance(error := done.exception(), PermissionError):
+        if (error := done.exception()) is None:
+            self.streamer.acted()  # what he did is on this screen now: its picture goes out first
+        elif isinstance(error, PermissionError):
             logger.warning("screen: acts refused: %s", error)
-        elif error is not None:
+        else:
             logger.warning("screen: an act failed", exc_info=error)
 
     async def end(self, ending: ScreenEnd) -> None:
