@@ -32,12 +32,12 @@ from galaius_core import (
     SCREEN_PASSKEY_ALGORITHMS,
     SCREEN_PROOF_LABEL,
     SCREEN_SESSION_MAX,
+    Refused,
     ScreenAssertion,
     ScreenEndReason,
     ScreenOffer,
-    Refused,
-    ScreenRefusal,
     ScreenPasskey,
+    ScreenRefusal,
     ScreenSealed,
     ScreenTrust,
     b64url,
@@ -45,8 +45,8 @@ from galaius_core import (
 )
 from pydantic import ValidationError
 
-from galaius.paths import UserPaths
 from galaius.desktop.screen_switch import ScreenSwitch
+from galaius.paths import UserPaths
 from galaius.private_files import PRIVATE_FILES
 
 logger = logging.getLogger("galaius")
