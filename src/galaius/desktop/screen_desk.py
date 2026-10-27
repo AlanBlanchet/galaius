@@ -93,9 +93,9 @@ class LiveScreen:
             self.ending = ScreenEnd("minutes_over", "The minutes this view was opened for are over: open it again.")
         except asyncio.CancelledError:
             pass  # `end` or `take` cancelled it, its ending already named
-        except Exception as error:  # noqa: BLE001 — whatever broke under it, the page is told it failed, never that he ended it
+        except Exception:  # whatever broke under it, the page is told it failed (the error stays in the log)
             logger.exception("screen: the view failed")
-            self.ending = self.ending or ScreenEnd("failed", f"this computer failed under the view: {error}")
+            self.ending = self.ending or ScreenEnd("failed", "this computer failed under the view")
         finally:
             self.ending = self.ending or ScreenEnd("ended", "this view was ended")
             for waiting in self.acks.values():

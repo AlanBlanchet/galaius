@@ -510,10 +510,12 @@ class ScreenStreamer:
                 await asyncio.sleep(max(1.0 / self.session.spec.max_fps - (time.perf_counter() - cycle), 0))
         except ScreenEnd as end:
             self.ended = end
-        except ConnectionError as error:
-            self.ended = ScreenEnd("link_lost", f"the connection ended: {error}")
-        except OSError as error:  # this computer's display or capture failed under the view
-            self.ended = ScreenEnd("failed", f"this computer failed: {error}")
+        except ConnectionError:  # the error's own text stays in the log: the page is told only what ended it
+            logger.warning("screen: the connection ended under the view", exc_info=True)
+            self.ended = ScreenEnd("link_lost", "the connection to the viewer ended")
+        except OSError:  # this computer's display or capture failed under the view
+            logger.exception("screen: capture failed under the view")
+            self.ended = ScreenEnd("failed", "this computer failed under the view")
         finally:
             # The session closes on the grabbing thread (mss's handles live there), even when this
             # task is cancelled: the badge comes down whatever ended the stream.
