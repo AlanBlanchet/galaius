@@ -4,7 +4,7 @@ import importlib
 import sys
 
 from cyclopts import App, CycloptsError, CycloptsPanel
-from rich.console import RenderableType
+from rich.console import Console, RenderableType
 from rich.text import Text
 
 from galaius import installed_version
@@ -31,6 +31,7 @@ app = App(
     version_flags=["--version", "-v"],
     help="Browser + desktop automation MCP server, plus tools to install and configure it.",
     error_formatter=plain_error,
+    error_console=Console(stderr=True, soft_wrap=True),  # one line however long: a relay keeps the first
 )
 
 app.command(
