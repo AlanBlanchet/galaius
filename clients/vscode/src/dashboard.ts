@@ -34,7 +34,7 @@ import { conversationExtensionVersion, resolveConversationBackend } from "./conv
 import { promptRequest, type PromptEditorState } from "./promptClient";
 import { PROMPT_ACTIONS, type PromptAction } from "./promptActions";
 import { comparisonRows } from "./comparison";
-import { readOrg } from "./org";
+import { readOrg, textOption } from "./org";
 import { bareModelName, shortCompetence } from "./competence";
 import { CompetenceStore } from "./competenceStore";
 import { billingPresentation } from "./billingPresentation";
@@ -382,7 +382,7 @@ export class DashboardPanel {
             this.refresh();
             break;
           }
-          args.push("--message", msg.message.trim());
+          args.push(textOption("message", msg.message.trim()));
         } else if (metadata.id === "publish") {
           let endpoint: URL;
           try { endpoint = new URL(msg.endpoint ?? ""); }

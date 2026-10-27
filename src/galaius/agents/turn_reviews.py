@@ -52,7 +52,7 @@ class Ask(BaseModel):
 
     def argv(self) -> list[str]:
         return reg.participant_argv("galaius", "agents", "spawn", "--agent", self.role, "--name", self.role,
-                                    "--parent-run-id", self.parent, "--cwd", self.cwd, "--task", self.task)
+                                    "--parent-run-id", self.parent, "--cwd", self.cwd, f"--task={self.task}")  # one argument: a task beginning with a dash stays a task
 
     def make(self) -> str | None:
         """Ask it; the run that took it (the spawn's last line), None when the spawn refused (logged)."""

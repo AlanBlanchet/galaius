@@ -3,7 +3,9 @@
 import importlib
 import sys
 
-from cyclopts import App
+from cyclopts import App, CycloptsError, CycloptsPanel
+from rich.console import RenderableType
+from rich.text import Text
 
 from galaius import installed_version
 from galaius.mcp_endpoint import SharedEndpoint
@@ -14,11 +16,21 @@ from galaius.upgrade.store import EXIT_UPGRADE, Addressed, Runtime, RuntimeStore
 from galaius.upgrade.supervisor import Supervisor
 from galaius.versioning import force_utf8_io
 
+
+
+def plain_error(error: CycloptsError) -> RenderableType:
+    """A command line the CLI cannot read, said as its other refusals are: one `ERROR:` line wherever no terminal reads
+    it (the PC relaying a web message, the editor, an agent), which showed the framed panel's top edge alone
+    (« ╭─ Error ───╮ », 2026-10-27); the framed panel at a terminal."""
+    return CycloptsPanel(error) if error.console is not None and error.console.is_terminal else Text(f"ERROR: {error}")
+
+
 app = App(
     name="galaius",
     version=installed_version(),
     version_flags=["--version", "-v"],
     help="Browser + desktop automation MCP server, plus tools to install and configure it.",
+    error_formatter=plain_error,
 )
 
 app.command(

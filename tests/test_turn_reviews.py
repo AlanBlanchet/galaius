@@ -137,3 +137,13 @@ def test_a_reviews_report_is_read_past_its_answer_to_a_stop_hook(asked, after_ho
     watch.tick(REFLECTION_ONLY)
     assert asked[-1]["--agent"] == "librarian" and durable in asked[-1]["--task"]
     assert "R1 rerun the visual check" in relations.card(reg.get_run(MAIN))
+
+
+@pytest.mark.parametrize("task", ["- first point\n- second", "--help", "-v"])
+def test_an_ask_carries_its_task_as_words_whatever_it_begins_with(task: str) -> None:
+    """The spawn reads its task as words: written apart from `--task`, one beginning with a dash was read as an option."""
+    from galaius.cli.app_commands import agents_app
+
+    argv = turn_reviews.Ask(role="tester", parent="p", cwd="/w", task=task).argv()
+    _command, bound, *_ = agents_app.parse_args(argv[argv.index("agents") + 1:], exit_on_error=False, print_error=False)
+    assert bound.arguments["task"] == task

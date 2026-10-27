@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
-  parseAgentProviders, readOrg, orgTree, spawnChoices, modelFor, spawnArgs, sendArgs, definitionFile,
+  parseAgentProviders, readOrg, orgTree, spawnChoices, modelFor, spawnArgs, sendArgs, textOption, definitionFile,
   type Org,
 } from "./org.ts";
 
@@ -284,4 +284,8 @@ test("his words follow `--` on every command line that carries them", () => {
     assert.deepEqual(spawn.slice(-2), ["--", text]);
     assert.equal(spawn.indexOf("--"), spawn.length - 2);
   }
+});
+
+test("an option carrying his text is one argument, whatever the text begins with", () => {
+  for (const text of DASHED) assert.deepEqual(textOption("message", text), `--message=${text}`);
 });

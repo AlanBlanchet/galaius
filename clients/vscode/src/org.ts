@@ -329,3 +329,9 @@ export function spawnArgs(
 export function sendArgs(runId: string, text: string): string[] {
   return ["agents", "send", runId, "--", text];
 }
+
+/** An option whose value is a person's text, as one argument (`--message=- fix typo`): written apart, a value
+ *  beginning with a dash is read as the next option and the command is refused. */
+export function textOption(name: string, text: string): string {
+  return `--${name}=${text}`;
+}
