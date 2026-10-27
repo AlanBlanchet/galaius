@@ -217,6 +217,8 @@ class ScreenSession:
     #: Typed text goes out this many characters at a time, the view's end checked between them: a
     #: long paste (8,000 characters at 20 ms each) kept typing for minutes after Stop.
     TYPE_CHUNK: ClassVar[int] = 16
+    #: Why a view ends at the minutes its passkey signed for, whichever side of it notices first.
+    MINUTES_OVER: ClassVar[str] = "The minutes this view was opened for are over: open it again."
 
     def __init__(self, spec: ScreenSpec | None = None, grabber: FrameGrabber | None = None,
                  backend: DesktopBackend | None = None, switch: ScreenSwitch | None = None,
@@ -280,9 +282,9 @@ class ScreenSession:
         being watched. Checked before every frame and every act, never once at the start."""
         allowance = self.allowed()
         if not allowance.live():
-            raise ScreenEnd(allowance.reason or "sharing_off", allowance.why or "This computer's screen sharing is off.")
+            raise ScreenEnd(allowance.reason or "sharing_off", allowance.why or ScreenSwitch.OFF)
         if self.ends_at is not None and datetime.now(UTC) >= self.ends_at:
-            raise ScreenEnd("minutes_over", "The minutes this view was opened for are over: open it again.")
+            raise ScreenEnd("minutes_over", self.MINUTES_OVER)
         if self.marker.ended_itself():
             raise ScreenEnd("stopped_here", "Stop was pressed on this computer.")
         if not self.marker.show(self.viewer):

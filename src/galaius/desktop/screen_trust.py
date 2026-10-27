@@ -46,6 +46,7 @@ from galaius_core import (
 from pydantic import ValidationError
 
 from galaius.paths import UserPaths
+from galaius.desktop.screen_switch import ScreenSwitch
 from galaius.private_files import PRIVATE_FILES
 
 logger = logging.getLogger("galaius")
@@ -254,7 +255,7 @@ class ScreenGate:
         except ValidationError as error:
             raise ScreenRefused("refused", "the session offer is malformed") from error
         if not switch_on:
-            raise ScreenRefused("sharing_off", "Screen sharing is off on this computer: its owner runs `galaius screen on` there.")
+            raise ScreenRefused("sharing_off", ScreenSwitch.OFF)
         if offer.machine_id != self.machine_id:
             raise ScreenRefused("refused", "the offer names another computer")
         if offer.origin != self.origin:

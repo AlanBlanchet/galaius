@@ -90,7 +90,7 @@ class LiveScreen:
             await asyncio.wait_for(self.streamer.run(), timeout=seconds)
             self.ending = self.ending or self.streamer.ended
         except TimeoutError:
-            self.ending = ScreenEnd("minutes_over", "The minutes this view was opened for are over: open it again.")
+            self.ending = ScreenEnd("minutes_over", ScreenSession.MINUTES_OVER)
         except asyncio.CancelledError:
             pass  # `end` or `take` cancelled it, its ending already named
         except Exception:  # whatever broke under it, the page is told it failed (the error stays in the log)

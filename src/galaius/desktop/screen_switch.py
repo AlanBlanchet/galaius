@@ -31,6 +31,10 @@ class ScreenSwitch:
 
     #: Checked this often while a session runs, so an `off` typed on the machine lands within a frame or two.
     POLL_SECONDS: ClassVar[float] = 1.0
+    #: Why a view cannot open or go on while sharing is off, and the fix, in one place for every refusal and ending.
+    OFF: ClassVar[str] = "Screen sharing is off on this computer: its owner runs `galaius screen on` there."
+    #: What the page is told when the owner turns sharing off here (`galaius screen off`).
+    SWITCHED_OFF: ClassVar[str] = "Screen sharing was switched off on this computer."
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or UserPaths.config() / "screen.json"
@@ -41,7 +45,7 @@ class ScreenSwitch:
         try:
             value = json.loads(self.path.read_bytes())
         except FileNotFoundError:
-            return ScreenAllowance(reason="sharing_off", why="Screen sharing is off on this computer (galaius screen on).")
+            return ScreenAllowance(reason="sharing_off", why=self.OFF)
         except (OSError, ValueError):
             logger.warning("screen allowance unreadable; treated as off", exc_info=True)
             return ScreenAllowance(reason="sharing_off", why="This computer's screen setting could not be read, so it stays off.")
@@ -70,7 +74,7 @@ class ScreenSwitch:
         span = ScreenAllowance.DEFAULT_HOURS if hours is None else hours
         return self.write(ScreenAllowance(allowed=True, until=datetime.now(UTC) + timedelta(hours=span) if span else None))
 
-    def turn_off(self, why: str = "Screen sharing was switched off on this computer.",
+    def turn_off(self, why: str = SWITCHED_OFF,
                  reason: ScreenOffReason = "sharing_off") -> ScreenAllowance:
         return self.write(ScreenAllowance(allowed=False, reason=reason, why=why))
 

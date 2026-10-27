@@ -126,7 +126,7 @@ def test_a_switch_turned_off_mid_session_ends_it_within_a_second(tmp_path, monke
     session = _session(tmp_path)
     assert session.frame() is not None
 
-    session.switch.turn_off("Screen sharing was switched off on this computer.")
+    session.switch.turn_off()
     monkeypatch.setattr(time, "monotonic", lambda: time.perf_counter() + ScreenSwitch.POLL_SECONDS + 1)
 
     with pytest.raises(PermissionError, match="switched off"):
@@ -298,7 +298,7 @@ async def test_a_stream_ends_by_itself_and_says_why(tmp_path, monkeypatch, endin
         await asyncio.sleep(0.05)
         grabber.fill = (90, 90, 90)  # something changed, so frames keep coming
         if stop == "switch":
-            session.switch.turn_off("Screen sharing was switched off on this computer.")
+            session.switch.turn_off()
             monkeypatch.setattr(time, "monotonic", lambda: time.perf_counter() + ScreenSwitch.POLL_SECONDS + 1)
         elif stop == "badge":
             marker.pressed = True
