@@ -94,11 +94,14 @@ class Policy:
     #: is applied after candidate selection, so one role can keep a cheaper model shallow and a
     #: stronger model deep without teaching the caller a vendor flag.
     reasoning_models: dict[str, str] = field(default_factory=dict)
-    #: Each role's context, in tokens, its conversation compacts at (`AgentRevision.compact_at`); a role absent from it
-    #: compacts at `Config.agent_compact_at`.
+    #: Each role's context, in tokens, its conversation compacts at: its catalog revision's `compact_at`, else its
+    #: department's (`Config.agent_compact_at_by_department`); a role absent from it compacts at `Config.agent_compact_at`.
     compact_at: dict[str, int] = field(default_factory=dict)
     #: What a role absent from `compact_at` compacts at (`Config.agent_compact_at`).
     default_compact_at: int = field(default_factory=lambda: Config().agent_compact_at)
+    #: What a role whose catalog revision names no `compact_at` compacts at, by its catalog department
+    #: (`Config.agent_compact_at_by_department`).
+    compact_at_by_department: dict[str, int] = field(default_factory=lambda: dict(Config().agent_compact_at_by_department))
     #: Per-agent providers explicitly ALLOWED to run it under COARSE (sandbox-scope, not per-tool)
     #: enforcement — a machine-local acceptance, same footing as `providers` (a role's own
     #: allowed/denied tool list stays catalog- or file-owned; this only says whether a provider
@@ -187,8 +190,9 @@ class Policy:
             elif agent.model is not None:
                 policy.agents[agent.role_key] = agent.model.id
             policy.reasoning[agent.role_key] = agent.reasoning
-            if agent.compact_at is not None:
-                policy.compact_at[agent.role_key] = agent.compact_at
+            compact_at = agent.compact_at if agent.compact_at is not None else policy.compact_at_by_department.get(agent.department)
+            if compact_at is not None:
+                policy.compact_at[agent.role_key] = compact_at
             if agent.harness_tools is not None:
                 policy.agent_tools[agent.role_key] = list(agent.harness_tools)
             policy.paradigms[agent.role_key] = [
@@ -315,7 +319,7 @@ class Policy:
         return self.reasoning.get(agent, self.defaults.get("reasoning", "medium"))
 
     def compact_at_for(self, agent: str | None) -> int:
-        """The context, in tokens, a run of `agent` compacts at: its role's, else `Config.agent_compact_at`, read when the
+        """The context, in tokens, a run of `agent` compacts at: its role's or its department's, else `Config.agent_compact_at`, read when the
         policy loads. Claude Code only (`ClaudeTurnSettings`): a Codex run compacts where its own CLI does."""
         return self.compact_at.get(agent or "", self.default_compact_at)
 

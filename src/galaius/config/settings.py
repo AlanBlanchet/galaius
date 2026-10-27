@@ -281,13 +281,17 @@ class Config(BaseSettings):
     claude_media_criteria: str = ""
     # Every model call of an agent re-reads its whole conversation, so the context it compacts at bounds what each call
     # costs (2026-10-26: runs left to Claude Code's own 967k on 1M models burnt half a day's subscription in hours).
-    # `agent_compact_at`: the context, in tokens, a run of a role whose catalog revision names no `compact_at` (and a run
-    # with no role) compacts at, Claude Code runs only (a Codex run compacts where its CLI does). `agent_reuse_context_max`:
-    # a run of a role holding more context than this is never handed
-    # a new task by a spawn; a fresh run of the role takes it (`spawn_line.Spawn._misfit`).
-    # Bash output: characters a Claude Code command's output may put in the conversation; the rest goes to a file the
-    # agent is pointed at. Overrides: GALAIUS_AGENT_COMPACT_AT, GALAIUS_AGENT_REUSE_CONTEXT_MAX, GALAIUS_CLAUDE_BASH_OUTPUT_CHARS.
+    # `agent_compact_at_by_department`: what a role whose catalog revision names no `compact_at` compacts at, by its
+    # catalog department (critics and reviewers sit in `quality`: they judge one artifact, 120k holds it).
+    # `agent_compact_at`: what every other run (a run with no role too) compacts at. Both: Claude Code runs only (a Codex
+    # run compacts where its CLI does). `agent_reuse_context_max`: a run of a role holding more context than this is never
+    # handed a new task by a spawn; a fresh run of the role takes it (`spawn_line.Spawn._misfit`).
+    # `claude_bash_output_chars`: characters a Claude Code command's output may put in the conversation; the rest goes to
+    # a file the agent is pointed at.
+    # Overrides: GALAIUS_AGENT_COMPACT_AT, GALAIUS_AGENT_COMPACT_AT_BY_DEPARTMENT (JSON, replaces the whole mapping),
+    # GALAIUS_AGENT_REUSE_CONTEXT_MAX, GALAIUS_CLAUDE_BASH_OUTPUT_CHARS.
     agent_compact_at: CompactAt = 200_000
+    agent_compact_at_by_department: dict[str, CompactAt] = {"quality": 120_000}
     agent_reuse_context_max: Annotated[int, Field(gt=0)] = 150_000
     claude_bash_output_chars: Annotated[int, Field(gt=0)] = 15_000
     # Sovereign-tier requirement (see QUALITY_TIERS); empty → cheapest VLM (self-hosted models

@@ -706,7 +706,7 @@ def test_every_agent_turn_runs_under_galaius_settings_and_gets_its_task_back_aft
 
 @pytest.mark.parametrize(("role", "compact_at"), [("visual-critic", 120_000), ("app-engineer", 200_000), (None, 200_000)])
 def test_an_agent_turn_compacts_at_its_role_s_point(role, compact_at):
-    """A role's catalog `compact_at` (a critic's 120k), else `Config.agent_compact_at` (200k; a run with no role too), becomes
+    """A role's own or its department's `compact_at` (a critic's 120k), else `Config.agent_compact_at` (200k; a run with no role too), becomes
     Claude Code's `autoCompactWindow` plus the reserve it keeps: probed 2.1.288, window 153000 → `autoCompactThreshold`
     120000. Never Claude Code's own 967k on a 1M model (2026-10-26: half a day's subscription in hours)."""
     policy = Policy(compact_at={"visual-critic": 120_000})
