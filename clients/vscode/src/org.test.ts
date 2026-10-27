@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
-  parseAgentProviders, readOrg, orgTree, spawnChoices, modelFor, spawnArgs, definitionFile,
+  parseAgentProviders, readOrg, orgTree, spawnChoices, modelFor, spawnArgs, sendArgs, definitionFile,
   type Org,
 } from "./org.ts";
 
@@ -159,18 +159,18 @@ test("provider discovery accepts only the machine-readable active and available 
 test("Start an Agent can omit the generic plain route while generic sessions omit a role", () => {
   assert.deepEqual(spawnChoices(["tester"], ORG, { includePlain: false }).map((c) => c.label), ["tester"]);
   assert.deepEqual(spawnArgs({ task: "start", provider: "codex", agent: "tester", org: ORG }), [
-    "agents", "spawn", "start", "--provider", "codex", "--agent", "tester",
+    "agents", "spawn", "--provider", "codex", "--agent", "tester", "--", "start",
   ]);
   assert.deepEqual(spawnArgs({ task: "chat", provider: "codex", agent: null, org: ORG }), [
-    "agents", "spawn", "chat", "--provider", "codex",
+    "agents", "spawn", "--provider", "codex", "--", "chat",
   ]);
 });
 
 test("ranked spawning omits provider while retaining each provider's workspace permissions", () => {
   assert.deepEqual(spawnArgs({task: "review", agent: "tester", org: ORG,
     providerModes: {codex: "read-only", claude: "plan"}}), [
-    "agents", "spawn", "review", "--agent", "tester",
-    "--provider-mode", "codex=read-only", "--provider-mode", "claude=plan",
+    "agents", "spawn", "--agent", "tester",
+    "--provider-mode", "codex=read-only", "--provider-mode", "claude=plan", "--", "review",
   ]);
 });
 
@@ -200,7 +200,7 @@ test("the spawn argv carries the provider, named role, and folder without pinnin
     a.name === "tester" ? { ...a, model: "claude-sonnet-5" } : a) };
 
   assert.deepEqual(spawnArgs({ task: "check it", provider: "claude", agent: "tester", cwd: "/w", org }),
-    ["agents", "spawn", "check it", "--provider", "claude", "--agent", "tester", "--cwd", "/w"]);
+    ["agents", "spawn", "--provider", "claude", "--agent", "tester", "--cwd", "/w", "--", "check it"]);
 });
 
 test("a named role is explicit, and inherit passes no --model", () => {
@@ -208,9 +208,9 @@ test("a named role is explicit, and inherit passes no --model", () => {
     a.name === "tester" ? { ...a, model: "inherit" } : a) };
 
   assert.deepEqual(spawnArgs({ task: "t", provider: "claude", agent: "claude", cwd: null, org: ORG }),
-    ["agents", "spawn", "t", "--provider", "claude", "--agent", "claude"]);
+    ["agents", "spawn", "--provider", "claude", "--agent", "claude", "--", "t"]);
   assert.deepEqual(spawnArgs({ task: "t", provider: "claude", agent: "tester", cwd: null, org: inheriting }),
-    ["agents", "spawn", "t", "--provider", "claude", "--agent", "tester"]);
+    ["agents", "spawn", "--provider", "claude", "--agent", "tester", "--", "t"]);
 });
 
 test("the permission flag is spelled exactly as the CLI parses it", () => {
@@ -269,4 +269,19 @@ test("an absolute definition path is left as it is", () => {
   writeFileSync(orgFile, JSON.stringify({ coordinator: { id: "main" }, providers: {}, departments: [],
     agents: [{ name: "r", def: "/somewhere/else/r.md" }] }));
   assert.equal(definitionFile("r", readOrg(orgFile), orgFile), "/somewhere/else/r.md");
+});
+
+// --- his words on the command line ---
+
+/** A message beginning with a dash was refused « Unknown option: - . » (2026-10-27): the CLI reads everything after
+ *  `--` as words, so his text always follows it and no option ever does. */
+const DASHED = ["- we never know which agent\n- we still have the icon", "- test", "--help", "-v"];
+
+test("his words follow `--` on every command line that carries them", () => {
+  for (const text of DASHED) {
+    assert.deepEqual(sendArgs("run-1", text), ["agents", "send", "run-1", "--", text]);
+    const spawn = spawnArgs({ task: text, provider: "claude", agent: "tester", cwd: "/w", org: ORG });
+    assert.deepEqual(spawn.slice(-2), ["--", text]);
+    assert.equal(spawn.indexOf("--"), spawn.length - 2);
+  }
 });

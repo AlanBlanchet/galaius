@@ -12,7 +12,7 @@ import { AgentsProvider, type GroupBy } from "./agentsView";
 import { DashboardPanel } from "./dashboard";
 import { ScopeStore, setScopeStore } from "./scopeStore";
 import {
-  definitionFile, parseAgentProviders, readOrg, spawnArgs, spawnChoices,
+  definitionFile, parseAgentProviders, readOrg, sendArgs, spawnArgs, spawnChoices,
   type AgentProviderStatus,
 } from "./org";
 import {
@@ -728,7 +728,7 @@ export async function activate(
         "Send",
       );
       if (confirm !== "Send") return;
-      const failed = (await Promise.all(running.map((r) => galaiusCli(["agents", "send", r.run_id, text]))))
+      const failed = (await Promise.all(running.map((r) => galaiusCli(sendArgs(r.run_id, text)))))
         .filter((result) => result.error).length;
       void vscode.window.showInformationMessage(
         failed
@@ -932,7 +932,7 @@ export async function activate(
         ignoreFocusOut: true,
       });
       if (!message) return;
-      const { stdout, error } = await galaiusCli(["agents", "send", run.run_id, message]);
+      const { stdout, error } = await galaiusCli(sendArgs(run.run_id, message));
       const said = (stdout || error || "").trim();
       if (error || said.startsWith("ERROR")) {
         vscode.window.showErrorMessage(said || `Could not reach ${run.name}.`);

@@ -20,7 +20,7 @@ import { agentDocument, agentView } from "./agentPanel";
 import { CompetenceStore } from "./competenceStore";
 import { DIM_FOREGROUND } from "./themeTokens";
 import { modelChosenFor } from "./agentModels";
-import { companyOf, definitionFile, readOrg } from "./org";
+import { companyOf, definitionFile, readOrg, sendArgs } from "./org";
 import { teamSpend } from "./teamSpend";
 import { scopeStore } from "./scopeStore";
 import { galaiusCli } from "./galaiusCli";
@@ -856,7 +856,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
     if (!usesConversationTransport(run)) {
-      const { error, stdout } = await galaiusCli(["agents", "send", run.run_id, text]);
+      const { error, stdout } = await galaiusCli(sendArgs(run.run_id, text));
       const failed = Boolean(error) || stdout.trim().startsWith("ERROR");
       void this.view?.webview.postMessage({ type: "sent", ok: !failed });
       if (failed) {

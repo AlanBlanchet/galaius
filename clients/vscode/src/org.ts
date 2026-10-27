@@ -309,7 +309,7 @@ export function spawnArgs(
     model?: string | null;
   },
 ): string[] {
-  const args = ["agents", "spawn", opts.task];
+  const args = ["agents", "spawn"];
   if (opts.provider) args.push("--provider", opts.provider);
   if (opts.agent) args.push("--agent", opts.agent);
   const model = opts.model === undefined
@@ -321,5 +321,11 @@ export function spawnArgs(
   for (const [provider, mode] of Object.entries(opts.providerModes ?? {})) {
     args.push("--provider-mode", `${provider}=${mode}`);
   }
-  return args;
+  return [...args, "--", opts.task];
+}
+
+/** The argv for a message to a running agent. His words follow `--`, as the task does in `spawnArgs`: the CLI reads
+ *  what comes after it as words, never options (« - we never know… » was refused « Unknown option: - . », 2026-10-27). */
+export function sendArgs(runId: string, text: string): string[] {
+  return ["agents", "send", runId, "--", text];
 }
