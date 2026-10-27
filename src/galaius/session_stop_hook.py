@@ -2,11 +2,14 @@
 asked from the web for one of HIS editor sessions (`galaius.agents.session_stops`) ends that session's
 turn at its next tool call — the tool is not run and the turn ends, as his Esc would end it — and ends
 any turn the session starts by itself afterwards, until he types in it again or `HOLD_SECONDS` pass.
+A tool call of one of the session's sub-agents is stopped too: the sub-agent ends, then the session's
+own turn at the call that started it.
 
-Called as `python -m galaius.session_stop_hook STOPS_DIR`, the hook's event on stdin. Standard library
-only, like `galaius.inbox_hook`: where a POSIX shell runs it, the shell starts Python only when a stop is
-waiting (`SessionStops.command`), so a session nobody stopped pays nothing. It never fails his tool
-call: anything it cannot read leaves the turn alone."""
+Run from a copy of this file beside the stops (`SessionStops.install`), as `python -I -S hook.py
+STOPS_DIR`, the hook's event on stdin: standard library only, so it needs no galaius runtime and outlives
+an upgrade. Where a POSIX shell runs it, the shell starts Python only when a stop is waiting
+(`SessionStops.hook`), so a session nobody stopped pays nothing. It never fails his tool call:
+anything it cannot read leaves the turn alone."""
 
 import json
 import sys
@@ -18,6 +21,21 @@ from pathlib import Path
 HOLD_SECONDS = 600
 #: What his editor shows where the turn ended.
 SAID = "Stopped from Galaius on the web."
+
+
+def sweep(stops: Path, now: float) -> None:
+    """Every stop older than `HOLD_SECONDS` removed: one for a session closed before its next tool call is
+    read by no hook of its own, and while any stop file is there every session's pre-check starts Python."""
+    try:
+        flags = list(stops.glob("*.json"))
+    except OSError:
+        return
+    for flag in flags:
+        try:
+            if now - flag.stat().st_mtime > HOLD_SECONDS:
+                flag.unlink(missing_ok=True)
+        except OSError:
+            continue
 
 
 def answer(event: dict, stops: Path, now: float) -> dict | None:
@@ -43,13 +61,13 @@ def answer(event: dict, stops: Path, now: float) -> dict | None:
 
 
 def main() -> None:
+    stops, now = Path(sys.argv[1]), time.time()
+    sweep(stops, now)
     try:
         event = json.load(sys.stdin)
     except ValueError:
         return
-    if not isinstance(event, dict) or event.get("agent_id"):
-        return  # a sub-agent's call: the session's own turn is the one stopped
-    said = answer(event, Path(sys.argv[1]), time.time())
+    said = answer(event, stops, now) if isinstance(event, dict) else None
     if said is not None:
         print(json.dumps(said))
 

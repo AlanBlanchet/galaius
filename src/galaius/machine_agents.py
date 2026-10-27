@@ -1278,9 +1278,9 @@ class MachineAgents(BaseModel):
 
     def _stop_editor_session(self, request: AgentStopRequest) -> MachineAgentAnswer | None:
         """`request` for one of HIS live editor sessions (no run of the web's): its turn ends at its next tool call
-        (`SessionStops`), never by typing into it. None when the id is not such a session. PermissionError when this
-        session cannot be stopped: the hook is not installed, or the session started before it was (Claude Code
-        reads its hooks when a session starts)."""
+        (`SessionStops`), never by typing into it. None when the id is not such a session. Refused when this session
+        cannot be stopped: `hook_missing` the hook is not installed, `opened_before` the session started before it
+        was (Claude Code reads its hooks when a session starts: reopened, it can be)."""
         if any(item.run_id == str(request.run_id) for item in self._allowed()[1]):
             return None
         session = next((run for run in reg.list_runs(include_foreign=True) if run.foreign and run.run_id == str(request.run_id)), None)
@@ -1289,9 +1289,9 @@ class MachineAgents(BaseModel):
         stops = SessionStops()
         since = stops.installed_at() if stops.installed() else None
         if since is None:
-            raise PermissionError("this computer has not installed the hook that stops an editor session")
+            raise AgentRefused("hook_missing", "this computer has not installed the hook that stops an editor session")
         if session.started_at and session.started_at < since:
-            raise PermissionError("this editor session was opened before this computer could stop it: it can be stopped once opened again")
+            raise AgentRefused("opened_before", "this editor session was opened before this computer could stop it: it can be stopped once opened again")
         stops.ask(request.run_id, request.by)
         return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail="stopping")
 

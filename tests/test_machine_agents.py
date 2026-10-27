@@ -1461,13 +1461,13 @@ def test_every_cut_has_a_resume_sender_and_words():
     assert all(sender in reg.SYSTEM_SENDERS and words for sender, words in _RESUMED_AFTER.values())
 
 
-@pytest.mark.parametrize(("installed", "opened", "said"), [
-    (True, "after", None),                                   # stopped: the hook in that session ends its turn
-    (False, "after", "not installed the hook"),              # no hook on this computer: refused, nothing promised
-    (True, "before", "opened before this computer could"),   # Claude Code read its hooks before the hook was there
+@pytest.mark.parametrize(("installed", "opened", "refused"), [
+    (True, "after", None),               # stopped: the hook in that session ends its turn
+    (False, "after", "hook_missing"),    # no hook on this computer: refused, nothing promised
+    (True, "before", "opened_before"),   # Claude Code read its hooks before the hook was there: reopened, it can be
 ], ids=["stopped", "no-hook", "opened-before-the-hook"])
 def test_his_editor_session_is_stopped_through_its_hook_never_typed_into(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-                                                                         installed: bool, opened: str, said: str | None) -> None:
+                                                                         installed: bool, opened: str, refused: str | None) -> None:
     """The web's stop for one of HIS editor sessions (a session galaius did not start, so not a run of the web's): the
     PC leaves the stop for the hook every Claude Code session runs (`SessionStops`) — it never types into his session."""
     from galaius.agents.session_stops import SessionStops
@@ -1476,17 +1476,17 @@ def test_his_editor_session_is_stopped_through_its_hook_never_typed_into(base: P
     session = uuid4()
     stops = SessionStops()
     if installed:
-        assert stops.install()
+        assert stops.install() == "written"
     since = stops.installed_at() or time.time()
     his = reg.AgentRun.from_foreign({"sessionId": str(session), "cwd": str(base / "project"), "kind": "interactive",
                                      "startedAt": (since + (60 if opened == "after" else -60)) * 1000})
     listed = reg.list_runs
     monkeypatch.setattr(reg, "list_runs", lambda **kw: [*listed(**kw), his] if kw.get("include_foreign") else listed(**kw))
     stop = _request("stop", run_id=str(session), by={"kind": "person", "name": "Alan"})
-    if said is not None:
-        with pytest.raises(PermissionError, match=said):
+    if refused is not None:
+        with pytest.raises(AgentRefused) as raised:
             _answer(agents, stop)
-        assert not (stops.folder / f"{session}.json").exists()
+        assert raised.value.refusal == AgentRefusal(reason=refused) and not (stops.folder / f"{session}.json").exists()
         return
     assert _answer(agents, stop).detail == "stopping"
     assert json.loads((stops.folder / f"{session}.json").read_text())["by"]["name"] == "Alan"
