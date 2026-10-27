@@ -27,7 +27,7 @@ from galaius_core import (
 from galaius.desktop.screen import ScreenSession
 from galaius.desktop.screen_desk import ScreenDesk
 from galaius.desktop.screen_switch import ScreenSwitch
-from galaius.desktop.screen_trust import ScreenIdentity, ScreenTrustFile
+from galaius.desktop.screen_trust import ScreenEnd, ScreenIdentity, ScreenRefused, ScreenTrustFile
 from tests.support.screen import (
     MACHINE,
     ORIGIN,
@@ -138,14 +138,15 @@ async def test_a_view_session_takes_no_act_and_a_newer_open_replaces_it(desk) ->
     _, second = await _open(desk, relay, phone)
     _, ended = await relay.next("screen_ended")
     assert ended["session"] == str(first.session) and ended["reason"] == "newer_view" and desk.live.session == second.session
-    await desk.close_all("the link to the server dropped", "link_lost")
+    await desk.close_all(ScreenEnd("link_lost", "the link to the server dropped"))
 
-    # A passkey this computer has not pinned is refused with its reason typed: the French page words
-    # it (« tapez galaius screen trust sur ce PC »), where it printed the PC's English sentence.
+    # A passkey this computer has not pinned is refused with its reason typed, for the page to word in its reader's
+    # language (the PC cannot know it); the PC's English sentence stays beside it for the log.
     stranger, viewer = SoftPasskey(), Viewer()
     text = viewer.offer()
-    refused = await desk.answer(_request(ScreenOpenRequest, offer=text, assertion=stranger.assert_(text, new=True), viewer="Alan"), relay.send)
-    assert refused.refusal == ScreenRefusal(reason="passkey_new") and "galaius screen trust" in refused.error
+    with pytest.raises(ScreenRefused) as refused:
+        await desk.answer(_request(ScreenOpenRequest, offer=text, assertion=stranger.assert_(text, new=True), viewer="Alan"), relay.send)
+    assert refused.value.refusal == ScreenRefusal(reason="passkey_new") and "galaius screen trust" in str(refused.value)
 
 
 async def test_a_session_ends_when_its_signed_minutes_are_over(desk, monkeypatch) -> None:
@@ -185,4 +186,4 @@ async def test_acts_from_successive_messages_land_in_the_order_they_were_sent(de
             break
         await asyncio.sleep(0.01)
     assert [step[0] for step in desk.backend.done] == ["click", "type"]
-    await desk.close_all("the test ended", "ended")
+    await desk.close_all(ScreenEnd("ended", "the test ended"))

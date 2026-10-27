@@ -25,7 +25,7 @@ from galaius_core import (
 )
 
 from galaius.desktop.screen_trust import (
-    ScreenGap,
+    ScreenEnd,
     ScreenGate,
     ScreenIdentity,
     ScreenRefused,
@@ -60,8 +60,9 @@ def test_a_first_passkey_pairs_and_both_ends_hold_the_same_keys_that_refuse_a_re
     # Threat review r2: a relay that drops ONE act (an Escape before typed text) must not go unseen.
     skipped = ScreenSealed(session=admitted.session, seq=3, data=b"")
     skipped = skipped.model_copy(update={"data": to_pc.encrypt(skipped.iv("viewer"), b'{"ack":2}', admitted.session.bytes)})
-    with pytest.raises(ScreenGap):
+    with pytest.raises(ScreenEnd, match="lost on the way") as ended:
         admitted.keys.open(skipped)
+    assert ended.value.refusal == "message_lost"
 
     # The browser pins `identity` and checks the proof as WebCrypto does (raw r||s).
     identity = ScreenIdentity(tmp_path / "screen-identity.pem")

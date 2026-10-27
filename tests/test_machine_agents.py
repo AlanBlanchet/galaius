@@ -1477,6 +1477,7 @@ def test_a_screen_request_rides_the_signed_channel_and_its_passkey_decides(base:
     stranger = ScreenAssertion(credential_id="AAAA", authenticator_data="AAAA", client_data_json="AAAA", signature="AAAA")
     asyncio.run(runner._answer_agent_request(socket, config, _signed(config, ScreenOpenRequest(id=uuid4(), offer=offer, assertion=stranger, **asked))))
     assert socket.sent[1]["error"] == "the session offer is malformed" and runner._screen_desk.live is None
+    assert socket.sent[1]["refusal"] == {"kind": "screen", "reason": "refused"}, "the runner's one handler answers a screen refusal typed"
 
 
 @pytest.mark.parametrize(("installed", "opened", "refused"), [

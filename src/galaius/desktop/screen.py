@@ -275,7 +275,7 @@ class ScreenSession:
         return self._allowance
 
     def _may_watch(self) -> None:
-        """Raise `PermissionError` unless this computer still says yes AND still shows its badge:
+        """Raise `ScreenEnd` unless this computer still says yes AND still shows its badge:
         the owner's switch is live, Stop was not pressed, and something on this desktop says it is
         being watched. Checked before every frame and every act, never once at the start."""
         allowance = self.allowed()
@@ -292,7 +292,7 @@ class ScreenSession:
         """The next frame, or None while the screen has not changed since the last one (and the
         idle heartbeat is not due yet): an idle desktop costs the link nothing.
 
-        Raises `PermissionError` once the owner's switch is off, its Stop is pressed, or the badge
+        Raises `ScreenEnd` once the owner's switch is off, its Stop is pressed, or the badge
         cannot be shown — the transport ends the session on it, so no picture leaves after that."""
         self._may_watch()
         rect = self.grabber.rect(self.spec.monitor)
@@ -456,7 +456,7 @@ class ScreenStreamer:
     measured time include the link); it belongs to whoever owns the connection, so this driver
     carries no transport and decides nothing about who may watch. The stream ends when the viewer
     stops asking (`VIEWER_GONE_SECONDS` with no frame taken), when the machine's own switch or
-    badge says stop (`PermissionError` out of the session), or when the transport closes."""
+    badge says stop (`ScreenEnd` out of the session), or when the transport closes."""
 
     #: No frame taken for this long: the browser is gone (a phone locked, a tab closed) and the
     #: session ends by itself — nothing waits for the server to notice.

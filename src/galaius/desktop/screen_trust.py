@@ -63,14 +63,6 @@ class ScreenEnd(Refused[ScreenEndReason]):
     in `ScreenEnded`."""
 
 
-class ScreenGap(ScreenEnd):
-    """A viewer message arrived after one that never did: the relay lost or withheld an act, and
-    acting on what follows it (typed text after a dropped Escape) is acting out of order."""
-
-    def __init__(self, sentence: str) -> None:
-        super().__init__("message_lost", sentence)
-
-
 class ScreenTrustFile:
     """The passkeys this computer trusts, in this user's own private file. Nothing the server sends
     adds a trusted key once there is one: a new passkey waits in `pending` for `trust` typed here."""
@@ -180,7 +172,7 @@ class ScreenKeys:
     """One session's end-to-end keys: ECDH P-256 between the viewer's ephemeral key (in the signed
     offer) and this computer's, HKDF-SHA256 salted with the offer's challenge, one AES-256-GCM key
     per direction. `seal` numbers what leaves; `open` takes the viewer's messages strictly in turn
-    (each the last + 1): a replay is refused, a gap raises `ScreenGap`."""
+    (each the last + 1): a replay is refused, a gap ends the view (`ScreenEnd` "message_lost")."""
 
     def __init__(self, session: UUID, viewer_key: bytes, challenge: bytes) -> None:
         self.session = session
@@ -207,7 +199,8 @@ class ScreenKeys:
 
     def open(self, sealed: ScreenSealed) -> bytes:
         """The viewer's plaintext; ScreenRefused for another session, a replay or a forgery,
-        ScreenGap (once it is genuine) when one before it never arrived."""
+        `ScreenEnd` "message_lost" (once it is genuine) when one before it never arrived: the relay lost or withheld an act,
+        and acting on what follows it (typed text after a dropped Escape) is acting out of order."""
         if sealed.session != self.session or sealed.seq <= self.received:
             raise ScreenRefused("refused", "a viewer message was replayed or reordered")
         try:
@@ -215,7 +208,7 @@ class ScreenKeys:
         except InvalidTag as error:
             raise ScreenRefused("refused", "a viewer message was not sealed by the viewer") from error
         if sealed.seq != self.received + 1:
-            raise ScreenGap(f"viewer messages {self.received + 1}-{sealed.seq - 1} were lost on the way")
+            raise ScreenEnd("message_lost", f"Viewer messages {self.received + 1}-{sealed.seq - 1} were lost on the way, so the view ended rather than act out of order.")
         self.received = sealed.seq
         return plain
 

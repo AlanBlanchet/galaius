@@ -62,6 +62,7 @@ from galaius.agents.session_stops import SETTINGS_OK, SessionStops
 from galaius.agents import registry as reg
 from galaius.agents.profiles import ALLOWED_ENV
 from galaius.desktop.screen_desk import ScreenDesk
+from galaius.desktop.screen_trust import ScreenEnd
 from galaius.functions import FunctionRegistry, PermissionLevel, invoke as invoke_function
 from galaius.vision_env import ModelWorker, Report, ensure_speech_env, ensure_vision_env
 from galaius import gpu_scrub, user_models
@@ -1318,7 +1319,7 @@ class MachineRunner:
                 query.cancel()
             await asyncio.gather(receiver, heartbeat, usage, asked, upgrade, prompts, policy, *self._queries, return_exceptions=True)
             if self._screen_desk is not None:  # its frames rode this connection: the viewer opens it again
-                await self._screen_desk.close_all("the link to the server dropped", "link_lost")
+                await self._screen_desk.close_all(ScreenEnd("link_lost", "the link to the server dropped"))
             await asyncio.shield(worker)
 
     async def _command_worker(self, socket, config: MachineConfig, commands: asyncio.Queue[MachineCommand | None]) -> None:
