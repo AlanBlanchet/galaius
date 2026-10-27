@@ -485,7 +485,9 @@ def card(run: reg.AgentRun, *, mid_turn: bool = False) -> str:
     others = [other for other in conversation if _working(other) and other not in mine and other.run_id not in run.askers][:CARD_RUNS_MAX]
     if others:
         lines.append("At work in this conversation: " + "; ".join(f"{placed(other.run_id)} — « {_first_line(other.task)} »" for other in others) + ".")
-    idle = {other.agent: other for other in reversed(conversation) if other.agent and _reusable(other)}
+    # A coordinator heads its conversation and is handed no task by another run (`Spawn._nested_coordinator`).
+    coordinators = Config().agent_turn_reviews.coordinators
+    idle = {other.agent: other for other in reversed(conversation) if other.agent and other.agent not in coordinators and _reusable(other)}
     if idle:
         lines.append("Idle, to reuse: " + ", ".join(placed(other.run_id) for other in sorted(idle.values(), key=lambda other: other.agent or "")) + ".")
     if rows := _left_open(run, conversation):
