@@ -702,7 +702,7 @@ class ScreenStreamer:
                         break
                     continue
                 self._grabbed_at = grabbed_at
-                in_flight.add(asyncio.create_task(self._round(frame, loop, queued=bool(in_flight))))
+                in_flight.add(asyncio.create_task(self._round(frame, loop, queued=any(not task.done() for task in in_flight))))
                 paced = cycle + 1.0 / self.session.spec.max_fps
         except ScreenEnd as end:
             self.ended = end
@@ -714,10 +714,12 @@ class ScreenStreamer:
             self.ended = ScreenEnd("failed", "this computer failed under the view")
         finally:
             for task in in_flight:
-                task.cancel()
-            # Retrieved, so a round that failed while another error ended the stream is not logged
-            # again as « never retrieved » once collected.
-            await asyncio.gather(*in_flight, return_exceptions=True)
+                # A round that already failed while another error ended the stream is retrieved here, never
+                # awaited: an await before the close below would let a second cancel skip it.
+                if not task.done():
+                    task.cancel()
+                elif not task.cancelled():
+                    task.exception()
             # The session closes on the grabbing thread (mss's handles live there), even when this
             # task is cancelled: the badge comes down whatever ended the stream.
             closing = loop.run_in_executor(self._grabbing, self.session.close)
