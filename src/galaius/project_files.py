@@ -141,9 +141,10 @@ class ProjectFolder(BaseModel):
     #: Most bytes of one `.env*` file read for the values to redact; most such files.
     ENV_MAX: ClassVar[int] = 256 * 1024
     ENV_FILES: ClassVar[int] = 32
-    #: A `.env` line's value: `NAME=value`, `export NAME="value"`, `NAME='value' # a comment`, `NAME=value # a comment`.
+    #: A `.env` line's value: `NAME=value`, `export NAME="va\\"lue"`, `NAME='value' # a comment`, `NAME=va#lue # a comment` (`#`
+    #: starts a comment only after a space, as dotenv reads it).
     ENV_LINE: ClassVar[re.Pattern[str]] = re.compile(
-        r"""^\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_.-]*\s*=\s*(?:"(?P<double>[^"]*)"|'(?P<single>[^']*)'|(?P<bare>[^#\s]*(?:\s+[^#\s]+)*))""")
+        r"""^\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_.-]*\s*=\s*(?:"(?P<double>(?:[^"\\]|\\.)*)"|'(?P<single>[^']*)'|(?P<bare>.*?)(?:\s+#.*)?\s*$)""")
     #: `git status --porcelain` two-letter codes of an unresolved merge.
     CONFLICTS: ClassVar[frozenset[str]] = frozenset({"DD", "AU", "UD", "UA", "DU", "AA", "UU"})
     #: File operations one PC runs at once; how long one waits for its turn.
@@ -272,7 +273,7 @@ class ProjectFolder(BaseModel):
                         return None
                     for line in handle.read(self.ENV_MAX).decode("utf-8", errors="replace").splitlines():
                         if (match := self.ENV_LINE.match(line)) is not None:
-                            value = next(group for group in (match["double"], match["single"], match["bare"]) if group is not None)
+                            value = match["double"].replace('\\"', '"') if match["double"] is not None else next(group for group in (match["single"], match["bare"]) if group is not None)
                             if len(value) >= 8:
                                 values.add(value)
         return tuple(sorted(values, key=len, reverse=True))

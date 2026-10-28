@@ -216,3 +216,12 @@ def test_a_change_inside_a_hidden_child_folder_marks_nothing(project: Path, tmp_
     (project / "docs" / ".cache" / "state").write_text("x\n")
     subprocess.run(("git", "add", "-f", "docs/.cache/state"), cwd=project, check=True)
     assert "docs" not in {entry.name: entry.git for entry in _ask(_agents(project, tmp_path), "files").files if entry.git}
+
+
+@pytest.mark.parametrize(("line", "value"), [("DB_PASS=abc#defghijk", "abc#defghijk"), ("K=Xy7#Qp2LmN9zRt # note", "Xy7#Qp2LmN9zRt"),
+                                             ('export A="ab\\"cdefghij" # c', 'ab"cdefghij'), ("B='q uoted value' # c", "q uoted value")])
+def test_an_env_value_is_masked_whole_whatever_it_holds(project: Path, tmp_path: Path, line: str, value: str) -> None:
+    # threat-modeler 2e6476da round 2: a `#` inside an unquoted value, or an escaped quote, must not shorten what is masked.
+    (project / ".env").write_text(line + "\n")
+    (project / "uses.txt").write_text(f"connect with {value} now\n")
+    assert value not in _ask(_agents(project, tmp_path), "file", path="uses.txt").content.text
