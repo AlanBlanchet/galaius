@@ -41,7 +41,8 @@ from galaius.agents.providers import PROVIDERS, AgentProvider
 from galaius.agents.subscriptions import Subscription
 from galaius.agents.tool_gateway import CONVERSATION_TOOLS, FILE_READERS
 from galaius.file_lock import FILE_LOCK
-from galaius.machine_agents import MachineAgents, redact, secret_values
+from galaius.machine_agents import MachineAgents
+from galaius.redaction import redact, secret_values
 
 logger = logging.getLogger(__name__)
 

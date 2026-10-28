@@ -16,7 +16,8 @@ from galaius.agents.events import AgentEvent, instant
 from galaius.agents.subscriptions import Subscription
 from galaius.agents.subscriptions import RunSubscription
 from galaius.fence import FenceSpec
-from galaius.machine_agents import MachineAgents, redact
+from galaius.machine_agents import MachineAgents
+from galaius.redaction import redact
 from galaius.server import tools_agents
 
 # Built in pieces so no secret scanner mistakes the fixture for a real key.

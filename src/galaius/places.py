@@ -169,6 +169,18 @@ class PlaceMap(BaseModel):
             return "this runner's own folders (settings, runtimes, data) are never opened"
         return None
 
+    def closed(self, target: Path) -> bool:
+        """Whether a read-only view of a folder beneath an agent root leaves `target` (absolute, unresolved) out: its
+        owner set it, or a folder above it, `hidden`; it lies in this runner's own folders or the home folder's
+        credential and startup stores (`NEVER_GRANTABLE.home`). Names and links are the view's own to check."""
+        parts = target.relative_to(self.base).parts if target.is_relative_to(self.base) else None
+        if parts and (place := self.place_of(parts)[0]) and self.levels[place] == "hidden":
+            return True
+        if any(target == folder or target.is_relative_to(folder) for folder in self.internal):
+            return True
+        home = Path.home().resolve()
+        return target.is_relative_to(home) and NEVER_GRANTABLE.refusal((), target.relative_to(home).parts) is not None
+
     def web_refusal(self, parts: tuple[str, ...]) -> str | None:
         """Why the web may not open `parts` further (`refusal`, and more): only a folder strictly
         inside the home folder; the home folder itself, everything outside it and system folders

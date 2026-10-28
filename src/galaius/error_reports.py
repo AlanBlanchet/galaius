@@ -30,7 +30,7 @@ from pydantic import BaseModel, ConfigDict, SecretStr, ValidationError
 
 import galaius
 
-from .machine_agents import redact
+from .redaction import redact
 from .private_files import PRIVATE_FILES
 
 logger = logging.getLogger(__name__)

@@ -26,7 +26,8 @@ from galaius.agents import registry as reg
 from galaius.agents.host import ConversationRefused
 from galaius.agents.run import ModelUnavailable
 from galaius.agents.subscriptions import RunSubscription, Subscription, SubscriptionRefused
-from galaius.machine_agents import LogRing, MachineAgents, MachineSessions, WebRun, WebRuns, interaction_digest, redact
+from galaius.machine_agents import LogRing, MachineAgents, MachineSessions, WebRun, WebRuns, interaction_digest
+from galaius.redaction import redact
 from galaius.workspace_git import AgentRefused
 from galaius.fence import FenceSpec
 from galaius.config import UserConfig

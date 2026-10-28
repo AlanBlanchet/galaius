@@ -31,7 +31,7 @@ import httpx
 import websockets
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, ValidationError, field_validator, model_validator
 
-from galaius_core import AGENT_FILES_FEATURE, AGENT_IMAGES_FEATURE, AGENT_REASONING_FEATURE, MACHINE_TOOLS_FEATURE, AGENT_IMAGES_WIRE, MACHINE_AGENT_REQUESTS, PROJECTS_DIR, PROJECTS_ROOT, PROJECTS_ROOT_FEATURE, RUN_MOVE_WAITS_FEATURE, SUBSCRIPTIONS_FEATURE, WEB_LIMIT_FEATURE, AgentCompactRequest, AgentMoveRequest, AgentSendRequest, AgentSignInCodeRequest, AgentStartRequest, MACHINE_MODELS, MachineProblem, MachineProblemCode, MachineAgentSettings, MachineAgentSettingsState, MachineAgentSettingsUpdate, PlacePath, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, AgentRefusal, MachineAgentAnswer, Refused, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachineRuntime, MachineTokenSwap, PlaceLevel, ScriptFile, ScriptLanguage, UserModelOrigin, SCREEN_FEATURE
+from galaius_core import AGENT_FILES_FEATURE, AGENT_IMAGES_FEATURE, AGENT_REASONING_FEATURE, MACHINE_TOOLS_FEATURE, AGENT_IMAGES_WIRE, MACHINE_AGENT_REQUESTS, PROJECTS_DIR, PROJECTS_ROOT, PROJECTS_ROOT_FEATURE, RUN_MOVE_WAITS_FEATURE, SUBSCRIPTIONS_FEATURE, WEB_LIMIT_FEATURE, AgentCompactRequest, AgentMoveRequest, AgentSendRequest, AgentSignInCodeRequest, AgentStartRequest, MACHINE_MODELS, MachineProblem, MachineProblemCode, MachineAgentSettings, MachineAgentSettingsState, MachineAgentSettingsUpdate, PlacePath, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, AgentRefusal, MachineAgentAnswer, Refused, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachineRuntime, MachineTokenSwap, PlaceLevel, ScriptFile, ScriptLanguage, UserModelOrigin, SCREEN_FEATURE, PROJECT_FILES_FEATURE, ProjectFilesBase
 from galaius import USER_AGENT
 from galaius import prompt_mirror, prompt_projection
 from galaius.agents.subscription_watch import SubscriptionWatch
@@ -45,8 +45,9 @@ from galaius.private_files import PRIVATE_FILES
 from galaius.server_tls import server_tls
 from galaius.server_address import ServerAddress
 from galaius.error_reports import MachineErrorReports
-from galaius.machine_places import PlaceDesk
-from galaius.machine_agents import AgentSpawns, LogRing, MachineAgents, MachineSessions, WebRuns, redact, secret_values
+from galaius.machine_places import LOG as PLACES_LOG, PlaceDesk
+from galaius.machine_agents import AgentSpawns, LogRing, MachineAgents, MachineSessions, WebRuns
+from galaius.redaction import redact, secret_values
 from galaius.machine_programs import AgentPrograms
 from galaius.machine_workspaces import MachineWorkspaces, WorkspaceJobs
 from galaius_core.sealing import SecretsSeal
@@ -1414,10 +1415,11 @@ class MachineRunner:
     #: `PROJECTS_ROOT_FEATURE`: `PROJECTS_ROOT` names the projects folder (`MachineConfig.projects_root`); kept ahead of the
     #: `script:*` entries, past which a server keeps no more.
     #: `SCREEN_FEATURE`: its screen can be watched, and driven, from the web (`ScreenDesk`).
+    #: `PROJECT_FILES_FEATURE`: a project folder's files are shown to the web, read-only (`ProjectFolder`).
     FEATURES: ClassVar[tuple[str, ...]] = ("file_query", "script_file", "file_read", "agent_control", "agent_settings", "web_settings", "workspaces", "start_permission", "project_secrets", "places", "agent_media", "tool_gateway", "token_swap",
                                            "workspace_copy", "places_direct", "agent_programs", SUBSCRIPTIONS_FEATURE, AgentMoveRequest.feature, RUN_MOVE_WAITS_FEATURE, str(AgentSendRequest.idempotent_feature), str(AgentStartRequest.idempotent_feature), WEB_LIMIT_FEATURE,
                                            AgentSignInCodeRequest.feature, AgentCompactRequest.feature, PROJECTS_ROOT_FEATURE, AGENT_IMAGES_FEATURE, AGENT_REASONING_FEATURE, AGENT_FILES_FEATURE, MACHINE_TOOLS_FEATURE,
-                                           SCREEN_FEATURE)
+                                           SCREEN_FEATURE, PROJECT_FILES_FEATURE)
 
     @classmethod
     def features(cls) -> list[str]:
@@ -1580,6 +1582,11 @@ class MachineRunner:
             self._log_ring.secrets = self._secrets(current)
             agents = self._agents(current)
             answer = await agents.answer(request)
+            if isinstance(request, ProjectFilesBase):
+                # A project file read from the web leaves its trace where his browse pages do: this PC's own log, never the server.
+                where = "/".join(filter(None, (request.root, request.base, getattr(request, "path", ""))))
+                self.audit(PLACES_LOG, {"op": "project_files", "read": request.op, "path": where, "query": getattr(request, "query", None),
+                                        "initiator_account": str(request.initiator_account)})
             # Reading (the page polls every few seconds) stays out of the owner's log; actions go in.
             run_id = answer.run_id or getattr(request, "run_id", None)
             placed = next((item for item in agents.runs.read() if item.run_id == run_id), None) if run_id else None
