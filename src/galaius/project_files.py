@@ -195,7 +195,7 @@ class ProjectFolder(BaseModel):
                 entries, hidden, truncated = self.entries(request.path)
                 return MachineAgentAnswer(request_id=request.id, files=entries, hidden=hidden, truncated=truncated)
             case ProjectFileRequest():
-                return MachineAgentAnswer(request_id=request.id, content=self.content(request.path))
+                return MachineAgentAnswer(request_id=request.id, content=self.content(request.path, request.offset))
             case ProjectFindRequest():
                 found, truncated = self.find(request.query)
                 return MachineAgentAnswer(request_id=request.id, found=found, truncated=truncated)
@@ -220,8 +220,9 @@ class ProjectFolder(BaseModel):
         entries = tuple(self._entry(name, facts, marks.get(name)) for name, facts in kept[:PROJECT_FILES_MAX])
         return entries, hidden, len(kept) > PROJECT_FILES_MAX
 
-    def content(self, path: str) -> ProjectFileContent:
-        """File `path`: its text (redacted, then cut at PROJECT_TEXT_MAX), its image, or its facts alone."""
+    def content(self, path: str, offset: int = 0) -> ProjectFileContent:
+        """File `path`: its text from `offset` (redacted, at most PROJECT_TEXT_MAX bytes cut where `page` says), its
+        image, or its facts alone."""
         with self._file(path) as (handle, facts, directory):
             head = handle.read(self.HEAD)
             name = self.parts(path)[-1]
@@ -233,24 +234,41 @@ class ProjectFolder(BaseModel):
                 return ProjectFileContent(kind="image", content_type=content_type, data=base64.b64encode(data[:MACHINE_AGENT_MEDIA]).decode("ascii"), **facts_of)
             if not self.text(head):
                 return ProjectFileContent(kind="binary", **facts_of)
-            data = head + handle.read(PROJECT_TEXT_MAX + 1 - len(head))
+            offset = min(offset, facts.st_size)
+            handle.seek(max(offset - 1, 0))
+            before = handle.read(1) if offset else b"\n"
+            data = handle.read(PROJECT_TEXT_MAX + 1)
         if (values := self.env_values()) is None:
             # An environment file it cannot read for its values: what they would mask cannot be told apart, so no text leaves.
             return ProjectFileContent(kind="binary", **facts_of)
         secrets = (*self.secrets, *values)
-        cut = len(data) > PROJECT_TEXT_MAX
-        if not cut:
-            return ProjectFileContent(kind="text", text=redact(data.decode("utf-8", errors="replace"), secrets), truncated=False, **facts_of)
-        # Cut at the last whole line, so every secret shape and value is whole where it is masked; a line longer than the
-        # cap loses its last run of key characters, and with it any secret the cut split.
-        window = data[:PROJECT_TEXT_MAX]
-        window = window[:end + 1] if (end := window.rfind(b"\n")) >= 0 else window
-        text = redact(window.decode("utf-8", errors="replace"), secrets)
-        if not text.endswith("\n"):
-            run = next((size for size in range(min(self.CUT_TAIL, len(text))) if text[-1 - size] in self.KEY_BREAKS), min(self.CUT_TAIL, len(text)))
-            text = text[:len(text) - run]
-            text = next((text[:-size] for secret in secrets for size in range(min(len(secret) - 1, len(text)), 3, -1) if text.endswith(secret[:size])), text)
-        return ProjectFileContent(kind="text", text=text, truncated=True, **facts_of)
+        start, end = self.page(data, before, tuple(secret.encode() for secret in secrets))
+        return ProjectFileContent(kind="text", text=redact(data[start:end].decode("utf-8", errors="replace"), secrets), truncated=offset + end < facts.st_size,
+                                  offset=offset + start, end=offset + end, **facts_of)
+
+    @classmethod
+    def page(cls, data: bytes, before: bytes, secrets: tuple[bytes, ...]) -> tuple[int, int]:
+        """The bytes of `data` (read from a file, PROJECT_TEXT_MAX + 1 at most, `before`: the byte ahead of them) a page
+        shows, so that neither of its cuts splits a secret: it starts after a line end, else after a word break (the
+        cut word left out, at most CUT_TAIL bytes of it), and ends at its last line end, else its last word break, when
+        `data` runs past PROJECT_TEXT_MAX. A secret either cut still split is left out too. A page asked from the end of
+        the one before starts where it ended: nothing between them lost."""
+        breaks = cls.KEY_BREAKS
+        start = 0
+        if before != b"\n":
+            if chr(before[0]) not in breaks:
+                start = next((size for size in range(min(cls.CUT_TAIL, len(data))) if chr(data[size]) in breaks), min(cls.CUT_TAIL, len(data)))
+            start += max((size for secret in secrets for size in range(min(len(secret) - 1, len(data) - start), 3, -1)
+                          if data[start:].startswith(secret[-size:])), default=0)
+        if len(data) <= PROJECT_TEXT_MAX:
+            return start, len(data)
+        window = data[start:PROJECT_TEXT_MAX]
+        if (line := window.rfind(b"\n")) >= 0:
+            return start, start + line + 1
+        run = next((size for size in range(min(cls.CUT_TAIL, len(window))) if chr(window[-1 - size]) in breaks), min(cls.CUT_TAIL, len(window)))
+        window = window[:len(window) - run]
+        run += max((size for secret in secrets for size in range(min(len(secret) - 1, len(window)), 3, -1) if window.endswith(secret[:size])), default=0)
+        return start, max(start, PROJECT_TEXT_MAX - run)
 
     def part(self, path: str, offset: int, length: int) -> ProjectFileBytes:
         """`length` raw bytes of file `path` from `offset` (none past its end), never redacted: refused for a file `content`

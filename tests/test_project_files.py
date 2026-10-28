@@ -252,3 +252,34 @@ def test_a_bytes_read_of_an_env_file_is_refused_before_the_disk(project: Path, t
     (project / ".env.media").write_bytes(b"\x00" + KNOWN.encode())
     with pytest.raises(ValueError):
         _ask(_agents(project, tmp_path), "bytes", path=".env.media", length=10)
+
+
+def _pages(agents, path: str, offset: int = 0) -> list:
+    pages = [_ask(agents, "file", path=path, offset=offset).content]
+    while pages[-1].truncated:
+        pages.append(_ask(agents, "file", path=path, offset=pages[-1].end).content)
+    return pages
+
+
+def test_pages_asked_each_from_the_end_of_the_last_join_into_the_whole_file_and_the_tail_starts_on_a_word(project: Path, tmp_path: Path) -> None:
+    """Product-critic 7b6efd4a: « big.log shows its first 1 MB with no way to reach the tail »."""
+    body = "".join(f"2026-10-28 15:{index % 60:02d} worker {index} took {index * 7 % 997} ms\n" for index in range(70_000))
+    (project / "big.log").write_text(body)
+    agents = _agents(project, tmp_path)
+    pages = _pages(agents, "big.log")
+    assert len(pages) == 3 and "".join(page.text for page in pages) == body and all(page.text.endswith("\n") for page in pages)
+    assert [(page.offset, page.end) for page in pages] == [(0, pages[0].end), (pages[0].end, pages[1].end), (pages[1].end, len(body))]
+    tail = _ask(agents, "file", path="big.log", offset=len(body) - 200).content
+    assert (tail.end, tail.truncated) == (len(body), False) and tail.text == body[tail.offset:] and tail.text[0] == " "   # the cut word left out
+
+
+@pytest.mark.parametrize("lines", [True, False], ids=["lines", "one-line"])
+def test_a_secret_split_by_a_page_start_never_leaves(project: Path, tmp_path: Path, lines: bool) -> None:
+    value = "Zq9x" + "vault" + "Secret77"
+    (project / ".env").write_text(f'DB_PASSWORD="{value}" # the vault\n')
+    unit = f"{value}\n" if lines else f"{value} "
+    (project / "full.log").write_text(unit * 5000)
+    agents = _agents(project, tmp_path)
+    for offset in range(len(unit) * 100, len(unit) * 101 + 1):
+        content = _ask(agents, "file", path="full.log", offset=offset).content
+        assert value[-6:] not in content.text and "Secret" not in content.text
