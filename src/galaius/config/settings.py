@@ -7,7 +7,7 @@ from pathlib import Path
 from collections.abc import Sequence
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ByteSize, ConfigDict, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode
 from galaius.caller import Caller
 from galaius_core import CompactAt
@@ -302,6 +302,10 @@ class Config(BaseSettings):
     criteria_weights: str = ""
     headless: bool = True
     slow_mo: int = 0
+    #: Most memory one session's browser (every process it forks) may hold before its page is killed, so a hostile
+    #: or runaway page never starves its neighbours; None: uncapped. Only where a systemd user manager runs (Linux).
+    #: Override: GALAIUS_BROWSER_MEMORY_MAX (e.g. "2GiB").
+    browser_memory_max: Annotated[ByteSize, Field(ge=256 * 2**20)] | None = ByteSize(4 * 2**30)
     browser_type: Literal["chromium", "firefox", "webkit"] = "chromium"
     viewport_width: Annotated[int, Field(ge=1)] = 1280
     viewport_height: Annotated[int, Field(ge=1)] = 720

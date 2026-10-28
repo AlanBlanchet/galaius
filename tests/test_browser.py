@@ -1,5 +1,7 @@
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -290,10 +292,104 @@ def test_chromium_launch_hides_automation_signals():
     so a legitimate QA browse is less likely to be flagged. Non-chromium engines are untouched."""
     from galaius.browser import chromium_launch_kwargs
 
-    kw = chromium_launch_kwargs("chromium", headless=True, slow_mo=0)
+    kw = chromium_launch_kwargs(SimpleNamespace(name="chromium"), headless=True, slow_mo=0)
     assert "--disable-blink-features=AutomationControlled" in kw["args"]
     assert kw["ignore_default_args"] == ["--enable-automation"]
 
-    assert chromium_launch_kwargs("firefox", headless=True, slow_mo=0) == {
+    assert chromium_launch_kwargs(SimpleNamespace(name="firefox"), headless=True, slow_mo=0) == {
         "headless": True, "slow_mo": 0
     }
+
+
+@pytest.mark.parametrize("platform", ["darwin", "win32"])
+def test_chromium_sandboxed_off_linux(monkeypatch, platform):
+    """macOS and Windows sandbox Chromium unprivileged: no route to pick there, and a sandbox-only caller (a community
+    scene) must not read them as unsandboxed."""
+    from galaius import browser
+
+    monkeypatch.setattr(browser.sys, "platform", platform)
+    kw = browser.chromium_launch_kwargs(SimpleNamespace(name="chromium", executable_path="chrome"), True, 0, 2**30)
+    assert kw["chromium_sandbox"] is True
+    assert "env" not in kw and "executable_path" not in kw
+
+
+def _descendants(root: int) -> list[int]:
+    parents = {}
+    for entry in Path("/proc").iterdir():
+        try:
+            parents[int(entry.name)] = int((entry / "stat").read_text().rsplit(")", 1)[1].split()[1])
+        except (ValueError, OSError):
+            continue
+    found, todo = [], [root]
+    while todo:
+        parent = todo.pop()
+        children = [pid for pid, ppid in parents.items() if ppid == parent]
+        found += children
+        todo += children
+    return found
+
+
+def _cmdline(pid: int) -> str:
+    try:
+        return Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode()
+    except OSError:
+        return ""
+
+
+async def _chromium_installed() -> bool:
+    from playwright.async_api import async_playwright
+
+    async with async_playwright() as pw:
+        return Path(pw.chromium.executable_path).exists()
+
+
+async def test_session_browser_sandboxed_and_capped():
+    """A real session launch on this machine: no Chromium process carries --no-sandbox (Playwright adds it unless
+    asked), and the browser's own cgroup holds the configured memory cap. Skips the half this machine offers no route
+    for; any other launch failure fails."""
+    from galaius.browser import BrowserManager, browser_scope, sandbox_route
+    from galaius.config import Config
+
+    if not await _chromium_installed():
+        pytest.skip("no Chromium installed")
+    if sandbox_route() == "none":
+        pytest.skip("no Chromium sandbox route on this machine")
+    cap = 768 * 2**20
+    manager = BrowserManager(Config(browser_memory_max=cap))
+    try:
+        await manager._ensure_browser()
+        page = await manager._browser.new_page()
+        await page.set_content("<p>sandboxed</p>")
+        lines = [_cmdline(pid) for pid in _descendants(os.getpid())]
+        assert any("--type=renderer" in line for line in lines)
+        assert not any("--no-sandbox" in line for line in lines)
+        if browser_scope("chrome", cap):
+            browser_pid = next(pid for pid in _descendants(os.getpid()) if "--remote-debugging-pipe" in _cmdline(pid))
+            cgroup = Path(f"/proc/{browser_pid}/cgroup").read_text().strip().rsplit(":", 1)[-1]
+            assert Path(f"/sys/fs/cgroup{cgroup}/memory.max").read_text().strip() == str(cap)
+    finally:
+        await manager.close()
+
+
+async def test_session_browser_starts_when_the_sandbox_guess_is_wrong(monkeypatch, caplog):
+    """A setup the route guess misses (a pod, a seccomp filter) used to start unsandboxed; it still starts: Chromium's
+    sandbox abort relaunches it once unsandboxed instead of reinstalling. Forced here by guessing namespaces with the
+    setuid helper hidden — on a machine where namespaces do work it simply starts sandboxed."""
+    from galaius import browser
+    from galaius.config import Config
+
+    if not await _chromium_installed():
+        pytest.skip("no Chromium installed")
+    monkeypatch.setattr(browser, "sandbox_route", lambda: "namespaces")
+    monkeypatch.setattr(browser.BrowserManager, "_install_browser",
+                        lambda self: pytest.fail("a sandbox abort reinstalled the browser"))
+    manager = browser.BrowserManager(Config(browser_memory_max=None))
+    try:
+        await manager._ensure_browser()
+        page = await manager._browser.new_page()
+        await page.set_content("<p>started</p>")
+        assert await page.inner_text("p") == "started"
+        if browser.userns_refused():
+            assert "running it unsandboxed" in caplog.text
+    finally:
+        await manager.close()

@@ -1,3 +1,6 @@
+import os
+import shutil
+import stat
 import sys
 import subprocess
 import logging
@@ -5,26 +8,129 @@ import tempfile
 from collections import deque
 import time
 from datetime import datetime
+from functools import partial
+from importlib.resources import files
 from pathlib import Path
+from typing import Literal
 
-from playwright.async_api import async_playwright, Browser, BrowserContext, Page
+from playwright.async_api import async_playwright, Browser, BrowserContext, BrowserType, Page
 
 from galaius.config import LOG_MAXLEN, Config
 from galaius.state import InteractiveElement
 from galaius.windowless import console_python
 
 
-def chromium_launch_kwargs(browser_type: str, headless: bool, slow_mo: int) -> dict:
+#: Setuid-root helpers of Chromium's SUID sandbox, the route Chromium takes when the kernel refuses this user new
+#: namespaces (Ubuntu 23.10+: `kernel.apparmor_restrict_unprivileged_userns=1`). A helper starts any Chromium build, so
+#: Playwright's own borrows the one Google Chrome installs; `CHROME_DEVEL_SANDBOX` names another.
+SUID_SANDBOXES = (Path("/opt/google/chrome/chrome-sandbox"),)
+
+
+def suid_sandbox() -> Path | None:
+    """The setuid-root sandbox helper this machine offers Chromium, if any."""
+    named = os.environ.get("CHROME_DEVEL_SANDBOX")
+    for path in ((Path(named),) if named else ()) + SUID_SANDBOXES:
+        try:
+            mode = path.stat()
+        except OSError:
+            continue
+        if mode.st_uid == 0 and mode.st_mode & stat.S_ISUID and os.access(path, os.X_OK):
+            return path
+    return None
+
+
+def userns_refused() -> bool:
+    """Chromium's own sandbox cannot start here: the kernel refuses this user namespaces, the process is root (Chromium
+    then refuses its sandbox), or a container's syscall filter blocks namespaces."""
+    def setting(name: str) -> str | None:
+        try:
+            return (Path("/proc/sys") / name).read_text().strip()
+        except OSError:
+            return None
+    return (os.geteuid() == 0 or Path("/.dockerenv").exists() or Path("/run/.containerenv").exists()
+            or setting("kernel/apparmor_restrict_unprivileged_userns") == "1"
+            or setting("kernel/unprivileged_userns_clone") == "0" or setting("user/max_user_namespaces") == "0")
+
+
+#: How Chromium's renderers are confined here: the operating system's own sandbox (macOS, Windows), the kernel's user
+#: namespaces, a setuid helper, or not at all.
+SandboxRoute = Literal["native", "namespaces", "suid", "none"]
+#: What a launch error carries when the sandbox Chromium was asked for cannot start (it then exits): Chromium's own
+#: line, and the header Playwright writes in its place.
+SANDBOX_ABORTS = ("No usable sandbox", "Chromium sandboxing failed")
+
+
+def sandbox_route() -> SandboxRoute:
+    """The route Chromium's sandbox takes on this machine."""
+    if sys.platform != "linux":
+        return "native"
+    if os.geteuid() != 0 and suid_sandbox() is not None:
+        return "suid"
+    return "none" if userns_refused() else "namespaces"
+
+
+def sandbox_aborted(error: Exception) -> bool:
+    """`error` is a launch Chromium refused because the sandbox it was asked for could not start."""
+    return any(marker in str(error) for marker in SANDBOX_ABORTS)
+
+
+def browser_scope(executable: str, memory_max: int) -> dict:
+    """Launch kwargs running the browser in a systemd scope of its own capped at `memory_max` bytes (no swap), inside the
+    slice this process runs in: a page that draws gigabytes is killed at the cap, never its neighbours. `{}` without a
+    systemd user manager (macOS, Windows, a container) or with a runtime folder mounted noexec, where the browser runs
+    uncapped."""
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if not (sys.platform == "linux" and runtime and shutil.which("systemd-run") and (Path(runtime) / "bus").exists()
+            and not os.statvfs(runtime).f_flag & os.ST_NOEXEC):
+        return {}
+    wrapper = Path(runtime) / "galaius" / "browser-scope.sh"
+    script = (files("galaius") / "data" / "browser_scope.sh").read_text()
+    if not wrapper.is_file() or wrapper.read_text() != script:  # replaced whole: a launch beside never runs half a file
+        wrapper.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        staged = wrapper.with_name(f"{wrapper.name}.{os.getpid()}")
+        staged.write_text(script)
+        staged.chmod(0o700)
+        staged.replace(wrapper)
+    parts = Path("/proc/self/cgroup").read_text().strip().rsplit(":", 1)[-1].split("/")
+    managed = parts[next((i for i, part in enumerate(parts) if part.startswith("user@")), len(parts)):]
+    own_slice = next((part for part in reversed(managed) if part.endswith(".slice")), "app.slice")
+    return {"executable_path": str(wrapper), "env": {
+        "GALAIUS_SCOPE_EXECUTABLE": executable, "GALAIUS_SCOPE_MEMORY_MAX": str(memory_max),
+        "GALAIUS_SCOPE_SLICE": own_slice}}
+
+
+def chromium_launch_kwargs(launcher: BrowserType, headless: bool, slow_mo: int, memory_max: int | None = None) -> dict:
     """Launch kwargs for the automation browser. For Chromium, hide default automation signals
     that bot-checks (Cloudflare et al.) fingerprint — drop ``--enable-automation`` and the
     ``AutomationControlled`` blink feature (sets ``navigator.webdriver``) — so a legit QA browse
     is less likely flagged (#69). Not full stealth: an advanced challenge can still block; pair
     with a persistent authenticated profile (browser_profile_dir). Non-Chromium engines take
-    only headless/slow_mo (reject Chromium args)."""
+    only headless/slow_mo (reject Chromium args) and the memory cap.
+
+    Chromium's renderers run sandboxed by `sandbox_route` (Playwright alone starts them with ``--no-sandbox``); route
+    "none" leaves them as before, said in the log. A caller that must never run a page unsandboxed checks
+    `sandbox_route` first and does not retry a `sandbox_aborted` launch. `memory_max`: the whole browser held to that many bytes
+    (`browser_scope`)."""
     kw: dict = {"headless": headless, "slow_mo": slow_mo}
-    if browser_type == "chromium":
+    env: dict[str, str] = {}
+    if memory_max is not None:
+        scope = browser_scope(launcher.executable_path, memory_max)
+        env |= scope.pop("env", {})
+        kw |= scope
+    if launcher.name == "chromium":
         kw["args"] = ["--disable-blink-features=AutomationControlled"]
         kw["ignore_default_args"] = ["--enable-automation"]
+        route = sandbox_route()
+        kw["chromium_sandbox"] = route != "none"
+        if route == "suid":
+            env["CHROME_DEVEL_SANDBOX"] = str(suid_sandbox())
+        if route == "none":
+            logging.getLogger("galaius").warning(
+                "Chromium runs unsandboxed: no user namespaces here (root, a container, or the kernel refuses them) and "
+                "no setuid sandbox helper (install Google Chrome, or allow user namespaces to Playwright's Chromium in "
+                "AppArmor)")
+    if env:
+        kw["env"] = {**os.environ, **env}
     return kw
 
 
@@ -578,18 +684,34 @@ class BrowserManager:
         # through here with the node driver still alive — starting a second one would orphan it.
         if self._playwright is None:
             self._playwright = await async_playwright().start()
+        self._browser = await self._launch("launch")
+
+    async def _launch(self, method: str, *args, **context):
+        """The configured browser started through `method` of its Playwright launcher, with this config's launch kwargs
+        (`chromium_launch_kwargs`) beside `args` / `context`. Launched straight away: when the browser is already
+        installed (the common case) this skips the slow `playwright install` subprocess; a failure installs it once,
+        then retries. Chromium's own sandbox abort (a setup `sandbox_route` guessed wrong), first try or retry, starts
+        it once more unsandboxed, said in the log, never a reinstall."""
         launcher = getattr(self._playwright, self._config.browser_type)
-        launch_kw = chromium_launch_kwargs(
-            self._config.browser_type, self._config.headless, self._config.slow_mo
-        )
+        start = partial(getattr(launcher, method), *args, **context)
+        memory_max = self._config.browser_memory_max
+        kw = chromium_launch_kwargs(launcher, self._config.headless, self._config.slow_mo,
+                                    int(memory_max) if memory_max is not None else None)
+
+        async def unsandboxed_on_abort():
+            try:
+                return await start(**kw)
+            except Exception as error:
+                if not (kw.get("chromium_sandbox") and sandbox_aborted(error)):
+                    raise
+                logging.getLogger("galaius").warning("Chromium's sandbox could not start here; running it unsandboxed")
+                return await start(**{**kw, "chromium_sandbox": False})
+
         try:
-            # Launch straight away — when the browser is already installed (the common case)
-            # this skips the slow per-launch `playwright install` subprocess entirely.
-            self._browser = await launcher.launch(**launch_kw)
+            return await unsandboxed_on_abort()
         except Exception:
-            # First run / missing browser → install once, then retry.
             self._install_browser()
-            self._browser = await launcher.launch(**launch_kw)
+            return await unsandboxed_on_abort()
 
     async def _new_context(self, storage_state: dict | None = None, record_video_dir: str | None = None):
         kwargs = self._context_kwargs(record_video_dir)
@@ -598,18 +720,7 @@ class BrowserManager:
             # both launches the browser AND is the context (no new_context). storage_state — the
             # idle-close stash (#36) — doesn't apply: persistence is already durable on disk.
             self._profile_dir.mkdir(parents=True, exist_ok=True)
-            launcher = getattr(self._playwright, self._config.browser_type)
-            try:
-                self._context = await launcher.launch_persistent_context(
-                    str(self._profile_dir),
-                    headless=self._config.headless, slow_mo=self._config.slow_mo, **kwargs,
-                )
-            except Exception:
-                self._install_browser()
-                self._context = await launcher.launch_persistent_context(
-                    str(self._profile_dir),
-                    headless=self._config.headless, slow_mo=self._config.slow_mo, **kwargs,
-                )
+            self._context = await self._launch("launch_persistent_context", str(self._profile_dir), **kwargs)
         else:
             if storage_state is not None:
                 kwargs["storage_state"] = storage_state

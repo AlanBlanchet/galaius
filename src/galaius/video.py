@@ -270,6 +270,8 @@ class Scene(BaseModel):
     #: page drawn larger holds gigabytes of a browser's memory).
     SECONDS: ClassVar[float] = 60
     PIXELS: ClassVar[int] = 1280 * 720
+    #: Most memory the browser drawing it may hold (every process it forks); a page drawing more is killed at it.
+    MEMORY: ClassVar[int] = 2**30
 
     scene: str = Field(min_length=1, max_length=4096)
     output: Annotated[str, AfterValidator(lambda path: kept_path(path, (".webm",)))]
@@ -297,14 +299,18 @@ class Scene(BaseModel):
     async def record(self) -> Written:
         """It played where its page sees nothing of this PC: a new browser with no profile, no script, no network (offline,
         every request refused), its text set as a blank page's content (which may open no local file); nothing of it read
-        back but the video. ValueError: the browser could not start."""
+        back but the video, its browser held to `MEMORY` and sandboxed. ValueError: the browser could not start, or this
+        computer offers it no sandbox."""
         text = self.text()
         work_root = MachineTools.folder("video_editing") / "work"
         work_root.mkdir(mode=0o700, parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="scene-", dir=work_root) as folder:
             async with async_playwright() as playwright:
+                launch = chromium_launch_kwargs(playwright.chromium, True, 0, memory_max=self.MEMORY)
+                if not launch["chromium_sandbox"]:
+                    raise ValueError("this computer offers no browser sandbox; a community scene is never drawn unsandboxed")
                 try:
-                    browser = await playwright.chromium.launch(**chromium_launch_kwargs("chromium", True, 0))
+                    browser = await playwright.chromium.launch(**launch)
                 except PlaywrightError as error:
                     raise ValueError(f"no browser to play the scene in: {str(error).splitlines()[0]}") from None
                 try:
@@ -318,6 +324,9 @@ class Scene(BaseModel):
                     video = page.video
                     await context.close()
                     recorded = Path(await video.path()) if video is not None else None
+                except PlaywrightError as error:
+                    cap = "" if browser.is_connected() else f" (a page holding more than {self.MEMORY >> 20} MiB is stopped)"
+                    raise ValueError(f"the scene's browser stopped{cap}: {str(error).splitlines()[0]}") from None
                 finally:
                     await browser.close()
             if recorded is None or not recorded.is_file():
