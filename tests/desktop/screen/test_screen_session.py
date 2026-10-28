@@ -423,6 +423,13 @@ async def test_a_tap_s_picture_leaves_beside_the_frame_in_flight(tmp_path):
         return link.frames
 
     streamer = ScreenStreamer(session, link.send)
+    rounds, take_round = [], streamer._round
+
+    def queued_round(frame, loop, queued):  # what the ladder will be told about each round
+        rounds.append((frame.sequence, queued))
+        return take_round(frame, loop, queued)
+
+    streamer._round = queued_round
     stream = asyncio.create_task(streamer.run())
     try:
         assert await sent(1) == [1]
@@ -431,6 +438,7 @@ async def test_a_tap_s_picture_leaves_beside_the_frame_in_flight(tmp_path):
         assert link.frames == [1], "a tap that changed nothing sends nothing"
         grabber.fill = (90, 90, 90)  # the tapped window repaints a moment after the tap
         assert await sent(2) == [1, 2], "its picture left while the first was still out"
+        assert rounds == [(1, False), (2, True)], "its round, behind the first frame's bytes, is not judged as the link's"
         grabber.fill = (120, 120, 120)  # a change nobody acted for
         await asyncio.sleep(0.3)
         assert link.frames == [1, 2], "it waits for a round to come back"
