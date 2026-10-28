@@ -136,6 +136,9 @@ class ProjectFolder(BaseModel):
     WALK_MAX: ClassVar[int] = 50_000
     #: The first bytes read to tell text (no NUL), an image and anything else apart.
     HEAD: ClassVar[int] = 8192
+    #: Heads of documents a viewer opens, never read as source text, though they may hold no NUL: 15 of 400 PDFs
+    #: sampled on one PC (2026-10-28) carry none in their first 8 KiB.
+    DOCUMENT_HEADS: ClassVar[tuple[bytes, ...]] = (b"%PDF-",)
     #: The tail a cut line loses: its last run of key characters (no space, quote, comma, semicolon), at most CUT_TAIL of
     #: them: a secret the cut split, which no mask recognises any more.
     CUT_TAIL: ClassVar[int] = 1024
@@ -259,10 +262,10 @@ class ProjectFolder(BaseModel):
             data = handle.read(min(length, max(facts.st_size - offset, 0)))
         return ProjectFileBytes(path=path, size=facts.st_size, modified_at=self._time(facts), offset=offset, data=base64.b64encode(data).decode("ascii"))
 
-    @staticmethod
-    def text(head: bytes) -> bool:
-        """Whether a file whose first bytes are `head` is shown as text: no image they prove, no NUL among them."""
-        return image_type(head) is None and b"\x00" not in head
+    @classmethod
+    def text(cls, head: bytes) -> bool:
+        """Whether a file whose first bytes are `head` is shown as text: no image or document they prove, no NUL among them."""
+        return image_type(head) is None and not head.startswith(cls.DOCUMENT_HEADS) and b"\x00" not in head
 
     def env_values(self) -> tuple[str, ...] | None:
         """Every value of 8 characters or more in the project folder's own `.env*` files (its vault's secrets are

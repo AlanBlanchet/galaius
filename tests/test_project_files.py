@@ -227,10 +227,16 @@ def test_an_env_value_is_masked_whole_whatever_it_holds(project: Path, tmp_path:
     assert value not in _ask(_agents(project, tmp_path), "file", path="uses.txt").content.text
 
 
+PDF = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n"   # no NUL in it
+
+
 @pytest.mark.parametrize(("path", "offset", "length", "expected"), [("blob.bin", 0, 200, b"\x00\x01" * 100), ("blob.bin", 7, 10, (b"\x00\x01" * 100)[7:17]),
                                                                    ("blob.bin", 190, 50, (b"\x00\x01" * 100)[190:]), ("blob.bin", 200, 5, b""), ("blob.bin", 10**9, 5, b""),
-                                                                   ("logo.png", 0, 8, PNG[:8])])
+                                                                   ("logo.png", 0, 8, PNG[:8]), ("plan.pdf", 9, 40, PDF[9:49])])
 def test_a_bytes_read_answers_exactly_the_part_asked_and_its_size(project: Path, tmp_path: Path, path: str, offset: int, length: int, expected: bytes) -> None:
+    """A PDF holding no NUL is a document, read raw, never shown as its source text."""
+    (project / "plan.pdf").write_bytes(PDF)
+    assert _ask(_agents(project, tmp_path), "file", path="plan.pdf").content.kind == "binary"
     part = _ask(_agents(project, tmp_path), "bytes", path=path, offset=offset, length=length).part
     assert (part.content, part.offset, part.size) == (expected, offset, (project / path).stat().st_size)
 
