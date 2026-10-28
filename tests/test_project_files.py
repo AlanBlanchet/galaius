@@ -13,6 +13,7 @@ import pytest
 
 from galaius_core import MACHINE_AGENT_REQUESTS, PROJECT_TEXT_MAX, MachineAgentAnswer
 from galaius.machine_agents import MachineAgents, WebRuns
+from galaius.pinned_directory import PinnedDirectory
 from galaius.places import PlaceMap
 
 # Built in pieces so no secret scanner mistakes the fixture for a real key.
@@ -45,9 +46,10 @@ def project(tmp_path: Path) -> Path:
     return folder
 
 
-def _agents(project: Path, tmp_path: Path) -> MachineAgents:
+def _agents(project: Path, tmp_path: Path, traced: list | None = None) -> MachineAgents:
     return MachineAgents(roots={"dev": project.parent}, permission="read_only", run_agents=True, session="web-test", runs=WebRuns(path=tmp_path / "web-runs.json"),
-                         environment={"PATH": os.environ["PATH"], "HOME": str(tmp_path), "SERVICE_TOKEN": KNOWN}, cli=("false",))
+                         environment={"PATH": os.environ["PATH"], "HOME": str(tmp_path), "SERVICE_TOKEN": KNOWN}, cli=("false",),
+                         places=PlaceMap(working_directory=tmp_path), audit=lambda log, entry: (traced if traced is not None else []).append((log, entry)))
 
 
 def _ask(agents: MachineAgents, op: str, **fields) -> MachineAgentAnswer:
@@ -70,15 +72,16 @@ def test_a_listing_shows_plain_entries_with_git_marks_and_counts_what_it_hid(pro
 
 
 @pytest.mark.parametrize("path", ["..", ".git/config", ".env.local", "src/../id_rsa", "/etc/passwd", "a\\b",
-                                  "README.md.", "README.md ", "README.md:stream", "src\x01x", ".vscode/settings.json", ".GITHUB/ci.yml"])
+                                  "README.md.", "README.md ", "README.md:stream", "src\x01x", ".vscode/settings.json", ".GITHUB/ci.yml",
+                                  "id_rsa", "src/cert.pem", "keys/ID_ED25519", "ops/client_secret_web.json"])
 def test_hidden_relative_and_absolute_paths_are_refused_before_the_disk(path: str) -> None:
     with pytest.raises(ValueError):
         MACHINE_AGENT_REQUESTS.validate_python({"id": str(uuid4()), "machine": {"id": str(uuid4())}, "workspace_id": str(uuid4()), "initiator_account": str(uuid4()),
                                                 "expires_at": datetime.now(UTC).isoformat(), "signature": "0" * 64, "op": "file", "root": "dev", "base": "app", "path": path})
 
 
-@pytest.mark.parametrize("path", ["id_rsa", "src/cert.pem", "out/anything", "src/linked.py", "out"])
-def test_credential_stores_and_links_are_never_read(project: Path, tmp_path: Path, path: str) -> None:
+@pytest.mark.parametrize("path", ["out/anything", "src/linked.py", "out"])
+def test_links_are_never_read(project: Path, tmp_path: Path, path: str) -> None:
     with pytest.raises(PermissionError):
         _ask(_agents(project, tmp_path), "file", path=path)
 
@@ -170,3 +173,46 @@ def test_a_linked_env_file_still_masks_its_values(project: Path, tmp_path: Path)
     (project / "uses.txt").write_text("connect with Zq9xLinkedValue now\n")
     text = _ask(_agents(project, tmp_path), "file", path="uses.txt").content.text
     assert "Zq9xLinkedValue" not in text
+
+
+def test_every_read_leaves_its_trace_in_the_pcs_places_log_refused_ones_too(project: Path, tmp_path: Path) -> None:
+    # code-reviewer 0284cc66 row 5: a probe the PC refuses is traced as a read it answers.
+    traced: list = []
+    agents = _agents(project, tmp_path, traced)
+    _ask(agents, "file", path="README.md")
+    with pytest.raises(PermissionError):
+        _ask(agents, "file", path="src/linked.py")
+    _ask(agents, "find", query="main")
+    assert [(log, entry["read"], entry.get("path"), entry.get("query"), entry["refused"] is not None) for log, entry in traced] == [
+        ("places.log", "file", "README.md", None, False), ("places.log", "file", "src/linked.py", None, True), ("places.log", "find", None, "main", False)]
+
+
+def test_a_pc_without_its_levels_shows_no_project_files(project: Path, tmp_path: Path) -> None:
+    with pytest.raises(PermissionError):
+        _ask(_agents(project, tmp_path).model_copy(update={"places": None}), "files")
+
+
+def test_a_folder_swapped_for_a_link_after_its_listing_is_never_entered(project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # code-reviewer 0284cc66 row 7: each folder is entered from its parent's pinned handle, so a swap between the name
+    # check and the open meets the link itself and is refused.
+    (tmp_path / "elsewhere").mkdir()
+    (tmp_path / "elsewhere" / "stolen.txt").write_text("x\n")
+    real = PinnedDirectory.selected.get().names
+
+    def swapping(directory) -> list[str]:
+        names = real(directory)
+        if directory.path == project / "src" and (project / "src" / "deep").is_dir() and not (project / "src" / "deep").is_symlink():
+            (project / "src" / "deep").rename(project / "src" / "moved")
+            (project / "src" / "deep").symlink_to(tmp_path / "elsewhere")
+        return names
+
+    monkeypatch.setattr(PinnedDirectory.selected.get(), "names", swapping)
+    with pytest.raises(PermissionError):
+        _ask(_agents(project, tmp_path), "files", path="src/deep")
+
+
+def test_a_change_inside_a_hidden_child_folder_marks_nothing(project: Path, tmp_path: Path) -> None:
+    (project / "docs" / ".cache").mkdir(parents=True)
+    (project / "docs" / ".cache" / "state").write_text("x\n")
+    subprocess.run(("git", "add", "-f", "docs/.cache/state"), cwd=project, check=True)
+    assert "docs" not in {entry.name: entry.git for entry in _ask(_agents(project, tmp_path), "files").files if entry.git}

@@ -6,7 +6,6 @@ Every path is walked part by part from the working directory without following a
 part is checked against `NEVER_GRANTABLE` (credential and configuration stores, casefolded, per
 OS) and the runner's own folders: no level opens them, whatever an ancestor's level says."""
 
-import fnmatch
 import re
 import stat
 import sys
@@ -16,7 +15,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from galaius_core import PLACE_LEVELS, MachinePlace, MachinePlaceEntry, PlaceLevel
+from galaius_core import CREDENTIAL_STORES, PLACE_LEVELS, CredentialStores, MachinePlace, MachinePlaceEntry, PlaceLevel
 
 from galaius.pinned_directory import PinnedDirectory
 
@@ -32,26 +31,13 @@ INSTRUCTION_NAMES = frozenset({"claude.md", "agents.md", "gemini.md", "copilot-i
 FORBIDDEN = re.compile(r"[:\\]|[. ]$")
 
 
-class NeverGrantable(BaseModel):
-    """Credential, configuration and startup stores no level opens, compared casefolded: `names`,
-    `suffixes`, `patterns` and the hidden `dot_names` / `dot_prefixes` wherever they appear on a
-    path (`secret`: the fence, a copy to another PC and the levels read the same list), `home`
-    folders beneath the home folder per platform (`sys.platform` prefix). For a level every hidden
-    (dot) name is refused too, which covers `.config` and `.local` on every OS."""
+class NeverGrantable(CredentialStores):
+    """Credential, configuration and startup stores no level opens: the credential stores wherever they appear on a
+    path (`secret`: the fence, a copy to another PC, the levels and a project files view read the same list), `home`
+    folders beneath the home folder per platform (`sys.platform` prefix). For a level every hidden (dot) name is
+    refused too, which covers `.config` and `.local` on every OS."""
 
-    model_config = ConfigDict(frozen=True)
     home: dict[str, tuple[str, ...]]
-    names: frozenset[str]
-    suffixes: tuple[str, ...]
-    patterns: tuple[str, ...] = ()
-    dot_names: frozenset[str] = frozenset()
-    dot_prefixes: tuple[str, ...] = ()
-
-    def secret(self, name: str) -> bool:
-        """Whether one name is a credential store's, hidden or not."""
-        folded = name.casefold()
-        return (folded in self.names or folded in self.dot_names or folded.startswith(self.dot_prefixes) or folded.endswith(self.suffixes)
-                or any(fnmatch.fnmatch(folded, pattern) for pattern in self.patterns))
 
     def refusal(self, parts: tuple[str, ...], below_home: tuple[str, ...] | None, platform: str = sys.platform) -> str | None:
         """Why `parts` (walked from the working directory; `below_home`: the same folder relative to
@@ -81,14 +67,7 @@ NEVER_GRANTABLE = NeverGrantable(
         # Snap applications keep their profiles (browsers, password managers) here; ~/bin is on PATH.
         "linux": ("snap", "bin"),
     },
-    names=frozenset({"id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "id_ecdsa_sk", "id_ed25519_sk", "authorized_keys", "known_hosts",
-                     "credentials", "credentials.json", "auth.json", "keychain", "keychains", "keyrings", "password-store", "wallets", "kubeconfig"}),
-    suffixes=(".kdbx", ".kdb", ".keychain", ".keychain-db", ".ppk", ".p12", ".pfx", ".pem", ".key", ".jks", ".keystore", ".gpg", ".asc", ".ovpn",
-              ".tfstate", ".tfstate.backup"),
-    patterns=("service-account*.json", "*-service-account*.json", "client_secret*.json"),
-    dot_names=frozenset({".env", ".netrc", ".npmrc", ".pypirc", ".pgpass", ".git-credentials", ".ssh", ".gnupg", ".aws", ".kube", ".docker",
-                         ".password-store", ".vault-token", ".terraform.d", ".credentials.json"}),
-    dot_prefixes=(".env.",),
+    **dict(CREDENTIAL_STORES),
 )
 #: Folders never walked or copied (dependencies, build output, caches): rebuilt where needed, never the project's own.
 DEPENDENCY_FOLDERS = frozenset({"node_modules", ".venv", "venv", "__pycache__", ".cache", "target", "dist", "build", ".next", ".tox", ".mypy_cache", ".gradle",

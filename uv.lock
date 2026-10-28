@@ -816,7 +816,7 @@ requires-dist = [
     { name = "datasets", specifier = ">=2.20" },
     { name = "evdev", marker = "platform_machine != 'x86_64' and sys_platform == 'linux'", specifier = ">=1.9" },
     { name = "evdev-binary", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = ">=2.0" },
-    { name = "galaius-core", git = "https://github.com/AlanBlanchet/galaius-core.git?rev=f157c3f50c9493aa5d580a66e270725ad5e7e369" },
+    { name = "galaius-core", git = "https://github.com/AlanBlanchet/galaius-core.git?rev=57888c9c8984010f3f5f76b83d946b71fa65056c" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "huggingface-hub", specifier = ">=0.35" },
     { name = "jsonschema", specifier = ">=4.23,<5" },
@@ -862,8 +862,8 @@ dev = [
 
 [[package]]
 name = "galaius-core"
-version = "0.78.0"
-source = { git = "https://github.com/AlanBlanchet/galaius-core.git?rev=f157c3f50c9493aa5d580a66e270725ad5e7e369#f157c3f50c9493aa5d580a66e270725ad5e7e369" }
+version = "0.79.0"
+source = { git = "https://github.com/AlanBlanchet/galaius-core.git?rev=57888c9c8984010f3f5f76b83d946b71fa65056c#57888c9c8984010f3f5f76b83d946b71fa65056c" }
 dependencies = [
     { name = "cryptography" },
     { name = "pydantic" },

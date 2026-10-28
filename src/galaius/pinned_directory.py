@@ -173,6 +173,15 @@ class DescriptorDirectory(PinnedDirectory):
     def names(self) -> list[str]:
         return os.listdir(self.descriptor)
 
+    @contextmanager
+    def child(self, name: str) -> Iterator[Self]:
+        """Folder `name` of this one, pinned from this folder's own descriptor (never a link)."""
+        descriptor = os.open(self._name(name), self.FLAGS, dir_fd=self.descriptor)
+        try:
+            yield type(self)(path=self.path / name, descriptor=descriptor)
+        finally:
+            os.close(descriptor)
+
     def mkdir(self, name: str, mode: int = 0o700) -> None:
         os.mkdir(self._name(name), mode, dir_fd=self.descriptor)
 
@@ -278,6 +287,13 @@ class PathDirectory(PinnedDirectory):
 
     def names(self) -> list[str]:
         return os.listdir(self.path)
+
+    @contextmanager
+    def child(self, name: str) -> Iterator[Self]:
+        """Folder `name` of this one, checked a real folder (never a link or junction)."""
+        path = self.path / self._name(name)
+        self._checked(path, directory=True)
+        yield type(self)(path=path)
 
     def mkdir(self, name: str, mode: int = 0o700) -> None:
         os.mkdir(self.path / self._name(name), mode)

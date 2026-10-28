@@ -58,6 +58,7 @@ from galaius.fence import EGRESS, FenceSpec, available
 from galaius.file_lock import exclusive
 from galaius.machine_programs import AgentPrograms
 from galaius.machine_tools import MachineTools
+from galaius.machine_places import LOG as PLACES_LOG
 from galaius.machine_workspaces import MachineWorkspaces, unusable
 from galaius.pinned_directory import PinnedDirectory
 from galaius.project_files import ProjectFolder
@@ -414,6 +415,8 @@ class MachineAgents(BaseModel):
     egress: tuple[str, ...] = ()
     #: The runner's agent child started ahead of the next start (`galaius.agents.warm`).
     warm: WarmStart | None = None
+    #: Appends one line to an owner-only log of this PC (`MachineRunner.audit`): log name, entry.
+    audit: Callable[[str, dict[str, object]], None] | None = None
     #: The runner's delivery of messages to its runs between their turns (`galaius.agents.followup`).
     followups: FollowUps | None = None
     #: The agent programs installed from the web (`programs` / `program_install`).
@@ -602,12 +605,24 @@ class MachineAgents(BaseModel):
         return MachineAgentAnswer(request_id=request.id, roots=roots, entries=folders, truncated=len(names) > 500, permission=permission, origin=origin)
 
     def _project_files(self, request: ProjectFilesBase) -> MachineAgentAnswer:
-        """A project folder's files beneath one agent root, read-only (`ProjectFolder`)."""
-        root = self.roots.get(request.root)
-        if root is None:
-            raise PermissionError(unusable(request.root))
-        placed = tuple(place for _, place in self.workspaces.placed()) if self.workspaces is not None else ()
-        return ProjectFolder.of(root, request, secrets=self.secrets, environment=self.environment, places=self.places, untrusted=placed).answer(request)
+        """A project folder's files beneath one agent root, read-only (`ProjectFolder`), only where this PC's levels and
+        its log are known. Every read, refused ones included, leaves its trace where his browse pages do: this PC's own
+        places log, never the server."""
+        if self.places is None or self.audit is None:
+            raise PermissionError("project files are shown only where this PC's levels and log are read")
+        refused = None
+        try:
+            root = self.roots.get(request.root)
+            if root is None:
+                raise PermissionError(unusable(request.root))
+            placed = tuple(place for _, place in self.workspaces.placed()) if self.workspaces is not None else ()
+            return ProjectFolder.of(root, request, secrets=self.secrets, environment=self.environment, places=self.places, untrusted=placed).answer(request)
+        except Exception as error:
+            refused = str(error)
+            raise
+        finally:
+            self.audit(PLACES_LOG, {"op": "project_files", "read": request.op, "root": request.root, "base": request.base,
+                                    **request.model_dump(include={"path", "query"}), "refused": refused, "initiator_account": str(request.initiator_account)})
 
     def _allowed(self) -> tuple[dict[str, WebRun], list[reg.AgentRun]]:
         return {str(item.run_id): item for item in self.runs.read()}, self.runs.runs()

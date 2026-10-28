@@ -3,8 +3,8 @@ marks, one file's text or image, a search by name.
 
 Only beneath one agent root; every name on a path matched byte for byte against its folder's own listing (a case,
 short-name or trailing-dot alias never opens the entry it stands for), every folder reached by `PinnedDirectory` and
-every file opened through it (never a link); never a `project_hidden` name or a credential store
-(`NEVER_GRANTABLE.secret`), nor what the owner's levels close (`PlaceMap.closed`). A listing counts what it left out,
+every file opened through it (never a link); never a `project_hidden` name (a credential store's included), nor what
+the owner's levels close (`PlaceMap.closed`). A listing counts what it left out,
 never names it. Text leaves redacted: credential shapes, the PC's secret values, and every value of the project
 folder's own `.env*` files (where its vault's secrets are written), redacted before it is cut.
 
@@ -24,6 +24,8 @@ import subprocess
 import threading
 import time
 from collections import deque
+from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import ClassVar
@@ -33,7 +35,7 @@ from pydantic import BaseModel, ConfigDict
 from galaius_core import (MACHINE_AGENT_MEDIA, PROJECT_FILES_MAX, PROJECT_FOUND_MAX, PROJECT_TEXT_MAX, GitMark, MachineAgentAnswer, ProjectFileContent,
                           ProjectFileEntry, ProjectFileRequest, ProjectFilesBase, ProjectFilesRequest, ProjectFindRequest, image_type, project_hidden)
 from galaius.pinned_directory import PinnedDirectory
-from galaius.places import DEPENDENCY_FOLDERS, NEVER_GRANTABLE, PlaceMap
+from galaius.places import DEPENDENCY_FOLDERS, PlaceMap
 from galaius.redaction import redact
 
 
@@ -77,6 +79,7 @@ class GitRun(BaseModel):
                 chunks.append(chunk)
                 size += len(chunk)
 
+        deadline = time.monotonic() + seconds
         reader = threading.Thread(target=read, daemon=True)
         reader.start()
         reader.join(seconds)
@@ -85,7 +88,7 @@ class GitRun(BaseModel):
                 self._kill(process)
                 return None
             try:
-                code = process.wait(seconds)
+                code = process.wait(max(deadline - time.monotonic(), 0))
             except subprocess.TimeoutExpired:
                 self._kill(process)
                 return None
@@ -98,10 +101,16 @@ class GitRun(BaseModel):
 
     @staticmethod
     def _kill(process: subprocess.Popen) -> None:
-        try:
-            os.killpg(process.pid, signal.SIGKILL) if os.name == "posix" else process.kill()
-        except OSError:
-            pass
+        """Kills git with every process it started: its process group on POSIX, its process tree on Windows."""
+        with suppress(OSError, subprocess.SubprocessError):
+            if os.name == "posix":
+                os.killpg(process.pid, signal.SIGKILL)
+            else:
+                taskkill = Path(os.environ.get("SYSTEMROOT", r"C:\Windows"), "System32", "taskkill.exe")
+                subprocess.run([str(taskkill), "/T", "/F", "/PID", str(process.pid)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, timeout=5, check=False)
+        with suppress(OSError):
+            process.kill()
         process.wait()
 
 
@@ -114,8 +123,8 @@ class ProjectFolder(BaseModel):
     secrets: tuple[str, ...] = ()
     #: What git runs with (its PATH, the home folder its own settings live in).
     environment: dict[str, str]
-    #: The owner's levels (None: none set).
-    places: PlaceMap | None = None
+    #: The owner's levels.
+    places: PlaceMap
     #: Folders put on this PC from the web (clones, copies): no git runs there.
     untrusted: tuple[Path, ...] = ()
     #: How long `git status` may take for one folder's marks; how long a search may take.
@@ -142,19 +151,12 @@ class ProjectFolder(BaseModel):
     WAIT_SECONDS: ClassVar[float] = 10.0
 
     @staticmethod
-    def hidden(name: str) -> bool:
-        return project_hidden(name) or NEVER_GRANTABLE.secret(name)
+    def parts(path: str) -> tuple[str, ...]:
+        """`path`'s names ("" none), each checked where the request parsed (`ProjectPath`, `FolderPath`)."""
+        return tuple(path.split("/")) if path else ()
 
     @classmethod
-    def parts(cls, path: str) -> tuple[str, ...]:
-        """`path`'s names, refused (PermissionError) when one of them is hidden, before any disk access."""
-        parts = tuple(path.split("/")) if path else ()
-        if path.startswith("/") or any(cls.hidden(part) for part in parts):
-            raise PermissionError("hidden files, environment files and credential stores are never shown")
-        return parts
-
-    @classmethod
-    def of(cls, root: Path, request: ProjectFilesBase, *, secrets: tuple[str, ...], environment: dict[str, str], places: PlaceMap | None,
+    def of(cls, root: Path, request: ProjectFilesBase, *, secrets: tuple[str, ...], environment: dict[str, str], places: PlaceMap,
            untrusted: tuple[Path, ...]) -> "ProjectFolder":
         return cls(root=root.resolve(), base=cls.parts(request.base), secrets=secrets, environment=environment, places=places,
                    untrusted=tuple(folder.resolve() for folder in untrusted))
@@ -200,7 +202,7 @@ class ProjectFolder(BaseModel):
             kept: list[tuple[str, os.stat_result]] = []
             hidden = 0
             for name in directory.names():
-                facts = None if self.hidden(name) or self._closed(directory.path / name) else directory.stat(name)
+                facts = None if project_hidden(name) or self._closed(directory.path / name) else directory.stat(name)
                 if facts is None or PinnedDirectory.link_like(facts) or not (stat.S_ISDIR(facts.st_mode) or stat.S_ISREG(facts.st_mode)):
                     hidden += 1
                     continue
@@ -255,7 +257,7 @@ class ProjectFolder(BaseModel):
         link is followed for its values only (never shown); one that cannot be read as a plain file → None (fail closed)."""
         values: set[str] = set()
         flags = os.O_RDONLY | PinnedDirectory.NONBLOCK | getattr(os, "O_BINARY", 0)
-        with PinnedDirectory.open(self.root, *self.base) as directory:
+        with self._opened(()) as directory:
             for name in sorted(name for name in directory.names() if name.casefold().startswith(".env"))[:self.ENV_FILES]:
                 try:
                     descriptor = os.open(directory.path / name, flags)
@@ -290,14 +292,14 @@ class ProjectFolder(BaseModel):
             if len(found) == PROJECT_FOUND_MAX:
                 return tuple(found), True
             parts = path.split("/")
-            if not any(self.hidden(part) or part in DEPENDENCY_FOLDERS for part in parts) and not self._closed(self.folder / path) and plain.holds(path):
+            if not any(project_hidden(part) or part in DEPENDENCY_FOLDERS for part in parts) and not self._closed(self.folder / path) and plain.holds(path):
                 found.append(path)
         return tuple(found), cut
 
     def marks(self, folder: Path, name: str = ".") -> dict[str, GitMark]:
         """The git mark of each entry of `folder` (or of entry `name` alone) as its own repository says it: a folder
-        holding marked paths is `modified`; an untracked folder `untracked`. Empty where git may not run, outside a
-        repository or past STATUS_SECONDS."""
+        holding marked paths is `modified` (never for a path the view hides or the owner's levels close); an untracked
+        folder `untracked`. Empty where git may not run, outside a repository or past STATUS_SECONDS."""
         top = self._repository(folder)
         said = self.git(folder, "status", "--porcelain=v1", "-z", "--untracked-files=normal", "--", name, seconds=self.STATUS_SECONDS) if top is not None else None
         if said is None or said[0] != 0 or top is None:
@@ -315,7 +317,8 @@ class ProjectFolder(BaseModel):
                 continue
             entry, _, beneath = path[len(prefix):].rstrip("/").partition("/")
             if beneath:
-                marks.setdefault(entry, "modified")
+                if not any(project_hidden(part) for part in beneath.split("/")) and not self._closed(folder / entry / beneath):
+                    marks.setdefault(entry, "modified")
             else:
                 marks[entry] = self._mark(code)
         return marks
@@ -363,7 +366,7 @@ class ProjectFolder(BaseModel):
                         seen += 1
                         if seen > self.WALK_MAX or time.monotonic() > deadline:
                             return paths, True
-                        if self.hidden(entry.name) or entry.is_symlink():
+                        if project_hidden(entry.name) or entry.is_symlink():
                             continue
                         relative = f"{current}/{entry.name}" if current else entry.name
                         if entry.is_dir(follow_symlinks=False):
@@ -375,18 +378,20 @@ class ProjectFolder(BaseModel):
                 continue
         return paths, False
 
-    def _opened(self, parts: tuple[str, ...]):
-        """Folder `parts` beneath the project folder, pinned (no link on the way), each name on the way byte-equal to an
-        entry of its folder's own listing and none closed by the owner's levels."""
-        current = self.root
-        for part in (*self.base, *parts):
-            if part not in os.listdir(current) or self._closed(current / part):
-                raise PermissionError(f"{'/'.join(parts) or 'the project folder'}: no such folder here")
-            current = current / part
-        return PinnedDirectory.open(self.root, *self.base, *parts)
+    @contextmanager
+    def _opened(self, parts: tuple[str, ...]) -> Iterator[PinnedDirectory]:
+        """Folder `parts` beneath the project folder, each folder on the way pinned from its parent's own handle (never a
+        link), its name byte-equal to an entry of that handle's listing, never hidden nor closed by the owner's levels."""
+        with ExitStack() as stack:
+            directory = stack.enter_context(PinnedDirectory.open(self.root))
+            for part in (*self.base, *parts):
+                if project_hidden(part) or part not in directory.names() or self._closed(directory.path / part):
+                    raise PermissionError(f"{'/'.join(parts) or 'the project folder'}: no such folder here")
+                directory = stack.enter_context(directory.child(part))
+            yield directory
 
     def _closed(self, target: Path) -> bool:
-        return self.places is not None and self.places.closed(target)
+        return self.places.closed(target)
 
     def _entry(self, name: str, facts: os.stat_result, mark: GitMark | None) -> ProjectFileEntry:
         folder = stat.S_ISDIR(facts.st_mode)
