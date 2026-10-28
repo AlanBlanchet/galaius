@@ -205,6 +205,23 @@ def test_runs_say_which_ranked_candidates_were_passed_over_and_until_when(base: 
         ("claude", "claude-opus-5-5", "quota_exceeded", 1791000000.0), ("claude", "claude-fable-5-1", "cli_missing", None)]
 
 
+def test_a_community_child_is_listed_with_its_entry_never_its_text(base: Path, tmp_path: Path) -> None:
+    """The web's agents panel marks a community agent by its entry (owner 2026-10-27 « they should show up like so in the
+    agents panel »): the run list carries its title, author, licence and source, never the entry's text or delimiter."""
+    from galaius.agents.community import CommunityAgent
+    agents = _agents(base, tmp_path)
+    mine, child = str(uuid4()), str(uuid4())
+    started = CommunityAgent(entry=uuid4(), kind="skill", title="Frontend slides", author="someone/skills", licence="MIT",
+                             origin_url="https://github.com/someone/skills/blob/" + "a" * 40 + "/SKILL.md", instructions="Make slides.", digest="0" * 64, nonce="n0nce")
+    reg.save_run(reg.AgentRun(run_id=mine, provider="claude", name="main", cwd=str(base / "project"), started_at=1.0))
+    reg.save_run(reg.AgentRun(run_id=child, provider="claude", name="c", cwd=str(base / "project"), parent_run_id=mine, started_at=2.0, community=started))
+    agents.runs.add(WebRun(run_id=mine, root="project"))
+    listed = {str(run.run_id): run.model_dump(mode="json") for run in _answer(agents, _request("runs")).runs}
+    assert "community" not in listed[mine]
+    assert listed[child]["community"] == {"entry": str(started.entry), "kind": "skill", "title": "Frontend slides", "author": "someone/skills",
+                                          "licence": "MIT", "origin_url": started.origin_url}
+
+
 @pytest.mark.parametrize(("kind", "recorded", "turned", "said"), [
     ("agent", "high", None, "high"),  # a start from the web or a spawn: the effort `register` recorded
     ("agent", "high", "xhigh", "xhigh"),  # a turn resumed at another effort: the one it runs at now

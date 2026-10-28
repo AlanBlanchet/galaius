@@ -6,6 +6,7 @@ Every input is copied, without a link and only from where the asking run may rea
 Kinocut sees only those copies, offline (every proxy points nowhere), one step after the other. The result is saved
 like a file `create_file` writes (`files.save`: only where the run may write, kept for the chat in parts, never whole)."""
 
+import asyncio
 import json
 import os
 import shutil
@@ -16,9 +17,11 @@ from pathlib import Path, PurePosixPath
 from typing import Annotated, ClassVar, Literal, NamedTuple
 
 from galaius_core import KEPT_FILE_MAX, MACHINE_TOOLS
+from playwright.async_api import Error as PlaywrightError, async_playwright
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
-from galaius.files import Written, copy_working, kept_path, offline_environment, save
+from galaius.browser import chromium_launch_kwargs
+from galaius.files import PASSED_ON_MAX, Written, asking, copy_working, kept_path, offline_environment, passed_on, read_working, save
 from galaius.machine_tools import MachineTools
 
 #: What this capability writes (`MACHINE_TOOLS`), split into video and sound by content type.
@@ -256,3 +259,67 @@ def _srt(seconds: float) -> str:
     """`seconds` as a SubRip time: 00:00:03,250."""
     millis = round(seconds * 1000)
     return f"{millis // 3_600_000:02d}:{millis // 60_000 % 60:02d}:{millis // 1000 % 60:02d},{millis % 1000:03d}"
+
+
+class Scene(BaseModel):
+    """An HTML or SVG page (`scene`) played `seconds` at `width` x `height` and saved as a WebM video at `output`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: Longest scene played, in seconds; most pixels of its frame (a 1280 x 720 picture, either way up: a stranger's
+    #: page drawn larger holds gigabytes of a browser's memory).
+    SECONDS: ClassVar[float] = 60
+    PIXELS: ClassVar[int] = 1280 * 720
+
+    scene: str = Field(min_length=1, max_length=4096)
+    output: Annotated[str, AfterValidator(lambda path: kept_path(path, (".webm",)))]
+    seconds: float = Field(gt=0, le=SECONDS)
+    width: int = Field(default=1280, ge=160, le=1280)
+    height: int = Field(default=720, ge=160, le=1280)
+    replace: bool = False
+
+    @model_validator(mode="after")
+    def drawn_small(self) -> "Scene":
+        if self.width * self.height > self.PIXELS:
+            raise ValueError(f"a scene is at most {self.PIXELS:,} pixels (1280 x 720 or 720 x 1280)")
+        return self
+
+    def text(self) -> str:
+        """Its page: a file a community agent the asking run started wrote (an absolute path: `passed_on`), else a file of
+        the working folder (`read_working`); UTF-8, at most `PASSED_ON_MAX` bytes."""
+        if Path(self.scene).expanduser().is_absolute():
+            return passed_on(self.scene, asking())
+        try:
+            return read_working(self.scene, PASSED_ON_MAX).decode()
+        except UnicodeDecodeError as error:
+            raise ValueError(f"{self.scene} is not UTF-8 text") from error
+
+    async def record(self) -> Written:
+        """It played where its page sees nothing of this PC: a new browser with no profile, no script, no network (offline,
+        every request refused), its text set as a blank page's content (which may open no local file); nothing of it read
+        back but the video. ValueError: the browser could not start."""
+        text = self.text()
+        work_root = MachineTools.folder("video_editing") / "work"
+        work_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="scene-", dir=work_root) as folder:
+            async with async_playwright() as playwright:
+                try:
+                    browser = await playwright.chromium.launch(**chromium_launch_kwargs("chromium", True, 0))
+                except PlaywrightError as error:
+                    raise ValueError(f"no browser to play the scene in: {str(error).splitlines()[0]}") from None
+                try:
+                    size = {"width": self.width, "height": self.height}
+                    context = await browser.new_context(java_script_enabled=False, offline=True, viewport=size, accept_downloads=False,
+                                                        service_workers="block", record_video_dir=folder, record_video_size=size)
+                    await context.route("**/*", lambda route: route.abort())
+                    page = await context.new_page()
+                    await page.set_content(text, wait_until="load")
+                    await asyncio.sleep(self.seconds)
+                    video = page.video
+                    await context.close()
+                    recorded = Path(await video.path()) if video is not None else None
+                finally:
+                    await browser.close()
+            if recorded is None or not recorded.is_file():
+                raise ValueError("the browser recorded no video")
+            return save(self.output, recorded, replace=self.replace)

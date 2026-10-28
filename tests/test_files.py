@@ -2,6 +2,7 @@
 
 import email
 import json
+import os
 from pathlib import Path
 
 import docx
@@ -185,3 +186,34 @@ def test_a_mail_draft_attaches_only_what_the_run_wrote_itself(tmp_path: Path, mo
     big = write(FileSpec(path="big.txt", content="x" * (5 * 1024 * 1024)), replace=False)
     with pytest.raises(ValueError, match="weighs more"):
         write(FileSpec(path="heavy.eml", content="x", attach=[big.path.name]), replace=False)
+
+
+def test_a_community_agent_s_deck_reaches_the_chat_unread_by_the_run_that_started_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """His coordinator makes a deck through a community slides agent (2026-10-27): the stranger's text becomes the file
+    without entering the coordinator's context, and only from the folder of a community agent that run started."""
+    from uuid import uuid4
+
+    from galaius.agents.community import CommunityAgent
+    work, other = tmp_path / "community" / "child", tmp_path / "community" / "stranger"
+    work.mkdir(parents=True)
+    other.mkdir()
+    (work / "deck.md").write_text(MARKDOWN)
+    (other / "deck.md").write_text(MARKDOWN)
+    agent = CommunityAgent(entry=uuid4(), kind="skill", title="Frontend slides", author="someone/skills", instructions="Make slides.",
+                           digest="0" * 64, nonce="n0nce", work=work)
+    register_run(run_id="coordinator")
+    register_run(run_id="child", parent_run_id="coordinator", community=agent)
+    register_run(run_id="other", parent_run_id="someone-else", community=agent.model_copy(update={"work": other}))
+    _as(monkeypatch, "coordinator")
+    written = write(FileSpec(path="deck.pptx", content_from=str(work / "deck.md")), replace=False)
+    assert [shape.text_frame.text for shape in pptx.Presentation(written.path).slides[0].shapes][0] == "Summary"
+    for refused in (other / "deck.md", work / ".." / "stranger" / "deck.md", tmp_path / "deck.pptx", Path("deck.md")):
+        with pytest.raises(PermissionError, match="only a file in the folder"):
+            write(FileSpec(path="leak.pptx", content_from=str(refused)), replace=False)
+    with pytest.raises(ValueError, match="not both"):
+        FileSpec(path="a.md", content="x", content_from=str(work / "deck.md"))
+    os.mkfifo(work / "pipe.md")
+    (work / "linked").symlink_to(other)
+    for refused, why in ((work / "pipe.md", "not a plain file"), (work / "linked" / "deck.md", "link"), (work, "only a file in the folder")):
+        with pytest.raises((ValueError, OSError), match=why):
+            write(FileSpec(path="leak.pptx", content_from=str(refused)), replace=False)

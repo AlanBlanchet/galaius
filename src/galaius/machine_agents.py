@@ -653,7 +653,7 @@ class MachineAgents(BaseModel):
                 passed_over=tuple(PassedOverCandidate(provider=item.candidate.provider, model=item.candidate.model[:MODEL_ID_MAX], reason=item.reason, until=item.until)
                                   for item in run.skipped[:16]),
                 subscription=run.subscription, stopped_by=run.stopped_by if run.status == "stopped" else None, replaced_by=run.replaced_by,
-                asked_by=tuple(UUID(asker) for asker in run.asked_by),
+                asked_by=tuple(UUID(asker) for asker in run.asked_by), community=run.community.ref() if run.community else None,
                 **{field: getattr(run, field) for field in ContextGauge.model_fields},
             ))
         return MachineAgentAnswer(request_id=request.id, runs=tuple(found), web=self.runs.load(request))

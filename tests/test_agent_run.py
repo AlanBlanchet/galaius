@@ -715,7 +715,7 @@ async def test_a_community_agent_runs_fenced_with_less_than_its_caller_and_plays
     from galaius_core import CommunityAuthor, CommunityPrompt
 
     from galaius.agents import community as community_module
-    from galaius.agents.community import CommunityAgent
+    from galaius.agents.community import CommunityAgent, Reads
     from galaius.agents.run import AheadLaunch, ModelUnavailable
     from galaius.fence import available
     if not available()[0]:
@@ -749,7 +749,7 @@ async def test_a_community_agent_runs_fenced_with_less_than_its_caller_and_plays
     assert "model: opus" not in started["agent_prompt"]
     assert record.community.entry == entry.entry and record.name == "community: someone/agents · Reverse (Galaius: engineer)"
     assert record.fence is not None and record.fence.levels == {"project": "read"} and record.cwd == str(record.community.work)
-    assert record.community.work.parent == tmp_path / ".galaius-community" and record.community.reads == project
+    assert record.community.work.parent == tmp_path / ".galaius-community" and record.community.reach == Reads(folder=project)
     assert not stale.exists(), "a community agent's folder untouched for a week is removed as the next one starts"
     assert not record.plays("tester") and reg.get_run(caller.run_id).plays("tester")
     turn = AheadLaunch.turn_arguments(ClaudeCodeProvider(), child.run_id, None, role="tester", compact_at=200_000, isolated=True)["turn"].arguments()
@@ -761,6 +761,45 @@ async def test_a_community_agent_runs_fenced_with_less_than_its_caller_and_plays
     monkeypatch.setattr(community_module, "available", lambda: (False, "no bubblewrap"))
     with pytest.raises(PermissionError, match="no bubblewrap"):
         await run_agent(_CommandRecorder(), "map its protocol", cwd=str(project), parent_run_id=caller.run_id, community=entry)
+
+
+def test_a_community_agent_starts_reading_nothing_from_a_caller_folder_the_fence_cannot_open(tmp_path, monkeypatch):
+    """His coordinator works in his whole workspace (> 200 000 entries, 2026-10-27): every community spawn from his chat
+    was refused. The fence cannot check that folder, so the agent starts reading none of it, never not at all."""
+    from uuid import uuid4
+
+    from galaius import fence as fence_module
+    from galaius.agents.community import CommunityAgent, Unread
+    if not fence_module.available()[0]:
+        pytest.skip("this system cannot build the agent fence")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(fence_module, "SCAN_ENTRIES", 5)
+    caller = tmp_path / "workspace"
+    for index in range(8):
+        (caller / f"part{index}").mkdir(parents=True)
+    agent = CommunityAgent(entry=uuid4(), kind="skill", title="Frontend slides", author="someone/skills", instructions="Make slides.", digest="0" * 64, nonce="n0nce")
+    started, spec = agent.fence(str(caller), None)
+    assert isinstance(started.reach, Unread) and spec.levels == {} and started.work is not None and started.work.is_dir()
+    assert "reads nothing of yours (" in started.started() and str(caller) in started.reach.why
+
+
+def test_a_community_entry_with_a_long_licence_or_a_plain_http_link_still_starts():
+    """An imported entry's licence (up to 60 characters in the library) and link come from its repository: what the run
+    list cannot carry is dropped, never a refused start."""
+    import hashlib
+    from uuid import uuid4
+
+    from galaius_core import CommunityAuthor, CommunityPrompt
+
+    from galaius.agents.community import CommunityAgent
+    body = "You make slides."
+    listed = CommunityPrompt(
+        id=uuid4(), kind="skill", reviewed=True, title="Frontend\u200b [slides]", summary="Slides.", tags=(), copies_total=0, uses_total=0, body=body,
+        author=CommunityAuthor(display_name="someone/skills", kind="source"), published_at="2026-10-26T00:00:00Z",
+        source_digest=hashlib.sha256(body.encode()).hexdigest(), licence="L" * 41, origin_url="http://example.com/slides.md")
+    agent = CommunityAgent.of(listed)
+    assert (agent.title, agent.licence, agent.origin_url) == ("Frontend (slides)", None, None)
+    assert set(agent.ref().model_dump()) == {"entry", "kind", "title", "author", "licence", "origin_url"}
 
 
 @pytest.mark.parametrize("forged", [

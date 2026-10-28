@@ -11,10 +11,11 @@ import tempfile
 from fractions import Fraction
 from pathlib import Path
 from typing import Literal, cast
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from mcp.types import CallToolResult, ContentBlock, TextContent
 from mcp.server.fastmcp.utilities.types import Image
+from playwright.async_api import Error as PlaywrightError
 from galaius import desktop
 from galaius.browser import BrowserManager
 from galaius.config.settings import Config
@@ -32,6 +33,7 @@ from galaius.server.core import _AUTO_SESSION, _NO_WINDOWS_MSG, _session_respons
 from galaius.vision import MediaAnalysis, MediaItem, RecordingCapture, RecordingResult
 from galaius.vision.types import VLMResult
 from galaius.vision.session import sample_video_frames
+from galaius.video import Scene
 
 
 class _VideoStream(BaseModel):
@@ -469,8 +471,16 @@ async def record(
     path: str | None = None,
     target: str | None = None,
     session: str = _AUTO_SESSION,
+    scene: str | None = None,
 ) -> RecordingResult:
     """Record actions as video and optionally analyze with vision.
+
+    Scene (motion design, an animated title): scene=<an .html or .svg page with CSS / SVG animation, no script>,
+    duration=<seconds, at most 60>, path=<.webm in your working folder> plays that page alone and saves it as a video;
+    then edit_video turns it into the .mp4 the person gets in their chat. `scene` is a file of your working folder, or
+    the absolute path of one a community agent you started wrote in its own folder. The page runs in a new browser with
+    no script, no network and no file of this PC; nothing of it comes back to you but the video's path (no frame, no
+    `query`), so a stranger's page never reaches your context.
 
     Browser (target unset): Two-step — record(start=True), perform actions, then record(start=False).
     Starting AND stopping browser recording reload the page. Cookies and localStorage carry over,
@@ -510,6 +520,8 @@ async def record(
     """
     if fps is not None and fps <= 0:
         raise ValueError("Recording fps must be positive")
+    if scene is not None:
+        return await _record_scene(scene, duration, path, query)
     win, mgr, err = targets._resolve_target(target, session)
     if err:
         return _record_tool_result(RecordingResult(
@@ -526,6 +538,26 @@ async def record(
     else:
         result = await _record_browser(mgr, start, query, path, session, fps=fps)
     return _record_tool_result(result)
+
+
+async def _record_scene(scene: str, duration: float | None, path: str | None, query: str | None) -> RecordingResult:
+    """`record(scene=…)`: the page played alone (`Scene.record`), its video's path the only thing said back."""
+    try:
+        if query is not None:
+            raise ValueError("a scene is recorded without query: nothing of its page comes back")
+        played = Scene(scene=scene, output=path or "", seconds=duration or 0)
+        written = await played.record()
+    except (ValidationError, ValueError, OSError, PlaywrightError) as error:
+        said = "; ".join(str(problem["msg"]) for problem in error.errors()) if isinstance(error, ValidationError) else str(error)
+        return RecordingResult(
+            capture=RecordingCapture(status="unavailable", requested_fps=25, timestamp_basis="derived_cadence", observation="indeterminate"),
+            analysis=MediaAnalysis(status="unavailable", eligible=False, attempted=False, input_kind="none", text=f"Nothing recorded: {said}"),
+        )
+    return RecordingResult(
+        capture=RecordingCapture(status="captured", artifact=str(written.path), requested_fps=25, duration=played.seconds,
+                                 timestamp_basis="derived_cadence", observation="indeterminate"),
+        analysis=MediaAnalysis(status="not_requested", eligible=False, attempted=False, input_kind="none"),
+    )
 
 
 async def _record_desktop(

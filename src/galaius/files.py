@@ -82,6 +82,9 @@ class FileSpec(BaseModel):
     #: Text: the whole file (txt, md, json), the body (eml), Markdown-lite (docx, pptx: `#` headings, `-` bullets,
     #: paragraphs; a pptx slide per `#` heading), or Typst markup (pdf).
     content: str = ""
+    #: A file a community agent this run started wrote in its own folder (`passed_on`), whose text is `content`: passed
+    #: on to the person unread by the run asking, a stranger's words never in its context.
+    content_from: str | None = Field(default=None, max_length=4096)
     #: A table: its first row is the header (csv, xlsx, docx, pdf).
     rows: Rows = Field(default_factory=list)
     #: Several named sheets (xlsx), each a table.
@@ -99,6 +102,8 @@ class FileSpec(BaseModel):
     def attached_to_a_mail(self) -> "FileSpec":
         if self.attach and self.suffix != ".eml":
             raise ValueError("only a mail draft (.eml) takes attachments")
+        if self.content_from is not None and self.content:
+            raise ValueError("give content or content_from, not both")
         return self
 
     @property
@@ -409,11 +414,38 @@ def write(spec: FileSpec, *, replace: bool) -> Written:
     """`spec` written as its format in the caller's working folder (`save`), a mail draft's attachments read first
     (`_attachments`: for an agent run, only files it wrote itself)."""
     if spec.attach:
-        spec = spec.model_copy(update={"attached": _attachments(spec.attach, _asking())})
+        spec = spec.model_copy(update={"attached": _attachments(spec.attach, asking())})
+    if spec.content_from is not None:
+        spec = spec.model_copy(update={"content": passed_on(spec.content_from, asking())})
     return save(spec.path, FileFormat.of(spec).bytes(spec), replace=replace)
 
 
-def _asking() -> "reg.AgentRun | None":
+#: The most a community agent's file weighs that its caller passes on (`passed_on`).
+PASSED_ON_MAX = 1024 * 1024
+
+
+def passed_on(path: str, run: "reg.AgentRun | None") -> str:
+    """The text of file `path` a community agent `run` started wrote in its own folder (`CommunityAgent.work`), for `run`
+    to pass on unread: the only file of a community agent an agent's file tool reads. PermissionError for any other file,
+    a person's own session included; ValueError: not a UTF-8 text file of at most `PASSED_ON_MAX` bytes."""
+    if run is None:
+        raise PermissionError("content_from passes on the file of a community agent your agent run started; this session is none")
+    target = PurePosixPath(os.path.normpath(Path(path).expanduser()))
+    works = [child.community.work.resolve() for child in reg.children_of(run.run_id) if child.community is not None and child.community.work is not None]
+    work = next((work for work in works if target.is_absolute() and target.is_relative_to(work.as_posix())), None)
+    if work is None or target == PurePosixPath(work.as_posix()):
+        raise PermissionError(f"{path}: content_from reads only a file in the folder of a community agent this run started")
+    with _plain_file(work, target.relative_to(work.as_posix()).as_posix(), "that community agent's folder") as handle:
+        data = handle.read(PASSED_ON_MAX + 1)
+    if len(data) > PASSED_ON_MAX:
+        raise ValueError(f"{path} weighs more than the {PASSED_ON_MAX // 1024} KiB content_from passes on")
+    try:
+        return data.decode()
+    except UnicodeDecodeError as error:
+        raise ValueError(f"{path} is not UTF-8 text") from error
+
+
+def asking() -> "reg.AgentRun | None":
     """The agent run asking (`asking_run`: its process ancestry first, never only what its environment claims); None for a
     person's own session. PermissionError: this process names a run this computer does not know."""
     asked = asking_run()
@@ -428,7 +460,7 @@ def writable(path: str) -> tuple[str, Caller, "reg.AgentRun | None", Path]:
     so nothing is charged that cannot be kept."""
     path = kept_path(path)
     caller = Caller.current()
-    run = _asking()
+    run = asking()
     target = caller.cwd.resolve() / path
     if run is not None and (provider := PROVIDERS.get(run.provider)) is not None and provider.touch_of(run.permission_mode) == TouchScope.READ_ONLY:
         raise PermissionError("this run reads only: it writes no file")
@@ -443,7 +475,7 @@ def save(path: str, data: bytes | Path, *, replace: bool) -> Written:
     run may write (its fence's `write` / `sandbox` levels, its project folder; anywhere in that folder for a run with no
     fence, which writes there itself), every folder on the way reached without a link and made when missing, a file
     already there only when `replace`, written whole or not at all; then kept for the web (`reg.RunFiles`) under the run
-    asking (`_asking`), refused before anything is written when larger than it keeps (`RunFiles.fits`). What `create_file`
+    asking (`asking`), refused before anything is written when larger than it keeps (`RunFiles.fits`). What `create_file`
     and every file tool write (`galaius.media`, `galaius.video`)."""
     path, caller, run, target = writable(path)
     *folders, name = PurePosixPath(path).parts
@@ -528,17 +560,25 @@ def _working(path: str) -> Iterator[BinaryIO]:
     folder). ValueError / PermissionError: why not."""
     path = kept_path(path, None)
     root = Caller.current().cwd.resolve()
-    run = _asking()
+    run = asking()
     if run is not None and run.fence is not None:
         _reachable(run.fence, root / path, READ_LEVELS, "read")
-    *folders, name = PurePosixPath(path).parts
+    with _plain_file(root, path, "your working folder") as handle:
+        yield handle
+
+
+@contextmanager
+def _plain_file(root: Path, path: str, where: str) -> Iterator[BinaryIO]:
+    """File `path` below `root` (`where` it is, said when it is missing), open to read: every folder on the way and the
+    file reached without a link, opened without waiting (a FIFO never blocks), a plain file. ValueError: why not."""
+    *folders, name = PurePosixPath(kept_path(path, None)).parts
     try:
         with PinnedDirectory.open(root, *folders) as folder, os.fdopen(folder.file(name, os.O_RDONLY | PinnedDirectory.NONBLOCK), "rb") as handle:
             if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
                 raise ValueError(f"{path} is not a plain file")
             yield handle
     except FileNotFoundError:
-        raise ValueError(f"{path}: no such file in your working folder") from None
+        raise ValueError(f"{path}: no such file in {where}") from None
 
 
 #: The address every proxy variable names for a program run offline (`offline_environment`): nothing listens there.
