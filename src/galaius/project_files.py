@@ -1,13 +1,14 @@
 """A project folder's files as the web reads them, read-only (`ProjectFilesBase`): one folder's entries with their git
 marks, one file's text or image, a search by name, a part of a file's raw bytes (never one shown as text: those leave only
-redacted).
+redacted; never one holding a secret, `ProjectFolder.part`).
 
 Only beneath one agent root; every name on a path matched byte for byte against its folder's own listing (a case,
 short-name or trailing-dot alias never opens the entry it stands for), every folder reached by `PinnedDirectory` and
 every file opened through it (never a link); never a `project_hidden` name (a credential store's included), nor what
 the owner's levels close (`PlaceMap.closed`). A listing counts what it left out,
 never names it. Text leaves redacted: credential shapes, the PC's secret values, and every value of the project
-folder's own `.env*` files (where its vault's secrets are written), redacted before it is cut.
+folder's own `.env*` files (where its vault's secrets are written), each found in a window reaching CONTEXT bytes past
+both edges of the page shown.
 
 git runs only in a repository its owner put here himself (never one cloned or copied from the web) whose own config
 names no filter, file-system monitor or include; read-only (`--no-optional-locks`: the index is never rewritten),
@@ -16,6 +17,9 @@ process group is killed, its output capped.
 """
 
 import base64
+import bz2
+import gzip
+import lzma
 import os
 import re
 import shutil
@@ -24,8 +28,10 @@ import stat
 import subprocess
 import threading
 import time
-from collections import deque
-from collections.abc import Iterator
+import zipfile
+import zlib
+from collections import OrderedDict, deque
+from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
@@ -33,12 +39,12 @@ from typing import BinaryIO, ClassVar
 
 from pydantic import BaseModel, ConfigDict
 
-from galaius_core import (MACHINE_AGENT_MEDIA, PROJECT_FILES_MAX, PROJECT_FOUND_MAX, PROJECT_TEXT_MAX, GitMark, MachineAgentAnswer, ProjectFileBytes,
+from galaius_core import (MACHINE_AGENT_MEDIA, PROJECT_BYTES_PART, PROJECT_FILES_MAX, PROJECT_FOUND_MAX, PROJECT_TEXT_MAX, GitMark, MachineAgentAnswer, ProjectFileBytes,
                           ProjectFileBytesRequest, ProjectFileContent, ProjectFileEntry, ProjectFileRequest, ProjectFilesBase, ProjectFilesRequest,
                           ProjectFindRequest, image_type, project_hidden)
 from galaius.pinned_directory import PinnedDirectory
 from galaius.places import DEPENDENCY_FOLDERS, PlaceMap
-from galaius.redaction import redact
+from galaius.redaction import holds_secret, redact
 
 
 class GitRun(BaseModel):
@@ -134,15 +140,40 @@ class ProjectFolder(BaseModel):
     FIND_SECONDS: ClassVar[float] = 2.0
     #: Entries a search outside a repository looks at, at most.
     WALK_MAX: ClassVar[int] = 50_000
-    #: The first bytes read to tell text (no NUL), an image and anything else apart.
+    #: The first bytes read to tell text (no NUL, or a UTF-16 byte-order mark), an image and anything else apart.
     HEAD: ClassVar[int] = 8192
     #: Heads of documents a viewer opens, never read as source text, though they may hold no NUL: 15 of 400 PDFs
     #: sampled on one PC (2026-10-28) carry none in their first 8 KiB.
     DOCUMENT_HEADS: ClassVar[tuple[bytes, ...]] = (b"%PDF-",)
-    #: The tail a cut line loses: its last run of key characters (no space, quote, comma, semicolon), at most CUT_TAIL of
-    #: them: a secret the cut split, which no mask recognises any more.
-    CUT_TAIL: ClassVar[int] = 1024
-    KEY_BREAKS: ClassVar[frozenset[str]] = frozenset(" \t\r\n\"',;")
+    #: UTF-16 text by its byte-order mark: decoded and shown redacted like any text, never sent raw.
+    UTF16: ClassVar[dict[bytes, str]] = {b"\xff\xfe": "utf-16-le", b"\xfe\xff": "utf-16-be"}
+    #: Bytes read on each side of a page and searched with it for what to mask (4 bytes per character at most: every
+    #: mask reaching into the page found whole, `redaction.PEM_BODY` the longest), never shown.
+    CONTEXT: ClassVar[int] = 256 * 1024
+    #: Where a page cut by PROJECT_TEXT_MAX ends: after its last line end, else after its last word break.
+    BREAKS: ClassVar[tuple[str, ...]] = ("\n", " \t\r\"',;")
+    #: Heads of the kinds a player or viewer reads, proven by their first bytes, none a container of other files: their
+    #: raw bytes leave unread (an image by `image_type`, a PDF, video, sound, a 3D model; an office document by its zip).
+    PROVEN: ClassVar[re.Pattern[bytes]] = re.compile(
+        rb"%PDF-|\x1aE\xdf\xa3|....ftyp|OggS|fLaC|ID3[\x02-\x04]|glTF|ply\r?\n|Kaydara FBX Binary|II\*\x00|MM\x00\*|RIFF....(?:WAVE|AVI )|FORM....AIF[FC]|MThd",
+        re.DOTALL)
+    #: Packed files this PC unpacks to check (zip; gzip, bzip2, xz), and those it cannot (7z, rar, zstd, lz4).
+    ZIP: ClassVar[tuple[bytes, ...]] = (b"PK\x03\x04", b"PK\x05\x06")
+    STREAMS: ClassVar[dict[bytes, Callable[[BinaryIO], BinaryIO]]] = {b"\x1f\x8b": lambda packed: gzip.GzipFile(fileobj=packed, mode="rb"), b"BZh": bz2.BZ2File,
+                                                           b"\xfd7zXZ\x00": lzma.LZMAFile}
+    SEALED: ClassVar[tuple[bytes, ...]] = (b"7z\xbc\xaf\x27\x1c", b"Rar!\x1a\x07", b"\x28\xb5\x2f\xfd", b"\x04\x22\x4d\x18")
+    #: A packed file is checked whole, at most UNPACKED bytes in at most ENTRIES files; any other file up to WHOLE bytes
+    #: too, its verdict kept for CHECKED_KEPT files; a larger one part by part, OVERLAP bytes past each edge. A check
+    #: reads about 20 MB a second (`holds_secret`, 2026-10-28): a whole one stays well inside a read's 15 s.
+    UNPACKED: ClassVar[int] = 64 * 1024 * 1024
+    ENTRIES: ClassVar[int] = 10_000
+    WHOLE: ClassVar[int] = 16 * 1024 * 1024
+    OVERLAP: ClassVar[int] = 64 * 1024
+    CHECKED_KEPT: ClassVar[int] = 64
+    CHECKED: ClassVar[OrderedDict[tuple, str | None]] = OrderedDict()
+    CHECKED_LOCK: ClassVar[threading.Lock] = threading.Lock()
+    #: Whatever a damaged packed file raises while it is unpacked.
+    UNREADABLE: ClassVar[tuple[type[Exception], ...]] = (OSError, EOFError, ValueError, NotImplementedError, RuntimeError, zipfile.BadZipFile, zlib.error, lzma.LZMAError)
     #: Most bytes of one `.env*` file read for the values to redact; most such files.
     ENV_MAX: ClassVar[int] = 256 * 1024
     ENV_FILES: ClassVar[int] = 32
@@ -221,8 +252,8 @@ class ProjectFolder(BaseModel):
         return entries, hidden, len(kept) > PROJECT_FILES_MAX
 
     def content(self, path: str, offset: int = 0) -> ProjectFileContent:
-        """File `path`: its text from `offset` (redacted, at most PROJECT_TEXT_MAX bytes cut where `page` says), its
-        image, or its facts alone."""
+        """File `path`: its text from `offset` (at most PROJECT_TEXT_MAX bytes, `cut`; redacted as `redact` finds masks
+        in it and CONTEXT bytes on each side), its image, or its facts alone."""
         with self._file(path) as (handle, facts, directory):
             head = handle.read(self.HEAD)
             name = self.parts(path)[-1]
@@ -232,62 +263,161 @@ class ProjectFolder(BaseModel):
                     return ProjectFileContent(kind="too_large", **facts_of)
                 data = head + handle.read(MACHINE_AGENT_MEDIA + 1 - len(head))
                 return ProjectFileContent(kind="image", content_type=content_type, data=base64.b64encode(data[:MACHINE_AGENT_MEDIA]).decode("ascii"), **facts_of)
-            if not self.text(head):
+            if (encoding := self.encoding(head)) is None or (secrets := self._secrets()) is None:
+                # Not text; or an environment file it cannot read for its values: what they would mask cannot be told apart, so no text leaves.
                 return ProjectFileContent(kind="binary", **facts_of)
-            offset = min(offset, facts.st_size)
-            handle.seek(max(offset - 1, 0))
-            before = handle.read(1) if offset else b"\n"
-            data = handle.read(PROJECT_TEXT_MAX + 1)
-        if (values := self.env_values()) is None:
-            # An environment file it cannot read for its values: what they would mask cannot be told apart, so no text leaves.
-            return ProjectFileContent(kind="binary", **facts_of)
-        secrets = (*self.secrets, *values)
-        start, end = self.page(data, before, tuple(secret.encode() for secret in secrets))
-        return ProjectFileContent(kind="text", text=redact(data[start:end].decode("utf-8", errors="replace"), secrets), truncated=offset + end < facts.st_size,
-                                  offset=offset + start, end=offset + end, **facts_of)
+            context = max(self.CONTEXT, 4 * max(map(len, secrets), default=0))
+            mark, width = (2, 2) if encoding.startswith("utf-16") else (0, 1)
+            start = max(min(offset, facts.st_size), mark)
+            start -= (start - mark) % width
+            before = max(start - context, mark)
+            handle.seek(before)
+            data = handle.read(start - before + PROJECT_TEXT_MAX + context)
+        start += self.boundary(data, start - before, encoding, forward=True) - (start - before)
+        page = data[start - before:start - before + PROJECT_TEXT_MAX]
+        end = start + (self.cut(page, encoding) if start + len(page) < facts.st_size else len(page))
+        shown = [data[:start - before], data[start - before:end - before], data[end - before:]]
+        left, middle, right = (part.decode(encoding, errors="replace") for part in shown)
+        text = redact(left + middle + right, secrets, len(left), len(left) + len(middle))
+        return ProjectFileContent(kind="text", text=text, truncated=end < facts.st_size, offset=start, end=end, **facts_of)
 
     @classmethod
-    def page(cls, data: bytes, before: bytes, secrets: tuple[bytes, ...]) -> tuple[int, int]:
-        """The bytes of `data` (read from a file, PROJECT_TEXT_MAX + 1 at most, `before`: the byte ahead of them) a page
-        shows, so that neither of its cuts splits a secret: it starts after a line end, else after a word break (the
-        cut word left out, at most CUT_TAIL bytes of it), and ends at its last line end, else its last word break, when
-        `data` runs past PROJECT_TEXT_MAX. A secret either cut still split is left out too. A page asked from the end of
-        the one before starts where it ended: nothing between them lost."""
-        breaks = cls.KEY_BREAKS
-        start = 0
-        if before != b"\n":
-            if chr(before[0]) not in breaks:
-                start = next((size for size in range(min(cls.CUT_TAIL, len(data))) if chr(data[size]) in breaks), min(cls.CUT_TAIL, len(data)))
-            start += max((size for secret in secrets for size in range(min(len(secret) - 1, len(data) - start), 3, -1)
-                          if data[start:].startswith(secret[-size:])), default=0)
-        if len(data) <= PROJECT_TEXT_MAX:
-            return start, len(data)
-        window = data[start:PROJECT_TEXT_MAX]
-        if (line := window.rfind(b"\n")) >= 0:
-            return start, start + line + 1
-        run = next((size for size in range(min(cls.CUT_TAIL, len(window))) if chr(window[-1 - size]) in breaks), min(cls.CUT_TAIL, len(window)))
-        window = window[:len(window) - run]
-        run += max((size for secret in secrets for size in range(min(len(secret) - 1, len(window)), 3, -1) if window.endswith(secret[:size])), default=0)
-        return start, max(start, PROJECT_TEXT_MAX - run)
+    def cut(cls, page: bytes, encoding: str) -> int:
+        """Where a page of `page` (the file running on past it) ends: after its last line end, else after its last word
+        break, else on its last character boundary."""
+        width = 2 if encoding.startswith("utf-16") else 1
+        for marks in cls.BREAKS:
+            found = max((at for mark in marks if (at := cls._last(page, mark.encode(encoding), width)) >= 0), default=-1)
+            if found >= 0:
+                return found + width
+        return cls.boundary(page, len(page) - len(page) % width, encoding, forward=False)
+
+    @staticmethod
+    def _last(data: bytes, unit: bytes, width: int) -> int:
+        """Where `unit` last starts in `data` on a character of `width` bytes, -1 nowhere."""
+        at = data.rfind(unit)
+        while at > 0 and at % width:
+            at = data.rfind(unit, 0, at + len(unit) - 1)
+        return at
+
+    @staticmethod
+    def boundary(data: bytes, at: int, encoding: str, *, forward: bool) -> int:
+        """`at` moved (`forward`, else back) to the nearest place in `data` no character spans: never inside a UTF-8
+        sequence, nor between a UTF-16 surrogate pair (`at` on a code unit already)."""
+        if encoding.startswith("utf-16"):
+            low = 1 if encoding == "utf-16-le" else 0
+            if forward:
+                return at + 2 if at + 2 <= len(data) and 0xDC <= data[at + low] <= 0xDF else at
+            return at - 2 if at >= 2 and 0xD8 <= data[at - 2 + low] <= 0xDB else at
+        step = 1 if forward else -1
+        for _ in range(3):
+            if not 0 < at < len(data) or not 0x80 <= data[at] < 0xC0:
+                break
+            at += step
+        return at
 
     def part(self, path: str, offset: int, length: int) -> ProjectFileBytes:
-        """`length` raw bytes of file `path` from `offset` (none past its end), never redacted: refused for a file `content`
-        shows as text (`text`), whose bytes leave only redacted."""
+        """`length` raw bytes of file `path` from `offset` (none past its end): refused for a file `content` shows as
+        text (`encoding`), whose bytes leave only redacted, and for one holding a secret (`withheld`): any but the
+        kinds PROVEN, read whole when packed or at most WHOLE bytes (the verdict kept), else this part with OVERLAP
+        bytes on each side."""
         with self._file(path) as (handle, facts, _):
-            if self.text(handle.read(self.HEAD)):
+            head = handle.read(self.HEAD)
+            if self.encoding(head) is not None:
                 raise PermissionError(f"{path} is shown as text, redacted: its raw bytes never leave this PC")
+            if image_type(head) is None and self.PROVEN.match(head) is None:
+                if (secrets := self._secrets()) is None:
+                    raise PermissionError(f"{path} cannot be checked for secrets (an environment file here cannot be read): never sent from this PC")
+                needles = tuple({secret.encode(encoding) for secret in secrets for encoding in ("utf-8", "utf-16-le", "utf-16-be")})
+                if (why := self.withheld(handle, facts, head, offset, length, needles)) is not None:
+                    raise PermissionError(f"{path} {why}: never sent from this PC")
             handle.seek(offset)
             data = handle.read(min(length, max(facts.st_size - offset, 0)))
         return ProjectFileBytes(path=path, size=facts.st_size, modified_at=self._time(facts), offset=offset, data=base64.b64encode(data).decode("ascii"))
 
+    def withheld(self, handle: BinaryIO, facts: os.stat_result, head: bytes, offset: int, length: int, needles: tuple[bytes, ...]) -> str | None:
+        """Why part `offset` + `length` of a file not PROVEN never leaves (None: it may): it holds a secret (`holds_secret`)
+        or cannot be checked for one. A packed file or one of at most WHOLE bytes is checked whole once (`checked`)."""
+        packed = head.startswith((*self.ZIP, *self.STREAMS, *self.SEALED))
+        if packed or facts.st_size <= self.WHOLE:
+            key = (facts.st_dev, facts.st_ino, facts.st_size, facts.st_mtime_ns, hash(frozenset(needles)))
+            with self.CHECKED_LOCK:
+                if key in self.CHECKED:
+                    self.CHECKED.move_to_end(key)
+                    return self.CHECKED[key]
+            why = self.checked(handle, head, needles)
+            with self.CHECKED_LOCK:
+                self.CHECKED[key] = why
+                while len(self.CHECKED) > self.CHECKED_KEPT:
+                    self.CHECKED.popitem(last=False)
+            return why
+        reach = self.OVERLAP + max(map(len, needles), default=0)
+        handle.seek(max(offset - reach, 0))
+        return "holds a secret" if holds_secret(handle.read(length + 2 * reach), needles) else None
+
+    def checked(self, handle: BinaryIO, head: bytes, needles: tuple[bytes, ...]) -> str | None:
+        """Why a whole file never leaves (None: it may): a secret in its bytes, or in what it unpacks to (a zip's files,
+        a gzip / bzip2 / xz stream; an office document's zip read as the document it is); packed so this PC cannot open
+        it, in a packed file inside, encrypted, damaged, or unpacking past UNPACKED bytes or ENTRIES files."""
+        if head.startswith(self.SEALED):
+            return "cannot be checked for secrets (packed in a format this PC cannot open)"
+        try:
+            if head.startswith(self.ZIP):
+                handle.seek(0)
+                with zipfile.ZipFile(handle) as archive:
+                    entries = archive.infolist()
+                    if any(entry.filename == "[Content_Types].xml" for entry in entries):
+                        return None
+                    if len(entries) > self.ENTRIES or sum(entry.file_size for entry in entries) > self.UNPACKED:
+                        return "cannot be checked for secrets (it unpacks to too much)"
+                    if any(entry.flag_bits & 0x1 for entry in entries):
+                        return "cannot be checked for secrets (encrypted)"
+                    for entry in entries:
+                        with archive.open(entry) as unpacked:
+                            if (why := self._scanned(unpacked, needles, nested=True)) is not None:
+                                return why
+            elif (opener := next((kind for magic, kind in self.STREAMS.items() if head.startswith(magic)), None)) is not None:
+                handle.seek(0)
+                with opener(handle) as unpacked:
+                    if (why := self._scanned(unpacked, needles, nested=True)) is not None:
+                        return why
+        except self.UNREADABLE:
+            return "cannot be checked for secrets (it cannot be unpacked)"
+        handle.seek(0)
+        return self._scanned(handle, needles, nested=False)
+
+    def _scanned(self, stream: BinaryIO, needles: tuple[bytes, ...], *, nested: bool) -> str | None:
+        """Why the bytes `stream` reads never leave: a secret in them (each part searched with OVERLAP bytes of the one
+        before), more than UNPACKED of them, or (`nested`: what a packed file unpacked to) a packed file again."""
+        reach, kept, read = self.OVERLAP + max(map(len, needles), default=0), b"", 0
+        while chunk := stream.read(PROJECT_BYTES_PART):
+            if nested and not read and chunk.startswith((*self.ZIP, *self.STREAMS, *self.SEALED)):
+                return "cannot be checked for secrets (it holds a packed file)"
+            read += len(chunk)
+            if nested and read > self.UNPACKED:
+                return "cannot be checked for secrets (it unpacks to too much)"
+            if holds_secret(kept + chunk, needles):
+                return "holds a secret"
+            kept = (kept + chunk)[-reach:]
+        return None
+
     @classmethod
-    def text(cls, head: bytes) -> bool:
-        """Whether a file whose first bytes are `head` is shown as text: no image or document they prove, no NUL among them."""
-        return image_type(head) is None and not head.startswith(cls.DOCUMENT_HEADS) and b"\x00" not in head
+    def encoding(cls, head: bytes) -> str | None:
+        """How a file whose first bytes are `head` is read as text (UTF-16 by its byte-order mark, else UTF-8: no image
+        or document they prove, no NUL among them), None: it is not text."""
+        if (utf16 := next((name for mark, name in cls.UTF16.items() if head.startswith(mark)), None)) is not None:
+            return utf16
+        return "utf-8" if image_type(head) is None and not head.startswith(cls.DOCUMENT_HEADS) and b"\x00" not in head else None
+
+    def _secrets(self) -> tuple[str, ...] | None:
+        """Every secret masked here: the PC's own and the project's `.env*` values (`env_values`); None as it is."""
+        values = self.env_values()
+        return None if values is None else (*self.secrets, *values)
 
     def env_values(self) -> tuple[str, ...] | None:
         """Every value of 8 characters or more in the project folder's own `.env*` files (its vault's secrets are
-        written to its `.env`), longest first: masked in any text shown, as the PC's own secrets are. A `.env*` that is a
+        written to its `.env`; an escaped quote's value both as written and as read), longest first: masked in any text
+    shown, as the PC's own secrets are. A `.env*` that is a
         link is followed for its values only (never shown); one that cannot be read as a plain file → None (fail closed)."""
         values: set[str] = set()
         flags = os.O_RDONLY | PinnedDirectory.NONBLOCK | getattr(os, "O_BINARY", 0)
@@ -306,9 +436,9 @@ class ProjectFolder(BaseModel):
                         return None
                     for line in handle.read(self.ENV_MAX).decode("utf-8", errors="replace").splitlines():
                         if (match := self.ENV_LINE.match(line)) is not None:
-                            value = match["double"].replace('\\"', '"') if match["double"] is not None else next(group for group in (match["single"], match["bare"]) if group is not None)
-                            if len(value) >= 8:
-                                values.add(value)
+                            found = (match["double"], match["double"].replace('\\"', '"')) if match["double"] is not None else (
+                                next(group for group in (match["single"], match["bare"]) if group is not None),)
+                            values.update(value for value in found if len(value) >= 8)
         return tuple(sorted(values, key=len, reverse=True))
 
     def find(self, query: str) -> tuple[tuple[str, ...], bool]:
