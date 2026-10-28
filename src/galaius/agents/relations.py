@@ -8,10 +8,11 @@ run unknown to the runs still writing to the old one."""
 
 import re
 import time
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
+from typing import Literal
 
 from galaius.agents import record_recall, turn_facts, turn_review_marks
 from galaius.agents import registry as reg
@@ -39,6 +40,11 @@ REPORT_SECTIONS = ("DURABLE CHANGE", "REDO", "NO CHANGE")
 #: run of dashes splits several ways (2026-10-17 review: « "-" * 2000 » took 24 s on a wider pattern).
 _LABEL_WORD = r"\w[\w#.]*(?:-[\w#.]+)*"
 _FAILED = re.compile(rf"\W*(?:{_LABEL_WORD}(?:\s+{_LABEL_WORD}){{0,3}}\s*[:—–-])?[\s*_]*(?:BLOCKED|FAIL(?:-AT-CAP)?|REJECTED)\b")
+#: Who opened a turn of a run (`turn_opener`): its PERSON (its launch, a prompt typed into its session, an ask from him or
+#: from a run it works for), a REPORT (an agent it asked handing its result back), a CONTINUATION of the work asked (no
+#: ask: a wake no message opened, an automatic resume, a compaction, a one-way note from its side), or a PEER run's message
+#: (a colleague's ask or note: answered to that colleague, never to its asker).
+TurnOpener = Literal["person", "report", "continuation", "peer"]
 #: Where an agent's own words start in a message it sent (`registry.AgentRun.handoff_header`).
 _CONTENT = "\n[Agent content]\n"
 #: What a run at work is doing, as its record says (a queued message alone is not work a card names).
@@ -272,11 +278,27 @@ def answers(sender: reg.AgentRun, recipient: reg.AgentRun) -> bool:
 @one_read()
 def relation(sender: reg.AgentRun, recipient: reg.AgentRun, text: str, *, reports: Sequence[str] = ()) -> Relation:
     """What `sender` is to `recipient` for a message saying `text` (a hand-back: carrying the final words of `reports`),
-    from their records as they are now."""
+    from their records as they are now. A hand-back asks when a report's newest part does: a wake's « Re-checked: PASS »
+    after a « Verdict: FAIL » close answers it."""
     if answers(sender, recipient):
-        asking = any(needs_answer(final_words(run_id)) for run_id in reports) if reports else needs_answer(text)
+        asking = any(needs_answer((final_parts(run_id, askers=(recipient.run_id,)) or ("",))[-1]) for run_id in reports) \
+            if reports else needs_answer(text)
         return Relation.REPORT_ASKING if asking else Relation.REPORT
     return Relation.ASKER if sender.run_id in works_for(recipient) else Relation.OTHER
+
+
+def turn_opener(message: Mapping[str, object], *, askers: Collection[str], by_agent: Callable[[str], bool]) -> TurnOpener:
+    """Who the message `message` (a stream `message` line's fields) opens a turn for: every reader of a run's turns
+    classifies them by this one rule, each with its own `askers` (the runs whose asks it answers to its reader) and
+    `by_agent` (whether a sender is an agent run, not a person)."""
+    sender, relation_ = str(message.get("from_run") or ""), message.get("relation")
+    if message.get("reports") or relation_ in (Relation.REPORT, Relation.REPORT_ASKING):
+        return "report"
+    if sender in reg.SYSTEM_SENDERS or str(message.get("text") or "").startswith(reg.RESUME_BRIEF):
+        return "continuation"
+    if sender not in askers and by_agent(sender):
+        return "peer"
+    return "continuation" if message.get("fyi") else "person"
 
 
 def final_words(run_id: str) -> str:
@@ -284,22 +306,72 @@ def final_words(run_id: str) -> str:
     return "\n\n".join(final_parts(run_id))
 
 
-def final_parts(run_id: str) -> tuple[str, ...]:
-    """What run `run_id` answered since its latest ask (`ask_lines`, or a prompt typed into its session): `closing_parts`."""
-    events = reg.read_events(run_id)
-    run = reg.get_run(run_id)
-    asked = max((*(line for line, _said in (ask_lines(run) if run is not None else ())),
-                 *(event.raw_index for event in events if event.kind == "prompt" and event.raw_index is not None)), default=0)
-    return closing_parts([event for event in events if event.raw_index is None or event.raw_index >= asked])
+def final_parts(run_id: str, *, askers: Collection[str] = ()) -> tuple[str, ...]:
+    """What run `run_id` answered its latest ask: `answer_parts` over its whole stream."""
+    return answer_parts(run_id, askers=askers) or ()
+
+
+@one_read()
+def answer_parts(run_id: str, *, askers: Collection[str] = (), start: int = 0, end: int | None = None) -> tuple[str, ...] | None:
+    """What run `run_id` answered over its raw stream lines from `start` up to `end` (None: its end), oldest first: from
+    the last turn its PERSON opened there (`turn_opener`, `askers` added to the runs it works for) through every later
+    turn but a PEER's, read by `closing_parts`; the first turn there is its person's. A REPORT or CONTINUATION turn adds
+    its words after the close before it, never replaces it (2026-10-28, backend-engineer 7cf011fd: its asker read only
+    its reply to the delivery gate, its close « Both fixes are live » dropped); a peer's turn adds nothing (« Noted, no
+    conflict » answers a colleague). Bounded by `end`: up to its newest ending there, None when nothing there ended."""
+    run = _get(run_id)
+    askers = {*askers, *(_asks(run) if run is not None else ())}
+    events = [event for event in reg.read_events(run_id) if event.raw_index is None and start == 0 and end is None
+              or event.raw_index is not None and event.raw_index >= start and (end is None or event.raw_index < end)]
+    if end is not None:
+        ended = next((index for index in range(len(events) - 1, -1, -1) if events[index].kind in ("done", "error")), None)
+        if ended is None:
+            return None
+        events = events[:ended + 1]
+    turns = _turns(run_id, events, askers=askers, after=start - 1 if start > 0 else None)
+    since = max((index for index, (opener, _events) in enumerate(turns) if opener == "person"), default=0)
+    return closing_parts([event for opener, chunk in turns[since:] if opener != "peer" for event in chunk])
+
+
+def _turns(run_id: str, events: Sequence[AgentEvent], *, askers: Collection[str],
+           after: int | None) -> list[tuple[TurnOpener, list[AgentEvent]]]:
+    """`events` cut at each turn start (`started`) and each prompt typed into its session, with who opened each: the
+    message of the queue item its dispatcher claimed for it (raw line after the previous start, `after` for the first; its
+    sender alone when this computer kept no such message); a turn no message item opened is a continuation (a wake, a
+    compaction), the run's very first one its person's (its launch)."""
+    from galaius.agents import agent_queue  # agent_queue imports this module (card, heading)
+    items = sorted(((item.raw_index, item) for item in agent_queue.items_seen(run_id) if item.raw_index is not None),
+                   key=lambda pair: pair[0])
+    messages = {event.event_id: event for event in reg.read_messages(run_id) if event.to_run == run_id and event.event_id}
+
+    def opened(raw: int) -> TurnOpener:
+        if after is None:
+            return "person"
+        item = next((item for line, item in reversed(items) if after < line <= raw), None)
+        if item is None or item.turn.kind != "message":
+            return "continuation"
+        message = messages.get(item.message_id)
+        fields = message.model_dump(include={"from_run", "text", "fyi", "reports", "relation"}) if message is not None \
+            else {"from_run": item.sender}
+        return turn_opener(fields, askers=askers, by_agent=lambda sender: _get(sender) is not None)
+
+    turns: list[tuple[TurnOpener, list[AgentEvent]]] = [("person", [])]
+    for event in events:
+        if event.kind == "started" and event.raw_index is not None:
+            turns.append((opened(event.raw_index), []))
+            after = event.raw_index
+        elif event.kind == "prompt":
+            turns.append(("person", []))
+        turns[-1][1].append(event)
+    return turns
 
 
 def closing_parts(events: Sequence[AgentEvent]) -> tuple[str, ...]:
     """What a run answered over `events` (one ask and every turn after it), oldest first, each once: per stretch a turn's
-    start, an end-of-turn check (a Stop hook's block) or a turn's ending closes, its last text, else that ending's text; a
-    stretch's newest report listing a report's sections (`REPORT_SECTIONS`) comes before that last text. So a Stop-hook
-    reply, a wake no message opened, a resume or a compaction adds its words after the close before it, never replaces
-    it (2026-10-28, backend-engineer 7cf011fd: its asker read only its reply to the delivery gate, its close « Both fixes
-    are live » dropped; 2026-10-22: a review's « the hook does not apply » read in place of its report)."""
+    start, an end-of-turn check (a Stop hook's block) or a turn's ending closes, its last text, else that ending's text (a
+    failed resume's reason too: it is why the run failed); a stretch's newest report
+    listing a report's sections (`REPORT_SECTIONS`) comes before that last text. Text injected into a turn (a message read
+    at a step) closes no stretch."""
     parts: dict[str, None] = {}
     said = sectioned = ""
     for event in (*events, None):
@@ -327,15 +399,6 @@ def report_of(run_id: str) -> str:
     sectioned = next((event.text for event in reversed(events[asked + 1:]) if event.kind == "text"
                       and any(report_section(event.text or "", name) for name in REPORT_SECTIONS)), None)
     return (sectioned or "").strip() or final_words(run_id)
-
-
-def report_between(run_id: str, start: int, end: int | None) -> tuple[str, ...] | None:
-    """Run `run_id`'s report written from raw stream line `start` up to `end` (None: its end), up to its newest ending
-    there: `closing_parts`; None when nothing there ended yet."""
-    events = [event for event in reg.read_events(run_id)
-              if event.raw_index is not None and event.raw_index >= start and (end is None or event.raw_index < end)]
-    ended = next((index for index in range(len(events) - 1, -1, -1) if events[index].kind in ("done", "error")), None)
-    return None if ended is None else closing_parts(events[:ended + 1])
 
 
 @one_read()

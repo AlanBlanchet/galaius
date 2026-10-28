@@ -14,7 +14,7 @@ from contextlib import ExitStack
 from datetime import UTC, datetime
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 from galaius.agents import agent_queue, messaging, relations
 from galaius.agents.events import AgentEvent
@@ -40,9 +40,8 @@ class Report(BaseModel):
     agent: str | None
     status: str
     pending: bool
-    text: str
-    #: The parts `text` joins, oldest first (`relations.closing_parts`): a clipped report drops its oldest first.
-    parts: tuple[str, ...] = Field(default=(), exclude=True)
+    #: What it answered, oldest first (`relations.answer_parts`): a clipped report drops its oldest first.
+    parts: tuple[str, ...] = ()
     #: Seconds since its vendor last wrote, for a run still at work; None for an ended one or one with nothing written.
     silent_for: float | None = None
     #: The run whose brief it took, refused by its plan's limit before it started (`reg.Relaunch.line`), and why its own
@@ -51,20 +50,25 @@ class Report(BaseModel):
     #: The community entry it ran: its words are quoted to its reader (`community.quote`), never read as its own.
     community: CommunityAgent | None = None
 
+    @computed_field
+    @property
+    def text(self) -> str:
+        """Its parts joined by a blank line."""
+        return "\n\n".join(self.parts)
+
     @classmethod
-    def of(cls, run: reg.AgentRun) -> "Report":
-        """`run`'s report; a run its plan's limit refused before it did anything is still to end until its brief is
+    def of(cls, run: reg.AgentRun, asker: str | None = None) -> "Report":
+        """`run`'s report (to `asker`, when a run asked it: its turns are its person's, `relations.turn_opener`); a run its plan's limit refused before it did anything is still to end until its brief is
         relaunched or its relaunch refused (`registry.relaunch_pending`), never read as a failure meanwhile."""
         relaunched = "\n".join(line for line in (run.relaunched_from.line(run.agent) if run.relaunched_from is not None else "",
                                                   f"its brief could not be relaunched on another model: {run.relaunch_refused}"
                                                   if run.relaunch_refused else "") if line)
         if _pending(run) or reg.relaunch_pending(run):
             said = reg.vendor_said_at(run) if run.process_running() else None  # a queued item alone: no turn to be silent
-            return cls(run_id=run.run_id, agent=run.agent, status=run.status, pending=True, text="", relaunched=relaunched,
+            return cls(run_id=run.run_id, agent=run.agent, status=run.status, pending=True, relaunched=relaunched,
                        silent_for=None if said is None else max(0.0, time.time() - said), community=run.community)
-        parts = relations.final_parts(run.run_id)
-        return cls(run_id=run.run_id, agent=run.agent, status=run.status, pending=False, text="\n\n".join(parts), parts=parts,
-                   relaunched=relaunched, community=run.community)
+        return cls(run_id=run.run_id, agent=run.agent, status=run.status, pending=False, relaunched=relaunched,
+                   parts=relations.final_parts(run.run_id, askers=() if asker is None else (asker,)), community=run.community)
 
     @classmethod
     def answering(cls, run: reg.AgentRun, asker: str) -> "Report":
@@ -73,7 +77,7 @@ class Report(BaseModel):
         started (`relations.ask_lines`). 2026-10-25: a reviewer kept for several makers handed one maker's verdict to an earlier
         maker whose ask it had answered days before. Its latest report (`of`) when no later ask came, or this computer
         kept no turn start for the ask."""
-        report = cls.of(run)
+        report = cls.of(run, asker)
         if report.pending:
             return report
         read = relations.ask_lines(run)
@@ -84,8 +88,8 @@ class Report(BaseModel):
         end = next((line for line, said in read if line > start and said != message), None)
         if end is None:
             return report
-        said = relations.report_between(run.run_id, start, end)
-        return report if said is None else report.model_copy(update={"text": "\n\n".join(said), "parts": said})
+        said = relations.answer_parts(run.run_id, askers=(asker,), start=start, end=end)
+        return report if said is None else report.model_copy(update={"parts": said})
 
     def section(self, limit: int | None = REPORT_MAX) -> str:
         if self.community is not None:
@@ -94,7 +98,6 @@ class Report(BaseModel):
         text = self.text if limit is None or len(self.text) <= limit else self._clipped(limit)
         lead = f"{self.relaunched}\n" if self.relaunched else ""
         return f"## {self.agent or 'agent'} {self.run_id[:8]} — {self.status}\n{lead}{text or '(it ended without a final message)'}"
-
 
     def _clipped(self, limit: int) -> str:
         """`text` within `limit`: its newest parts that fit, the older ones named as dropped; the newest alone past it, its
@@ -105,7 +108,9 @@ class Report(BaseModel):
             if sum(len(said) + 2 for said in (part, *kept)) + len(clip) > limit:
                 break
             kept.insert(0, part)
-        return "\n\n".join((clip, *kept)) if kept else f"{self.text[:limit]}\n{clip}"
+        if kept:
+            return "\n\n".join((clip, *kept))
+        return f"{clip}\n\n{self.parts[-1][:max(0, limit - len(clip) - 2)]}" if self.parts else clip
 
 
 def _pending(run: reg.AgentRun) -> bool:
@@ -309,11 +314,11 @@ def wait(run_ids: Sequence[str], *, timeout: float, interval: float = 2.0, asker
                         and ((started := reg.get_run(taken)) is not None or line.describe(taken) is not None):
                     # Its brief relaunched on another model: that run's report, or it waits in line.
                     reports.append(Report.of(started) if started is not None else
-                                   Report(run_id=taken, agent=run.agent, status="queued", pending=True, text=""))
+                                   Report(run_id=taken, agent=run.agent, status="queued", pending=True))
                 elif run is not None:
                     reports.append(Report.of(run))
                 elif line.describe(asked) is not None:
-                    reports.append(Report(run_id=asked, agent=None, status="queued", pending=True, text=""))
+                    reports.append(Report(run_id=asked, agent=None, status="queued", pending=True))
                 else:
                     raise LookupError(f"no agent run {asked!r}")
             if not any(report.pending for report in reports) or time.monotonic() >= deadline:

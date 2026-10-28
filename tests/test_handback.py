@@ -546,7 +546,40 @@ def test_a_hand_back_keeps_the_close_a_hook_reply_or_a_wake_follows(lines, expec
     assert handback.Report.of(reg.get_run("maker")).text == expected
 
 
-def test_a_clipped_hand_back_drops_its_oldest_parts_first():
-    report = handback.Report(run_id="maker", agent="backend-engineer", status="done", pending=False,
-                             text="a" * 90 + "\n\n" + "b" * 30, parts=("a" * 90, "b" * 30))
-    assert report.section(limit=80) == f"## backend-engineer maker — done\n… (clipped; `galaius agents events maker`)\n\n{'b' * 30}"
+@pytest.mark.parametrize("sender, expected", [
+    pytest.param("peer", _CLOSE, id="peer-note-adds-nothing"),
+    pytest.param("lead", f"{_CLOSE}\n\nNoted, no conflict.", id="own-launcher-note-continues"),
+])
+def test_a_turn_a_peer_opened_adds_nothing_to_the_hand_back(sender, expected):
+    """2026-10-28 review: a colleague's one-way note woke a run that had closed; its « Noted, no conflict » answered that
+    colleague and reached its asker as the newest part of its report (`relations.turn_opener`, peer)."""
+    register_run("lead", agent="main")
+    register_run("peer", agent="app-engineer")
+    _ended("maker", 100.0, agent="backend-engineer", parent_run_id="lead")
+    note = reg.record_message_event(from_run=sender, to_run="maker", text="FYI: I touch store.py too.", fyi=True)
+    reg.raw_events_path("maker").write_text("".join(json.dumps(line) + "\n" for line in (
+        _INIT, _assistant(_CLOSE), _result(_CLOSE), _INIT, _assistant("Noted, no conflict."), _result("Noted, no conflict."))))
+    item = agent_queue.enqueue("maker", message_id=note, sender=sender)
+    with reg.record_lock("maker"):
+        agent_queue._replace_item_locked("maker", item.id, state="replied", started_at=200.0, finished_at=201.0, raw_index=3)
+    assert handback.Report.of(reg.get_run("maker")).text == expected
+
+
+@pytest.mark.parametrize("turns, relation", [
+    pytest.param(("Verdict: FAIL — row 2 still overflows.",), Relation.REPORT_ASKING, id="fail-close-asks"),
+    pytest.param(("Verdict: FAIL — row 2 still overflows.", "Re-checked: PASS."), Relation.REPORT, id="wake-pass-answers-it"),
+])
+def test_a_hand_back_asks_when_its_newest_part_does(turns, relation):
+    register_run("maker", agent="backend-engineer")
+    _ended("rev", 100.0, agent="code-reviewer", parent_run_id="maker")
+    reg.raw_events_path("rev").write_text("".join(json.dumps(line) + "\n" for said in turns for line in (_INIT, _assistant(said), _result(said))))
+    assert relations.relation(reg.get_run("rev"), reg.get_run("maker"), "", reports=["rev"]) == relation
+
+
+@pytest.mark.parametrize("parts, kept", [
+    pytest.param(("a" * 90, "b" * 30), f"\n\n{'b' * 30}", id="newest-parts-that-fit"),
+    pytest.param(("a" * 90, "NEW " + "b" * 100), "\n\nNEW bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", id="newest-alone-too-long-keeps-its-opening"),
+])
+def test_a_clipped_hand_back_drops_its_oldest_parts_first(parts, kept):
+    report = handback.Report(run_id="maker", agent="backend-engineer", status="done", pending=False, parts=parts)
+    assert report.section(limit=80) == f"## backend-engineer maker — done\n… (clipped; `galaius agents events maker`){kept}"
