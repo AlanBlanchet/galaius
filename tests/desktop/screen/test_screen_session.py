@@ -26,6 +26,7 @@ from galaius.desktop.screen.session import (
     QualityLadder,
     ScreenSession,
     ScreenStreamer,
+    StreamSettings,
 )
 from galaius.desktop.screen.switch import ScreenSwitch
 from tests.support.screen import FakeBackend, FakeGrabber, FakeMarker
@@ -164,14 +165,18 @@ class _Link:
     def __init__(self, ladder: QualityLadder, clock: _Clock, floor_ms: float, picture_ms: float, screen: int = 1920) -> None:
         self.ladder, self.clock, self.floor_ms, self.picture_ms = ladder, clock, floor_ms, picture_ms
         ladder.screen_width = screen
+        #: He is typing: every other frame is a keystroke's picture, sent beside the one in flight, so
+        #: its round also carries the bytes of the frame ahead of it.
+        self.typing = False
 
     def rounds(self, n: int) -> list[int]:
         sent = []
-        for _ in range(n):
+        for at in range(n):
             width, quality = self.ladder.sent
-            round_ms = self.floor_ms + self.picture_ms * (width / 1280) ** 2
+            queued = self.typing and at % 2 == 1
+            round_ms = self.floor_ms + self.picture_ms * (width / 1280) ** 2 * (2 if queued else 1)
             self.clock.now += max(round_ms, 100) / 1000
-            self.ladder.measured(round_ms, width, quality)
+            self.ladder.measured(round_ms, width, quality, queued=queued)
             sent.append(width)
         return sent
 
@@ -242,6 +247,17 @@ def test_a_link_full_from_its_first_frame_settles_on_a_picture_that_fits(ladder,
     link.during(30)
     held = link.during(60)
     assert sum(width == 480 for width in held) >= 0.9 * len(held), collections.Counter(held)
+
+
+def test_a_keystroke_s_picture_that_waited_behind_another_does_not_hold_the_picture_narrow(ladder, clock):
+    """A keystroke's picture leaves beside the frame in flight, so its round carries that frame's
+    bytes too — up to twice a real round. Judged as the link's, half of every judgment while he types
+    read a link twice as full as it is, and a cleared link stayed at 960 (code-reviewer r2)."""
+    link = _Link(ladder, clock, 70, picture_ms=400)
+    link.during(6)
+    link.picture_ms, link.typing = 60, True
+    up = link.rounds(100)
+    assert up[-1] == 1280, collections.Counter(up)
 
 
 def test_a_screen_narrower_than_the_rungs_still_narrows_on_a_full_link(ladder, clock):
@@ -373,8 +389,7 @@ async def test_a_stream_ends_by_itself_and_says_why(tmp_path, monkeypatch, endin
     grabber = FakeGrabber()
     marker = FakeMarker()
     session = _session(tmp_path, grabber=grabber, marker=marker)
-    monkeypatch.setattr(ScreenStreamer, "SEND_TIMEOUT_SECONDS", 0.2)
-    streamer = ScreenStreamer(session, link.send)
+    streamer = ScreenStreamer(session, link.send, StreamSettings(send_timeout_seconds=0.2))
 
     async def interfere() -> None:
         await asyncio.sleep(0.05)
@@ -425,13 +440,12 @@ async def test_a_tap_s_picture_leaves_beside_the_frame_in_flight(tmp_path):
             await stream
 
 
-async def test_a_viewer_that_went_away_ends_the_stream_without_the_server(tmp_path, monkeypatch):
+async def test_a_viewer_that_went_away_ends_the_stream_without_the_server(tmp_path):
     """A locked phone or a closed tab stops taking frames; the PC stops sending within
-    `VIEWER_GONE_SECONDS` instead of grabbing its own screen for nobody."""
-    monkeypatch.setattr(ScreenStreamer, "VIEWER_GONE_SECONDS", 0.1)
+    `StreamSettings.viewer_gone_seconds` instead of grabbing its own screen for nobody."""
     session = _session(tmp_path)  # an idle screen: one frame, then nothing changes
     link = FakeLink()
-    streamer = ScreenStreamer(session, link.send)
+    streamer = ScreenStreamer(session, link.send, StreamSettings(viewer_gone_seconds=0.1))
 
     stats = await asyncio.wait_for(streamer.run(), timeout=5)
 

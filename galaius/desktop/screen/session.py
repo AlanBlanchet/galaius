@@ -133,12 +133,13 @@ class LadderSettings(BaseModel):
     @model_validator(mode="after")
     def _retries_inside_the_floor(self) -> "LadderSettings":
         if not self.retry_seconds <= self.retry_max_seconds < self.floor_seconds:
-            raise ValueError("retry_seconds ≤ retry_max_seconds < floor_seconds")
+            raise ValueError(f"retry_seconds ({self.retry_seconds}) ≤ retry_max_seconds ({self.retry_max_seconds}) "
+                             f"< floor_seconds ({self.floor_seconds}) must hold")
         return self
 
 
 @dataclass
-class Refusal:
+class _Refusal:
     """A level the link refused: tried again once `until` passes, or sooner once its round,
     predicted from the level below and scaled by `excess` (how far its real round outran that
     prediction when it was refused), fits — the link cleared. A level on its edge, whose real round
@@ -161,7 +162,7 @@ class QualityLadder:
     fit, where a fixed « fast enough » held it narrow. A narrowing that came back no faster is undone
     and teaches the ladder the link's new distance; a level refused right after sharpening to it
     waits out a doubling retry, so a link on the edge of one level does not flip, unless the link
-    clears first (`Refusal`). Never sharper than the viewer asked (`asked`)."""
+    clears first (`_Refusal`). Never sharper than the viewer asked (`asked`)."""
 
     #: A screen this close above a rung is sent as it is, or by whole-number reduction when that lands
     #: this close above it: the geometric middle between the two nearest rungs (√1.2 ≈ 1.095), so two
@@ -193,7 +194,7 @@ class QualityLadder:
         #: the last, not the median, as a link filling up mixes rounds from before it filled into the median.
         self._narrowed_from: tuple[int, float] | None = None
         #: Levels the link refused, by index in `levels`; the wait the next refusal gets.
-        self._refused: dict[int, Refusal] = {}
+        self._refused: dict[int, _Refusal] = {}
         self._retry = self.settings.retry_seconds
 
     @property
@@ -251,14 +252,17 @@ class QualityLadder:
         """The width and quality a frame of the current level has, from the last grab."""
         return self.sizing(self.screen_width)[0], self.spec.quality
 
-    def measured(self, round_ms: float, width: int, quality: int) -> None:
-        """One round the link took for a frame `width` wide at `quality`; may move a level. A frame
-        made at a level the ladder has left since (two can be out at once) teaches the floor only."""
+    def measured(self, round_ms: float, width: int, quality: int, queued: bool = False) -> None:
+        """One round the link took for a frame `width` wide at `quality`; may move a level. Two
+        frames can be out at once (`StreamSettings.in_flight`), so a round teaches the floor only —
+        a minimum, which a long round leaves as it is — when its frame was made at a level the ladder
+        has left since, or `queued` behind the bytes of the frame ahead of it: up to twice a real
+        round, it read a link twice as full as it is."""
         now = self.clock()
         self._recent.append((now, round_ms, width))
         while self._recent[0][0] < now - self.settings.floor_seconds:
             self._recent.popleft()
-        if (width, quality) != self.sent:
+        if queued or (width, quality) != self.sent:
             return
         self._at_level.append(round_ms)
         if len(self._at_level) < self.settings.judged_rounds:
@@ -278,7 +282,7 @@ class QualityLadder:
             self._move_to(self._at - 1)
 
     def _excess(self, at: int, now: float) -> float | None:
-        """How far level `at`'s rounds outrun their prediction: 1 unless it is refused (`Refusal`),
+        """How far level `at`'s rounds outrun their prediction: 1 unless it is refused (`_Refusal`),
         None while its refusal holds whatever the link does."""
         refusal = self._refused.get(at)
         return 1.0 if refusal is None or refusal.until <= now else refusal.excess
@@ -314,7 +318,7 @@ class QualityLadder:
             return False
         again = now - self._stepped_at < self.settings.retry_max_seconds and self._sharpened_last
         self._retry = min(self._retry * 2, self.settings.retry_max_seconds) if again else self.settings.retry_seconds
-        self._refused[self._at] = Refusal(now + self._retry)
+        self._refused[self._at] = _Refusal(now + self._retry)
         self._narrowed_from = (self._at, self._at_level[-1])
         self._move_to(narrower)
         return True
@@ -521,11 +525,12 @@ class ScreenSession:
         return hashlib.blake2b(b"".join(pixels[row * stride:(row + 1) * stride]
                                        for row in range(0, image.height, self.DIGEST_ROWS)), digest_size=16).digest()
 
-    def measured(self, send_ms: float, frame: ScreenFrame) -> None:
+    def measured(self, send_ms: float, frame: ScreenFrame, queued: bool = False) -> None:
         """What the link really took for `frame` (out → its ack back), from the transport that sent
-        it: the only number that includes the network. The ladder decides the next step."""
+        it: the only number that includes the network; `queued`: it left behind a frame still in
+        flight. The ladder decides the next step."""
         self._sends.append(send_ms)
-        self.ladder.measured(send_ms, frame.w, frame.quality)
+        self.ladder.measured(send_ms, frame.w, frame.quality, queued=queued)
         self.stats = self.stats.model_copy(update={"send": Timing.of(list(self._sends))})
         self._count_steps()
 
@@ -603,39 +608,47 @@ class ScreenSession:
         logger.info("screen session ended: %s", self.stats.said)
 
 
+class StreamSettings(BaseModel):
+    """How `ScreenStreamer` paces frames and decides the viewer or the link is gone."""
+
+    model_config = ConfigDict(frozen=True)
+    #: No frame taken for this long: the browser is gone (a phone locked, a tab closed) and the
+    #: session ends by itself — nothing waits for the server to notice.
+    viewer_gone_seconds: float = Field(default=20.0, gt=0)
+    #: How long a transport may take for one frame before the stream treats the link as gone.
+    send_timeout_seconds: float = Field(default=15.0, gt=0)
+    #: Frames out at once: one, and one more for an act's picture.
+    in_flight: int = Field(default=2, ge=1)
+    #: After an act, the screen is grabbed this often until it changes: one refresh of a 60 Hz display.
+    act_poll_seconds: float = Field(default=1 / 60, gt=0)
+    #: ...for this long at most: an act that changed nothing (a move over a still window) stops it.
+    act_watch_seconds: float = Field(default=0.5, gt=0)
+
+
 class ScreenStreamer:
-    """What turns a session into a stream: one frame in flight at a time, the link's own pace, and
-    an end that needs nobody's cooperation.
+    """What turns a session into a stream: one frame in flight at a time (and one more for an act's
+    picture), the link's own pace, and an end that needs nobody's cooperation.
 
     `send` is the transport (it returns once the other side has the frame, which is what makes the
     measured time include the link); it belongs to whoever owns the connection, so this driver
     carries no transport and decides nothing about who may watch. The stream ends when the viewer
-    stops asking (`VIEWER_GONE_SECONDS` with no frame taken), when the machine's own switch or
+    stops asking (`StreamSettings.viewer_gone_seconds` with no frame taken), when the machine's own switch or
     badge says stop (`ScreenEnd` out of the session), or when the transport closes.
 
     An act the viewer sent (`acted`) is what he waits to see: the screen is grabbed every
-    `ACT_POLL_SECONDS` until its change goes out, and that frame leaves beside the one in flight,
+    `StreamSettings.act_poll_seconds` until its change goes out, and that frame leaves beside the one in flight,
     past the frame rate's pace — a tap waited up to a whole round for the frame ahead of it (134 ms
     at 1280 px on a phone link, perf-critic r1), on top of its own."""
 
-    #: No frame taken for this long: the browser is gone (a phone locked, a tab closed) and the
-    #: session ends by itself — nothing waits for the server to notice.
-    VIEWER_GONE_SECONDS: ClassVar[float] = 20.0
-    #: How long a transport may take for one frame before the stream treats the link as gone.
-    SEND_TIMEOUT_SECONDS: ClassVar[float] = 15.0
     #: Grabbing and encoding one frame this long is logged: a stall the viewer sees must be placed
     #: on this computer or on the link (the transport logs its own slow rounds).
     SLOW_FRAME_MS: ClassVar[float] = 200.0
-    #: Frames out at once: one, and one more for an act's picture.
-    IN_FLIGHT: ClassVar[int] = 2
-    #: After an act, the screen is grabbed this often until it changes: one refresh of a 60 Hz display.
-    ACT_POLL_SECONDS: ClassVar[float] = 1 / 60
-    #: ...for this long at most: an act that changed nothing (a move over a still window) stops it.
-    ACT_WATCH_SECONDS: ClassVar[float] = 0.5
 
-    def __init__(self, session: ScreenSession, send: Callable[[ScreenFrame], Awaitable[None]]) -> None:
+    def __init__(self, session: ScreenSession, send: Callable[[ScreenFrame], Awaitable[None]],
+                 settings: StreamSettings | None = None) -> None:
         self.session = session
         self.send = send
+        self.settings = settings or StreamSettings()
         #: Why it ended (its sentence and its typed reason, `ScreenEnd`); None: asked to.
         self.ended: ScreenEnd | None = None
         #: The one thread that grabs and encodes — and walks the ladder, so a session is only ever
@@ -656,7 +669,7 @@ class ScreenStreamer:
     @property
     def _act_waiting(self) -> bool:
         """An act landed after the newest frame sent was grabbed, lately enough to still watch for it."""
-        return self._acted_at > self._grabbed_at and time.monotonic() - self._acted_at < self.ACT_WATCH_SECONDS
+        return self._acted_at > self._grabbed_at and time.monotonic() - self._acted_at < self.settings.act_watch_seconds
 
     async def run(self) -> ScreenStats:
         """Stream until it ends, and say why (`ended`) and what it cost."""
@@ -682,14 +695,14 @@ class ScreenStreamer:
                         logger.info("screen: %d frame(s) took ≥%.0f ms on this computer, the last %.0f ms", slow, self.SLOW_FRAME_MS, made_ms)
                         slow, slow_said = 0, time.monotonic()
                 if frame is None:
-                    polled = time.perf_counter() + (self.ACT_POLL_SECONDS if self._act_waiting
+                    polled = time.perf_counter() + (self.settings.act_poll_seconds if self._act_waiting
                                                     else min(1.0 / self.session.spec.max_fps, self.session.IDLE_SECONDS))
-                    if not in_flight and time.monotonic() - self._taken > self.VIEWER_GONE_SECONDS:
+                    if not in_flight and time.monotonic() - self._taken > self.settings.viewer_gone_seconds:
                         self.ended = ScreenEnd("viewer_gone", "the viewer went away")
                         break
                     continue
                 self._grabbed_at = grabbed_at
-                in_flight.add(asyncio.create_task(self._round(frame, loop)))
+                in_flight.add(asyncio.create_task(self._round(frame, loop, queued=bool(in_flight))))
                 paced = cycle + 1.0 / self.session.spec.max_fps
         except ScreenEnd as end:
             self.ended = end
@@ -702,6 +715,9 @@ class ScreenStreamer:
         finally:
             for task in in_flight:
                 task.cancel()
+            # Retrieved, so a round that failed while another error ended the stream is not logged
+            # again as « never retrieved » once collected.
+            await asyncio.gather(*in_flight, return_exceptions=True)
             # The session closes on the grabbing thread (mss's handles live there), even when this
             # task is cancelled: the badge comes down whatever ended the stream.
             closing = loop.run_in_executor(self._grabbing, self.session.close)
@@ -710,21 +726,22 @@ class ScreenStreamer:
         logger.info("screen stream ended (%s): %s", self.ended or "asked to", self.session.stats.said)
         return self.session.stats
 
-    async def _round(self, frame: ScreenFrame, loop: asyncio.AbstractEventLoop) -> None:
-        """One frame out and back; what it took walks the ladder, on the grabbing thread."""
+    async def _round(self, frame: ScreenFrame, loop: asyncio.AbstractEventLoop, queued: bool) -> None:
+        """One frame out and back, `queued` behind one still in flight; what it took walks the
+        ladder, on the grabbing thread."""
         started = time.perf_counter()
         try:
-            await asyncio.wait_for(self.send(frame), timeout=self.SEND_TIMEOUT_SECONDS)
+            await asyncio.wait_for(self.send(frame), timeout=self.settings.send_timeout_seconds)
         except TimeoutError:
             raise ScreenEnd("link_lost", "the link stopped carrying frames") from None
-        await loop.run_in_executor(self._grabbing, self.session.measured, (time.perf_counter() - started) * 1000, frame)
+        await loop.run_in_executor(self._grabbing, self.session.measured, (time.perf_counter() - started) * 1000, frame, queued)
         self._taken = time.monotonic()
 
     def _due(self, in_flight: set[asyncio.Task[None]], paced: float, polled: float) -> float | None:
         """When the next grab may start (`time.perf_counter`), or None while it waits for a round or an
         act: an act's picture once a poll is due, past the pace and beside one frame in flight; any
         other once nothing is in flight and both are due."""
-        if self._act_waiting and len(in_flight) < self.IN_FLIGHT:
+        if self._act_waiting and len(in_flight) < self.settings.in_flight:
             return polled
         return None if in_flight else max(paced, polled)
 
