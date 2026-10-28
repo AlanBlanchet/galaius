@@ -622,7 +622,7 @@ class MachineAgents(BaseModel):
             raise
         finally:
             self.audit(PLACES_LOG, {"op": "project_files", "read": request.op, "root": request.root, "base": request.base,
-                                    **request.model_dump(include={"path", "query"}), "refused": refused, "initiator_account": str(request.initiator_account)})
+                                    **request.model_dump(include={"path", "query", "offset"}), "refused": refused, "initiator_account": str(request.initiator_account)})
 
     def _allowed(self) -> tuple[dict[str, WebRun], list[reg.AgentRun]]:
         return {str(item.run_id): item for item in self.runs.read()}, self.runs.runs()

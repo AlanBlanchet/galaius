@@ -225,3 +225,24 @@ def test_an_env_value_is_masked_whole_whatever_it_holds(project: Path, tmp_path:
     (project / ".env").write_text(line + "\n")
     (project / "uses.txt").write_text(f"connect with {value} now\n")
     assert value not in _ask(_agents(project, tmp_path), "file", path="uses.txt").content.text
+
+
+@pytest.mark.parametrize(("path", "offset", "length", "expected"), [("blob.bin", 0, 200, b"\x00\x01" * 100), ("blob.bin", 7, 10, (b"\x00\x01" * 100)[7:17]),
+                                                                   ("blob.bin", 190, 50, (b"\x00\x01" * 100)[190:]), ("blob.bin", 200, 5, b""), ("blob.bin", 10**9, 5, b""),
+                                                                   ("logo.png", 0, 8, PNG[:8])])
+def test_a_bytes_read_answers_exactly_the_part_asked_and_its_size(project: Path, tmp_path: Path, path: str, offset: int, length: int, expected: bytes) -> None:
+    part = _ask(_agents(project, tmp_path), "bytes", path=path, offset=offset, length=length).part
+    assert (part.content, part.offset, part.size) == (expected, offset, (project / path).stat().st_size)
+
+
+@pytest.mark.parametrize("path", ["notes.txt", "README.md", "src/linked.py", "out/anything", "media.bin", "missing.bin"])
+def test_a_bytes_read_never_leaves_text_unredacted_nor_follows_a_link(project: Path, tmp_path: Path, path: str) -> None:
+    (project / "media.bin").symlink_to(project / "blob.bin")
+    with pytest.raises(PermissionError):
+        _ask(_agents(project, tmp_path), "bytes", path=path, length=10)
+
+
+def test_a_bytes_read_of_an_env_file_is_refused_before_the_disk(project: Path, tmp_path: Path) -> None:
+    (project / ".env.media").write_bytes(b"\x00" + KNOWN.encode())
+    with pytest.raises(ValueError):
+        _ask(_agents(project, tmp_path), "bytes", path=".env.media", length=10)

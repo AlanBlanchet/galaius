@@ -31,7 +31,7 @@ import httpx
 import websockets
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, ValidationError, field_validator, model_validator
 
-from galaius_core import AGENT_FILES_FEATURE, AGENT_IMAGES_FEATURE, AGENT_REASONING_FEATURE, MACHINE_TOOLS_FEATURE, AGENT_IMAGES_WIRE, MACHINE_AGENT_REQUESTS, PROJECTS_DIR, PROJECTS_ROOT, PROJECTS_ROOT_FEATURE, RUN_MOVE_WAITS_FEATURE, SUBSCRIPTIONS_FEATURE, WEB_LIMIT_FEATURE, AgentCompactRequest, AgentMoveRequest, AgentSendRequest, AgentSignInCodeRequest, AgentStartRequest, MACHINE_MODELS, MachineProblem, MachineProblemCode, MachineAgentSettings, MachineAgentSettingsState, MachineAgentSettingsUpdate, PlacePath, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, AgentRefusal, MachineAgentAnswer, Refused, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachineRuntime, MachineTokenSwap, PlaceLevel, ScriptFile, ScriptLanguage, UserModelOrigin, SCREEN_FEATURE, PROJECT_FILES_FEATURE
+from galaius_core import AGENT_FILES_FEATURE, AGENT_IMAGES_FEATURE, AGENT_REASONING_FEATURE, MACHINE_TOOLS_FEATURE, AGENT_IMAGES_WIRE, MACHINE_AGENT_REQUESTS, PROJECTS_DIR, PROJECTS_ROOT, PROJECTS_ROOT_FEATURE, RUN_MOVE_WAITS_FEATURE, SUBSCRIPTIONS_FEATURE, WEB_LIMIT_FEATURE, AgentCompactRequest, AgentMoveRequest, AgentSendRequest, AgentSignInCodeRequest, AgentStartRequest, MACHINE_MODELS, MachineProblem, MachineProblemCode, MachineAgentSettings, MachineAgentSettingsState, MachineAgentSettingsUpdate, PlacePath, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, AgentRefusal, MachineAgentAnswer, Refused, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachineRuntime, MachineTokenSwap, PlaceLevel, ScriptFile, ScriptLanguage, UserModelOrigin, SCREEN_FEATURE, PROJECT_FILES_FEATURE, PROJECT_FILE_BYTES_FEATURE
 from galaius import USER_AGENT
 from galaius import prompt_mirror, prompt_projection
 from galaius.agents.subscription_watch import SubscriptionWatch
@@ -1415,11 +1415,12 @@ class MachineRunner:
     #: `PROJECTS_ROOT_FEATURE`: `PROJECTS_ROOT` names the projects folder (`MachineConfig.projects_root`); kept ahead of the
     #: `script:*` entries, past which a server keeps no more.
     #: `SCREEN_FEATURE`: its screen can be watched, and driven, from the web (`ScreenDesk`).
-    #: `PROJECT_FILES_FEATURE`: a project folder's files are shown to the web, read-only (`ProjectFolder`).
+    #: `PROJECT_FILES_FEATURE`: a project folder's files are shown to the web, read-only (`ProjectFolder`);
+    #: `PROJECT_FILE_BYTES_FEATURE`: a file not shown as text is also read as raw bytes, part by part (`ProjectFolder.part`).
     FEATURES: ClassVar[tuple[str, ...]] = ("file_query", "script_file", "file_read", "agent_control", "agent_settings", "web_settings", "workspaces", "start_permission", "project_secrets", "places", "agent_media", "tool_gateway", "token_swap",
                                            "workspace_copy", "places_direct", "agent_programs", SUBSCRIPTIONS_FEATURE, AgentMoveRequest.feature, RUN_MOVE_WAITS_FEATURE, str(AgentSendRequest.idempotent_feature), str(AgentStartRequest.idempotent_feature), WEB_LIMIT_FEATURE,
                                            AgentSignInCodeRequest.feature, AgentCompactRequest.feature, PROJECTS_ROOT_FEATURE, AGENT_IMAGES_FEATURE, AGENT_REASONING_FEATURE, AGENT_FILES_FEATURE, MACHINE_TOOLS_FEATURE,
-                                           SCREEN_FEATURE, PROJECT_FILES_FEATURE)
+                                           SCREEN_FEATURE, PROJECT_FILES_FEATURE, PROJECT_FILE_BYTES_FEATURE)
 
     @classmethod
     def features(cls) -> list[str]:

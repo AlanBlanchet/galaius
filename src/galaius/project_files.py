@@ -1,5 +1,6 @@
 """A project folder's files as the web reads them, read-only (`ProjectFilesBase`): one folder's entries with their git
-marks, one file's text or image, a search by name.
+marks, one file's text or image, a search by name, a part of a file's raw bytes (never one shown as text: those leave only
+redacted).
 
 Only beneath one agent root; every name on a path matched byte for byte against its folder's own listing (a case,
 short-name or trailing-dot alias never opens the entry it stands for), every folder reached by `PinnedDirectory` and
@@ -28,12 +29,13 @@ from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import ClassVar
+from typing import BinaryIO, ClassVar
 
 from pydantic import BaseModel, ConfigDict
 
-from galaius_core import (MACHINE_AGENT_MEDIA, PROJECT_FILES_MAX, PROJECT_FOUND_MAX, PROJECT_TEXT_MAX, GitMark, MachineAgentAnswer, ProjectFileContent,
-                          ProjectFileEntry, ProjectFileRequest, ProjectFilesBase, ProjectFilesRequest, ProjectFindRequest, image_type, project_hidden)
+from galaius_core import (MACHINE_AGENT_MEDIA, PROJECT_FILES_MAX, PROJECT_FOUND_MAX, PROJECT_TEXT_MAX, GitMark, MachineAgentAnswer, ProjectFileBytes,
+                          ProjectFileBytesRequest, ProjectFileContent, ProjectFileEntry, ProjectFileRequest, ProjectFilesBase, ProjectFilesRequest,
+                          ProjectFindRequest, image_type, project_hidden)
 from galaius.pinned_directory import PinnedDirectory
 from galaius.places import DEPENDENCY_FOLDERS, PlaceMap
 from galaius.redaction import redact
@@ -194,6 +196,8 @@ class ProjectFolder(BaseModel):
             case ProjectFindRequest():
                 found, truncated = self.find(request.query)
                 return MachineAgentAnswer(request_id=request.id, found=found, truncated=truncated)
+            case ProjectFileBytesRequest():
+                return MachineAgentAnswer(request_id=request.id, part=self.part(request.path, request.offset, request.length))
         raise TypeError(f"not a project files request: {request.op}")
 
     def entries(self, path: str) -> tuple[tuple[ProjectFileEntry, ...], int, bool]:
@@ -215,25 +219,18 @@ class ProjectFolder(BaseModel):
 
     def content(self, path: str) -> ProjectFileContent:
         """File `path`: its text (redacted, then cut at PROJECT_TEXT_MAX), its image, or its facts alone."""
-        *folder, name = self.parts(path)
-        with self._opened(tuple(folder)) as directory:
-            if name not in directory.names() or self._closed(directory.path / name):
-                raise PermissionError(f"{path}: no such file here")
-            descriptor = directory.file(name, os.O_RDONLY | PinnedDirectory.NONBLOCK | getattr(os, "O_BINARY", 0))
-            with os.fdopen(descriptor, "rb") as handle:
-                facts = os.fstat(handle.fileno())
-                if not stat.S_ISREG(facts.st_mode):
-                    raise PermissionError(f"{path} is not a plain file")
-                head = handle.read(self.HEAD)
-                facts_of = {"path": path, "size": facts.st_size, "modified_at": self._time(facts), "git": self.marks(directory.path, name).get(name)}
-                if (content_type := image_type(head)) is not None:
-                    if facts.st_size > MACHINE_AGENT_MEDIA:
-                        return ProjectFileContent(kind="too_large", **facts_of)
-                    data = head + handle.read(MACHINE_AGENT_MEDIA + 1 - len(head))
-                    return ProjectFileContent(kind="image", content_type=content_type, data=base64.b64encode(data[:MACHINE_AGENT_MEDIA]).decode("ascii"), **facts_of)
-                if b"\x00" in head:
-                    return ProjectFileContent(kind="binary", **facts_of)
-                data = head + handle.read(PROJECT_TEXT_MAX + 1 - len(head))
+        with self._file(path) as (handle, facts, directory):
+            head = handle.read(self.HEAD)
+            name = self.parts(path)[-1]
+            facts_of = {"path": path, "size": facts.st_size, "modified_at": self._time(facts), "git": self.marks(directory.path, name).get(name)}
+            if (content_type := image_type(head)) is not None:
+                if facts.st_size > MACHINE_AGENT_MEDIA:
+                    return ProjectFileContent(kind="too_large", **facts_of)
+                data = head + handle.read(MACHINE_AGENT_MEDIA + 1 - len(head))
+                return ProjectFileContent(kind="image", content_type=content_type, data=base64.b64encode(data[:MACHINE_AGENT_MEDIA]).decode("ascii"), **facts_of)
+            if not self.text(head):
+                return ProjectFileContent(kind="binary", **facts_of)
+            data = head + handle.read(PROJECT_TEXT_MAX + 1 - len(head))
         if (values := self.env_values()) is None:
             # An environment file it cannot read for its values: what they would mask cannot be told apart, so no text leaves.
             return ProjectFileContent(kind="binary", **facts_of)
@@ -251,6 +248,21 @@ class ProjectFolder(BaseModel):
             text = text[:len(text) - run]
             text = next((text[:-size] for secret in secrets for size in range(min(len(secret) - 1, len(text)), 3, -1) if text.endswith(secret[:size])), text)
         return ProjectFileContent(kind="text", text=text, truncated=True, **facts_of)
+
+    def part(self, path: str, offset: int, length: int) -> ProjectFileBytes:
+        """`length` raw bytes of file `path` from `offset` (none past its end), never redacted: refused for a file `content`
+        shows as text (`text`), whose bytes leave only redacted."""
+        with self._file(path) as (handle, facts, _):
+            if self.text(handle.read(self.HEAD)):
+                raise PermissionError(f"{path} is shown as text, redacted: its raw bytes never leave this PC")
+            handle.seek(offset)
+            data = handle.read(min(length, max(facts.st_size - offset, 0)))
+        return ProjectFileBytes(path=path, size=facts.st_size, modified_at=self._time(facts), offset=offset, data=base64.b64encode(data).decode("ascii"))
+
+    @staticmethod
+    def text(head: bytes) -> bool:
+        """Whether a file whose first bytes are `head` is shown as text: no image they prove, no NUL among them."""
+        return image_type(head) is None and b"\x00" not in head
 
     def env_values(self) -> tuple[str, ...] | None:
         """Every value of 8 characters or more in the project folder's own `.env*` files (its vault's secrets are
@@ -378,6 +390,21 @@ class ProjectFolder(BaseModel):
             except OSError:
                 continue
         return paths, False
+
+    @contextmanager
+    def _file(self, path: str) -> Iterator[tuple[BinaryIO, os.stat_result, PinnedDirectory]]:
+        """Plain file `path` opened through its folder's pinned handle (`_opened`; never a link, never closed by the owner's
+        levels), its facts, and that folder."""
+        *folder, name = self.parts(path)
+        with self._opened(tuple(folder)) as directory:
+            if name not in directory.names() or self._closed(directory.path / name):
+                raise PermissionError(f"{path}: no such file here")
+            descriptor = directory.file(name, os.O_RDONLY | PinnedDirectory.NONBLOCK | getattr(os, "O_BINARY", 0))
+            with os.fdopen(descriptor, "rb") as handle:
+                facts = os.fstat(handle.fileno())
+                if not stat.S_ISREG(facts.st_mode):
+                    raise PermissionError(f"{path} is not a plain file")
+                yield handle, facts, directory
 
     @contextmanager
     def _opened(self, parts: tuple[str, ...]) -> Iterator[PinnedDirectory]:
