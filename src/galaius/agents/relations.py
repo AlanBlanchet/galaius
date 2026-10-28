@@ -16,7 +16,7 @@ from pathlib import Path
 from galaius.agents import record_recall, turn_facts, turn_review_marks
 from galaius.agents import registry as reg
 from galaius.config import Config
-from galaius.agents.events import AgentEvent, Relation, ending_of
+from galaius.agents.events import AgentEvent, Relation
 from galaius.inbox_hook import HEADING, OPERATOR
 
 #: Share of its context window a compaction may leave a run at, past which it hands its work to the first run of its role
@@ -280,10 +280,42 @@ def relation(sender: reg.AgentRun, recipient: reg.AgentRun, text: str, *, report
 
 
 def final_words(run_id: str) -> str:
-    """What run `run_id` last said: its ending's text, else its newest text."""
-    ending = ending_of(events := reg.read_events(run_id), run_id)
-    said = ending.text if ending is not None else next((event.text for event in reversed(events) if event.kind == "text"), "")
-    return (said or "").strip()
+    """What run `run_id` answered its latest ask (`final_parts`), its parts joined by a blank line."""
+    return "\n\n".join(final_parts(run_id))
+
+
+def final_parts(run_id: str) -> tuple[str, ...]:
+    """What run `run_id` answered since its latest ask (`ask_lines`, or a prompt typed into its session): `closing_parts`."""
+    events = reg.read_events(run_id)
+    run = reg.get_run(run_id)
+    asked = max((*(line for line, _said in (ask_lines(run) if run is not None else ())),
+                 *(event.raw_index for event in events if event.kind == "prompt" and event.raw_index is not None)), default=0)
+    return closing_parts([event for event in events if event.raw_index is None or event.raw_index >= asked])
+
+
+def closing_parts(events: Sequence[AgentEvent]) -> tuple[str, ...]:
+    """What a run answered over `events` (one ask and every turn after it), oldest first, each once: per stretch a turn's
+    start, an end-of-turn check (a Stop hook's block) or a turn's ending closes, its last text, else that ending's text; a
+    stretch's newest report listing a report's sections (`REPORT_SECTIONS`) comes before that last text. So a Stop-hook
+    reply, a wake no message opened, a resume or a compaction adds its words after the close before it, never replaces
+    it (2026-10-28, backend-engineer 7cf011fd: its asker read only its reply to the delivery gate, its close « Both fixes
+    are live » dropped; 2026-10-22: a review's « the hook does not apply » read in place of its report)."""
+    parts: dict[str, None] = {}
+    said = sectioned = ""
+    for event in (*events, None):
+        if event is not None and event.kind == "text" and (text := (event.text or "").strip()):
+            said = text
+            if any(report_section(text, name) for name in REPORT_SECTIONS):
+                sectioned = text
+        elif event is not None and event.kind in ("done", "error") and not said:
+            said = (event.text or "").strip()
+        if event is None or event.kind in ("started", "check", "done", "error"):
+            for part in (sectioned, said) if sectioned != said else (said,):
+                if part:
+                    parts.pop(part, None)
+                    parts[part] = None
+            said = sectioned = ""
+    return tuple(parts)
 
 
 def report_of(run_id: str) -> str:
@@ -297,18 +329,13 @@ def report_of(run_id: str) -> str:
     return (sectioned or "").strip() or final_words(run_id)
 
 
-def report_between(run_id: str, start: int, end: int | None) -> str | None:
-    """Run `run_id`'s report written from raw stream line `start` up to `end` (None: its end): the newest of its texts
-    there listing a report's sections (`REPORT_SECTIONS`), else the newest ending's text, else its newest text; None when
-    nothing there ended yet."""
+def report_between(run_id: str, start: int, end: int | None) -> tuple[str, ...] | None:
+    """Run `run_id`'s report written from raw stream line `start` up to `end` (None: its end), up to its newest ending
+    there: `closing_parts`; None when nothing there ended yet."""
     events = [event for event in reg.read_events(run_id)
               if event.raw_index is not None and event.raw_index >= start and (end is None or event.raw_index < end)]
-    endings = [event for event in events if event.kind in ("done", "error")]
-    if not endings:
-        return None
-    texts = [event.text or "" for event in events if event.kind == "text" and (event.raw_index or 0) <= (endings[-1].raw_index or 0)]
-    sectioned = [text for text in texts if any(report_section(text, name) for name in REPORT_SECTIONS)]
-    return (sectioned[-1] if sectioned else endings[-1].text or (texts[-1] if texts else "")).strip()
+    ended = next((index for index in range(len(events) - 1, -1, -1) if events[index].kind in ("done", "error")), None)
+    return None if ended is None else closing_parts(events[:ended + 1])
 
 
 @one_read()

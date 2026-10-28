@@ -20,7 +20,7 @@ from galaius.agents import agent_queue, messaging, relations
 from galaius.agents.events import AgentEvent
 from galaius.agents import registry as reg
 from galaius.agents.community import CommunityAgent, quote
-from galaius.agents.relations import final_words, live, one_read, owed
+from galaius.agents.relations import live, one_read, owed
 from galaius.agents.spawn_line import SpawnLine
 from galaius.config import Config
 from galaius.paths import UserPaths
@@ -41,6 +41,8 @@ class Report(BaseModel):
     status: str
     pending: bool
     text: str
+    #: The parts `text` joins, oldest first (`relations.closing_parts`): a clipped report drops its oldest first.
+    parts: tuple[str, ...] = Field(default=(), exclude=True)
     #: Seconds since its vendor last wrote, for a run still at work; None for an ended one or one with nothing written.
     silent_for: float | None = None
     #: The run whose brief it took, refused by its plan's limit before it started (`reg.Relaunch.line`), and why its own
@@ -60,8 +62,9 @@ class Report(BaseModel):
             said = reg.vendor_said_at(run) if run.process_running() else None  # a queued item alone: no turn to be silent
             return cls(run_id=run.run_id, agent=run.agent, status=run.status, pending=True, text="", relaunched=relaunched,
                        silent_for=None if said is None else max(0.0, time.time() - said), community=run.community)
-        return cls(run_id=run.run_id, agent=run.agent, status=run.status, pending=False, text=final_words(run.run_id), relaunched=relaunched,
-                   community=run.community)
+        parts = relations.final_parts(run.run_id)
+        return cls(run_id=run.run_id, agent=run.agent, status=run.status, pending=False, text="\n\n".join(parts), parts=parts,
+                   relaunched=relaunched, community=run.community)
 
     @classmethod
     def answering(cls, run: reg.AgentRun, asker: str) -> "Report":
@@ -82,15 +85,27 @@ class Report(BaseModel):
         if end is None:
             return report
         said = relations.report_between(run.run_id, start, end)
-        return report if said is None else report.model_copy(update={"text": said})
+        return report if said is None else report.model_copy(update={"text": "\n\n".join(said), "parts": said})
 
     def section(self, limit: int | None = REPORT_MAX) -> str:
         if self.community is not None:
             text = quote(self.text or "(it ended without a final message)")
             return f"## {self.community.label()} {self.run_id[:8]} — {self.status}\n{text}"
-        text = self.text if limit is None or len(self.text) <= limit else f"{self.text[:limit]}\n… (clipped; `galaius agents events {self.run_id}`)"
+        text = self.text if limit is None or len(self.text) <= limit else self._clipped(limit)
         lead = f"{self.relaunched}\n" if self.relaunched else ""
         return f"## {self.agent or 'agent'} {self.run_id[:8]} — {self.status}\n{lead}{text or '(it ended without a final message)'}"
+
+
+    def _clipped(self, limit: int) -> str:
+        """`text` within `limit`: its newest parts that fit, the older ones named as dropped; the newest alone past it, its
+        opening (its result comes first)."""
+        clip = f"… (clipped; `galaius agents events {self.run_id}`)"
+        kept: list[str] = []
+        for part in reversed(self.parts):
+            if sum(len(said) + 2 for said in (part, *kept)) + len(clip) > limit:
+                break
+            kept.insert(0, part)
+        return "\n\n".join((clip, *kept)) if kept else f"{self.text[:limit]}\n{clip}"
 
 
 def _pending(run: reg.AgentRun) -> bool:

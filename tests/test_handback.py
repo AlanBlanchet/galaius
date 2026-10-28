@@ -165,7 +165,7 @@ def test_an_ask_is_answered_by_one_hand_back(sent, next_turn, woken_again):
 
 
 def test_a_run_waiting_on_its_own_agents_hands_back_its_final_report_once(sent, at_work):
-    """An ask is answered by one hand-back, so that hand-back carries the final report, never the words of a turn that
+    """An ask is answered by one hand-back, so that hand-back carries the final report, after the words of the turn that
     ended to wait on its own agents."""
     ids = {name: str(uuid.UUID(int=n)) for n, name in enumerate(("parent", "coordinator", "eng", "helper"), start=1)}
     for name in ("parent", "coordinator"):
@@ -513,3 +513,40 @@ def test_a_reviewer_kept_for_two_makers_hands_each_its_own_verdict(sent, monkeyp
     assert relations.owed(run) == (second,)
     handback.hand_back(reviewer)                                        # its turn for the second ends: the first is idle
     assert not [call for call in sent if call["run_id"] == first]
+
+
+_INIT = {"type": "system", "subtype": "init", "session_id": "s"}
+
+
+def _assistant(text: str) -> dict:
+    return {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}, "session_id": "s"}
+
+
+def _result(text: str) -> dict:
+    return {"type": "result", "subtype": "success", "is_error": False, "session_id": "s", "stop_reason": "end_turn", "result": text}
+
+
+_HOOK = {"type": "user", "isSynthetic": True, "session_id": "s",
+         "message": {"role": "user", "content": [{"type": "text", "text": "Stop hook feedback:\nDELIVERY GATE: state the live commit."}]}}
+_CLOSE = "Both fixes are live in build 27f54b4.\n\n**DONE**"
+
+
+@pytest.mark.parametrize("lines, expected", [
+    pytest.param([_INIT, _assistant("Deploying."), _assistant(_CLOSE), _result(_CLOSE)], _CLOSE, id="no-hook-unchanged"),
+    pytest.param([_INIT, _assistant(_CLOSE), _HOOK, _assistant("Live build: 27f54b4."), _result("Live build: 27f54b4.")],
+                 f"{_CLOSE}\n\nLive build: 27f54b4.", id="stop-hook-reply-after-the-close"),
+    pytest.param([_INIT, _assistant(_CLOSE), _result(_CLOSE), _INIT, _assistant("Nothing changed since."), _result("Nothing changed since.")],
+                 f"{_CLOSE}\n\nNothing changed since.", id="no-message-wake-after-the-close"),
+])
+def test_a_hand_back_keeps_the_close_a_hook_reply_or_a_wake_follows(lines, expected):
+    """2026-10-28, backend-engineer 7cf011fd: its librarian was handed only its reply to the delivery-gate Stop hook
+    (« Live build: … »), its close « Both fixes are live » dropped; a no-op wake replaced an answer the same way."""
+    _ended("maker", 100.0, agent="backend-engineer")
+    reg.raw_events_path("maker").write_text("".join(json.dumps(line) + "\n" for line in lines))
+    assert handback.Report.of(reg.get_run("maker")).text == expected
+
+
+def test_a_clipped_hand_back_drops_its_oldest_parts_first():
+    report = handback.Report(run_id="maker", agent="backend-engineer", status="done", pending=False,
+                             text="a" * 90 + "\n\n" + "b" * 30, parts=("a" * 90, "b" * 30))
+    assert report.section(limit=80) == f"## backend-engineer maker — done\n… (clipped; `galaius agents events maker`)\n\n{'b' * 30}"
