@@ -40,7 +40,7 @@ class Report(BaseModel):
     agent: str | None
     status: str
     pending: bool
-    #: What it answered, oldest first (`relations.answer_parts`): a clipped report drops its oldest first.
+    #: What it answered, oldest first (`relations.answer_of`): a clipped report drops its oldest first.
     parts: tuple[str, ...] = ()
     #: Seconds since its vendor last wrote, for a run still at work; None for an ended one or one with nothing written.
     silent_for: float | None = None
@@ -71,6 +71,7 @@ class Report(BaseModel):
                    parts=relations.final_parts(run.run_id, askers=() if asker is None else (asker,)), community=run.community)
 
     @classmethod
+    @one_read()
     def answering(cls, run: reg.AgentRun, asker: str) -> "Report":
         """`run`'s report to `asker`'s latest ask, never to another run's: what it wrote from the turn that read that ask
         (its queue item, `ask_message`; its start when the ask is its task) up to the turn the next ask from another run
@@ -88,8 +89,8 @@ class Report(BaseModel):
         end = next((line for line, said in read if line > start and said != message), None)
         if end is None:
             return report
-        said = relations.answer_parts(run.run_id, askers=(asker,), start=start, end=end)
-        return report if said is None else report.model_copy(update={"parts": said})
+        said = relations.answer_of(run.run_id, askers=(asker,), start=start, end=end)
+        return report if said is None else report.model_copy(update={"parts": said.parts})
 
     def section(self, limit: int | None = REPORT_MAX) -> str:
         if self.community is not None:

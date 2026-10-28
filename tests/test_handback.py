@@ -565,14 +565,20 @@ def test_a_turn_a_peer_opened_adds_nothing_to_the_hand_back(sender, expected):
     assert handback.Report.of(reg.get_run("maker")).text == expected
 
 
-@pytest.mark.parametrize("turns, relation", [
-    pytest.param(("Verdict: FAIL — row 2 still overflows.",), Relation.REPORT_ASKING, id="fail-close-asks"),
-    pytest.param(("Verdict: FAIL — row 2 still overflows.", "Re-checked: PASS."), Relation.REPORT, id="wake-pass-answers-it"),
+_FAIL = "Verdict: FAIL — row 2 still overflows."
+
+
+@pytest.mark.parametrize("lines, relation", [
+    pytest.param((_INIT, _assistant(_FAIL), _result(_FAIL)), Relation.REPORT_ASKING, id="fail-close-asks"),
+    pytest.param((_INIT, _assistant(_FAIL), _HOOK, _assistant("The hook does not apply."), _result("The hook does not apply.")),
+                 Relation.REPORT_ASKING, id="hook-reply-after-a-fail-close-still-asks"),
+    pytest.param((_INIT, _assistant(_FAIL), _result(_FAIL), _INIT, _assistant("Re-checked: PASS."), _result("Re-checked: PASS.")),
+                 Relation.REPORT, id="wake-pass-answers-it"),
 ])
-def test_a_hand_back_asks_when_its_newest_part_does(turns, relation):
+def test_a_hand_back_asks_while_its_newest_turn_does(lines, relation):
     register_run("maker", agent="backend-engineer")
     _ended("rev", 100.0, agent="code-reviewer", parent_run_id="maker")
-    reg.raw_events_path("rev").write_text("".join(json.dumps(line) + "\n" for said in turns for line in (_INIT, _assistant(said), _result(said))))
+    reg.raw_events_path("rev").write_text("".join(json.dumps(line) + "\n" for line in lines))
     assert relations.relation(reg.get_run("rev"), reg.get_run("maker"), "", reports=["rev"]) == relation
 
 
