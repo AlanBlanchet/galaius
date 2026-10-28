@@ -40,7 +40,7 @@ from galaius_core import (
     MODEL_ID_MAX,
     PROJECTS_ROOT, AGENT_TOUCH_SCOPES, AgentCompactRequest, ContextGauge, MACHINE_AGENT_MEDIA, MACHINE_AGENT_READ, MACHINE_AGENT_TAIL, AgentAnswerRequest, AgentMedia, AgentMediaRequest, AgentFile, media_kind, image_type, AgentContinueRequest, AgentFoldersRequest, AgentInteraction, AgentLogsRequest, AgentOptionsRequest,
     AgentAllowanceRequest, AgentMoveRequest, AgentProgramInstallRequest, AgentProgramsRequest, AgentToolInstallRequest, AgentToolsRequest, AgentProviderState, AgentSignInCodeRequest, AgentSignOutRequest, SubscriptionAllowance, Lent, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
-    MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, PassedOverCandidate, ReadsAt, WebLimited, WebLoad, media_key, media_paths, MachineAgentSession, MachineFileEntry, StopActor, WorkspaceCreateRequest, WorkspacePack, WorkspacePackRequest, WorkspacePrepareRequest, WorkspaceRefresh, WorkspacesRequest, ProjectFilesBase, ProjectFileBytesRequest,
+    MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, PassedOverCandidate, ReadsAt, WebLimited, WebLoad, media_key, media_paths, MachineAgentSession, MachineFileEntry, StopActor, WorkspaceCreateRequest, WorkspacePack, WorkspacePackRequest, WorkspacePrepareRequest, WorkspaceRefresh, WorkspacesRequest, ProjectFilesBase, ProjectFilePart,
 )
 from galaius.agents import agent_queue, quota
 from galaius.agents import registry as reg
@@ -621,8 +621,9 @@ class MachineAgents(BaseModel):
             refused = str(error)
             raise
         finally:
-            # A player reads a file's bytes part by part: its first part alone is logged, and every refused one.
-            if refused is not None or not (isinstance(request, ProjectFileBytesRequest) and request.offset):
+            # A player, a viewer or a whole text read part by part or page by page: the part opening it alone is logged
+            # (`opens`), and every refused one.
+            if refused is not None or not isinstance(request, ProjectFilePart) or request.opens:
                 self.audit(PLACES_LOG, {"op": "project_files", "read": request.op, "root": request.root, "base": request.base,
                                         **request.model_dump(include={"path", "query", "offset"}), "refused": refused, "initiator_account": str(request.initiator_account)})
 

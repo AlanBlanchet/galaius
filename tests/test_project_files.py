@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import gzip
+import io
 import os
 import subprocess
 import zipfile
@@ -13,11 +14,12 @@ from uuid import uuid4
 
 import pytest
 
-from galaius_core import MACHINE_AGENT_REQUESTS, PROJECT_TEXT_MAX, MachineAgentAnswer
+from galaius_core import MACHINE_AGENT_REQUESTS, PROJECT_TEXT_MAX, MachineAgentAnswer, ProjectFileRefusal, Refused
 from galaius.machine_agents import MachineAgents, WebRuns
 from galaius.pinned_directory import PinnedDirectory
 from galaius.project_files import ProjectFolder
 from galaius.places import PlaceMap
+from galaius.redaction import holds_secret, redact
 
 # Built in pieces so no secret scanner mistakes the fixture for a real key.
 SHAPED = "sk-" + "abcdefghijklmnop"
@@ -337,6 +339,14 @@ def test_a_utf16_text_file_is_shown_decoded_and_redacted_never_raw(project: Path
         _ask(_agents(project, tmp_path), "bytes", path="setup.ps1", length=10)
 
 
+def _zip_bytes(files: dict[str, bytes]) -> bytes:
+    held = io.BytesIO()
+    with zipfile.ZipFile(held, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, data in files.items():
+            archive.writestr(name, data)
+    return held.getvalue()
+
+
 def _zip(path: Path, files: dict[str, bytes]) -> bytes:
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
         for name, data in files.items():
@@ -371,11 +381,114 @@ def test_a_clean_zip_downloads_and_a_large_file_is_checked_part_by_part(project:
             _ask(agents, "bytes", path="weights.bin", offset=offset, length=1024 * 1024)
 
 
-def test_a_players_later_parts_leave_no_trace_its_first_and_refused_ones_do(project: Path, tmp_path: Path) -> None:
+def test_a_read_leaves_its_trace_when_it_opens_and_when_it_is_refused(project: Path, tmp_path: Path) -> None:
+    """The server marks every part or page after a response's first one (`opens` False): those alone stay out of the log."""
     traced: list = []
     agents = _agents(project, tmp_path, traced)
-    for offset in (0, 50, 100):
-        _ask(agents, "bytes", path="blob.bin", offset=offset, length=50)
+    _ask(agents, "bytes", path="blob.bin", offset=50, length=50)
+    _ask(agents, "bytes", path="blob.bin", offset=100, length=50, opens=False)
+    _ask(agents, "file", path="big.log", offset=10)
+    _ask(agents, "file", path="big.log", offset=20, opens=False)
     with pytest.raises(PermissionError):
-        _ask(agents, "bytes", path="notes.txt", offset=50, length=50)
-    assert [(entry["path"], entry.get("offset", 0), entry["refused"] is not None) for _, entry in traced] == [("blob.bin", 0, False), ("notes.txt", 50, True)]
+        _ask(agents, "bytes", path="notes.txt", offset=50, length=50, opens=False)
+    assert [(entry["read"], entry["path"], entry.get("offset", 0), entry["refused"] is not None) for _, entry in traced] == [
+        ("bytes", "blob.bin", 50, False), ("file", "big.log", 10, False), ("bytes", "notes.txt", 50, True)]
+
+
+# Office parts (`word/`, `xl/` ...) are searched for the exact secrets only: a document quoting a credential's shape opens.
+DOCX = {"[Content_Types].xml": b"<Types/>", "_rels/.rels": b"<Relationships/>", "docProps/core.xml": b"<cp/>",
+        "word/document.xml": f"<w:t>{'api' + '_key'} = {SHAPED}</w:t>".encode()}
+
+
+@pytest.mark.parametrize(("files", "why"), [
+    ({}, None),
+    ({"id_rsa_backup": (PEM_BEGIN + "\n" + PEM_BODY[0] + "\n").encode()}, "secret"),
+    ({"word/document.xml": f"<w:t>{KNOWN}</w:t>".encode()}, "secret"),
+    ({"word/document.xml": f"<w:t>{KNOWN}</w:t>".encode("utf-16-le")}, "secret"),
+    ({"customXml/item1.xml": f"<v>{KNOWN}</v>".encode()}, "secret"),
+    ({"word/id_rsa_backup": (PEM_BEGIN + "\n" + PEM_BODY[0] + "\n").encode()}, "secret"),
+    ({"word/../notes.txt": f"token: {SHAPED}".encode()}, "secret"),
+    ({"keys/signing.der": b"\x30\x82\x04\xa4" + b"\x01" * 200}, "secret"),
+    ({"word/embeddings/Sheet.xlsx": _zip_bytes({"[Content_Types].xml": b"<Types/>", "xl/sheet1.xml": b"<c>12</c>"})}, None),
+    ({"word/embeddings/Sheet.xlsx": _zip_bytes({"[Content_Types].xml": b"<Types/>", "xl/sheet1.xml": f"<c>{KNOWN}</c>".encode()})}, "secret"),
+    ({"word/embeddings/x.gz": gzip.compress(KNOWN.encode())}, "unchecked"),
+], ids=["clean", "key-beside", "pc-secret", "pc-secret-utf16", "custom-xml", "key-in-word-folder", "escaping-name", "der-key", "embedded-clean", "embedded-secret",
+        "packed-inside"])
+def test_an_office_document_is_searched_for_the_pcs_secrets_and_any_other_file_inside_it_like_a_zip(project: Path, tmp_path: Path, files: dict,
+                                                                                                    why: str | None) -> None:
+    data = _zip(project / "report.docx", {**DOCX, **files})
+    agents = _agents(project, tmp_path)
+    if why is None:
+        assert _ask(agents, "bytes", path="report.docx", length=len(data)).part.content == data
+    else:
+        with pytest.raises(PermissionError) as refused:
+            _ask(agents, "bytes", path="report.docx", length=10)
+        assert Refused.refusal_of(refused.value) == ProjectFileRefusal(reason=why)
+
+
+def test_a_secret_written_escaped_in_a_documents_xml_is_found(project: Path, tmp_path: Path) -> None:
+    secret = "Zq9x&vault<" + "Secret77"
+    agents = _agents(project, tmp_path).model_copy(update={"environment": {"PATH": os.environ["PATH"], "HOME": str(tmp_path), "SERVICE_TOKEN": secret}})
+    _zip(project / "sheet.xlsx", {"[Content_Types].xml": b"<Types/>", "xl/sharedStrings.xml": b"<t>Zq9x&amp;vault&lt;Secret77</t>"})
+    with pytest.raises(PermissionError, match="holds a secret"):
+        _ask(agents, "bytes", path="sheet.xlsx", length=10)
+
+
+@pytest.mark.parametrize(("path", "reason"), [("notes.txt", "text"), ("sealed.7z", "sealed"), ("locked.zip", "sealed"), ("blob.bin", None)])
+def test_a_bytes_refusal_says_its_reason_typed(project: Path, tmp_path: Path, path: str, reason: str | None) -> None:
+    (project / "sealed.7z").write_bytes(b"7z\xbc\xaf\x27\x1c" + b"\x00" * 64)
+    data = bytearray(_zip(project / "locked.zip", {"a.txt": b"plain"}))
+    for at in (6, data.index(b"PK\x01\x02") + 8):   # the encrypted flag, in the local and the central header
+        data[at] |= 1
+    (project / "locked.zip").write_bytes(bytes(data))
+    if reason is None:
+        assert _ask(_agents(project, tmp_path), "bytes", path=path, length=10).part.size == 200
+        return
+    with pytest.raises(PermissionError) as refused:
+        _ask(_agents(project, tmp_path), "bytes", path=path, length=10)
+    assert Refused.refusal_of(refused.value) == ProjectFileRefusal(reason=reason)
+
+
+# Credential bodies in pieces, so no secret scanner mistakes the fixtures for real keys.
+PGP = "-----BEGIN PGP " + "PRIVATE KEY BLOCK-----\n\nlQOYBGVmZXJ" + "QkFTRTY0Ym9keQ" * 6 + "\n=AbCd\n-----END PGP " + "PRIVATE KEY BLOCK-----\n"
+AGE = "# created: 2026-10-28\n" + "AGE-SECRET-" + "KEY-1" + "QQPZ5GJ7X3UXDMPF0Q7ZFS6N4LJ2V0Q9CQRT5K8EHWJ3XGAYNZ7QS6E4DL5" + "\n"
+PUTTY = ("PuTTY-User-" + "Key-File-3: ssh-ed25519\nEncryption: none\nComment: work\nPublic-Lines: 2\nAAAAC3NzaC1lZDI1NTE5AAAAIPub\nPubLine2\n"
+         "Private-Lines: 1\nAAAAIQ" + "Cprivbody" * 4 + "\nPrivate-MAC: 8f3a9c" + "d" * 58 + "\n")
+KUBE = "users:\n- name: admin\n  user:\n    client-key-data: " + "LS0tLS1CRUdJTi" + "BSU0EgUFJJVkFURSBLRVk" * 3 + "\n    client-" + "certificate: c.crt\n"
+
+
+@pytest.mark.parametrize(("text", "body"), [(PGP, "QkFTRTY0Ym9keQ"), (AGE, "QQPZ5GJ7X3UXDMPF"), (PUTTY, "Cprivbody"), (PUTTY, "8f3a9c"), (KUBE, "LS0tLS1CRUdJTi"),
+                                             ("private_key = " + "Zq9xKeyMaterial77\n", "Zq9xKeyMaterial77")],
+                         ids=["pgp", "age", "putty-body", "putty-mac", "kubeconfig-key-data", "private-key-name"])
+def test_a_credential_body_never_shows_and_its_raw_bytes_never_leave(text: str, body: str) -> None:
+    assert body not in redact("intro\n" + text + "outro\n") and "•••" in redact(text)
+    assert holds_secret(b"\x00" * 300 + text.encode() + b"\x00" * 300, ())
+
+
+@pytest.mark.parametrize("char", ["é", "€", "😀"])
+def test_a_page_of_one_unbroken_run_of_wide_characters_ends_on_a_whole_one(project: Path, tmp_path: Path, char: str) -> None:
+    # One ASCII character first when the page size is a whole number of them: the first cut lands inside one.
+    body = "a" * (PROJECT_TEXT_MAX % len(char.encode()) == 0) + char * (PROJECT_TEXT_MAX // len(char.encode()) + 5000)
+    (project / "wide.txt").write_text(body)
+    pages = _pages(_agents(project, tmp_path), "wide.txt")
+    assert len(pages) > 1 and "\ufffd" not in "".join(page.text for page in pages) and "".join(page.text for page in pages) == body
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-16"])
+def test_a_tail_read_from_a_line_start_begins_on_a_whole_line_and_says_where(project: Path, tmp_path: Path, encoding: str) -> None:
+    body = "".join(f"line {index} é\n" for index in range(3000))
+    data = body.encode(encoding)
+    (project / "tail.log").write_bytes(data)
+    agents = _agents(project, tmp_path)
+    plain, mark = ("utf-16-le", 2) if encoding == "utf-16" else (encoding, 0)
+    line_end = "\n".encode(plain)
+    for asked in (len(data) - 501, len(data) - 500, data.rindex("line 2900 ".encode(plain)), data.rindex("line 2900 ".encode(plain)) + 1, 0):
+        page = _ask(agents, "file", path="tail.log", offset=asked, line_start=True).content
+        assert page.offset >= max(asked, mark) and data[page.offset:].decode(plain) == page.text and page.text.startswith("line ")
+        assert page.offset == mark or data[page.offset - len(line_end):page.offset] == line_end
+        assert page.offset - asked < 40   # the next line start, never one further on
+
+
+def test_a_tail_asked_from_a_line_start_in_a_file_without_one_starts_where_asked(project: Path, tmp_path: Path) -> None:
+    (project / "one.txt").write_text("x" * 5000)
+    assert _ask(_agents(project, tmp_path), "file", path="one.txt", offset=4000, line_start=True).content.offset == 4000
