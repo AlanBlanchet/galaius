@@ -125,13 +125,16 @@ class ProjectFolder(BaseModel):
     WALK_MAX: ClassVar[int] = 50_000
     #: The first bytes read to tell text (no NUL), an image and anything else apart.
     HEAD: ClassVar[int] = 8192
-    #: Bytes read past PROJECT_TEXT_MAX so a secret across the cut is redacted before the cut.
-    MARGIN: ClassVar[int] = 64 * 1024
+    #: The tail a cut line loses: its last run of key characters (no space, quote, comma, semicolon), at most CUT_TAIL of
+    #: them: a secret the cut split, which no mask recognises any more.
+    CUT_TAIL: ClassVar[int] = 1024
+    KEY_BREAKS: ClassVar[frozenset[str]] = frozenset(" \t\r\n\"',;")
     #: Most bytes of one `.env*` file read for the values to redact; most such files.
     ENV_MAX: ClassVar[int] = 256 * 1024
     ENV_FILES: ClassVar[int] = 32
-    #: A `.env` line's value: `NAME=value`, `export NAME="value"`.
-    ENV_LINE: ClassVar[re.Pattern[str]] = re.compile(r"^\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_.-]*\s*=\s*(?P<value>.*?)\s*$")
+    #: A `.env` line's value: `NAME=value`, `export NAME="value"`, `NAME='value' # a comment`, `NAME=value # a comment`.
+    ENV_LINE: ClassVar[re.Pattern[str]] = re.compile(
+        r"""^\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_.-]*\s*=\s*(?:"(?P<double>[^"]*)"|'(?P<single>[^']*)'|(?P<bare>[^#\s]*(?:\s+[^#\s]+)*))""")
     #: `git status --porcelain` two-letter codes of an unresolved merge.
     CONFLICTS: ClassVar[frozenset[str]] = frozenset({"DD", "AU", "UD", "UA", "DU", "AA", "UU"})
     #: File operations one PC runs at once; how long one waits for its turn.
@@ -227,29 +230,47 @@ class ProjectFolder(BaseModel):
                     return ProjectFileContent(kind="image", content_type=content_type, data=base64.b64encode(data[:MACHINE_AGENT_MEDIA]).decode("ascii"), **facts_of)
                 if b"\x00" in head:
                     return ProjectFileContent(kind="binary", **facts_of)
-                data = head + handle.read(PROJECT_TEXT_MAX + self.MARGIN - len(head))
+                data = head + handle.read(PROJECT_TEXT_MAX + 1 - len(head))
+        if (values := self.env_values()) is None:
+            # An environment file it cannot read for its values: what they would mask cannot be told apart, so no text leaves.
+            return ProjectFileContent(kind="binary", **facts_of)
+        secrets = (*self.secrets, *values)
         cut = len(data) > PROJECT_TEXT_MAX
-        text = redact(data.decode("utf-8", errors="replace"), (*self.secrets, *self.env_values()))
-        if cut:
-            text = text[:len(data[:PROJECT_TEXT_MAX].decode("utf-8", errors="replace"))][:PROJECT_TEXT_MAX]
-        return ProjectFileContent(kind="text", text=text, truncated=cut, **facts_of)
+        if not cut:
+            return ProjectFileContent(kind="text", text=redact(data.decode("utf-8", errors="replace"), secrets), truncated=False, **facts_of)
+        # Cut at the last whole line, so every secret shape and value is whole where it is masked; a line longer than the
+        # cap loses its last run of key characters, and with it any secret the cut split.
+        window = data[:PROJECT_TEXT_MAX]
+        window = window[:end + 1] if (end := window.rfind(b"\n")) >= 0 else window
+        text = redact(window.decode("utf-8", errors="replace"), secrets)
+        if not text.endswith("\n"):
+            run = next((size for size in range(min(self.CUT_TAIL, len(text))) if text[-1 - size] in self.KEY_BREAKS), min(self.CUT_TAIL, len(text)))
+            text = text[:len(text) - run]
+            text = next((text[:-size] for secret in secrets for size in range(min(len(secret) - 1, len(text)), 3, -1) if text.endswith(secret[:size])), text)
+        return ProjectFileContent(kind="text", text=text, truncated=True, **facts_of)
 
-    def env_values(self) -> tuple[str, ...]:
+    def env_values(self) -> tuple[str, ...] | None:
         """Every value of 8 characters or more in the project folder's own `.env*` files (its vault's secrets are
-        written to its `.env`), longest first: masked in any text shown, as the PC's own secrets are."""
+        written to its `.env`), longest first: masked in any text shown, as the PC's own secrets are. A `.env*` that is a
+        link is followed for its values only (never shown); one that cannot be read as a plain file → None (fail closed)."""
         values: set[str] = set()
+        flags = os.O_RDONLY | PinnedDirectory.NONBLOCK | getattr(os, "O_BINARY", 0)
         with PinnedDirectory.open(self.root, *self.base) as directory:
             for name in sorted(name for name in directory.names() if name.casefold().startswith(".env"))[:self.ENV_FILES]:
                 try:
-                    descriptor = directory.file(name, os.O_RDONLY | PinnedDirectory.NONBLOCK | getattr(os, "O_BINARY", 0))
+                    descriptor = os.open(directory.path / name, flags)
+                except FileNotFoundError:
+                    continue   # a link to nothing holds no value
                 except OSError:
-                    continue
+                    return None
                 with os.fdopen(descriptor, "rb") as handle:
                     if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
-                        continue
+                        if stat.S_ISDIR(os.fstat(handle.fileno()).st_mode):
+                            continue
+                        return None
                     for line in handle.read(self.ENV_MAX).decode("utf-8", errors="replace").splitlines():
                         if (match := self.ENV_LINE.match(line)) is not None:
-                            value = match["value"].strip("'\"")
+                            value = next(group for group in (match["double"], match["single"], match["bare"]) if group is not None)
                             if len(value) >= 8:
                                 values.add(value)
         return tuple(sorted(values, key=len, reverse=True))

@@ -88,7 +88,7 @@ def test_credential_stores_and_links_are_never_read(project: Path, tmp_path: Pat
     ("notes.txt", "text", lambda content: SHAPED not in content.text and KNOWN not in content.text and content.git == "untracked"),
     ("logo.png", "image", lambda content: content.content_type == "image/png" and base64.b64decode(content.data) == PNG),
     ("blob.bin", "binary", lambda content: content.text is None and content.size == 200),
-    ("big.log", "text", lambda content: content.truncated and len(content.text) == PROJECT_TEXT_MAX),
+    ("big.log", "text", lambda content: content.truncated and PROJECT_TEXT_MAX - 1024 <= len(content.text) < PROJECT_TEXT_MAX),
 ])
 def test_a_file_comes_as_text_image_or_facts(project: Path, tmp_path: Path, path: str, kind: str, check) -> None:
     content = _ask(_agents(project, tmp_path), "file", path=path).content
@@ -148,3 +148,25 @@ def test_a_folder_its_owner_set_hidden_is_left_out_and_never_opened(project: Pat
     with pytest.raises(PermissionError):
         _ask(agents, "file", path="src/deep/main.py")
     assert "src/deep/main.py" not in _ask(agents, "find", query="main").found
+
+
+@pytest.mark.parametrize("lines", [True, False], ids=["lines", "one-line"])
+def test_a_secret_split_by_the_cut_never_leaves_even_when_masks_shrink_the_text(project: Path, tmp_path: Path, lines: bool) -> None:
+    # code-reviewer 0284cc66 row 1: a log full of the vault value shrinks once masked; the split copy at the cut must not show.
+    value = "Zq9x" + "vault" + "Secret77"
+    (project / ".env").write_text(f'DB_PASSWORD="{value}" # the vault\n')
+    unit = f"{value}\n" if lines else f"{value} "
+    body = unit * (PROJECT_TEXT_MAX // len(unit))
+    (project / "full.log").write_text(body + value + "tail" * 100)
+    text = _ask(_agents(project, tmp_path), "file", path="full.log").content.text
+    assert value[:6] not in text and "•••" in text
+
+
+def test_a_linked_env_file_still_masks_its_values(project: Path, tmp_path: Path) -> None:
+    # code-reviewer 0284cc66 row 2: a `.env` that is a link is never shown, but its values are masked everywhere.
+    (tmp_path / "vault.env").write_text("pw=" + "Zq9x" + "LinkedValue\n")
+    (project / ".env").unlink()
+    (project / ".env").symlink_to(tmp_path / "vault.env")
+    (project / "uses.txt").write_text("connect with Zq9xLinkedValue now\n")
+    text = _ask(_agents(project, tmp_path), "file", path="uses.txt").content.text
+    assert "Zq9xLinkedValue" not in text
