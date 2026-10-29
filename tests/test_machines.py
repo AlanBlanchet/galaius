@@ -545,7 +545,8 @@ _HF_ORIGIN = UserModelOrigin(kind="huggingface_repo", repo_id="hustvl/yolos-tiny
 
 def test_his_pc_transcribes_a_recording_with_the_warm_speech_worker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The blob's free voice: the recording (already downloaded to a local path by `CommandFiles`)
-    goes to the warm `speech_infer.py` worker, told the two languages he speaks; its answer is the step's."""
+    goes to the warm `speech_infer.py` worker, told the two languages he speaks and the names he may say
+    (the step's `vocabulary`, Whisper's hotwords); its answer is the step's."""
     config = _config(tmp_path, "full_access")
     audio = tmp_path / "said.webm"
     audio.write_bytes(b"\x1aE")
@@ -553,7 +554,7 @@ def test_his_pc_transcribes_a_recording_with_the_warm_speech_worker(tmp_path: Pa
         id=uuid4(), nonce=uuid4(), machine=MachineRef(id=config.machine_id), workspace_id=uuid4(), run_id=uuid4(),
         workflow=WorkflowRevisionRef(key=WorkflowKey(id=uuid4()), revision=uuid4()), node_id=uuid4(),
         impl=ModelImplementation(kind="model", provider="huggingface", model="mobiuslabsgmbh/faster-whisper-large-v3-turbo", task="automatic-speech-recognition"),
-        inputs={"audio": str(audio)}, expires_at=datetime.now(UTC), signature="a" * 64,
+        inputs={"audio": str(audio)}, config={"vocabulary": "Galaius, my-project, Bureau"}, expires_at=datetime.now(UTC), signature="a" * 64,
     )
     asked = {}
 
@@ -567,7 +568,7 @@ def test_his_pc_transcribes_a_recording_with_the_warm_speech_worker(tmp_path: Pa
     monkeypatch.setattr(runner, "_worker", lambda script, cfg: Worker() if script == "speech_infer.py" else None)
 
     assert runner._run_model(command, config) == {"text": "Montre-moi mes PC.", "language": "fr", "seconds": 1.9}
-    assert (asked["audio_path"], asked["languages"], asked["model"]) == (str(audio), ["fr", "en"], "mobiuslabsgmbh/faster-whisper-large-v3-turbo")
+    assert (asked["audio_path"], asked["languages"], asked["model"], asked["hotwords"]) == (str(audio), ["fr", "en"], "mobiuslabsgmbh/faster-whisper-large-v3-turbo", "Galaius, my-project, Bureau")
 
 
 def test_run_user_model_refuses_a_task_this_machine_has_no_loader_for(tmp_path: Path) -> None:

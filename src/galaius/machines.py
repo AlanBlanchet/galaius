@@ -1817,7 +1817,7 @@ class MachineRunner:
         python = ensure_speech_env(cache_root, report=report)
         request_path = run_dir / "request.json"
         request_path.write_text(json.dumps({"model": command.impl.model, "audio_path": str(command.inputs["audio"]), "cache_root": str(cache_root),
-                                            "languages": list(self.SPOKEN_LANGUAGES)}), encoding="utf-8")
+                                            "languages": list(self.SPOKEN_LANGUAGES), "hotwords": str(command.config.get("vocabulary") or "")}), encoding="utf-8")
         output = self._worker("speech_infer.py", config).run(python, request_path, report)
         logger.info("%s heard %s s of %s", command.impl.model, output.get("seconds"), output.get("language"))
         return output

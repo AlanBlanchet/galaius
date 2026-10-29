@@ -8,7 +8,10 @@ included). The server warms it up when the owner allows voice on this machine: a
 second of silence, which installs, fetches and loads whatever is missing.
 
 Request: `{"model": <MACHINE_MODELS id>, "audio_path": <local file>, "cache_root": <dir>,
-"languages": ["fr", "en"]}`. Result: `{"text": str, "language": str, "seconds": float}`.
+"languages": ["fr", "en"], "hotwords": "Galaius, ..."}`. Result: `{"text": str, "language": str, "seconds": float}`.
+`hotwords`: the names the owner may say (the server's vocabulary, comma-separated), given to Whisper as
+faster-whisper `hotwords` (a <|startofprev|> prompt on every window, capped at 223 tokens by faster-whisper)
+so they come out spelled as written; empty: none.
 
 No dependency on `galaius` or `galaius_core`: this script runs in that venv only.
 """
@@ -59,7 +62,8 @@ def infer(request: dict, loaded: dict, emit: Emit) -> dict:
     languages = tuple(request.get("languages") or ("fr", "en"))
     _language, _probability, probabilities = model.detect_language(audio)
     language = spoken_language(probabilities, languages)
-    segments, _info = model.transcribe(audio, language=language, beam_size=1, condition_on_previous_text=False)
+    hotwords = str(request.get("hotwords") or "").strip() or None
+    segments, _info = model.transcribe(audio, language=language, beam_size=1, condition_on_previous_text=False, hotwords=hotwords)
     return {"text": " ".join(segment.text.strip() for segment in segments).strip(), "language": language, "seconds": round(len(audio) / 16_000, 3)}
 
 
