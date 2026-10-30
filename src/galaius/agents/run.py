@@ -1457,8 +1457,8 @@ async def run_agent(
     nobody passing the id by hand.
 
     ``subscription`` pins the run to one subscription signed in here (`RunSubscription`): its CLI
-    alone, its login folder alone, its caps checked before the start; a child's is its parent run's,
-    whatever is asked (`RunSubscription.resolve`). None: this PC's default login.
+    alone, its login folder alone, its caps checked before the start; a child asking none runs on its
+    parent run's (`RunSubscription.resolve`). None: this PC's default login.
 
     ``choices`` (a web start's, never a child's) names one subscription per provider: the walk runs each
     candidate on its provider's, its caps checked first (a capped one is passed over, saying so), a

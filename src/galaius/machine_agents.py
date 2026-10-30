@@ -1109,7 +1109,8 @@ class MachineAgents(BaseModel):
             raise SubscriptionRefused("default_login_only", "an editor conversation runs on the login its editor runs: only an agent started here moves")
         moved = await asyncio.to_thread(self._carry, run, request)
         there = f"subscription {request.subscription_id}" if request.subscription_id is not None else "this PC's own login"
-        if not request.resume:
+        # A run at work is not resumed: it goes on, its next turn there.
+        if not request.resume or moved.status in {"running", "waiting"}:
             said = "its next turn runs there" if moved.pending_move is None else "its next turn runs there, once the one at work ended"
             return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=f"moved to {there}; {said}", subscription_id=request.subscription_id)
         # Moved from here on, whatever the resume does: the answer names the new pin so the server records it too.
@@ -1124,19 +1125,15 @@ class MachineAgents(BaseModel):
 
     @staticmethod
     def _carry(run: reg.AgentRun, request: AgentMoveRequest) -> reg.AgentRun:
-        """The move made on stopped `run`, from and to a subscription or this PC's own login alike. One that waits (not
-        `resume`): asked for the login the run is on, the move held for it dropped; on a run at work, checked now
-        (`registry.movable`) and held for that turn's end (`registry.hold_move`). Never signs any login out."""
+        """The move made on stopped `run`, from and to a subscription or this PC's own login alike; on a run at work, checked
+        now (`registry.movable`) and held for that turn's end (`registry.hold_move`). Asked for the login the run is on:
+        the move held for it dropped, nothing carried. Never signs any login out."""
         pinned = RunSubscription(subscription_id=request.subscription_id, limits=request.limits) if request.subscription_id is not None else None
         reg.movable(run, pinned if run.status in {"running", "waiting"} else None)
         if request.subscription_id == run.subscription_id:
-            if request.resume:
-                raise PermissionError("this run is on that login already: continue it there")
             return reg.hold_move(run.run_id, None) or run
         if run.status not in {"running", "waiting"}:
             return reg.carry(run, pinned)
-        if request.resume:
-            raise PermissionError("a run moves to another login and resumes there only once it stopped; asked without resuming, it moves at its turn's end")
         return reg.hold_move(run.run_id, pinned if pinned is not None else reg.OWN_LOGIN) or run
 
     async def _allow(self, request: AgentAllowanceRequest) -> MachineAgentAnswer:

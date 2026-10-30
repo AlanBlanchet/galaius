@@ -194,15 +194,16 @@ async def test_each_candidate_runs_on_its_own_providers_subscription_and_the_run
 
 
 @pytest.mark.parametrize(("parent", "asked", "named", "pinned"), [
-    ("x", None, "x", "x"),          # a child inherits its parent's
-    ("x", "y", "x", None),          # a child asking another is refused
+    ("x", None, "x", "x"),          # a child asking none inherits its parent's
+    ("x", "y", "x", "y"),           # a child asking another runs there (owner 2026-10-30 « stop making hard rules like that »)
+    ("lent", "y", None, None),      # a child of a member's run on a lent PC runs on none of its logins
     ("x", None, "y", None),         # an environment naming another folder is refused
     (None, None, "x", None),        # a default-login parent's child naming a subscription folder is refused
     (None, "x", None, "x"),         # a start from the web on its subscription
 ])
-def test_a_child_runs_on_its_parents_subscription_and_never_another(parent, asked, named, pinned) -> None:
+def test_a_child_runs_on_its_parents_subscription_unless_it_asks_another(parent, asked, named, pinned) -> None:
     folders = {name: Subscription.create(uuid4(), "claude") for name in ("x", "y")}
-    run = {name: RunSubscription(subscription_id=folders[name].id, limits=SubscriptionLimits()) for name in folders}
+    run = {name: RunSubscription(subscription_id=folders[name].id, limits=SubscriptionLimits()) for name in folders} | {"lent": RunSubscription(lent=True)}
     environment = {"CLAUDE_CONFIG_DIR": str(folders[named].folder)} if named else {}
     resolve = lambda: RunSubscription.resolve(run.get(asked), parent=run.get(parent), child=parent is not None or asked is None and named is not None,
                                               environment=environment)
@@ -402,14 +403,15 @@ def test_continuing_on_another_subscription_carries_the_session_never_a_credenti
     assert quota.blocked_until(unpinned.provider, unpinned.model) is None
 
 
-@pytest.mark.parametrize("status", ["done", "running"])
+@pytest.mark.parametrize(("status", "resume"), [("done", False), ("running", False), ("running", True)], ids=["done", "running", "running, « Continuer sur »"])
 @pytest.mark.parametrize(("source", "target"), [("login", "a"), ("a", "login"), ("a", "b")])
-def test_a_running_conversation_switches_account_from_and_to_the_pc_login(source: str, target: str, status: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_running_conversation_switches_account_from_and_to_the_pc_login(source: str, target: str, status: str, resume: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Owner 2026-10-30 « stop making hard rules like that »: his pick of another account in a conversation
     (`RunMove.resume` False) moves it from the PC's own login to a subscription, back, or between two: the session carried
     (never a credential, no login signed out), the run pinned there, no resume turn spent; on a run at work, held until
     that turn ended, then made before the next one, the turn's answer naming the account it runs on; picked back before
-    then, nothing moves."""
+    then, nothing moves. Asked to resume there while at work, the same: it goes on, no refusal; asked for the login it is
+    on, nothing to do, no refusal either."""
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     subscriptions = {"a": Subscription.create(uuid4(), "claude"), "b": Subscription.create(uuid4(), "claude")}
     folder = lambda name: subscriptions[name].folder if name != "login" else tmp_path / ".claude"  # noqa: E731
@@ -429,7 +431,7 @@ def test_a_running_conversation_switches_account_from_and_to_the_pc_login(source
     def move(to: str) -> None:
         to_id = login_id(to)
         request = AgentMoveRequest(id=uuid4(), machine=MachineRef(id=uuid4()), workspace_id=uuid4(), initiator_account=uuid4(), expires_at=datetime.now(UTC), signature="0" * 64,
-                                   run_id=UUID(run_id), subscription_id=to_id, limits=SubscriptionLimits() if to_id is not None else None, resume=False)
+                                   run_id=UUID(run_id), subscription_id=to_id, limits=SubscriptionLimits() if to_id is not None else None, resume=resume)
         assert (answer := asyncio.run(MachineAgents._move(agents, request))).subscription_id == to_id and answer.reads_at is None
 
     move(target)

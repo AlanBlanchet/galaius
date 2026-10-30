@@ -365,15 +365,17 @@ class RunSubscription(WireRunSubscription):
 
     @classmethod
     def resolve(cls, asked: Self | None, *, parent: Self | None, child: bool, environment: Mapping[str, str]) -> Self | None:
-        """What a new run is pinned to: a child's is its parent run's (from the run records and the
-        process tree, never from what its environment names), anything else what was asked. A child
-        asking another, or an environment naming a folder of another subscription, is refused."""
-        pinned = parent if child else asked
-        if child and asked is not None and (asked.subscription_id, asked.lent) != ((parent.subscription_id, parent.lent) if parent is not None else (None, False)):
-            raise SubscriptionRefused("pinned_elsewhere", "a child runs on its parent run's subscription, never another")
+        """What a new run is pinned to: what was asked; a child asking none its parent run's (from the run records and
+        the process tree, never from what its environment names). A child of a lent run asking any login, or an
+        environment naming a folder of another subscription, is refused."""
+        if child and parent is not None and parent.lent and asked is not None and (asked.subscription_id, asked.lent) != (parent.subscription_id, parent.lent):
+            raise SubscriptionRefused("lent", "a child of a member's run on a lent PC runs on none of its CLI logins, as its parent")
+        pinned = asked if asked is not None or not child else parent
         if child and pinned is not None:
             pinned = pinned.model_copy(update={"capped": None})
-        expected = frozenset() if pinned is None else frozenset(Path(folder).resolve() for folder in pinned.overlay().values())
+        # A child's environment is its parent's: the folder it names is the parent's login, replaced by `bound`.
+        named = (pinned, parent if child else None)
+        expected = frozenset(Path(folder).resolve() for one in named if one is not None for folder in one.overlay().values())
         if not Subscription.named_in(environment) <= expected:
             raise SubscriptionRefused("pinned_elsewhere", "this run's environment names another subscription's folder; a run uses only the subscription it is pinned to")
         return pinned
