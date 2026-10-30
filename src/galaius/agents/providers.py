@@ -2212,14 +2212,15 @@ class CodexProvider(AgentProvider):
     IDENTITY_KEYS = ("type", "email")
 
     def account_answer(self, line: dict) -> tuple[str, str] | None:
-        """Its answer to request 2; an error (a CLI without `account/read`) or no account names none."""
+        """Its answer to request 2; an error (a CLI without `account/read`), no account, or one naming no e-mail (an API
+        key, which only the status line tells apart) names none."""
         if line.get("id") != 2:
             return None
         result = line.get("result")
         account = result.get("account") if isinstance(result, dict) else None
-        if not isinstance(account, dict):
+        if not isinstance(account, dict) or not account.get("email"):
             return "", ""
-        return str(account.get("email") or ""), self.identity_of(account)
+        return str(account["email"]), self.identity_of(account)
 
     @staticmethod
     def initialize_params() -> dict:

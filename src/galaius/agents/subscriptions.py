@@ -267,7 +267,8 @@ class Subscription(BaseModel):
     def identify(self, identity: LoginIdentity) -> None:
         """Its CLI named the login its folder holds now (`AgentProvider.login_status`)."""
         with self.WRITING:
-            self._write(self.state().model_copy(update={"identity": identity}))
+            if (state := self.state()).identity != identity:
+                self._write(state.model_copy(update={"identity": identity}))
 
     def report_due(self, now: datetime) -> SubscriptionUsage | None:
         """Its usage and login when the server should hear them now: its usage moved (`SubscriptionUsageReport.due`), or

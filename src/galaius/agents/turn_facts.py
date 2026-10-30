@@ -75,7 +75,7 @@ def this_pc() -> str:
 
 def login(name: str) -> str:
     """Program `name`'s default login here, as its CLI says now."""
-    status = asyncio.run(PROVIDERS[name].login_status(dict(os.environ)))
+    status = asyncio.run(PROVIDERS[name].login_status(dict(os.environ), named=False))
     return "signed in" if status.signed_in else "signed out" if status.signed_in is False else "status unknown"
 
 

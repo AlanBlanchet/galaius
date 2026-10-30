@@ -112,6 +112,7 @@ def test_codex_login_is_its_chatgpt_account(other: dict, same: bool):
     assert first[0] == "owner@example.com"
     assert (first[1] == provider.account_answer(other)[1]) is same
     assert provider.account_answer({"id": 2, "error": {"code": -32601, "message": "method not found"}}) == ("", "")  # older CLI: its status names it
+    assert provider.account_answer({"id": 2, "result": {"account": {"type": "apiKey"}}}) == ("", "")  # API keys: its status line tells them apart
     assert provider.account_answer({"id": 1, "result": {}}) is None
 
 
