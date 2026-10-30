@@ -1,6 +1,6 @@
 {
  "about": "Golden cases of the speech vocabulary rule (galaius.speech_infer), read by this repo's tests and by any other implementation of the same rule, so the copies cannot drift.",
- "names": ["Galaius", "my-project", "Arrête", "Blob", "galaius-core", "librarian"],
+ "names": ["Galaius", "my-project", "Arrête", "Blob", "galaius-core", "librarian", "Deployer"],
  "fold": [
   ["Galéaüs,", "galeaus"],
   ["my-project", "myproject"],
@@ -39,7 +39,9 @@
   ["galaius, ouvre", "galaius, ouvre"],
   ["Galaius core", "Galaius core"],
   ["open my project", "open my project"],
-  ["Galai, us", "Galai, us"]
+  ["Galai, us", "Galai, us"],
+  ["Il faut déployer la version.", "Il faut déployer la version."],
+  ["Demande à Déployer, vite.", "Demande à Deployer, vite."]
  ],
  "misheard_known": [
   ["Ask the librarians", ["librarian"], []],

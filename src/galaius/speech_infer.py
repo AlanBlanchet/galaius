@@ -138,10 +138,16 @@ def heard_as(words: Sequence[str], places: Sequence[Place], scores: Sequence[flo
     return " ".join(out)
 
 
+def _marks(word: str) -> int:
+    """The accents `word` carries: « déployer » -> 1, « Galaïus » -> 1, « deployer » -> 0."""
+    return sum(unicodedata.category(c) == "Mn" for c in unicodedata.normalize("NFKD", word))
+
+
 def spelled(text: str, names: Sequence[str]) -> str:
     """`text` with each one-word name of `names` written as given where it reads the same but for accents or hyphens
     (« Galaïus, » -> « Galaius, »), or, for a name of letters only, comes out split (« Galai us » -> « Galaius »); case
-    alone is kept (« bureau » stays a word, not his PC « Bureau »)."""
+    alone is kept (« bureau » stays a word, not his PC « Bureau »). Accents the model wrote are dropped only on a word
+    it capitalised, as it writes a name: a lowercase « déployer » is the French verb, never his agent « Deployer »."""
     written = {fold(name): name for name in names if " " not in name}
     joined = {folded: name for folded, name in written.items() if name.isalpha()}
     tokens = [_parts(token) for token in text.split()]
@@ -153,7 +159,7 @@ def spelled(text: str, names: Sequence[str]) -> str:
                 continue
             core = "".join(core for _head, core, _tail in group)
             name = (joined if n > 1 else written).get(fold(core))
-            if core and name and (n > 1 or core.casefold() != name.casefold()):
+            if core and name and (n > 1 or core.casefold() != name.casefold() and (core[0].isupper() or _marks(core) <= _marks(name))):
                 words.append(group[0][0] + name + group[-1][2])
                 at += n
                 break
