@@ -9,17 +9,23 @@ second of silence, which installs, fetches and loads whatever is missing.
 
 Request: `{"model": <MACHINE_MODELS id>, "audio_path": <local file>, "cache_root": <dir>,
 "languages": ["fr", "en"], "hotwords": "Galaius, ..."}`. Result: `{"text": str, "language": str, "seconds": float}`.
-`hotwords`: the names the owner may say (the server's vocabulary, comma-separated), given to Whisper as
-faster-whisper `hotwords` (a <|startofprev|> prompt on every window, capped at 223 tokens by faster-whisper)
-so they come out spelled as written; empty: none.
+`hotwords`: the names the owner may say (the server's vocabulary, comma-separated). The audio is first
+transcribed with no hint; only where a word comes out a few letters off one of those names (`misheard`)
+is it transcribed again told that name (faster-whisper `hotwords`), and only that place is taken from the
+second transcript, when it does write the name there (`corrected`). A hint on every request turned
+« Goliath », « Galilée », « galets » into the name and made his other words worse; a real word Whisper
+writes without hint stays as he said it. Empty: no hint ever.
 
 No dependency on `galaius` or `galaius_core`: this script runs in that venv only.
 """
 
 import ctypes
+import difflib
 import json
+import re
 import sys
 import traceback
+import unicodedata
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -32,6 +38,67 @@ def spoken_language(probabilities: Sequence[tuple[str, float]], languages: Seque
     Italian is still French."""
     scored = dict(probabilities)
     return max(languages, key=lambda language: (scored.get(language, 0.0), -languages.index(language)))
+
+
+#: A word (or 2-3 run together) this close to a name is the name misheard: up to 3 letters in 7 differ. Measured on
+#: synthetic EN/FR clips: Whisper's spellings of « Galaius » (Galeus, Gallius, Galios, Galeos) are within it, the real
+#: words near it (Goliath, Galilée, Galileo, galleon) are not, or keep their spelling once told the name.
+NEAR_EDITS = 3 / 7
+#: Names shorter than this are only ever taken as written: too many real words lie a letter away from « Blob ».
+NEAR_MIN_LETTERS = 6
+
+
+def _folded(text: str) -> str:
+    """Lowercase letters and digits only, accents dropped: « Galéaüs, » -> « galeaus »."""
+    return re.sub(r"[^a-z0-9]", "", unicodedata.normalize("NFKD", text.lower()).encode("ascii", "ignore").decode())
+
+
+def _edits(a: str, b: str) -> int:
+    row = list(range(len(b) + 1))
+    for i in range(1, len(a) + 1):
+        previous, row[0] = row[:], i
+        for j in range(1, len(b) + 1):
+            row[j] = min(previous[j] + 1, row[j - 1] + 1, previous[j - 1] + (a[i - 1] != b[j - 1]))
+    return row[-1]
+
+
+def misheard(words: Sequence[str], names: Sequence[str]) -> list[tuple[int, int, str]]:
+    """`(start, end, name)` for each place in `words` that reads as `name` misheard: 1 to 3 words whose letters are
+    within `NEAR_EDITS` of it, where it is not already written. Overlapping readings keep the closest."""
+    found = []
+    for name in names:
+        target = _folded(name)
+        if len(target) < NEAR_MIN_LETTERS:
+            continue
+        near = sorted((_edits(_folded("".join(words[start:start + n])), target), n, start)
+                      for start in range(len(words)) for n in (1, 2, 3) if start + n <= len(words))
+        taken: list[tuple[int, int]] = []
+        for distance, n, start in near:
+            if distance > int(NEAR_EDITS * len(target)):
+                break
+            if all(start + n <= s or start >= e for s, e in taken):
+                taken.append((start, start + n))
+                if distance:
+                    found.append((start, start + n, name))
+    return sorted(found)
+
+
+def corrected(plain: str, hinted: str, places: Sequence[tuple[int, int, str]]) -> str:
+    """`plain` with each of `places` replaced by the fewest `hinted` words that write its name there; every other
+    word stays as first heard."""
+    plain_words, hinted_words = plain.split(), hinted.split()
+    matcher = difflib.SequenceMatcher(a=[_folded(w) for w in plain_words], b=[_folded(w) for w in hinted_words], autojunk=False)
+    words: list[str] = []
+    for operation, a0, a1, b0, b1 in matcher.get_opcodes():
+        place = next(((max(a0, start), min(a1, end), _folded(name)) for start, end, name in places
+                      if operation != "equal" and start < a1 and end > a0), None)
+        written = place and min(((j - i, i, j) for i in range(b0, b1) for j in range(i + 1, b1 + 1)
+                                 if place[2] in _folded("".join(hinted_words[i:j]))), default=None)
+        if place and written:
+            words += plain_words[a0:place[0]] + hinted_words[written[1]:written[2]] + plain_words[place[1]:a1]
+        else:
+            words += plain_words[a0:a1]
+    return " ".join(words)
 
 
 def _load_cuda_libraries() -> None:
@@ -62,9 +129,16 @@ def infer(request: dict, loaded: dict, emit: Emit) -> dict:
     languages = tuple(request.get("languages") or ("fr", "en"))
     _language, _probability, probabilities = model.detect_language(audio)
     language = spoken_language(probabilities, languages)
-    hotwords = str(request.get("hotwords") or "").strip() or None
-    segments, _info = model.transcribe(audio, language=language, beam_size=1, condition_on_previous_text=False, hotwords=hotwords)
-    return {"text": " ".join(segment.text.strip() for segment in segments).strip(), "language": language, "seconds": round(len(audio) / 16_000, 3)}
+
+    def transcript(hotwords: str | None) -> str:
+        segments, _info = model.transcribe(audio, language=language, beam_size=1, condition_on_previous_text=False, hotwords=hotwords)
+        return " ".join(segment.text.strip() for segment in segments).strip()
+
+    names = [name.strip() for name in str(request.get("hotwords") or "").split(",") if name.strip()]
+    text = transcript(None)
+    if places := misheard(text.split(), names):
+        text = corrected(text, transcript(", ".join(dict.fromkeys(name for _start, _end, name in places))), places)
+    return {"text": text, "language": language, "seconds": round(len(audio) / 16_000, 3)}
 
 
 def _say(message: dict) -> None:
