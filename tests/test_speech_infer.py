@@ -4,7 +4,7 @@ French, and a language Whisper half-hears outside that pair never wins."""
 
 import pytest
 
-from galaius.speech_infer import corrected, misheard, spoken_language
+from galaius.speech_infer import corrected, misheard, spelled, spoken_language
 
 
 @pytest.mark.parametrize(("probabilities", "expected"), [
@@ -51,3 +51,19 @@ def test_only_a_misheard_name_asks_for_a_second_pass(heard, expected):
 ])
 def test_only_the_misheard_place_is_corrected(plain, hinted, expected):
     assert corrected(plain, hinted, misheard(plain.split(), NAMES)) == expected
+
+
+@pytest.mark.parametrize(("heard", "expected"), [
+    ("Demande à Galaïus, vite.", "Demande à Galaius, vite."),
+    ("ouvre myproject", "ouvre my-project"),
+    ("arrete", "Arrête"),
+    ("Tell Galai us that", "Tell Galaius that"),
+    ("Dis à Gal ai us, vite", "Dis à Galaius, vite"),
+    # A name written with a hyphen reads naturally split: kept. Case alone is how the sentence writes it: kept.
+    ("galaius, ouvre", "galaius, ouvre"),
+    ("Galaius core", "Galaius core"),
+    ("open my project", "open my project"),
+    ("Galai, us", "Galai, us"),
+])
+def test_a_name_with_other_accents_is_spelled_as_given(heard, expected):
+    assert spelled(heard, NAMES) == expected

@@ -11,8 +11,10 @@ Request: `{"model": <MACHINE_MODELS id>, "audio_path": <local file>, "cache_root
 "languages": ["fr", "en"], "hotwords": "Galaius, ..."}`. Result: `{"text": str, "language": str, "seconds": float}`.
 `hotwords`: the names the owner may say (the server's vocabulary, comma-separated). The audio is first
 transcribed with no hint; only where a word comes out a few letters off one of those names (`misheard`)
-is it transcribed again told that name (faster-whisper `hotwords`), and only that place is taken from the
-second transcript, when it does write the name there (`corrected`). A hint on every request turned
+is it transcribed again told the names (faster-whisper `hotwords`: told the one name alone, Whisper base and small
+wrote « Galius », « Galios » where the whole list got « Galaius »), and only that place is taken from the second
+transcript, when it does write the name there (`corrected`); a name written with other accents, or split, is
+spelled as given (`spelled`). A hint on every request turned
 « Goliath », « Galilée », « galets » into the name and made his other words worse; a real word Whisper
 writes without hint stays as he said it. Empty: no hint ever.
 
@@ -101,6 +103,31 @@ def corrected(plain: str, hinted: str, places: Sequence[tuple[int, int, str]]) -
     return " ".join(words)
 
 
+def spelled(text: str, names: Sequence[str]) -> str:
+    """`text` with each one-word name of `names` written as given where it reads the same but for accents or hyphens
+    (« Galaïus, » -> « Galaius, »), or, for a name of letters only, comes out split (« Galai us » -> « Galaius »); case
+    alone is kept (« bureau » stays a word, not his PC « Bureau »)."""
+    written = {_folded(name): name for name in names if " " not in name}
+    joined = {folded: name for folded, name in written.items() if re.fullmatch(r"[^\W\d_]+", name)}
+    tokens = [re.fullmatch(r"(\W*)(.*?)(\W*)", token).groups() for token in text.split()]
+    words, at = [], 0
+    while at < len(tokens):
+        for n in (3, 2, 1):
+            group = tokens[at:at + n]
+            if len(group) < n or any(tail for _head, _core, tail in group[:-1]) or any(head for head, _core, _tail in group[1:]):
+                continue
+            core = "".join(core for _head, core, _tail in group)
+            name = (joined if n > 1 else written).get(_folded(core))
+            if name and (n > 1 or core.casefold() != name.casefold()):
+                words.append(group[0][0] + name + group[-1][2])
+                at += n
+                break
+        else:
+            words.append("".join(tokens[at]))
+            at += 1
+    return " ".join(words)
+
+
 def _load_cuda_libraries() -> None:
     """CTranslate2 opens cuBLAS 12 and cuDNN 9 by name; in this venv they are the `nvidia-*` wheels
     torch installed, which no loader path names. Loaded here once, globally, before it imports."""
@@ -137,8 +164,8 @@ def infer(request: dict, loaded: dict, emit: Emit) -> dict:
     names = [name.strip() for name in str(request.get("hotwords") or "").split(",") if name.strip()]
     text = transcript(None)
     if places := misheard(text.split(), names):
-        text = corrected(text, transcript(", ".join(dict.fromkeys(name for _start, _end, name in places))), places)
-    return {"text": text, "language": language, "seconds": round(len(audio) / 16_000, 3)}
+        text = corrected(text, transcript(", ".join(names)), places)
+    return {"text": spelled(text, names), "language": language, "seconds": round(len(audio) / 16_000, 3)}
 
 
 def _say(message: dict) -> None:
