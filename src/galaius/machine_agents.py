@@ -1068,9 +1068,8 @@ class MachineAgents(BaseModel):
             raise
         # The account that turn runs on (a move held for it included): the server's pin follows it.
         current = await asyncio.to_thread(reg.get_run, run.run_id) or run
-        runs_on = current.pending_move or current.subscription
         return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=delivery.text, reads_at=delivery.reads_at,
-                                  subscription_id=runs_on.subscription_id if runs_on is not None else None)
+                                  subscription_id=current.next_subscription_id)
 
     async def _compact(self, request: AgentCompactRequest) -> MachineAgentAnswer:
         """Refused by `compact_refusal`, the rule its row says; a session compacts through its host, a queued run as a
@@ -1089,59 +1088,56 @@ class MachineAgents(BaseModel):
         return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail="compacting", reads_at=delivery.reads_at)
 
     def _pinned_run(self, request: AgentSendRequest) -> reg.AgentRun:
-        """The run a message goes to, on the subscription it is pinned to: a message naming another
-        is refused; one naming its own brings that subscription's caps as the server has them now."""
+        """The run a message goes to, on the login it is pinned to (a move held for it included): one naming its own
+        subscription brings its caps as the server has them now; one naming another login runs where the run is, its
+        answer naming that login (`AgentRun.next_subscription_id`) so the server's pin follows this PC. A member's message
+        on a lent PC to a run of the owner's logins is refused."""
         run = self._require_run(request.run_id)
         if request.lent and (run.subscription is None or not run.subscription.lent):
             raise SubscriptionRefused("lent", LENT_REFUSAL)
-        if run.subscription is None:
-            if request.subscription_id is not None:
-                raise SubscriptionRefused("pinned_elsewhere", "this run runs on this PC's own login: its turns never move to a subscription")
-            return run
-        run.subscription.pins(request.subscription_id)
-        if request.limits is not None and request.limits != run.subscription.limits:
+        if run.subscription is not None and request.subscription_id == run.subscription_id and request.limits is not None and request.limits != run.subscription.limits:
             run = reg.merge_subscription(run.run_id, limits=request.limits) or run
         return run
 
     async def _move(self, request: AgentMoveRequest) -> MachineAgentAnswer:
-        """`RunMove`: the run pinned to the other subscription from now on (contract A9), its session carried there
-        (`registry.carry`) and resumed, unless the request does not `resume`: his pick in a conversation, the switch
-        before a turn, made at once on a stopped run, at the end of the turn at work on one working (`_carry`)."""
+        """`RunMove`: the run pinned to another login from now on (contract A9), a subscription or this PC's own
+        (`subscription_id` None), its session carried there (`registry.carry`) and resumed, unless the request does not
+        `resume`: his pick in a conversation, the switch before a turn, made at once on a stopped run, at the end of the
+        turn at work on one working (`_carry`). An editor's own conversation runs on the login its editor runs: refused typed."""
         run = await asyncio.to_thread(self._require_run, request.run_id)
+        if self._kind(request.run_id) != "agent":
+            raise SubscriptionRefused("default_login_only", "an editor conversation runs on the login its editor runs: only an agent started here moves")
         moved = await asyncio.to_thread(self._carry, run, request)
+        there = f"subscription {request.subscription_id}" if request.subscription_id is not None else "this PC's own login"
         if not request.resume:
             said = "its next turn runs there" if moved.pending_move is None else "its next turn runs there, once the one at work ended"
-            return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=f"moved to subscription {request.subscription_id}; {said}",
-                                      subscription_id=request.subscription_id)
+            return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=f"moved to {there}; {said}", subscription_id=request.subscription_id)
         # Moved from here on, whatever the resume does: the answer names the new pin so the server records it too.
         try:
             environment = await asyncio.to_thread(self.launcher_environment_in, Path(moved.cwd))
             delivery = await asyncio.to_thread(deliver_message, moved.run_id, reg.RESUME_BRIEF, sender=reg.PERSON_SENDER, environment=environment, message_id=str(request.id))
-            detail, reads_at = (f"moved to subscription {request.subscription_id}; not resumed: {delivery.text.removeprefix('ERROR: ')}", None) if delivery.state == "error" \
-                else (f"continued on subscription {request.subscription_id}", delivery.reads_at)
+            detail, reads_at = (f"moved to {there}; not resumed: {delivery.text.removeprefix('ERROR: ')}", None) if delivery.state == "error" \
+                else (f"continued on {there}", delivery.reads_at)
         except Exception as error:  # the move stands; its resume's failure is said, « Continuer » there resumes it
-            detail, reads_at = f"moved to subscription {request.subscription_id}; not resumed: {error}"[:400], None
+            detail, reads_at = f"moved to {there}; not resumed: {error}"[:400], None
         return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=detail[:400], reads_at=reads_at, subscription_id=request.subscription_id)
 
     @staticmethod
     def _carry(run: reg.AgentRun, request: AgentMoveRequest) -> reg.AgentRun:
-        """The move made on stopped `run`. One that waits (not `resume`): asked for the subscription the run is on, the
-        move held for it dropped; on a run at work, checked now and held for that turn's end (`registry.hold_move`)."""
-        pinned = RunSubscription(subscription_id=request.subscription_id, limits=request.limits)
-        if run.subscription is None or run.subscription.subscription_id is None:
-            raise SubscriptionRefused("pinned_elsewhere", "this run runs on this PC's own login (or lent): it never moves to a subscription")
-        if request.subscription_id == run.subscription.subscription_id:
+        """The move made on stopped `run`, from and to a subscription or this PC's own login alike. One that waits (not
+        `resume`): asked for the login the run is on, the move held for it dropped; on a run at work, checked now
+        (`registry.movable`) and held for that turn's end (`registry.hold_move`). Never signs any login out."""
+        pinned = RunSubscription(subscription_id=request.subscription_id, limits=request.limits) if request.subscription_id is not None else None
+        reg.movable(run, pinned if run.status in {"running", "waiting"} else None)
+        if request.subscription_id == run.subscription_id:
             if request.resume:
-                raise PermissionError("this run is on that subscription already: continue it there")
+                raise PermissionError("this run is on that login already: continue it there")
             return reg.hold_move(run.run_id, None) or run
         if run.status not in {"running", "waiting"}:
             return reg.carry(run, pinned)
         if request.resume:
-            raise PermissionError("a run moves to another subscription only once it stopped")
-        pinned.check()
-        if (target := Subscription.of(pinned.subscription_id)).provider != (source := Subscription.of(run.subscription.subscription_id)).provider:
-            raise SubscriptionRefused("pinned_elsewhere", f"subscription {target.id} is a {target.provider} login, not {source.provider}: a session never moves between them")
-        return reg.hold_move(run.run_id, pinned) or run
+            raise PermissionError("a run moves to another login and resumes there only once it stopped; asked without resuming, it moves at its turn's end")
+        return reg.hold_move(run.run_id, pinned if pinned is not None else reg.OWN_LOGIN) or run
 
     async def _allow(self, request: AgentAllowanceRequest) -> MachineAgentAnswer:
         """`RunAllowance`: the run may go on its subscription up to `up_to_percent` of the window it is

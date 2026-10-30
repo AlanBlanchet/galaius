@@ -64,6 +64,10 @@ from galaius.server_registry import (
     _alive,  # generic pid liveness (Windows-safe, no signal sent)
 )
 
+#: `AgentRun.pending_move` to this PC's own login of its CLI (no subscription): his pick of the PC login in a conversation.
+OwnLogin = Literal["own_login"]
+OWN_LOGIN: OwnLogin = "own_login"
+
 if TYPE_CHECKING:
     from galaius.agents.agent_queue import QueueItem  # imports this module at run time
 
@@ -438,8 +442,9 @@ class AgentRun(ContextGauge):
     #: None: this PC's default login.
     subscription: RunSubscription | None = None
     #: A move asked while a turn worked (his pick in a conversation, `RunMove.resume` False): made once that turn ended,
-    #: before its next one starts (`carry_held`); None once made, refused or asked back.
-    pending_move: RunSubscription | None = None
+    #: before its next one starts (`carry_held`), to a subscription or to this PC's own login (`OWN_LOGIN`); None once
+    #: made, refused or asked back.
+    pending_move: RunSubscription | OwnLogin | None = None
     #: The vendor login this run's provider authenticated as, as the launch read it (`run.py`'s auth
     #: cache); "" when that CLI tells none apart. Recorded because a model the vendor refuses is a fact
     #: about the LOGIN, and a refusal heard after the launch (`_remember_vendor_refusal`) has nothing
@@ -501,6 +506,17 @@ class AgentRun(ContextGauge):
     @property
     def subscription_id(self) -> UUID | None:
         return None if self.subscription is None else self.subscription.subscription_id
+
+    @property
+    def next_subscription_id(self) -> UUID | None:
+        """The subscription its next turn runs on, a move held for it included; None: this PC's own login (or lent)."""
+        match self.pending_move:
+            case None:
+                return self.subscription_id
+            case RunSubscription() as held:
+                return held.subscription_id
+            case _:
+                return None
 
     @field_validator("unit")
     @classmethod
@@ -1640,43 +1656,59 @@ def merge_subscription(run_id: str, **changes: object) -> AgentRun | None:
         return _merge_record_locked(run_id, {"subscription": merged.model_dump(mode="json")})
 
 
-def repin(run_id: str, subscription: RunSubscription, fence: FenceSpec | None, usage_from: dict[str, int]) -> AgentRun | None:
-    """A stopped run pinned to another of its account's subscriptions from now on (his « Continuer sur … », contract A9),
-    with the fence its next turns build (that login's folder); None unless it is stopped and on a subscription."""
+def repin(run_id: str, subscription: RunSubscription | None, fence: FenceSpec | None, usage_from: dict[str, int]) -> AgentRun | None:
+    """A stopped run pinned to another login from now on (his « Continuer sur … », his pick, contract A9): a subscription,
+    or None this PC's own; with the fence its next turns build (that login's folder). None unless it is stopped and not
+    a member's lent run."""
     with record_lock(run_id):
         stored = _read_record(run_id)
-        if stored is None or stored.subscription is None or stored.subscription.subscription_id is None or stored.status in {"running", "waiting"}:
+        if stored is None or (stored.subscription is not None and stored.subscription.lent) or stored.status in {"running", "waiting"}:
             return None
-        return _merge_record_locked(run_id, {"subscription": subscription.model_dump(mode="json"), "pending_move": None,
+        return _merge_record_locked(run_id, {"subscription": subscription.model_dump(mode="json") if subscription is not None else None, "pending_move": None,
                                              "fence": fence.model_dump(mode="json") if fence is not None else None, "usage_from": usage_from})
 
 
-def carry(run: AgentRun, pinned: RunSubscription) -> AgentRun:
-    """Stopped `run`'s session carried to subscription `pinned`'s folder and the run pinned to it from now on (contract A9);
-    a fenced run's session already sits in its own state folder. Refused: on this PC's own login, at a cap, another
-    provider's login, or started again meanwhile."""
-    if run.subscription is None or run.subscription.subscription_id is None:
-        raise SubscriptionRefused("pinned_elsewhere", "this run runs on this PC's own login (or lent): it never moves to a subscription")
-    pinned.check()
-    source, target = Subscription.of(run.subscription.subscription_id), Subscription.of(pinned.subscription_id)
-    if target.provider != source.provider:
-        raise SubscriptionRefused("pinned_elsewhere", f"subscription {target.id} is a {target.provider} login, not {source.provider}: a session never moves between them")
-    session = run.provider_session_id or run.run_id
-    if run.fence is None:
-        source.carry_session(target, Path(run.cwd), session)
-    fence = run.fence.rehomed(pinned.homes()) if run.fence is not None else None
+def login_folder(program: AgentProvider, pinned: RunSubscription | None) -> Path:
+    """The folder `program`'s CLI logs in from for a run on `pinned`: its subscription's, None this PC's own login's."""
+    return Subscription.of(pinned.subscription_id).folder if pinned is not None and pinned.subscription_id is not None else Subscription.default_home(program, os.environ)
+
+
+def movable(run: AgentRun, pinned: RunSubscription | None) -> AgentProvider:
+    """Run `run`'s CLI, refused typed when it cannot move to `pinned` (None: this PC's own login): a member's lent run (on
+    none of this PC's logins), a CLI no login runs, a subscription at its cap or of another CLI."""
+    if run.subscription is not None and run.subscription.lent:
+        raise SubscriptionRefused("lent", "a member's run on a lent PC runs on none of its CLI logins: it never moves to one")
+    if (program := PROVIDERS.get(run.provider)) is None or not program.auth_home_env:
+        raise SubscriptionRefused("pinned_elsewhere", f"a {run.provider} run runs on no CLI login: it has none to move to")
+    if pinned is not None:
+        pinned.check()
+        if (target := Subscription.of(pinned.subscription_id)).provider != run.provider:
+            raise SubscriptionRefused("pinned_elsewhere", f"subscription {target.id} is a {target.provider} login, not {run.provider}: a session never moves between them")
+    return program
+
+
+def carry(run: AgentRun, pinned: RunSubscription | None) -> AgentRun:
+    """Stopped `run`'s session carried to the login `pinned` names (None: this PC's own) and the run pinned there from now
+    on (contract A9), from a subscription's folder or this PC's own login alike; a fenced run's session already sits in its
+    own state folder. Refused as `movable` says, or when it started again meanwhile."""
+    program = movable(run, pinned)
+    session, source, target = run.provider_session_id or run.run_id, login_folder(program, run.subscription), login_folder(program, pinned)
+    if run.fence is None and source != target:
+        Subscription.carry_session(program, source, target, Path(run.cwd), session)
+    # A default-login run's fence binds no login folder of its own (`MachineAgents._prepare_start`).
+    fence = run.fence.rehomed(pinned.homes() if pinned is not None else {}) if run.fence is not None else None
     # Its usage is read on from here only: the readings already in its stream and session record are the old login's.
-    home = run.fence.state / target.provider if run.fence is not None else target.folder
-    files = (raw_events_path(run.run_id), *target.program.session_files(home, Path(run.cwd), session))
+    home = run.fence.state / program.name if run.fence is not None else target
+    files = (raw_events_path(run.run_id), *program.session_files(home, Path(run.cwd), session))
     moved = repin(run.run_id, pinned, fence, {str(path): path.stat().st_size for path in files if path.is_file()})
     if moved is None:
-        raise PermissionError("this run started again meanwhile: it stays on its subscription")
+        raise PermissionError("this run started again meanwhile: it stays on its login")
     return moved
 
 
-def hold_move(run_id: str, pinned: RunSubscription | None) -> AgentRun | None:
-    """The move `carry_held` makes once run `run_id`'s turn ended (None: the one held, dropped)."""
-    return _update_fields(run_id, {"pending_move": pinned.model_dump(mode="json") if pinned is not None else None})
+def hold_move(run_id: str, pinned: RunSubscription | OwnLogin | None) -> AgentRun | None:
+    """The move `carry_held` makes once run `run_id`'s turn ended (`OWN_LOGIN`: to this PC's own login; None: the one held, dropped)."""
+    return _update_fields(run_id, {"pending_move": pinned.model_dump(mode="json") if isinstance(pinned, RunSubscription) else pinned})
 
 
 def carry_held(run_id: str) -> AgentRun | None:
@@ -1687,9 +1719,9 @@ def carry_held(run_id: str) -> AgentRun | None:
         if run is None or run.pending_move is None or run.status in {"running", "waiting"}:
             return run
         try:
-            return carry(run, run.pending_move)
+            return carry(run, run.pending_move if isinstance(run.pending_move, RunSubscription) else None)
         except (SubscriptionRefused, PermissionError, OSError) as error:
-            log.warning("held move of %s to subscription %s refused: %s", run_id[:8], run.pending_move.subscription_id, error)
+            log.warning("held move of %s to %s refused: %s", run_id[:8], run.pending_move, error)
             return hold_move(run_id, None) or run
 
 

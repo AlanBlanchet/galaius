@@ -403,42 +403,66 @@ def test_continuing_on_another_subscription_carries_the_session_never_a_credenti
 
 
 @pytest.mark.parametrize("status", ["done", "running"])
-def test_a_move_that_waits_pins_the_run_and_starts_no_turn(status: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """His pick of another account in a conversation (`RunMove.resume` False): the session is carried and the run pinned
-    there, no resume turn is spent on it; on a run at work, held until that turn ended, then made before the next one
-    (a message he sent meanwhile runs there); picked back before then, nothing moves."""
-    a, b = Subscription.create(uuid4(), "claude"), Subscription.create(uuid4(), "claude")
+@pytest.mark.parametrize(("source", "target"), [("login", "a"), ("a", "login"), ("a", "b")])
+def test_a_running_conversation_switches_account_from_and_to_the_pc_login(source: str, target: str, status: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Owner 2026-10-30 « stop making hard rules like that »: his pick of another account in a conversation
+    (`RunMove.resume` False) moves it from the PC's own login to a subscription, back, or between two: the session carried
+    (never a credential, no login signed out), the run pinned there, no resume turn spent; on a run at work, held until
+    that turn ended, then made before the next one, the turn's answer naming the account it runs on; picked back before
+    then, nothing moves."""
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    subscriptions = {"a": Subscription.create(uuid4(), "claude"), "b": Subscription.create(uuid4(), "claude")}
+    folder = lambda name: subscriptions[name].folder if name != "login" else tmp_path / ".claude"  # noqa: E731
+    login_id = lambda name: subscriptions[name].id if name != "login" else None  # noqa: E731
     run_id, cwd, session = str(uuid4()), tmp_path / "project", str(uuid4())
-    transcript = ClaudeCodeProvider.project_folder(a.folder, cwd) / f"{session}.jsonl"
+    transcript = ClaudeCodeProvider.project_folder(folder(source), cwd) / f"{session}.jsonl"
     transcript.parent.mkdir(parents=True)
     transcript.write_text('{"type":"user","message":"go"}\n', encoding="utf-8")
-    reg.save_run(reg.AgentRun(run_id=run_id, provider="claude", name="r", cwd=str(cwd), started_at=1.0, finished_at=2.0, status=status, provider_session_id=session,
-                              subscription=RunSubscription(subscription_id=a.id, limits=SubscriptionLimits())))
+    for name in ("login", "a", "b"):
+        folder(name).mkdir(parents=True, exist_ok=True)
+        (folder(name) / ".credentials.json").write_text(json.dumps({"token": name}), encoding="utf-8")
+    pinned = RunSubscription(subscription_id=login_id(source), limits=SubscriptionLimits()) if source != "login" else None
+    reg.save_run(reg.AgentRun(run_id=run_id, provider="claude", name="r", cwd=str(cwd), started_at=1.0, finished_at=2.0, status=status, provider_session_id=session, subscription=pinned))
     monkeypatch.setattr(machine_agents, "deliver_message", lambda *args, **kwargs: pytest.fail("a move that waits starts no turn"))
-    agents = SimpleNamespace(_require_run=lambda run: reg.get_run(str(run)), _carry=MachineAgents._carry)
+    agents = SimpleNamespace(_require_run=lambda run: reg.get_run(str(run)), _carry=MachineAgents._carry, _kind=lambda run: "agent")
 
-    def move(to: Subscription) -> None:
-        request = AgentMoveRequest(id=uuid4(), machine=MachineRef(id=uuid4()), workspace_id=uuid4(), initiator_account=uuid4(), expires_at=datetime.now(UTC),
-                                   signature="0" * 64, run_id=UUID(run_id), subscription_id=to.id, limits=SubscriptionLimits(), resume=False)
-        assert (answer := asyncio.run(MachineAgents._move(agents, request))).subscription_id == to.id and answer.reads_at is None
+    def move(to: str) -> None:
+        to_id = login_id(to)
+        request = AgentMoveRequest(id=uuid4(), machine=MachineRef(id=uuid4()), workspace_id=uuid4(), initiator_account=uuid4(), expires_at=datetime.now(UTC), signature="0" * 64,
+                                   run_id=UUID(run_id), subscription_id=to_id, limits=SubscriptionLimits() if to_id is not None else None, resume=False)
+        assert (answer := asyncio.run(MachineAgents._move(agents, request))).subscription_id == to_id and answer.reads_at is None
 
-    move(b)
+    move(target)
     if status == "running":
-        assert (reg.get_run(run_id).subscription.subscription_id, reg.get_run(run_id).pending_move.subscription_id) == (a.id, b.id)
-        move(a)  # picked back while it works: nothing held
+        held = reg.get_run(run_id)
+        assert (held.subscription_id, held.next_subscription_id) == (login_id(source), login_id(target))
+        move(source)  # picked back while it works: nothing held
         assert reg.get_run(run_id).pending_move is None
-        move(b)
+        move(target)
         reg._update_fields(run_id, {"status": "done"})  # its turn ended: its runner and its dispatcher both make the move
         carried, carry = [], Subscription.carry_session
-        monkeypatch.setattr(Subscription, "carry_session", lambda self, *args: (carried.append(self.id), carry(self, *args))[1])
+        monkeypatch.setattr(Subscription, "carry_session", lambda *args: (carried.append(args[1]), carry(*args))[1])
         both = [threading.Thread(target=reg.carry_held, args=(run_id,)) for _ in range(2)]
         for thread in both:
             thread.start()
         for thread in both:
             thread.join()
-        assert carried == [a.id], "its session carried once"
+        assert carried == [folder(source)], "its session carried once"
     run = reg.get_run(run_id)
-    assert (run.subscription.subscription_id, run.pending_move) == (b.id, None)
+    assert (run.subscription_id, run.pending_move) == (login_id(target), None)
+    assert (ClaudeCodeProvider.project_folder(folder(target), cwd) / f"{session}.jsonl").read_bytes() == transcript.read_bytes()
+    assert all(json.loads((folder(name) / ".credentials.json").read_text()) == {"token": name} for name in ("login", "a", "b")), "no login signed out or copied"
+
+
+def test_a_lent_run_never_moves_to_a_login(tmp_path: Path) -> None:
+    """A member's run on a lent PC runs on none of its CLI logins: moved to the owner's subscription or own login, refused typed."""
+    run = reg.AgentRun(run_id=str(uuid4()), provider="claude", name="r", cwd=str(tmp_path), started_at=1.0, finished_at=2.0, status="done", subscription=RunSubscription(lent=True))
+    for to in (Subscription.create(uuid4(), "claude").id, None):
+        request = AgentMoveRequest(id=uuid4(), machine=MachineRef(id=uuid4()), workspace_id=uuid4(), initiator_account=uuid4(), expires_at=datetime.now(UTC), signature="0" * 64,
+                                   run_id=UUID(run.run_id), subscription_id=to, limits=SubscriptionLimits() if to is not None else None, resume=False)
+        with pytest.raises(SubscriptionRefused) as refused:
+            MachineAgents._carry(run, request)
+        assert refused.value.refusal.reason == "lent"
 
 
 def test_each_login_here_says_its_own_usage_and_a_subscriptions_never_mixes_with_the_default_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -223,17 +223,18 @@ class Subscription(BaseModel):
             self._replace(target, path.read_bytes())
             target.chmod(path.stat().st_mode & 0o700)
 
-    def carry_session(self, to: Self, cwd: Path, session: str) -> int:
-        """Session `session`'s files (`AgentProvider.session_files`) copied from this folder to `to`'s, same place inside,
-        for it to continue there (contract A9): never a credential, never another file; refused when none is here. How
-        many were copied (`to` is the same provider's login: the caller checked)."""
-        files = [path for path in self.program.session_files(self.folder, cwd, session) if path.is_file() and not path.is_symlink() and path.name not in self.CREDENTIALS]
+    @classmethod
+    def carry_session(cls, program: AgentProvider, source: Path, target: Path, cwd: Path, session: str) -> int:
+        """Session `session`'s files (`AgentProvider.session_files`) copied from login folder `source` to `target`, same place
+        inside, for it to continue there (contract A9): each a subscription's folder or this PC's own login's, one CLI's
+        (the caller checked). Never a credential, never another file; refused when none is in `source`. How many were copied."""
+        files = [path for path in program.session_files(source, cwd, session) if path.is_file() and not path.is_symlink() and path.name not in cls.CREDENTIALS]
         if not files:
-            raise SubscriptionRefused("session_missing", f"session {session} is not in subscription {self.id}'s folder: it cannot continue elsewhere")
+            raise SubscriptionRefused("session_missing", f"session {session} is not in login folder {source}: it cannot continue elsewhere")
         for path in files:
-            target = to.folder / path.relative_to(self.folder)
-            target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            self._replace(target, path.read_bytes())
+            copy = target / path.relative_to(source)
+            copy.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            cls._replace(copy, path.read_bytes())
         return len(files)
 
     def overlay(self) -> dict[str, str]:
@@ -376,11 +377,6 @@ class RunSubscription(WireRunSubscription):
         if not Subscription.named_in(environment) <= expected:
             raise SubscriptionRefused("pinned_elsewhere", "this run's environment names another subscription's folder; a run uses only the subscription it is pinned to")
         return pinned
-
-    def pins(self, asked: UUID | None) -> None:
-        """Refused unless `asked` (a turn or message's subscription) is this run's own."""
-        if asked is not None and asked != self.subscription_id:
-            raise SubscriptionRefused("pinned_elsewhere", "this run is pinned to another subscription: its turns never move to a different one")
 
     def overlay(self) -> dict[str, str]:
         """Every CLI's login variable for this run: its subscription's CLI at its folder, every other
