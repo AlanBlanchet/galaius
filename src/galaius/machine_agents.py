@@ -1109,8 +1109,8 @@ class MachineAgents(BaseModel):
             raise SubscriptionRefused("default_login_only", "an editor conversation runs on the login its editor runs: only an agent started here moves")
         moved = await asyncio.to_thread(self._carry, run, request)
         there = f"subscription {request.subscription_id}" if request.subscription_id is not None else "this PC's own login"
-        # A run at work is not resumed: it goes on, its next turn there.
-        if not request.resume or moved.status in {"running", "waiting"}:
+        # A run at work is not resumed: it goes on, its next turn there; nor one already there: nothing moved.
+        if not request.resume or moved.status in {"running", "waiting"} or request.subscription_id == run.subscription_id:
             said = "its next turn runs there" if moved.pending_move is None else "its next turn runs there, once the one at work ended"
             return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=f"moved to {there}; {said}", subscription_id=request.subscription_id)
         # Moved from here on, whatever the resume does: the answer names the new pin so the server records it too.

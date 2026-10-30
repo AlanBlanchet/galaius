@@ -428,7 +428,7 @@ def test_a_running_conversation_switches_account_from_and_to_the_pc_login(source
     monkeypatch.setattr(machine_agents, "deliver_message", lambda *args, **kwargs: pytest.fail("a move that waits starts no turn"))
     agents = SimpleNamespace(_require_run=lambda run: reg.get_run(str(run)), _carry=MachineAgents._carry, _kind=lambda run: "agent")
 
-    def move(to: str) -> None:
+    def move(to: str, resume: bool = resume) -> None:
         to_id = login_id(to)
         request = AgentMoveRequest(id=uuid4(), machine=MachineRef(id=uuid4()), workspace_id=uuid4(), initiator_account=uuid4(), expires_at=datetime.now(UTC), signature="0" * 64,
                                    run_id=UUID(run_id), subscription_id=to_id, limits=SubscriptionLimits() if to_id is not None else None, resume=resume)
@@ -454,6 +454,7 @@ def test_a_running_conversation_switches_account_from_and_to_the_pc_login(source
     assert (run.subscription_id, run.pending_move) == (login_id(target), None)
     assert (ClaudeCodeProvider.project_folder(folder(target), cwd) / f"{session}.jsonl").read_bytes() == transcript.read_bytes()
     assert all(json.loads((folder(name) / ".credentials.json").read_text()) == {"token": name} for name in ("login", "a", "b")), "no login signed out or copied"
+    move(target, resume=True)  # asked to go on where it already is: nothing moved, no turn spent (code-reviewer r3 #1)
 
 
 def test_a_lent_run_never_moves_to_a_login(tmp_path: Path) -> None:
