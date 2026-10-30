@@ -8,30 +8,33 @@ included). The server warms it up when the owner allows voice on this machine: a
 second of silence, which installs, fetches and loads whatever is missing.
 
 Request: `{"model": <MACHINE_MODELS id>, "audio_path": <local file>, "cache_root": <dir>,
-"languages": ["fr", "en"], "hotwords": "Galaius, ..."}`. Result: `{"text": str, "language": str, "seconds": float}`.
-`hotwords`: the names the owner may say (the server's vocabulary, comma-separated). The audio is first
-transcribed with no hint; only where a word comes out a few letters off one of those names (`misheard`)
-is it transcribed again told the names (faster-whisper `hotwords`: told the one name alone, Whisper base and small
-wrote « Galius », « Galios » where the whole list got « Galaius »), and only that place is taken from the second
-transcript, when it does write the name there (`corrected`); a name written with other accents, or split, is
-spelled as given (`spelled`). A hint on every request turned
-« Goliath », « Galilée », « galets » into the name and made his other words worse; a real word Whisper
-writes without hint stays as he said it. Empty: no hint ever.
+"languages": ["fr", "en"], "hotwords": "Galaius, ...", "hint": "on_mishear"}`. Result: `{"text": str, "language": str, "seconds": float}`.
+`hotwords`: the names the owner may say (the server's vocabulary, comma-separated); `hint` (`Hint`, default
+`on_mishear`): when Whisper is told them. `on_mishear`: the audio is transcribed with no hint; where 1-3 words come
+out a few letters off a name (`misheard`), the transcript with the name in their place is scored against the audio
+by the same unhinted model, and kept only when the model finds it nearly as likely (`heard_as`): « Galeus » becomes
+« Galaius », « Gaius », « library », « galas » stay. No second decode, so no other word changes. A name written with
+other accents, or split, is spelled as given (`spelled`). A hint on every pass (`always`) turned « Goliath »,
+« Galilée », « Top » into names and made his other words worse; a second decode told the names spliced in hinted
+words that only contained one (« she-advocates-for-change », « galaius-core, » for « Galice »).
 
 No dependency on `galaius` or `galaius_core`: this script runs in that venv only.
 """
 
 import ctypes
-import difflib
 import json
-import re
+import math
 import sys
 import traceback
 import unicodedata
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import Literal, NamedTuple, get_args
 
 Emit = Callable[[str, str], None]
+#: When Whisper is told the names: `always` (a prompt on every pass), `on_mishear` (only where it wrote one a few letters
+#: off, and kept only where the audio agrees: `heard_as`), `never`.
+Hint = Literal["always", "on_mishear", "never"]
 
 
 def spoken_language(probabilities: Sequence[tuple[str, float]], languages: Sequence[str]) -> str:
@@ -42,17 +45,27 @@ def spoken_language(probabilities: Sequence[tuple[str, float]], languages: Seque
     return max(languages, key=lambda language: (scored.get(language, 0.0), -languages.index(language)))
 
 
-#: A word (or 2-3 run together) this close to a name is the name misheard: up to 3 letters in 7 differ. Measured on
-#: synthetic EN/FR clips: Whisper's spellings of « Galaius » (Galeus, Gallius, Galios, Galeos) are within it, the real
-#: words near it (Goliath, Galilée, Galileo, galleon) are not, or keep their spelling once told the name.
+#: A word (or 2-3 run together) this close to a name may be the name misheard: up to 3 letters in 7 differ (Whisper's
+#: « Galeus », « Gallius », « Galios » for « Galaius »). Only a candidate: the audio decides (`heard_as`).
 NEAR_EDITS = 3 / 7
 #: Names shorter than this are only ever taken as written: too many real words lie a letter away from « Blob ».
 NEAR_MIN_LETTERS = 6
+#: How much less likely, per token of the name, a model may find the transcript with the name in it than the one it wrote
+#: (natural log, both scored by that model against the audio, unhinted) for the name to be written: per model, each
+#: scoring on its own scale. Measured on synthetic EN/FR voices (84 clips, audio-critic r2's set, its 35-name list): a
+#: misheard « Galaius » scored at worst -4.27 on turbo, -3.68 kept on small (-4.72 lost); real words near a name at best
+#: -5.02 (« optimiser ») and -5.04 (« Gaius ») on turbo, -3.93 (« Galas ») on small.
+NAME_TOKEN_LOGPROB = {"mobiuslabsgmbh/faster-whisper-large-v3-turbo": -4.5, "small": -3.8}
+#: The bar of a model not measured above: the strictest one.
+UNMEASURED_LOGPROB = max(NAME_TOKEN_LOGPROB.values())
+#: A name Whisper spells in at most this many tokens is a word it knows (« librarian », « teacher », « optimizer »): it
+#: writes it when it hears it, and what comes out near it is another real word (« teaches », « optimiser »).
+KNOWN_WORD_TOKENS = 2
 
 
-def _folded(text: str) -> str:
-    """Lowercase letters and digits only, accents dropped: « Galéaüs, » -> « galeaus »."""
-    return re.sub(r"[^a-z0-9]", "", unicodedata.normalize("NFKD", text.lower()).encode("ascii", "ignore").decode())
+def fold(text: str) -> str:
+    """Letters and digits of any script, lowercase, accents dropped: « Galéaüs, » -> « galeaus », « Ωmega-2 » -> « ωmega2 »."""
+    return "".join(c for c in unicodedata.normalize("NFKD", text.lower()) if unicodedata.category(c)[0] in "LN")
 
 
 def _edits(a: str, b: str) -> int:
@@ -64,52 +77,74 @@ def _edits(a: str, b: str) -> int:
     return row[-1]
 
 
-def misheard(words: Sequence[str], names: Sequence[str]) -> list[tuple[int, int, str]]:
-    """`(start, end, name)` for each place in `words` that reads as `name` misheard: 1 to 3 words whose letters are
-    within `NEAR_EDITS` of it, where it is not already written. Overlapping readings keep the closest."""
+class Place(NamedTuple):
+    """Words `start` to `end` (exclusive) of a transcript that may be `name` misheard."""
+
+    start: int
+    end: int
+    name: str
+
+
+def misheard(words: Sequence[str], names: Sequence[str], known: Callable[[str], bool] = lambda _name: False) -> list[Place]:
+    """Each place in `words` that may be one of `names` misheard: 1 to 3 words whose letters are within `NEAR_EDITS`
+    of it, none of them already part of a name written exactly; a `known` name (a word the model spells itself) only
+    ever as written. Overlapping readings of one name keep the closest."""
+    spans = [(start, start + n) for start in range(len(words)) for n in (1, 2, 3) if start + n <= len(words)]
+    folded = {span: fold("".join(words[span[0]:span[1]])) for span in spans}
+    written = {fold(name) for name in names}
+    taken = [span for span in spans if folded[span] in written]
     found = []
     for name in names:
-        target = _folded(name)
-        if len(target) < NEAR_MIN_LETTERS:
+        target = fold(name)
+        if len(target) < NEAR_MIN_LETTERS or known(name):
             continue
-        near = sorted((_edits(_folded("".join(words[start:start + n])), target), n, start)
-                      for start in range(len(words)) for n in (1, 2, 3) if start + n <= len(words))
-        taken: list[tuple[int, int]] = []
-        for distance, n, start in near:
+        near = sorted((_edits(folded[span], target), span[1] - span[0], span) for span in spans)
+        claimed = list(taken)
+        for distance, _n, (start, end) in near:
             if distance > int(NEAR_EDITS * len(target)):
                 break
-            if all(start + n <= s or start >= e for s, e in taken):
-                taken.append((start, start + n))
-                if distance:
-                    found.append((start, start + n, name))
+            if all(end <= s or start >= e for s, e in claimed):
+                claimed.append((start, end))
+                found.append(Place(start, end, name))
     return sorted(found)
 
 
-def corrected(plain: str, hinted: str, places: Sequence[tuple[int, int, str]]) -> str:
-    """`plain` with each of `places` replaced by the fewest `hinted` words that write its name there; every other
-    word stays as first heard."""
-    plain_words, hinted_words = plain.split(), hinted.split()
-    matcher = difflib.SequenceMatcher(a=[_folded(w) for w in plain_words], b=[_folded(w) for w in hinted_words], autojunk=False)
-    words: list[str] = []
-    for operation, a0, a1, b0, b1 in matcher.get_opcodes():
-        place = next(((max(a0, start), min(a1, end), _folded(name)) for start, end, name in places
-                      if operation != "equal" and start < a1 and end > a0), None)
-        written = place and min(((j - i, i, j) for i in range(b0, b1) for j in range(i + 1, b1 + 1)
-                                 if place[2] in _folded("".join(hinted_words[i:j]))), default=None)
-        if place and written:
-            words += plain_words[a0:place[0]] + hinted_words[written[1]:written[2]] + plain_words[place[1]:a1]
-        else:
-            words += plain_words[a0:a1]
-    return " ".join(words)
+def _parts(token: str) -> tuple[str, str, str]:
+    """Punctuation before, the word, punctuation after: « (Galeus,) » -> « ( », « Galeus », « ,) »."""
+    kept = [at for at, char in enumerate(token) if unicodedata.category(char)[0] in "LNM"]
+    return (token[:kept[0]], token[kept[0]:kept[-1] + 1], token[kept[-1] + 1:]) if kept else (token, "", "")
+
+
+def _named(words: Sequence[str], place: Place) -> list[str]:
+    """The words of `place` written as its name, the punctuation around them kept: « Galeus, » -> « Galaius, »."""
+    return f"{_parts(words[place.start])[0]}{place.name}{_parts(words[place.end - 1])[2]}".split()
+
+
+def substituted(words: Sequence[str], place: Place) -> str:
+    """`words` with `place` written as its name: « Ask Galeus, now » -> « Ask Galaius, now »."""
+    return " ".join([*words[:place.start], *_named(words, place), *words[place.end:]])
+
+
+def heard_as(words: Sequence[str], places: Sequence[Place], scores: Sequence[float], bar: float) -> str:
+    """`words` with each place whose score (log-likelihood gained by the name, per name token) reaches `bar`
+    (`NAME_TOKEN_LOGPROB`) written as its name; of overlapping places the best scored wins."""
+    kept: list[Place] = []
+    for score, place in sorted(zip(scores, places), key=lambda pair: -pair[0]):
+        if score >= bar and all(place.end <= other.start or place.start >= other.end for other in kept):
+            kept.append(place)
+    out = list(words)
+    for place in sorted(kept, reverse=True):
+        out[place.start:place.end] = _named(out, place)
+    return " ".join(out)
 
 
 def spelled(text: str, names: Sequence[str]) -> str:
     """`text` with each one-word name of `names` written as given where it reads the same but for accents or hyphens
     (« Galaïus, » -> « Galaius, »), or, for a name of letters only, comes out split (« Galai us » -> « Galaius »); case
     alone is kept (« bureau » stays a word, not his PC « Bureau »)."""
-    written = {_folded(name): name for name in names if " " not in name}
-    joined = {folded: name for folded, name in written.items() if re.fullmatch(r"[^\W\d_]+", name)}
-    tokens = [re.fullmatch(r"(\W*)(.*?)(\W*)", token).groups() for token in text.split()]
+    written = {fold(name): name for name in names if " " not in name}
+    joined = {folded: name for folded, name in written.items() if name.isalpha()}
+    tokens = [_parts(token) for token in text.split()]
     words, at = [], 0
     while at < len(tokens):
         for n in (3, 2, 1):
@@ -117,8 +152,8 @@ def spelled(text: str, names: Sequence[str]) -> str:
             if len(group) < n or any(tail for _head, _core, tail in group[:-1]) or any(head for head, _core, _tail in group[1:]):
                 continue
             core = "".join(core for _head, core, _tail in group)
-            name = (joined if n > 1 else written).get(_folded(core))
-            if name and (n > 1 or core.casefold() != name.casefold()):
+            name = (joined if n > 1 else written).get(fold(core))
+            if core and name and (n > 1 or core.casefold() != name.casefold()):
                 words.append(group[0][0] + name + group[-1][2])
                 at += n
                 break
@@ -157,15 +192,46 @@ def infer(request: dict, loaded: dict, emit: Emit) -> dict:
     _language, _probability, probabilities = model.detect_language(audio)
     language = spoken_language(probabilities, languages)
 
-    def transcript(hotwords: str | None) -> str:
-        segments, _info = model.transcribe(audio, language=language, beam_size=1, condition_on_previous_text=False, hotwords=hotwords)
-        return " ".join(segment.text.strip() for segment in segments).strip()
-
     names = [name.strip() for name in str(request.get("hotwords") or "").split(",") if name.strip()]
-    text = transcript(None)
-    if places := misheard(text.split(), names):
-        text = corrected(text, transcript(", ".join(names)), places)
-    return {"text": spelled(text, names), "language": language, "seconds": round(len(audio) / 16_000, 3)}
+    hint: Hint = request.get("hint", "on_mishear")
+    if hint not in get_args(Hint):
+        raise ValueError(f"hint {hint!r} is none of {get_args(Hint)}")
+    segments, _info = model.transcribe(audio, language=language, beam_size=1, condition_on_previous_text=False,
+                                       hotwords=", ".join(names) if hint == "always" and names else None)
+    # Whisper hears 30 s at a time: each window's words are scored against that window's audio only.
+    windows: dict[int, list[str]] = {}
+    for segment in segments:
+        windows.setdefault(segment.seek, []).extend(segment.text.split())
+    if hint == "on_mishear" and names:
+        from faster_whisper.tokenizer import Tokenizer  # noqa: PLC0415 - in the speech venv only
+
+        tokenizer = Tokenizer(model.hf_tokenizer, True, task="transcribe", language=language)
+        bar = NAME_TOKEN_LOGPROB.get(model_id, UNMEASURED_LOGPROB)
+        features = None
+        for seek, words in windows.items():
+            if places := misheard(words, names, known=lambda name: len(tokenizer.encode(" " + name)) <= KNOWN_WORD_TOKENS):
+                features = model.feature_extractor(audio) if features is None else features
+                window = features[:, seek:seek + model.feature_extractor.nb_max_frames]
+                windows[seek] = heard_as(words, places, _name_scores(model, tokenizer, window, words, places), bar).split()
+    text = " ".join(word for words in windows.values() for word in words)
+    return {"text": spelled(text, names) if hint != "never" else text, "language": language, "seconds": round(len(audio) / 16_000, 3)}
+
+
+def _name_scores(model, tokenizer, window, words: Sequence[str], places: Sequence[Place]) -> list[float]:
+    """Per place: how much likelier (log, per token of the name) the unhinted model finds the transcript with the name
+    than the one it wrote, both scored against `window` (the log-Mel frames, at most 30 s, Whisper wrote `words` from;
+    CTranslate2's `align`: teacher-forced token probabilities)."""
+    from faster_whisper.audio import pad_or_trim  # noqa: PLC0415 - in the speech venv only
+
+    encoded = model.encode(pad_or_trim(window))
+
+    def likelihood(text: str) -> float:
+        ids = tokenizer.encode(" " + text)
+        aligned = model.model.align(encoded, tokenizer.sot_sequence, [ids], window.shape[-1], median_filter_width=7)[0]
+        return sum(math.log(max(p, 1e-12)) for p in aligned.text_token_probs)
+
+    plain = likelihood(" ".join(words))
+    return [(likelihood(substituted(words, place)) - plain) / len(tokenizer.encode(" " + place.name)) for place in places]
 
 
 def _say(message: dict) -> None:

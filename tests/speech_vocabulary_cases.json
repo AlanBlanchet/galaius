@@ -1,0 +1,48 @@
+{
+ "about": "Golden cases of the speech vocabulary rule (galaius.speech_infer), read by this repo's tests and by any other implementation of the same rule, so the copies cannot drift.",
+ "names": ["Galaius", "my-project", "Arrête", "Blob", "galaius-core", "librarian"],
+ "fold": [
+  ["Galéaüs,", "galeaus"],
+  ["my-project", "myproject"],
+  ["ARRÊTE", "arrete"],
+  ["ﬁle_2", "file2"],
+  ["Ωmega-2", "ωmega2"],
+  ["日本語!", "日本語"],
+  ["Привет, мир", "приветмир"]
+ ],
+ "misheard": [
+  ["Galeus, open the agents.", [[0, 1, "Galaius"]]],
+  ["Demande à Gal ius de lancer", [[2, 4, "Galaius"], [2, 5, "galaius-core"]]],
+  ["open my projet please", [[1, 3, "my-project"]]],
+  ["Goliath beat David.", []],
+  ["Galilée observait Jupiter.", []],
+  ["Galaius, ouvre les agents.", []],
+  ["Galaius core is ready", []],
+  ["Arrête ça", []],
+  ["open my project please", []],
+  ["Blobs", []]
+ ],
+ "heard_as": [
+  {"heard": "Ask Galeus, now.", "places": [[1, 2, "Galaius"]], "scores": [-1.5], "expected": "Ask Galaius, now.", "bar": -4.5},
+  {"heard": "Gaius Julius Caesar", "places": [[0, 1, "Galaius"]], "scores": [-5.2], "expected": "Gaius Julius Caesar", "bar": -4.5},
+  {"heard": "(Gal ius) runs", "places": [[0, 2, "Galaius"]], "scores": [-0.4], "expected": "(Galaius) runs", "bar": -4.5},
+  {"heard": "open my projet now", "places": [[1, 3, "my-project"]], "scores": [-2.0], "expected": "open my-project now", "bar": -4.5},
+  {"heard": "La Galice, vite", "places": [[1, 2, "Galaius"], [1, 2, "galaius-core"]], "scores": [-6.0, -4.9], "expected": "La Galice, vite", "bar": -4.5},
+  {"heard": "Galios and Galeus", "places": [[0, 1, "Galaius"], [2, 3, "Galaius"]], "scores": [-3.0, -9.0], "expected": "Galaius and Galeus", "bar": -4.5}
+ ],
+ "spelled": [
+  ["Demande à Galaïus, vite.", "Demande à Galaius, vite."],
+  ["ouvre myproject", "ouvre my-project"],
+  ["arrete", "Arrête"],
+  ["Tell Galai us that", "Tell Galaius that"],
+  ["Dis à Gal ai us, vite", "Dis à Galaius, vite"],
+  ["galaius, ouvre", "galaius, ouvre"],
+  ["Galaius core", "Galaius core"],
+  ["open my project", "open my project"],
+  ["Galai, us", "Galai, us"]
+ ],
+ "misheard_known": [
+  ["Ask the librarians", ["librarian"], []],
+  ["Ask Galeus", ["librarian"], [[1, 2, "Galaius"]]]
+ ]
+}

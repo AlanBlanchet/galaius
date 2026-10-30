@@ -2,9 +2,12 @@
 (French and English) before it is transcribed — a French command on an English screen stays
 French, and a language Whisper half-hears outside that pair never wins."""
 
+import json
+from pathlib import Path
+
 import pytest
 
-from galaius.speech_infer import corrected, misheard, spelled, spoken_language
+from galaius.speech_infer import Place, fold, heard_as, misheard, spelled, spoken_language
 
 
 @pytest.mark.parametrize(("probabilities", "expected"), [
@@ -19,51 +22,31 @@ def test_the_spoken_language_is_one_he_speaks(probabilities, expected):
     assert spoken_language(probabilities, ("fr", "en")) == expected
 
 
-NAMES = ("Galaius", "my-project", "Arrête", "Blob")
+#: The rule's golden cases, shared with every other implementation of it (the web app's copy reads this file too).
+CASES = json.loads((Path(__file__).parent / "speech_vocabulary_cases.json").read_text(encoding="utf-8"))
+NAMES = CASES["names"]
 
 
-@pytest.mark.parametrize(("heard", "expected"), [
-    # Whisper's spellings of the name are hinted, joined words included.
-    ("Galeus, open the agents.", [(0, 1, "Galaius")]),
-    ("Demande à Gal ius de lancer", [(2, 4, "Galaius")]),
-    ("open my projet please", [(1, 3, "my-project")]),
-    # Real words near the name never trigger: a hint would turn them into it. (« galets » does, and stays
-    # « galets »: the hinted pass writes « galais », which is not the name — `corrected` keeps the plain words.)
-    ("Goliath beat David.", []),
-    ("Galilée observait Jupiter.", []),
-    # Already written as said (also inside a longer name), or too short to guess: no second pass.
-    ("Galaius, ouvre les agents.", []),
-    ("Galaius core is ready", []),
-    ("Arrête ça", []),
-    ("open my project please", []),
-    ("Blobs", []),
-])
-def test_only_a_misheard_name_asks_for_a_second_pass(heard, expected):
-    assert misheard(heard.split(), NAMES) == expected
+@pytest.mark.parametrize(("text", "expected"), CASES["fold"])
+def test_names_are_compared_letters_and_digits_only_in_any_script(text, expected):
+    assert fold(text) == expected
 
 
-@pytest.mark.parametrize(("plain", "hinted", "expected"), [
-    # The name is taken from the hinted pass; every other word stays from the plain one.
-    ("Galeus, euh, open the agents.", "Galaius, E. Open the agents.", "Galaius, euh, open the agents."),
-    # The hinted pass did not write the name there: the plain words stay.
-    ("Galeus, open the agents.", "Gallus, open the agents.", "Galeus, open the agents."),
-    ("Les galets de la plage.", "Les galais de la plage.", "Les galets de la plage."),
-])
-def test_only_the_misheard_place_is_corrected(plain, hinted, expected):
-    assert corrected(plain, hinted, misheard(plain.split(), NAMES)) == expected
+@pytest.mark.parametrize(("heard", "expected"), CASES["misheard"])
+def test_only_a_name_a_few_letters_off_is_a_candidate(heard, expected):
+    assert [list(place) for place in misheard(heard.split(), NAMES)] == expected
 
 
-@pytest.mark.parametrize(("heard", "expected"), [
-    ("Demande à Galaïus, vite.", "Demande à Galaius, vite."),
-    ("ouvre myproject", "ouvre my-project"),
-    ("arrete", "Arrête"),
-    ("Tell Galai us that", "Tell Galaius that"),
-    ("Dis à Gal ai us, vite", "Dis à Galaius, vite"),
-    # A name written with a hyphen reads naturally split: kept. Case alone is how the sentence writes it: kept.
-    ("galaius, ouvre", "galaius, ouvre"),
-    ("Galaius core", "Galaius core"),
-    ("open my project", "open my project"),
-    ("Galai, us", "Galai, us"),
-])
-def test_a_name_with_other_accents_is_spelled_as_given(heard, expected):
+@pytest.mark.parametrize("case", CASES["heard_as"], ids=[case["heard"] for case in CASES["heard_as"]])
+def test_a_candidate_is_written_only_where_the_audio_agrees(case):
+    assert heard_as(case["heard"].split(), [Place(*place) for place in case["places"]], case["scores"], case["bar"]) == case["expected"]
+
+
+@pytest.mark.parametrize(("heard", "known", "expected"), CASES["misheard_known"])
+def test_a_name_the_model_knows_is_only_taken_as_written(heard, known, expected):
+    assert [list(place) for place in misheard(heard.split(), NAMES, known=lambda name: name in known)] == expected
+
+
+@pytest.mark.parametrize(("heard", "expected"), CASES["spelled"])
+def test_a_name_with_other_accents_or_split_is_spelled_as_given(heard, expected):
     assert spelled(heard, NAMES) == expected
