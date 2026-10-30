@@ -13,22 +13,33 @@ from datetime import datetime
 from pathlib import Path
 from typing import get_args
 
-from galaius_core import AgentProvider, LoginUsage, SubscriptionUsageReport, UsageWindow
+from galaius_core import AgentProvider, LoginIdentity, LoginUsage, SubscriptionUsageReport, UsageWindow
 from pydantic import BaseModel, PrivateAttr
 
 from galaius.agents import registry as reg
 from galaius.agents.events import stream_lines
-from galaius.agents.providers import PROVIDERS
+from galaius.agents.providers import PROVIDERS, AgentProvider as Program
 from galaius.agents.subscriptions import Subscription
 
 
 class LoginReading(BaseModel):
-    """A program's default login here: its last usage reading, and the one last reported (None: none since this runner
-    started, so the server's, maybe older, is replaced by the first)."""
+    """A program's default login here: its last usage reading and the login its CLI last named, and what was last
+    reported of them (None: nothing since this runner started, so the server's, maybe older, is replaced by the first)."""
 
     usage: tuple[UsageWindow, ...] = ()
+    identity: LoginIdentity = LoginIdentity()
     reported: tuple[UsageWindow, ...] | None = None
+    reported_identity: LoginIdentity = LoginIdentity()
     reported_at: datetime | None = None
+
+    def due(self, now: datetime) -> bool:
+        """The server should hear it now: never yet, its usage moved (`SubscriptionUsageReport.due`), or its CLI names
+        another login than the one last reported."""
+        return (self.reported is None or SubscriptionUsageReport.due(self.usage, self.reported, self.reported_at, now)
+                or bool(self.identity.login) and self.identity != self.reported_identity)
+
+    def report(self, provider: AgentProvider) -> LoginUsage:
+        return LoginUsage(provider=provider, windows=self.usage, **self.identity.model_dump())
 
 
 class SubscriptionWatch(BaseModel):
@@ -43,17 +54,31 @@ class SubscriptionWatch(BaseModel):
 
     async def ask(self, environment: dict[str, str]) -> None:
         """Each program's default login (`environment`: the system variables), then each subscription in its own folder:
-        its usage now as its CLI says, one CLI at a time. Not installed: no reading; a CLI that could not answer leaves
-        the last one. A subscription's reading goes to its folder (`Subscription.observe`, as a run's would)."""
+        its usage and which login it is now as its CLI says (`identity`), one CLI at a time. Not installed: no reading;
+        a CLI that could not answer leaves the last one. A subscription's go to its folder (`Subscription.observe`, as
+        a run's would, `Subscription.identify`)."""
         for name in get_args(AgentProvider):
             provider = PROVIDERS[name]
-            usage = await provider.current_usage(environment) if provider.available() else ()
-            if usage is not None:
-                with self._lock:
-                    self._logins[name] = self._logins.get(name, LoginReading()).model_copy(update={"usage": usage})
+            installed = provider.available()
+            usage = await provider.current_usage(environment) if installed else ()
+            identity = await self.identity(provider, environment) if installed else LoginIdentity()
+            with self._lock:
+                reading = self._logins.get(name, LoginReading())
+                self._logins[name] = reading.model_copy(update={"usage": reading.usage if usage is None else usage,
+                                                                "identity": reading.identity if identity is None else identity})
         for subscription in await asyncio.to_thread(Subscription.all):
-            if (usage := await subscription.program.current_usage({**environment, **subscription.overlay()})) is not None:
+            overlaid = {**environment, **subscription.overlay()}
+            if (usage := await subscription.program.current_usage(overlaid)) is not None:
                 await asyncio.to_thread(subscription.observe, usage, whole=True)
+            if (identity := await self.identity(subscription.program, overlaid)) is not None:
+                await asyncio.to_thread(subscription.identify, identity)
+
+    @staticmethod
+    async def identity(provider: Program, environment: dict[str, str]) -> LoginIdentity | None:
+        """Which login `environment` names for `provider` now, as its status command says (`login_status`; never its
+        expiry check: an expired login is the same account); none when signed out; None: it could not answer."""
+        status = await provider.login_status(environment, expiry=False)
+        return None if status.signed_in is None else LoginIdentity(account=status.account, login=status.login)
 
     def login_usage(self, provider: AgentProvider) -> tuple[UsageWindow, ...]:
         """`provider`'s default login's last reading here (`ask`)."""
@@ -78,8 +103,7 @@ class SubscriptionWatch(BaseModel):
         only once sent (`sent`)."""
         due = tuple(usage for subscription in Subscription.all() if (usage := subscription.report_due(now)) is not None)
         with self._lock:
-            logins = tuple(LoginUsage(provider=name, windows=reading.usage) for name, reading in self._logins.items()
-                           if reading.reported is None or SubscriptionUsageReport.due(reading.usage, reading.reported, reading.reported_at, now))
+            logins = tuple(reading.report(name) for name, reading in self._logins.items() if reading.due(now))
         return SubscriptionUsageReport(usage=due, logins=logins) if due or logins else None
 
     def sent(self, report: SubscriptionUsageReport, now: datetime) -> None:
@@ -87,7 +111,8 @@ class SubscriptionWatch(BaseModel):
             Subscription.of(usage.subscription_id).reported(usage, now)
         with self._lock:
             for login in report.logins:
-                self._logins[login.provider] = self._logins[login.provider].model_copy(update={"reported": login.windows, "reported_at": now})
+                self._logins[login.provider] = self._logins[login.provider].model_copy(update={
+                    "reported": login.windows, "reported_identity": LoginIdentity(account=login.account, login=login.login), "reported_at": now})
 
     def _session_record(self, run: reg.AgentRun) -> Path | None:
         """A Codex run's session record in its subscription's folder (`sessions/**/rollout-*-<thread>.jsonl`),

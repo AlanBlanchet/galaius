@@ -78,6 +78,43 @@ def test_codex_auth_status_requires_an_affirmative_login_message():
         assert not provider.accepts_any_auth(status, "")
 
 
+def _claude_status(folder: str, email: str = "owner@example.com", org: str = "00000000-0000-4000-8000-000000000001", plan: str = "max") -> str:
+    """`claude auth status` as 2.1.288 prints it (shape read 2026-10-30)."""
+    return json.dumps({"loggedIn": True, "authMethod": "claude.ai", "apiProvider": "firstParty", "analyticsDisabled": False,
+                       "projectsDirectory": f"{folder}/projects", "configDirectory": folder, "email": email, "orgId": org,
+                       "orgName": f"{email}'s Organization", "subscriptionType": plan}, indent=2)
+
+
+@pytest.mark.parametrize(("other", "same"), [
+    (_claude_status("~/.galaius/subscriptions/0a1b2c3d"), True),   # his account in a subscription's folder
+    (_claude_status("~/.claude", plan="pro"), True),                # a plan change: the same account
+    (_claude_status("~/.claude", email="second@example.com"), False),
+    (_claude_status("~/.claude", org="00000000-0000-4000-8000-000000000002"), False),
+])
+def test_claude_login_is_its_account_never_the_folder_it_is_kept_in(other: str, same: bool):
+    """Owner 2026-10-30 « I wanted to connect a second … account »: one account signed in in two folders is one login."""
+    provider = ClaudeCodeProvider()
+    assert (provider.login_identity(_claude_status("~/.claude"), "") == provider.login_identity(other, "")) is same
+
+
+def _codex_account(email: str = "owner@example.com", plan: str = "free") -> dict:
+    """Codex 0.155.1's `account/read` answer (shape probed 2026-10-30)."""
+    return {"id": 2, "result": {"account": {"type": "chatgpt", "email": email, "planType": plan}, "requiresOpenaiAuth": True}}
+
+
+@pytest.mark.parametrize(("other", "same"), [
+    (_codex_account(plan="plus"), True),                 # a plan change: the same account
+    (_codex_account(email="second@example.com"), False),  # « Logged in using ChatGPT » for both, yet another account
+])
+def test_codex_login_is_its_chatgpt_account(other: dict, same: bool):
+    provider = CodexProvider()
+    first = provider.account_answer(_codex_account())
+    assert first[0] == "owner@example.com"
+    assert (first[1] == provider.account_answer(other)[1]) is same
+    assert provider.account_answer({"id": 2, "error": {"code": -32601, "message": "method not found"}}) == ("", "")  # older CLI: its status names it
+    assert provider.account_answer({"id": 1, "result": {}}) is None
+
+
 def test_codex_command_uses_the_effort_resolved_by_the_launcher():
     command = CodexProvider().command(
         "Reply once", cwd="/tmp", model="fixture-model", mcp_config=None,

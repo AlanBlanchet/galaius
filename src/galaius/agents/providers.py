@@ -35,7 +35,7 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, model_validator
 
 from galaius.caller import Caller
-from galaius_core import AgentMedia, ContextGauge, UsageWindow, UsageWindowName
+from galaius_core import AgentMedia, ContextGauge, LoginIdentity, UsageWindow, UsageWindowName
 
 from galaius import installed_version
 from galaius.agents.catalog import AgentCatalog
@@ -238,17 +238,12 @@ ANTHROPIC_INSTALL_HOSTS = frozenset({"claude.ai", "downloads.claude.ai"})
 OPENAI_INSTALL_HOSTS = frozenset({"chatgpt.com", "releases.openai.com"})
 
 
-class LoginStatus(BaseModel):
-    """What a CLI's own status commands say of one login, asked now (`AgentProvider.login_status`)."""
-
-    model_config = ConfigDict(frozen=True)
+class LoginStatus(LoginIdentity):
+    """What a CLI's own status commands say of one login, asked now (`AgentProvider.login_status`): as whom
+    (`signed_in_as`) and which login (a digest of `login_identity`), once signed in."""
 
     #: Signed in; None: its status check could not complete.
     signed_in: bool | None
-    #: As whom (`signed_in_as`), once signed in.
-    account: str = ""
-    #: Which login: a digest of its status answer (`login_identity`), once signed in.
-    login: str = ""
     #: Signed out because the login saved here expired and could not be refreshed (`expiry_command`).
     expired: bool = False
 
@@ -405,6 +400,24 @@ class AgentProvider(ABC):
     def usage_answer(self, line: dict) -> tuple[UsageWindow, ...] | None:
         """The usage an output line of `usage_command` answers (no window: none, the login signed out or metered by no
         plan); None: not its answer."""
+        return None
+
+    #: The keys of the answer naming its account (its JSON status, `account_command`'s) that say which account it is
+    #: (`identity_of`): never where the login is kept nor its plan (an upgrade is the same account).
+    IDENTITY_KEYS: ClassVar[tuple[str, ...]] = ()
+
+    def identity_of(self, said: object) -> str:
+        """What names the account in `said` (`IDENTITY_KEYS`); "" when it is no object."""
+        return json.dumps({key: said[key] for key in self.IDENTITY_KEYS if key in said}, sort_keys=True) if isinstance(said, dict) else ""
+
+    def account_command(self) -> tuple[list[str], tuple[dict, ...]] | None:
+        """How this CLI names the account its login is when its status command does not (`login_status`): the command
+        and the lines it is sent; None: its status answer names it (`login_identity`)."""
+        return None
+
+    def account_answer(self, line: dict) -> tuple[str, str] | None:
+        """Who an output line of `account_command` says the login is signed in as, and what names that account; ("", ""):
+        it names none (a CLI too old for the request), the status answer's then; None: not its answer."""
         return None
 
     async def current_usage(self, env: dict[str, str], *, timeout: float = 30) -> tuple[UsageWindow, ...] | None:
@@ -569,25 +582,35 @@ class AgentProvider(ABC):
         status = await self._auth_status(env, timeout=timeout)
         return status is not None and status[0] == 0 and self.accepts_subscription_auth(*status[1:]) and not await self._expired(env, timeout=timeout)
 
-    async def login_status(self, env: dict[str, str], *, timeout: float = 10) -> LoginStatus:
+    async def login_status(self, env: dict[str, str], *, timeout: float = 10, expiry: bool = True, named: bool = True) -> LoginStatus:
         """Signed in, as whom and which login, asked now (`LoginStatus`): the login is a digest of the
-        CLI's whole status answer, kept instead of the answer. It tells apart what the answer names —
-        Claude Code: account, organisation, plan; Codex: a ChatGPT login from an API key, never one
-        ChatGPT account or plan from another. A login its status still reports but `expiry_command`
-        says expired is signed out (`LoginStatus.expired`); that second command runs only then, one CLI at a time."""
+        account its status answer names (`login_identity`), kept instead of the answer. It tells apart
+        what the answer names — Claude Code: account and organisation; Codex: a ChatGPT login from an API
+        key, never one ChatGPT account from another. A login its status still reports but `expiry_command`
+        says expired is signed out (`LoginStatus.expired`); that second command runs only then, one CLI at a
+        time, and never with `expiry` False (only who it is matters: an expired login is the same account). A CLI whose
+        status names no account is asked who it is (`account_command`) unless `named` is False (a launch's check: whether,
+        never who); that ask unanswered leaves the whole answer unknown."""
         status = await self._auth_status(env, timeout=timeout)
         if status is None:
             return LoginStatus(signed_in=None)
         if not (status[0] == 0 and self.accepts_any_auth(*status[1:])):
             return LoginStatus(signed_in=False)
-        if await self._expired(env, timeout=timeout):
+        if expiry and await self._expired(env, timeout=timeout):
             return LoginStatus(signed_in=False, expired=True)
-        return LoginStatus(signed_in=True, account=self.signed_in_as(*status[1:]), login=hashlib.sha256(self.login_identity(*status[1:]).encode()).hexdigest()[:16])
+        said, identity = self.signed_in_as(*status[1:]), self.login_identity(*status[1:])
+        if named and (asked := self.account_command()) is not None:
+            answered = await ask_process(asked[0], cwd=Path(env.get("HOME") or Path.home()), env=env, lines=asked[1], answer=self.account_answer, timeout=timeout)
+            if answered is None:  # never the status answer's instead: the same login would read as another one
+                return LoginStatus(signed_in=None)
+            said, identity = (answered[0] or said, answered[1]) if answered[1] else (said, identity)
+        return LoginStatus(signed_in=True, account=said[:200], login=hashlib.sha256(identity.encode()).hexdigest()[:16])
 
     def login_identity(self, stdout: str, stderr: str) -> str:
-        """The part of the status answer that names the login (`login_status`): its stdout, never a notice
-        a CLI prints beside it on stderr (an update, a warning), which would make every check read as
-        a new login."""
+        """The part of the status answer that names the login's account (`login_status`): its stdout, never a
+        notice a CLI prints beside it on stderr (an update, a warning), which would make every check read as
+        a new login. A CLI whose answer also says where the login is kept (its folder) names only the
+        account, so one account signed in in two folders is one login."""
         return stdout
 
     def _login_key(self, env: dict[str, str]) -> tuple[str, str]:
@@ -601,7 +624,7 @@ class AgentProvider(ABC):
         confirmed = self._logged_in.get(key)
         if confirmed is not None and time.monotonic() - confirmed[0] < self.LOGIN_REUSE_SECONDS:
             return True
-        status = await self.login_status(env, timeout=timeout)
+        status = await self.login_status(env, timeout=timeout, named=False)
         if status.signed_in:
             self._logged_in[key] = (time.monotonic(), status.login)
         else:
@@ -1117,6 +1140,9 @@ class ClaudeCodeProvider(AgentProvider):
             return False
         return isinstance(status, dict) and status.get("loggedIn") is True
 
+    #: Its JSON status's, never `configDirectory` / `projectsDirectory` (where it is kept) nor `subscriptionType`.
+    IDENTITY_KEYS = ("authMethod", "apiProvider", "email", "orgId")
+
     def signed_in_as(self, stdout: str, stderr: str) -> str:
         try:
             status = json.loads(stdout)
@@ -1124,6 +1150,12 @@ class ClaudeCodeProvider(AgentProvider):
             return ""
         said = [str(status[key]) for key in ("email", "orgName") if isinstance(status, dict) and status.get(key)]
         return " · ".join(said)[:200]
+
+    def login_identity(self, stdout: str, stderr: str) -> str:
+        try:
+            return self.identity_of(json.loads(stdout))
+        except ValueError:
+            return ""
 
     def supports_session_media(self, media_kind: str) -> bool:
         return media_kind in self.session_media_kinds
@@ -2161,11 +2193,33 @@ class CodexProvider(AgentProvider):
     #: Its app-server's refusal when no account is signed in (0.155.1).
     SIGNED_OUT: ClassVar[re.Pattern[str]] = re.compile(r"authentication required", re.IGNORECASE)
 
-    def usage_command(self) -> tuple[list[str], tuple[dict, ...]]:
-        """`account/rateLimits/read` on its app-server (0.155.1): the login's windows as ChatGPT has them."""
+    def app_server_ask(self, method: str, params: dict) -> tuple[list[str], tuple[dict, ...]]:
+        """One request (id 2) on its app-server, after its handshake (id 1)."""
         return (self.app_server_command(),
                 ({"id": 1, "method": "initialize", "params": self.initialize_params()}, {"method": "initialized", "params": {}},
-                 {"id": 2, "method": "account/rateLimits/read", "params": {}}))
+                 {"id": 2, "method": method, "params": params}))
+
+    def usage_command(self) -> tuple[list[str], tuple[dict, ...]]:
+        """`account/rateLimits/read` on its app-server (0.155.1): the login's windows as ChatGPT has them."""
+        return self.app_server_ask("account/rateLimits/read", {})
+
+    def account_command(self) -> tuple[list[str], tuple[dict, ...]]:
+        """`account/read` on its app-server (0.155.1, probed 2026-10-30: `{account: {type, email, planType}}`): its status
+        command says only « Logged in using ChatGPT », the same for every ChatGPT account."""
+        return self.app_server_ask("account/read", {"refreshToken": False})
+
+    #: Its `account/read` answer's, never `planType`.
+    IDENTITY_KEYS = ("type", "email")
+
+    def account_answer(self, line: dict) -> tuple[str, str] | None:
+        """Its answer to request 2; an error (a CLI without `account/read`) or no account names none."""
+        if line.get("id") != 2:
+            return None
+        result = line.get("result")
+        account = result.get("account") if isinstance(result, dict) else None
+        if not isinstance(account, dict):
+            return "", ""
+        return str(account.get("email") or ""), self.identity_of(account)
 
     @staticmethod
     def initialize_params() -> dict:

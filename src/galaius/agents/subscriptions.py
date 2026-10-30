@@ -17,7 +17,7 @@ from typing import ClassVar, Self
 from uuid import UUID, uuid4
 
 from galaius_core import AgentProvider as ProviderName, RunSubscription as WireRunSubscription, SubscriptionAllowance, SubscriptionCap, SubscriptionLimits
-from galaius_core import Refused, SubscriptionChoice, SubscriptionRefusal, SubscriptionUsage, SubscriptionUsageReport, UsageWindow
+from galaius_core import LoginIdentity, Refused, SubscriptionChoice, SubscriptionRefusal, SubscriptionUsage, SubscriptionUsageReport, UsageWindow
 from pydantic import BaseModel, ConfigDict
 
 from galaius.agents.providers import PROVIDERS, AgentProvider
@@ -41,7 +41,7 @@ class SubscriptionCapped(SubscriptionRefused):
 
 class SubscriptionState(BaseModel):
     """What galaius keeps in a subscription's folder (`Subscription.STATE`): its provider, its last
-    usage reading per window, and the reading last reported to the server."""
+    usage reading per window and the login its CLI last named, and what was last reported of each to the server."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -49,6 +49,8 @@ class SubscriptionState(BaseModel):
     usage: tuple[UsageWindow, ...] = ()
     reported: tuple[UsageWindow, ...] = ()
     reported_at: datetime | None = None
+    identity: LoginIdentity = LoginIdentity()
+    reported_identity: LoginIdentity = LoginIdentity()
 
 
 class Subscription(BaseModel):
@@ -262,15 +264,23 @@ class Subscription(BaseModel):
         if (cap := limits.reached(self.usage(), allowance)) is not None:
             raise SubscriptionCapped(cap)
 
+    def identify(self, identity: LoginIdentity) -> None:
+        """Its CLI named the login its folder holds now (`AgentProvider.login_status`)."""
+        with self.WRITING:
+            self._write(self.state().model_copy(update={"identity": identity}))
+
     def report_due(self, now: datetime) -> SubscriptionUsage | None:
-        """Its usage when the server should hear it now (`SubscriptionUsageReport.due`)."""
+        """Its usage and login when the server should hear them now: its usage moved (`SubscriptionUsageReport.due`), or
+        its CLI names another login than the one last reported."""
         state = self.state()
         due = state.usage and SubscriptionUsageReport.due(state.usage, state.reported, state.reported_at, now)
-        return SubscriptionUsage(subscription_id=self.id, windows=state.usage) if due else None
+        named = state.identity.login and state.identity != state.reported_identity
+        return SubscriptionUsage(subscription_id=self.id, windows=state.usage, **state.identity.model_dump()) if due or named else None
 
     def reported(self, usage: SubscriptionUsage, now: datetime) -> None:
         with self.WRITING:
-            self._write(self.state().model_copy(update={"reported": usage.windows, "reported_at": now}))
+            self._write(self.state().model_copy(update={"reported": usage.windows, "reported_at": now,
+                                                        "reported_identity": LoginIdentity(account=usage.account, login=usage.login)}))
 
     @classmethod
     def credentials_in(cls, folder: Path) -> tuple[str, ...]:

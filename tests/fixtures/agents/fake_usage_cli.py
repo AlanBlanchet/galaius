@@ -3,7 +3,7 @@
 2026-10-13): Claude's `get_usage` control request, Codex's `account/rateLimits/read` on its app-server. A login folder
 named by CLAUDE_CONFIG_DIR is a subscription's (80 % of its week); Codex is signed out; a file `silent` in HOME makes
 it end without answering, a file `failing` makes Claude answer its request's error (the vendor unreachable), a file
-`signed_out` makes it answer as signed out (no plan windows)."""
+`signed_out` makes it answer as signed out (no plan windows). Claude's `auth status` names one account in every folder."""
 
 import json
 import os
@@ -11,6 +11,12 @@ import sys
 from pathlib import Path
 
 if (Path(os.environ["HOME"]) / "silent").exists():
+    sys.exit(0)
+if sys.argv[1:3] == ["auth", "status"]:  # one account in every folder: only where it is kept differs (2.1.288's shape)
+    folder = os.environ.get("CLAUDE_CONFIG_DIR") or str(Path(os.environ["HOME"]) / ".claude")
+    print(json.dumps({"loggedIn": True, "authMethod": "claude.ai", "apiProvider": "firstParty", "analyticsDisabled": False,
+                      "projectsDirectory": f"{folder}/projects", "configDirectory": folder, "email": "owner@example.com",
+                      "orgId": "00000000-0000-4000-8000-000000000001", "orgName": "owner@example.com's Organization", "subscriptionType": "max"}, indent=2))
     sys.exit(0)
 if "app-server" in sys.argv:
     for raw in sys.stdin:

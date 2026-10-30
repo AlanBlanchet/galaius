@@ -489,6 +489,8 @@ def test_each_login_here_says_its_own_usage_and_a_subscriptions_never_mixes_with
     report = watch.report(now)
     assert [(login.provider, len(login.windows)) for login in report.logins] == [("claude", 2), ("codex", 0)]  # first report: « none » too
     assert [usage.subscription_id for usage in report.usage] == [subscription.id]
+    # His account in ~/.claude and in the subscription's folder: one login, said with its e-mail (owner 2026-10-30).
+    assert report.logins[0].login == report.usage[0].login != "" and report.logins[0].account.startswith("owner@example.com")
     watch.sent(report, now)
     assert watch.report(now) is None
     for stalled in ("failing", "silent"):  # the vendor unreachable, a CLI ending without a word: the last reading stands
