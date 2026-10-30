@@ -394,7 +394,7 @@ def test_continuing_on_another_subscription_carries_the_session_never_a_credenti
     with pytest.raises(SystemExit) as stopped:
         agents_resume([run_id])
     said = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
-    assert (stopped.value.code, said["subscription_refusal"]["reason"]) == (1, "capped")
+    assert (stopped.value.code, said["refusal"]["kind"], said["refusal"]["reason"]) == (1, "subscription", "capped")
     # A vendor's usage limit never refuses it (2026-10-13: « resumes at 13:40 » refused while the login answered from 13:10):
     # what this PC remembers against that login is dropped, the vendor answers the turn.
     unpinned = moved.model_copy(update={"subscription": None})

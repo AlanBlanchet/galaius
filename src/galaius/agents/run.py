@@ -28,7 +28,7 @@ from collections.abc import Callable
 from typing import BinaryIO, ClassVar, Mapping, Sequence
 from galaius.caller import Caller
 from galaius.config import Config
-from galaius_core import IMAGE_TYPES, AgentRevisionRef, ReasoningLevel, SubscriptionCap, SubscriptionChoices
+from galaius_core import IMAGE_TYPES, AgentRefusal, AgentRefusalCode, AgentRevisionRef, Coded, LaunchSkipReason, PassedOverCandidate, ReasoningLevel, SubscriptionCap, SubscriptionChoices
 from pydantic import BaseModel, ConfigDict
 
 from galaius.agents import admission, agent_queue
@@ -36,6 +36,7 @@ from galaius.agents import registry as reg
 from galaius.agents import quota, relations
 from galaius.agents import run_folder
 from galaius.agents.catalog import AgentCatalog
+from galaius.agents.catalog_connection import RoleAbsent
 from galaius.agents import community as community_agents
 from galaius.agents.community import CommunityAgent
 from galaius.agents.ceiling import contained
@@ -63,11 +64,11 @@ log = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class _SkipDecision:
-    code: reg.SkipReason
+    code: LaunchSkipReason
     message: str
 
 
-def _skip(code: reg.SkipReason, message: str) -> _SkipDecision:
+def _skip(code: LaunchSkipReason, message: str) -> _SkipDecision:
     """Keep stable machine code and human sentence together at refusal point."""
     return _SkipDecision(code, message)
 
@@ -498,9 +499,13 @@ class TaskNotHanded(RuntimeError):
     """
 
 
-class ModelUnavailable(RuntimeError):
-    """A criterion nothing currently clears. Raised rather than falling back: silently resolving
-    to some other model is worse than none — it looks like it worked."""
+class ModelUnavailable(Coded[AgentRefusal], RuntimeError):
+    """An agent this PC cannot run as asked: a criterion nothing currently clears (`model_unavailable`), or no candidate
+    of the ranked list could start (`no_candidate`, each one's reason in `AgentRefusal.skips`). Raised rather than falling
+    back: silently resolving to some other model is worse than none — it looks like it worked."""
+
+    def __init__(self, sentence: str, *, refusal: AgentRefusal | AgentRefusalCode = "model_unavailable") -> None:
+        super().__init__(refusal, sentence)
 
 
 #: Raw stream lines in which the VENDOR speaks about the request itself. Everything else — the
@@ -1708,7 +1713,7 @@ async def run_agent(
         if candidate_provider.name == "claude" and policy.catalog is None:
             definition = candidate_provider.definition_path(agent)
             if definition is None:
-                raise ModelUnavailable(f"No installed definition for {agent!r}")
+                raise RoleAbsent(f"No installed definition for {agent!r}")
             raw = definition.read_text(encoding="utf-8")
             if not raw.startswith("---\n") or "\n---" not in raw[4:]:
                 raise ModelUnavailable(f"Malformed agent definition for {agent!r}")
@@ -1868,7 +1873,9 @@ async def run_agent(
             for s in skipped
         )
         raise ModelUnavailable(
-            f"No candidate for {agent!r} can start on this machine; the ranked list was:\n{walked}"
+            f"No candidate for {agent!r} can start on this machine; the ranked list was:\n{walked}",
+            refusal=AgentRefusal(reason="no_candidate", skips=tuple(PassedOverCandidate(provider=entry.candidate.provider, model=entry.candidate.model,
+                                                                             reason=entry.reason, until=entry.until) for entry in skipped)),
         )
     provider = chosen_provider
     registered = reg.register(

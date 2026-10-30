@@ -16,9 +16,10 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from galaius_core import MACHINE_AGENT_REQUESTS, MachineFence
+from galaius_core import MACHINE_AGENT_REQUESTS, AgentRefusal, MachineFence, OwnFault
 from galaius_core.wire import internals
-from galaius.machines import OWN_FAULT, MachineConfig, MachineRunner, own_fault, said_of
+from galaius.agents.run import ModelUnavailable
+from galaius.machines import MachineConfig, MachineRunner, said_of
 from galaius.place_reviews import PlaceReviews
 
 pytestmark = pytest.mark.usefixtures("directory_backend")
@@ -151,15 +152,20 @@ def test_a_fault_of_this_pcs_own_making_never_travels_to_the_web() -> None:
     except ValidationError as error:
         # What it was DOING and the KIND of fault — the web reader is a continent from this PC and could act on
         # neither « son journal, sur ce PC, dit pourquoi » alone (product-critic 2026-10-23, Lenovo run fe4bf2c5).
-        said = said_of(error, doing="starting or driving an agent")
-        assert said == own_fault("starting or driving an agent", "its answer did not fit what Galaius expects")
-        assert said.startswith(OWN_FAULT) and not internals(said)
+        said = said_of(error, doing="driving_agent").said
+        assert said == OwnFault(doing="driving_agent", fault="contract").said
+        assert said.startswith("this computer could not build its answer") and not internals(said)
         # No field, no class, no file, no path of the dump; short enough for one line of a status.
         assert not {"MachineFence", "reason", "string_too_long", "validation"} & set(said.split()) and len(said) < 160
         # A traceback or a bare `KeyError` is the other kind: its code failed, said so, its text left in the log.
-        gone = said_of(KeyError("token"), doing="reading its data")
-        assert gone == own_fault("reading its data", "its own code failed") and not internals(gone)
-    assert said_of(PermissionError("file query targets another machine")) == "file query targets another machine"
-    assert said_of(FileNotFoundError(2, "No such file or directory"), "docs/report.md") == "docs/report.md: No such file or directory"
-    timed_out = said_of(subprocess.TimeoutExpired(["bwrap", "--ro-bind", "/srv/private-folder"], 5.0))
+        gone = said_of(KeyError("token"), doing="reading_data").said
+        assert gone == OwnFault(doing="reading_data", fault="code").said and not internals(gone)
+    assert said_of(PermissionError("file query targets another machine")).said == "file query targets another machine"
+    assert said_of(FileNotFoundError(2, "No such file or directory"), "docs/report.md").said == "docs/report.md: No such file or directory"
+    timed_out = said_of(subprocess.TimeoutExpired(["bwrap", "--ro-bind", "/srv/private-folder"], 5.0)).said
     assert timed_out == "a program this computer ran took longer than 5s" and "private-folder" not in timed_out
+    # Typed first, whatever its words or kind (code-review r2 2026-10-30: a candidate named `NotImplementedError` turned a
+    # typed `no_candidate` into an own fault), and an OS error with no words is typed too, never English alone.
+    typed = said_of(ModelUnavailable("claude: NotImplementedError in its probe", refusal=AgentRefusal(reason="no_candidate")))
+    assert (typed.refusal, typed.said) == (AgentRefusal(reason="no_candidate"), OwnFault(doing="answering_web", fault="code").said)
+    assert said_of(OSError()).refusal == OwnFault(doing="answering_web", fault="code")

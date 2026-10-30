@@ -52,6 +52,7 @@ from galaius_core import PlaceLevel
 
 from galaius.paths import UserPaths
 from galaius.pinned_directory import PinnedDirectory
+from galaius_core import AgentRefused
 from galaius.places import DEPENDENCY_FOLDERS, LEVEL_RANK, NEVER_GRANTABLE, PlaceMap, split
 from galaius.upgrade.store import active_interpreter
 
@@ -284,7 +285,7 @@ class FenceSpec(BaseModel):
                 raise PermissionError(f"{self.start} is not inside the plain project folder {self.project}")
             opened.append((self.project.relative_to(base).as_posix(), (self.project, "write")))
         elif start_parts and LEVEL_RANK[places.reach(start_parts)] < LEVEL_RANK["read"]:
-            raise PermissionError(f"no level opens {'/'.join(start_parts)} to agents; its owner sets one on this PC with `galaius machine places`")
+            raise AgentRefused("fence_closed", f"no level opens {'/'.join(start_parts)} to agents; its owner sets one on this PC with `galaius machine places`")
         binds, emptied, blanked, guards = [], [], [], []
         for path, (folder, level) in opened:
             parts = split(path)

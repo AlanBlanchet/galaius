@@ -8,12 +8,8 @@ from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict
 
-from galaius_core import AgentRefusal, Refused, WorkspaceFailureCode
+from galaius_core import AgentRefused, WorkspaceFailureCode
 
-
-
-class AgentRefused(Refused[AgentRefusal]):
-    """An agent request this computer refuses, its reason an `AgentRefusalCode` (the codes and what each means live there)."""
 
 
 class WorkspaceRefused(AgentRefused):

@@ -12,14 +12,14 @@ import time
 from importlib.util import find_spec
 from pathlib import Path
 from collections.abc import Callable
-from typing import Annotated, TypeVar, cast
+from typing import Annotated, TextIO, TypeVar, cast
 from uuid import UUID
 
 from cyclopts import App, Parameter
 from pydantic import ValidationError
 
 from galaius import feedback, live_sources, model_catalog, ollama
-from galaius_core import AGENT_TOUCH_SCOPES, ASKED_BY_MAX, IMAGE_TYPES, CommunityKind
+from galaius_core import refusal_of, AGENT_TOUCH_SCOPES, ASKED_BY_MAX, IMAGE_TYPES, Coded, CommunityKind, MachineRefusal, RefusedLine
 
 from galaius.agents import agent_queue, handback, messaging, relations
 from galaius.agents import providers as agent_providers
@@ -27,7 +27,6 @@ from galaius.agents import registry as reg
 from galaius.agents import community as community_agents
 from galaius.agents.community import CommunityAgent
 from galaius.agents.conversations import ConversationAnswers
-from galaius.agents.subscriptions import SubscriptionRefused
 from galaius.agents.catalog import AgentCatalog
 from galaius.agents.catalog_connection import CatalogConnection, CatalogConnectionError
 from galaius.fence import FenceSpec
@@ -1017,6 +1016,13 @@ def refresh_live_data() -> None:
         raise SystemExit(1)
 
 
+def said_refused(sentence: str, refusal: MachineRefusal | None, *, file: TextIO | None = None) -> None:
+    """A refusal said to whoever runs the command: its `ERROR:` line, then, typed, its reason as one `RefusedLine`."""
+    print(f"ERROR: {sentence}" if not sentence.startswith("ERROR: ") else sentence, file=file)
+    if refusal is not None:
+        print(RefusedLine(refusal=refusal).model_dump_json(), file=file)
+
+
 @agents_app.command(name="send")
 def agents_send(run_id: str, message: str, *, fyi: Annotated[bool, Parameter(name="--fyi")] = False,
                 cross_project: Annotated[bool, Parameter(name="--cross-project")] = False,
@@ -1065,9 +1071,10 @@ def agents_send(run_id: str, message: str, *, fyi: Annotated[bool, Parameter(nam
         print(f"ERROR: the resumed turn did not start: {refused}")
         raise SystemExit(1)
     waiting = SpawnLine.here().waits(delivery.run_id) if delivery.state == "queued" else None
-    print(f"{delivery.text} Its turn: {waiting}" if waiting else delivery.text)
     if delivery.state == "error":
+        said_refused(delivery.text, delivery.refusal)
         raise SystemExit(1)
+    print(f"{delivery.text} Its turn: {waiting}" if waiting else delivery.text)
 
 
 @agents_app.command(name="work-for")
@@ -1132,17 +1139,20 @@ def agents_resume(
         return
     refused = False
     for identity in targets:
-        # A run at one of his subscription caps is refused before anything is queued, typed on stderr (one JSON line
-        # `{"subscription_refusal": …}`) for the caller to word with its reset time.
+        # A run at one of his subscription caps is refused before anything is queued, typed (`said_refused`) for the
+        # caller to word with its reset time.
         if (run := reg.get_run(reg.resolve_run_id(identity) or identity)) is not None:
             try:
                 run.prepare_continue()
-            except SubscriptionRefused as refusal:
-                print(json.dumps({"run_id": run.run_id, "subscription_refusal": refusal.refusal.model_dump(mode="json")}), file=sys.stderr)
+            except Coded as refusal:
+                said_refused(f"{identity[:8]}: {refusal}", refusal_of(refusal), file=sys.stderr)
                 refused = True
                 continue
         delivery = messaging.deliver_message(identity, reg.RESUME_BRIEF)
-        print(f"{identity[:8]}: {delivery.text}", file=sys.stderr if delivery.state == "error" else sys.stdout)
+        if delivery.state == "error":
+            said_refused(f"{identity[:8]}: {delivery.text.removeprefix('ERROR: ')}", delivery.refusal, file=sys.stderr)
+        else:
+            print(f"{identity[:8]}: {delivery.text}")
         refused = refused or delivery.state == "error"
     if refused:
         raise SystemExit(1)

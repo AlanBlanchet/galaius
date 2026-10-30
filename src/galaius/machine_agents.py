@@ -64,7 +64,7 @@ from galaius.pinned_directory import PinnedDirectory
 from galaius.project_files import ProjectFolder
 from galaius.redaction import mask, redact, secret_values
 from galaius.workspace_copy import WorkspaceRefused
-from galaius.workspace_git import AgentRefused
+from galaius_core import AgentRefusal, AgentRefused
 from galaius.place_reviews import PlaceReviews
 from galaius.places import LEVEL_RANK, PlaceMap, split
 from galaius.project_secrets import ProjectEnv
@@ -205,7 +205,7 @@ class WebRuns(BaseModel):
         run of a tool of the web's own UI (a question to the blob: no conversation of his, `UI_ROLES`). Nothing here caps how
         many of those start at once but the web's start rate limit: the blob role has no tools and runs read_only."""
         if listed_role(request.role if isinstance(request, AgentStartRequest) else None) and (load := self.load(request)).full:
-            raise AgentRefused("web_full", f"{load.working} conversations started from the web are already working on this computer (at most {load.limit}); stop one first")
+            raise AgentRefused(AgentRefusal(reason="web_full", web=load), f"{load.working} conversations started from the web are already working on this computer (at most {load.limit}); stop one first")
 
     def working(self) -> bool:
         """One of these runs, or a run it launched, is starting or running now (waiting for its owner is not working)."""
@@ -439,9 +439,9 @@ class MachineAgents(BaseModel):
                           | AgentProgramsRequest | AgentProgramInstallRequest | AgentSignOutRequest | AgentSignInCodeRequest
                           | AgentToolsRequest | AgentToolInstallRequest):
             if not self.run_agents:
-                raise PermissionError("agents are off on this computer; its owner turns them on on its page on the web, or there with `galaius machine agents on`")
+                raise AgentRefused("agents_off", "agents are off on this computer; its owner turns them on on its page on the web, or there with `galaius machine agents on`")
             if not self.roots:
-                raise PermissionError("no agent folders on this computer yet; its owner adds one on its page on the web, or there with `galaius machine agent-roots <folder>`")
+                raise AgentRefused("folder_closed", "no agent folders on this computer yet; its owner adds one on its page on the web, or there with `galaius machine agent-roots <folder>`")
         if self.fence_agents and isinstance(request, (AgentStartRequest, AgentContinueRequest)) and (request.kind == "session" if isinstance(request, AgentStartRequest) else True):
             raise PermissionError("sessions and continued conversations are not fenced yet, and the agent fence is on here: start an agent (a role), "
                                   "or its owner switches the fence off there with `galaius machine fence off`")
@@ -575,18 +575,18 @@ class MachineAgents(BaseModel):
         plain, unhidden folder, never a link. Raises PermissionError otherwise."""
         base = self.roots.get(root)
         if base is None:
-            raise PermissionError(unusable(root))
+            raise AgentRefused("folder_closed", unusable(root))
         parts = [part for part in path.split("/") if part]
         if any(part in {".", ".."} or part.startswith(".") or "\\" in part for part in parts):
-            raise PermissionError("agent folders never include hidden or relative names")
+            raise AgentRefused("folder_closed", "agent folders never include hidden or relative names")
         for index in range(len(parts) + 1):
             current = base.joinpath(*parts[:index])
             try:
                 facts = current.lstat()
             except FileNotFoundError:
-                raise PermissionError(f"{root}/{path} does not exist") from None
+                raise AgentRefused("folder_closed", f"{root}/{path} does not exist") from None
             if not stat.S_ISDIR(facts.st_mode) or PinnedDirectory.link_like(facts):
-                raise PermissionError(f"{root}/{path} is not a plain folder (links and junctions are never followed)")
+                raise AgentRefused("folder_closed", f"{root}/{path} is not a plain folder (links and junctions are never followed)")
         return current
 
     def _folders(self, request: AgentFoldersRequest) -> MachineAgentAnswer:
@@ -614,7 +614,7 @@ class MachineAgents(BaseModel):
         try:
             root = self.roots.get(request.root)
             if root is None:
-                raise PermissionError(unusable(request.root))
+                raise AgentRefused("folder_closed", unusable(request.root))
             placed = tuple(place for _, place in self.workspaces.placed()) if self.workspaces is not None else ()
             return ProjectFolder.of(root, request, secrets=self.secrets, environment=self.environment, places=self.places, untrusted=placed).answer(request)
         except Exception as error:
@@ -1006,9 +1006,9 @@ class MachineAgents(BaseModel):
         cannot be fenced is refused before anything runs; every turn builds it again."""
         ready, reason = available()
         if not ready:
-            raise PermissionError(f"the agent fence is on here but cannot be built: {reason}; its owner switches it off there with `galaius machine fence off` to start agents unfenced")
+            raise AgentRefused("fence_broken", f"the agent fence is on here but cannot be built: {reason}; its owner switches it off there with `galaius machine fence off` to start agents unfenced")
         if self.places is None or self.reviews is None:
-            raise PermissionError("the agent fence is on but this runner holds no levels")
+            raise AgentRefused("fence_broken", "the agent fence is on but this runner holds no levels")
         places, base = self.places, self.places.base
         parts = folder.relative_to(base).parts
         project = None
@@ -1018,7 +1018,7 @@ class MachineAgents(BaseModel):
                 raise PermissionError("with the fence on, an agent starts inside one project folder, never in the projects folder itself")
             project = self.roots[root] / inside[0]
         elif LEVEL_RANK[places.reach(parts)] < LEVEL_RANK["read"]:
-            raise PermissionError(f"no level opens {'/'.join(parts)} to agents; with the fence on, its owner sets one there first (`galaius machine places {root} write`)")
+            raise AgentRefused("fence_closed", f"no level opens {'/'.join(parts)} to agents; with the fence on, its owner sets one there first (`galaius machine places {root} write`)")
         staging, review = {}, None
         if project is None and places.reach(parts) == "write_on_review":
             place, _ = places.place_of(parts)
@@ -1060,8 +1060,7 @@ class MachineAgents(BaseModel):
                 delivery = await AgentSpawns.run(lambda: followups.send(str(request.run_id), request.text, environment=environment, message_id=str(request.id), turn=turn))
             else:
                 delivery = await asyncio.to_thread(deliver_message, str(request.run_id), request.text, sender=reg.PERSON_SENDER, environment=environment, message_id=str(request.id), turn=turn)
-            if delivery.state == "error":
-                raise RuntimeError(delivery.text.removeprefix("ERROR: ") or "not delivered")
+            delivery.taken("not delivered")
         except BaseException:
             if request.reasoning is not None:
                 await asyncio.to_thread(reg.reasoning_set, run.run_id, run.reasoning_set)
@@ -1083,8 +1082,7 @@ class MachineAgents(BaseModel):
         environment = await asyncio.to_thread(self.launcher_environment_in, Path(run.cwd))
         delivery = await asyncio.to_thread(deliver_message, run.run_id, "", sender=reg.PERSON_SENDER, environment=environment,
                                            message_id=str(request.id), turn=agent_queue.CompactionTurn())
-        if delivery.state == "error":
-            raise RuntimeError(delivery.text.removeprefix("ERROR: ") or "not compacted")
+        delivery.taken("not compacted")
         return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail="compacting", reads_at=delivery.reads_at)
 
     def _pinned_run(self, request: AgentSendRequest) -> reg.AgentRun:
@@ -1153,8 +1151,7 @@ class MachineAgents(BaseModel):
             return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=f"allowed up to {request.up_to_percent}%")
         environment = await asyncio.to_thread(self.launcher_environment_in, Path(run.cwd))
         delivery = await asyncio.to_thread(deliver_message, run.run_id, reg.RESUME_BRIEF, sender=reg.PERSON_SENDER, environment=environment, message_id=str(request.id))
-        if delivery.state == "error":
-            raise RuntimeError(delivery.text.removeprefix("ERROR: ") or "not resumed")
+        delivery.taken("not resumed")
         return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=f"allowed up to {request.up_to_percent}%; resumed", reads_at=delivery.reads_at)
 
     async def resume_paused(self) -> list[str]:
@@ -1383,7 +1380,7 @@ class MachineAgents(BaseModel):
 
     async def _start_session(self, request: AgentStartRequest) -> MachineAgentAnswer:
         if not self.answer_approvals or self.sessions is None:
-            raise PermissionError("answering a session's approvals from the web is off on this computer; its owner turns it on there with `galaius machine agents --approvals on`")
+            raise AgentRefused("approvals_off", "answering a session's approvals from the web is off on this computer; its owner turns it on there with `galaius machine agents --approvals on`")
         folder = await asyncio.to_thread(self.folder, request.root, request.path)
         await asyncio.to_thread(self.runs.refuse_full, request)
         route, models, reason = await self.sessions.route()
@@ -1421,7 +1418,7 @@ class MachineAgents(BaseModel):
                     detail, reads_at = "compacting", "now"
                 case AgentAnswerRequest():
                     if not self.answer_approvals:
-                        raise PermissionError("answering a session's approvals from the web is off on this computer")
+                        raise AgentRefused("approvals_off", "answering a session's approvals from the web is off on this computer")
                     asked = next((item for item in await asyncio.to_thread(self.pending, run.run_id) if item.id == request.interaction_id), None)
                     if asked is None or asked.digest != request.digest:
                         raise PermissionError("this approval is no longer the one waiting on this computer; read it again")
@@ -1441,7 +1438,7 @@ class MachineAgents(BaseModel):
 
     def _require_continue(self) -> None:
         if not self.continue_conversations:
-            raise PermissionError("continuing your editor conversations from the web is off on this computer; its owner turns it on there with `galaius machine agents --continue on`")
+            raise AgentRefused("continue_off", "continuing your editor conversations from the web is off on this computer; its owner turns it on there with `galaius machine agents --continue on`")
 
     def _is_claude_conversation(self, session_id: UUID) -> bool:
         return any(path.is_file() for path in self.editor_projects.glob(f"*/{session_id}.jsonl"))
@@ -1584,7 +1581,7 @@ class MachineAgents(BaseModel):
         cwd, first, _, _ = self._read_editor(self._editor_file(request.session_id))
         root, where = self._place(cwd)
         if not root:
-            raise PermissionError("this conversation's folder is not one this computer opens to agents")
+            raise AgentRefused("folder_closed", "this conversation's folder is not one this computer opens to agents")
         folder = self.folder(root, where)
         run = reg.AgentRun(run_id=str(uuid4()), provider="claude", name="Editor conversation", task=redact(first, self.secrets)[:500] or request.text[:500],
                            cwd=str(folder), project=reg.project_for(str(folder)), permission_mode=self.permission, session_id=self.session, started_at=time.time(), status="running")

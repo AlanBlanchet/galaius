@@ -13,6 +13,7 @@ from galaius_core import AgentCatalogSnapshot, AgentRevision, AgentRevisionRef, 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from galaius.agents.catalog_connection import (
+    RoleAbsent,
     CatalogAuthenticationError,
     CatalogConnection,
     CatalogConnectionError,
@@ -99,13 +100,13 @@ class CatalogSnapshot(AgentCatalogSnapshot):
         for agent in self.agents:
             if agent.role_key == key:
                 return agent
-        raise CatalogConnectionError(f"role {key!r} is absent from the active server catalog")
+        raise RoleAbsent(f"role {key!r} is absent from the active server catalog")
 
     def revision(self, reference: AgentRevisionRef) -> AgentRevision:
         for agent in self.agents:
             if agent.id == reference.id and agent.revision == reference.revision:
                 return agent
-        raise CatalogConnectionError("pinned agent revision is absent from this catalog")
+        raise RoleAbsent("pinned agent revision is absent from this catalog")
 
     def delegated(self, name: str) -> AgentRevisionRef:
         """The revision a delegate capability of this name launches, wherever this catalog declares it.

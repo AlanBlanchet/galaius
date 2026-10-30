@@ -14,7 +14,7 @@ from uuid import uuid4
 
 import pytest
 
-from galaius_core import MACHINE_AGENT_REQUESTS, PROJECT_TEXT_MAX, MachineAgentAnswer, ProjectFileRefusal, Refused
+from galaius_core import refusal_of, MACHINE_AGENT_REQUESTS, PROJECT_TEXT_MAX, MachineAgentAnswer, ProjectFileRefusal, Refused
 from galaius.machine_agents import MachineAgents, WebRuns
 from galaius.pinned_directory import PinnedDirectory
 from galaius.project_files import ProjectFolder
@@ -423,7 +423,7 @@ def test_an_office_document_is_searched_for_the_pcs_secrets_and_any_other_file_i
     else:
         with pytest.raises(PermissionError) as refused:
             _ask(agents, "bytes", path="report.docx", length=10)
-        assert Refused.refusal_of(refused.value) == ProjectFileRefusal(reason=why)
+        assert refusal_of(refused.value) == ProjectFileRefusal(reason=why)
 
 
 def test_a_secret_written_escaped_in_a_documents_xml_is_found(project: Path, tmp_path: Path) -> None:
@@ -446,7 +446,7 @@ def test_a_bytes_refusal_says_its_reason_typed(project: Path, tmp_path: Path, pa
         return
     with pytest.raises(PermissionError) as refused:
         _ask(_agents(project, tmp_path), "bytes", path=path, length=10)
-    assert Refused.refusal_of(refused.value) == ProjectFileRefusal(reason=reason)
+    assert refusal_of(refused.value) == ProjectFileRefusal(reason=reason)
 
 
 # Credential bodies in pieces, so no secret scanner mistakes the fixtures for real keys.

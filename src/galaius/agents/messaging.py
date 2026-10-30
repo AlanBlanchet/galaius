@@ -11,7 +11,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 from galaius.caller import Caller
-from galaius_core import ReadsAt
+from galaius_core import refusal_of, Coded, MachineRefusal, ReadsAt
 
 from galaius.agents import agent_queue, community, relations
 from galaius.agents.critic_rounds import CriticRounds, turn_of
@@ -21,9 +21,13 @@ from galaius.agents.events import Relation
 from galaius.agents.policy import PolicyError
 from galaius.agents.providers import AgentProvider, provider_for
 from galaius.agents.run import ModelUnavailable, load_policy, resolve_continuable_model
-from galaius.agents.subscriptions import SubscriptionRefused
+from galaius.agents.catalog_connection import RoleAbsent
 
 DeliveryState = Literal["queued", "replied", "error"]
+
+
+class Undelivered(Coded[MachineRefusal], RuntimeError):
+    """A message its run could not take, a typed refusal saying why."""
 
 
 class Delivery(BaseModel):
@@ -32,11 +36,21 @@ class Delivery(BaseModel):
     state: DeliveryState
     text: str
     run_id: str
+    #: `error`: why, typed, when a typed refusal said it (`Coded`): the web words it from its code (`Undelivered`).
+    refusal: MachineRefusal | None = None
     queue_id: str | None = None
     #: `queued`: when the run's agent reads it (`galaius_core.ReadsAt`); None when not queued.
     reads_at: ReadsAt | None = None
     #: `queued`: the message was queued by an earlier call under the same message id, not by this one.
     repeated: bool = False
+
+    def taken(self, fallback: str) -> "Delivery":
+        """This delivery, or its refusal raised with its words (`fallback` when it said none): `Undelivered` typed, a
+        `RuntimeError` when it had no type."""
+        if self.state != "error":
+            return self
+        said = self.text.removeprefix("ERROR: ") or fallback
+        raise Undelivered(self.refusal, said) if self.refusal is not None else RuntimeError(said)
 
     @classmethod
     def queued(cls, run: reg.AgentRun, item: agent_queue.QueueItem, *, repeated: bool = False, waits: str = "") -> "Delivery":
@@ -136,7 +150,7 @@ def policy_for_continuation(run, provider: AgentProvider, environment: Mapping[s
         if not criterion:
             raise ModelUnavailable(f"No model criterion for {run.agent!r}; configure it in the agent policy UI")
         if policy.catalog is None and not provider.valid_definition(run.agent):
-            raise ModelUnavailable(f"No installed definition for {run.agent!r}")
+            raise RoleAbsent(f"No installed definition for {run.agent!r}")
         try:
             provider.validate_permission_mode(run.permission_mode)
         except ValueError as error:
@@ -149,7 +163,9 @@ def policy_for_continuation(run, provider: AgentProvider, environment: Mapping[s
         return policy, criterion, model, policy.effort_for(run.agent, chosen=run.reasoning_set)
     except CatalogOffline:
         raise
-    except (ModelUnavailable, PolicyError, ValueError) as error:
+    except Coded:
+        raise   # typed already (`ModelUnavailable`, `RoleAbsent`): its code stays
+    except (PolicyError, ValueError) as error:
         raise ModelUnavailable(str(error)) from error
 
 
@@ -256,8 +272,8 @@ def _queue_message(
             if reg.get_run(speaker) is None:
                 run.prepare_continue()
             _, criterion, model, reasoning = policy_for_continuation(run, provider, environment)
-        except (ModelUnavailable, SubscriptionRefused) as policy_error:
-            return Delivery(state="error", text=f"ERROR: {policy_error}", run_id=run.run_id)
+        except Coded as policy_error:
+            return Delivery(state="error", text=f"ERROR: {policy_error}", run_id=run.run_id, refusal=refusal_of(policy_error))
         except CatalogOffline:
             # His words are never lost to a link that is down: the message is recorded and waits, and the dispatcher
             # resolves the model again when it starts the turn (`_fresh_policy`, which waits the same way).

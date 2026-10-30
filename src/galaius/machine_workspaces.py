@@ -45,6 +45,7 @@ from galaius.file_lock import exclusive
 from galaius.paths import UserPaths
 from galaius.pinned_directory import PinnedDirectory
 from galaius.places import DEPENDENCY_FOLDERS
+from galaius_core import AgentRefused
 from galaius.private_files import PRIVATE_FILES
 from galaius.workspace_copy import PackedFile, WorkspaceArchiveReader, WorkspaceFiles, WorkspaceTransfers
 from galaius.workspace_git import Git, WorkspaceRefused
@@ -181,7 +182,7 @@ class MachineWorkspaces(BaseModel):
         """Agent root `root`'s folder names below the working directory (PermissionError when it is none here)."""
         base = self.roots.get(root)
         if base is None:
-            raise PermissionError(unusable(root))
+            raise AgentRefused("folder_closed", unusable(root))
         return base.relative_to(self.working_directory.resolve()).parts
 
     def _room(self, root: str, space: bool = True) -> None:

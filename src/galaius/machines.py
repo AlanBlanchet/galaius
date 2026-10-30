@@ -23,7 +23,7 @@ import traceback
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
-from typing import ClassVar, Literal, Self
+from typing import ClassVar, Literal, NamedTuple, Self
 from urllib.parse import urlencode, urlsplit, urlunsplit
 from uuid import UUID, uuid4
 
@@ -31,7 +31,7 @@ import httpx
 import websockets
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, ValidationError, field_validator, model_validator
 
-from galaius_core import AGENT_FILES_FEATURE, AGENT_IMAGES_FEATURE, AGENT_REASONING_FEATURE, MACHINE_TOOLS_FEATURE, AGENT_IMAGES_WIRE, MACHINE_AGENT_REQUESTS, PROJECTS_DIR, PROJECTS_ROOT, PROJECTS_ROOT_FEATURE, RUN_MOVE_LOGIN_FEATURE, RUN_MOVE_WAITS_FEATURE, SUBSCRIPTIONS_FEATURE, WEB_LIMIT_FEATURE, AgentCompactRequest, AgentMoveRequest, AgentSendRequest, AgentSignInCodeRequest, AgentStartRequest, MACHINE_MODELS, MachineProblem, MachineProblemCode, MachineAgentSettings, MachineAgentSettingsState, MachineAgentSettingsUpdate, PlacePath, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, AgentRefusal, MachineAgentAnswer, Refused, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachineRuntime, MachineTokenSwap, PlaceLevel, ScriptFile, ScriptLanguage, UserModelOrigin, SCREEN_FEATURE, PROJECT_FILES_FEATURE, PROJECT_FILE_BYTES_FEATURE, PROJECT_FILE_OFFSET_FEATURE
+from galaius_core import refusal_of, AGENT_FILES_FEATURE, AGENT_IMAGES_FEATURE, AGENT_REASONING_FEATURE, MACHINE_TOOLS_FEATURE, AGENT_IMAGES_WIRE, MACHINE_AGENT_REQUESTS, PROJECTS_DIR, PROJECTS_ROOT, PROJECTS_ROOT_FEATURE, RUN_MOVE_LOGIN_FEATURE, RUN_MOVE_WAITS_FEATURE, SUBSCRIPTIONS_FEATURE, WEB_LIMIT_FEATURE, AgentCompactRequest, AgentMoveRequest, AgentSendRequest, AgentSignInCodeRequest, AgentStartRequest, MACHINE_MODELS, MachineProblem, MachineProblemCode, MachineAgentSettings, MachineAgentSettingsState, MachineAgentSettingsUpdate, PlacePath, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, AgentRefusal, MachineAgentAnswer, MachineRefusal, OwnFault, OwnFaultDoing, OwnFaultKind, Refused, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachineRuntime, MachineTokenSwap, PlaceLevel, ScriptFile, ScriptLanguage, UserModelOrigin, SCREEN_FEATURE, PROJECT_FILES_FEATURE, PROJECT_FILE_BYTES_FEATURE, PROJECT_FILE_OFFSET_FEATURE
 from galaius import USER_AGENT
 from galaius import prompt_mirror, prompt_projection
 from galaius.agents.subscription_watch import SubscriptionWatch
@@ -76,7 +76,7 @@ from galaius.fence import EGRESS, FenceSpec, available
 from galaius.places import BrowseBudget, IN_PLACE_WRITES, INSTRUCTION_NAMES, LEVEL_RANK, PlaceMap, split
 from galaius.place_reviews import PlaceReviews, write_plain
 from galaius.workspace_copy import WorkspaceTransfers
-from galaius.workspace_git import AgentRefused
+from galaius_core import AgentRefused
 from galaius.windowless import console_python
 
 if sys.platform == "win32":
@@ -301,52 +301,61 @@ class MachineConfig(MachineAgentSettings):
 
 logger = logging.getLogger(__name__)
 
-#: What the web is told when this computer's own code failed rather than the request: the fault's own text names
-#: fields, classes and files nobody reading a screen wrote, so the whole of it stays in this PC's log, where its
-#: owner reads it. The HEAD of that sentence, which the server matches to word it (`machines/refusals.py`): a PC
-#: released before `own_fault` sends it alone, with nothing of what it was doing.
-OWN_FAULT = "this computer could not build its answer"
-#: What this computer was DOING when its own code failed, one of a closed set: the sentence is read on the web, so
-#: it must say that much without the fault's text. This English is the contract between runner and server (there is
-#: no refusal code on this wire): the server holds its reader's words for each of them, keyed by this English.
-OwnFaultDoing = Literal["answering the web", "starting or driving an agent", "listing its files", "reading its data", "running a step"]
-#: The KIND of that fault, as plainly as it can be said naming no field, class or file: an answer this release could
-#: not build (a contract `ValidationError`), else its code failed outright (a traceback, a `KeyError`).
-OwnFaultKind = Literal["its answer did not fit what Galaius expects", "its own code failed"]
+#: A fault of this computer's own code is told as `OwnFault` (what it was doing, its kind): its own text names fields,
+#: classes and files nobody reading a screen wrote, so it stays in this PC's log.
 #: The exceptions raised here that are already WRITTEN FOR A READER: their own sentence travels to the web as it is.
 #: Anything else is this PC's code failing, whatever its text reads like — a `KeyError`'s « 'token' » reached the web
 #: as though the PC had refused in those words, once a catch-all started answering every request (2026-10-23).
 WORDED: tuple[type[BaseException], ...] = (PermissionError, OSError, ValueError, RuntimeError, subprocess.TimeoutExpired)
 
 
-def own_fault(doing: OwnFaultDoing, kind: OwnFaultKind) -> str:
-    """The sentence the web is told for a fault of this PC's own making: what it was DOING and the KIND of fault, and
-    no byte of the fault's own text. Its reader is on the web, a continent from this PC (product-critic 2026-10-23:
-    « son journal, sur ce PC, dit pourquoi » named neither cause nor command), and the server turns this into his
-    sentence plus the one command that reads this PC's log."""
-    return f"{OWN_FAULT} while {doing}: {kind}"
+def fault_of(error: BaseException) -> OwnFaultKind | None:
+    """The kind of fault `error` is when it is of this PC's own making — a contract `ValidationError`, a text written for a
+    program, an exception nothing here words for a reader (`WORDED`) or one with no words at all; None for a refusal
+    written for its reader."""
+    words = str(error).strip()
+    if isinstance(error, ValidationError):
+        return "contract"
+    if not isinstance(error, WORDED) or internals(words) or not (words or isinstance(error, OSError)):
+        return "code"
+    return None
 
 
-def said_of(error: BaseException, about: str = "", *, doing: OwnFaultDoing = "answering the web") -> str:
+class Said(NamedTuple):
+    """What this PC answers the web for an error: its English sentence (`said`) and, typed, why (`refusal`), the one
+    the server words in its reader's language."""
+
+    said: str
+    refusal: MachineRefusal | None
+
+
+def said_of(error: BaseException, about: str = "", *, doing: OwnFaultDoing = "answering_web") -> Said:
     """What this PC answers the web when it could not do what was asked, `doing` naming what it was at.
 
-    A refusal's own sentence (every `PermissionError`, `ValueError` and `RuntimeError` raised here
-    is written for a reader) travels as it is; an OS fault says what it could not do `about` the
-    path it touched; a program that ran too long says so without its argv. A fault of this PC's own
-    making travels as `own_fault`: a contract `ValidationError`, a text written for a program, or an
-    exception nothing here words for a reader (`WORDED`). Its own text is logged here and never
-    relayed (2026-10-15: a 464-character fence reason reached the web as « 1 validation error for
+    A typed refusal (`Coded`) travels with its type, whatever its sentence names (a sentence that is a text written
+    for a program stays in the log). Any other refusal's own sentence
+    (every `PermissionError`, `ValueError` and `RuntimeError` raised here is written for a reader) travels as it is;
+    an OS fault says what it could not do `about` the path it touched; a program that ran too long says so without
+    its argv. A fault of this PC's own making travels as its `OwnFault`: a contract `ValidationError`, a text written
+    for a program, an exception nothing here words for a reader (`WORDED`), or no words at all. Its own text is logged
+    here and never relayed (2026-10-15: a 464-character fence reason reached the web as « 1 validation error for
     MachineFence … » and the Data page showed it).
     """
     words = str(error).strip()
-    if isinstance(error, ValidationError) or not isinstance(error, WORDED) or internals(words):
-        logger.warning("this computer could not build its answer while %s", doing, exc_info=error)
-        return own_fault(doing, "its answer did not fit what Galaius expects" if isinstance(error, ValidationError) else "its own code failed")
+    if (typed := refusal_of(error)) is not None:
+        if words and not internals(words):
+            return Said(words, typed)
+        logger.warning("%s", words or type(error).__name__, exc_info=error)  # a text written for a program, kept to the log
+        return Said(OwnFault(doing=doing, fault="code").said, typed)
     if isinstance(error, subprocess.TimeoutExpired):
-        return f"a program this computer ran took longer than {error.timeout:.0f}s"
-    if isinstance(error, OSError) and not isinstance(error, PermissionError):
-        return ": ".join(part for part in (about, error.strerror or words) if part) or own_fault(doing, "its own code failed")
-    return words or own_fault(doing, "its own code failed")
+        return Said(f"a program this computer ran took longer than {error.timeout:.0f}s", None)
+    if isinstance(error, OSError) and not isinstance(error, PermissionError) and (said := ": ".join(part for part in (about, error.strerror or words) if part)):
+        return Said(said, None)
+    if (fault := fault_of(error)) is None and words:
+        return Said(words, None)
+    own = OwnFault(doing=doing, fault=fault or "code")
+    logger.warning(own.said, exc_info=error)
+    return Said(own.said, own)
 
 PLACE_PATH: TypeAdapter[str] = TypeAdapter(PlacePath)
 
@@ -1471,7 +1480,7 @@ class MachineRunner:
             logger.info("file query %s: %s", query.path or "(roots)", listing.kind)
             answer = MachineFileQueryResult(query_id=query.id, listing=listing)
         except (PermissionError, OSError, ValueError) as error:
-            answer = MachineFileQueryResult(query_id=query.id, error=fitted(MachineFileQueryResult, "error", said_of(error, query.path, doing="listing its files")))
+            answer = MachineFileQueryResult(query_id=query.id, error=fitted(MachineFileQueryResult, "error", said_of(error, query.path, doing="listing_files").said))
         await socket.send(json.dumps({"type": "file_listing", "result": answer.model_dump(mode="json")}))
 
     async def _answer_data_request(self, socket, config: MachineConfig, payload: object) -> None:
@@ -1489,7 +1498,7 @@ class MachineRunner:
             answer = await asyncio.to_thread(MachineDataFiles(config=self._current_config(config)).answer, request)
             logger.info("data %s %s/%s", request.op, request.root or "(roots)", request.path)
         except (PermissionError, OSError, ValueError) as error:
-            answer = MachineDataAnswer(request_id=request.id, error=fitted(MachineDataAnswer, "error", said_of(error, request.path, doing="reading its data")))
+            answer = MachineDataAnswer(request_id=request.id, error=fitted(MachineDataAnswer, "error", said_of(error, request.path, doing="reading_data").said))
         await socket.send(json.dumps({"type": "data_answer", "result": answer.model_dump(mode="json")}))
 
     async def _apply_web_settings(self, socket, config: MachineConfig, payload: object) -> None:
@@ -1594,14 +1603,14 @@ class MachineRunner:
                                                                  ("answer", answer.detail if request.op in {"answer", "send", "provider"} else None)) if value)
             logger.log(logging.INFO if request.action else logging.DEBUG, "agent %s %s", request.op, said)
         except ANSWERED_REFUSALS as error:
-            answer = MachineAgentAnswer(request_id=request.id, error=fitted(MachineAgentAnswer, "error", said_of(error, doing="starting or driving an agent")), refusal=Refused.refusal_of(error))
+            answer = MachineAgentAnswer(request_id=request.id, error=fitted(MachineAgentAnswer, "error", (said := said_of(error, doing="driving_agent")).said), refusal=said.refusal)
             logger.warning("agent %s refused: %s", request.op, answer.error)
         except Exception as error:  # noqa: BLE001 — the asker is never left with no answer at all
             # Whatever this was, the server is waiting on an answer to THIS request: without one it
             # cannot tell a refusal from a frozen PC and tells him the PC « n'a pas confirmé le
             # lancement » minutes later (2026-10-23 16:29, his new conversation: `admission.Paused`
             # derived from bare `Exception`, so the only trace was this runner's own log line).
-            answer = MachineAgentAnswer(request_id=request.id, error=fitted(MachineAgentAnswer, "error", said_of(error, doing="starting or driving an agent")))
+            answer = MachineAgentAnswer(request_id=request.id, error=fitted(MachineAgentAnswer, "error", (said := said_of(error, doing="driving_agent")).said), refusal=said.refusal)
             logger.error("agent %s failed: %s", request.op, answer.error, exc_info=error)
         if request.action:
             # The whole brief / message stays HERE, in the owner's local log; the server keeps a digest.
@@ -1729,7 +1738,7 @@ class MachineRunner:
                 result = MachineCommandResult(command_id=command.id, nonce=command.nonce, status="succeeded", result=output[:256 * 1024])
             except Exception as error:
                 logger.error("%s step failed", command.impl.kind, exc_info=error, extra=bound)
-                result = MachineCommandResult(command_id=command.id, nonce=command.nonce, status="failed", error=fitted(MachineCommandResult, "error", said_of(error, doing="running a step")))
+                result = MachineCommandResult(command_id=command.id, nonce=command.nonce, status="failed", error=fitted(MachineCommandResult, "error", said_of(error, doing="running_step").said))
         finally:
             # Threat #1c: a pooled tenant's VRAM must be scrubbed whether its run succeeded,
             # failed, or crashed — never conditioned on the run's own outcome.

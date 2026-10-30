@@ -27,11 +27,20 @@ from pydantic import BaseModel, ConfigDict, model_validator
 
 from galaius import USER_AGENT
 from galaius.file_lock import exclusive
+from galaius_core import AgentRefusal, Coded
+
 from galaius.private_files import PRIVATE_FILES
 
 
 class CatalogConnectionError(ValueError):
     """A catalog connection that cannot be used without changing its configuration."""
+
+
+class RoleAbsent(Coded[AgentRefusal], CatalogConnectionError):
+    """A role this catalog does not hold (yet): its PC's release predates it, or its server no longer has it."""
+
+    def __init__(self, sentence: str) -> None:
+        super().__init__("role_absent", sentence)
 
 
 class CatalogAuthenticationError(CatalogConnectionError):

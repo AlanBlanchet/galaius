@@ -18,7 +18,7 @@ import hmac
 import logging
 import time
 
-from galaius_core import MACHINE_AGENT_REQUESTS, PROJECTS_ROOT, PROJECTS_ROOT_FEATURE, AgentProviderState, AgentRefusal, Refused, MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentSettings, MachineAgentSettingsUpdate, MachineWorkspaceJob, SubscriptionLimits, WebLoad, MachineRef, ScreenAssertion, ScreenOpenRequest, ScreenReadiness, ScreenStatusRequest
+from galaius_core import refusal_of, MACHINE_AGENT_REQUESTS, PROJECTS_ROOT, PROJECTS_ROOT_FEATURE, AgentProviderState, AgentRefusal, Refused, MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentSettings, MachineAgentSettingsUpdate, MachineWorkspaceJob, SubscriptionLimits, WebLoad, MachineRef, ScreenAssertion, ScreenOpenRequest, ScreenReadiness, ScreenStatusRequest
 from galaius.desktop.screen_desk import ScreenDesk
 from galaius.machine_programs import AgentPrograms
 from galaius.agents import agent_queue, messaging
@@ -28,7 +28,7 @@ from galaius.agents.run import ModelUnavailable
 from galaius.agents.subscriptions import RunSubscription, Subscription, SubscriptionRefused
 from galaius.machine_agents import LogRing, MachineAgents, MachineSessions, WebRun, WebRuns, interaction_digest
 from galaius.redaction import redact
-from galaius.workspace_git import AgentRefused
+from galaius_core import AgentRefused
 from galaius.fence import FenceSpec
 from galaius.config import UserConfig
 from galaius import machines
@@ -1133,7 +1133,7 @@ def test_the_web_cap_counts_conversations_never_the_agents_they_launched(base: P
     started()
     with pytest.raises(AgentRefused, match=r"^4 conversations started from the web are already working on this computer \(at most 4\)") as refused:
         agents._prepare_start(start, None)
-    assert Refused.refusal_of(refused.value) == AgentRefusal(reason="web_full")   # typed for every web: an older one reads only the sentence
+    assert refusal_of(refused.value) == AgentRefusal(reason="web_full", web=WebLoad(working=4, limit=4))   # typed with its count: the web words it alone
     with pytest.raises(AgentRefused) as refused:
         agents._prepare_start(start.model_copy(update={"web_limit": 4}), None)
     assert refused.value.refusal.reason == "web_full"

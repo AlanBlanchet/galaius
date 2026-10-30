@@ -1,15 +1,16 @@
 """The runtime's refusals on the one coded-refusal base (galaius-core `Refused`): each kind declares only its reason's type,
-a bare reason is validated into it at the raise, and the kinds a machine answer carries reach it whole (`Refused.refusal_of`)."""
+a bare reason is validated into it at the raise, and the kinds a machine answer carries reach it whole (`refusal_of`)."""
 from datetime import UTC, datetime
 
 import pytest
-from galaius_core import AgentRefusal, Refused, SubscriptionCap, SubscriptionRefusal
+from galaius_core import AgentRefusal, Refused, SubscriptionCap, SubscriptionRefusal, refusal_of
 from pydantic import ValidationError
 
 from galaius.agents.host import ConversationRefused
 from galaius.agents.subscriptions import SubscriptionCapped, SubscriptionRefused
 from galaius.machine_programs import ProgramFailed
-from galaius.workspace_git import AgentRefused, WorkspaceRefused
+from galaius_core import AgentRefused
+from galaius.workspace_git import WorkspaceRefused
 
 CAP = SubscriptionCap(window="five_hour", used_percent=81, cap_percent=80, at_cap="finish", resets_at=datetime(2026, 10, 26, 15, tzinfo=UTC))
 
@@ -24,7 +25,7 @@ CAP = SubscriptionCap(window="five_hour", used_percent=81, cap_percent=80, at_ca
     (ConversationRefused("conflict", "Conversation already has an active turn."), None),
 ])
 def test_a_refusal_carries_its_typed_reason_and_its_sentence(raised, answered) -> None:
-    assert isinstance(raised, PermissionError) and Refused.refusal_of(raised) == answered and str(raised)
+    assert isinstance(raised, PermissionError) and refusal_of(raised) == answered and str(raised)
     kind = SubscriptionRefused if isinstance(raised, SubscriptionCapped) else type(raised)   # a cap builds its own refusal
     with pytest.raises(ValidationError):
         kind("no_such_reason", "a reason its kind does not know is refused at the raise")
