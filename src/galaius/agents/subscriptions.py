@@ -20,6 +20,7 @@ from galaius_core import AgentProvider as ProviderName, RunSubscription as WireR
 from galaius_core import LoginIdentity, Refused, SubscriptionChoice, SubscriptionRefusal, SubscriptionUsage, SubscriptionUsageReport, UsageWindow
 from pydantic import BaseModel, ConfigDict
 
+from galaius.agents import quota
 from galaius.agents.providers import PROVIDERS, AgentProvider
 from galaius.paths import UserPaths
 
@@ -335,12 +336,14 @@ class Subscription(BaseModel):
 
 
 class PassedOver(BaseModel):
-    """Why a launch passed over every subscription of one provider: the caps they were at, the English of each refusal."""
+    """Why a launch passed over subscriptions of one provider: the caps they were at, the English of each refusal, the
+    logins at their usage limit (`held`, waited on should nothing else start)."""
 
     model_config = ConfigDict(frozen=True)
 
     caps: tuple[SubscriptionCap, ...] = ()
     said: str = ""
+    held: tuple[UUID | None, ...] = ()
 
 
 class RunSubscription(WireRunSubscription):
@@ -355,17 +358,23 @@ class RunSubscription(WireRunSubscription):
     @classmethod
     def first_under_cap(cls, offered: list[Self], environment: Mapping[str, str], provider: str) -> tuple[Self | None, dict[str, str], PassedOver]:
         """The first of `offered` (one provider's, his order) a launch of `provider` can run on now, with its environment
-        (`bound`); none: why each was passed over (`PassedOver`: the caps reached, the English of the first refusal)."""
-        caps, said = [], []
+        (`bound`); none: why each was passed over (`PassedOver`). A login at its usage limit waits for its reopening; one
+        whose sign-in was lost is asked again after the others, never ahead of a spare that works (2026-10-31: his second
+        Claude account sat unused while the first waited for its weekly reset)."""
+        held, lost, ready = [], [], []
         for option in offered:
+            pause = quota.login_pause(provider, subscription=option.subscription_id)
+            (ready if pause is None else held if pause.reason == "usage_limit" else lost).append(option)
+        caps, said, waiting = [], [], tuple(option.subscription_id for option in held)
+        for option in ready + lost:
             try:
-                return option, option.bound(environment, provider), PassedOver()
+                return option, option.bound(environment, provider), PassedOver(held=waiting)
             except SubscriptionCapped as capped:
                 caps.append(capped.refusal.cap)
                 said.append(str(capped))
             except SubscriptionRefused as refused:
                 said.append(str(refused))
-        return None, dict(environment), PassedOver(caps=tuple(caps), said="; ".join(said)[:400])
+        return None, dict(environment), PassedOver(caps=tuple(caps), said="; ".join(said)[:400], held=waiting)
 
     @classmethod
     def closed(cls, providers: Iterable[str]) -> dict[str, Path]:

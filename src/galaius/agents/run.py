@@ -13,6 +13,7 @@ from datetime import UTC, date, datetime
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -24,7 +25,7 @@ from uuid import UUID
 from pathlib import Path
 import subprocess
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import BinaryIO, ClassVar, Mapping, Sequence
 from galaius.caller import Caller
 from galaius.config import Config
@@ -1391,6 +1392,12 @@ def resolve_role(policy: Policy, agent: str | None, *, reference: AgentRevisionR
     return policy, role, AgentRevisionRef(id=selected.id, revision=selected.revision)
 
 
+def _reopening(provider: str, logins: Iterable[UUID | None]) -> admission.Hold | None:
+    """The usage-limit hold among `provider`'s `logins` that reopens first; None when none is held."""
+    holds = [hold for login in logins if (hold := admission.Hold.usage(provider, login)) is not None]
+    return min(holds, key=lambda hold: hold.until if hold.until is not None else math.inf, default=None)
+
+
 async def run_agent(
     provider: AgentProvider | None,
     task: str,
@@ -1599,15 +1606,19 @@ async def run_agent(
     offered = {} if choices is None or pinned is not None else \
         {provider: [RunSubscription.of(choice) for choice in choices.of(provider)] for provider in dict.fromkeys(choice.provider for choice in choices.subscriptions)}
     caps: list[SubscriptionCap] = []
-    # A quota note is read against the login a candidate would first run on: its provider's first offered, or the run's own.
-    first_login = {provider: options[0].subscription_id for provider, options in offered.items()}
     pinned_id = pinned.subscription_id if pinned is not None else None
+    # The logins a candidate may run on: its provider's offered ones, in his order, else the run's own.
+    logins = {provider: [option.subscription_id for option in options] for provider, options in offered.items()}
+    # A quota note is read against the login a candidate would first run on: the first one whose window is open.
     noted = {index: until for index, candidate in enumerate(candidates)
-             if (until := quota.blocked_until(candidate.provider, candidate.model, subscription=first_login.get(candidate.provider, pinned_id))) is not None}
+             if (until := quota.blocked_until(candidate.provider, candidate.model, subscription=next(
+                 (login for login in logins.get(candidate.provider, [pinned_id]) if admission.Hold.usage(candidate.provider, login) is None),
+                 logins.get(candidate.provider, [pinned_id])[0]))) is not None}
     # A login whose usage window refused a turn and named its reopening is out of the walk until then (`admission`),
-    # asked before each candidate: a child started there now is refused the same way, and a refusal heard from one model
-    # pauses its login's others. Every candidate held: the spawn waits in line (`admission.Paused`), never refused for it.
-    held: dict[int, admission.Hold] = {}
+    # asked afresh before each candidate: a refusal heard from one model pauses its login's others, and a provider
+    # offered several runs on the next of them (`first_under_cap`). Every login of every candidate held: the spawn waits
+    # in line (`admission.Paused`) for the one reopening first, never refused for it.
+    waits: dict[int, admission.Hold] = {}
     chosen_index = -1
     walk = deque([index for index in range(len(candidates)) if index not in noted] + list(noted))
     #: Candidates passed over only because this login was refused them before: asked again, once, when
@@ -1624,18 +1635,20 @@ async def run_agent(
         if (candidate.provider, candidate.model) in passed_over:
             skipped.append(_skip_record(candidate, _skip("quota_exceeded", f"{candidate.provider}/{candidate.model} refused this brief before it started; relaunched on the next ranked model")))
             continue
-        if (hold := admission.Hold.of_login(candidate.provider, first_login.get(candidate.provider, pinned_id))) is not None \
-                and hold.reason == "usage_limit":
-            held[index] = hold
+        if candidate.provider not in offered and (hold := admission.Hold.usage(candidate.provider, pinned_id)) is not None:
+            waits[index] = hold
             skipped.append(_skip_record(candidate, _skip("quota_exceeded", hold.line()), until=hold.until))
             continue
         candidate_provider = by_name[candidate.provider]
         candidate_pin, candidate_env = pinned, environment
         if candidate.provider in offered:
             candidate_pin, candidate_env, passed = RunSubscription.first_under_cap(offered[candidate.provider], environment, candidate.provider)
+            if (hold := _reopening(candidate.provider, passed.held)) is not None:
+                waits[index] = hold  # waited on should this candidate not start on another of his logins
             if candidate_pin is None:
                 caps.extend(passed.caps)
-                skipped.append(_skip_record(candidate, _skip("subscription_capped" if passed.caps else "subscription_missing", passed.said)))
+                skipped.append(_skip_record(candidate, _skip("quota_exceeded", hold.line()), until=hold.until) if hold is not None and not passed.said
+                               else _skip_record(candidate, _skip("subscription_capped" if passed.caps else "subscription_missing", passed.said)))
                 continue
         candidate_pin_id = candidate_pin.subscription_id if candidate_pin is not None else None
         candidate_fence = fence if fence is None or not offered else \
@@ -1834,6 +1847,9 @@ async def run_agent(
                 if quota_reason == "quota_exceeded" \
                 else _unsupported_message(candidate, f"{_vendor_words(said)}; passed over for the next ranked model")
             skipped.append(_skip_record(candidate, _skip(quota_reason, message), until=until))
+            if candidate.provider in offered and admission.Hold.usage(candidate.provider, candidate_pin_id) is not None \
+                    and any(admission.Hold.usage(candidate.provider, login) is None for login in logins[candidate.provider]):
+                walk.appendleft(index)  # its login just reached its limit: the same model on his next one, before any lower one
             continue
         chosen = candidate
         chosen_index = index
@@ -1858,11 +1874,10 @@ async def run_agent(
     if chosen is None or process is None or chosen_provider is None or model is None:
         # Nothing else could start: it starts once a held login reopens, never refused for it — one whose launch was just
         # refused naming its reopening included (`quota.record_refusal` paused it).
-        held = held or {index: hold for index, candidate in enumerate(candidates)
-                        if (hold := admission.Hold.of_login(candidate.provider, first_login.get(candidate.provider, pinned_id))) is not None
-                        and hold.reason == "usage_limit"}
-        if held:
-            raise admission.Paused(tuple(dict.fromkeys(held.values())))
+        waits = waits or {index: hold for index, candidate in enumerate(candidates)
+                        if (hold := _reopening(candidate.provider, logins.get(candidate.provider, [pinned_id]))) is not None}
+        if waits:
+            raise admission.Paused(tuple(dict.fromkeys(waits.values())))
         if caps:
             # A cap is what stood in the way: said as such, the window reopening first (an allowance or a wait opens it).
             raise SubscriptionCapped(min(caps, key=lambda cap: cap.resets_at or datetime.max.replace(tzinfo=UTC)))

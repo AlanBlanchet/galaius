@@ -41,6 +41,13 @@ class MemoryReading(BaseModel):
     tenant: tuple[str, float] | None = None
 
 
+def _moment(at: datetime) -> str:
+    """`at` as the line says it: its hour today, « demain 20:01 », else its date (a weekly window reopens days later:
+    « jusqu'à 20:01 » read as tonight, 2026-10-31)."""
+    days = (at.date() - datetime.now().date()).days
+    return at.strftime("%H:%M") if days <= 0 else f"demain {at:%H:%M}" if days == 1 else at.strftime("%d/%m %H:%M")
+
+
 class Hold(BaseModel):
     """One reason a turn does not start here now: its cause, a login's pause (`quota.Pause`, for `provider` /
     `subscription`) or the agents' memory (`MemoryReading`, every turn)."""
@@ -73,6 +80,12 @@ class Hold(BaseModel):
         pause = quota.login_pause(provider, subscription=subscription, now=now)
         return None if pause is None else cls(cause=pause, provider=provider, subscription=subscription)
 
+    @classmethod
+    def usage(cls, provider: str, subscription: UUID | None, *, now: float | None = None) -> Self | None:
+        """This login's usage-limit hold, None while its window is open (a lost login is asked again at its start)."""
+        hold = cls.of_login(provider, subscription, now=now)
+        return hold if hold is not None and hold.reason == "usage_limit" else None
+
     def holding(self, memory: SoftMemory | None, *, now: float | None = None) -> bool:
         """Still holding at `now`, asked again of its cause (`memory` None: no soft limit)."""
         if self.reason == "memory":
@@ -83,7 +96,7 @@ class Hold(BaseModel):
         """The waiting run's line (`agents list`, `agents send`): « en pause : limite d'usage claude jusqu'à 17:21, reprise
         sans clic »; `promise` False where nothing waits to start it (a start refused, `Paused` outside the line)."""
         if self.reason == "usage_limit":
-            at = datetime.fromtimestamp(self.until).strftime("%H:%M") if self.until is not None else "sa réouverture"
+            at = _moment(datetime.fromtimestamp(self.until)) if self.until is not None else "sa réouverture"
             return f"en pause : limite d'usage {self.provider} jusqu'à {at}" + (", reprise sans clic" if promise else "")
         if self.reason == "login_lost":
             return f"en pause : connexion {self.provider} perdue" + (", reprise sans clic une fois reconnectée sur ce PC" if promise else "")

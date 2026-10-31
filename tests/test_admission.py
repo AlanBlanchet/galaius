@@ -5,10 +5,12 @@ the agents' memory cap."""
 
 import asyncio
 import json
+import re
 import subprocess
 import sys
 import threading
 import time
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -168,3 +170,11 @@ def test_a_spawn_every_login_of_which_is_paused_waits_and_starts_once_one_lifts(
     monkeypatch.setattr("galaius.agents.spawn_line.run_agent", runner)
     line.wait(admission.run_id)
     assert started == [admission.run_id] and line.describe(admission.run_id[:8]) is None
+
+
+@pytest.mark.parametrize(("days", "said"), [(0, r"jusqu'à \d\d:\d\d$"), (1, r"jusqu'à demain \d\d:\d\d$"), (6, r"jusqu'à \d\d/\d\d \d\d:\d\d$")])
+def test_a_hold_line_names_the_day_its_window_reopens_past_today(days, said):
+    """A weekly window reopens days later: « jusqu'à 20:01 » alone read as tonight (2026-10-31)."""
+    until = (datetime.now().replace(hour=12, minute=0) + timedelta(days=days)).timestamp()
+    hold = Hold(cause=quota.Pause(reason="usage_limit", at=time.time(), until=until), provider="claude")
+    assert re.search(said, hold.line(promise=False))

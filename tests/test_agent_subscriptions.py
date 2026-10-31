@@ -18,7 +18,7 @@ import pytest
 from galaius_core import AgentMoveRequest, MachineRef, SubscriptionAllowance, SubscriptionChoice, UsageWindow, SubscriptionChoices, SubscriptionLimits
 
 from galaius.agents import registry as reg
-from galaius.agents import quota
+from galaius.agents import admission, quota
 from galaius.agents.events import AgentEvent
 from galaius.agents.providers import PROVIDERS, ClaudeCodeProvider
 from galaius.agents import run as run_module
@@ -191,6 +191,51 @@ async def test_each_candidate_runs_on_its_own_providers_subscription_and_the_run
     with pytest.raises(SubscriptionRefused) as missing:  # its only provider's subscription is not on this PC: said so, typed
         await launch((SubscriptionChoice(provider="claude", subscription_id=uuid4(), limits=SubscriptionLimits()),))
     assert missing.value.refusal.reason == "not_signed_in"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("first", "second", "runs_on"), [
+    ("usage", None, "second"),         # his first account at its weekly limit: the start runs on his second (2026-10-31)
+    ("lost", None, "second"),          # a lost first login is asked again after the spare, never ahead of it
+    ("usage", "usage", "first"),       # both held: it waits for the one reopening first (the first, at +600 s)
+    ("usage", "capped", "first"),      # the spare at his cap: it waits for the held one, never refused for it
+    ("refuses", None, "second"),       # his first refuses the start naming its reopening: the same model on his second
+])
+async def test_a_held_login_never_hides_his_next_subscription(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, first: str, second: str | None, runs_on: str) -> None:
+    """A provider offered several of his logins runs on the first one able to start; all held, the start waits in line
+    for the earliest reopening (`admission.Paused`) instead of being refused."""
+    use_policy(monkeypatch, agents={"tester": "fixture-model"}, reasoning={"tester": "medium"})
+    definition = tmp_path / "tester.md"
+    definition.write_text("---\nname: tester\n---\nTest.\n", encoding="utf-8")
+    monkeypatch.setattr(_Claude, "definition_path", lambda self, agent: definition)
+    logins = {"first": Subscription.create(uuid4(), "claude"), "second": Subscription.create(uuid4(), "claude")}
+    provider = _Claude()
+    if first == "refuses":  # Claude Code's own rejected line, on the first login only
+        rejected = json.dumps({"type": "rate_limit_event", "rate_limit_info": {"status": "rejected", "rateLimitType": "seven_day", "resetsAt": int(time.time()) + 7200}})
+        provider.script = f"import os,sys\nif os.environ.get('CLAUDE_CONFIG_DIR') == {str(logins['first'].folder)!r}:\n    print({rejected!r}, flush=True); sys.exit(1)\n" + _Claude.script
+    install_provider(monkeypatch, provider)
+    monkeypatch.setattr(run_module, "rank_candidates", lambda rule, env, *, providers, weights="", role=None: (
+        reg.LaunchCandidate(provider="claude", model="fixture-model", rank=0), reg.LaunchCandidate(provider="claude", model="lower-model", rank=1)))
+    limits = {"first": SubscriptionLimits(), "second": SubscriptionLimits()}
+    for name, state in (("first", first), ("second", second)):
+        if state == "usage":
+            quota.pause_login("claude", "usage_limit", subscription=logins[name].id, until=time.time() + (600 if name == "first" else 3600))
+        elif state == "lost":
+            quota.pause_login("claude", "login_lost", subscription=logins[name].id)
+        elif state == "capped":
+            logins[name].observe((UsageWindow(window="weekly", used_percent=85, observed_at=datetime.now(UTC)),))
+            limits[name] = SubscriptionLimits(weekly_percent=80)
+    choices = SubscriptionChoices(subscriptions=tuple(SubscriptionChoice(provider="claude", subscription_id=logins[name].id, limits=limits[name]) for name in ("first", "second")))
+    launch = run_agent(None, "go", agent="tester", cwd=str(tmp_path), environment={"PATH": "/usr/bin:/bin"}, choices=choices)
+    if first != "usage" or second is None:
+        handle = await launch
+        await asyncio.wait_for(handle.wait(), timeout=30)
+        record = reg.get_run(handle.run_id)
+        assert (record.subscription_id, record.model) == (logins[runs_on].id, "fixture-model")
+        return
+    with pytest.raises(admission.Paused) as paused:
+        await launch
+    assert [hold.subscription for hold in paused.value.holds] == [logins[runs_on].id]
 
 
 @pytest.mark.parametrize(("parent", "asked", "named", "pinned"), [
