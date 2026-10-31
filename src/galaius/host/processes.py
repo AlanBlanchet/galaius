@@ -62,6 +62,32 @@ class NpmShim(BaseModel):
         return None
 
 
+@functools.cache
+def shell_entries(shell: str | None = None, timeout: float = 10) -> tuple[str, ...]:
+    """The PATH entries the owner's shell sets, asked once per process.
+
+    A process a service manager starts (a user service, a `systemd-run` scope, an editor opened from the desktop) has
+    its PATH, not the shell's, so a CLI placed on PATH by a shell rc file (nvm's node bin, an npm prefix) is invisible
+    to `shutil.which`: an installed codex went unreported. The shell is asked interactive + login (rc files hold those
+    additions), detached from any terminal and bounded by `timeout`; rc-file noise around the markers is ignored, and
+    any failure names none."""
+    marker = "__galaius_path__"
+    try:
+        completed = subprocess.run(
+            [shell or os.environ.get("SHELL") or "/bin/sh", "-ilc", f'printf "{marker}%s{marker}" "$PATH"'],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout, start_new_session=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ()
+    parts = completed.stdout.split(marker)
+    return tuple(entry for entry in (parts[1] if len(parts) >= 3 else "").split(":") if entry)
+
+
+def shell_path(current: str, shell: str | None = None) -> str:
+    """The owner's shell PATH (`shell_entries`), ahead of `current`, deduplicated."""
+    return ":".join(dict.fromkeys(entry for entry in (*shell_entries(shell), *current.split(":")) if entry))
+
+
 def spawnable(argv: Sequence[str], env: Mapping[str, str] | None = None) -> list[str]:
     """`argv` as the OS can start it, a bare program name resolved on `env`'s PATH (this process's by default).
 

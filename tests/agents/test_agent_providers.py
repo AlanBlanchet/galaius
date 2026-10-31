@@ -26,6 +26,7 @@ from galaius.agents.providers import (
 )
 from galaius.models.registry import Model
 from galaius.agents.registry import StreamDigest, participant_environment
+from galaius.host.processes import shell_entries
 from galaius.host.processes import NpmShim, spawnable
 from tests.support.paths import TESTS
 
@@ -1228,6 +1229,31 @@ def test_a_bare_program_name_starts_from_its_own_folder_off_the_service_path(tmp
     env = participant_environment({"HOME": str(tmp_path), "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin"})
     assert spawnable([provider.binary, "--version"], env) == [str(program), "--version"]
     assert str(folder) in env["PATH"].split(":")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a POSIX service manager's PATH and login shell")
+@pytest.mark.parametrize("provider", list(PROVIDERS.values()), ids=list(PROVIDERS))
+def test_a_program_only_his_shell_rc_puts_on_path_is_found_off_the_service_path(tmp_path: Path, monkeypatch, provider) -> None:
+    """2026-10-31: codex installed with nvm (its folder on PATH from ~/.bashrc only) was « not installed » for agent
+    runs, whose dispatcher a scope started with the service manager's PATH, while the machine service, asking his
+    shell, said « signed in »: both now ask the shell the same way (`shell_entries`), and every agent child's PATH
+    carries that folder (its node beside it)."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    folder = tmp_path / ".nvm" / "versions" / "node" / "v22" / "bin"
+    folder.mkdir(parents=True)
+    (folder / provider.binary).write_text("#!/bin/sh\n")
+    (folder / provider.binary).chmod(0o755)
+    shell = tmp_path / "bash"
+    shell.write_text(f'#!/bin/sh\necho "rc noise"\nprintf "__galaius_path__{folder}:/usr/bin__galaius_path__"\n')
+    shell.chmod(0o755)
+    monkeypatch.setenv("SHELL", str(shell))
+    monkeypatch.setenv("PATH", "/usr/local/bin:/usr/bin:/bin")
+    shell_entries.cache_clear()
+    try:
+        assert provider.located() == str(folder / provider.binary)
+        assert str(folder) in participant_environment({"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"})["PATH"].split(":")
+    finally:
+        shell_entries.cache_clear()
 
 
 @pytest.mark.parametrize(("text", "kind"), [

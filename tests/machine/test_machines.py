@@ -91,7 +91,8 @@ def test_machine_config_round_trips_token_with_owner_only_permissions(tmp_path: 
     assert ("iwm_" in path.read_text()) != (sys.platform == "win32")  # Windows keeps the token DPAPI-sealed on disk
 
 
-from galaius.machine.connection import connect_command, shell_path
+from galaius.machine.connection import connect_command
+from galaius.host.processes import shell_path
 import galaius
 from galaius.diagnostics.error_reports import MachineErrorReports
 

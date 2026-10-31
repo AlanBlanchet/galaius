@@ -43,6 +43,7 @@ from galaius.cli.prompts import PromptMode
 from galaius.agents import providers as agent_providers
 from galaius.host.file_lock import exclusive
 from galaius.host.private_files import PRIVATE_FILES
+from galaius.host.processes import shell_path
 from galaius.account.tls import server_tls
 from galaius.account.address import ServerAddress
 from galaius.diagnostics.error_reports import MachineErrorReports
@@ -2352,27 +2353,6 @@ class MachineRunner:
             except Exception:  # one failed look never stops the next
                 logger.exception("delivering an error report failed")
             await asyncio.sleep(self.deliver_seconds)
-
-
-def shell_path(current: str, shell: str | None = None, timeout: float = 10) -> str:
-    """The owner's shell PATH, ahead of `current`, deduplicated.
-
-    A user service starts with the service manager's PATH, not the shell's, so a CLI placed on
-    PATH by a shell rc file (nvm's node bin, an npm prefix) is invisible to `shutil.which`: an
-    installed codex went unreported. The shell is asked once, interactive + login (rc files hold
-    those additions), detached from any terminal and bounded by `timeout`; rc-file noise around
-    the markers is ignored, and any failure keeps `current` unchanged."""
-    marker = "__galaius_path__"
-    try:
-        completed = subprocess.run(
-            [shell or os.environ.get("SHELL") or "/bin/sh", "-ilc", f'printf "{marker}%s{marker}" "$PATH"'],
-            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout, start_new_session=True,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return current
-    parts = completed.stdout.split(marker)
-    found = parts[1] if len(parts) >= 3 else ""
-    return ":".join(dict.fromkeys(entry for entry in (*found.split(":"), *current.split(":")) if entry))
 
 
 async def connect_command(server_url: str | None, workspace_id: UUID | None, machine_id: UUID | None, token: str | None, permission_ceiling: PermissionLevel, working_directory: Path | None, serve: bool) -> None:

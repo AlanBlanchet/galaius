@@ -47,7 +47,7 @@ from galaius.hooks.brief import NOTE as BRIEF_NOTE
 from galaius.isolation.fence import COMPAT_KEY, KEYS, RELAY, RELAY_PORT, Confinement, RelayedServer, SignIn, confinement_refusal, userns_refusal
 from galaius.hooks.inbox import NOTE as INBOX_NOTE
 from galaius.models.registry import Model
-from galaius.host.processes import ask_process, run_isolated_process
+from galaius.host.processes import ask_process, run_isolated_process, shell_entries
 from galaius.mcp.announcement import GatewayServed
 
 #: Set (to anything) in the environment of an agent working in a folder whose own agent settings
@@ -435,10 +435,13 @@ class AgentProvider(ABC):
 
     @staticmethod
     def search_path(path: str | None = None) -> str:
-        """`path` (this process's PATH by default) followed by every program's own user folder here."""
+        """`path` (this process's PATH by default) followed by every program's own user folder here, then the owner's
+        shell PATH (`shell_entries`): a process the service manager started (a dispatcher, a spawn's scope) lacks what
+        his rc files add, nvm's node and the codex installed there."""
         current = (os.environ.get("PATH", os.defpath) if path is None else path).split(os.pathsep)
         installed = (entry for provider in PROVIDERS.values() if (installer := provider.installer()) is not None for entry in installer.found_dirs())
-        return os.pathsep.join(dict.fromkeys(entry for entry in (*current, *installed) if entry))  # an empty entry means the current folder
+        shell = shell_entries() if os.name == "posix" else ()
+        return os.pathsep.join(dict.fromkeys(entry for entry in (*current, *installed, *shell) if entry))  # an empty entry means the current folder
 
     def located(self) -> str | None:
         """Where the CLI is found on the search path, as found (never the versioned file a link there
