@@ -36,7 +36,7 @@ from galaius.actions.dispatch import (
 )
 from galaius.actions.models import SleepAction, _click_selector
 from galaius.actions.models import EvaluateJsAction as _EvalModel  # real class the monkeypatch targets
-from galaius.browser import BrowserManager
+from galaius.browser.manager import BrowserManager
 from galaius.desktop.window import DesktopWindow
 from galaius.actions.dispatch import _run_actions_desktop
 

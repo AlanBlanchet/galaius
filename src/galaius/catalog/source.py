@@ -32,7 +32,7 @@ from pathlib import Path
 
 import httpx
 
-from galaius.models import Benchmark
+from galaius.models.registry import Benchmark
 from galaius.catalog.ttl_cache import TTL_SECONDS, RefreshFailed, TTLCache, age_of, describe_age
 
 #: Pro tier returns every registered metric (`terminalbench_hard`, `scicode`, `aa_lcr`,

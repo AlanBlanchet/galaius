@@ -5,7 +5,7 @@
 from pathlib import Path
 
 from galaius.desktop.accessibility.atspi import AtSpi
-from galaius.browser import BrowserManager
+from galaius.browser.manager import BrowserManager
 from galaius.desktop.accessibility.element import DesktopElement
 from galaius.desktop.window import DesktopWindow
 from galaius.desktop.backend import DesktopUnsupportedError

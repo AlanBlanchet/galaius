@@ -13,9 +13,11 @@ import galaius.vision.core as vision
 from galaius.catalog.published import PublishedEntry, PublishedTable
 from galaius.catalog.upstream import GroundingLeaderboardJS, UpstreamSource
 from galaius.config.settings import Config
-from galaius.models import Benchmark, Model, ModelCapability
+from galaius.models.registry import Benchmark, Model
+from galaius.models.capability import ModelCapability
 from galaius.vision.types import MediaItem
-from galaius.vision.core import VLMResult, analyze_media
+from galaius.vision.core import analyze_media
+from galaius.vision.types import VLMResult
 from tests.support import solid_png
 from tests.support.paths import TESTS
 

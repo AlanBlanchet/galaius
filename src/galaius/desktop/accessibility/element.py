@@ -12,7 +12,7 @@ from pydantic import BaseModel, computed_field
 from galaius.desktop.coords import CoordTransform
 from galaius.desktop.geometry import BBox, BoxArray
 from galaius.vision.parsing import Parse
-from galaius.state import Element, InteractiveElement
+from galaius.browser.state import Element, InteractiveElement
 
 _log = logging.getLogger("galaius")
 _IOU_OVERLAP_THRESHOLD = 0.3

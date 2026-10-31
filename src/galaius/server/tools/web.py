@@ -7,13 +7,13 @@ import json
 from typing import Literal
 
 from galaius.actions.models import AnyAction
-from galaius.browser import BrowserManager
+from galaius.browser.manager import BrowserManager
 from galaius.config.settings import DEFAULT_LIMIT
 from galaius.diagnostics.debug_output import Debug
 from galaius.actions.dispatch import _run_actions_browser, _run_actions_desktop
 from galaius.server import capture, core, targets, vlm
 from galaius.server.core import _AUTO_SESSION, _DBG_ACTIONS, _session_response, config, instrumented, mcp
-from galaius.state import format_element_list
+from galaius.browser.state import format_element_list
 
 
 def _recovered(mgr: BrowserManager | None, body: str) -> str:

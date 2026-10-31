@@ -4,9 +4,9 @@ import os
 
 import pytest
 
-from galaius.models import Model
+from galaius.models.registry import Model
 
-from e2e.harness import (
+from tests.e2e.harness import (
     ResultCollector,
     cheapest_grounding_model,
     ensure_registry_loaded,

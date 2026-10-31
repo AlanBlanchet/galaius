@@ -23,7 +23,7 @@ from galaius.desktop.video import _ffmpeg_grab_args, _VideoSession
 from galaius.desktop.input import MULTI_CLICK_GAP_MS, to_xdotool_key
 from galaius.vision.parsing import Parse
 from galaius.mcp.registry import _alive as process_alive
-from galaius.state import Element, InteractiveElement
+from galaius.browser.state import Element, InteractiveElement
 
 _log = logging.getLogger("galaius")
 # Live record sessions for real-display (`:0`) window targets, keyed by wid (see #61/#62).

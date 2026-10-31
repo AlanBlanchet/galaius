@@ -11,7 +11,7 @@ from typing import Any, Literal, Self
 import jsonschema
 from pydantic import BaseModel, Field, PrivateAttr, field_validator
 
-from galaius.state import bytes_to_b64
+from galaius.browser.state import bytes_to_b64
 
 _MEDIA_MAX_BYTES = 50 * 1024 * 1024
 

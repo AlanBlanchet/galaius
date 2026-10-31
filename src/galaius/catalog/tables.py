@@ -16,7 +16,7 @@ the displayed number able to change.
 import time
 
 from galaius.catalog.published import PublishedTable
-from galaius.models import Model
+from galaius.models.registry import Model
 from galaius.catalog.ttl_cache import TTL_SECONDS, RefreshFailed, TTLCache
 
 #: Leaderboards move slowly, but the cost of being wrong here is showing a stale model as best,

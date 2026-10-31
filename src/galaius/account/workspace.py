@@ -11,7 +11,7 @@ from uuid import UUID, uuid4
 
 import httpx
 from galaius_core import CommunityPage, CommunityPrompt, CommunityQuery, CommunitySources, AgentGraph, AgentGraphUpdate, ImageAnswer, ImageRequest, MediaAnswer, MediaRequest, AgentRevision, AgentRevisionRef, AgentStartSpec, AgentTouchScope, ArtifactRef, CompanyProfile, ConfiguredModelRef, MachineRunEvents, MachineSummary, ReasoningLevel, ReleaseInfo, TriggerInvocation, WorkflowEvent, WorkflowRevision, WorkflowRevisionRef, WorkflowRun
-from galaius_core.accounts import Bootstrap
+from galaius_core.identity.accounts import Bootstrap
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from galaius.agents.catalog.entries import CatalogSnapshot

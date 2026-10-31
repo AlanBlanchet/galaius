@@ -20,7 +20,7 @@ from galaius_core import KEPT_FILE_MAX, MACHINE_TOOLS
 from playwright.async_api import Error as PlaywrightError, async_playwright
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
-from galaius.browser import chromium_launch_kwargs
+from galaius.browser.manager import chromium_launch_kwargs
 from galaius.media.files import PASSED_ON_MAX, Written, asking, copy_working, kept_path, offline_environment, passed_on, read_working, save
 from galaius.machine.tools import MachineTools
 

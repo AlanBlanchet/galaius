@@ -15,7 +15,7 @@ from galaius.vision.critique import (
     format_review,
     parse_review,
 )
-from galaius.state import InteractiveElement
+from galaius.browser.state import InteractiveElement
 from tests.support import interactive_element
 from galaius.vision.types import VLMResult
 

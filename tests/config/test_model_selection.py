@@ -1,6 +1,6 @@
 """Which model a role actually resolves to — best/cheapest first, and only what clears its
 criterion right now. Every role carries ONE requirement string
-(``galaius_core.tool_settings.PortableToolSettingsValues``); there is no separate pinned-model
+(``galaius_core.tools.settings.PortableToolSettingsValues``); there is no separate pinned-model
 field and no separate fallback-chain field — ``Criteria.qualifying`` already returns every
 clearing model in rank order, so the second entry IS the fallback.
 
@@ -14,7 +14,7 @@ that clears nothing REFUSING loudly rather than silently substituting a model no
 import pytest
 
 from galaius.config.settings import Config
-from galaius.models import Benchmark, Model
+from galaius.models.registry import Benchmark, Model
 from tests.support.models import catalog_of
 from tests.support.models import model as _m
 
@@ -111,7 +111,7 @@ def test_ranked_models_second_entry_is_the_fallback(registry, monkeypatch):
 
 
 def test_circuit_broken_model_is_skipped_in_favour_of_the_next(registry, monkeypatch):
-    from galaius.models import CircuitBreaker
+    from galaius.models.breaker import CircuitBreaker
 
     monkeypatch.setenv("ALPHA_KEY", "k")
     monkeypatch.setenv("BETA_KEY", "k")

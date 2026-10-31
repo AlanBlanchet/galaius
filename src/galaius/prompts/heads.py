@@ -6,7 +6,7 @@ import re
 from contextlib import contextmanager
 
 import httpx
-from galaius_core.accounts import Bootstrap
+from galaius_core.identity.accounts import Bootstrap
 from galaius_core.prompts import PromptCreateRequest, PromptKey, PromptRevision, PromptSyncStatus
 from pydantic import BaseModel, ConfigDict, TypeAdapter
 

@@ -12,7 +12,8 @@ from galaius.agents.transport.protocol import ConversationRoute, RouteAvailabili
 from galaius.agents.providers import CodexProvider, provider_for
 from galaius.agents.registry import AgentRun
 from galaius.agents.transport.base import _ConversationTransport
-from galaius.models import Model, ModelCapability
+from galaius.models.registry import Model
+from galaius.models.capability import ModelCapability
 
 
 def _codex_failure_reason(error: BaseException, *, phase: str) -> str:

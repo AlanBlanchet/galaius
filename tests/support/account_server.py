@@ -17,7 +17,7 @@ from uuid import UUID, uuid4
 import uvicorn
 from galaius_core import (DeviceLoginIssued, DeviceLoginStart, DeviceLoginStarted, MachineCommand, MachineCommandResult, MachineRef, MachineSummary,
                            ReleaseInfo, ScriptImplementation, WorkflowKey, WorkflowRevisionRef)
-from galaius_core.device_login import DeviceLoginWorkspace, UserCode
+from galaius_core.identity.device_login import DeviceLoginWorkspace, UserCode
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.applications import Starlette
 from starlette.requests import Request

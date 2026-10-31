@@ -22,7 +22,7 @@ from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
 import httpx
-from galaius_core.accounts import Bootstrap
+from galaius_core.identity.accounts import Bootstrap
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from galaius import USER_AGENT

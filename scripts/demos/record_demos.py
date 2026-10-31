@@ -234,7 +234,7 @@ def demo_browser(out: Path) -> None:
     scripted happy path."""
     from galaius.actions.dispatch import _run_actions_browser
     from galaius.actions.models import ClickAction, TypeTextAction
-    from galaius.browser import BrowserManager
+    from galaius.browser.manager import BrowserManager
     from galaius.runtime import config
 
     async def run() -> bytes:

@@ -97,7 +97,7 @@ SETTINGS: list[Setting] = [
     # ── Models ───────────────────────────────────────────────────────────────
     # Every role below carries a CRITERION, never a pinned model id: a sentence the resolver
     # re-reads every call against whatever provider key or CLI session is actually reachable
-    # (galaius_core.tool_settings.PortableToolSettingsValues). A blank field falls back to the
+    # (galaius_core.tools.settings.PortableToolSettingsValues). A blank field falls back to the
     # bare capability that made the role usable at all (Config._ROLE_DEFAULT_CRITERIA).
     Setting(
         key="criteria.weights", field="criteria_weights", group="Models", kind="str",

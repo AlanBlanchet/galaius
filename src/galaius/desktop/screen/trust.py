@@ -2,7 +2,7 @@
 the signed offer it checks itself (`ScreenGate.admit`), its own identity key (`ScreenIdentity`), and
 the end-to-end keys of one session (`ScreenKeys`).
 
-The server relays every byte and decides none of them (`galaius_core.screen`): a request the server
+The server relays every byte and decides none of them (`galaius_core.compute.screen`): a request the server
 signs with this machine's key only says the server sent it. A session opens when the WebAuthn
 assertion over the offer verifies against a passkey THIS computer trusts — the first one offered
 while its owner's own switch is on (`ScreenSwitch`), any later one only once `galaius screen trust`

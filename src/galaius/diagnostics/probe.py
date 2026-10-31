@@ -27,8 +27,9 @@ from galaius.desktop.accessibility import atspi
 from galaius.desktop.accessibility.element import DesktopElement
 from galaius.desktop.window import DesktopWindow
 from galaius.vision.detect import _vlm_detect_elements, judge_missing_elements
-from galaius.models import Model, ModelCapability
-from galaius.state import annotate_screenshot
+from galaius.models.registry import Model
+from galaius.models.capability import ModelCapability
+from galaius.browser.state import annotate_screenshot
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 TEST_GUI = _REPO_ROOT / "tests" / "fixtures" / "gui_app.py"
@@ -134,7 +135,7 @@ class Capture(BaseModel):
 
     @classmethod
     async def from_browser(cls, page_arg: str) -> Self:
-        from galaius.browser import BrowserManager  # heavy: pulls in Playwright
+        from galaius.browser.manager import BrowserManager  # heavy: pulls in Playwright
         from galaius.config.settings import Config
 
         page_path = Path(page_arg).resolve()
@@ -352,7 +353,7 @@ class Scenario(ArtifactRun):
         )
 
     async def run(self) -> None:
-        from galaius.browser import BrowserManager  # heavy: pulls in Playwright
+        from galaius.browser.manager import BrowserManager  # heavy: pulls in Playwright
         from galaius.config.settings import Config
 
         manager = BrowserManager(Config())

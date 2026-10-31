@@ -1,6 +1,6 @@
 """Local function registry: a `@galaius.function`-decorated Python callable, or a registered
 shell command, invocable from a workflow's "On my PC" machine-function node — the inbound half
-of PC integration; `galaius.workflows.run` is the outbound half. Every entry is typed (each
+of PC integration; `galaius.workflows.runs.run` is the outbound half. Every entry is typed (each
 input port and the single output port carry a `ValueType`) and version-hashed, so a workflow
 node pinned against one signature fails loudly, never silently, when the local function changes
 shape. Registered under `~/.config/galaius/functions.json`, 0600, same layout discipline as

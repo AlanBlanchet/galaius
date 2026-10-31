@@ -102,7 +102,7 @@ async def list_providers() -> str:
                 if key in keys:
                     available.add(provider)
 
-    from galaius.models import Model
+    from galaius.models.registry import Model
 
     # Off the event loop: loading the registry now asks a running Ollama daemon what it has, and
     # a host that ACCEPTS then stalls would otherwise block every other MCP call on this server

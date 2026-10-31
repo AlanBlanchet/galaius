@@ -13,11 +13,11 @@
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'  # Invoke-WebRequest's progress bar slows downloads tenfold on 5.1
 
-# >>> install report (src/galaius/data/install_report.ps1, verbatim: tests/test_install_scripts.py)
+# >>> install report (src/galaius/data/install_report.ps1, verbatim: tests/repo/test_install_scripts.py)
 # The install-report part every Galaius install.ps1 shares (owner 2026-10-11: "The install script should have
 # error logs in case of errors, and if there is an error that happens we must prompt the user to ask to send").
 # One copy: galaius/data/install_report.ps1; a server inserts it into the script it serves, the repository's
-# install.ps1 carries it verbatim (tests/test_install_scripts.py). The script names each part of its install with
+# install.ps1 carries it verbatim (tests/repo/test_install_scripts.py). The script names each part of its install with
 # `Step`, runs programs through `Invoke-Logged`, downloads with `Fetch`, and runs it all with `Invoke-Install`.
 # PowerShell names are case-blind: no parameter may be called $speaksFrench.
 $speaksFrench = (Get-UICulture).TwoLetterISOLanguageName -eq 'fr'

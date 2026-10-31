@@ -8,7 +8,7 @@ shared sandbox (the first app's size no longer wins forever).
 import pytest
 
 from galaius import server as srv
-from galaius.launch import _resolve_nested_size
+from galaius.desktop.launch import _resolve_nested_size
 from galaius.server.browser_sandbox import _get_sandbox
 
 

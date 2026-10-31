@@ -41,10 +41,12 @@ from galaius.agents.providers import (
     _MediaResult,
 )
 from galaius.config.settings import Config
-from galaius.models import CircuitBreaker, Model, ModelCapability
+from galaius.models.breaker import CircuitBreaker
+from galaius.models.registry import Model
+from galaius.models.capability import ModelCapability
 from galaius.vision.types import MediaItem
 from galaius.vision.core import analyze_media, transcribe_audio
-from galaius.vision.core import VLMResult
+from galaius.vision.types import VLMResult
 from tests.support.paths import TESTS
 
 

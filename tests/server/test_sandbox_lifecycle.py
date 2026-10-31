@@ -260,7 +260,7 @@ def test_close_kills_through_the_sweeps_and_forgets_its_apps(monkeypatch):
     monkeypatch.setattr("galaius.desktop.orphans.sweep_if_owned",
                         lambda display, *, owned: swept.append((display, owned)) or [])
     monkeypatch.setattr("galaius.desktop.orphans.display_clients", lambda display: [])
-    monkeypatch.setattr("galaius.launch.sandbox_profiles", lambda display: [])
+    monkeypatch.setattr("galaius.desktop.launch.sandbox_profiles", lambda display: [])
     proc = nb.spawn([sys.executable, "-c", "import time; time.sleep(30)"])
     nb.close()
     assert proc.poll() is not None

@@ -35,7 +35,7 @@ os.environ.setdefault("GALAIUS_MEDIA_BILLING", "api_allowed")
 from galaius.config.user import UserConfig
 from galaius.config.dotenv import load_dotenv_for_cli
 from galaius.agents.providers import AgentProvider, ClaudeCodeProvider
-from galaius.models import Model
+from galaius.models.registry import Model
 from tests.support.models import catalog_of
 from galaius.host.pinned_directory import PinnedDirectory
 

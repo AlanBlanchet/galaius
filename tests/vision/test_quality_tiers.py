@@ -10,7 +10,7 @@ import pytest
 from galaius import server as srv
 from galaius.config.settings import Config
 from galaius.vision.critique import RequirementCheck, UIFinding, UIReview, VerifyReport
-from galaius.state import InteractiveElement
+from galaius.browser.state import InteractiveElement
 from tests.support import interactive_element
 from tests.support.models import catalog_of, model as _fixture_model
 from galaius.vision.types import VLMResult
@@ -37,13 +37,13 @@ def _avail(value: bool):
     ("critical", True, ""),
 ])
 def test_resolve_quality_model(monkeypatch, tier, available, expected):
-    monkeypatch.setattr("galaius.models.Model.is_available", _avail(available))
+    monkeypatch.setattr("galaius.models.registry.Model.is_available", _avail(available))
     with catalog_of(_fixture_model(_DEFAULT_SOVEREIGN_MODEL, input_cost=0.0, output_cost=0.0)):
         assert Config().resolve_quality_model(tier) == expected
 
 
 def test_resolve_quality_model_honors_a_configured_sovereign_criterion(monkeypatch):
-    monkeypatch.setattr("galaius.models.Model.is_available", _avail(True))
+    monkeypatch.setattr("galaius.models.registry.Model.is_available", _avail(True))
     with catalog_of(
         _fixture_model("ollama/glm-local", input_cost=0.0, output_cost=0.0),
         _fixture_model("expensive/vlm", input_cost=50.0, output_cost=50.0),
@@ -54,7 +54,7 @@ def test_resolve_quality_model_honors_a_configured_sovereign_criterion(monkeypat
 def test_resolve_quality_model_prefers_the_cheapest_clearing_model(monkeypatch):
     # Two reachable VLMs: the tier's bare "cap.vlm" default picks the cheapest one, whichever
     # vendor that happens to be — the criterion names a bar, never a vendor.
-    monkeypatch.setattr("galaius.models.Model.is_available", _avail(True))
+    monkeypatch.setattr("galaius.models.registry.Model.is_available", _avail(True))
     with catalog_of(
         _fixture_model("zai/glm-4.5v", input_cost=0.0, output_cost=0.0),
         _fixture_model("novita/zai-org/glm-4.5v", input_cost=1.0, output_cost=1.0),
@@ -63,7 +63,7 @@ def test_resolve_quality_model_prefers_the_cheapest_clearing_model(monkeypatch):
 
 
 def test_resolve_quality_model_falls_to_the_only_reachable_candidate(monkeypatch):
-    monkeypatch.setattr("galaius.models.Model.is_available", lambda self: self.id == "novita/zai-org/glm-4.5v")
+    monkeypatch.setattr("galaius.models.registry.Model.is_available", lambda self: self.id == "novita/zai-org/glm-4.5v")
     with catalog_of(
         _fixture_model("zai/glm-4.5v", input_cost=0.0, output_cost=0.0),
         _fixture_model("novita/zai-org/glm-4.5v", input_cost=1.0, output_cost=1.0),
@@ -85,7 +85,7 @@ def test_quality_plan_rejects_an_unknown_tier():
 
 
 def test_quality_plan_explicit_model_beats_the_tier(monkeypatch):
-    monkeypatch.setattr("galaius.models.Model.is_available", _avail(True))  # sovereign available
+    monkeypatch.setattr("galaius.models.registry.Model.is_available", _avail(True))  # sovereign available
     with catalog_of(_fixture_model(_DEFAULT_SOVEREIGN_MODEL, input_cost=0.0, output_cost=0.0)):
         assert srv.capture._quality_plan("low", "pinned")[0] == "pinned"            # explicit model wins
         assert srv.capture._quality_plan("low", None)[0] == _DEFAULT_SOVEREIGN_MODEL  # else the tier's model
@@ -109,7 +109,7 @@ def _stub_browser_capture(monkeypatch, elements):
 @pytest.mark.asyncio
 async def test_review_ui_quality_low_picks_the_sovereign_model(monkeypatch):
     _stub_browser_capture(monkeypatch, [])
-    monkeypatch.setattr("galaius.models.Model.is_available", _avail(True))  # sovereign reachable
+    monkeypatch.setattr("galaius.models.registry.Model.is_available", _avail(True))  # sovereign reachable
     captured: dict = {}
 
     async def fake_vlm(data, context, prompt, *, response_format=None, model_override=None, **kw):
@@ -135,7 +135,7 @@ async def test_session_quality_tier_does_not_send_a_sovereign_api_model_to_the_c
     )
     srv.core.config.media_backend = "session"
     srv.core.config.media_billing = "session_only"
-    monkeypatch.setattr("galaius.models.Model.is_available", _avail(True))
+    monkeypatch.setattr("galaius.models.registry.Model.is_available", _avail(True))
     captured: dict = {}
 
     async def fake_vlm(data, context, prompt, *, model_override=None, **kwargs):

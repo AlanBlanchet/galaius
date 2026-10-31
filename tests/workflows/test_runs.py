@@ -11,13 +11,13 @@ from uuid import UUID, uuid4
 import httpx
 import pytest
 from galaius_core import ArtifactRef, TriggerInvocation, WorkflowEvent, WorkflowRevision, WorkflowRun
-from galaius_core.accounts import Account, Bootstrap, Workspace
+from galaius_core.identity.accounts import Account, Bootstrap, Workspace
 
 from galaius.agents.catalog.connection import CatalogConnection, CatalogConnectionError
 from galaius.cli.app import app as cli
 from galaius.client import AsyncClient, Client
 from galaius.config.user import UserConfig
-from galaius.workflows import WorkflowNotFound, WorkflowRunFailed
+from galaius.workflows.runs import WorkflowNotFound, WorkflowRunFailed
 
 REPORT = b"quarterly report\n"
 

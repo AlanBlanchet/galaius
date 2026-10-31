@@ -15,7 +15,7 @@ _PNG_B64 = base64.b64encode(_PNG).decode()
 
 
 def _page_state(**overrides):
-    from galaius.state import PageState
+    from galaius.browser.state import PageState
 
     defaults = dict(
         url="https://example.com",
@@ -30,7 +30,7 @@ def _page_state(**overrides):
 
 
 def _state_change():
-    from galaius.state import StateChange
+    from galaius.browser.state import StateChange
 
     return StateChange(before=_page_state(), after=_page_state())
 
@@ -49,7 +49,7 @@ def browser_mocks():
 
     with (
         patch("galaius.server.capture._capture", AsyncMock(return_value=state)) as cap,
-        patch("galaius.state.StateChange.compute", return_value=change),
+        patch("galaius.browser.state.StateChange.compute", return_value=change),
         patch("galaius.server.vlm.analyze_media", AsyncMock(return_value=_VLM)) as vlm,
         patch(
             "galaius.vision.core.analyze_screenshot", AsyncMock(return_value=_ANALYZED)

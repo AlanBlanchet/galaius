@@ -25,7 +25,7 @@ from typing import ClassVar, Protocol
 from uuid import UUID, uuid4
 
 import httpx
-from galaius_core.error_reports import MachineErrorAsk, MachineErrorKind, MachineErrorUpload, MachineErrorUploadRequest
+from galaius_core.support.error_reports import MachineErrorAsk, MachineErrorKind, MachineErrorUpload, MachineErrorUploadRequest
 from pydantic import BaseModel, ConfigDict, SecretStr, ValidationError
 
 import galaius

@@ -373,7 +373,7 @@ def _cooldown_policy(monkeypatch):
 def test_a_resumed_turn_skips_a_cooled_model_and_uses_the_next_ranked_one(monkeypatch):
     from galaius.agents.limits import agent_queue
     from galaius.agents.limits import quota
-    from galaius.models import ModelCapability
+    from galaius.models.capability import ModelCapability
     from tests.support import catalog_of, model as fixture_model
 
     provider = _FixtureCatalogProvider()
@@ -415,7 +415,7 @@ def test_a_resumed_turn_refuses_when_every_candidate_for_its_provider_is_cooled(
     switch CLI mid-conversation; that would abandon the conversation history)."""
     from galaius.agents.limits import agent_queue
     from galaius.agents.limits import quota
-    from galaius.models import ModelCapability
+    from galaius.models.capability import ModelCapability
     from tests.support import catalog_of, model as fixture_model
 
     provider = _FixtureCatalogProvider()
@@ -769,7 +769,7 @@ def _ranked_policy(monkeypatch, criterion: str = "aa.intelligence >= 0"):
 
 
 def _ranked_catalog():
-    from galaius.models import ModelCapability
+    from galaius.models.capability import ModelCapability
     from tests.support import catalog_of, model as fixture_model
 
     return catalog_of(

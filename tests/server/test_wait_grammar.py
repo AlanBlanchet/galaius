@@ -40,7 +40,7 @@ def desktop_spies():
 @pytest.fixture
 def srv():
     import galaius.server as _srv
-    from galaius.server.core import breaker
+    from galaius.runtime import breaker
 
     breaker.clear()
     _srv.core.config.component_criteria = "cap.gui_grounding"

@@ -28,7 +28,7 @@ from galaius.agents.registry import (
     CostCertainty,
 )
 from galaius.catalog.criteria import Criteria, CriteriaError
-from galaius.models import Model
+from galaius.models.registry import Model
 
 
 def _cooldown_refusal(provider: str, cooled: dict[str, float]) -> str:

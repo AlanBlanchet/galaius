@@ -11,11 +11,13 @@ from pydantic import BaseModel, ByteSize, ConfigDict, Field, field_validator, mo
 from pydantic_settings import BaseSettings, NoDecode
 from galaius.account.caller import Caller
 from galaius_core import CompactAt
-from galaius_core.tool_settings import VLM_MIN_DIM_DEFAULT, VLM_MAX_DIM_DEFAULT
+from galaius_core.tools.settings import VLM_MIN_DIM_DEFAULT, VLM_MAX_DIM_DEFAULT
 
 from galaius.agents.providers import MEDIA_PROVIDERS
 from galaius.catalog.criteria import Criteria, CriteriaError
-from galaius.models import CircuitBreaker, Model, ModelRole
+from galaius.models.breaker import CircuitBreaker
+from galaius.models.registry import Model
+from galaius.models.spec import ModelRole
 
 DEFAULT_LIMIT = 50
 LOG_MAXLEN = 1000
@@ -76,7 +78,7 @@ def caller_session_name() -> str:
 QUALITY_TIERS = ("low", "medium", "high", "critical")
 
 # Every role galaius resolves a model for gets its OWN requirement, per
-# ``galaius_core.tool_settings.PortableToolSettingsValues``. An unset field falls back to the
+# ``galaius_core.tools.settings.PortableToolSettingsValues``. An unset field falls back to the
 # bare capability that made the role usable at all — never a literal model id (a criterion
 # replaces the pin, it does not hide behind one). "Sovereign" names the cheap/self-hostable tier
 # (review_ui/verify_ui low/medium) rather than a specific vendor; cheapest-clearing is the whole
@@ -254,7 +256,7 @@ class Config(BaseSettings):
 
     # One requirement per role — never a pinned model id, never a separate fallback list: a
     # criterion's own ranking already gives every clearing model in order, so the second-ranked
-    # entry IS the fallback (galaius_core.tool_settings). Mirrors
+    # entry IS the fallback (galaius_core.tools.settings). Mirrors
     # ``PortableToolSettingsValues`` field-for-field so a server-synced value round-trips.
     image_criteria: str = ""
     video_criteria: str = ""
@@ -539,7 +541,7 @@ class Config(BaseSettings):
     ) -> list[Model]:
         """Every model this role's criterion clears, best/cheapest first. The FULL ranking, not
         just the top pick — the second entry already IS the fallback a separate stored chain
-        used to duplicate (galaius_core.tool_settings)."""
+        used to duplicate (galaius_core.tools.settings)."""
         criterion = self._role_criterion(role)
         runnable = (
             (lambda model: model.is_available() and not breaker.tripped(model.id))

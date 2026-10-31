@@ -215,7 +215,7 @@ def test_quoted_value_reads_back_unquoted(_check_env, tmp_path, monkeypatch):
 def test_probe_resolves_through_criterion(_check_env, monkeypatch):
     """The probe target comes from the user's own `media.criteria` resolver, restricted to the
     provider owning the key — never a literal table."""
-    from galaius.models import Model
+    from galaius.models.registry import Model
 
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     Model.load_registry()

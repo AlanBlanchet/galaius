@@ -5,7 +5,7 @@
     run = Client().workflows.run("Write a report", inputs={"topic": "Q3"})
 """
 
-from galaius.workflows import AsyncWorkflows, ServerBound, Workflows
+from galaius.workflows.runs import AsyncWorkflows, ServerBound, Workflows
 
 
 class Client(ServerBound):

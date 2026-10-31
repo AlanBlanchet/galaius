@@ -17,7 +17,7 @@ import httpx
 from cyclopts import App, Parameter
 
 from galaius.client import Client
-from galaius.workflows import Run
+from galaius.workflows.runs import Run
 
 workflows_app = App(name="workflows", help="Run server workflows from scripts: wait for the end, print outputs as JSON.")
 

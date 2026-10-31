@@ -15,7 +15,8 @@ from datetime import date, timedelta
 
 import pytest
 
-from galaius.models import Benchmark, Model, ModelCapability
+from galaius.models.registry import Benchmark, Model
+from galaius.models.capability import ModelCapability
 from galaius.catalog.criteria import Criteria, CriteriaError, Variables
 from galaius.agents.transport.protocol import ConversationRoute, ModelSelection
 
@@ -323,7 +324,7 @@ def test_a_model_states_its_competence_with_the_source_and_the_field_it_ranks_in
     models that carry the same measure — a comparison, explicitly not a verdict. A model nobody
     scored says so rather than reading as a zero.
     """
-    from galaius.models import Model
+    from galaius.models.registry import Model
 
     with catalog_of(
         Model(id="big", provider="anthropic", capabilities=set(), intelligence_score=60.0),

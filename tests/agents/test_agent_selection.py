@@ -30,7 +30,7 @@ from galaius.agents.run import (
     run_agent,
 )
 from galaius.catalog.criteria import ValueRule
-from galaius.models import Benchmark
+from galaius.models.registry import Benchmark
 import galaius.server.tools.agents as tools_agents
 from galaius.cli import app_commands as cli
 from tests.support.models import catalog_of, model

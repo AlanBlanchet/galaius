@@ -21,7 +21,7 @@ import pytest
 
 from galaius.actions.models import ClickAction, HoverAction
 from galaius.actions.dispatch import _named_locator
-from galaius.state import InteractiveElement
+from galaius.browser.state import InteractiveElement
 
 from tests.support import browser_manager, ready_or_skip
 

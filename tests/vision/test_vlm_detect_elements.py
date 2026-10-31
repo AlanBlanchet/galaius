@@ -16,7 +16,8 @@ import pytest
 from PIL import Image as PILImage
 
 import galaius.vision.detect as det
-from galaius.models import Model, ModelCapability
+from galaius.models.registry import Model
+from galaius.models.capability import ModelCapability
 from galaius.vision.types import VLMResult
 from tests.support.models import catalog_of
 from galaius.diagnostics.debug_output import Debug
@@ -40,7 +41,7 @@ _VLM_JSON = '[{"role":"button","name":"Save","x":100,"y":200,"w":150,"h":30}]'
 @pytest.fixture
 def srv(provider_key):
     import galaius.server as _srv
-    from galaius.server.core import breaker
+    from galaius.runtime import breaker
 
     breaker.clear()
     _srv.core.config.component_criteria = "cap.gui_grounding"
@@ -101,7 +102,7 @@ async def test_vlm_detect_elements_soft_failure_no_fallback(srv, soft_fail_msg):
 
 
 def test_element_detection_prompt_generic():
-    from galaius.formats import CoordFormat
+    from galaius.vision.formats import CoordFormat
 
     prompt = CoordFormat().prompt(1920, 1080)
     assert "pixel coordinates" in prompt
@@ -114,7 +115,7 @@ def test_element_detection_prompt_generic():
 @pytest.mark.asyncio
 async def test_vlm_detect_elements_fallback_uses_generic_prompt(srv):
     """When component model fails, it uses format-specific prompt."""
-    from galaius.formats import CoordFormat
+    from galaius.vision.formats import CoordFormat
 
     fail = AsyncMock(side_effect=RuntimeError("missing API key"))
     CoordFormat.load_from_config(
@@ -184,7 +185,7 @@ async def test_circuit_breaker_skips_after_failure(srv, one_component_candidate)
 
 @pytest.mark.asyncio
 async def test_circuit_breaker_resets_after_ttl(srv, one_component_candidate):
-    from galaius.server.core import breaker
+    from galaius.runtime import breaker
 
     component_model = srv.core.config.resolve_model("component")
     # Trip the breaker with a timestamp in the past (beyond TTL)

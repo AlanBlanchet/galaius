@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import galaius.server as srv
-from galaius.browser import BrowserManager
+from galaius.browser.manager import BrowserManager
 from galaius.desktop.window import DesktopWindow
 from galaius.runtime import config
 from galaius.vision.types import VLMResult

@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from galaius.launch import _browser_isolate, _clear_stale_locks, _editor_isolate, needs_shell
-from galaius.launch import apply_launch_rewrites
+from galaius.desktop.launch import _browser_isolate, _clear_stale_locks, _editor_isolate, needs_shell
+from galaius.desktop.launch import apply_launch_rewrites
 
 
 @pytest.mark.parametrize(

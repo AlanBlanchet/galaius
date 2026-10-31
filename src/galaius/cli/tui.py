@@ -647,7 +647,8 @@ class GalaiusTUI(App):
         the by-provider usage breakdown, then update the panels. Fails soft."""
         provider_rows: list[tuple[str, int, float, int]] = []
         try:
-            from galaius.models import Model, ModelCapability
+            from galaius.models.registry import Model
+            from galaius.models.capability import ModelCapability
             from galaius.runtime import config
 
             Model.load_registry()

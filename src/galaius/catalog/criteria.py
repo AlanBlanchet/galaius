@@ -42,7 +42,9 @@ from galaius.catalog import source as benchmark_source
 from galaius.catalog import tables as benchmark_tables
 from galaius.catalog import models as model_catalog
 from galaius.inference import ollama
-from galaius.models import Benchmark, Model, ModelCapability, PublishedEntry, TokenMix
+from galaius.models.registry import Benchmark, Model, TokenMix
+from galaius.models.capability import ModelCapability
+from galaius.catalog.published import PublishedEntry
 from galaius.catalog.ttl_cache import TTLCache
 
 

@@ -15,16 +15,16 @@ from galaius.agents.providers import MEDIA_PROVIDERS
 from galaius.config.settings import Config
 from galaius.catalog.criteria import Criteria
 from galaius.lazy import deferred
-from galaius.models import ModelRole, supports_native_video_inline
+from galaius.models.spec import ModelRole
+from galaius.models.capability import supports_native_video_inline
 from galaius.host.processes import run_isolated_process
 from galaius.runtime import breaker
-from galaius.state import PageState, bytes_to_b64
+from galaius.browser.state import PageState, bytes_to_b64
 from galaius.vision.session import sample_video_frames, subscription_media_completion
-from galaius.vision.types import (  # noqa: F401 — public re-export
+from galaius.vision.types import (
     MediaItem,
     VLMResult,
     _compile_response_schema,
-    evenly_sampled,
 )
 from galaius.vision.usage import log_api_attempt
 from galaius.vision.workspace import _MediaWorkspace

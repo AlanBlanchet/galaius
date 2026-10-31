@@ -55,7 +55,8 @@ from galaius.agents.limits.warm import WarmStart
 from galaius.agents.catalog.server_ranking import ServerRanking, ServerRankingUnavailable
 from galaius.catalog.criteria import Criteria, CriteriaError, Dropped, Variables
 from galaius.catalog.models import live_scores
-from galaius.models import Model, ModelCapability
+from galaius.models.registry import Model
+from galaius.models.capability import ModelCapability
 from galaius.prompts.projection import coordinator_instructions
 from galaius.runtime import config
 from galaius.host.windowless import console_python

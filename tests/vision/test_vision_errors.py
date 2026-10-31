@@ -23,7 +23,7 @@ from galaius.diagnostics.debug_output import Debug
 @pytest.fixture
 def srv(provider_key):
     import galaius.server as _srv
-    from galaius.server.core import breaker
+    from galaius.runtime import breaker
 
     breaker.clear()
     _srv.core.config.component_criteria = "cap.gui_grounding"
@@ -142,8 +142,9 @@ async def test_vlm_rate_limit_triggers_fallback(srv):
     """RateLimitError in _vlm trips breaker and tries fallback model."""
     from litellm.exceptions import RateLimitError
     from galaius.config.settings import Config
-    from galaius.models import Model, ModelCapability
-    from galaius.server.core import breaker
+    from galaius.models.registry import Model
+    from galaius.models.capability import ModelCapability
+    from galaius.runtime import breaker
 
     call_count = 0
 
@@ -194,7 +195,8 @@ async def test_vlm_rate_limit_triggers_fallback(srv):
 async def test_vlm_falls_back_on_error(srv, make_error):
     """Any non-cancellation exception triggers fallback chain (not only RateLimitError)."""
     from galaius.config.settings import Config
-    from galaius.models import Model, ModelCapability
+    from galaius.models.registry import Model
+    from galaius.models.capability import ModelCapability
 
     call_count = 0
 
@@ -277,7 +279,8 @@ async def test_vlm_exhausted_chain_is_an_ERROR_line_that_says_why(srv, make_erro
     RateLimitError]": a class name, no ERROR: prefix, no way out. Now it is an ERROR: line carrying
     the last failure's own words — a VisionError's guidance, or the class + message of anything else."""
     from galaius.config.settings import Config
-    from galaius.models import Model, ModelCapability
+    from galaius.models.registry import Model
+    from galaius.models.capability import ModelCapability
 
     async def _mock(
         media, context, cfg, query, max_tokens, response_format, model, _dispatch_state,

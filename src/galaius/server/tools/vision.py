@@ -13,7 +13,7 @@ from galaius.config.settings import DEFAULT_LIMIT
 from galaius.diagnostics.debug_output import Debug
 from galaius.desktop.frames import Framing, RegionOutsideCapture
 from galaius.desktop.accessibility.element import DesktopElement
-from galaius.models import is_audio_model, is_transcription_only_model
+from galaius.models.capability import is_audio_model, is_transcription_only_model
 from galaius.server import capture, core, targets, vlm
 from galaius.server.core import (
     _AUTO_SESSION,
@@ -23,7 +23,7 @@ from galaius.server.core import (
     instrumented,
     mcp,
 )
-from galaius.state import format_element_list
+from galaius.browser.state import format_element_list
 from galaius.vision.types import MediaItem
 from galaius.vision.core import analyze_media, transcribe_audio
 from galaius.vision.critique import (

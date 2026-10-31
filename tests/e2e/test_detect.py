@@ -1,6 +1,6 @@
 """E2E: VLM element detection tests against real providers.
 
-Uses :class:`galaius.models.Model` directly — no provider/model classes
+Uses :class:`galaius.models.registry.Model` directly — no provider/model classes
 are defined here. LLM-visible artifacts (``interpretation.txt``,
 ``vlm_elements.json``) reference elements by index/name only; pixel
 coordinates live in debug-only files (``vlm_raw.txt``, ``ground_truth.json``).
@@ -17,15 +17,15 @@ import pytest
 from PIL import Image
 
 from galaius.desktop.accessibility import atspi
-from galaius.browser import BrowserManager
+from galaius.browser.manager import BrowserManager
 from galaius.desktop.accessibility.element import DesktopElement
 from galaius.desktop.window import DesktopWindow
 from galaius.vision.detect import _vlm_detect_elements
-from galaius.models import Model
+from galaius.models.registry import Model
 from galaius.runtime import config
-from galaius.state import annotate_screenshot
+from galaius.browser.state import annotate_screenshot
 
-from e2e.harness import (
+from tests.e2e.harness import (
     OUT_DIR,
     Comparison,
     E2EResult,

@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from galaius.data import PackageData  # noqa: E402
 from galaius.catalog.upstream import UpstreamSource  # noqa: E402
-from galaius.models import Benchmark, Model  # noqa: E402
+from galaius.models.registry import Benchmark, Model  # noqa: E402
 
 # Benchmark scores come from published online leaderboards; optional measured scores
 # can be injected via GALAIUS_GROUNDING_JSON (we never run our own paid eval).

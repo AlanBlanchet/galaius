@@ -25,7 +25,7 @@ import traceback
 from collections.abc import Callable
 from pathlib import Path
 
-#: Mirrors galaius_core.workflows.VALUE_PREVIEW_MAX_PIXELS / VALUE_PREVIEW_MAX_BYTES — literal
+#: Mirrors galaius_core.workflows.contracts.VALUE_PREVIEW_MAX_PIXELS / VALUE_PREVIEW_MAX_BYTES — literal
 #: here, never imported: this script stays dependency-free (see module docstring), so the bound
 #: is duplicated, not shared, and must move in step with that contract.
 _PREVIEW_MAX_PIXELS = 256

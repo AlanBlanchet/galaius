@@ -46,7 +46,7 @@ from galaius.agents.catalog.vocabulary import ApprovalIntent, TouchScope, Thinki
 from galaius.hooks.brief import NOTE as BRIEF_NOTE
 from galaius.isolation.fence import COMPAT_KEY, KEYS, RELAY, RELAY_PORT, Confinement, RelayedServer, SignIn, confinement_refusal, userns_refusal
 from galaius.hooks.inbox import NOTE as INBOX_NOTE
-from galaius.models import Model
+from galaius.models.registry import Model
 from galaius.host.processes import ask_process, run_isolated_process
 from galaius.mcp.announcement import GatewayServed
 

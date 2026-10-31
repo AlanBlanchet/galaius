@@ -15,7 +15,7 @@ import subprocess
 from pathlib import Path
 from uuid import UUID
 
-from galaius_core.sealing import SecretsSeal
+from galaius_core.identity.sealing import SecretsSeal
 from pydantic import BaseModel, ConfigDict
 
 from galaius.machine.projects.workspaces import MachineWorkspaces

@@ -30,7 +30,7 @@ from pydantic import BaseModel, ConfigDict
 from galaius.catalog.published import PublishedEntry, PublishedTable
 from galaius.data import PackageData
 from galaius.config.dotenv import load_dotenv_for_cli
-from galaius.models import RegistryMixin
+from galaius.models.registry import RegistryMixin
 
 _log = logging.getLogger(__name__)
 

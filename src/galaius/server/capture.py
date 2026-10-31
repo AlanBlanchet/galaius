@@ -14,9 +14,9 @@ from galaius.desktop.window import DesktopWindow
 from galaius.desktop.frames import Framing
 from galaius.vision.detect import _desktop_context, _detect_desktop_elements
 from galaius.server import core, targets, vlm
-from galaius.settle import settle_page
+from galaius.browser.settle import settle_page
 from galaius.server.core import config
-from galaius.state import (
+from galaius.browser.state import (
     InteractiveElement,
     PageState,
     annotate_screenshot,

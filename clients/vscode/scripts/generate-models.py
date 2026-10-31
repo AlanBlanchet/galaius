@@ -20,7 +20,7 @@ from pathlib import Path
 
 from galaius.data import PackageData
 from galaius.config.dotenv import load_dotenv_for_cli
-from galaius.models import is_audio_model, is_native_video_model
+from galaius.models.capability import is_audio_model, is_native_video_model
 
 load_dotenv_for_cli()
 
@@ -601,7 +601,7 @@ recommendations = _compute_recommendations(providers, aa_scores)
 # Append per-benchmark best published model (lookup-only — no eval runs).
 # Keys: "screenspot", "screenspot_pro" — values: list[model_id] for shape parity.
 from galaius.catalog.published import PublishedTable  # noqa: E402
-from galaius.models import Model  # noqa: E402
+from galaius.models.registry import Model  # noqa: E402
 
 Model.load_registry()
 for _bid in ("screenspot", "screenspot_pro"):

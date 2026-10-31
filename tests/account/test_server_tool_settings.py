@@ -9,7 +9,7 @@ import httpx
 import pytest
 from textual.widgets import Button, Input, Static, TabbedContent
 from galaius_core import PortableToolSettings, PortableToolSettingsUpdate
-from galaius_core.accounts import Account, Bootstrap, Workspace
+from galaius_core.identity.accounts import Account, Bootstrap, Workspace
 
 from galaius.agents.catalog.connection import CatalogAuthenticationError, CatalogConnection, CatalogConnectionError
 from galaius.config.schema import SETTINGS

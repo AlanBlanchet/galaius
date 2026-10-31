@@ -1,24 +1,26 @@
+"""The model registry and the benchmark registry: each `Model` with its prices and scores, each `Benchmark` with its published table, and the benchmarks registered at import."""
+
 import re
 import json
 import logging
 import os
-import time
-from enum import StrEnum
 from typing import TYPE_CHECKING, ClassVar, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
-from galaius.catalog.published import (
-    PublishedEntry,
-    PublishedTable,
-)
+from galaius.catalog.published import PublishedTable
 from galaius.data import PackageData
-from galaius.formats import CoordFormat
+from galaius.vision.formats import CoordFormat
+
+from galaius.models.capability import ModelCapability, is_audio_model, is_native_video_model
+from galaius.models.spec import ModelsConfig
 
 if TYPE_CHECKING:
     from galaius.inference.ollama import OllamaModel
 
+
 _log = logging.getLogger(__name__)
+
 
 def _litellm():
     """Import litellm lazily — costs ~2.5s, and only the litellm-fallback registry path and
@@ -31,135 +33,6 @@ def _litellm():
         return importlib.import_module("litellm")
     except ImportError:  # pragma: no cover
         return None
-
-ModelRole = Literal["image", "component", "video", "audio"]
-
-
-class ModelSpec(BaseModel):
-    input_cost_per_million: float | None = None
-    output_cost_per_million: float | None = None
-    #: Prompt tokens served FROM the provider's prompt cache, and tokens WRITTEN to it (litellm's
-    #: `cache_read_input_token_cost` / `cache_creation_input_token_cost`, default cache lifetime).
-    #: None = the source quotes no cache rate for this model, never "same as input".
-    cache_read_cost_per_million: float | None = None
-    cache_write_cost_per_million: float | None = None
-    supports_response_schema: bool = False
-    #: How strong the model is, on the catalog's own scale. Present in models.json all along,
-    #: dropped on load — why nothing at runtime could order a chain by quality.
-    intelligence_score: float | None = None
-    # Capability tags carried from upstream catalog (litellm) into models.json, so a model's
-    # behaviour (e.g. grounding default) is DERIVED from a live source, not a hardcoded list.
-    # See generate-models.py for how these are sourced.
-    capabilities: list[str] = Field(default_factory=list)
-    #: What the model PRODUCES, in litellm's words (chat, responses, image_generation,
-    #: video_generation, embedding, audio_speech, audio_transcription, realtime); None = unknown.
-    mode: str | None = None
-
-
-class ProviderSpec(BaseModel):
-    model_config = {"populate_by_name": True}
-
-    env_keys: list[str] = Field(default_factory=list, alias="envKeys")
-    models: dict[str, ModelSpec] = {}
-
-
-class ModelsConfig(BaseModel):
-    """Typed schema for models.json content."""
-
-    model_config = {"populate_by_name": True}
-
-    providers: dict[str, ProviderSpec] = {}
-    recommendations: dict[str, list[str]] = {}
-    coord_formats: dict[str, dict] = Field(default_factory=dict, alias="coordFormats")
-    defaults: dict[str, str] = {}
-
-
-class ModelCapability(StrEnum):
-    LLM = "llm"
-    VLM = "vlm"
-    GUI_GROUNDING = "gui_grounding"
-    # Native computer-use: the model emits click coordinates directly (Anthropic/OpenAI
-    # computer-use tool). Sourced from litellm's `supports_computer_use` — not hardcoded.
-    COMPUTER_USE = "computer_use"
-    VIDEO = "video"  # native video input — see is_native_video_model
-    AUDIO = "audio"  # audio understanding / transcription — see is_audio_model
-
-
-# Native video INPUT and audio understanding are per-FAMILY facts litellm's
-# `supports_video_input`/`supports_audio_input` flags do NOT reliably populate (return nothing
-# for every current model), so — like CoordFormat's grounding table — these are curated
-# substring tables grounded in each provider's own docs (web-verified 2026-06-24):
-#   • Native video input: Gemini (all 2.x/3.x, incl. YouTube URLs), Qwen-VL/Qwen3-VL, InternVL,
-#     LLaVA-Video, Amazon Nova Lite/Pro/Premier. OpenAI + Anthropic are FRAMES-ONLY (no native
-#     video media type) — galaius still drives them by ffmpeg-sampling a recording to images,
-#     but they aren't "video models".
-#   • Audio understanding/transcription: Gemini, GPT-4o-audio/-transcribe, Whisper, Qwen-Omni.
-#     (Anthropic has no audio input.)
-# Substring match against the litellm id (provider prefix included), case-insensitive.
-_VIDEO_FAMILIES: tuple[str, ...] = (
-    "gemini",
-    "qwen2-vl", "qwen2.5-vl", "qwen3-vl", "qwen-vl", "qwenvl",
-    "internvl",
-    "llava-video", "llava-next-video",
-    "nova-lite", "nova-pro", "nova-premier",  # Nova Micro is text-only — match the video tiers
-)
-_AUDIO_FAMILIES: tuple[str, ...] = (
-    "gemini",
-    "gpt-4o-audio", "gpt-4o-mini-audio", "gpt-audio",
-    "gpt-4o-transcribe", "gpt-4o-mini-transcribe", "whisper",
-    "qwen-omni", "qwen2.5-omni", "qwen3-omni", "qwen2-audio",
-)
-
-# Generation/TTS/embedding variants of a family (e.g. gemini-*-image-preview, *-tts, imagen,
-# veo) OUTPUT media or vectors — they don't UNDERSTAND video/audio input, so excluded from that
-# capability even though the name carries the family substring.
-_NOT_UNDERSTANDING: tuple[str, ...] = (
-    "-image", "image-preview", "image-generation", "-tts", "-embedding",
-    "embedding", "imagen", "veo",
-)
-
-
-def _is_understanding(model_id: str) -> bool:
-    lid = model_id.lower()
-    return not any(x in lid for x in _NOT_UNDERSTANDING)
-
-
-def is_native_video_model(model_id: str) -> bool:
-    """Whether a model accepts NATIVE video input (a clip), per the curated family table."""
-    lid = model_id.lower()
-    return _is_understanding(lid) and any(fam in lid for fam in _VIDEO_FAMILIES)
-
-
-def is_audio_model(model_id: str) -> bool:
-    """Whether a model can understand or transcribe AUDIO, per the curated family table."""
-    lid = model_id.lower()
-    return _is_understanding(lid) and any(fam in lid for fam in _AUDIO_FAMILIES)
-
-
-# Families litellm sends NATIVE inline video to (a Gemini `inline_data` part) — matched as a
-# substring so a bare `gemini-2.5-pro`, `gemini/…` and `vertex_ai/gemini-…` all qualify. Other
-# providers have no inline-video transform in litellm and SILENTLY DROP a video content part
-# (HTTP 200 + a hallucinated answer, never an error) — so this MUST be a positive allowlist, not
-# exception catching. Qwen/DashScope is URL-only through litellm, stays on frame sampling (#48).
-_NATIVE_VIDEO_INLINE_FAMILIES: tuple[str, ...] = ("gemini", "vertex_ai")
-
-
-def supports_native_video_inline(model_id: str) -> bool:
-    """Whether litellm will send this model native inline video rather than us ffmpeg-sampling
-    frames — a Gemini/Vertex understanding model only, today (#48)."""
-    lid = model_id.lower()
-    return is_native_video_model(lid) and any(fam in lid for fam in _NATIVE_VIDEO_INLINE_FAMILIES)
-
-
-# Pure speech-to-text models — transcribe but can't take audio in a chat completion. The
-# transcribe tool answers a `query` about one of these over its TRANSCRIPT (via the image
-# model), not by routing audio into an acoustic chat call it can't serve.
-_TRANSCRIBE_ONLY: tuple[str, ...] = ("whisper", "-transcribe")
-
-
-def is_transcription_only_model(model_id: str) -> bool:
-    lid = model_id.lower()
-    return any(t in lid for t in _TRANSCRIBE_ONLY)
 
 
 class RegistryMixin:
@@ -987,21 +860,6 @@ class Model(RegistryMixin, BaseModel):
                     benchmark._measured[model.id] = score
 
 
-__all__ = [
-    "Benchmark",
-    "BenchmarkRecommendation",
-    "CircuitBreaker",
-    "Model",
-    "ModelCapability",
-    "ModelSpec",
-    "ModelsConfig",
-    "ProviderSpec",
-    "PublishedEntry",
-    "PublishedTable",
-    "RegistryMixin",
-]
-
-
 #: Words that name the KIND of a source rather than the source itself — dropped when initials
 #: are derived, so "OpenCompass video leaderboard" becomes "oc" and not "ovl".
 _SOURCE_NOISE = {"leaderboard", "leaderboards", "benchmark", "the", "of", "and", "for"}
@@ -1187,31 +1045,6 @@ class BenchmarkRecommendation(BaseModel):
         return self.model.cost_score or None
 
 
-class CircuitBreaker:
-    """Track failed models with TTL-based cooldown."""
-
-    def __init__(self, ttl: float = 300.0):
-        self._trips: dict[str, float] = {}
-        self._ttl = ttl
-
-    def tripped(self, model_id: str) -> bool:
-        ts = self._trips.get(model_id)
-        if ts is None:
-            return False
-        if time.monotonic() - ts >= self._ttl:
-            del self._trips[model_id]
-            return False
-        return True
-
-    def trip(self, model_id: str) -> None:
-        self._trips[model_id] = time.monotonic()
-
-    def clear(self) -> None:
-        self._trips.clear()
-
-
-_ = PublishedTable  # re-exported via __all__; reference here silences unused-import lint
-
 # Pre-register known grounding benchmarks at import time.
 # Published tables for these benchmarks live in galaius.catalog.published.
 # GUI grounding — "can the model point at the right on-screen element to click?"
@@ -1231,6 +1064,8 @@ Benchmark._register(
         published=PublishedTable.load("screenspot"),
     )
 )
+
+
 Benchmark._register(
     Benchmark(
         id="screenspot_pro",
@@ -1247,6 +1082,8 @@ Benchmark._register(
         published=PublishedTable.load("screenspot_pro"),
     )
 )
+
+
 # Image understanding — "how well does the model reason over a static image?"
 Benchmark._register(
     Benchmark(
@@ -1270,6 +1107,8 @@ Benchmark._register(
         published=PublishedTable.load("mmmu_pro"),
     )
 )
+
+
 # Language-model role metrics. Names are registry data; the live adapter maps only these exact
 # Artificial Analysis API fields, so an example or an unavailable field cannot become a route.
 for _id, _name, _field, _range in (
@@ -1298,6 +1137,8 @@ for _id, _name, _field, _range in (
             higher_is_better=True,
         )
     )
+
+
 # Current coding measures Artificial Analysis publishes on its site but in no API field — the API's
 # coding field is the legacy index, empty for every model newer than its methodology switch.
 Benchmark._register(
@@ -1319,6 +1160,8 @@ Benchmark._register(
         published=PublishedTable.load("coding_agent_index"),
     )
 )
+
+
 Benchmark._register(
     Benchmark(
         id="terminalbench_4",
@@ -1338,6 +1181,8 @@ Benchmark._register(
         published=PublishedTable.load("terminalbench_4"),
     )
 )
+
+
 Benchmark._register(
     Benchmark(
         id="mmbench",
@@ -1356,6 +1201,8 @@ Benchmark._register(
         published=PublishedTable.load("mmbench"),
     )
 )
+
+
 # Video understanding — "can the model reason over time across frames?"
 Benchmark._register(
     Benchmark(
@@ -1373,6 +1220,8 @@ Benchmark._register(
         published=PublishedTable.load("video_mme"),
     )
 )
+
+
 Benchmark._register(
     Benchmark(
         id="mvbench",
@@ -1389,6 +1238,8 @@ Benchmark._register(
         published=PublishedTable.load("mvbench"),
     )
 )
+
+
 Benchmark._register(
     Benchmark(
         id="mlvu",
@@ -1405,6 +1256,8 @@ Benchmark._register(
         published=PublishedTable.load("mlvu"),
     )
 )
+
+
 # Audio understanding — "can the model reason over speech, sound and music?"
 Benchmark._register(
     Benchmark(

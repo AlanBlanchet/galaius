@@ -12,7 +12,7 @@ from datetime import datetime as _dt
 from pathlib import Path
 
 from galaius.runtime import config
-from galaius.state import _SLUG_MAX
+from galaius.browser.state import _SLUG_MAX
 
 _log = logging.getLogger("galaius")
 

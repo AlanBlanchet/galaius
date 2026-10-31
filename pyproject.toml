@@ -89,7 +89,7 @@ packages = [
     "src/galaius",
 ]
 artifacts = [
-    "src/galaius/js/*.js",
+    "src/galaius/browser/js/*.js",
     "src/galaius/data/*.json",
     "src/galaius/agents/transport/codex_app_server_schema/*.json",
 ]

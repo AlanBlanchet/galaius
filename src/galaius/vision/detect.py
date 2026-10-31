@@ -14,10 +14,11 @@ from galaius.diagnostics.debug_output import Debug
 from galaius.desktop.coords import CoordTransform
 from galaius.desktop.accessibility.element import DesktopElement, _IOU_OVERLAP_THRESHOLD, _TITLEBAR_Y, _WM_BUTTON_NAMES
 from galaius.desktop.window import DesktopWindow
-from galaius.formats import CoordFormat
+from galaius.vision.formats import CoordFormat
 from galaius.runtime import breaker, config
-from galaius.state import annotate_screenshot
-from galaius.vision.core import MediaItem, analyze_media, litellm as _litellm
+from galaius.browser.state import annotate_screenshot
+from galaius.vision.core import analyze_media, litellm as _litellm
+from galaius.vision.types import MediaItem
 
 _log = logging.getLogger("galaius")
 

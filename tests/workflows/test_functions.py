@@ -9,7 +9,7 @@ import pytest
 
 import galaius
 from galaius.host.private_files import PRIVATE_FILES
-from galaius.functions import FunctionRegistry, discover_python, discover_shell, invoke
+from galaius.workflows.functions import FunctionRegistry, discover_python, discover_shell, invoke
 
 
 def test_bare_decorator_marks_a_typed_function_with_its_docstring(tmp_path: Path) -> None:

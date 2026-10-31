@@ -12,7 +12,8 @@ from typing import Any
 from dotenv import load_dotenv
 from pydantic import BaseModel
 
-from galaius.models import Model, ModelCapability
+from galaius.models.registry import Model
+from galaius.models.capability import ModelCapability
 from galaius.diagnostics.probe import Comparison, MatchedElement, UnmatchedElement
 
 load_dotenv()

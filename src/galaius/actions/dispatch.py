@@ -12,7 +12,7 @@ from playwright.async_api import Error as PlaywrightError, TimeoutError as Playw
 
 from galaius.desktop.accessibility import cdp as _cdp
 from galaius.desktop.accessibility.atspi import AtSpi
-from galaius.settle import settle_animations
+from galaius.browser.settle import settle_animations
 from galaius.actions.models import (
     AnyAction,
     AnnotateAction,
@@ -32,7 +32,7 @@ from galaius.actions.models import (
     TypeTextAction,
     WaitForAction,
 )
-from galaius.browser import BrowserManager
+from galaius.browser.manager import BrowserManager
 from galaius.diagnostics.debug_output import Debug
 from galaius.desktop.window import DesktopWindow
 from galaius.desktop import host as desktop_host
@@ -40,7 +40,7 @@ from galaius.desktop import ocr as desktop_ocr
 from galaius.desktop.frames import Framing
 from galaius.desktop.waits import until_text, until_window
 from galaius.vision.detect import _desktop_context
-from galaius.state import DesktopState, PageState, StateChange, ref_locator
+from galaius.browser.state import DesktopState, PageState, StateChange, ref_locator
 from galaius.desktop.accessibility.element import DesktopElement
 from galaius.desktop.cursor import Cursor
 from galaius.desktop.nested import NestedBackend

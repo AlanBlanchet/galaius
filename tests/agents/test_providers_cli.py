@@ -12,7 +12,7 @@ from galaius.cli import app_commands
 from galaius.agents.providers import ClaudeCodeProvider, CodexProvider, MEDIA_PROVIDERS
 from galaius.config.settings import Config
 from galaius.config.user import UserConfig
-from galaius.models import Model
+from galaius.models.registry import Model
 import galaius.inference.ollama as ollama
 from galaius.runtime import config as runtime_config
 from galaius.server.tools.meta import list_providers
@@ -21,7 +21,7 @@ from galaius.server.tools.meta import list_providers
 @pytest.fixture
 def _only_zai(monkeypatch):
     # ONLY the z.ai GLM reachable → resolution is deterministic without real keys.
-    monkeypatch.setattr("galaius.models.Model.is_available", lambda self: self.id == "zai/glm-4.5v")
+    monkeypatch.setattr("galaius.models.registry.Model.is_available", lambda self: self.id == "zai/glm-4.5v")
 
 
 def test_resolved_models_helper_names_every_task_with_its_role_knob(_only_zai, capsys):
@@ -38,7 +38,7 @@ def test_resolved_models_helper_names_every_task_with_its_role_knob(_only_zai, c
 
 
 def test_resolved_models_helper_flags_a_missing_key(monkeypatch, capsys):
-    monkeypatch.setattr("galaius.models.Model.is_available", lambda self: False)  # nothing reachable
+    monkeypatch.setattr("galaius.models.registry.Model.is_available", lambda self: False)  # nothing reachable
     app_commands._print_resolved_models()
     out = capsys.readouterr().out
     assert "⚠" in out and "no model available" in out  # nothing resolving is called out, never silent
@@ -309,7 +309,7 @@ def test_the_doctor_reports_the_criterion_when_one_governs_the_role(monkeypatch,
     criterion looked like it did nothing and the honest-seeming move was to pin a model id —
     which is exactly what a criterion exists to avoid.
     """
-    monkeypatch.setattr("galaius.models.Model.is_available", lambda self: self.id == "zai/glm-4.5v")
+    monkeypatch.setattr("galaius.models.registry.Model.is_available", lambda self: self.id == "zai/glm-4.5v")
     monkeypatch.setattr(runtime_config, "image_criteria", "cap.vlm and aa.intelligence >= 1")
     app_commands._print_resolved_models()
     out = capsys.readouterr().out

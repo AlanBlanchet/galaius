@@ -12,7 +12,7 @@ from uuid import UUID
 
 import httpx
 from galaius_core import PortableToolSettings, PortableToolSettingsUpdate, PortableToolSettingsValues
-from galaius_core.accounts import Bootstrap
+from galaius_core.identity.accounts import Bootstrap
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from galaius.agents.catalog.connection import CatalogAuthenticationError, CatalogConnection, CatalogConnectionError

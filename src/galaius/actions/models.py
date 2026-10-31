@@ -8,10 +8,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from playwright.async_api import Page
 
 from galaius.config.settings import DEFAULT_LIMIT
-from galaius.settle import settle_animations
-from galaius.state import ref_locator
+from galaius.browser.settle import settle_animations
+from galaius.browser.state import ref_locator
 
-_DND_DISPATCH_JS = (Path(__file__).parent.parent / "js" / "dnd_dispatch.js").read_text()
+_DND_DISPATCH_JS = (Path(__file__).parent.parent / "browser" / "js" / "dnd_dispatch.js").read_text()
 
 _JS_NEEDS_ASYNC = re.compile(r"\b(return|await)\b")
 

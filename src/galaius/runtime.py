@@ -7,8 +7,9 @@ import os
 from galaius.config.settings import Config
 from galaius.config.user import UserConfig
 from galaius.data import PackageData
-from galaius.formats import CoordFormat
-from galaius.models import CircuitBreaker, Model
+from galaius.vision.formats import CoordFormat
+from galaius.models.breaker import CircuitBreaker
+from galaius.models.registry import Model
 from galaius.account.tool_settings import PORTABLE_ENV
 
 

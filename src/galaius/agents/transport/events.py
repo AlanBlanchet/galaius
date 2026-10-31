@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from galaius_core import CompactionTrigger, ContextGauge, UsageWindow
 
-from galaius.models import TokenMix
+from galaius.models.registry import TokenMix
 
 EventKind = Literal[
     "started",     # session is up (id, cwd, tools known)

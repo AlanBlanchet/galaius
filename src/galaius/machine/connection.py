@@ -51,7 +51,7 @@ from galaius.machine.agents import AgentSpawns, LogRing, MachineAgents, MachineS
 from galaius.diagnostics.redaction import redact, secret_values
 from galaius.machine.programs import AgentPrograms
 from galaius.machine.projects.workspaces import MachineWorkspaces, WorkspaceJobs
-from galaius_core.sealing import SecretsSeal
+from galaius_core.identity.sealing import SecretsSeal
 from galaius_core.wire import fitted, internals, readable
 from galaius.agents.transport.events import AgentEvent
 from galaius.agents.turns.handback import EndWatch, SilenceWatch
@@ -65,7 +65,7 @@ from galaius.agents import registry as reg
 from galaius.agents.catalog.profiles import ALLOWED_ENV
 from galaius.desktop.screen.desk import ScreenDesk
 from galaius.desktop.screen.trust import ScreenEnd
-from galaius.functions import FunctionRegistry, PermissionLevel, invoke as invoke_function
+from galaius.workflows.functions import FunctionRegistry, PermissionLevel, invoke as invoke_function
 from galaius.inference.env import ModelWorker, Report, ensure_speech_env, ensure_vision_env
 from galaius.isolation import gpu_scrub
 from galaius.inference import user_models

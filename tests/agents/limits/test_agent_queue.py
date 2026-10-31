@@ -235,7 +235,7 @@ def test_separate_process_enqueue_calls_are_serialized(monkeypatch, tmp_path):
     setup_queue(monkeypatch)
     script = (
         "import sys; "
-        "from galaius.agents import agent_queue; "
+        "from galaius.agents.limits import agent_queue; "
         "item=agent_queue.enqueue('r1', message_id=sys.argv[1], sender='operator'); "
         "raise SystemExit(0 if item else 1)"
     )

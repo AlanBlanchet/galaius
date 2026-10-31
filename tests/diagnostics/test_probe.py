@@ -2,7 +2,7 @@ import re
 
 import pytest
 
-from galaius.models import Model
+from galaius.models.registry import Model
 from galaius.diagnostics.probe import ArtifactRun
 from tests.support import catalog_json
 

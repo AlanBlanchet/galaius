@@ -20,7 +20,7 @@ const edit = (path: string, extra = "") => ({
 test("a file edit is a card with a preview, never the change dumped inline", () => {
   /* The design moved once he asked for colour: the card PREVIEWS a few lines of the change (that
      is what a preview is), but the raw argument soup and the full payload stay out. */
-  const html = renderTranscript([edit("/work/galaius/src/galaius/models.py")] as never[]);
+  const html = renderTranscript([edit("/work/galaius/src/galaius/models/__init__.py")] as never[]);
   assert.ok(html.includes("models.py"), "the card must name the file");
   const summary = html.slice(0, html.indexOf("</summary>"));
   assert.ok(!summary.includes("old_string"), "raw arguments do not belong in the resting row");

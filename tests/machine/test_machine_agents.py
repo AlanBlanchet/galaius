@@ -44,7 +44,7 @@ from galaius.agents.providers import PROJECT_SETTINGS_OFF, UNTRUSTED_FOLDERS, Cl
 from galaius.machine.places.place_reviews import PlaceReviews
 from galaius.host.private_files import PRIVATE_FILES
 from galaius.machine.projects.project_secrets import MARKER, ProjectEnv
-from galaius_core.sealing import SecretsSeal
+from galaius_core.identity.sealing import SecretsSeal
 
 
 @pytest.fixture

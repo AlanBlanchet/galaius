@@ -7,7 +7,8 @@ import copy
 import json
 from contextlib import contextmanager
 
-from galaius.models import Model, ModelCapability
+from galaius.models.registry import Model
+from galaius.models.capability import ModelCapability
 
 
 def model(

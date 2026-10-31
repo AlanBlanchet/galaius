@@ -8,15 +8,8 @@ picker is a genuine subset, the matchers are right, and the new MLVU/MMAU benchm
 
 import pytest
 
-from galaius.models import (
-    Benchmark,
-    Model,
-    ModelCapability,
-    is_audio_model,
-    is_native_video_model,
-    is_transcription_only_model,
-    supports_native_video_inline,
-)
+from galaius.models.registry import Benchmark, Model
+from galaius.models.capability import ModelCapability, is_audio_model, is_native_video_model, is_transcription_only_model, supports_native_video_inline
 from galaius.config.settings import _ROLE_DEFAULT_CRITERIA
 from galaius.catalog.criteria import Criteria
 

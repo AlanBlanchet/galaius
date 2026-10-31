@@ -254,7 +254,7 @@ def test_a_window_wait_runs_through_run_actions_on_a_screen_target(monkeypatch):
     target is bound to, and sees the launcher window the key opened."""
     from galaius.actions import dispatch
     from galaius.actions.models import KeyPressAction
-    from galaius.state import DesktopState
+    from galaius.browser.state import DesktopState
 
     class Host(PortableBackend):
         def __init__(self):

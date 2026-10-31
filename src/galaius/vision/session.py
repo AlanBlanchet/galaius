@@ -30,7 +30,7 @@ from galaius.agents.providers import (
     _MediaSessionProvider,
 )
 from galaius.config.settings import Config
-from galaius.models import Model
+from galaius.models.registry import Model
 from galaius.host.private_files import PRIVATE_FILES
 from galaius.host.processes import run_isolated_process
 from galaius.vision.types import (

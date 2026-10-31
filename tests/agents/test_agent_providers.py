@@ -24,7 +24,7 @@ from galaius.agents.providers import (
     PROJECT_SETTINGS_OFF,
     PROVIDERS, ClaudeCodeProvider, CodexProvider, UnsupportedToolPolicy, provider_for,
 )
-from galaius.models import Model
+from galaius.models.registry import Model
 from galaius.agents.registry import StreamDigest, participant_environment
 from galaius.host.processes import NpmShim, spawnable
 from tests.support.paths import TESTS

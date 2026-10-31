@@ -9,7 +9,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from galaius_core.accounts import Account, Bootstrap, Workspace
+from galaius_core.identity.accounts import Account, Bootstrap, Workspace
 from galaius_core.prompts import PromptCreateRequest, PromptKey, PromptRevision
 
 from galaius.agents.catalog.connection import CatalogConnection

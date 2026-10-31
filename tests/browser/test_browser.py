@@ -7,13 +7,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from galaius.config.settings import LOG_MAXLEN
-from galaius.state import InteractiveElement, PageState, _visible_text, ref_locator
+from galaius.browser.state import InteractiveElement, PageState, _visible_text, ref_locator
 from tests.support import browser_manager, interactive_element
+from tests.support.paths import REPO
 
-_ANNOTATE_JS = (
-    Path(__file__).parents[1]
-    / "src" / "galaius" / "js" / "annotate_elements.js"
-).read_text()
+_ANNOTATE_JS = (REPO / "src" / "galaius" / "browser" / "js" / "annotate_elements.js").read_text()
 
 
 def _el(index: int, ref: str | None = None) -> InteractiveElement:
@@ -290,7 +288,7 @@ def test_chromium_launch_hides_automation_signals():
     """#69: Cloudflare & friends fingerprint the default automation flags. A chromium launch now
     drops --enable-automation and disables the AutomationControlled blink feature (navigator.webdriver)
     so a legitimate QA browse is less likely to be flagged. Non-chromium engines are untouched."""
-    from galaius.browser import chromium_launch_kwargs
+    from galaius.browser.manager import chromium_launch_kwargs
 
     kw = chromium_launch_kwargs(SimpleNamespace(name="chromium"), headless=True, slow_mo=0)
     assert "--disable-blink-features=AutomationControlled" in kw["args"]
@@ -305,7 +303,7 @@ def test_chromium_launch_hides_automation_signals():
 def test_chromium_sandboxed_off_linux(monkeypatch, platform):
     """macOS and Windows sandbox Chromium unprivileged: no route to pick there, and a sandbox-only caller (a community
     scene) must not read them as unsandboxed."""
-    from galaius import browser
+    from galaius.browser import manager as browser
 
     monkeypatch.setattr(browser.sys, "platform", platform)
     kw = browser.chromium_launch_kwargs(SimpleNamespace(name="chromium", executable_path="chrome"), True, 0, 2**30)
@@ -347,7 +345,7 @@ async def test_session_browser_sandboxed_and_capped():
     """A real session launch on this machine: no Chromium process carries --no-sandbox (Playwright adds it unless
     asked), and the browser's own cgroup holds the configured memory cap. Skips the half this machine offers no route
     for; any other launch failure fails."""
-    from galaius.browser import BrowserManager, browser_scope, sandbox_route
+    from galaius.browser.manager import BrowserManager, browser_scope, sandbox_route
     from galaius.config.settings import Config
 
     if not await _chromium_installed():
@@ -375,7 +373,7 @@ async def test_session_browser_starts_when_the_sandbox_guess_is_wrong(monkeypatc
     """A setup the route guess misses (a pod, a seccomp filter) used to start unsandboxed; it still starts: Chromium's
     sandbox abort relaunches it once unsandboxed instead of reinstalling. Forced here by guessing namespaces with the
     setuid helper hidden — on a machine where namespaces do work it simply starts sandboxed."""
-    from galaius import browser
+    from galaius.browser import manager as browser
     from galaius.config.settings import Config
 
     if not await _chromium_installed():

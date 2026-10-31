@@ -10,7 +10,7 @@ import pytest
 from pydantic import ValidationError
 
 from galaius.actions.models import EmulateDeviceAction
-from galaius.browser import BrowserManager
+from galaius.browser.manager import BrowserManager
 
 from tests.support import browser_manager, ready_or_skip
 

@@ -12,7 +12,7 @@ stops. A vision model may corroborate a finding's severity; it never gets to inv
 
 Reuses the ref scan every other browser tool already runs (`galaius.server.capture._scan_
 elements`, `data-galaius-ref`) — one addressing scheme, not a parallel one — and the existing
-bounded settle wait (`galaius.settle.settle_page`) to decide "did this ever stop moving".
+bounded settle wait (`galaius.browser.settle.settle_page`) to decide "did this ever stop moving".
 
 Scope (named, not silent): browser sessions only. A desktop/AT-SPI equivalent is a real future
 capability (DesktopElement already carries geometry) but has no second caller yet — right-altitude
@@ -27,8 +27,8 @@ from typing import Literal
 from playwright.async_api import Page
 from pydantic import BaseModel
 
-from galaius.settle import settle_page
-from galaius.state import ref_locator
+from galaius.browser.settle import settle_page
+from galaius.browser.state import ref_locator
 
 Severity = Literal["critical", "major", "minor"]
 

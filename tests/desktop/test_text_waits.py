@@ -127,7 +127,7 @@ def test_the_default_read_region_is_the_active_window_and_screen_is_opt_in(monke
     not the terminal or editor beside it; region="screen" reads everything."""
     from galaius.actions import dispatch
     from galaius.desktop.geometry import HostWindow
-    from galaius.state import DesktopState
+    from galaius.browser.state import DesktopState
 
     sizes: list[tuple[int, int]] = []
 
@@ -166,7 +166,7 @@ def test_run_actions_never_counts_its_own_typing(monkeypatch):
     """type_text "calculator" then wait_for text="calculator": the field's echo is not a result."""
     from galaius.actions import dispatch
     from galaius.actions.models import TypeTextAction
-    from galaius.state import DesktopState
+    from galaius.browser.state import DesktopState
 
     class Reader(ocr.TextReader):
         def read(self, png: bytes) -> str:
@@ -207,7 +207,7 @@ def test_a_text_wait_through_run_actions_reads_only_the_region(monkeypatch):
     """`key_press super` opens a launcher; `wait_for text=… region=…` OCRs just that rectangle of
     the screen target until the result row shows."""
     from galaius.actions import dispatch
-    from galaius.state import DesktopState
+    from galaius.browser.state import DesktopState
 
     sizes: list[tuple[int, int]] = []
 

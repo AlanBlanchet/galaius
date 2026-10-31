@@ -5,7 +5,7 @@ from typing import Union
 
 from pydantic import TypeAdapter
 
-from galaius_core.people import PersonInvite
+from galaius_core.identity.people import PersonInvite
 from galaius_core import (
     Account,
     AccountUpdate,

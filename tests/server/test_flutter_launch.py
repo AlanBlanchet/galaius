@@ -9,7 +9,7 @@ import time
 
 import pytest
 
-from galaius.launch import _flutter_software_render
+from galaius.desktop.launch import _flutter_software_render
 
 
 

@@ -326,7 +326,7 @@ def test_agents_models_ranks_what_can_be_compared(capsys, monkeypatch):
     import json as _json
 
     from galaius.cli.app_commands import agents_models
-    from galaius.models import Model
+    from galaius.models.registry import Model
 
     with catalog_of(
         Model(id="big", provider="anthropic", capabilities=set(), intelligence_score=60.2),
@@ -346,7 +346,7 @@ def test_agents_models_lists_each_model_once_not_once_per_provider_alias(capsys,
     import json as _json
 
     from galaius.cli.app_commands import agents_models
-    from galaius.models import Model
+    from galaius.models.registry import Model
 
     with catalog_of(
         Model(id="azure/gpt-5.5", provider="azure", capabilities=set(), intelligence_score=60.2),
@@ -403,7 +403,7 @@ def test_agents_models_scores_the_alias_a_picker_offers(capsys):
     import json as _json
 
     from galaius.cli.app_commands import agents_models
-    from galaius.models import Model
+    from galaius.models.registry import Model
 
     with catalog_of(
         Model(id="gpt-5.5", provider="openai", capabilities=set(), intelligence_score=60.2),
@@ -430,7 +430,7 @@ def test_agents_models_ranks_by_competition_not_by_list_position(capsys):
     import json as _json
 
     from galaius.cli.app_commands import agents_models
-    from galaius.models import Model
+    from galaius.models.registry import Model
 
     with catalog_of(
         Model(id="alpha", provider="a", capabilities=set(), intelligence_score=60.2),
@@ -452,7 +452,7 @@ def test_agents_models_names_the_aliases_it_absorbed(capsys):
     import json as _json
 
     from galaius.cli.app_commands import agents_models
-    from galaius.models import Model
+    from galaius.models.registry import Model
 
     with catalog_of(
         Model(id="gpt-5.5", provider="openai", capabilities=set(), intelligence_score=60.2),
@@ -475,7 +475,7 @@ def test_agents_models_falls_back_to_the_closest_ranked_relative(capsys):
     import json as _json
 
     from galaius.cli.app_commands import agents_models
-    from galaius.models import Model
+    from galaius.models.registry import Model
 
     with catalog_of(
         Model(id="gpt-5.5", provider="openai", capabilities=set(), intelligence_score=60.2),
@@ -499,7 +499,7 @@ def test_rank_is_over_the_board_not_over_what_this_machine_can_reach(capsys, mon
 
     from galaius.catalog import models as mcat
     from galaius.cli.app_commands import agents_models
-    from galaius.models import Model
+    from galaius.models.registry import Model
 
     board = tmp_path / "board.json"
     board.write_text(_json.dumps({"scores": [
@@ -532,7 +532,7 @@ def test_the_ranking_scores_every_model_the_board_measures(capsys, monkeypatch, 
 
     from galaius.catalog import models as mcat
     from galaius.cli.app_commands import agents_models
-    from galaius.models import Model
+    from galaius.models.registry import Model
 
     board = tmp_path / "board.json"
     board.write_text(_json.dumps({"scores": [
@@ -573,7 +573,7 @@ def test_a_different_version_is_never_passed_off_as_the_one_asked_for(capsys, mo
 
     from galaius.catalog import models as mcat
     from galaius.cli.app_commands import agents_models
-    from galaius.models import Model
+    from galaius.models.registry import Model
 
     board = tmp_path / "board.json"
     board.write_text(_json.dumps({"scores": [
@@ -607,7 +607,7 @@ def test_a_criterion_can_be_asked_what_it_picks_today(capsys, monkeypatch, tmp_p
 
     from galaius.catalog import models as mcat
     from galaius.cli.app_commands import agents_criterion
-    from galaius.models import Model
+    from galaius.models.registry import Model
 
     board = tmp_path / "board.json"
     board.write_text(_json.dumps({"scores": [
@@ -649,7 +649,7 @@ def test_the_policy_says_which_rule_governs_an_agent_and_what_it_means_today(
     """
     from galaius.catalog import models as mcat
     from galaius.cli.app_commands import agents_policy
-    from galaius.models import Model
+    from galaius.models.registry import Model
 
     board = tmp_path / "board.json"
     board.write_text(json.dumps({"scores": [{"name": "Mid One", "intelligence": 40.0}]}))
@@ -687,7 +687,7 @@ def test_a_criterion_answers_PER_VENDOR_CLI_because_that_is_who_will_run_it(
     """
     from galaius.catalog import models as mcat
     from galaius.cli.app_commands import agents_criterion
-    from galaius.models import Model
+    from galaius.models.registry import Model
 
     board = tmp_path / "board.json"
     board.write_text(json.dumps({"scores": [{"name": "Only One", "intelligence": 50.0}]}))

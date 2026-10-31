@@ -96,6 +96,6 @@ def test_a_windowless_start_with_no_stdout_still_hands_off(store: RuntimeStore) 
     store.activate(fake(store, "0.9.0", 1))
     env = {**os.environ, "GALAIUS_SUPERVISE": "1", "GALAIUS_RUNTIMES": str(store.root)}
     env.pop("GALAIUS_SUPERVISED", None)
-    script = "import sys; sys.stdout = sys.stderr = None; sys.argv = ['galaius', 'machine', 'service', 'run']; from galaius.cli import main; main()"
+    script = "import sys; sys.stdout = sys.stderr = None; sys.argv = ['galaius', 'machine', 'service', 'run']; from galaius.cli.app import main; main()"
     ran = subprocess.run([sys.executable, "-c", script], env=env, capture_output=True, text=True, timeout=60)
     assert ran.stdout.strip() == "0.9.0 ran machine service run", ran.stderr

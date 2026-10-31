@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from galaius.browser import BrowserManager
+from galaius.browser.manager import BrowserManager
 from galaius.vision.types import VLMResult
 from tests.support import browser_manager, ready_or_skip
 from galaius.desktop.motion import Motion
@@ -32,7 +32,7 @@ from galaius.diagnostics.debug_output import Debug
 @pytest.fixture
 def srv():
     import galaius.server as _srv
-    from galaius.server.core import breaker
+    from galaius.runtime import breaker
     from unittest.mock import patch
 
     breaker.clear()

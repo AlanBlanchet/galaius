@@ -15,7 +15,7 @@ import struct
 import zlib
 
 from galaius.catalog.criteria import Criteria, CriteriaError
-from galaius.models import Model
+from galaius.models.registry import Model
 
 
 class Verdict:

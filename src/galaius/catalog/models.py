@@ -328,7 +328,7 @@ def live_scores(path: Path | None = None) -> dict[str, float]:
 def _with_scores(models: list[ModelInfo]) -> list[ModelInfo]:
     """Same models, each carrying its capability score from the model registry (None if
     nobody measured it). Registry is the one place a score lives; catalog only ferries it."""
-    from galaius.models import Model
+    from galaius.models.registry import Model
 
     by_id = {m.id: m.intelligence_score for m in Model.catalog()}
     return [replace(m, intelligence_score=by_id.get(m.id)) for m in models]

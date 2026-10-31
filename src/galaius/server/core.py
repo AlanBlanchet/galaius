@@ -4,9 +4,8 @@ registers on, the server lifespan, tool-facing instructions, the browser
 other submodule leans on.
 
 Split by COHESION — ``vlm``/``browser_sandbox``/``targets``/``capture`` hold private helpers, the ``tools`` package
-hold the ``@mcp.tool`` surfaces — so no file is a 2000-line monolith. ``server/__init__``
-re-exports the whole public + test-patched surface, so both ``srv._vlm`` and ``from
-galaius.server import _scan_elements`` keep resolving. Cross-module calls to a monkeypatched
+hold the ``@mcp.tool`` surfaces — so no file is a 2000-line monolith. Callers and tests import
+each helper from its home module (``from galaius.server.capture import _scan_elements``). Cross-module calls to a monkeypatched
 helper are MODULE-QUALIFIED (``vlm._vlm(...)``) so a test patching it on its home module is
 seen at the call site; same-module calls stay bare.
 """
@@ -15,7 +14,6 @@ import asyncio
 import functools
 import hashlib
 import inspect
-import json
 import logging
 import threading
 import weakref
@@ -31,13 +29,12 @@ from mcp.shared.version import SUPPORTED_PROTOCOL_VERSIONS
 
 from galaius import __version__
 from galaius.agents.tool_gateway import ServedGateway
-from galaius.browser import SessionRegistry
+from galaius.browser.manager import SessionRegistry
 from galaius.account.caller import Caller
 from galaius.diagnostics.debug_output import _CURRENT_INV, Debug, resolve_output_path
 from galaius.mcp.announcement import GATEWAY_PREFIX, McpAnnouncement
 from galaius.desktop.window import CaptureError
-from galaius.runtime import (  # noqa: F401 — breaker re-exported for tests/vlm
-    breaker,
+from galaius.runtime import (
     config,
 )
 from galaius.upgrade.quiet import QuietPoint
@@ -62,8 +59,7 @@ _DEFAULT_SESSION = "default"
 #: so a default of ``"default"`` makes the two indistinguishable.
 _AUTO_SESSION = "auto"
 _NO_WINDOWS_MSG = "No desktop windows detected (X11/maim required)."
-# js/ lives at the package root (galaius/js), one level up from this subpackage.
-_ANNOTATE_JS = (Path(__file__).parent.parent / "js" / "annotate_elements.js").read_text()
+_ANNOTATE_JS = (Path(__file__).parent.parent / "browser" / "js" / "annotate_elements.js").read_text()
 
 _DBG_ELEMENTS = "get_interactive_elements"
 _DBG_ACTIONS = "run_actions"

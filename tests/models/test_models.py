@@ -4,13 +4,9 @@ from unittest.mock import patch
 
 import pytest
 
-from galaius.models import (
-    Benchmark,
-    BenchmarkRecommendation,
-    CircuitBreaker,
-    Model,
-    ModelCapability,
-)
+from galaius.models.registry import Benchmark, BenchmarkRecommendation, Model
+from galaius.models.breaker import CircuitBreaker
+from galaius.models.capability import ModelCapability
 from tests.support.models import model
 
 SAMPLE_JSON = json.dumps(
@@ -201,7 +197,7 @@ class TestModelFromLitellmId:
                 "output_cost_per_token": 0.000002,
             }
         }
-        with patch("galaius.models._litellm") as litellm_fn:
+        with patch("galaius.models.registry._litellm") as litellm_fn:
             litellm_fn.return_value.model_cost = fake_cost
             result = Model.from_litellm_id("new/model")
         assert result.id == "new/model"
@@ -246,9 +242,9 @@ class TestRegistry:
         }
         # No catalog data (env or bundled) → load_registry falls through to litellm.
         with (
-            patch("galaius.models._litellm") as litellm_fn,
-            patch("galaius.models.PackageData.models_raw", return_value=None),
-            patch("galaius.models.PackageData.grounding_raw", return_value=None),
+            patch("galaius.models.registry._litellm") as litellm_fn,
+            patch("galaius.models.registry.PackageData.models_raw", return_value=None),
+            patch("galaius.models.registry.PackageData.grounding_raw", return_value=None),
         ):
             litellm_fn.return_value.model_cost = fake_cost
             Model.load_registry()
@@ -314,7 +310,7 @@ class TestIsAvailable:
         def _boom(*_args):
             raise RuntimeError("litellm must not be consulted by is_available")
 
-        monkeypatch.setattr("galaius.models._litellm", _boom)
+        monkeypatch.setattr("galaius.models.registry._litellm", _boom)
         monkeypatch.delenv("GEMINI_API_KEY", raising=False)
         assert gemini.is_available() is False
         monkeypatch.setenv("GEMINI_API_KEY", "test-key")
@@ -548,7 +544,7 @@ def test_the_served_check_joins_two_spellings_of_one_model():
     Every other cross-source join in this codebase goes through `bare_model_name`; this one
     compared raw strings.
     """
-    from galaius.models import Model
+    from galaius.models.registry import Model
 
     saved = dict(Model._served)
     try:

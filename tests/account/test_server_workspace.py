@@ -9,7 +9,7 @@ from uuid import uuid4
 import httpx
 import pytest
 from galaius_core import AgentGraph, AgentGraphUpdate, AgentRevision, AgentRevisionRef, ConfiguredModelRef, PromptExecutionRef, PromptKey, TriggerInvocation, WorkflowRevision, WorkflowRun
-from galaius_core.accounts import Account, Bootstrap, Workspace
+from galaius_core.identity.accounts import Account, Bootstrap, Workspace
 from textual.widgets import Button, Input, Select, Static, TabbedContent, Tree
 
 from galaius import USER_AGENT

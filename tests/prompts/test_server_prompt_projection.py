@@ -519,7 +519,7 @@ def test_independent_connection_processes_lock_before_reading_shared_install_sta
 import sys
 from pathlib import Path
 from uuid import UUID
-from galaius import prompt_projection as projection
+from galaius.prompts import projection
 from galaius.agents.catalog.connection import CatalogConnection
 root, source, ordinal = Path(sys.argv[1]), Path(sys.argv[2]), int(sys.argv[3])
 CatalogConnection.path = classmethod(lambda cls: root / 'connection.json')

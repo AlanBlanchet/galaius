@@ -455,7 +455,7 @@ class NestedBackend(X11Display):
         if owned:
             # launch imports desktop.orphans, while desktop.__init__ imports NestedBackend: this
             # genuine cycle requires resolving the profile helper only after package import.
-            from galaius.launch import sandbox_profiles
+            from galaius.desktop.launch import sandbox_profiles
 
             for profile in sandbox_profiles(self.display):
                 swept.update(orphans.kill_profile_clients(str(profile)))

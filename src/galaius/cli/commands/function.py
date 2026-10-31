@@ -6,7 +6,7 @@ from typing import Annotated
 
 from cyclopts import App, Parameter
 
-from galaius.functions import FunctionRegistry, discover_python, discover_shell, invoke
+from galaius.workflows.functions import FunctionRegistry, discover_python, discover_shell, invoke
 
 function_app = App(name="functions", help="Register and test typed functions this machine can run from a workflow.")
 

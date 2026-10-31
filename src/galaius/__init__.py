@@ -31,13 +31,9 @@ default) is served the contract of clients released before responses were read t
 
 
 def __getattr__(name: str):
-    """Resolve `galaius.function` (the `@galaius.function` decorator) and `galaius.workflows`
-    (the reverse-direction "run a server workflow from this machine" API) lazily, so a plain
+    """Resolve `galaius.function` (the `@galaius.function` decorator) lazily, so a plain
     `import galaius` for `installed_version()` never pays for `galaius_core`/`httpx`."""
     if name == "function":
-        from galaius.functions import function
+        from galaius.workflows.functions import function
         return function
-    if name == "workflows":
-        import importlib
-        return importlib.import_module("galaius.workflows")
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

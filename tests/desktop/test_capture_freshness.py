@@ -17,7 +17,7 @@ import pytest
 from PIL import Image
 
 from galaius.desktop.accessibility.element import DesktopElement
-from galaius.state import PageState
+from galaius.browser.state import PageState
 from tests.support import browser_manager, ready_or_skip
 from galaius.diagnostics.debug_output import Debug
 
@@ -25,7 +25,7 @@ from galaius.diagnostics.debug_output import Debug
 @pytest.fixture
 def srv():
     import galaius.server as _srv
-    from galaius.server.core import breaker
+    from galaius.runtime import breaker
 
     breaker.clear()
     _srv.core.config.component_criteria = "cap.gui_grounding"

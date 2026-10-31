@@ -5,7 +5,7 @@ from unittest.mock import patch
 import pytest
 from PIL import Image
 
-from galaius.state import (
+from galaius.browser.state import (
     DesktopState,
     PageState,
     StateChange,

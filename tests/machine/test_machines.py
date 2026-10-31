@@ -29,7 +29,7 @@ from galaius.account import workspace as server_workspace
 from galaius.agents.catalog.connection import CatalogConnection
 from galaius.cli.commands import machine as machine_command
 from galaius.cli.commands.machine import _described_step
-from galaius.functions import FunctionRegistry, discover_python, discover_shell
+from galaius.workflows.functions import FunctionRegistry, discover_python, discover_shell
 from galaius.host.private_files import PRIVATE_FILES
 from tests.support.private_files import loosen
 from galaius.account.tls import server_tls

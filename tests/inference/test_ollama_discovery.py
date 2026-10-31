@@ -13,7 +13,8 @@ import httpx
 import pytest
 
 from galaius.inference import ollama
-from galaius.models import Model, ModelCapability
+from galaius.models.registry import Model
+from galaius.models.capability import ModelCapability
 
 # --- captured from a real daemon -------------------------------------------------------------
 

@@ -10,7 +10,7 @@ import pytest
 
 from galaius.catalog.published import PublishedEntry, PublishedTable
 from galaius.catalog.criteria import Criteria, Variables
-from galaius.models import Benchmark, Model
+from galaius.models.registry import Benchmark, Model
 
 from tests.support.models import catalog_of, model
 

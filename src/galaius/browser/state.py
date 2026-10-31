@@ -7,7 +7,7 @@ from PIL import Image, ImageDraw, ImageFont
 from pydantic import BaseModel, model_validator
 from playwright.async_api import Locator, Page
 
-from galaius.settle import settle_page
+from galaius.browser.settle import settle_page
 
 _ANNOTATION_COLORS = ["#FF4444", "#44AA44", "#4444FF", "#FF8800", "#AA44AA", "#00AAAA"]
 _NAME_MAX_LEN = 30

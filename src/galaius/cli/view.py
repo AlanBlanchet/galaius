@@ -55,7 +55,7 @@ class View(BaseModel):
         Pure data — no API calls, no VLM. Reads provider availability (env-key
         based), the configured model per role, and the ready grounding models.
         """
-        from galaius.models import Model  # heavy: pulls litellm
+        from galaius.models.registry import Model  # heavy: pulls litellm
 
         providers = Model.available_providers()
         grounding = Model.recommended_grounding()

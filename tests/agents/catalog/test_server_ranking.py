@@ -7,7 +7,7 @@ import pytest
 from galaius.agents import run
 from galaius.agents.providers import PROVIDERS
 from galaius.agents.catalog.server_ranking import ServerRanking, ServerRankingUnavailable
-from galaius.models import Model
+from galaius.models.registry import Model
 
 
 def test_a_pc_without_a_board_launches_its_servers_ranking(monkeypatch: pytest.MonkeyPatch) -> None:

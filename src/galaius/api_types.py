@@ -32,16 +32,10 @@ from galaius.agents.transport.protocol import (
 from galaius.agents.registry import AgentRun
 from galaius.catalog.published import PublishedEntry, PublishedTable
 from galaius.catalog.upstream import UpstreamSource
-from galaius.formats import BoxOrder, CoordFormat
-from galaius.models import (
-    Benchmark,
-    BenchmarkRecommendation,
-    Model,
-    ModelCapability,
-    ModelsConfig,
-    ModelSpec,
-    ProviderSpec,
-)
+from galaius.vision.formats import BoxOrder, CoordFormat
+from galaius.models.registry import Benchmark, BenchmarkRecommendation, Model
+from galaius.models.capability import ModelCapability
+from galaius.models.spec import ModelsConfig, ModelSpec, ProviderSpec
 from galaius.vision.usage_records import UsageEntry
 
 __all__ = [

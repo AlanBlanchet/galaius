@@ -59,7 +59,8 @@ from galaius.diagnostics.extension_status import deliver_extension, extension_st
 # Shared normalizer: the registry needs it too, to meet a leaderboard NAME with a catalog ID —
 # lives beside the catalog, not this command surface.
 from galaius.catalog.models import bare_model_name as _bare_model_name
-from galaius.models import Model, ModelCapability, _ordinal
+from galaius.models.registry import Model, _ordinal
+from galaius.models.capability import ModelCapability
 from galaius.runtime import _LiveConfig, config
 from galaius.mcp.registry import kill_stale_servers, latest_version, stale_servers
 from galaius.account.tool_settings import PORTABLE_ENV, MachineNotice, ServerToolSettings, ToolSettingsConflict

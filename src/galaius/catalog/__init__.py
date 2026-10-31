@@ -1,1 +1,1 @@
-"""Evaluation pipelines for VLM benchmarks (real eval, no leaderboard scraping)."""
+"""Benchmark catalog: published leaderboard tables, their upstream sources, and choosing a model by what it scores."""

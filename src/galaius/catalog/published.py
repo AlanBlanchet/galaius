@@ -116,7 +116,7 @@ class PublishedTable(BaseModel):
         Lowercase + strip non-alphanumerics, then require exact identity.
         Returns the first matching ``Model`` or ``None``.
         """
-        from galaius.models import Model  # noqa: PLC0415 — circular import
+        from galaius.models.registry import Model  # noqa: PLC0415 — circular import
 
         needle = cls._fuzzy_norm(name)
         if len(needle) < 4:

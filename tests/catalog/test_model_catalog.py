@@ -141,7 +141,7 @@ def test_the_catalog_carries_each_model_s_capability_score_for_the_pickers():
     """The panel's model picker reads this catalog, so the score has to travel on it — otherwise
     a picker row can only show a name, and the choice cannot be a comparison."""
     from galaius.catalog.models import ModelInfo, _with_scores
-    from galaius.models import Model
+    from galaius.models.registry import Model
 
     with catalog_of(
         Model(id="known", provider="anthropic", capabilities=set(), intelligence_score=42.0),
@@ -180,7 +180,7 @@ def test_catalog_scores_follow_the_live_board_not_the_shipped_snapshot(tmp_path,
     Ranking on the snapshot is how the picker came to call a model first at 60.2 while the panel's
     own Benchmarks tab, reading the live fetch, had it at 38.6 behind a different leader."""
     from galaius.catalog import models as mcat
-    from galaius.models import Model
+    from galaius.models.registry import Model
 
     board = tmp_path / "benchmark_scores.json"
     board.write_text(json.dumps({"scores": [

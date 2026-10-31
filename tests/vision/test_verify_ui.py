@@ -57,7 +57,7 @@ def test_format_verify_flags_all_pass():
 
 def test_build_verify_prompt_embeds_detected_elements_for_grounding():
     from galaius.vision.critique import format_grounding
-    from galaius.state import InteractiveElement
+    from galaius.browser.state import InteractiveElement
 
     grounding = format_grounding([InteractiveElement(ref="e3", role="link", name="Home", x=0, y=0, w=40, h=12, index=1)])
     p = build_verify_prompt(["nav has Home"], grounding=grounding)

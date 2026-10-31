@@ -11,7 +11,7 @@ from galaius.cli.tui import _provider_usage_rows
 from galaius.cli.usage import UsageReport
 from galaius.cli.view import View
 from galaius.config.settings import Config
-from galaius.models import Model
+from galaius.models.registry import Model
 from tests.support import catalog_json
 
 # --- Usage-log aggregation — the data behind `galaius usage` -------------------------------

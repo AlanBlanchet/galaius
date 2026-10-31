@@ -6,7 +6,8 @@ import json
 
 import pytest
 
-from galaius.models import Model, ModelCapability
+from galaius.models.registry import Model
+from galaius.models.capability import ModelCapability
 from tests.support.models import model
 
 

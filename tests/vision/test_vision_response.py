@@ -26,7 +26,7 @@ from pydantic import BaseModel
 
 import galaius.server as srv
 import galaius.vision.core as v
-from galaius.vision.core import VLMResult
+from galaius.vision.types import VLMResult
 
 # A frame with CONTENT in it, not a flat fill (#112 short-circuits an empty frame before any
 # model call, which would make this assert on a chain that never ran).

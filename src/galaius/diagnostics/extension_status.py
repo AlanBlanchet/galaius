@@ -37,7 +37,7 @@ def _extensions_dir() -> Path:
 
 
 def _manifest() -> dict:
-    pkg = Path(__file__).resolve().parents[5] / "clients" / "vscode" / "package.json"
+    pkg = _extension_dir() / "package.json"
     try:
         return json.loads(pkg.read_text())
     except (OSError, ValueError):
@@ -233,7 +233,7 @@ def extension_status() -> dict | None:
 
 def _extension_dir() -> Path:
     """The extension SOURCE in this checkout — where the package is built from."""
-    return Path(__file__).resolve().parents[5] / "clients" / "vscode"
+    return Path(__file__).resolve().parents[3] / "clients" / "vscode"
 
 
 def _run(argv: list[str], cwd: Path | None = None) -> tuple[int, str]:

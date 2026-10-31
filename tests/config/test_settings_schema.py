@@ -82,8 +82,8 @@ def test_nested_default_and_numeric_constraints_have_one_declarative_owner() -> 
         projected = next(item for item in json.loads(exported.read_text())["settings"]
                          if item["key"] == "desktop.nestedSize")
         assert projected["pattern"] == size.pattern
-    assert properties["galaius.browser.viewportWidth"]["minimum"] == 1
-    assert properties["galaius.browser.viewportHeight"]["minimum"] == 1
+    assert properties["galaius.browser.manager.viewportWidth"]["minimum"] == 1
+    assert properties["galaius.browser.manager.viewportHeight"]["minimum"] == 1
 
 
 @pytest.mark.parametrize("field,key", [

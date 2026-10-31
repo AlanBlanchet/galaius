@@ -70,7 +70,7 @@ from galaius.machine.places.place_reviews import PlaceReviews
 from galaius.machine.places.levels import LEVEL_RANK, PlaceMap, split
 from galaius.machine.projects.project_secrets import ProjectEnv
 from cryptography.exceptions import InvalidTag
-from galaius_core.sealing import SecretsSeal
+from galaius_core.identity.sealing import SecretsSeal
 
 logger = logging.getLogger(__name__)
 

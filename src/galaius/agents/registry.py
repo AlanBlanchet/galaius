@@ -55,7 +55,7 @@ from galaius.isolation.fence import FenceSpec
 from galaius.host.paths import UserPaths
 from galaius.host.file_lock import LockTimeout, SoleHolder, exclusive
 from galaius.host.file_stamp import FileStamp
-from galaius.models import TokenMix
+from galaius.models.registry import TokenMix
 from galaius.host.pinned_directory import DescriptorDirectory, PinnedDirectory
 from galaius.host.private_files import PRIVATE_FILES
 from galaius.host.processes import detached_options, end_process_tree, process_ancestry, process_started, process_unit

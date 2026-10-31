@@ -5,7 +5,7 @@ from typing import Union
 
 from pydantic import TypeAdapter
 
-from galaius_core.admin import (
+from galaius_core.identity.admin import (
     BudgetDecision,
     OperatorAuditEvent,
     OperatorAuthority,

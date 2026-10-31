@@ -24,7 +24,8 @@ from galaius.catalog.published import PublishedEntry, PublishedTable
 import galaius.catalog.tables as benchmark_tables
 import galaius.catalog.tables as bt
 import galaius.catalog.live_sources as live_sources
-from galaius.models import Benchmark, Model, ModelCapability
+from galaius.models.registry import Benchmark, Model
+from galaius.models.capability import ModelCapability
 
 
 @pytest.fixture(autouse=True)
@@ -404,7 +405,7 @@ def test_mapped_numeric_entry_is_unverified_until_producer_opts_in(monkeypatch) 
                                model_name="exact", model_id=model.id, score=0.9,
                                normalized_score=0.9,
                            )])
-    benchmark = next(b for b in __import__("galaius.models", fromlist=["Benchmark"]).Benchmark.registry()
+    benchmark = next(b for b in Benchmark.registry()
                      if b.id == "mmmu_pro").model_copy(update={"published": table})
     assert table.entries[0].status == "unverified"
     assert benchmark.recommend(available_only=False) == []

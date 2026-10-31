@@ -16,16 +16,16 @@ from pydantic import BaseModel, Field, ValidationError
 from mcp.types import CallToolResult, ContentBlock, TextContent
 from mcp.server.fastmcp.utilities.types import Image
 from playwright.async_api import Error as PlaywrightError
-from galaius.browser import BrowserManager
+from galaius.browser.manager import BrowserManager
 from galaius.config.settings import Config
 from galaius.desktop.window import DesktopWindow
 from galaius.desktop import backend as desktop_backend
 from galaius.desktop import host as desktop_host
 from galaius.desktop.nested import KillReport
-from galaius.launch import (
+from galaius.desktop.launch import (
     _resolve_nested_size, apply_launch_rewrites, needs_shell, split_env_assignments,
 )
-from galaius.models import supports_native_video_inline
+from galaius.models.capability import supports_native_video_inline
 from galaius.host.processes import run_isolated_process
 from galaius.server import core, targets, vlm
 from galaius.server import browser_sandbox

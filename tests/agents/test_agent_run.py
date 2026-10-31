@@ -300,7 +300,8 @@ def test_unknown_model_is_refused_for_image_attachments(monkeypatch):
 
 def test_non_vlm_model_is_refused_for_image_attachments(monkeypatch):
     import galaius.agents.run as run_mod
-    from galaius.models import Model, ModelCapability
+    from galaius.models.registry import Model
+    from galaius.models.capability import ModelCapability
 
     candidate = Model(id="text-model", provider="openai", capabilities={ModelCapability.LLM})
     monkeypatch.setattr(run_mod.Model, "catalog", lambda: [candidate])
