@@ -34,6 +34,7 @@ from typing import Any, Literal, Self
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from galaius_core import UsageWindow
 from pydantic import BaseModel, ConfigDict, Field
 
 from galaius.agents.events import instant
@@ -612,10 +613,7 @@ def served(provider: str, model: str | None, *, subscription: UUID | None = None
     refused = max((block.at for name, block in ((key, found), *entries.items())
                    if block is not None and block.at <= moment and _of_login(name, provider, subscription)), default=None)
     if refused is not None:
-        lifted = _read_lifted()
-        login = _login(provider, subscription)
-        if lifted.get(login, 0.0) < refused:
-            _write_json(_lifted_path(), {**lifted, login: moment})
+        _note_lift(_login(provider, subscription), moment, past=refused)
 
 
 def _login(provider: str, subscription: UUID | None) -> str:
@@ -652,6 +650,32 @@ def lifted_after(provider: str, since: float, *, subscription: UUID | None = Non
     13:06, the same login answering from 13:10). The server's `_lifted_at` counts the same answers. None when it has not."""
     at = _read_lifted().get(_login(provider, subscription))
     return at if at is not None and at > since else None
+
+
+def usage_heard(provider: str, usage: tuple[UsageWindow, ...], *, asked: float, subscription: UUID | None = None) -> None:
+    """The vendor's own usage reading of this login, asked at `asked` (`SubscriptionWatch.ask`): every window it reports
+    under its allowance lifts a usage pause heard before the question (`lifted_after`), as an answer would. A paused
+    login starts no turn, so no answer could lift it: a weekly limit heard at 01:58 (« resets Nov 1, 8pm »), read back
+    at 51 % by 13:46, held every turn of that login until its named reopening. A refusal heard while the reading was on
+    its way stands; a reading with a window at or past its allowance, or none, lifts nothing; a wrong lift costs one
+    refused start, which pauses again."""
+    if not usage or any(window.used_percent >= 100 for window in usage):
+        return
+    login = _login(provider, subscription)
+    pause = _read_paused(asked).get(login, {}).get("usage_limit")
+    if pause is not None and pause.at < asked:
+        _note_lift(login, asked, past=pause.at)
+
+
+def _note_lift(login: str, at: float, *, past: float) -> None:
+    """`login` answered (or read open) at `at`, past a refusal remembered at `past` (`lifted_after`); noted under the
+    store's own lock, as `_paused` writes its own: a lift lost to a concurrent write would hold that login's turns."""
+    path = _lifted_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with exclusive(os.open(path.with_name("#quota-lifted.lock"), os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)):
+        lifted = _read_lifted()
+        if lifted.get(login, 0.0) < past:
+            _write_json(path, {**lifted, login: at})
 
 
 def forget_login(provider: str, *, subscription: UUID | None = None, now: float | None = None) -> None:

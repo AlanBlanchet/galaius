@@ -7,8 +7,10 @@ the ACCOUNT for a period, so hearing it once must spare every later launch the s
 import json
 import time
 from datetime import UTC, datetime
+from uuid import UUID
 
 import pytest
+from galaius_core import UsageWindow
 
 from galaius.agents import quota
 from galaius.agents import registry as reg
@@ -472,3 +474,41 @@ def test_a_conversation_too_long_to_compact_is_still_a_usage_LIMIT_cut_that_resu
     assert ClaudeCodeProvider.cut_of(CONTEXT_FULL_LINE) is RunCut.usage_limit
     refusal = quota.Refusal.read(CONTEXT_FULL_LINE, now=HEARD_AT)
     assert refusal is not None and refusal.reopens_at is not None and refusal.reopens_at > HEARD_AT
+
+
+def _window(name: str, used: float, observed: float) -> UsageWindow:
+    return UsageWindow(window=name, used_percent=used, resets_at=None, observed_at=datetime.fromtimestamp(observed, UTC))
+
+
+@pytest.mark.parametrize("subscription", [None, "5f0c8a52-3d55-4c3e-9b8e-1f2a3b4c5d6e"])
+@pytest.mark.parametrize(
+    ("readings", "lifted"),
+    [
+        ((("five_hour", 44.0), ("weekly", 51.0)), True),    # 2026-10-31: the week reopened before the day it named
+        ((("five_hour", 28.0), ("weekly", 100.0)), False),  # the refused window still full
+        ((), False),                                         # signed out: no window to read
+    ],
+)
+def test_a_usage_reading_under_every_allowance_lifts_the_login_pause(readings, lifted, subscription):
+    """A paused login starts no turn, so no answer ever lifted it: a weekly limit heard 01:58 held the login until
+    « Nov 1, 8pm » though its vendor read it back at 51 % by 13:46."""
+    login = UUID(subscription) if subscription else None
+    heard = time.time() - 12 * 3600  # the lift store keeps a week of wall-clock time
+    quota.pause_login("claude", "usage_limit", subscription=login, said="You've hit your weekly limit · resets Nov 1, 8pm",
+                      now=heard, until=heard + 42 * 3600)
+    read_at = heard + 12 * 3600 - 60
+
+    quota.usage_heard("claude", tuple(_window(name, used, read_at) for name, used in readings), asked=read_at, subscription=login)
+
+    assert (quota.login_pause("claude", subscription=login, now=read_at + 60) is None) is lifted
+
+
+def test_a_usage_reading_asked_before_the_pause_lifts_nothing():
+    """The question must postdate the refusal: a reading on its way when the refusal was heard says nothing about the
+    window that refusal closed, even when it arrives after."""
+    heard = time.time()
+    quota.pause_login("claude", "usage_limit", said="You've hit your weekly limit", now=heard, until=heard + 3600)
+
+    quota.usage_heard("claude", (_window("weekly", 51.0, heard + 5),), asked=heard - 1)
+
+    assert quota.login_pause("claude", now=heard + 60) is not None

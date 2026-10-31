@@ -9,6 +9,7 @@ writes its usage only into its session record inside the subscription folder, ne
 
 import asyncio
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import get_args
@@ -16,7 +17,7 @@ from typing import get_args
 from galaius_core import AgentProvider, LoginIdentity, LoginUsage, SubscriptionUsageReport, UsageWindow
 from pydantic import BaseModel, PrivateAttr
 
-from galaius.agents import registry as reg
+from galaius.agents import quota, registry as reg
 from galaius.agents.events import stream_lines
 from galaius.agents.providers import PROVIDERS, AgentProvider as Program
 from galaius.agents.subscriptions import Subscription
@@ -60,16 +61,21 @@ class SubscriptionWatch(BaseModel):
         for name in get_args(AgentProvider):
             provider = PROVIDERS[name]
             installed = provider.available()
+            asked = time.time()
             usage = await provider.current_usage(environment) if installed else ()
             identity = await self.identity(provider, environment) if installed else LoginIdentity()
+            if usage is not None:
+                await asyncio.to_thread(quota.usage_heard, name, usage, asked=asked)
             with self._lock:
                 reading = self._logins.get(name, LoginReading())
                 self._logins[name] = reading.model_copy(update={"usage": reading.usage if usage is None else usage,
                                                                 "identity": reading.identity if identity is None else identity})
         for subscription in await asyncio.to_thread(Subscription.all):
             overlaid = {**environment, **subscription.overlay()}
+            asked = time.time()
             if (usage := await subscription.program.current_usage(overlaid)) is not None:
                 await asyncio.to_thread(subscription.observe, usage, whole=True)
+                await asyncio.to_thread(quota.usage_heard, subscription.program.name, usage, asked=asked, subscription=subscription.id)
             if (identity := await self.identity(subscription.program, overlaid)) is not None:
                 await asyncio.to_thread(subscription.identify, identity)
 
