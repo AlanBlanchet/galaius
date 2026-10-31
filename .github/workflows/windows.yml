@@ -177,17 +177,17 @@ jobs:
 
       - name: Windows unit tests (private files, lock, scripts in PowerShell and cmd, login, safe folders)
         run: >-
-          uv run --frozen python -m pytest -q -rs tests/test_private_files.py tests/test_account_login.py tests/test_machines.py tests/test_processes_windows.py
-          tests/test_pinned_directory.py tests/test_machine_data.py tests/test_server_prompt_projection.py
-          tests/test_agent_registry.py::test_registry_refuses_hostile_writes_through_a_leaf_link
-          tests/test_agent_registry.py::test_registry_record_reads_never_follow_a_link_swapped_in_during_open
-          tests/test_agent_registry.py::test_public_registry_reads_never_follow_hostile_private_leaves
-          tests/test_prompt_cli.py::test_prompt_editor_rejects_a_symlink_out_of_the_source
-          tests/test_prompt_cli.py::test_prompt_editor_releases_its_lock_when_post_lock_validation_fails
-          tests/test_prompt_cli.py::test_prompt_editor_stores_the_exact_bytes_it_reports
-          tests/test_prompt_contracts.py::test_cache_is_never_opened_through_a_link
-          tests/test_prompt_contracts.py::test_cache_owner_check_is_portable_when_getuid_is_unavailable
-          tests/test_prompt_projection.py::test_installer_switches_only_declared_consumers_and_rejects_unmanaged_collision
+          uv run --frozen python -m pytest -q -rs tests/host/test_private_files.py tests/account/test_account_login.py tests/machine/test_machines.py tests/host/test_processes_windows.py
+          tests/host/test_pinned_directory.py tests/machine/test_machine_data.py tests/prompts/test_server_prompt_projection.py
+          tests/agents/test_agent_registry.py::test_registry_refuses_hostile_writes_through_a_leaf_link
+          tests/agents/test_agent_registry.py::test_registry_record_reads_never_follow_a_link_swapped_in_during_open
+          tests/agents/test_agent_registry.py::test_public_registry_reads_never_follow_hostile_private_leaves
+          tests/cli/test_prompt_cli.py::test_prompt_editor_rejects_a_symlink_out_of_the_source
+          tests/cli/test_prompt_cli.py::test_prompt_editor_releases_its_lock_when_post_lock_validation_fails
+          tests/cli/test_prompt_cli.py::test_prompt_editor_stores_the_exact_bytes_it_reports
+          tests/prompts/test_prompt_contracts.py::test_cache_is_never_opened_through_a_link
+          tests/prompts/test_prompt_contracts.py::test_cache_owner_check_is_portable_when_getuid_is_unavailable
+          tests/prompts/test_prompt_projection.py::test_installer_switches_only_declared_consumers_and_rejects_unmanaged_collision
 
       - name: Logs
         if: always()
@@ -196,7 +196,7 @@ jobs:
 
   # Installed by the real one-liner, then a newer runtime lands in the store: the installer's own
   # galaius.exe must run it (every command follows the newest runtime); then a running MCP server
-  # and machine connection upgrade N -> N+1 by themselves (tests/test_upgrade_integration.py).
+  # and machine connection upgrade N -> N+1 by themselves (tests/upgrade/test_upgrade_integration.py).
   upgrade:
     name: windows (auto-upgrade after install.ps1)
     runs-on: windows-latest
@@ -246,4 +246,4 @@ jobs:
           "installer's galaius.exe runs $version"
           if ($version -ne '9.9.9') { throw "the installer's galaius.exe runs $version, not the active runtime 9.9.9" }
       - name: Running processes upgrade N -> N+1 (and the handoff / release rules)
-        run: uv run --frozen python -m pytest -v -rfEs -p no:cacheprovider tests/test_upgrade_integration.py tests/test_upgrade_release.py tests/test_handoff.py
+        run: uv run --frozen python -m pytest -v -rfEs -p no:cacheprovider tests/upgrade/test_upgrade_integration.py tests/upgrade/test_upgrade_release.py tests/upgrade/test_handoff.py

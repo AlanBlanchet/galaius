@@ -3,7 +3,7 @@ registers on, the server lifespan, tool-facing instructions, the browser
 :class:`SessionRegistry`, and small dependency-free helpers (path/mime/label formatting) every
 other submodule leans on.
 
-Split by COHESION — ``vlm``/``sandbox``/``targets``/``capture`` hold private helpers, ``tools_*``
+Split by COHESION — ``vlm``/``browser_sandbox``/``targets``/``capture`` hold private helpers, the ``tools`` package
 hold the ``@mcp.tool`` surfaces — so no file is a 2000-line monolith. ``server/__init__``
 re-exports the whole public + test-patched surface, so both ``srv._vlm`` and ``from
 galaius.server import _scan_elements`` keep resolving. Cross-module calls to a monkeypatched
@@ -35,7 +35,7 @@ from galaius.browser import SessionRegistry
 from galaius.account.caller import Caller
 from galaius.diagnostics.debug_output import _CURRENT_INV, Debug, resolve_output_path
 from galaius.mcp.announcement import GATEWAY_PREFIX, McpAnnouncement
-from galaius.desktop import CaptureError
+from galaius.desktop.window import CaptureError
 from galaius.runtime import (  # noqa: F401 — breaker re-exported for tests/vlm
     breaker,
     config,
@@ -386,11 +386,11 @@ def undispatchable_tools(names) -> list[str]:
 @asynccontextmanager
 async def _lifespan(_: FastMCP) -> AsyncIterator[None]:
     from galaius.catalog import live_sources
-    from galaius.server import sandbox
+    from galaius.server import browser_sandbox
     from galaius.mcp.registry import register_server, unregister_server
 
     reg = register_server()  # record pid+version so `galaius doctor` can flag a stale long-lived server
-    sandbox.install_teardown_handlers()  # tear the display down on SIGTERM too, not only a clean exit
+    browser_sandbox.install_teardown_handlers()  # tear the display down on SIGTERM too, not only a clean exit
     # Prices/benchmark scores are read off disk by the CLI dashboard and VS Code extension, so
     # something has to WRITE them — this server is alive whenever the user works. Off-thread,
     # best-effort: a slow/missing API never delays a tool call. Opt-out — the only outbound
@@ -405,11 +405,11 @@ async def _lifespan(_: FastMCP) -> AsyncIterator[None]:
     gateway = _SideLoop("galaius-tool-gateway", mcp.gateway.watch)
     # The reaper stays HERE: it closes browser sessions owned by this loop, and touching them
     # from another one is a different bug. It never reads the registry.
-    reaper = asyncio.create_task(sandbox._idle_session_reaper(config.session_idle_ttl))
+    reaper = asyncio.create_task(browser_sandbox._idle_session_reaper(config.session_idle_ttl))
     # Supervised (`galaius mcp` under its upgrade relay): once another runtime is active, say
     # whether swapping this worker would lose an open browser session or sandbox.
     quiet = QuietPoint.current()
-    reporter = None if quiet is None else _SideLoop("galaius-upgrade-report", lambda alive: quiet.watch(lambda: bool(_sessions.active()) or sandbox._sandbox is not None, alive=alive))
+    reporter = None if quiet is None else _SideLoop("galaius-upgrade-report", lambda alive: quiet.watch(lambda: bool(_sessions.active()) or browser_sandbox._sandbox is not None, alive=alive))
     try:
         yield
     finally:
@@ -421,7 +421,7 @@ async def _lifespan(_: FastMCP) -> AsyncIterator[None]:
         with suppress(asyncio.CancelledError):
             await reaper
         await _sessions.close_all()
-        sandbox._close_sandbox()
+        browser_sandbox._close_sandbox()
         unregister_server(reg)
 
 

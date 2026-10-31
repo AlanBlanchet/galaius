@@ -18,7 +18,7 @@ from galaius.agents.turns import record_recall
 from galaius.agents.turns import facts as turn_facts
 from galaius.agents.turns import review_marks as turn_review_marks
 from galaius.agents import registry as reg
-from galaius.config import Config
+from galaius.config.settings import Config
 from galaius.agents.transport.events import AgentEvent, Relation
 from galaius.hooks.inbox import HEADING, OPERATOR
 

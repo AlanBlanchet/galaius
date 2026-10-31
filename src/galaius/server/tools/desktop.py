@@ -16,10 +16,9 @@ from pydantic import BaseModel, Field, ValidationError
 from mcp.types import CallToolResult, ContentBlock, TextContent
 from mcp.server.fastmcp.utilities.types import Image
 from playwright.async_api import Error as PlaywrightError
-from galaius import desktop
 from galaius.browser import BrowserManager
 from galaius.config.settings import Config
-from galaius.desktop import DesktopWindow
+from galaius.desktop.window import DesktopWindow
 from galaius.desktop import backend as desktop_backend
 from galaius.desktop import host as desktop_host
 from galaius.desktop.nested import KillReport
@@ -28,9 +27,10 @@ from galaius.launch import (
 )
 from galaius.models import supports_native_video_inline
 from galaius.host.processes import run_isolated_process
-from galaius.server import core, sandbox, targets, vlm
+from galaius.server import core, targets, vlm
+from galaius.server import browser_sandbox
 from galaius.server.core import _AUTO_SESSION, _NO_WINDOWS_MSG, _session_response, config, mcp
-from galaius.vision import MediaAnalysis, MediaItem, RecordingCapture, RecordingResult
+from galaius.vision.types import MediaAnalysis, MediaItem, RecordingCapture, RecordingResult
 from galaius.vision.types import VLMResult
 from galaius.vision.session import sample_video_frames
 from galaius.media.video import Scene
@@ -256,15 +256,15 @@ async def list_desktop_windows() -> str:
         return _NO_WINDOWS_MSG
     if windows:
         parts.append(f"Windows (target=<title>):\n{DesktopWindow.listing(windows)}")
-    if sandbox._sandbox is not None:
+    if browser_sandbox._sandbox is not None:
         nested = "\n".join(
             f'  target="nested:{n}" (or target="nested:wid:{w}")'
-            for w, n in sandbox._sandbox.list_windows()
+            for w, n in browser_sandbox._sandbox.list_windows()
         )
         parts.append(f"Sandbox windows (isolated display; launch_app to add):\n{nested or '  (empty)'}")
         # A URL a sandboxed app opened was CONTAINED, not sent to the user's real browser (#83) —
         # say so, else the control looks broken since nothing visibly happens.
-        opened = getattr(sandbox._sandbox, "opened_urls", None)
+        opened = getattr(browser_sandbox._sandbox, "opened_urls", None)
         if opened is not None and (urls := opened()):
             listed = "\n".join(f"  {u}" for u in urls[-5:])
             parts.append(
@@ -335,7 +335,7 @@ async def launch_app(
             return f"ERROR: cwd {cwd!r} is not a directory"
         cwd = str(cwd_path)
     try:
-        backend = sandbox._get_sandbox(resolved_size)
+        backend = browser_sandbox._get_sandbox(resolved_size)
     except RuntimeError as e:  # Xephyr/Xvfb not installed
         return f"ERROR: sandbox unavailable — {e}"
     env: dict[str, str] | None = None
@@ -455,10 +455,10 @@ async def reset_sandbox() -> str:
     leak apps and exhaust the display), or to clear all running sandbox apps between rebuilds. The
     real desktop is unaffected — this only touches the isolated display galaius owns. A dead display
     is also respawned automatically on the next launch_app, so this is mainly for a proactive reset."""
-    if sandbox._sandbox is None:
+    if browser_sandbox._sandbox is None:
         return "No sandbox is running. The next launch_app will create a fresh one."
-    n = len(getattr(sandbox._sandbox, "_procs", []))
-    await asyncio.to_thread(sandbox._close_sandbox)
+    n = len(getattr(browser_sandbox._sandbox, "_procs", []))
+    await asyncio.to_thread(browser_sandbox._close_sandbox)
     return f"Sandbox reset — stopped the nested display and {n} app(s). The next launch_app respawns it."
 
 

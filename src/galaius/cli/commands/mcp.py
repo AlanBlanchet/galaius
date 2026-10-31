@@ -1,7 +1,7 @@
 """Deferred MCP-server command boundary."""
 
 from galaius.cli.command_bootstrap import apply_command_environment
-from galaius.server import main as serve
+from galaius.server.core import main as serve
 
 
 def mcp() -> None:

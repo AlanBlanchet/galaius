@@ -7,7 +7,7 @@ import logging
 
 import pytest
 
-from galaius.desktop import DesktopElement
+from galaius.desktop.accessibility.element import DesktopElement
 from galaius.formats import BoxOrder, CoordFormat
 
 _QWEN_RESPONSE = json.dumps(

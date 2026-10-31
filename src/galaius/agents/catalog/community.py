@@ -29,7 +29,7 @@ from pydantic import BaseModel, ConfigDict
 
 from galaius.agents.limits.subscriptions import RunSubscription
 from galaius.isolation.fence import EGRESS, FenceSpec, available
-from galaius.machine.levels import PlaceMap, split
+from galaius.machine.places.levels import PlaceMap, split
 from galaius.account.workspace import ServerWorkspace
 
 if TYPE_CHECKING:

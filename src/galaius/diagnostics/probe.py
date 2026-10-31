@@ -24,7 +24,8 @@ from PIL import Image
 from pydantic import BaseModel
 
 from galaius.desktop.accessibility import atspi
-from galaius.desktop import DesktopElement, DesktopWindow
+from galaius.desktop.accessibility.element import DesktopElement
+from galaius.desktop.window import DesktopWindow
 from galaius.vision.detect import _vlm_detect_elements, judge_missing_elements
 from galaius.models import Model, ModelCapability
 from galaius.state import annotate_screenshot
@@ -134,7 +135,7 @@ class Capture(BaseModel):
     @classmethod
     async def from_browser(cls, page_arg: str) -> Self:
         from galaius.browser import BrowserManager  # heavy: pulls in Playwright
-        from galaius.config import Config
+        from galaius.config.settings import Config
 
         page_path = Path(page_arg).resolve()
         if not page_path.exists():
@@ -352,7 +353,7 @@ class Scenario(ArtifactRun):
 
     async def run(self) -> None:
         from galaius.browser import BrowserManager  # heavy: pulls in Playwright
-        from galaius.config import Config
+        from galaius.config.settings import Config
 
         manager = BrowserManager(Config())
         try:
@@ -366,9 +367,7 @@ class Scenario(ArtifactRun):
 
     async def _agent_loop(self, model: Model, page) -> None:
         # Real action classes — what `run_actions` dispatches; deferred (pull Playwright).
-        from galaius.actions import (
-            ClickAction, DragAction, HoverAction, KeyPressAction, ScrollAction,
-        )
+        from galaius.actions.models import ClickAction, DragAction, HoverAction, KeyPressAction, ScrollAction
 
         await page.goto(f"file://{self.page_path}")  # reset state per agent
         await page.wait_for_load_state("networkidle")
@@ -548,7 +547,8 @@ class DesktopScenario(ArtifactRun):
         )
 
     async def run(self) -> None:
-        from galaius.desktop import LocalBackend, NestedBackend
+        from galaius.desktop.backend import LocalBackend
+        from galaius.desktop.nested import NestedBackend
         from galaius.runtime import config
 
         if self.target == "nested":

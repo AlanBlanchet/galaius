@@ -4,7 +4,8 @@ from the server or its verified stale cache; machine settings remain local.
 
 import os
 
-from galaius.config import Config, UserConfig
+from galaius.config.settings import Config
+from galaius.config.user import UserConfig
 from galaius.data import PackageData
 from galaius.formats import CoordFormat
 from galaius.models import CircuitBreaker, Model

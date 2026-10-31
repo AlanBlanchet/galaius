@@ -34,7 +34,7 @@ jobs:
         with:
           enable-cache: true
 
-      # tests/test_paths.py runs the extension's own TS path resolver through node to pin it to
+      # tests/config/test_paths.py runs the extension's own TS path resolver through node to pin it to
       # the Python writer. Without node it would SKIP — silently unchecking the cross-language
       # contract in the one place it matters; the test hard-fails under CI rather than skipping.
       - uses: actions/setup-node@v4
@@ -65,7 +65,7 @@ jobs:
       # Screen-Recording/Accessibility skips with a diagnostic rather than failing.
       - name: Desktop automation (macOS real GUI)
         if: runner.os == 'macOS'
-        run: uv run pytest tests/test_portable_backend.py -v -rs
+        run: uv run pytest tests/desktop/backend/test_portable_backend.py -v -rs
 
   # The whole suite on Windows (integration and live-desktop tests auto-skip): every agent, console
   # and provider path a Windows PC runs, not only the install one. -rf names each failure.
@@ -92,8 +92,8 @@ jobs:
       - name: This runner's share of the test files
         run: |
           # Every test file, sorted, dealt round-robin to 8 runners (pytest reads them from @shard.txt).
-          $files = @(Get-ChildItem tests -Filter 'test_*.py' | Sort-Object Name)
-          $mine = @(for ($i = 0; $i -lt $files.Count; $i++) { if ($i % 8 -eq ${{ matrix.shard }}) { "tests/$($files[$i].Name)" } })
+          $files = @(Get-ChildItem tests -Recurse -Filter 'test_*.py' | Where-Object { $_.FullName -notmatch '[\\/](e2e|fixtures)[\\/]' } | ForEach-Object { (Resolve-Path -Relative $_.FullName) -replace '\\', '/' -replace '^\./', '' } | Sort-Object)
+          $mine = @(for ($i = 0; $i -lt $files.Count; $i++) { if ($i % 8 -eq ${{ matrix.shard }}) { $files[$i] } })
           $mine | Set-Content -Encoding ascii shard.txt
           uv sync --frozen --quiet
           .venv\Scripts\python.exe -m playwright install chromium  # the page tests drive it
@@ -126,7 +126,7 @@ jobs:
   # publish-extension, i.e. on release tags only, so the extension source could sit broken on
   # main for weeks with no ordinary run noticing. This job typechecks + bundles on every push
   # and PR. (It would NOT by itself have caught the usage-log path drift — that was a runtime
-  # semantic mismatch between two languages, and tests/test_paths.py is what pins it; this job
+  # semantic mismatch between two languages, and tests/config/test_paths.py is what pins it; this job
   # is what makes such a cross-language test compile-checked and runnable at all.)
   extension:
     name: extension (typecheck + bundle)
@@ -186,7 +186,7 @@ jobs:
           ffmpeg -y -loglevel error -f x11grab -video_size 1280x1024 -framerate 10 -i :99 \
             out/ci-desktop.mp4 >/dev/null 2>&1 &
           ff=$!
-          uv run pytest tests/test_desktop_scenario.py -q; rc=$?
+          uv run pytest tests/desktop/test_desktop_scenario.py -q; rc=$?
           kill "$ff" 2>/dev/null; sleep 1
           exit $rc
       - name: Upload the recording

@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from galaius.agents.limits import quota
 from galaius.agents import registry as reg
 from galaius.agents.limits.ceiling import RUN_SCOPE_PREFIX, slice_cgroup
-from galaius.config import Config
+from galaius.config.settings import Config
 
 #: Why a turn waits: its login's usage window is shut, its login was lost, or the agents' memory is past its soft limit.
 HoldReason = Literal["usage_limit", "login_lost", "memory"]

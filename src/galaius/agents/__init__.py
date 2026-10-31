@@ -4,21 +4,5 @@ galaius is an MCP *server*; every agent CLI it supervises is an MCP *client*. Th
 cross-provider teamwork needs no bespoke bus — handing a spawned agent galaius's own server
 config lets a Claude agent call the same tools a Codex agent calls, and MCP is vendor-neutral.
 
-The boundary that keeps this legal is in :mod:`galaius.agents.limits.providers`: galaius spawns the
-vendor's own binary and reads stdout; it never touches a credential.
-"""
-
-from galaius.agents.transport.events import AgentEvent, EventKind
-from galaius.agents.limits.providers import (
-    PROVIDERS,
-    AgentProvider,
-    ClaudeCodeProvider,
-    CodexProvider,
-    available_providers,
-    provider_for,
-)
-
-__all__ = [
-    "PROVIDERS", "AgentEvent", "AgentProvider", "ClaudeCodeProvider", "CodexProvider",
-    "EventKind", "available_providers", "provider_for",
-]
+The boundary that keeps this legal is in :mod:`galaius.agents.providers`: galaius spawns the
+vendor's own binary and reads stdout; it never touches a credential."""

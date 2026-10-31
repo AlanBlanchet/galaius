@@ -13,7 +13,7 @@ const SPAWN = /\b(execFile|execFileSync|spawn|spawnSync|exec|execSync|fork)\(/g;
 test("every program the extension starts hides its window on Windows", () => {
   const folder = new URL(".", import.meta.url).pathname;
   const offenders: string[] = [];
-  for (const name of readdirSync(folder).filter((file) => file.endsWith(".ts") && !file.endsWith(".test.ts"))) {
+  for (const name of readdirSync(folder, { recursive: true, encoding: "utf8" }).filter((file) => file.endsWith(".ts") && !file.endsWith(".test.ts"))) {
     const source = readFileSync(join(folder, name), "utf8");
     if (!/child_process/.test(source)) continue;
     for (const match of source.matchAll(SPAWN)) {

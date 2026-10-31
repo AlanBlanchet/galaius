@@ -111,8 +111,8 @@ test("the guard covers every file that carries an embedded source", () => {
   // see it — and it is the file that broke the build twice in one afternoon on backticks inside
   // its comments. The defect belongs to "comment inside an open template", which no tag confers.
   for (const expected of ["webview/workplace/sim.ts", "webview/workplace/motion.ts",
-    "webview/workplace/style.ts", "src/conversationFormat.ts",
-    "webview/workplace/index.ts", "src/railHtml.ts"]) {
+    "webview/workplace/style.ts", "src/conversation/format/conversationFormat.ts",
+    "webview/workplace/index.ts", "src/view/railHtml.ts"]) {
     assert.ok(covered.some((f) => f.replace(/\\/g, "/").endsWith(expected)),
       `${expected} is not guarded (covered: ${covered.join(", ")})`);
   }
@@ -127,7 +127,7 @@ test("the shipping sources are clean", () => {
 });
 
 test("the live reduced-motion body class stops Chat and Team animation clocks", () => {
-  const chat = readFileSync(join(here, "conversationFormat.ts"), "utf8");
+  const chat = readFileSync(join(here, "conversation", "format", "conversationFormat.ts"), "utf8");
   const dashboard = readFileSync(join(here, "..", "webview", "styles.css"), "utf8");
   const workplace = readFileSync(join(here, "..", "webview", "workplace", "style.ts"), "utf8");
 

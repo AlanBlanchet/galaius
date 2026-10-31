@@ -9,7 +9,7 @@
  *  panel" here and nothing at all next door.
  */
 import type { Grid, Palette } from "./pixels";
-import type { ZoneId } from "../../src/team";
+import type { ZoneId } from "../../src/team/team";
 
 export interface Piece {
   grid: Grid;

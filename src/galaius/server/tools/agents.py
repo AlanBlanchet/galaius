@@ -18,7 +18,7 @@ from galaius.agents.turns import handback
 from galaius.agents.catalog import community as community_agents
 from galaius.agents.catalog.community import CommunityAgent
 from galaius.agents.conversations import ConversationAnswers, ConversationScope
-from galaius.agents.limits.providers import PROVIDERS, available_providers, provider_caveat_note, provider_for
+from galaius.agents.providers import PROVIDERS, available_providers, provider_caveat_note, provider_for
 from galaius.agents.run import run_agent
 from galaius.agents.spawn_line import Admission, Continued, Spawn, SpawnLine, StartNew
 from galaius.server.core import instrumented, mcp, offloaded

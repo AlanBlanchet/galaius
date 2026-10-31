@@ -6,10 +6,12 @@ from pathlib import Path
 
 from galaius.desktop.accessibility.atspi import AtSpi
 from galaius.browser import BrowserManager
-from galaius.desktop import DesktopElement, DesktopWindow
+from galaius.desktop.accessibility.element import DesktopElement
+from galaius.desktop.window import DesktopWindow
 from galaius.desktop.backend import DesktopUnsupportedError
 from galaius.desktop.host import host_desktop
-from galaius.server import core, sandbox
+from galaius.server import core
+from galaius.server import browser_sandbox
 from galaius.server.core import _NO_WINDOWS_MSG, config
 
 
@@ -38,7 +40,7 @@ def _desktop_unsupported(is_screen: bool = False) -> str | None:
 def _resolve_nested_target(spec: str) -> tuple[DesktopWindow | None, None, str | None]:
     """Resolve target="nested" (whole sandbox screen) or "nested:<title>" (one sandbox window)."""
     try:
-        backend = sandbox._get_sandbox()
+        backend = browser_sandbox._get_sandbox()
     except RuntimeError as e:  # nested server (Xephyr/Xvfb) not installed
         return None, None, f"ERROR: sandbox unavailable — {e}"
     title = spec.split(":", 1)[1].strip() if ":" in spec else ""
@@ -100,9 +102,9 @@ def _sandbox_death_diagnostics(backend) -> str:
 
     ``backend`` here is always the CURRENT (fresh) sandbox — `_get_sandbox` already self-healed a
     dead one before this runs, so its own `display_health` reports "alive" and says nothing about
-    why the window this call was looking for is gone. `sandbox.last_replace_reason()` carries that
+    why the window this call was looking for is gone. `browser_sandbox.last_replace_reason()` carries that
     forward from the respawn instead of leaving it silently swallowed (#141)."""
-    if replaced := sandbox.last_replace_reason():
+    if replaced := browser_sandbox.last_replace_reason():
         return f"The sandbox was recreated automatically — the previous one: {replaced}\n"
 
     def _text(fn_name: str) -> str:

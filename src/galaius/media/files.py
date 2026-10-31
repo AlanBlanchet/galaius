@@ -33,7 +33,7 @@ from pydantic import AfterValidator, BaseModel, Field, model_validator
 
 from galaius.agents import registry as reg
 from galaius.agents.messaging import asking_run
-from galaius.agents.limits.providers import PROVIDERS
+from galaius.agents.providers import PROVIDERS
 from galaius.agents.catalog.vocabulary import TouchScope
 from galaius.account.caller import Caller
 from galaius.isolation.fence import INSTRUCTIONS, STEERING

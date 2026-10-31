@@ -19,7 +19,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from galaius.data import PackageData
-from galaius.config import load_dotenv_for_cli
+from galaius.config.dotenv import load_dotenv_for_cli
 from galaius.models import is_audio_model, is_native_video_model
 
 load_dotenv_for_cli()

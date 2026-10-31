@@ -32,8 +32,9 @@ os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 os.environ.setdefault("GALAIUS_MEDIA_BACKEND", "api")
 os.environ.setdefault("GALAIUS_MEDIA_BILLING", "api_allowed")
 
-from galaius.config import UserConfig, load_dotenv_for_cli
-from galaius.agents.limits.providers import AgentProvider, ClaudeCodeProvider
+from galaius.config.user import UserConfig
+from galaius.config.dotenv import load_dotenv_for_cli
+from galaius.agents.providers import AgentProvider, ClaudeCodeProvider
 from galaius.models import Model
 from tests.support.models import catalog_of
 from galaius.host.pinned_directory import PinnedDirectory
@@ -78,7 +79,7 @@ def desktop_gate_open(monkeypatch: pytest.MonkeyPatch) -> None:
     be an autouse fixture hidden inside ``tests/support/desktop.py`` that three files turned on
     for themselves merely by importing its name (a live-by-import trick pytest allows but that
     hides which tests actually need it); the off-Linux behaviour has its own coverage in
-    test_cross_platform.py."""
+    repo/test_cross_platform.py."""
     from galaius import server as srv
 
     monkeypatch.setattr("galaius.desktop.backend.desktop_supported", lambda: True)
@@ -152,7 +153,7 @@ def _in_no_run_scope(monkeypatch):
 def _codex_sandbox_starts(monkeypatch):
     """Codex's argv never depends on whether this host refuses bubblewrap a user namespace (a systemd
     service on Ubuntu 24.04 does): a test that means it probes on purpose."""
-    monkeypatch.setattr("galaius.agents.limits.providers.userns_refusal", lambda bwrap: None)
+    monkeypatch.setattr("galaius.agents.providers.userns_refusal", lambda bwrap: None)
 
 
 @pytest.fixture(autouse=True)
@@ -274,7 +275,7 @@ def reset_model_registry():
     """A private, empty `Model` catalog per test, and the catalog that was there put back after
     (`catalog_of`): a test that loads a fixture JSON leaves no registry or loader state behind.
     Not autouse here: a file opts in with its own `@pytest.fixture(autouse=True)` wrapper (see
-    `test_probe.py`, `test_cli_reports.py`). `test_models.py`'s `_clear_registry` also clears
+    `diagnostics/test_probe.py`, `cli/test_cli_reports.py`). `test_models.py`'s `_clear_registry` also clears
     measured Benchmark scores and stays a separate, file-local fixture — a real superset, not this."""
     with catalog_of():
         yield

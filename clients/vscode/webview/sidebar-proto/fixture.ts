@@ -15,7 +15,7 @@
  *  clashes against the WHOLE lead set — dropping one can shift another's colour. Same lead set =
  *  same colours as the building.
  */
-import type { Worker } from "../../src/team";
+import type { Worker } from "../../src/team/team";
 import { fixture as building } from "../workplace/dev/fixture";
 
 /** Worker (workplace's view model) has no clock — a building shows WHERE, not how long. A board

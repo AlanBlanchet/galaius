@@ -25,7 +25,7 @@ const ROOT = path.join(__dirname, "..");
  *  big plain-backtick sheet is still listed by hand: nothing distinguishes it from ordinary code
  *  holding an ordinary template, and guessing flagged three files that compile perfectly well.
  */
-const LISTED = ["src/conversationFormat.ts"];
+const LISTED = ["src/conversation/format/conversationFormat.ts"];
 
 function rawTemplateFiles(dir, found = []) {
   let entries;

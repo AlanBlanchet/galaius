@@ -1,5 +1,5 @@
 """The agent fence: an agent CLI started on this PC runs inside an OS sandbox built from its levels
-(`galaius.machine.levels.PlaceMap`), so a level shown for agents is enforced by the kernel, not by the
+(`galaius.machine.places.levels.PlaceMap`), so a level shown for agents is enforced by the kernel, not by the
 CLI's own permission mode.
 
 What a run records is its `FenceSpec` (the levels file, where it starts, its staging copies, its
@@ -53,7 +53,7 @@ from galaius_core import PlaceLevel
 from galaius.host.paths import UserPaths
 from galaius.host.pinned_directory import PinnedDirectory
 from galaius_core import AgentRefused
-from galaius.machine.levels import DEPENDENCY_FOLDERS, LEVEL_RANK, NEVER_GRANTABLE, PlaceMap, split
+from galaius.machine.places.levels import DEPENDENCY_FOLDERS, LEVEL_RANK, NEVER_GRANTABLE, PlaceMap, split
 from galaius.upgrade.store import active_interpreter
 
 #: Per CLI: its state folder under home, what of it the agent reads (sign-in, settings, the
@@ -591,7 +591,7 @@ class SteeringGuard(BaseModel):
         if self.reviews is None:
             return
         # registry → fence → place_reviews → registry: the store is loaded where it is used.
-        from galaius.machine.place_reviews import PlaceReviews
+        from galaius.machine.places.place_reviews import PlaceReviews
         store = PlaceReviews(root=self.reviews)
         for path in sorted((self.candidates() | (self.nested() if deep else set())) - before):
             top, place, folder = next(guard for guard in self.guards if path.is_relative_to(guard[2]))

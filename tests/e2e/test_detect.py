@@ -18,7 +18,8 @@ from PIL import Image
 
 from galaius.desktop.accessibility import atspi
 from galaius.browser import BrowserManager
-from galaius.desktop import DesktopElement, DesktopWindow
+from galaius.desktop.accessibility.element import DesktopElement
+from galaius.desktop.window import DesktopWindow
 from galaius.vision.detect import _vlm_detect_elements
 from galaius.models import Model
 from galaius.runtime import config

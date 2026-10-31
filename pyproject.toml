@@ -95,7 +95,7 @@ artifacts = [
 ]
 
 [project.scripts]
-galaius = "galaius.cli:main"
+galaius = "galaius.cli.app:main"
 galaius-fetch-upstream = "galaius.catalog.upstream:_main"
 galaius-sign-in-browser = "galaius.machine.sign_in_browser:main"
 

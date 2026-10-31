@@ -11,14 +11,9 @@ from pydantic import BaseModel
 
 from galaius.desktop.accessibility.atspi import AtSpi
 from galaius.diagnostics.debug_output import Debug
-from galaius.desktop import (
-    CoordTransform,
-    DesktopElement,
-    DesktopWindow,
-    _IOU_OVERLAP_THRESHOLD,
-    _TITLEBAR_Y,
-    _WM_BUTTON_NAMES,
-)
+from galaius.desktop.coords import CoordTransform
+from galaius.desktop.accessibility.element import DesktopElement, _IOU_OVERLAP_THRESHOLD, _TITLEBAR_Y, _WM_BUTTON_NAMES
+from galaius.desktop.window import DesktopWindow
 from galaius.formats import CoordFormat
 from galaius.runtime import breaker, config
 from galaius.state import annotate_screenshot
@@ -344,7 +339,6 @@ async def _detect_desktop_elements(
     method: "default" (AT-SPI with VLM fallback) or "vlm" (force VLM only). Applies to desktop windows.
     Returns (screenshot_bytes, elements, error_detail, elapsed_seconds, method_label, img_w, img_h).
     """
-    import galaius.server as _srv  # noqa: PLC0415 — circular: server imports detect
 
     screenshot_bytes = win.capture()
     offsets = CoordTransform.from_xprop(win.wid)
@@ -371,7 +365,7 @@ async def _detect_desktop_elements(
                 offsets.shadow_right,
                 offsets.shadow_bottom,
             )
-            screenshot_bytes = _srv._crop_image(
+            screenshot_bytes = _crop_image(
                 screenshot_bytes,
                 offsets.shadow_left,
                 offsets.shadow_top,
@@ -382,7 +376,7 @@ async def _detect_desktop_elements(
     # screen share one signature (and accumulate), while a navigated-to screen gets a new one.
     page_sig = _page_signature(screenshot_bytes)
     if crop:
-        screenshot_bytes = _srv._crop_image(screenshot_bytes, *crop)
+        screenshot_bytes = _crop_image(screenshot_bytes, *crop)
 
     if crop:
         img_w, img_h = crop[2], crop[3]

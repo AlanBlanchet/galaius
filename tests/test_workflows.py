@@ -16,7 +16,7 @@ from galaius_core.accounts import Account, Bootstrap, Workspace
 from galaius.agents.catalog.connection import CatalogConnection, CatalogConnectionError
 from galaius.cli.app import app as cli
 from galaius.client import AsyncClient, Client
-from galaius.config import UserConfig
+from galaius.config.user import UserConfig
 from galaius.workflows import WorkflowNotFound, WorkflowRunFailed
 
 REPORT = b"quarterly report\n"

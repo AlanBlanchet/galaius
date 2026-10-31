@@ -40,7 +40,7 @@ from galaius.agents.transport.events import (
     InteractionKind,
 )
 from galaius.agents.limits.ceiling import contained
-from galaius.agents.limits.providers import CodexProvider
+from galaius.agents.providers import CodexProvider
 from galaius.agents.registry import AgentRun, participant_environment
 from galaius.host.processes import process_group_options, spawnable, stop_process_tree
 from galaius.agents.transport.base import (

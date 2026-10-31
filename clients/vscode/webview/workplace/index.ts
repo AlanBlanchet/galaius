@@ -18,7 +18,7 @@
  *  Reassigning .html still works (the document recovers the last snapshot from setState) but
  *  restarts the clock each time; see motion.ts.
  */
-import type { TeamState } from "../../src/team";
+import type { TeamState } from "../../src/team/team";
 import { renderScene } from "./scene";
 import { STYLE } from "./style";
 import { SCRIPT } from "./motion";

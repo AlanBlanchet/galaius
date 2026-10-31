@@ -5,7 +5,7 @@ import asyncio
 import json
 import os
 
-from galaius.agents.limits.providers import PROVIDERS, AgentProvider
+from galaius.agents.providers import PROVIDERS, AgentProvider
 from galaius.lazy import deferred
 from galaius.server.core import mcp
 

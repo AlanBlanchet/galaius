@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from galaius.config import LOG_MAXLEN
+from galaius.config.settings import LOG_MAXLEN
 from galaius.state import InteractiveElement, PageState, _visible_text, ref_locator
 from tests.support import browser_manager, interactive_element
 
@@ -348,7 +348,7 @@ async def test_session_browser_sandboxed_and_capped():
     asked), and the browser's own cgroup holds the configured memory cap. Skips the half this machine offers no route
     for; any other launch failure fails."""
     from galaius.browser import BrowserManager, browser_scope, sandbox_route
-    from galaius.config import Config
+    from galaius.config.settings import Config
 
     if not await _chromium_installed():
         pytest.skip("no Chromium installed")
@@ -376,7 +376,7 @@ async def test_session_browser_starts_when_the_sandbox_guess_is_wrong(monkeypatc
     sandbox abort relaunches it once unsandboxed instead of reinstalling. Forced here by guessing namespaces with the
     setuid helper hidden — on a machine where namespaces do work it simply starts sandboxed."""
     from galaius import browser
-    from galaius.config import Config
+    from galaius.config.settings import Config
 
     if not await _chromium_installed():
         pytest.skip("no Chromium installed")

@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
-import { GALAIUS_CONFIG_PATH } from "./paths";
+import { extensionManifest, GALAIUS_CONFIG_PATH } from "./paths";
 
 export const SETTING_SECTION = "galaius";
 export const IS_SECRET_RE = /KEY|SECRET|TOKEN/i;
@@ -26,7 +26,7 @@ import type {
   ProviderSpec,
   ModelsConfig,
 } from "./generated/types";
-import type { BillingPresentation, ChargePath, CostCertainty } from "./billingPresentation";
+import type { BillingPresentation, ChargePath, CostCertainty } from "./billing/billingPresentation";
 
 export interface Action {
   type: string;
@@ -324,8 +324,7 @@ export function metaOf(model: string, data: ModelsData): ModelInfo | undefined {
  *  HEAD. */
 function extensionVersion(): string {
   try {
-    const pkg = path.join(__dirname, "..", "package.json");
-    return JSON.parse(fs.readFileSync(pkg, "utf8")).version || "";
+    return JSON.parse(fs.readFileSync(extensionManifest(), "utf8")).version || "";
   } catch {
     return "";
   }

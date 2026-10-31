@@ -28,7 +28,7 @@ from galaius.agents import messaging
 from galaius.agents.limits import agent_queue
 from galaius.agents.turns import handback
 from galaius.agents.catalog import relations
-from galaius.agents.limits import providers as agent_providers
+from galaius.agents import providers as agent_providers
 from galaius.agents import registry as reg
 from galaius.agents.catalog import community as community_agents
 from galaius.agents.catalog.community import CommunityAgent
@@ -38,7 +38,7 @@ from galaius.agents.catalog.connection import CatalogConnection, CatalogConnecti
 from galaius.isolation.fence import FenceSpec
 from galaius.agents.host import run_console
 from galaius.agents.policy import ParadigmProjection, Policy, PolicyError, policy_path
-from galaius.agents.limits.providers import (
+from galaius.agents.providers import (
     MEDIA_PROVIDERS,
     PROVIDERS,
     available_providers,
@@ -739,8 +739,6 @@ def _maybe_probe(env: str, key: str, value: str) -> None:
             return
         verdict = config_check.ConfigCheck.run(config_check.ConfigCheck.key(env))
     elif key in ("image.model", "image-model", "component.model", "video.model"):
-        from galaius.config.settings import config
-
         if config.media_billing != "api_allowed":
             return  # probe would run through a session backend, not this pin
         verdict = config_check.ConfigCheck.run(config_check.ConfigCheck.model(value))
@@ -1574,12 +1572,6 @@ async def _run_agent_for_cli(provider, task, **kwargs):
     return await run_agent(provider, task, **kwargs)
 
 
-def _agent_runner():
-    """Honor an explicitly replaced CLI runner while command code remains deferred."""
-    cli_module = sys.modules.get("galaius.cli.app")
-    return getattr(cli_module, "_run_agent_for_cli", _run_agent_for_cli)
-
-
 @agents_app.command(name="definitions")
 def agents_definitions(provider: str | None = None) -> None:
     """Print the agent definitions this CLI can resolve, one per line.
@@ -1790,7 +1782,7 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
                 print(admission.run_id)
                 return
             predecessor = spawn.taking_over()
-            launched = asyncio.run(line.launch(admission, spawn, _agent_runner()))
+            launched = asyncio.run(line.launch(admission, spawn, _run_agent_for_cli))
             if isinstance(launched, Admission):   # held at launch: it waits in line, said why
                 print(launched.sentence())
                 print(launched.run_id)

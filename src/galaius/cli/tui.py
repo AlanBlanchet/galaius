@@ -47,7 +47,8 @@ from textual.widgets import (
 
 from galaius.cli.clients import ClientTarget
 from galaius.cli.usage import UsageReport
-from galaius.config import SETTINGS, Setting, UserConfig, groups
+from galaius.config.schema import SETTINGS, Setting, groups
+from galaius.config.user import UserConfig
 from galaius.account.tool_settings import PORTABLE_ENV, MachineNotice, ServerToolSettings
 from galaius.upgrade.quiet import QuietPoint, UpgradeReady
 from galaius.upgrade.store import EXIT_UPGRADE

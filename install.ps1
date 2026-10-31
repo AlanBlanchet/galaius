@@ -167,16 +167,8 @@ function Install-Galaius {
     # $env:GALAIUS_ADDRESS names the server; a computer connected elsewhere moves there when that
     # server holds it (the server moved).
     $server = if ($env:GALAIUS_ADDRESS) { @('--server', $env:GALAIUS_ADDRESS) } else { @() }
-    $migrated = $false
-    # Named interact until 2026-10-07: a computer that ran it moves its install once, staying connected.
-    if ((Test-Path (Join-Path $HOME '.interact')) -or (Test-Path (Join-Path $configRoot 'interact'))) {
-        try { Invoke-Tool 'moving the former install' { & $galaius migrate }; $migrated = $true }
-        catch { Say 'galaius: part of the former install was not moved (above); fix it, then run  galaius migrate' }
-    }
     # Nothing is asked: the sign-in goes on in the browser and in the background.
-    if ($migrated) {
-        Say 'Your interact install is now galaius; this computer stays connected.'
-    } elseif ($server.Count -gt 0) {
+    if ($server.Count -gt 0) {
         Step 'connecting this computer' 'la connexion de cet ordinateur'
         try { Invoke-Tool 'connecting this computer' { & $galaius login @server --detach } }
         catch { Say 'Not connected. Run it again any time:  galaius login --detach' }

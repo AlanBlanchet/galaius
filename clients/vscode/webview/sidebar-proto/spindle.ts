@@ -33,8 +33,8 @@ import { GHOST_PAL, POSE_MOVE, POSE_REST, SKIN_PAL, SNOOZE } from "../workplace/
 import { STALL_SECONDS, isHeld, markOf, stampFor, stampHtml } from "../workplace/status";
 import { assignAccents, faceOf, shortDuration } from "../workplace/palette";
 import { clip, esc } from "../workplace/esc";
-import { ZONES } from "../../src/team";
-import type { ZoneId } from "../../src/team";
+import { ZONES } from "../../src/team/team";
+import type { ZoneId } from "../../src/team/team";
 import { DESK_STAMP, DOG_EAR, OUT_FLAG, PAD_CORNER, SPINDLE_BASE, SPINDLE_TIP, STAPLE } from "./art";
 import type { Board, Docket } from "./fixture";
 

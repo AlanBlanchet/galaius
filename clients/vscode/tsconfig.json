@@ -25,6 +25,8 @@
   "exclude": [
     "node_modules",
     "webview",
-    "src/**/*.test.ts"
+    "src/**/*.test.ts",
+    // node-only test helper (reads import.meta), never shipped
+    "src/testPaths.ts"
   ]
 }

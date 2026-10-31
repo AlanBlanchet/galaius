@@ -11,7 +11,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Self
 
-from galaius.config import Config
+from galaius.config.settings import Config
 from galaius.host.private_files import PRIVATE_FILES
 from galaius.vision.types import MediaItem
 

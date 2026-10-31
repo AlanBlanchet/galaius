@@ -2,7 +2,9 @@
 
 import sys
 
-from galaius.config import Config, UserConfig, load_dotenv_for_cli
+from galaius.config.settings import Config
+from galaius.config.user import UserConfig
+from galaius.config.dotenv import load_dotenv_for_cli
 from galaius.account.tool_settings import MachineNotice
 
 

@@ -7,7 +7,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from playwright.async_api import Page
 
-from galaius.config import DEFAULT_LIMIT
+from galaius.config.settings import DEFAULT_LIMIT
 from galaius.settle import settle_animations
 from galaius.state import ref_locator
 

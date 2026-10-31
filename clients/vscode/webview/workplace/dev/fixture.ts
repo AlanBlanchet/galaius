@@ -6,7 +6,7 @@
  *  room, a stalled "running" worker, an errored one, and a session galaius did not start.
  */
 import { atSeconds } from "../palette";
-import type { TeamState, Worker, ZoneId } from "../../../src/team";
+import type { TeamState, Worker, ZoneId } from "../../../src/team/team";
 
 type Seed = [
   name: string,

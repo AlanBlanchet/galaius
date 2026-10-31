@@ -10,8 +10,8 @@ import type {
   AgentGroupBy,
   AgentStatus,
 } from "../src/shared";
-import { PROMPT_ACTIONS } from "../src/promptActions";
-import { amongYours, shortCompetence } from "../src/competence";
+import { PROMPT_ACTIONS } from "../src/workspace/promptActions";
+import { amongYours, shortCompetence } from "../src/competence/competence";
 
 declare function acquireVsCodeApi(): { postMessage(msg: unknown): void };
 

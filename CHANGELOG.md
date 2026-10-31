@@ -6,6 +6,10 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ## Unreleased
 
+- `galaius migrate` and the installers' move of a former interact install are removed, as 0.44.0
+  announced. A computer still holding `~/.interact` installs galaius fresh and signs in again.
+- `src/galaius` is grouped into domain packages (no source folder over 20 files); every module path
+  changed (`galaius.<domain>.<module>`), the `galaius` command and MCP server names did not.
 - Windows: the PC program no longer opens console windows. Every program a galaius process with no
   console window starts gets none either (`galaius.host.windowless`), and its Python children run
   under a hidden console that what they start shares (a script step's own git, an agent CLI).
@@ -261,7 +265,7 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
   Win32 / Xlib) — so `target="screen"` automation has a real backend on macOS and Windows, not just
   Linux. `select_desktop_backend` picks it for `local` off Linux (Linux keeps the deeper
   uinput/X11 `LocalBackend`; the `nested` Xephyr sandbox stays Linux-only).
-- **The macOS/Windows path is now tested on real runners.** `tests/test_portable_backend.py`
+- **The macOS/Windows path is now tested on real runners.** `tests/desktop/backend/test_portable_backend.py`
   exercises capture + pointer round-trip on the **macos-latest and windows-latest** CI matrix (the
   genuine GUI sessions), self-skipping on Linux and skipping-with-a-diagnostic when a host denies
   Screen-Recording/Accessibility — so there's a reproducible mac/win desktop test, not an

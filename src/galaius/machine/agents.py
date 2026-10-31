@@ -50,25 +50,25 @@ from galaius.agents.host import ConversationHost, ConversationRefused
 from galaius.agents.turns.session_stops import SessionStops
 from galaius.agents.turns.followup import FollowUps
 from galaius.agents.messaging import deliver_message
-from galaius.agents.limits.providers import PROJECT_SETTINGS_OFF, PROVIDERS, UNTRUSTED_FOLDERS, provider_for
+from galaius.agents.providers import PROJECT_SETTINGS_OFF, PROVIDERS, UNTRUSTED_FOLDERS, provider_for
 from galaius.agents.limits.subscriptions import RunSubscription, Subscription, SubscriptionRefused
 from galaius.agents.run import LAUNCH_STAMP, launch_editor_turn, load_policy, rank_candidates, run_agent
 from galaius.agents.limits.warm import WarmStart
-from galaius.config import UserConfig
+from galaius.config.user import UserConfig
 from galaius.isolation.fence import EGRESS, FenceSpec, available
 from galaius.host.file_lock import exclusive
 from galaius.machine.programs import AgentPrograms
 from galaius.machine.tools import MachineTools
-from galaius.machine.places import LOG as PLACES_LOG
-from galaius.machine.workspaces import MachineWorkspaces, unusable
+from galaius.machine.places.places import LOG as PLACES_LOG
+from galaius.machine.projects.workspaces import MachineWorkspaces, unusable
 from galaius.host.pinned_directory import PinnedDirectory
-from galaius.machine.project_files import ProjectFolder
-from galaius.host.redaction import mask, redact, secret_values
-from galaius.machine.workspace_copy import WorkspaceRefused
+from galaius.machine.projects.project_files import ProjectFolder
+from galaius.diagnostics.redaction import mask, redact, secret_values
+from galaius.machine.projects.workspace_copy import WorkspaceRefused
 from galaius_core import AgentRefusal, AgentRefused
-from galaius.machine.place_reviews import PlaceReviews
-from galaius.machine.levels import LEVEL_RANK, PlaceMap, split
-from galaius.machine.project_secrets import ProjectEnv
+from galaius.machine.places.place_reviews import PlaceReviews
+from galaius.machine.places.levels import LEVEL_RANK, PlaceMap, split
+from galaius.machine.projects.project_secrets import ProjectEnv
 from cryptography.exceptions import InvalidTag
 from galaius_core.sealing import SecretsSeal
 

@@ -49,17 +49,8 @@ main() {
   echo ""
   echo "✓ galaius installed."
   if [ -n "${GALAIUS_ADDRESS:-}" ]; then set -- --server "$GALAIUS_ADDRESS"; else set --; fi
-  migrated=""
-  # Named interact until 2026-10-07: a computer that ran it moves its install once, staying connected.
-  if [ -d "$HOME/.interact" ] || [ -d "${XDG_CONFIG_HOME:-$HOME/.config}/interact" ]; then
-    if "$bin/galaius" migrate; then migrated=1
-    else echo "galaius: part of the former install was not moved (above); fix it, then run  galaius migrate" >&2
-    fi
-  fi
   # Nothing is asked: the sign-in goes on in the browser and in the background.
-  if [ -n "$migrated" ]; then
-    echo "Your interact install is now galaius; this computer stays connected."
-  elif [ $# -gt 0 ]; then
+  if [ $# -gt 0 ]; then
     step 'connecting this computer' 'la connexion de cet ordinateur'
     through_file "$bin/galaius" login "$@" --detach || echo "Not connected. Run it again any time:  galaius login --detach"
   else
@@ -108,11 +99,11 @@ fetch() {
 
 describe() { printf 'Galaius install (source %s, server %s)' "${GALAIUS_REPO:-${GALAIUS_ARCHIVE:-GitHub main}}" "${GALAIUS_ADDRESS:-not named}"; }
 
-# >>> install report (src/galaius/data/install_report.sh, verbatim: tests/test_install_scripts.py)
+# >>> install report (src/galaius/data/install_report.sh, verbatim: tests/repo/test_install_scripts.py)
 # The install-report part every Galaius install.sh shares (owner 2026-10-11: « The install script should have
 # error logs in case of errors, and if there is an error that happens we must prompt the user to ask to send »).
 # One copy: galaius/data/install_report.sh; a server inserts it into the script it serves, the repository's
-# install.sh carries it verbatim (tests/test_install_scripts.py). The script defines `main` (its install, each part
+# install.sh carries it verbatim (tests/repo/test_install_scripts.py). The script defines `main` (its install, each part
 # named with `step`, a refusal with `fail`) and `describe` (the log's first line), then ends with `run "$@"`.
 say() { printf '%s\n' "$1"; }
 # The reason, said by `run` in its sentence.

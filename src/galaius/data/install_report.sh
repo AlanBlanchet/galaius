@@ -1,7 +1,7 @@
 # The install-report part every Galaius install.sh shares (owner 2026-10-11: « The install script should have
 # error logs in case of errors, and if there is an error that happens we must prompt the user to ask to send »).
 # One copy: galaius/data/install_report.sh; a server inserts it into the script it serves, the repository's
-# install.sh carries it verbatim (tests/test_install_scripts.py). The script defines `main` (its install, each part
+# install.sh carries it verbatim (tests/repo/test_install_scripts.py). The script defines `main` (its install, each part
 # named with `step`, a refusal with `fail`) and `describe` (the log's first line), then ends with `run "$@"`.
 say() { printf '%s\n' "$1"; }
 # The reason, said by `run` in its sentence.

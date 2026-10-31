@@ -2,7 +2,10 @@
 and whether a captured surface is a uniform (GL-unrendered) blank."""
 
 import io
+import subprocess
+import tempfile
 import logging
+from pathlib import Path
 
 from PIL import Image, ImageChops
 

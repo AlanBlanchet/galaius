@@ -6,9 +6,9 @@ import base64
 import json
 from typing import Literal
 
-from galaius.actions import AnyAction
+from galaius.actions.models import AnyAction
 from galaius.browser import BrowserManager
-from galaius.config import DEFAULT_LIMIT
+from galaius.config.settings import DEFAULT_LIMIT
 from galaius.diagnostics.debug_output import Debug
 from galaius.actions.dispatch import _run_actions_browser, _run_actions_desktop
 from galaius.server import capture, core, targets, vlm

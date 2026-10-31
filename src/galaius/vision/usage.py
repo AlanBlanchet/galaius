@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from typing import Literal
 
 from galaius import runtime
-from galaius.config import Config
+from galaius.config.settings import Config
 from galaius.lazy import deferred
 from galaius.vision.types import VLMResult
 from galaius.vision.usage_records import UsageEntry

@@ -12,7 +12,7 @@ on:
       - "src/galaius/desktop/**"
       - "src/galaius/actions/**"
       - "src/galaius/server/**"
-      - "tests/test_host_desktop*.py"
+      - "tests/desktop/backend/test_host_desktop*.py"
       - ".github/workflows/desktop-host.yml"
   pull_request:
   workflow_dispatch:
@@ -46,7 +46,7 @@ jobs:
       - name: Host desktop — unit + live
         env:
           GALAIUS_LIVE_DESKTOP: "1"
-        run: uv run pytest tests/test_host_desktop.py tests/test_text_waits.py tests/test_host_desktop_live.py tests/test_screen_target.py -v -rs -p no:cacheprovider
+        run: uv run pytest tests/desktop/backend/test_host_desktop.py tests/desktop/test_text_waits.py tests/desktop/backend/test_host_desktop_live.py tests/desktop/test_screen_target.py -v -rs -p no:cacheprovider
       - name: Screens a live test failed on
         if: failure()
         uses: actions/upload-artifact@v4

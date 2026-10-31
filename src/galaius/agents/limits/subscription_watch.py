@@ -20,7 +20,7 @@ from pydantic import BaseModel, PrivateAttr
 from galaius.agents import registry as reg
 from galaius.agents.limits import quota
 from galaius.agents.transport.events import stream_lines
-from galaius.agents.limits.providers import PROVIDERS, AgentProvider as Program
+from galaius.agents.providers import PROVIDERS, AgentProvider as Program
 from galaius.agents.limits.subscriptions import Subscription
 
 

@@ -13,8 +13,8 @@ from galaius_core import PLACE_LEVELS, AgentTouchScope, PlaceLevel, WorkflowNode
 
 from galaius.functions import PermissionLevel
 from galaius.machine.service import MACHINE_SERVICE, ServiceUnavailable
-from galaius.machine.places import PlaceDesk
-from galaius.machine.levels import split
+from galaius.machine.places.places import PlaceDesk
+from galaius.machine.places.levels import split
 from galaius.machine.connection import SCRIPT_RUNTIMES, MachineFiles, MachineRunner, ScriptExecution, connect_command
 
 machine_app = App(name="machine", help="Connect this computer as a workflow machine.")

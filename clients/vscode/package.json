@@ -559,7 +559,7 @@
     "generate-benchmarks": "uv run --project .. python scripts/generate-benchmarks.py",
     "test:vscode": "npm run compile && tsc -p tsconfig.test.json && vscode-test",
     "build:workplace": "esbuild webview/workplace/index.ts --bundle --outfile=out/workplace.js --format=cjs --platform=node --target=es2022",
-    "test": "node --test --experimental-strip-types src/*.test.ts",
+    "test": "node --test --experimental-strip-types \"{src,webview}/**/*.test.ts\"",
     "check-css": "node scripts/check-css-templates.js"
   },
   "devDependencies": {

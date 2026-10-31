@@ -18,9 +18,9 @@
  *  simulation owns where a body actually is and may have it somewhere else entirely at the moment
  *  this markup lands.
  */
-import { ZONES } from "../../src/team";
-import type { TeamState, Worker, ZoneId } from "../../src/team";
-import { FACULTIES } from "../../src/capabilities";
+import { ZONES } from "../../src/team/team";
+import type { TeamState, Worker, ZoneId } from "../../src/team/team";
+import { FACULTIES } from "../../src/competence/capabilities";
 import { closeSheet, draw, drawFrames, openSheet } from "./pixels";
 import { FACULTY_ART, BANG, NOTE, RING, SNOOZE, WAVE_A, WAVE_B, WAVE_PAL } from "./art";
 import { atlasDefs, cellUse, dollOf, dollSvg, tileUse } from "./kenney";

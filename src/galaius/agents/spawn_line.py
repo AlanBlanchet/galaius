@@ -52,10 +52,10 @@ from galaius.agents.limits.admission import Hold, Paused, SoftMemory, turn_hold
 from galaius.agents import registry as reg
 from galaius.agents.catalog.community import CommunityAgent
 from galaius.agents.policy import Policy, PolicyError
-from galaius.agents.limits.providers import provider_for
+from galaius.agents.providers import provider_for
 from galaius.agents.catalog.vocabulary import TouchScope
 from galaius.agents.run import ModelUnavailable, RunHandle, effective_permission_mode, load_policy, resolve_role, run_agent
-from galaius.config import Config
+from galaius.config.settings import Config
 from galaius.isolation.fence import FenceSpec
 from galaius.machine.agents import WebRuns
 from galaius.host.paths import UserPaths

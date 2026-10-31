@@ -15,13 +15,13 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { chatDocument } from "../../src/conversationFormat";
-import { CHAT_COMMANDS } from "../../src/chatCommands";
-import { railBody, railDocument, railStyle } from "../../src/railHtml";
-import { buildRail } from "../../src/rail";
-import { voiceOf } from "../../src/statusLanguage";
-import { conversationTitle, roleOf } from "../../src/roster";
-import { actionsFor } from "../../src/agentActions";
+import { chatDocument } from "../../src/conversation/format/conversationFormat";
+import { CHAT_COMMANDS } from "../../src/conversation/chatCommands";
+import { railBody, railDocument, railStyle } from "../../src/view/railHtml";
+import { buildRail } from "../../src/view/rail";
+import { voiceOf } from "../../src/view/statusLanguage";
+import { conversationTitle, roleOf } from "../../src/team/roster";
+import { actionsFor } from "../../src/agents/agentActions";
 
 /** The theme variables VS Code injects on <body> — real values, not approximations. */
 const THEMES: Record<string, Record<string, string>> = {

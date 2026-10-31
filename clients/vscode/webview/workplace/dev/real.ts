@@ -18,17 +18,17 @@
 import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { readAgentActivity, readAgentMessages, readAgentRuns } from "../../../src/agents";
-import { actionsFor } from "../../../src/agentActions";
-import { facultiesOf, parseCapabilities } from "../../../src/capabilities";
-import { mergeDiscovered, parseDiscovered } from "../../../src/discovered";
-import { companyOf, readOrg } from "../../../src/org";
-import { buildRail } from "../../../src/rail";
-import { railBody, railScript, railStyle } from "../../../src/railHtml";
-import { agentLabel, conversationTitle, roleOf } from "../../../src/roster";
-import { voiceOf } from "../../../src/statusLanguage";
-import { buildTeam, lastObservedAt } from "../../../src/teamState";
-import { scopeRuns } from "../../../src/workspaceScope";
+import { readAgentActivity, readAgentMessages, readAgentRuns } from "../../../src/agents/agents";
+import { actionsFor } from "../../../src/agents/agentActions";
+import { facultiesOf, parseCapabilities } from "../../../src/competence/capabilities";
+import { mergeDiscovered, parseDiscovered } from "../../../src/agents/discovered";
+import { companyOf, readOrg } from "../../../src/team/org";
+import { buildRail } from "../../../src/view/rail";
+import { railBody, railScript, railStyle } from "../../../src/view/railHtml";
+import { agentLabel, conversationTitle, roleOf } from "../../../src/team/roster";
+import { voiceOf } from "../../../src/view/statusLanguage";
+import { buildTeam, lastObservedAt } from "../../../src/team/teamState";
+import { scopeRuns } from "../../../src/workspace/workspaceScope";
 import { renderWorkplace } from "../index";
 
 // The panel's own constant (workplacePanel.ts STEP_WINDOW).

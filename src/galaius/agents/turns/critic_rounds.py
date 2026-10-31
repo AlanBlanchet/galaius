@@ -24,7 +24,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from galaius.agents.limits import agent_queue
 from galaius.agents.catalog import relations
 from galaius.agents import registry as reg
-from galaius.config import Config
+from galaius.config.settings import Config
 from galaius.config.settings import CriticCap
 
 

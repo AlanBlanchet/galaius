@@ -34,7 +34,7 @@ from galaius.agents.catalog.connection import CatalogAuthenticationError, Catalo
 from galaius.agents import registry as reg
 from galaius.account.caller import RUN_VARIABLES, Caller
 from galaius.agents.transport.events import AgentEvent, MessageFields
-from galaius.agents.limits.providers import AgentProvider, _safe_process_detail, provider_for
+from galaius.agents.providers import AgentProvider, _safe_process_detail, provider_for
 from galaius.agents.catalog.relations import card, heading
 from galaius.hooks.inbox import HEADING, OPERATOR
 from galaius.host.processes import process_started, share_malloc_arenas

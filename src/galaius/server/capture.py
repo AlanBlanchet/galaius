@@ -6,10 +6,11 @@ import base64
 import re
 import logging
 
-from galaius.config import DEFAULT_LIMIT, QUALITY_TIERS
+from galaius.config.settings import DEFAULT_LIMIT, QUALITY_TIERS
 from galaius.vision.critique import format_grounding
 from galaius.diagnostics.debug_output import Debug
-from galaius.desktop import DesktopElement, DesktopWindow
+from galaius.desktop.accessibility.element import DesktopElement
+from galaius.desktop.window import DesktopWindow
 from galaius.desktop.frames import Framing
 from galaius.vision.detect import _desktop_context, _detect_desktop_elements
 from galaius.server import core, targets, vlm

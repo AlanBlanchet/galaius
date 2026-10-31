@@ -19,7 +19,7 @@
  */
 import { draw } from "./pixels";
 import { MARKS } from "./art";
-import { STATUS, type Attention } from "../../src/statusLanguage";
+import { STATUS, type Attention } from "../../src/view/statusLanguage";
 
 /** Past two minutes of nothing, a worker isn't working. Both surfaces used to declare this
  *  privately — precisely how two views end up disagreeing who's stalled. */

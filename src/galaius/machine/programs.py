@@ -38,8 +38,8 @@ from galaius_core import (
 )
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
 
-from galaius.agents.limits.providers import PROVIDERS, LoginStatus, ProgramInstaller
-from galaius.agents.limits.providers import AgentProvider as Program
+from galaius.agents.providers import PROVIDERS, LoginStatus, ProgramInstaller
+from galaius.agents.providers import AgentProvider as Program
 from galaius.agents.limits.subscriptions import Subscription, SubscriptionRefused
 from galaius.host.processes import end_process_tree, process_group_options
 from galaius.machine.sign_in_browser import SignInHandoff

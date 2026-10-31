@@ -9,10 +9,10 @@ from pathlib import Path
 
 from mcp.server.fastmcp.utilities.types import Image
 
-from galaius.config import DEFAULT_LIMIT
+from galaius.config.settings import DEFAULT_LIMIT
 from galaius.diagnostics.debug_output import Debug
 from galaius.desktop.frames import Framing, RegionOutsideCapture
-from galaius.desktop import DesktopElement
+from galaius.desktop.accessibility.element import DesktopElement
 from galaius.models import is_audio_model, is_transcription_only_model
 from galaius.server import capture, core, targets, vlm
 from galaius.server.core import (
@@ -24,7 +24,7 @@ from galaius.server.core import (
     mcp,
 )
 from galaius.state import format_element_list
-from galaius.vision import MediaItem
+from galaius.vision.types import MediaItem
 from galaius.vision.core import analyze_media, transcribe_audio
 from galaius.vision.critique import (
     UIReview,

@@ -34,7 +34,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from galaius.config import Config
+from galaius.config.settings import Config
 from galaius.host.processes import RUN_SCOPE_PREFIX
 
 #: How a scope working for no one run is named (`task_scope_name`).

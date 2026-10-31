@@ -29,11 +29,11 @@ from mcp.shared.message import SessionMessage
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from galaius.account.caller import Caller
-from galaius.config import UserConfig
+from galaius.config.user import UserConfig
 from galaius.mcp.endpoint import SharedEndpoint
 from galaius.mcp.relay import HELLO, SWITCH, Endpoint
 from galaius.host.processes import share_malloc_arenas
-from galaius.server import sandbox
+from galaius.server import browser_sandbox
 from galaius.server.core import CONNECTION, _auto_session_names, _lifespan, _sessions, mcp
 from galaius.upgrade.store import Runtime, RuntimeStore
 
@@ -87,7 +87,7 @@ class Connection:
     def holds(self) -> bool:
         """What a move would lose: its own browser session, or the sandbox display shared with others."""
         own = _auto_session_names.get(self)
-        return (own is not None and _sessions.peek(own) is not None) or sandbox._sandbox is not None
+        return (own is not None and _sessions.peek(own) is not None) or browser_sandbox._sandbox is not None
 
     async def hello(self, seconds: float) -> Caller:
         raw = await asyncio.wait_for(self.reader.readline(), seconds)

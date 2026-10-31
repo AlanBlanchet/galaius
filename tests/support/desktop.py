@@ -7,7 +7,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-from galaius.desktop import DesktopBackend, DesktopWindow, NestedBackend
+from galaius.desktop.backend import DesktopBackend
+from galaius.desktop.window import DesktopWindow
+from galaius.desktop.nested import NestedBackend
 
 
 def tk_env(env: dict[str, str] | None = None) -> dict[str, str]:

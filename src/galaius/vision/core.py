@@ -11,8 +11,8 @@ from typing import Any, TypeAlias
 
 from pydantic import BaseModel
 
-from galaius.agents.limits.providers import MEDIA_PROVIDERS
-from galaius.config import Config
+from galaius.agents.providers import MEDIA_PROVIDERS
+from galaius.config.settings import Config
 from galaius.catalog.criteria import Criteria
 from galaius.lazy import deferred
 from galaius.models import ModelRole, supports_native_video_inline

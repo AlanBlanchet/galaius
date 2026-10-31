@@ -35,7 +35,8 @@ from galaius.agents.catalog.entries import AgentCatalog
 from galaius.agents.catalog.connection import CatalogConnectionError
 from galaius.agents.tool_gateway import AgentToolList, ToolGateway
 from galaius.agents.catalog.vocabulary import TouchScope
-from galaius.config import Config, UserConfig
+from galaius.config.settings import Config
+from galaius.config.user import UserConfig
 from galaius.catalog.criteria import ValueRule
 
 #: The two altitudes a paradigm can be projected at for one agent. Closed on purpose: a third
@@ -71,7 +72,7 @@ def policy_path() -> Path:
     NOT under the debug dir: a box that relocates its dumps (`GALAIUS_DEBUG_DIR`) would drag the
     policy along — the CLI once looked for `<repo>/out/agents.json` while the panel wrote
     `~/.galaius/agents.json`: one fact in two files, and a choice that never bit. The extension
-    computes the same path on its own (`agentModels.ts`); `tests/test_paths.py` holds the two together.
+    computes the same path on its own (`agentModels.ts`); `tests/config/test_paths.py` holds the two together.
     """
     return UserConfig.PATH.parent / "agents.json"
 

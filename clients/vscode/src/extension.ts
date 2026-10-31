@@ -1,27 +1,27 @@
 import * as vscode from "vscode";
 
-import { ACTIVITY_SCHEME, activityPath, formatActivity, runIdFromPath } from "./activityDocument";
-import { IO_INLINE, IO_SCHEME, ioFromPath } from "./ioDocument";
-import { ChatViewProvider } from "./chatView";
-import { galaiusCli } from "./galaiusCli";
-import { ServerWorkspaceControls } from "./serverWorkspaceControls";
-import { serverWorkspaceConfigured } from "./workspaceState.ts";
-import { refreshToolSettings, saveToolSetting, stripPortableEnvironment, toolSettingsView } from "./toolSettings.ts";
-import { REVEAL_COMMAND, REVEALED_KEY, shouldRevealOnce } from "./panelReveal";
-import { AgentsProvider, type GroupBy } from "./agentsView";
-import { DashboardPanel } from "./dashboard";
-import { ScopeStore, setScopeStore } from "./scopeStore";
+import { ACTIVITY_SCHEME, activityPath, formatActivity, runIdFromPath } from "./conversation/format/activityDocument";
+import { IO_INLINE, IO_SCHEME, ioFromPath } from "./conversation/format/ioDocument";
+import { ChatViewProvider } from "./conversation/chatView";
+import { galaiusCli } from "./workspace/galaiusCli";
+import { ServerWorkspaceControls } from "./workspace/serverWorkspaceControls";
+import { serverWorkspaceConfigured } from "./workspace/workspaceState.ts";
+import { refreshToolSettings, saveToolSetting, stripPortableEnvironment, toolSettingsView } from "./workspace/toolSettings.ts";
+import { REVEAL_COMMAND, REVEALED_KEY, shouldRevealOnce } from "./view/panelReveal";
+import { AgentsProvider, type GroupBy } from "./agents/agentsView";
+import { DashboardPanel } from "./dashboard/dashboard";
+import { ScopeStore, setScopeStore } from "./workspace/scopeStore";
 import {
   definitionFile, parseAgentProviders, readOrg, sendArgs, spawnArgs, spawnChoices,
   type AgentProviderStatus,
-} from "./org";
+} from "./team/org";
 import {
   adoptLegacyChoices, agentsPolicyPath, chooseModel, clearChoice, modelChosenFor, profilesIn,
   ruleReads,
-} from "./agentModels";
-import { shortCompetence } from "./competence";
-import { CompetenceStore } from "./competenceStore";
-import { knownModes, modeChoices } from "./permissionModes";
+} from "./competence/agentModels";
+import { shortCompetence } from "./competence/competence";
+import { CompetenceStore } from "./competence/competenceStore";
+import { knownModes, modeChoices } from "./agents/permissionModes";
 import {
   KeyManager,
   formatLabel,
@@ -404,7 +404,7 @@ async function manageApiKeys(
 /** Repaint the room's roster. Lazily imported: the workplace pulls in the art bundle, and a
  *  window that never opens the room should not pay for it. */
 function refreshWorkplace(): void {
-  void import("./workplacePanel").then((m) => m.WorkplacePanel.refreshIfOpen()).catch(() => {});
+  void import("./workplace/workplacePanel").then((m) => m.WorkplacePanel.refreshIfOpen()).catch(() => {});
 }
 
 export async function activate(
@@ -517,7 +517,7 @@ export async function activate(
       // catalog, and VS Code renders its own loading state for a pending item list. Awaiting first
       // showed nothing at all for that whole window, which reads as a dead control.
       const items: Promise<vscode.QuickPickItem[]> = (async () => {
-        const { loadCatalog } = await import("./catalog");
+        const { loadCatalog } = await import("./dashboard/catalog");
         const cat = await loadCatalog().catch(() => null);
         // A CRITERION comes FIRST, because a pinned id is a claim frozen when somebody typed it:
         // "we shouldn't write a model, but resolve a model from the constraints". The bars are
@@ -680,7 +680,7 @@ export async function activate(
     }),
     vscode.workspace.registerTextDocumentContentProvider(ACTIVITY_SCHEME, {
       async provideTextDocumentContent(uri: vscode.Uri): Promise<string> {
-        const { readAgentActivity } = await import("./agents");
+        const { readAgentActivity } = await import("./agents/agents");
         return formatActivity(readAgentActivity(runIdFromPath(uri.path), 200));
       },
     }),
@@ -694,8 +694,8 @@ export async function activate(
         // Banked text first: an unstamped call's stored half, handed over by the webview.
         const banked = IO_INLINE.get(parsed.toolId);
         if (banked !== undefined) return banked;
-        const { readAgentRuns, rawEventsPath } = await import("./agents");
-        const { foreignTranscriptPath, fullToolIO } = await import("./foreignSession");
+        const { readAgentRuns, rawEventsPath } = await import("./agents/agents");
+        const { foreignTranscriptPath, fullToolIO } = await import("./agents/foreignSession");
         const run = readAgentRuns().find((r) => r.run_id === parsed.runId)
           ?? scope.runs().find((r) => r.run_id === parsed.runId);
         const file = run?.status === "foreign"
@@ -905,11 +905,11 @@ export async function activate(
     vscode.commands.registerCommand("galaius.showLogs", () => log.show(true)),
     // The team as a workplace: who is here, and what room the work has them in.
     vscode.commands.registerCommand("galaius.agents.team", async () => {
-      const { WorkplacePanel } = await import("./workplacePanel");
+      const { WorkplacePanel } = await import("./workplace/workplacePanel");
       WorkplacePanel.show(log, context.globalState);
     }),
     vscode.commands.registerCommand("galaius.agents.sequence", async () => {
-      const { SequencePanel } = await import("./sequencePanel");
+      const { SequencePanel } = await import("./team/sequencePanel");
       SequencePanel.show();
     }),
     // The manifest already puts the panel in the secondary side bar; what it cannot do is make it
@@ -1029,7 +1029,7 @@ export async function activate(
   try {
     // The bundled file is baked at BUILD time, so its scores can never change once packaged.
     // Whatever Python has fetched since wins, per benchmark.
-    const { mergeLiveTables, readLiveTables } = require("./benchmarkTables");
+    const { mergeLiveTables, readLiveTables } = require("./dashboard/benchmarkTables");
     benchmarksData = mergeLiveTables(require("./benchmarks.json"), readLiveTables());
   } catch {}
 

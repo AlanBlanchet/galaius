@@ -10,7 +10,6 @@ from typing import Callable, NamedTuple
 
 from playwright.async_api import Error as PlaywrightError, TimeoutError as PlaywrightTimeout
 
-from galaius import desktop
 from galaius.desktop.accessibility import cdp as _cdp
 from galaius.desktop.accessibility.atspi import AtSpi
 from galaius.settle import settle_animations
@@ -35,13 +34,16 @@ from galaius.actions.models import (
 )
 from galaius.browser import BrowserManager
 from galaius.diagnostics.debug_output import Debug
-from galaius.desktop import DesktopWindow
+from galaius.desktop.window import DesktopWindow
 from galaius.desktop import host as desktop_host
 from galaius.desktop import ocr as desktop_ocr
 from galaius.desktop.frames import Framing
 from galaius.desktop.waits import until_text, until_window
 from galaius.vision.detect import _desktop_context
 from galaius.state import DesktopState, PageState, StateChange, ref_locator
+from galaius.desktop.accessibility.element import DesktopElement
+from galaius.desktop.cursor import Cursor
+from galaius.desktop.nested import NestedBackend
 
 _log = logging.getLogger("galaius")
 
@@ -54,7 +56,7 @@ async def _finalize_step(
     record frame if recording, and run an `observe` VLM query if the action asked for one. Only the
     per-surface capture (`win.capture()` sync vs `page.screenshot()` async) and the observe context
     string differ, so both are injected; ``capture_fn`` may return bytes or an awaitable."""
-    from galaius.server import _run_observe  # noqa: PLC0415 — circular: server imports dispatch
+    from galaius.server.vlm import _run_observe  # noqa: PLC0415 — circular: server imports dispatch
 
     async def _grab() -> bytes:
         frame = capture_fn()
@@ -156,7 +158,7 @@ def _element_at(wid: int, x: int, y: int):
     wins so a click inside a button-within-a-panel snaps to the button, not the panel."""
     hits = [
         el
-        for el in (desktop.DesktopElement.cached(wid) or [])
+        for el in (DesktopElement.cached(wid) or [])
         if el.x <= x <= el.x + el.w and el.y <= y <= el.y + el.h
     ]
     return min(hits, key=lambda el: el.w * el.h) if hits else None
@@ -178,7 +180,7 @@ def _coord_note(wid: int, win: DesktopWindow, x: int, y: int) -> str:
     """The hedged annotation for a LITERAL coordinate action. What is believed to sit at (x,y) is
     genuinely useful context — but only as an annotation, never as a relabelling, and never at all
     when the detection predates a layout change (a stale guess is worse than none, #88)."""
-    stale = desktop.DesktopElement.detection_stale(wid, win)
+    stale = DesktopElement.detection_stale(wid, win)
     if stale:
         return f" (WARNING: {stale} — cached refs may name the wrong widget)"
     el = _element_at(wid, x, y)
@@ -189,12 +191,14 @@ def _element_note(wid: int, win: DesktopWindow) -> str:
     """#88 item 1: an action resolved BY REF/element/selector against a detection taken under a
     different window geometry is clicking a box that may now hold a different widget. Say so in
     the step report instead of silently acting on it."""
-    stale = desktop.DesktopElement.detection_stale(wid, win)
+    stale = DesktopElement.detection_stale(wid, win)
     return f" (WARNING: {stale} — re-run get_interactive_elements)" if stale else ""
 
 
 def _resolve_action_coords(action, wid: int, win: DesktopWindow) -> _Resolved:
-    from galaius.server import _name_not_found_msg, _not_found, _resolve_desktop_el  # noqa: PLC0415 — circular: server imports dispatch
+    # circular: server imports dispatch
+    from galaius.server.core import _not_found  # noqa: PLC0415
+    from galaius.server.targets import _name_not_found_msg, _resolve_desktop_el  # noqa: PLC0415
 
     x = getattr(action, "x", None)
     y = getattr(action, "y", None)
@@ -472,8 +476,8 @@ def _fmt_cursor(win=None) -> str:
     # backend when it can answer.
     backend = getattr(win, "_backend", None)
     reader = getattr(backend, "cursor_type", None)
-    ct = reader() if callable(reader) else desktop.Cursor.current_type()
-    return f"{ct} ({desktop.Cursor.label(ct)})"
+    ct = reader() if callable(reader) else Cursor.current_type()
+    return f"{ct} ({Cursor.label(ct)})"
 
 
 def _click_verb(action) -> str:
@@ -520,7 +524,7 @@ async def _settle_and_diff(mgr, page, action, tab: int, before: PageState):
 
     The desktop twin is :func:`_mutating_step`; a browser step can't use a context manager for the
     same job because ``final`` has to reach the enclosing runner."""
-    from galaius.server import _capture, _wait as _wait_fn  # noqa: PLC0415 — circular
+    from galaius.server.capture import _capture, _wait as _wait_fn  # noqa: PLC0415 — circular
 
     if action.wait:
         await _wait_fn(page, action.wait)
@@ -580,7 +584,7 @@ class _CdpSlot:
     async def _port_once(self) -> int | None:
         if self._port is _UNSET:
             backend = getattr(self._win, "_backend", None)
-            if isinstance(backend, desktop.NestedBackend) and self._win.wid:
+            if isinstance(backend, NestedBackend) and self._win.wid:
                 self._port = await asyncio.to_thread(backend.debug_port_for_wid, self._win.wid)
             else:
                 self._port = None
@@ -872,7 +876,7 @@ async def _d_scroll(c: _DesktopCtx) -> None:
 
 @_handles("drag")
 async def _d_drag(c: _DesktopCtx) -> None:
-    from galaius.server import _resolve_desktop_el  # noqa: PLC0415 — circular
+    from galaius.server.targets import _resolve_desktop_el  # noqa: PLC0415 — circular
 
     action, win = c.action, c.win
     fx, fy = action.from_x, action.from_y
@@ -910,7 +914,7 @@ async def _d_evaluate_js(c: _DesktopCtx) -> None:
 
 @_handles("screenshot")
 async def _d_screenshot(c: _DesktopCtx) -> None:
-    from galaius.server import _capture_desktop  # noqa: PLC0415 — circular
+    from galaius.server.capture import _capture_desktop  # noqa: PLC0415 — circular
 
     screenshot_bytes, report = await _capture_desktop(c.win, c.action.query, c.action.path)
     c.snapshots[c.step_idx] = screenshot_bytes
@@ -922,7 +926,7 @@ async def _d_screenshot(c: _DesktopCtx) -> None:
 
 @_handles("annotate")
 async def _d_annotate(c: _DesktopCtx) -> None:
-    from galaius.server import _annotate_desktop  # noqa: PLC0415 — circular
+    from galaius.server.capture import _annotate_desktop  # noqa: PLC0415 — circular
 
     _, report = await _annotate_desktop(c.win, c.action.query, invocation_id=c.invocation_id)
     c.snapshots[c.step_idx] = c.win.capture()
@@ -942,13 +946,10 @@ async def _run_actions_desktop(
     record_frames: list[bytes] | None = None,
     wait: str | None = None,
 ) -> str:
-    from galaius.server import (  # noqa: PLC0415 — circular: server imports dispatch
-        _annotate_desktop,
-        _capture_desktop,
-        _desktop_label,
-        _resolve_desktop_el,
-        _run_compare,
-    )
+    # circular: server imports dispatch
+    from galaius.server.capture import _capture_desktop  # noqa: PLC0415
+    from galaius.server.core import _desktop_label  # noqa: PLC0415
+    from galaius.server.vlm import _run_compare  # noqa: PLC0415
 
     wid = win.wid
     label = _desktop_label(win)
@@ -958,7 +959,7 @@ async def _run_actions_desktop(
     # `finally` below regardless of how the loop ends, never carried into a later run_actions call.
     cdp_slot = _CdpSlot(win)
 
-    from galaius.server.capture import _parse_wait_seconds
+    from galaius.server.capture import _parse_wait_seconds  # noqa: PLC0415 — circular: server imports dispatch
 
     def seconds_for(condition: str) -> float:
         seconds = _parse_wait_seconds(condition)
@@ -1076,17 +1077,10 @@ async def _run_actions_browser(
     invocation_id: str | None = None,
     record_frames: list[bytes] | None = None,
 ) -> str:
-    from galaius.server import (  # noqa: PLC0415 — circular: server imports dispatch
-        _annotate_and_describe,
-        _analyze,
-        _capture,
-        _element_screenshot,
-        _run_compare,
-        _save_to_path,
-        _saved_note,
-        _session_response,
-        _wait as _wait_fn,
-    )
+    # circular: server imports dispatch
+    from galaius.server.capture import _annotate_and_describe, _capture, _element_screenshot, _wait as _wait_fn  # noqa: PLC0415
+    from galaius.server.core import _save_to_path, _saved_note, _session_response  # noqa: PLC0415
+    from galaius.server.vlm import _analyze, _run_compare  # noqa: PLC0415
 
     current_tab = mgr.active_tab  # the tab the prior tab-less scan acted on, so its refs resolve (#34)
     page = await mgr.get_page(current_tab)

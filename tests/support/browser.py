@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from galaius.browser import BrowserManager
-from galaius.config import Config
+from galaius.config.settings import Config
 from galaius.state import InteractiveElement
 
 
@@ -41,7 +41,7 @@ def browser_manager(session_id: str = "default", **overrides) -> BrowserManager:
     real name so two managers land in two distinct `<base>/<session_id>` subdirs.
 
     A unique id per call was tried and reverted: it did not stop a foreign page appearing in
-    `_context.pages` (tests/test_tabs_and_refs.py, "Example" where the test opened "BBB") and it
+    `_context.pages` (tests/actions/test_tabs_and_refs.py, "Example" where the test opened "BBB") and it
     launches one browser per test, which on a loaded host cost a recording its video.
     """
     return BrowserManager(browser_config(**overrides), session_id)

@@ -15,7 +15,7 @@ from typing import Literal
 
 from playwright.async_api import async_playwright, Browser, BrowserContext, BrowserType, Page
 
-from galaius.config import LOG_MAXLEN, Config
+from galaius.config.settings import LOG_MAXLEN, Config
 from galaius.state import InteractiveElement
 from galaius.host.windowless import console_python
 

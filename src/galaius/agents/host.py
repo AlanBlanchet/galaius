@@ -44,7 +44,7 @@ from galaius.agents.transport.protocol import (
 )
 from galaius.agents.transport.base import CompactionUnsupported, _ConversationTransport
 from galaius.catalog.criteria import Variables
-from galaius.config import Config
+from galaius.config.settings import Config
 from galaius.prompts.cache import _PromptCache
 from galaius.prompts.client import _PromptClient
 from galaius.host.private_files import PRIVATE_FILES

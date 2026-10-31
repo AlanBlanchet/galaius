@@ -37,12 +37,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from galaius.account.caller import Caller
 from galaius.agents import registry as reg
 from galaius.agents.transport.events import AgentEvent, instant
-from galaius.agents.limits.providers import PROVIDERS, AgentProvider
+from galaius.agents.providers import PROVIDERS, AgentProvider
 from galaius.agents.limits.subscriptions import Subscription
 from galaius.agents.tool_gateway import CONVERSATION_TOOLS, FILE_READERS
 from galaius.host.file_lock import FILE_LOCK
 from galaius.machine.agents import MachineAgents
-from galaius.host.redaction import redact, secret_values
+from galaius.diagnostics.redaction import redact, secret_values
 
 logger = logging.getLogger(__name__)
 

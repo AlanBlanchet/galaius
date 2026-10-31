@@ -171,7 +171,7 @@ def _listable_tools(role: str, tools) -> list[str]:
     if not any(name.startswith(TOOL_PREFIX) for name in names):
         return names
     from galaius import __version__
-    from galaius.server import undispatchable_tools  # registers every tool on import
+    from galaius.server.core import undispatchable_tools  # registers every tool on import
 
     missing = undispatchable_tools(names)
     if missing:

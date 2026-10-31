@@ -71,7 +71,7 @@ test("a view that VS Code can dispose is never written to afterwards", () => {
      and that is exactly why the defect reached a live host. So the contract is pinned at the
      source: forget the view on disposal, and never paint one that is not visible. The roster view
      has always done both; this file only became disposable when it gained a `when`. */
-  const chat = readFileSync(join(import.meta.dirname, "chatView.ts"), "utf8");
+  const chat = readFileSync(join(import.meta.dirname, "conversation", "chatView.ts"), "utf8");
   assert.match(chat, /onDidDispose\(/,
     "chatView must forget a disposed view, or the next show() writes to a dead webview");
   assert.match(chat, /this\.view\s*=\s*undefined/,

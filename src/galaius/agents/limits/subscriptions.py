@@ -21,7 +21,7 @@ from galaius_core import LoginIdentity, Refused, SubscriptionChoice, Subscriptio
 from pydantic import BaseModel, ConfigDict
 
 from galaius.agents.limits import quota
-from galaius.agents.limits.providers import PROVIDERS, AgentProvider
+from galaius.agents.providers import PROVIDERS, AgentProvider
 from galaius.host.paths import UserPaths
 
 logger = logging.getLogger(__name__)

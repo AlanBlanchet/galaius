@@ -55,7 +55,7 @@ test("the workspace switcher is reachable from the panel's title bar", () => {
 
 test("every slash command in the chat invokes a command that exists", () => {
   // The chat menu is a second place a capability can be advertised and wired to nothing.
-  const { CHAT_COMMANDS } = require("../out/chatCommands.js");
+  const { CHAT_COMMANDS } = require("../out/conversation/chatCommands.js");
   const missing = CHAT_COMMANDS
     .map((c: { slash: string; command: string }) => c)
     .filter((c: { command: string }) => !registered.includes(c.command))
@@ -93,7 +93,7 @@ test("every command drawn with an icon is placed where a person can click it", (
   );
   // The chat's slash menu and the rail's action row are the two other places a command is wired
   // to something a person clicks or types.
-  for (const file of ["chatCommands.ts", "rail.ts"]) {
+  for (const file of ["conversation/chatCommands.ts", "view/rail.ts"]) {
     const src = readFileSync(join(here, file), "utf8");
     for (const m of src.matchAll(/command:\s*"([^"]+)"/g)) placed.add(m[1]);
   }

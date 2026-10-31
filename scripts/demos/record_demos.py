@@ -141,7 +141,7 @@ def demo_desktop(out: Path) -> None:
 
     A calculator is deliberately chosen: a reader knows instantly what the right answer is, so the
     clip proves the clicks landed rather than asking them to take the recording's word for it."""
-    from galaius.desktop import DesktopWindow
+    from galaius.desktop.window import DesktopWindow
     from galaius.desktop.nested import NestedBackend
 
     backend = NestedBackend(display=120, size="460x620")
@@ -232,7 +232,7 @@ def demo_browser(out: Path) -> None:
     The controls are the ordinary ones an agent meets — a filter that re-renders a list, a search
     box, a counter that changes — so the clip shows targeting and state-change reporting, not a
     scripted happy path."""
-    from galaius.actions import _run_actions_browser
+    from galaius.actions.dispatch import _run_actions_browser
     from galaius.actions.models import ClickAction, TypeTextAction
     from galaius.browser import BrowserManager
     from galaius.runtime import config

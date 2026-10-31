@@ -1,6 +1,6 @@
 """Register a run for the registry and messaging test suites.
 
-`test_agent_registry.py` and `test_agent_messaging.py` each carried their own `_record` factory
+`agents/test_agent_registry.py` and `agents/test_agent_messaging.py` each carried their own `_record` factory
 around `galaius.agents.registry.register`, with drifted defaults (the registry suite cared about
 `pid`/`cwd`, the messaging suite about `pid`/`agent`/`provider_session_id`) but the same shape.
 One typed factory covers both call sites; a caller only names what its scenario needs.
@@ -13,10 +13,12 @@ import sys
 import tempfile
 from pathlib import Path
 
+from galaius.agents import messaging
 from galaius.agents import registry as reg
+from galaius.agents.limits import agent_queue
 from galaius.agents import run as _run_module
 from galaius.agents.policy import Policy
-from galaius.agents.limits.providers import AgentProvider, ClaudeCodeProvider
+from galaius.agents.providers import AgentProvider, ClaudeCodeProvider
 from galaius.agents.catalog.relations import CARD_HEADING
 
 def said(prompt: str) -> str:
@@ -81,10 +83,10 @@ def install_provider(monkeypatch, provider: AgentProvider) -> None:
     """Register `provider` into the live `PROVIDERS` registry for the test's duration. A run's
     raw stream is parsed by the provider named on its record, looked up in that global registry,
     so a test double has to be registered exactly like a real provider is. Four files reached the
-    module via `__import__("galaius.agents.limits.providers", fromlist=["PROVIDERS"]).PROVIDERS` to
+    module via `__import__("galaius.agents.providers", fromlist=["PROVIDERS"]).PROVIDERS` to
     dodge a stale-binding import; `monkeypatch.setitem` on the module's own dict never goes stale,
     so a plain import serves every call site."""
-    from galaius.agents.limits.providers import PROVIDERS
+    from galaius.agents.providers import PROVIDERS
 
     monkeypatch.setitem(PROVIDERS, provider.name, provider)
 
@@ -117,3 +119,62 @@ def register_run(
         run_id=run_id, pid=pid, provider=provider, name=name, task=task, cwd=cwd,
         agent=agent, provider_session_id=provider_session_id, **rest,
     )
+
+
+class StreamProvider(ScriptedProvider):
+    """Emits two events then exits — the shape of a real stream, none of the cost."""
+
+    name = "fake"
+    script = (
+        'import json,sys\n'
+        'print(json.dumps({"type":"system","subtype":"init","cwd":"/tmp","tools":[],'
+        '"session_id":"SID"}), flush=True)\n'
+        'print(json.dumps({"type":"result","subtype":"success","is_error":False,'
+        '"total_cost_usd":0.5,"usage":{"output_tokens":7},"session_id":"SID"}), flush=True)\n'
+    )
+
+
+class QueueProvider(ScriptedProvider):
+    """Resumable provider whose resumed turn prints one reply and exits; records each message."""
+
+    name = "queue-fake"
+    can_resume = True
+
+    def __init__(self, script: str | None = None):
+        self.script = script or (
+            "import json; "
+            "print(json.dumps({'type':'assistant','session_id':'vendor',"
+            "'message':{'content':[{'type':'text','text':'reply'}]}})); "
+            "print(json.dumps({'type':'result','is_error':False,'session_id':'vendor'}))"
+        )
+        self.messages: list[str] = []
+
+    def command(self, *args, **kwargs):
+        return [sys.executable, "-c", "pass"]
+
+    def resume_command(self, session_id, message, **kwargs):
+        self.messages.append(said(message))
+        return [sys.executable, "-c", self.script]
+
+    def valid_definition(self, agent):
+        return True
+
+    def permission_modes(self):
+        return []
+
+
+def setup_queue(monkeypatch, provider=None):
+    """Run `r1` registered against `provider`, the queue dispatcher stubbed to in-process delivery."""
+    provider = provider or QueueProvider()
+    install_provider(monkeypatch, provider)
+    monkeypatch.setattr(messaging, "provider_for", lambda _: provider)
+    use_policy(monkeypatch, messaging, agents={"tester": "queue-model"}, providers={provider.name: True})
+    # Delivery tests run the same dispatcher entry point in-process. The child process itself is
+    # still real: launch_continuation uses Popen and its reaper owns waitpid/finish.
+    monkeypatch.setattr(agent_queue, "ensure_dispatcher_locked", lambda *args, **kwargs: 1)
+    monkeypatch.setattr(agent_queue, "RESUME_BACKOFF", (0.01, 0.02))
+    reg.register(
+        run_id="r1", pid=999999, provider=provider.name, name="worker", task="t",
+        agent="tester", provider_session_id="vendor",
+    )
+    return provider

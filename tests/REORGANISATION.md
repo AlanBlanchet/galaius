@@ -107,7 +107,7 @@ of the 55 hand-written `setenv("HOME")` lines), `reset_model_registry`, `http_or
 ### Two production bugs found on the way
 
 - `registry._write` merged a run with `run.model_dump()` (Python objects) then `json.dumps()`,
-  which raises on `agent_ref`'s UUIDs. Four `test_agent_catalog.py` tests had been failing on it.
+  which raises on `agent_ref`'s UUIDs. Four `agents/catalog/test_agent_catalog.py` tests had been failing on it.
 - The launcher's quota fall-through did not work: it only ran when no provider was named, its
   refusal pattern matched the healthy `rate_limit ... allowed` line, a second candidate of the
   same vendor reused the dead child's session id, and nothing remembered the refusal. See

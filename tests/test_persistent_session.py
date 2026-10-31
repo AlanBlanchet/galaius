@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from galaius.browser import BrowserManager, SessionRegistry
-from galaius.config import Config
+from galaius.config.settings import Config
 from tests.support import browser_config, browser_manager
 
 

@@ -28,7 +28,7 @@ import tempfile
 from collections.abc import Callable, Iterable
 from typing import BinaryIO, ClassVar, Mapping, Sequence
 from galaius.account.caller import Caller
-from galaius.config import Config
+from galaius.config.settings import Config
 from galaius_core import IMAGE_TYPES, AgentRefusal, AgentRefusalCode, AgentRevisionRef, Coded, LaunchSkipReason, PassedOverCandidate, ReasoningLevel, SubscriptionCap, SubscriptionChoices
 from pydantic import BaseModel, ConfigDict
 
@@ -48,7 +48,7 @@ from galaius.isolation.fence import FenceSpec, fenced
 from galaius.host.processes import process_group_options, spawnable
 from galaius.agents.policy import Policy, policy_path
 from galaius.agents.catalog.profiles import overlay_for, profiles_from
-from galaius.agents.limits.providers import PROVIDERS, AgentProvider, ClaudeTurnSettings, UnsupportedToolPolicy, fits_argv, validate_denied_tools, _safe_process_detail
+from galaius.agents.providers import PROVIDERS, AgentProvider, ClaudeTurnSettings, UnsupportedToolPolicy, fits_argv, validate_denied_tools, _safe_process_detail
 from galaius.agents.catalog.vocabulary import TouchScope
 from galaius.agents.limits.subscriptions import RunSubscription, Subscription, SubscriptionCapped, SubscriptionRefused
 from galaius.agents.limits.warm import WarmStart

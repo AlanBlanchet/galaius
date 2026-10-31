@@ -9,7 +9,7 @@ from galaius.agents.transport.codex import _CodexTransport
 from galaius.agents.transport.completion import _CompletionTransport
 from galaius.agents.policy import Policy, PolicyError
 from galaius.agents.transport.protocol import ConversationRoute, RouteAvailability
-from galaius.agents.limits.providers import CodexProvider, provider_for
+from galaius.agents.providers import CodexProvider, provider_for
 from galaius.agents.registry import AgentRun
 from galaius.agents.transport.base import _ConversationTransport
 from galaius.models import Model, ModelCapability

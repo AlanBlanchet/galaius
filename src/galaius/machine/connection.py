@@ -40,23 +40,23 @@ from galaius.agents.limits.subscriptions import Subscription
 from galaius.agents.catalog.entries import AgentCatalog
 from galaius.agents.catalog.connection import CatalogConnection
 from galaius.cli.prompts import PromptMode
-from galaius.agents.limits import providers as agent_providers
+from galaius.agents import providers as agent_providers
 from galaius.host.file_lock import exclusive
 from galaius.host.private_files import PRIVATE_FILES
 from galaius.account.tls import server_tls
 from galaius.account.address import ServerAddress
 from galaius.diagnostics.error_reports import MachineErrorReports
-from galaius.machine.places import PlaceDesk
+from galaius.machine.places.places import PlaceDesk
 from galaius.machine.agents import AgentSpawns, LogRing, MachineAgents, MachineSessions, WebRuns
-from galaius.host.redaction import redact, secret_values
+from galaius.diagnostics.redaction import redact, secret_values
 from galaius.machine.programs import AgentPrograms
-from galaius.machine.workspaces import MachineWorkspaces, WorkspaceJobs
+from galaius.machine.projects.workspaces import MachineWorkspaces, WorkspaceJobs
 from galaius_core.sealing import SecretsSeal
 from galaius_core.wire import fitted, internals, readable
 from galaius.agents.transport.events import AgentEvent
 from galaius.agents.turns.handback import EndWatch, SilenceWatch
 from galaius.agents.turns.reviews import TurnReviewWatch
-from galaius.config import Config
+from galaius.config.settings import Config
 from galaius.agents.run import load_policy, run_agent
 from galaius.agents.turns.followup import FollowUps
 from galaius.agents.limits.warm import WarmStart
@@ -75,9 +75,9 @@ from galaius.upgrade.quiet import QuietPoint, UpgradeReady
 from galaius.upgrade.store import RuntimeStore
 from galaius.host.pinned_directory import PinnedDirectory
 from galaius.isolation.fence import EGRESS, FenceSpec, available
-from galaius.machine.levels import BrowseBudget, IN_PLACE_WRITES, INSTRUCTION_NAMES, LEVEL_RANK, PlaceMap, split
-from galaius.machine.place_reviews import PlaceReviews, write_plain
-from galaius.machine.workspace_copy import WorkspaceTransfers
+from galaius.machine.places.levels import BrowseBudget, IN_PLACE_WRITES, INSTRUCTION_NAMES, LEVEL_RANK, PlaceMap, split
+from galaius.machine.places.place_reviews import PlaceReviews, write_plain
+from galaius.machine.projects.workspace_copy import WorkspaceTransfers
 from galaius_core import AgentRefused
 from galaius.host.windowless import console_python
 
@@ -93,7 +93,7 @@ class MachineConfig(MachineAgentSettings):
     token: SecretStr = Field(min_length=32, max_length=256)
     permission_ceiling: PermissionLevel
     working_directory: Path
-    #: Levels per folder (relative to `working_directory`; `galaius.machine.levels`): what workflows, the
+    #: Levels per folder (relative to `working_directory`; `galaius.machine.places.levels`): what workflows, the
     #: Data screen and agents may do there. Set HERE by the owner (`galaius machine places`), or
     #: from the web, at once either way: the web never opens the home folder itself, anything
     #: outside it, a hidden name or a credential store (`PlaceMap.web_refusal`). A folder not named is hidden.
@@ -568,7 +568,7 @@ class CommandFiles(MachineFiles):
     server into `<working directory>/.galaius/transfers/<run>/` and handed to the step as a local
     path; a file op reads or writes one file INSIDE a folder whose level allows it
     (`MachineConfig.places`; a `write_on_review` folder receives the write in a staging copy the
-    owner accepts on the machine, `galaius.machine.place_reviews`). Every byte crosses the server over HTTP with this machine's own
+    owner accepts on the machine, `galaius.machine.places.place_reviews`). Every byte crosses the server over HTTP with this machine's own
     token, scoped to this command while it is in flight (`MachineCommand.input_file_path` /
     `upload_path`), its sha256 checked on arrival; every file op is logged locally."""
 

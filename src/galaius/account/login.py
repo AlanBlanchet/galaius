@@ -43,7 +43,7 @@ from galaius.prompts.heads import ServerPrompts
 from galaius.machine.service import MACHINE_SERVICE, ServiceUnavailable
 from galaius.machine.connection import MachineConfig, MachineRunner
 from galaius.account.address import ServerAddress, ServerAddressError
-from galaius.machine.workspaces import unusable
+from galaius.machine.projects.workspaces import unusable
 from galaius.host.paths import UserPaths
 from galaius.host.private_files import PRIVATE_FILES
 from galaius.host.processes import process_started

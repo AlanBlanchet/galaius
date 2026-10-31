@@ -24,12 +24,12 @@ import jsonschema
 from jsonschema.exceptions import SchemaError, ValidationError
 from pydantic import BaseModel
 
-from galaius.agents.limits.providers import (
+from galaius.agents.providers import (
     MEDIA_PROVIDERS,
     _MediaProcessFailure,
     _MediaSessionProvider,
 )
-from galaius.config import Config
+from galaius.config.settings import Config
 from galaius.models import Model
 from galaius.host.private_files import PRIVATE_FILES
 from galaius.host.processes import run_isolated_process

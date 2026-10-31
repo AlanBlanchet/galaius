@@ -22,7 +22,7 @@ from galaius_core import StopActor
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from galaius.hooks import session_stop as session_stop_hook
-from galaius.agents.limits.providers import PROVIDERS
+from galaius.agents.providers import PROVIDERS
 from galaius.host.paths import UserPaths
 from galaius.host.private_files import PRIVATE_FILES
 

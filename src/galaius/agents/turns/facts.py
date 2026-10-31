@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from galaius.agents.limits.providers import PROVIDERS
+from galaius.agents.providers import PROVIDERS
 from galaius.config.settings import TurnFacts
 
 #: A build tag's leading time (`20261022T134400Z-e079498`), stamped when its deploy started.

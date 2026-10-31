@@ -28,7 +28,7 @@ from galaius.agents.limits import agent_queue
 from galaius.agents import registry as reg
 from galaius.agents.transport.events import stream_lines
 from galaius.agents.messaging import Delivery, policy_for_continuation, queue_message, start_dispatcher
-from galaius.agents.limits.providers import provider_for
+from galaius.agents.providers import provider_for
 from galaius.agents.run import ResumeLaunch, mirror_while_alive, record_turn_stderr
 from galaius.agents.limits.warm import WarmStart, end_waiting
 

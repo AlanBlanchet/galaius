@@ -48,7 +48,7 @@ from galaius.agents.transport.events import (
 from galaius.agents.catalog.connection import CatalogConnection
 from galaius.account.caller import Caller
 from galaius.agents.limits.ceiling import contained, end_run_scope, is_run_scope
-from galaius.agents.limits.providers import PROVIDERS, AgentProvider, DeniedTool
+from galaius.agents.providers import PROVIDERS, AgentProvider, DeniedTool
 from galaius.agents.limits.subscriptions import RunSubscription, Subscription, SubscriptionRefused
 from galaius.agents.catalog.community import CommunityAgent
 from galaius.isolation.fence import FenceSpec
@@ -2261,7 +2261,7 @@ def _reader_code() -> str:
     """Fingerprint of the code turning a run's streams into events and a digest: a release that
     reads streams differently re-derives every run once (and rewrites the panel's mirror)."""
     from galaius.agents.transport import events
-    from galaius.agents.limits import providers
+    from galaius.agents import providers
 
     code = hashlib.sha256()
     for module in (events, providers):

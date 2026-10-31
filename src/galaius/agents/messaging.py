@@ -21,7 +21,7 @@ from galaius.agents import registry as reg
 from galaius.agents.catalog.connection import CatalogOffline
 from galaius.agents.transport.events import Relation
 from galaius.agents.policy import PolicyError
-from galaius.agents.limits.providers import AgentProvider, provider_for
+from galaius.agents.providers import AgentProvider, provider_for
 from galaius.agents.run import ModelUnavailable, load_policy, resolve_continuable_model
 from galaius.agents.catalog.connection import RoleAbsent
 

@@ -11,10 +11,10 @@
  *  empty footprint with an arrow to where they went. Nothing is drawn between rooms: at fifteen
  *  workers a wire per relationship is the node graph this view exists to not be.
  */
-import { reportsOf } from "../../src/team";
+import { reportsOf } from "../../src/team/team";
 import { assignAccents, atSeconds } from "./palette";
 import { isHeld } from "./status";
-import type { TeamState, Worker, ZoneId } from "../../src/team";
+import type { TeamState, Worker, ZoneId } from "../../src/team/team";
 
 /** Floors, top to bottom. The ground floor is the one with the door, so the rooms a worker is
  *  sent to are upstairs and the way out is at the bottom — the building reads as a route. */

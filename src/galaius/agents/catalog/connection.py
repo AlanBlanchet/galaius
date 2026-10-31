@@ -136,7 +136,7 @@ class CatalogConnection(BaseModel):
     def path(cls) -> Path:
         # Circular layers: config.settings imports agents.providers for MEDIA_PROVIDERS;
         # providers imports catalog_connection for server-backed role discovery.
-        from galaius.config import UserConfig
+        from galaius.config.user import UserConfig
 
         return UserConfig.PATH.parent / "agent-catalog-connection.json"
 

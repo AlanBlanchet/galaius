@@ -1,0 +1,1298 @@
+"""Provider adapters for the agent CLIs galaius supervises.
+
+Parsing is pinned against a synthetic stream (`tests/fixtures/agents/claude_stream.jsonl`) shaped
+exactly like `claude -p --output-format stream-json` output — same event types, same field names,
+same nesting — with all content replaced by neutral placeholders so no real session data ships in
+the repo.
+
+The legal line these tests also encode: galaius builds an argv and reads stdout. It never reads,
+stores or forwards a credential — the CLI authenticates itself with the user's own login.
+"""
+
+import json
+import shutil
+import subprocess
+import sys
+import tomllib
+from pathlib import Path
+
+import pytest
+from galaius_core import ContextGauge
+
+from galaius.agents.transport.events import TOKEN_FIELDS, AgentEvent, UsageLedger
+from galaius.agents.providers import (
+    PROJECT_SETTINGS_OFF,
+    PROVIDERS, ClaudeCodeProvider, CodexProvider, UnsupportedToolPolicy, provider_for,
+)
+from galaius.models import Model
+from galaius.agents.registry import StreamDigest, participant_environment
+from galaius.host.processes import NpmShim, spawnable
+from tests.support.paths import TESTS
+
+
+@pytest.mark.parametrize("resume", [False, True])
+def test_claude_role_tools_and_denials_are_available_tool_restrictions_on_every_turn(resume):
+    provider = ClaudeCodeProvider()
+    options = dict(model="fixture-model", agent="visual-critic", agent_prompt="Pinned role instructions",
+                   allowed_tools=["Read", "Bash", "mcp__galaius__screenshot", "mcp__galaius__report_issue"],
+                   denied_tools=("mcp__galaius__report_issue",))
+    command = provider.resume_command("fixture-session", "Review", **options) if resume else provider.command(
+        "Review", cwd="/tmp", mcp_config=None, run_id="fixture-run", **options)
+    definition = json.loads(command[command.index("--agents") + 1])["visual-critic"]
+    assert definition["prompt"] == "Pinned role instructions"
+    assert definition["tools"] == options["allowed_tools"]
+    assert command[command.index("--agent") + 1] == "visual-critic"
+    assert command[command.index("--disallowedTools") + 1] == "mcp__galaius__report_issue"
+    assert "--allowedTools" not in command
+    assert "--permission-mode" not in command
+
+
+def test_denied_tool_names_cannot_inject_flags_or_unverified_patterns():
+    provider = ClaudeCodeProvider()
+    for tool in ("--permission-mode", "Bash(git *)", "mcp__*", "Read,Write", "Read\nWrite"):
+        with pytest.raises(ValueError, match="tool"):
+            provider.command("t", cwd="/tmp", model=None, mcp_config=None, run_id="x", denied_tools=(tool,))
+
+
+@pytest.mark.parametrize("provider_type", [ClaudeCodeProvider, CodexProvider])
+def test_role_definition_rejects_malformed_frontmatter_and_unsafe_names(provider_type, monkeypatch, tmp_path):
+    provider = provider_type()
+    path = tmp_path / "role.md"
+    path.write_text("---\nname: fixture\n")
+    monkeypatch.setattr(provider, "definition_path", lambda agent: path)
+    with pytest.raises(ValueError, match="frontmatter"):
+        provider.definition_prompt("fixture")
+    with pytest.raises(ValueError, match="name"):
+        provider.definition_prompt("../fixture")
+    path.write_text("---\nname: fixture\n---\nRole instructions")
+    assert provider.definition_prompt("fixture") == "Role instructions"
+    path.write_text("Role instructions")
+    assert provider.definition_prompt("fixture") == "Role instructions"
+
+
+def test_codex_auth_status_requires_an_affirmative_login_message():
+    provider = CodexProvider()
+    assert provider.accepts_any_auth("", "Logged in using ChatGPT")
+    assert provider.accepts_any_auth("Logged in using an API key", "")
+    assert provider.accepts_any_auth("", "WARNING: proceeding\nLogged in using ChatGPT")
+    for status in ("logged in: false", "Not logged in", "Login failed", ""):
+        assert not provider.accepts_any_auth(status, "")
+
+
+def _claude_status(folder: str, email: str = "owner@example.com", org: str = "00000000-0000-4000-8000-000000000001", plan: str = "max") -> str:
+    """`claude auth status` as 2.1.288 prints it (shape read 2026-10-30)."""
+    return json.dumps({"loggedIn": True, "authMethod": "claude.ai", "apiProvider": "firstParty", "analyticsDisabled": False,
+                       "projectsDirectory": f"{folder}/projects", "configDirectory": folder, "email": email, "orgId": org,
+                       "orgName": f"{email}'s Organization", "subscriptionType": plan}, indent=2)
+
+
+@pytest.mark.parametrize(("other", "same"), [
+    (_claude_status("~/.galaius/subscriptions/0a1b2c3d"), True),   # his account in a subscription's folder
+    (_claude_status("~/.claude", plan="pro"), True),                # a plan change: the same account
+    (_claude_status("~/.claude", email="second@example.com"), False),
+    (_claude_status("~/.claude", org="00000000-0000-4000-8000-000000000002"), False),
+])
+def test_claude_login_is_its_account_never_the_folder_it_is_kept_in(other: str, same: bool):
+    """Owner 2026-10-30 « I wanted to connect a second … account »: one account signed in in two folders is one login."""
+    provider = ClaudeCodeProvider()
+    assert (provider.login_identity(_claude_status("~/.claude"), "") == provider.login_identity(other, "")) is same
+
+
+def _codex_account(email: str = "owner@example.com", plan: str = "free") -> dict:
+    """Codex 0.155.1's `account/read` answer (shape probed 2026-10-30)."""
+    return {"id": 2, "result": {"account": {"type": "chatgpt", "email": email, "planType": plan}, "requiresOpenaiAuth": True}}
+
+
+@pytest.mark.parametrize(("other", "same"), [
+    (_codex_account(plan="plus"), True),                 # a plan change: the same account
+    (_codex_account(email="second@example.com"), False),  # « Logged in using ChatGPT » for both, yet another account
+])
+def test_codex_login_is_its_chatgpt_account(other: dict, same: bool):
+    provider = CodexProvider()
+    first = provider.account_answer(_codex_account())
+    assert first[0] == "owner@example.com"
+    assert (first[1] == provider.account_answer(other)[1]) is same
+    assert provider.account_answer({"id": 2, "error": {"code": -32601, "message": "method not found"}}) == ("", "")  # older CLI: its status names it
+    assert provider.account_answer({"id": 2, "result": {"account": {"type": "apiKey"}}}) == ("", "")  # API keys: its status line tells them apart
+    assert provider.account_answer({"id": 1, "result": {}}) is None
+
+
+def test_codex_command_uses_the_effort_resolved_by_the_launcher():
+    command = CodexProvider().command(
+        "Reply once", cwd="/tmp", model="fixture-model", mcp_config=None,
+        run_id="fixture-run", reasoning="medium",
+    )
+    assert 'model_reasoning_effort="medium"' in command
+
+
+def test_codex_command_honors_the_requested_write_scope():
+    provider = CodexProvider()
+    command = provider.command(
+        "Edit the assigned file", cwd="/tmp", model="fixture-model", mcp_config=None,
+        run_id="fixture-run", permission_mode="acceptEdits",
+    )
+    assert command[command.index("--sandbox") + 1] == "workspace-write"
+    with pytest.raises(ValueError, match="not a permission intent"):
+        provider.command(
+            "Edit the assigned file", cwd="/tmp", model="fixture-model", mcp_config=None,
+            run_id="fixture-run", permission_mode="invented-mode",
+        )
+
+
+def test_shared_workspace_write_intent_maps_to_each_harness():
+    """The local default names the capability, not one vendor's flag spelling."""
+    assert ClaudeCodeProvider().provider_permission_mode("workspace_write") == "acceptEdits"
+    assert CodexProvider().provider_permission_mode("workspace_write") == "workspace-write"
+
+
+def test_native_claude_model_id_uses_cli_version_spelling_without_a_model_pin():
+    provider = ClaudeCodeProvider()
+    model = Model(
+        provider="anthropic", id="claude-opus-9.9", capabilities=set(),
+    )
+    assert provider.model_id_for(model) == "claude-opus-9-9"
+
+
+@pytest.mark.parametrize("off", [False, True])
+def test_claude_loads_no_folder_settings_where_they_must_not_load(monkeypatch: pytest.MonkeyPatch, off: bool) -> None:
+    """A workspace cloned from the web: its own hooks and permission rules never load, on a start or a resume."""
+    if off:
+        monkeypatch.setenv(PROJECT_SETTINGS_OFF, "1")
+    provider = ClaudeCodeProvider()
+    for argv in (provider.command("t", cwd="/tmp", model=None, mcp_config=None, run_id="r"), provider.resume_command("r", "next")):
+        assert (argv[argv.index("--setting-sources") + 1] == "user") if off else "--setting-sources" not in argv
+        assert argv[-2:] in (["--", "t"], ["--", "next"])
+    codex = CodexProvider()
+    for build in (lambda: codex.command("t", cwd="/tmp", model=None, mcp_config=None, run_id="r"), lambda: codex.resume_command("r", "next")):
+        if off:
+            with pytest.raises(UnsupportedToolPolicy, match="cannot run in a workspace cloned from the web"):
+                build()
+        else:
+            build()
+
+
+@pytest.mark.parametrize("subcommand", [("exec",), ("exec", "resume")])
+def test_codex_runs_in_a_folder_that_is_not_a_git_repository(subcommand: tuple[str, ...]) -> None:
+    """Codex refuses a non-git folder unless told otherwise; galaius already chose the folder."""
+    codex = CodexProvider()
+    argv = (codex.command("t", cwd="/tmp", model=None, mcp_config=None, run_id="r") if subcommand == ("exec",)
+            else codex.resume_command("r", "next"))
+    assert "--skip-git-repo-check" in argv[:argv.index("--")]
+    if installed := shutil.which("codex"):
+        help_text = subprocess.run([installed, *subcommand, "--help"], capture_output=True, text=True, timeout=10).stdout
+        assert "--skip-git-repo-check" in help_text
+
+
+def test_codex_uses_only_documented_approval_flags():
+    provider = CodexProvider()
+    plan = provider.command("t", cwd="/tmp", model=None, mcp_config=None, run_id="r", permission_mode="plan")
+    auto = provider.command("t", cwd="/tmp", model=None, mcp_config=None, run_id="r", permission_mode="auto")
+    assert "--ask-for-approval" not in plan and "--ask-for-approval" not in auto
+    assert "--approve-for-me" in auto
+
+
+@pytest.mark.parametrize(
+    ("intent", "claude_mode", "codex_sandbox"),
+    [
+        ("plan", "plan", "read-only"),
+        ("manual", "manual", "read-only"),
+        ("auto", "auto", "workspace-write"),
+        ("acceptEdits", "acceptEdits", "workspace-write"),
+        ("dontAsk", "dontAsk", "workspace-write"),
+        ("bypassPermissions", "bypassPermissions", "workspace-write"),
+    ],
+)
+def test_shared_permission_intents_translate_for_each_provider(
+    intent, claude_mode, codex_sandbox,
+):
+    claude = ClaudeCodeProvider().command(
+        "t", cwd="/tmp", model=None, mcp_config=None, run_id="r",
+        permission_mode=intent,
+    )
+    codex = CodexProvider().command(
+        "t", cwd="/tmp", model=None, mcp_config=None, run_id="r",
+        permission_mode=intent,
+    )
+    assert claude[claude.index("--permission-mode") + 1] == claude_mode
+    assert codex[codex.index("--sandbox") + 1] == codex_sandbox
+
+
+@pytest.mark.parametrize("resume", [False, True])
+def test_codex_projects_mesh_without_changing_permissions(resume):
+    provider = CodexProvider()
+    config = json.dumps({"mcpServers": {"galaius": {
+        "command": '/fixture path/\U00010400/galaius', "args": ["mcp", 'quoted"arg'],
+        "env": {"GALAIUS_PARENT_RUN_ID": "fixture-run"},
+    }}})
+    # A pure-read role: no write, no network tool named, so no extra `-c` table beyond the mesh's
+    # own two — isolates "does the mesh smuggle permission flags" from the sandbox-mapping tests.
+    kwargs = dict(allowed_tools=["Read"])
+    if resume:
+        argv = provider.resume_command("thread", "continue", mcp_config=config, **kwargs)
+    else:
+        argv = provider.command("read", cwd=".", model=None, mcp_config=config, run_id="fixture-run", **kwargs)
+    overrides = [argv[i + 1] for i, value in enumerate(argv) if value == "-c"]
+    data = tomllib.loads("\n".join(overrides))
+    assert data["mcp_servers"]["galaius"] == {**json.loads(config)["mcpServers"]["galaius"], "default_tools_approval_mode": "approve"}
+    # Beside the mesh only the system's own table (Windows: the sandbox Codex runs in).
+    platform = tomllib.loads("\n".join(CodexProvider.platform_flags()[1::2]))
+    # A resumed turn names its scope again, from the same policy (read-only for this role), never the saved one.
+    assert set(data) == {"features", "mcp_servers", *platform, *(("sandbox_mode",) if resume else ())}
+    assert data.get("sandbox_mode", "read-only") == "read-only"
+
+
+# --- Mapping a role's NATIVE tool policy onto codex's OWN mechanisms -------------------------
+#
+# Codex has no per-name flag for a native tool, but it is not toothless: `--sandbox` genuinely
+# blocks a write (apply_patch AND shell `>`/`rm`/... alike — verified live 2026-09-22, both fail
+# at the OS level under `-s read-only`, only the OS-vs-approval error text differs), and
+# `-c features.shell_tool=false` genuinely removes the shell tool from the model's toolset
+# (codex-rs 0.155.1 `tools/spec_plan.rs` L969-973). A role's allow-list is read as INTENT and
+# translated: Read/Grep/Glob need nothing (reads are never gated); Write/Edit need
+# workspace-write; Bash needs the shell tool kept; WebFetch/WebSearch need local network, which
+# codex only documents a toggle for under workspace-write — the one combination (network without
+# write) that has no clean equivalent and still falls back to the coarse opt-in, named concretely.
+
+@pytest.mark.parametrize("allowed,expected_sandbox,shell_disabled,network_on", [
+    ([], "workspace-write", False, True),                                          # no restriction at all
+    (["Read", "Grep", "Glob"], "read-only", True, False),                          # pure read: no reason for a shell
+    (["Read", "Grep", "Glob", "Bash"], "read-only", False, False),                 # read-only critic
+    (["Read", "Write", "Edit"], "workspace-write", True, False),                   # writes, no shell (e.g. teacher)
+    # A builder runs dev servers, test suites and the galaius launcher through its shell, and
+    # codex's sandbox cannot tell loopback from the internet: without the toggle a builder
+    # cannot even bind 127.0.0.1 (live: PermissionError: [Errno 1] Operation not permitted).
+    (["Read", "Bash", "Write", "Edit"], "workspace-write", False, True),           # builder
+    (["Read", "Bash", "Write", "Edit", "WebFetch", "WebSearch"], "workspace-write", False, True),  # builder + network
+    (["Agent", "SendMessage", "ListAgents"], "read-only", True, False),            # Claude-only orchestration names
+])
+def test_codex_maps_native_tool_policy_onto_sandbox_and_feature_flags(allowed, expected_sandbox, shell_disabled, network_on):
+    provider = CodexProvider()
+    argv = provider.command("read", cwd=".", model=None, mcp_config=None,
+                            run_id="fixture-run", allowed_tools=allowed)
+    assert argv[argv.index("--sandbox") + 1] == expected_sandbox
+    assert (argv.count("--disable") > 0 and "shell_tool" in argv) is shell_disabled
+    assert ("sandbox_workspace_write.network_access=true" in " ".join(argv)) is network_on
+
+
+def test_codex_denied_write_narrows_an_unrestricted_roles_sandbox():
+    """`denied_tools` subtracts even when nothing was explicitly allowed — it only narrows,
+    matching `agent_spawn`'s own contract ('never grants permissions')."""
+    provider = CodexProvider()
+    argv = provider.command("read", cwd=".", model=None, mcp_config=None,
+                            run_id="fixture-run", denied_tools=("Write", "Edit"))
+    assert argv[argv.index("--sandbox") + 1] == "read-only"
+
+
+@pytest.mark.parametrize("resume", [False, True])
+def test_codex_network_without_write_has_no_documented_sandbox_equivalent(resume):
+    """The one genuine gap: codex documents a network toggle only under workspace-write, so a
+    role wanting WebFetch/WebSearch but no filesystem write has no exact codex mapping — refused,
+    naming the combination, until the operator accepts the coarser (workspace-write) substitute."""
+    provider = CodexProvider()
+    kwargs = dict(allowed_tools=["Read", "WebFetch"])
+    with pytest.raises(UnsupportedToolPolicy, match="network"):
+        if resume:
+            provider.resume_command("thread", "continue", **kwargs)
+        else:
+            provider.command("read", cwd=".", model=None, mcp_config=None, run_id="fixture-run", **kwargs)
+    if resume:
+        argv = provider.resume_command("thread", "continue", coarse_accepted=True, **kwargs)
+    else:
+        argv = provider.command("read", cwd=".", model=None, mcp_config=None,
+                                run_id="fixture-run", coarse_accepted=True, **kwargs)
+    assert "sandbox_workspace_write.network_access=true" in " ".join(argv)
+
+
+@pytest.mark.parametrize("resume", [False, True])
+def test_codex_needs_no_coarse_acceptance_for_its_own_mcp_tools(resume):
+    """Unlike native tools, `mcp__galaius__*` names ARE fully expressible — no tradeoff, no
+    opt-in, because nothing is left unenforced."""
+    provider = CodexProvider()
+    kwargs = dict(allowed_tools=["mcp__galaius__screenshot", "mcp__galaius__run_actions"],
+                  denied_tools=("mcp__galaius__report_issue",))
+    if resume:
+        argv = provider.resume_command("thread", "continue", **kwargs)
+    else:
+        argv = provider.command("read", cwd=".", model=None, mcp_config=None, run_id="fixture-run", **kwargs)
+    joined = " ".join(argv)
+    assert 'mcp_servers.galaius.enabled_tools=["run_actions", "screenshot"]' in joined
+    assert 'mcp_servers.galaius.disabled_tools=["report_issue"]' in joined
+
+
+@pytest.mark.parametrize("resume", [False, True])
+def test_codex_mixed_native_and_mcp_tools_needs_acceptance_but_still_enforces_the_mcp_half(resume):
+    """A role naming BOTH an mcp tool and a GENUINELY unmapped native one (no sandbox / feature
+    flag speaks to it at all) is refused for the native remainder alone — never blamed on the mcp
+    name it already covers, and never on a native name (Bash, Write, ...) codex CAN map; once
+    accepted, the mcp restriction still applies exactly."""
+    provider = CodexProvider()
+    kwargs = dict(allowed_tools=["NotebookEdit", "mcp__galaius__screenshot"])
+    with pytest.raises(UnsupportedToolPolicy) as excinfo:
+        if resume:
+            provider.resume_command("thread", "continue", **kwargs)
+        else:
+            provider.command("read", cwd=".", model=None, mcp_config=None, run_id="fixture-run", **kwargs)
+    assert "NotebookEdit" in str(excinfo.value) and "screenshot" not in str(excinfo.value)
+    if resume:
+        argv = provider.resume_command("thread", "continue", coarse_accepted=True, **kwargs)
+    else:
+        argv = provider.command("read", cwd=".", model=None, mcp_config=None,
+                                run_id="fixture-run", coarse_accepted=True, **kwargs)
+    assert 'mcp_servers.galaius.enabled_tools=["screenshot"]' in " ".join(argv)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("env", {"GALAIUS_PARENT_RUN_ID": "fixture-run", "TOKEN": "leak"}),
+    ("enabled", True), ("command", ""), ("args", [42]),
+])
+def test_codex_mesh_rejects_extra_fields_and_invalid_values_without_echoing_them(field, value):
+    server = {"command": "fixture-galaius", "args": ["mcp"],
+              "env": {"GALAIUS_PARENT_RUN_ID": "fixture-run"}, field: value}
+    with pytest.raises(ValueError, match="^Invalid credential-free Codex mesh configuration$"):
+        CodexProvider.mesh_arguments(json.dumps({"mcpServers": {"galaius": server}}))
+
+
+def test_codex_image_support_is_verified_from_installed_help(monkeypatch):
+    provider = CodexProvider()
+    monkeypatch.setattr(provider, "executable", lambda: "/usr/bin/codex")
+
+    class _Help:
+        returncode = 0
+        stdout = "  -i, --image <FILE>...  Optional image(s)"
+
+    monkeypatch.setattr("galaius.agents.providers.subprocess.run", lambda *a, **k: _Help())
+    assert provider.image_attachment_support() is True
+
+    _Help.stdout = "  -m, --model <MODEL>"
+    assert provider.image_attachment_support() is False
+
+
+def test_codex_command_emits_one_image_flag_per_attachment(monkeypatch, tmp_path):
+    provider = CodexProvider()
+    monkeypatch.setattr(provider, "image_attachment_support", lambda: True)
+    first = tmp_path / "first.png"
+    second = tmp_path / "second.webp"
+    command = provider.command(
+        "Inspect", cwd="/tmp", model="fixture-model", mcp_config=None,
+        run_id="fixture-run", image_paths=(first, second),
+    )
+    assert command[-5:] == ["--image", str(first), str(second), "--", "Inspect"]
+
+
+def test_a_stdin_image_provider_refuses_images_on_its_command_line(tmp_path):
+    # Claude Code takes a shown image in its stdin message (`task_message`); asked for one on its command
+    # line it refuses, so a launch that cannot carry the image never starts without it.
+    image = tmp_path / "screen.png"
+    image.write_bytes(b"png")
+    assert ClaudeCodeProvider().image_attachment_support() is True
+    with pytest.raises(ValueError, match="not on its command line"):
+        ClaudeCodeProvider().command(
+            "Inspect", cwd="/tmp", model="fixture-model", mcp_config=None,
+            run_id="fixture-run", image_paths=(image,),
+        )
+
+
+def test_codex_failed_command_is_a_tool_result_not_a_terminal_agent_failure():
+    event = CodexProvider().parse(json.dumps({
+        "type": "item.completed", "item": {
+            "id": "item_6", "type": "command_execution", "command": "pytest",
+            "aggregated_output": "1 failed", "exit_code": 1, "status": "completed",
+        },
+    }))
+    assert event is not None
+    assert event.kind == "tool_result" and event.status == "failed"
+    assert event.tool_id == "item_6" and event.text == "1 failed"
+
+
+def test_codex_command_start_exposes_the_actual_tool_and_command():
+    event = CodexProvider().parse(json.dumps({
+        "type": "item.started", "item": {
+            "id": "item_6", "type": "command_execution", "command": "pytest",
+            "status": "in_progress",
+        },
+    }))
+    assert event is not None
+    assert event.kind == "tool" and event.tool == "Shell"
+    assert event.tool_id == "item_6" and event.tool_input == "pytest"
+
+
+def test_codex_delivery_commands_use_the_vendor_thread_id():
+    provider = CodexProvider()
+    resumed = provider.resume_command(
+        "vendor-thread", "ping", model="fresh-model", reasoning="high",
+        permission_mode="acceptEdits",
+    )
+    assert resumed[:3] == ["codex", "exec", "resume"] and resumed[-3:] == ["--", "vendor-thread", "ping"]
+    assert "--json" in resumed and "--model" in resumed
+    assert 'model_reasoning_effort="high"' in resumed
+    assert "--sandbox" not in resumed
+    assert 'sandbox_mode="workspace-write"' in resumed
+
+
+def test_codex_resume_does_not_re_inject_the_role_definition(monkeypatch, tmp_path):
+    """Unlike Claude (a separate ``--agents`` channel), Codex can only seed a role by baking its
+    definition into the FIRST turn's message — :func:`test_codex_command_injects_the_named_role_definition`
+    below covers that. That first turn is already part of the saved session; re-baking the whole
+    definition into every RESUMED message doubles input tokens per turn and was observed live to
+    make the model re-answer the original task instead of the new message. A resumed turn sends
+    exactly the new message."""
+    root = tmp_path / "galaius" / "prompts" / "agents"
+    root.mkdir(parents=True)
+    (root / "tester.md").write_text(
+        "---\nname: tester\n---\nAGENT_ROLE: tester\nDo the assigned check.\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+
+    resumed = CodexProvider().resume_command("vendor-thread", "continue", agent="tester")
+
+    assert resumed[-1] == "continue"
+
+
+def test_codex_command_injects_the_named_role_definition(monkeypatch, tmp_path):
+    """The FIRST turn has no other channel to seed the role, so it must bake the definition in."""
+    root = tmp_path / "galaius" / "prompts" / "agents"
+    root.mkdir(parents=True)
+    (root / "tester.md").write_text(
+        "---\nname: tester\n---\nAGENT_ROLE: tester\nDo the assigned check.\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+
+    started = CodexProvider().command(
+        "continue", cwd="/tmp", model=None, mcp_config=None, run_id="fixture-run", agent="tester",
+    )
+    prompt = started[-1]
+
+    assert started[-2] == "--" and prompt.startswith("AGENT_ROLE: tester\n")
+    assert "Do the assigned check." in prompt
+    assert "Delegated task:\ncontinue" in prompt
+
+
+def test_codex_thread_start_keeps_vendor_session_identity():
+    event = CodexProvider().parse(json.dumps({
+        "type": "thread.started", "thread_id": "vendor-thread",
+    }))
+    assert event is not None and event.session_id == "vendor-thread"
+
+# ── an OpenAI-compatible endpoint (HF's router, a self-hosted vLLM box) as a Codex target ───────
+
+
+def test_codex_routes_a_base_url_through_a_named_isolated_provider():
+    """The routed endpoint must land in a NEW ``model_providers`` entry, never on the built-in
+    ``openai``/``chatgpt`` ids — those are tied to the user's own ChatGPT/API-key login, and
+    reusing them would risk sending that session's credential to a third-party box."""
+    command = CodexProvider().command(
+        "Reply once", cwd="/tmp", model="glm-5.2", mcp_config=None,
+        run_id="fixture-run", base_url="http://gpubox.lan:8000/v1",
+    )
+    joined = " ".join(command)
+    assert 'model_providers.galaius_openai_compat.base_url="http://gpubox.lan:8000/v1"' in joined
+    assert 'model_provider="galaius_openai_compat"' in joined
+    assert "openai_base_url" not in joined, "must never touch the native openai provider's base url"
+    assert '-c model_providers.openai.' not in joined
+    assert '-c model_providers.chatgpt.' not in joined
+
+
+def test_codex_omits_openai_compat_routing_when_no_base_url_is_given():
+    command = CodexProvider().command(
+        "Reply once", cwd="/tmp", model="fixture-model", mcp_config=None, run_id="fixture-run",
+    )
+    assert "model_providers.galaius_openai_compat" not in " ".join(command)
+
+
+def test_codex_resume_also_carries_the_routed_base_url():
+    command = CodexProvider().resume_command(
+        "vendor-thread", "continue", base_url="http://gpubox.lan:8000/v1", model="glm-5.2",
+    )
+    assert 'model_providers.galaius_openai_compat.base_url="http://gpubox.lan:8000/v1"' in " ".join(command)
+
+
+def test_claude_cannot_claim_an_openai_protocol_model_even_when_its_base_url_is_set():
+    """The overlay-truthiness bug: overlay_for now returns a non-empty dict for BOTH wire
+    protocols, so can_run must discriminate by KEY, never by mere presence."""
+    model = Model(id="glm-5.2", provider="vllm", capabilities=set())
+    env = {"VLLM_BASE_URL": "http://gpubox.lan:8000/v1"}
+    assert ClaudeCodeProvider().can_run(model, env) is False
+
+
+def test_codex_can_run_a_routed_openai_compat_model():
+    model = Model(id="glm-5.2", provider="vllm", capabilities=set())
+    env = {"VLLM_BASE_URL": "http://gpubox.lan:8000/v1"}
+    assert CodexProvider().can_run(model, env) is True
+
+
+def test_claude_still_claims_ollama_after_the_can_run_tightening(monkeypatch):
+    """Availability asks the live daemon; this test is about the route, so it pins availability."""
+    monkeypatch.setattr(Model, "is_available", lambda self: True)
+    model = Model(id="deepseek-v4-flash", provider="ollama", capabilities=set())
+    assert ClaudeCodeProvider().can_run(model, {"OLLAMA_API_BASE": "http://localhost:11434"}) is True
+
+
+FIXTURE = TESTS / "fixtures" / "agents" / "claude_stream.jsonl"
+
+
+def _events() -> list[AgentEvent]:
+    p, ledger = ClaudeCodeProvider(), UsageLedger()
+    out = []
+    for line in FIXTURE.read_text().splitlines():
+        ev = p.parse(line, ledger)
+        if ev is not None:
+            out.append(ev)
+    return out
+
+
+# ── parsing a real stream ────────────────────────────────────────────────────────────────────
+
+
+def test_the_context_gauge_and_a_manual_compaction_read_off_a_real_compacted_session():
+    """Claude Code 2.1.288 headless: a one-word turn, then `/compact` as a resumed turn (captured, local
+    paths removed). The gauge is the newest main-thread call's whole prompt, the window the result's
+    own `contextWindow`, and the compaction one `compacted` event carrying both sizes."""
+    provider, ledger = ClaudeCodeProvider(), UsageLedger()
+    lines = (TESTS / "fixtures" / "agents" / "claude_compact_stream.jsonl").read_text().splitlines()
+    events = [event for line in lines if (event := provider.parse(line, ledger)) is not None]
+    assert {e.context_tokens for e in events if e.kind in ("text", "thinking")} == {10 + 13803 + 8587}
+    assert [e.context_window for e in events if e.kind == "done"] == [200_000, 200_000]
+    [compacted] = [e for e in events if e.kind == "compacted"]
+    assert (compacted.compaction, compacted.compacted_from, compacted.context_tokens) == ("manual", 22560, 1769)
+    assert [e.kind for e in events if e.raw_type == "user"] == ["injected"]  # the summary; the replayed stdout is dropped
+    # Each turn's own thinking (its result's `output_tokens_details`), summed: 153 then 0 for the compaction.
+    assert StreamDigest.of("", events, viewer="").context == ContextGauge(context_tokens=1769, context_window=200_000, compactions=1, thinking_tokens=153)
+    subagent = json.loads(lines[2]) | {"parent_tool_use_id": "toolu_example"}
+    assert provider.parse(json.dumps(subagent), UsageLedger()).context_tokens is None
+
+
+def test_a_claude_run_knows_its_window_before_its_first_turn_ends():
+    """Claude Code 2.1.288 answers the `get_context_usage` request its task follows on stdin before the turn starts
+    (captured: haiku-5-5 200k, opus-5-5 1M, local paths removed): its gauge has the window from its first line on,
+    which it never takes as the message read; another request's answer, or a refusal, reports none."""
+    provider = ClaudeCodeProvider()
+    request, task = (json.loads(line) for line in provider.task_message("- list the files").decode().splitlines())
+    assert (request["request"]["subtype"], request["request_id"], task["message"]["content"]) == ("get_context_usage", provider.CONTEXT_REQUEST, "- list the files")
+    lines = (TESTS / "fixtures" / "agents" / "claude_context_usage.jsonl").read_text().splitlines()
+    assert [provider.parse(line).context_window for line in lines] == [200_000, 1_000_000]
+    assert not any(provider.took_message(line) for line in lines)
+    stream = [lines[0], *(TESTS / "fixtures" / "agents" / "claude_compact_stream.jsonl").read_text().splitlines()[:3]]
+    assert StreamDigest.of("", [e for line in stream if (e := provider.parse(line)) is not None], viewer="").context == ContextGauge(
+        context_tokens=10 + 13803 + 8587, context_window=200_000)
+    # Under `autoCompactWindow` the request says the compaction window, the turn's result still the model's own: the gauge keeps the first.
+    sized, ledger = json.loads(lines[1]), UsageLedger()
+    sized["response"]["response"]["maxTokens"] = 200_000
+    compacted = (TESTS / "fixtures" / "agents" / "claude_compact_stream.jsonl").read_text().splitlines()
+    result = json.loads(compacted[3].replace('"contextWindow":200000', '"contextWindow":1000000'))
+    assert [provider.parse(json.dumps(line), ledger).context_window for line in (sized, json.loads(stream[1]), result)] == [200_000, None, 200_000]
+    # Turns that ask nothing (a resume with its message as an argument) compact below the model's window or the one
+    # galaius launched them with (its line ahead of theirs), whichever is less; one turn's answer or line never
+    # outlives it, so a replay reads a run whose window was raised between turns as it ran. No line: the model's.
+    turns = [provider.turn_preface(["-p", "--settings", json.dumps({"autoCompactWindow": window}), "--", "go on"]).decode() for window in (200_000, 1_000_000)]
+    replay, ledger = (stream[1], turns[0], json.dumps(result), turns[1], json.dumps(result), json.dumps(result)), UsageLedger()
+    assert [e.context_window for line in replay if (e := provider.parse(line, ledger)) is not None and e.kind == "done"] == [200_000, 1_000_000, 1_000_000]
+    assert provider.turn_preface(["-p", "--", "go on"]) == b"" and not provider.took_message(turns[0])
+    other = json.loads(lines[1])
+    for answer in ({"request_id": provider.USAGE_REQUEST}, {"subtype": "error", "error": "unsupported"}):
+        assert provider.parse(json.dumps(other | {"response": other["response"] | answer})).context_window is None
+
+
+
+def test_the_real_stream_parses_end_to_end():
+    evs = _events()
+    kinds = [e.kind for e in evs]
+    assert "started" in kinds, f"no init event recognised: {kinds}"
+    assert "text" in kinds
+    assert kinds[-1] == "done"
+
+
+def test_the_assistant_text_is_extracted():
+    said = [e.text for e in _events() if e.kind == "text"]
+    assert any("OK" in t for t in said), said
+
+
+def test_cost_and_tokens_come_off_the_result_event():
+    events = _events()
+    done = [e for e in events if e.kind == "done"][-1]
+    # Claude Code reports API-equivalent cost even on a subscription run — this is what makes
+    # per-agent cost real rather than a guess.
+    assert done.cost_usd is not None and done.cost_usd > 0
+    assert done.output_tokens is not None
+    assert sum(e.input_tokens or 0 for e in events) == 106591, \
+        "run accounting includes cached prompt tokens"
+
+
+def test_every_event_carries_the_session_id():
+    evs = _events()
+    ids = {e.session_id for e in evs if e.session_id}
+    assert len(ids) == 1, f"expected one session, got {ids}"
+
+
+def test_a_rate_limit_event_is_surfaced_as_its_own_kind():
+    # Running several agents on one account hits a POOLED limit; a run that dies on it must say
+    # so rather than just going quiet.
+    raw = [json.loads(l) for l in FIXTURE.read_text().splitlines()]
+    if not any(r.get("type") == "rate_limit_event" for r in raw):
+        pytest.skip("this capture has no rate-limit event")
+    assert any(e.kind == "rate_limit" for e in _events())
+
+
+def test_junk_lines_never_raise():
+    p = ClaudeCodeProvider()
+    assert p.parse("") is None
+    assert p.parse("not json") is None
+    assert p.parse('{"type":"totally-unknown"}') is not None  # kept as `other`, never dropped
+
+
+# ── building the command ─────────────────────────────────────────────────────────────────────
+
+
+def test_claude_command_asks_for_a_parseable_stream():
+    argv = ClaudeCodeProvider().command("do a thing", cwd="/tmp", model="sonnet",
+                                        mcp_config='{"mcpServers":{}}', run_id="11111111-2222-3333-4444-555555555555")
+    assert argv[0] == "claude"
+    assert "-p" in argv and "do a thing" in argv
+    # stream-json REQUIRES --verbose; without it the CLI refuses and we'd get no events at all.
+    assert "--output-format" in argv and "stream-json" in argv and "--verbose" in argv
+
+
+def test_the_run_id_is_the_session_id():
+    # Assigning the session id means our registry key and the vendor's own id are the SAME string,
+    # so `claude --resume <run_id>` and our records line up with no mapping table.
+    rid = "11111111-2222-3333-4444-555555555555"
+    argv = ClaudeCodeProvider().command("t", cwd="/tmp", model=None, mcp_config=None, run_id=rid)
+    assert argv[argv.index("--session-id") + 1] == rid
+
+
+def test_the_mesh_config_is_passed_through():
+    cfg = '{"mcpServers":{"galaius":{"command":"galaius"}}}'
+    argv = ClaudeCodeProvider().command("t", cwd="/tmp", model=None, mcp_config=cfg, run_id="r")
+    assert argv[argv.index("--mcp-config") + 1] == cfg
+
+
+def test_no_credential_is_ever_placed_on_the_command_line():
+    argv = ClaudeCodeProvider().command("t", cwd="/tmp", model="opus", mcp_config=None, run_id="r")
+    joined = " ".join(argv).lower()
+    for banned in ("api_key", "apikey", "token", "oauth", "bearer", "credential"):
+        assert banned not in joined, f"{banned!r} must never appear — the CLI authenticates itself"
+
+
+# ── the provider set ─────────────────────────────────────────────────────────────────────────
+
+
+def test_providers_are_addressable_by_name():
+    assert provider_for("claude") is not None
+    assert isinstance(provider_for("claude"), ClaudeCodeProvider)
+    assert "claude" in PROVIDERS
+
+
+def test_an_unknown_provider_names_the_ones_that_exist():
+    with pytest.raises(ValueError) as exc:
+        provider_for("gpt5-cli")
+    assert "claude" in str(exc.value)
+
+
+def test_codex_is_verified_and_states_the_limit_that_remains():
+    # The adapter was exercised against a real codex binary (spawn, a resumed thread, the quota
+    # refusal), so it no longer claims to be unverified. Most of a role's native tool policy now
+    # maps exactly onto --sandbox + feature flags; ONE limit survives and must be stated: network
+    # without a write tool has no documented codex toggle.
+    c = CodexProvider()
+    assert c.verified is True
+    assert "webfetch" in (c.caveat or "").lower()  # gap itself: test_codex_network_without_write_has_no_documented_sandbox_equivalent
+
+
+def test_a_verified_providers_real_caveat_still_shows():
+    """`verified` says the flags were checked against a real binary; it is NOT permission to hide
+    a caveat that stays true regardless — every one of the three surfaces that print this
+    (`agent_providers`, the CLI `providers` command, the per-spawn NOTE) shares this one line."""
+    from galaius.agents.providers import provider_caveat_note
+
+    assert "no codex-documented equivalent" in provider_caveat_note(CodexProvider())
+
+
+def test_an_unverified_provider_with_no_written_caveat_falls_back_to_saying_so():
+    from galaius.agents.providers import provider_caveat_note
+
+    class _Untested(ClaudeCodeProvider):
+        verified = False
+        caveat = None
+
+    assert "unverified" in provider_caveat_note(_Untested()).lower()
+
+
+def test_a_verified_provider_with_no_caveat_says_nothing():
+    from galaius.agents.providers import provider_caveat_note
+
+    class _Solid(ClaudeCodeProvider):
+        verified = True
+        caveat = None
+
+    assert provider_caveat_note(_Solid()) == ""
+
+
+# ── what a CONVERSATION view needs (not just a status line) ──────────────────────────────────
+# The tree's one-line summary was enough to answer "what is it doing"; showing the actual
+# conversation needs the tool's INPUT, the tool's RESULT, and the model's thinking — all of which
+# the stream carries and the first normalisation discarded.
+
+
+def _parse(raw: dict):
+    import json as _json
+    return ClaudeCodeProvider().parse(_json.dumps(raw))
+
+
+def test_a_tool_call_keeps_its_input():
+    ev = _parse({"type": "assistant", "session_id": "s", "message": {"content": [
+        {"type": "tool_use", "name": "Bash", "input": {"command": "ls -la", "description": "list"}}]}})
+    assert ev.kind == "tool" and ev.tool == "Bash"
+    assert "ls -la" in ev.tool_input, "the command is the whole point of showing a Bash call"
+
+
+def test_a_tool_result_is_its_own_event():
+    ev = _parse({"type": "user", "session_id": "s", "message": {"content": [
+        {"type": "tool_result", "content": "file-a\nfile-b"}]}})
+    assert ev.kind == "tool_result" and "file-a" in ev.text
+
+
+def test_thinking_is_kept_but_marked_as_thinking():
+    ev = _parse({"type": "assistant", "session_id": "s", "message": {"content": [
+        {"type": "thinking", "thinking": "weighing the options"}]}})
+    assert ev.kind == "thinking" and "weighing" in ev.text
+
+
+def test_a_long_tool_result_is_truncated_not_dropped():
+    ev = _parse({"type": "user", "session_id": "s", "message": {"content": [
+        {"type": "tool_result", "content": "x" * 50_000}]}})
+    assert 0 < len(ev.text) < 5000, "a huge result must not blow up the transcript file"
+
+
+def test_a_named_agent_definition_is_passed_through():
+    """Claude Code resolves `--agent <name>` against the agent files (~/.claude/agents/*.md), so a
+    run can BE visual-critic rather than an anonymous 'claude'. That name is also what the panel
+    should show, which is why the caller gets it back rather than inventing a label."""
+    argv = ClaudeCodeProvider().command("t", cwd="/tmp", model=None, mcp_config=None,
+                                        run_id="r", agent="visual-critic")
+    assert argv[argv.index("--agent") + 1] == "visual-critic"
+
+
+def test_no_agent_flag_when_none_is_named():
+    argv = ClaudeCodeProvider().command("t", cwd="/tmp", model=None, mcp_config=None, run_id="r")
+    assert "--agent" not in argv
+
+
+# ── agents talking to each other ─────────────────────────────────────────────────────────────
+# Delivery is not a bespoke protocol either: our run_id IS the vendor's session id, so resuming
+# that session with a message continues the SAME conversation — the recipient keeps its context
+# and its transcript grows in place, which is what makes the exchange visible afterwards.
+
+
+def test_resume_continues_the_same_session_with_the_message():
+    argv = ClaudeCodeProvider().resume_command("11111111-2222-3333-4444-555555555555", "ping")
+    assert argv[0] == "claude"
+    assert argv[argv.index("--resume") + 1] == "11111111-2222-3333-4444-555555555555"
+    assert "ping" in argv
+    # Still a parseable stream, or the reply would never reach the transcript.
+    assert "--output-format" in argv and "stream-json" in argv and "--verbose" in argv
+
+
+def test_a_provider_that_cannot_resume_says_so():
+    assert CodexProvider().can_resume is True
+    assert CodexProvider().can_queue is True
+    assert ClaudeCodeProvider().can_resume is True
+
+
+# ── Housekeeping is not activity ────────────────────────────────────────────────────────────
+# The activity view rendered more `other` rows than real ones: token accounting and hook
+# lifecycle lines outnumbered what the agent actually DID, so the transparency the panel exists
+# for was buried in noise. Bookkeeping the vendor emits about its own machinery is dropped;
+# anything describing the agent's WORK is kept and named.
+
+
+@pytest.mark.parametrize(
+    "subtype",
+    ["thinking_tokens", "hook_started", "hook_response"],
+)
+def test_vendor_housekeeping_is_dropped_not_shown_as_other(subtype):
+    from galaius.agents.providers import ClaudeCodeProvider
+
+    event = ClaudeCodeProvider().parse(
+        json.dumps({"type": "system", "subtype": subtype, "session_id": "s"})
+    )
+    assert event is None, f"{subtype} is bookkeeping about the harness, not agent activity"
+
+
+def test_a_spawned_subagent_is_real_activity_and_is_kept():
+    """An agent starting a Task IS the team behaviour the panel exists to show."""
+    from galaius.agents.providers import ClaudeCodeProvider
+
+    event = ClaudeCodeProvider().parse(
+        json.dumps({"type": "system", "subtype": "task_started", "session_id": "s"})
+    )
+    assert event is not None and event.kind != "other"
+
+
+def test_an_unknown_system_subtype_is_still_kept_as_other():
+    """A vendor adding a new event must not vanish — dropping is for the known-noisy only."""
+    from galaius.agents.providers import ClaudeCodeProvider
+
+    event = ClaudeCodeProvider().parse(
+        json.dumps({"type": "system", "subtype": "something_new", "session_id": "s"})
+    )
+    assert event is not None and event.kind == "other"
+
+
+def test_the_incoming_prompt_is_named_not_lumped_as_other():
+    """A `user` line carrying text is what was ASKED of the agent — the other half of the
+    conversation. Left as `other` the activity view showed only the agent's replies."""
+    from galaius.agents.providers import ClaudeCodeProvider
+
+    event = ClaudeCodeProvider().parse(json.dumps({
+        "type": "user", "session_id": "s",
+        "message": {"role": "user", "content": [{"type": "text", "text": "check the error paths"}]},
+    }))
+    assert event is not None and event.kind == "prompt"
+    assert "check the error paths" in (event.text or "")
+
+
+# ── Which agent definitions can be spawned here ─────────────────────────────────────────────
+# `agent_spawn(agent=...)` resolves a definition by name, but nothing told a caller WHICH names
+# exist — and an agent cannot ask a follow-up question, so an unlisted capability is an unusable
+# one. The provider knows where its definitions live, so it is the provider that answers.
+
+
+def test_a_provider_lists_the_agent_definitions_it_can_resolve(tmp_path, monkeypatch):
+    from galaius.agents.providers import ClaudeCodeProvider
+
+    home = tmp_path / ".claude" / "agents"
+    home.mkdir(parents=True)
+    (home / "code-reviewer.md").write_text("---\nname: code-reviewer\n---\nreview things")
+    (home / "visual-critic.md").write_text("---\nname: visual-critic\n---\nlook at things")
+    (home / "notes.txt").write_text("not an agent")
+    assert ClaudeCodeProvider().agent_definitions() == ["code-reviewer", "visual-critic"]
+
+
+def test_no_definitions_directory_is_an_empty_list_not_an_error(tmp_path, monkeypatch):
+    from galaius.agents.providers import ClaudeCodeProvider
+
+    assert ClaudeCodeProvider().agent_definitions() == []
+
+
+def test_codex_lists_installed_role_definitions(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    provider = CodexProvider()
+    assert provider.agent_definitions() == []
+    root = tmp_path / "galaius/prompts/agents"
+    root.mkdir(parents=True)
+    (root / "tester.md").write_text("Verify the assigned change.")
+    assert provider.agent_definitions() == ["tester"]
+    assert provider.definition_path("tester") == root / "tester.md"
+
+
+# ── Session usage sums to the vendor's truth ────────────────────────────────────────────────
+# Lines trimmed from real recorded streams (Claude run 665a5b67, Codex run 5339802d). Contract:
+# input = every prompt token incl. cache reads + writes, cached / cache_write are subsets of it,
+# output includes reasoning, and a run's totals are the plain SUM of its events.
+
+_OPUS, _HAIKU = "claude-opus-5-5", "claude-haiku-4-5-20251001"
+
+
+def _claude_assistant(block: str, *, message_id: str, write: int, read: int = 0) -> dict:
+    return {"type": "assistant", "session_id": "s", "message": {
+        "id": message_id, "model": _OPUS, "role": "assistant",
+        "content": [{"type": block, block: "x"}],
+        "usage": {"input_tokens": 2, "cache_creation_input_tokens": write,
+                  "cache_read_input_tokens": read, "output_tokens": 6}}}
+
+
+def _claude_result(cost: float, main: tuple[int, int, int, int],
+                   per_model: dict[str, tuple[int, int, int, int]]) -> dict:
+    """``main`` / ``per_model`` = (uncached input, cache read, cache write, output)."""
+    return {"type": "result", "subtype": "success", "session_id": "s", "is_error": False,
+            "result": "done", "total_cost_usd": cost,
+            "usage": dict(zip(("input_tokens", "cache_read_input_tokens",
+                               "cache_creation_input_tokens", "output_tokens"), main)),
+            "modelUsage": {model: dict(zip(("inputTokens", "cacheReadInputTokens",
+                                            "cacheCreationInputTokens", "outputTokens"), usage))
+                           for model, usage in per_model.items()}}
+
+
+_INIT = {"type": "system", "subtype": "init", "session_id": "s", "model": _OPUS, "tools": []}
+_FIRST = _claude_result(2.68535105, (84, 4532709, 152345, 23514), {
+    _HAIKU: (1712, 0, 68937, 310), _OPUS: (84, 4532709, 152345, 23514)})
+_RESUMED = _claude_result(3.74336, (18, 1532956, 55022, 4689), {
+    _HAIKU: (1718, 0, 241548, 634), _OPUS: (102, 6065665, 207367, 28203)})
+_BLOCKS = [_claude_assistant("thinking", message_id="msg_011CfPu79Kk466DNzRoTXjkd", write=66743),
+           _claude_assistant("text", message_id="msg_011CfPu79Kk466DNzRoTXjkd", write=66743)]
+
+
+def _codex_turn(input_tokens: int, cached: int, write: int, output: int) -> dict:
+    return {"type": "turn.completed", "usage": {
+        "input_tokens": input_tokens, "cached_input_tokens": cached,
+        "cache_write_input_tokens": write, "output_tokens": output,
+        "reasoning_output_tokens": 348}}
+
+
+def test_codex_turns_settle_the_reasoning_their_cumulative_counter_grew():
+    from galaius.agents.transport.events import UsageLedger
+    from galaius.agents.providers import PROVIDERS
+
+    ledger, turn = UsageLedger(), _codex_turn(1000, 0, 0, 400)
+    thought = [PROVIDERS["codex"].parse(json.dumps({**turn, "usage": {**turn["usage"], "reasoning_output_tokens": n}}), ledger).thinking_tokens
+               for n in (300, 500, 120)]
+    assert thought == [300, 200, 120]  # a counter that went backwards restarted from zero
+
+
+@pytest.mark.parametrize(("provider", "stream", "truth"), [
+    pytest.param("claude", [_INIT, *_BLOCKS], (66745, 0, 66743, 0, None),
+                 id="claude-live-message-counted-once-across-its-block-lines"),
+    pytest.param("claude", [_INIT, *_BLOCKS, _FIRST],
+                 (1712 + 68937 + 84 + 4532709 + 152345, 4532709, 68937 + 152345, 310 + 23514,
+                  2.68535105),
+                 id="claude-result-reconciles-to-modelUsage-incl-internal-haiku"),
+    pytest.param("claude", [_INIT, *_BLOCKS, _FIRST, _INIT, _RESUMED],
+                 (1718 + 241548 + 102 + 6065665 + 207367, 6065665, 241548 + 207367,
+                  634 + 28203, 3.74336),
+                 id="claude-resume-restored-cumulative-counters-counted-once"),
+    pytest.param("claude", [_INIT, _RESUMED, _INIT, *_BLOCKS, _FIRST],
+                 (1718 + 241548 + 102 + 6065665 + 207367
+                  + 1712 + 68937 + 84 + 4532709 + 152345,
+                  6065665 + 4532709, 241548 + 207367 + 68937 + 152345,
+                  634 + 28203 + 310 + 23514, 3.74336 + 2.68535105),
+                 id="claude-resume-whose-counters-restarted-from-zero"),
+    pytest.param("claude", [_INIT, *_BLOCKS, _FIRST, _FIRST | {"usage": {"input_tokens": 3}}],
+                 (1712 + 68937 + 84 + 4532709 + 152345, 4532709, 68937 + 152345, 310 + 23514,
+                  2.68535105),
+                 id="claude-queued-turn-repeats-process-counters"),
+    pytest.param("codex", [_codex_turn(529466, 463616, 0, 2883),
+                           _codex_turn(1352384, 1249792, 4096, 5655)],
+                 (1352384, 1249792, 4096, 5655, None),
+                 id="codex-exec-resume-reports-thread-cumulative-with-cache-write"),
+])
+def test_session_usage_sums_to_vendor_truth(provider, stream, truth):
+    ledger = UsageLedger()
+    events = [e for line in stream if (e := PROVIDERS[provider].parse(json.dumps(line), ledger))]
+    costs = [e.cost_usd for e in events if e.cost_usd is not None]
+    summed = tuple(sum(getattr(e, field) or 0 for e in events)
+                   for field in ("input_tokens", "cached_input_tokens",
+                                 "cache_write_input_tokens", "output_tokens"))
+    assert set(TOKEN_FIELDS) == {"input_tokens", "cached_input_tokens",
+                                 "cache_write_input_tokens", "output_tokens"}
+    assert summed == truth[:4]
+    assert (round(sum(costs), 8) if costs else None) == truth[4]
+
+
+def test_no_usage_at_all_reports_nothing_rather_than_zero():
+    """Zero would render as a real measurement of an empty context."""
+    from galaius.agents.providers import ClaudeCodeProvider
+
+    event = ClaudeCodeProvider().parse(json.dumps({
+        "type": "assistant", "session_id": "s",
+        "message": {"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
+    }))
+    assert event.input_tokens is None
+
+
+# ── A machine-readable list of definitions ──────────────────────────────────────────────────
+# The panel's "start an agent" picker was scraping the human-readable `agents providers` output by
+# splitting on "agents:" and commas — a display change would silently empty the picker.
+
+
+def test_definitions_command_prints_one_name_per_line(capsys, tmp_path, monkeypatch):
+    import importlib
+
+    home = tmp_path / ".claude" / "agents"
+    home.mkdir(parents=True)
+    for name in ("code-reviewer", "researcher"):
+        (home / f"{name}.md").write_text("---\n---\n")
+    importlib.import_module("galaius.cli.app_commands").agents_definitions()
+    assert capsys.readouterr().out.split() == ["code-reviewer", "researcher"]
+
+
+def test_definitions_command_is_silent_when_there_are_none(capsys, tmp_path, monkeypatch):
+    """Empty output, not a message: the caller is a parser, and prose would become a fake agent."""
+    import importlib
+
+    importlib.import_module("galaius.cli.app_commands").agents_definitions()
+    assert capsys.readouterr().out.strip() == ""
+
+
+# --- How much autonomy an agent is given ----------------------------------------------------
+#
+# Supervising a team means deciding what each member may do on its own. The panel could spawn
+# agents but had no way to say "this one may not write" or "let this one plan first, don't touch
+# anything" — every run got whatever the vendor defaults to. The modes below are read off the
+# INSTALLED binary's own `--help`, never recalled: `claude --permission-mode` accepts
+# acceptEdits/auto/bypassPermissions/manual/dontAsk/plan, which is not the set an older memory of
+# the docs would produce.
+
+
+def test_codex_offers_the_verified_bounded_sandbox_scopes():
+    modes = {mode.id: mode for mode in CodexProvider().permission_modes()}
+    assert set(modes) == {
+        "plan", "manual", "auto", "acceptEdits", "dontAsk", "bypassPermissions",
+    }
+    assert modes["plan"].provider_mode == "read-only"
+    assert modes["acceptEdits"].provider_mode == "workspace-write"
+    assert modes["bypassPermissions"].provider_mode == "workspace-write"
+    assert modes["bypassPermissions"].unrestricted is True
+    assert "no exact" in modes["bypassPermissions"].detail.lower()
+
+
+def test_claude_offers_the_modes_its_binary_actually_accepts():
+    modes = {m.id for m in ClaudeCodeProvider().permission_modes()}
+    assert modes == {"acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"}
+
+
+def test_every_offered_mode_says_what_it_lets_the_agent_do():
+    for mode in ClaudeCodeProvider().permission_modes():
+        assert mode.label and mode.detail, f"{mode.id} is offered with no explanation"
+
+
+def test_the_dangerous_mode_is_marked_as_such():
+    """bypassPermissions is the one that can act without asking. It is offered — refusing to
+    expose it would just push people to the terminal — but never as an unremarkable choice."""
+    modes = {m.id: m for m in ClaudeCodeProvider().permission_modes()}
+    assert modes["bypassPermissions"].unrestricted is True
+    assert not any(m.unrestricted for i, m in modes.items() if i != "bypassPermissions")
+
+
+def test_a_chosen_mode_reaches_the_argv():
+    argv = ClaudeCodeProvider().command(
+        "t", cwd="/tmp", model=None, mcp_config=None, run_id="r", permission_mode="plan")
+    assert "--permission-mode" in argv
+    assert argv[argv.index("--permission-mode") + 1] == "plan"
+
+
+def test_no_mode_means_no_flag():
+    """The vendor's own default must stay reachable; passing a mode nobody asked for would
+    override a setting the person configured in their own CLI."""
+    argv = ClaudeCodeProvider().command(
+        "t", cwd="/tmp", model=None, mcp_config=None, run_id="r")
+    assert "--permission-mode" not in argv
+
+
+def test_an_unknown_mode_is_refused_at_the_edge():
+    """The value arrives from a tool caller and lands on a command line. An unknown one is a
+    typo or an injection attempt, not a mode the CLI will helpfully ignore."""
+    with pytest.raises(ValueError, match="permission intent"):
+        ClaudeCodeProvider().command(
+            "t", cwd="/tmp", model=None, mcp_config=None, run_id="r",
+            permission_mode="--dangerously-skip-everything")
+
+
+def test_a_tool_call_and_its_result_share_the_vendor_tool_id():
+    """The transcript view opens a call's FULL input/output from the raw stream on click.
+
+    The summarised event is clipped (300/2000 chars) by design; the raw line holds everything,
+    and the vendor's tool_use id is the ONE stable key that pairs a call with its result across
+    both files. Without it the viewer falls back to prefix-matching, which breaks the moment two
+    identical commands run."""
+    call = _parse({"type": "assistant", "session_id": "s", "message": {"content": [
+        {"type": "tool_use", "id": "toolu_42", "name": "Bash", "input": {"command": "ls"}}]}})
+    assert call.tool_id == "toolu_42"
+    answer = _parse({"type": "user", "session_id": "s", "message": {"content": [
+        {"type": "tool_result", "tool_use_id": "toolu_42", "content": "a\nb"}]}})
+    assert answer.tool_id == "toolu_42", "the result must carry the id that names its question"
+
+
+def test_codex_initial_and_resumed_delegates_cannot_bypass_shared_role_policy():
+    provider = CodexProvider()
+    commands = (
+        provider.command("Read", cwd="/tmp", model="fixture-model", mcp_config=None, run_id="fixture"),
+        provider.resume_command("fixture-session", "Continue", model="fixture-model"),
+    )
+    for command in commands:
+        assert "features.multi_agent=false" in command
+        assert "features.multi_agent_v2=false" in command
+
+
+# ───────────── Agent-name validation (formerly test_agent_name_validation.py) ─────────────────
+#
+# `agent` arrives from the MCP boundary and is handed to the provider, which turns it into a
+# filesystem path (`~/.claude/agents/<agent>.md`) that is now RECORDED on the run and offered by
+# the VS Code panel as a clickable "system prompt" link. Nothing validated it, so
+# `agent="../../x"` walked out of the definitions directory into a path a person would then click.
+# Exploitability is low but the fix belongs at the edge, not in the sink.
+
+
+def test_a_traversing_agent_name_is_refused_before_it_becomes_a_path():
+    prov = provider_for("claude")
+    assert prov.valid_definition("../../../etc/passwd") is False
+    assert prov.valid_definition("../secrets") is False
+    assert prov.valid_definition("nested/name") is False
+    assert prov.valid_definition("") is False
+
+
+def test_a_real_definition_is_accepted(monkeypatch):
+    prov = provider_for("claude")
+    monkeypatch.setattr(type(prov), "agent_definitions", lambda self: ["code-reviewer", "tester"])
+    assert prov.valid_definition("code-reviewer") is True
+    assert prov.valid_definition("ghost") is False
+
+
+@pytest.mark.asyncio
+async def test_spawn_refuses_an_unknown_definition_and_says_which_exist(monkeypatch):
+    import galaius.server as srv
+    from galaius.agents.providers import ClaudeCodeProvider
+
+    monkeypatch.setattr(ClaudeCodeProvider, "available", lambda self: True)
+    monkeypatch.setattr(ClaudeCodeProvider, "agent_definitions", lambda self: ["tester", "researcher"])
+
+    async def never(*a, **k):
+        raise AssertionError("a process was started for an unvalidated definition name")
+
+    monkeypatch.setattr(srv.tools.agents, "run_agent", never)
+
+    out = await srv.tools.agents.agent_spawn("do a thing", agent="../../../etc/passwd")
+    assert out.startswith("ERROR:")
+    assert "tester" in out and "researcher" in out, "an agent cannot ask, so list what IS valid"
+
+
+@pytest.mark.parametrize("provider", [ClaudeCodeProvider(), CodexProvider()], ids=["claude", "codex"])
+@pytest.mark.parametrize("text", ["- a markdown bullet", "--help", "-"])
+def test_a_prompt_starting_with_a_dash_is_never_an_option(provider, text):
+    """A message the owner types ("- fix the header") reaches the model as text: after "--", last."""
+    started = provider.command(text, cwd="/tmp", model=None, mcp_config=None, run_id="fixture-run")
+    resumed = provider.resume_command("vendor-thread", text)
+    assert started[-2:] == ["--", text] and resumed[-1] == text and resumed[-3 if provider.name == "codex" else -2] == "--"
+
+
+def test_claude_resumes_an_editor_conversation_into_a_copy():
+    """The editor's session is read, never written: Claude forks it under the id given."""
+    argv = ClaudeCodeProvider().resume_command("editor-session", "- go on", fork_to="copy-id")
+    assert argv[argv.index("--resume") + 1] == "editor-session" and argv[argv.index("--session-id") + 1] == "copy-id"
+    assert "--fork-session" in argv and argv[-2:] == ["--", "- go on"]
+    with pytest.raises(ValueError, match="cannot resume into a copy"):
+        CodexProvider().resume_command("thread", "x", fork_to="copy-id")
+
+
+@pytest.mark.parametrize(("system", "config", "expected"), [
+    ("win32", None, ("-c", 'windows.sandbox="unelevated"')),                 # nothing chosen: galaius sets it
+    ("win32", '[windows]\nsandbox = "elevated"\n', ()),                      # the owner's own choice stands
+    ("win32", "not toml [", ("-c", 'windows.sandbox="unelevated"')),         # unreadable config: still sandboxed
+    ("linux", None, ()),
+])
+def test_codex_runs_in_its_windows_sandbox_on_windows(monkeypatch, tmp_path, system, config, expected):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    if config is not None:
+        (tmp_path / "config.toml").write_text(config)
+    monkeypatch.setattr("galaius.agents.providers.sys.platform", system)
+    assert CodexProvider.platform_flags() == expected
+    argv = CodexProvider().command("hi", cwd=str(tmp_path), model=None, mcp_config=None, run_id="r1")
+    assert (argv[argv.index("exec") + 1:].count('windows.sandbox="unelevated"') == 1) == bool(expected)
+
+
+NPM_SHIMS = TESTS / "fixtures" / "agents" / "npm"
+
+
+@pytest.mark.parametrize(
+    ("shim", "node", "expected"),
+    [
+        ("codex.cmd", "beside", ("node.exe", "node_modules\\@openai\\codex\\bin\\codex.js")),
+        ("codex.cmd", "on-path", ("PATH", "node_modules\\@openai\\codex\\bin\\codex.js")),
+        ("codex.cmd", "absent", None),
+        ("tool.cmd", "absent", ("node_modules\\native\\bin\\tool.exe",)),
+        ("plain.cmd", "on-path", None),
+    ],
+)
+def test_npm_shim_starts_its_script_without_cmd(tmp_path: Path, shim: str, node: str, expected) -> None:
+    """npm's real `.cmd` launchers (cmd-shim 7.0.0 output) are read back to the program they start,
+    so a prompt's line breaks and `&` never pass through cmd.exe; any other batch file is not one."""
+    folder, tools = tmp_path / "bin", tmp_path / "tools"
+    folder.mkdir(), tools.mkdir()
+    (folder / "plain.cmd").write_bytes(b"@ECHO off\r\nsomething.exe %*\r\n")
+    for name in ("codex.cmd", "tool.cmd"):
+        (folder / name).write_bytes((NPM_SHIMS / name).read_bytes())
+    if node == "beside":
+        (folder / "node.exe").write_bytes(b"")
+    on_path = tools / ("node.exe" if sys.platform == "win32" else "node")
+    if node == "on-path":
+        on_path.write_bytes(b"")
+        on_path.chmod(0o755)
+    parsed = NpmShim.read(folder / shim, str(tools))
+    assert (parsed and parsed.argv) == (expected and tuple(
+        shutil.which("node", path=str(tools)) if part == "PATH" else str(folder / part) for part in expected
+    ))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a POSIX service manager's PATH")
+@pytest.mark.parametrize("provider", list(PROVIDERS.values()), ids=list(PROVIDERS))
+def test_a_bare_program_name_starts_from_its_own_folder_off_the_service_path(tmp_path: Path, monkeypatch, provider) -> None:
+    """A resumed turn's argv names its program bare and a systemd user service's PATH lacks
+    ~/.local/bin (`systemd-run`: « Failed to find executable claude »): every agent child's argv0
+    leaves the spawn absolute, found in the program's own folder, which its PATH carries."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    folder = tmp_path / ".local" / "bin"
+    folder.mkdir(parents=True)
+    program = folder / provider.binary
+    program.write_text("#!/bin/sh\n")
+    program.chmod(0o755)
+    env = participant_environment({"HOME": str(tmp_path), "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin"})
+    assert spawnable([provider.binary, "--version"], env) == [str(program), "--version"]
+    assert str(folder) in env["PATH"].split(":")
+
+
+@pytest.mark.parametrize(("text", "kind"), [
+    ("Stop hook feedback:\n[Review the turn before it ends. Three checks]: Check 1(c) fires", "check"),
+    ("[Image: original 3200x1010, displayed at 2000x631.]", "injected"),
+    ("This session is being continued from a previous conversation that ran out of context.", "injected"),
+])
+def test_a_harness_injected_user_turn_is_never_an_operator_prompt(text, kind):
+    """Claude Code writes its own turns into a headless stream as `user` lines marked
+    `isSynthetic` (shape read off real run 6af52772): a Stop-hook block, an image note, a
+    compaction summary. Read as `prompt`, the web transcript labelled them "You →"."""
+    from galaius.agents.providers import ClaudeCodeProvider
+
+    event = ClaudeCodeProvider().parse(json.dumps({
+        "type": "user", "session_id": "s", "isSynthetic": True,
+        "message": {"role": "user", "content": [{"type": "text", "text": text}]},
+    }))
+    assert event is not None and event.kind == kind
+    assert event.text == text
+
+
+def test_a_long_stop_hook_block_keeps_its_verdict():
+    """The block opens on the hook's whole rule (15k chars on a real run) and CLOSES on what it
+    found; clipped from the front only, every long one lost the verdict the reader needs."""
+    from galaius.agents.providers import ClaudeCodeProvider
+
+    text = "Stop hook feedback:\n[" + "rule " * 3000 + "]: Check 1(b) fires: two items left as remaining."
+    event = ClaudeCodeProvider().parse(json.dumps({
+        "type": "user", "session_id": "s", "isSynthetic": True,
+        "message": {"role": "user", "content": [{"type": "text", "text": text}]},
+    }))
+    assert event.kind == "check" and event.text.startswith("Stop hook feedback:")
+    assert event.text.endswith("]: Check 1(b) fires: two items left as remaining.") and len(event.text) < 2100
+
+
+@pytest.mark.parametrize("status, said, cut", [
+    (401, "Failed to authenticate: OAuth token revoked.", "login_lost"),  # another account signed in (Claude Code's result)
+    (None, "Failed to authenticate: OAuth session expired and could not be refreshed", "login_lost"),  # before it said its status
+    (401, "Invalid API key · Fix external API key", None),  # a key refused: no sign-in brings it back
+    (401, "Invalid API key · Please run /login", "login_lost"),  # no login at all: signing in brings it back
+    (None, "Failed to authenticate: invalid x-api-key", None),  # a key refused says no status here: its own failure
+    (429, "Rate limited, retry shortly", None),  # a short rate limit is no usage window
+    (429, "You've hit your weekly limit · resets 9pm (Europe/Paris)", "usage_limit"),
+    # Its API was never reached: the vendor said nothing about the turn, so the run is cut, not failed, and comes back
+    # by itself (`registry.network_resume_at`). The first line is verbatim from the runs the owner lost on 22-23 Oct.
+    (None, "API Error: Can't reach the API server — check your internet or DNS (ENOTFOUND)", "network_lost"),
+    (None, "TypeError: fetch failed", "network_lost"),
+    (None, "connect ECONNREFUSED 160.79.104.10:443", "network_lost"),
+    (None, "getaddrinfo EAI_AGAIN api.anthropic.com", "network_lost"),
+    (None, "You've hit your session limit · resets 5:20pm (Europe/Paris)\nENOTFOUND", "usage_limit"),  # answered: its window spoke
+    (None, "Request timed out after 600s", None),  # a slow or unanswered request may have reached the model: its own failure
+    (None, "Error: the build failed", None),
+])
+def test_a_failed_turn_says_its_cut_by_its_api_status_else_its_words(status, said, cut):
+    assert PROVIDERS["claude"].cut_of(said, status) == cut
+    if cut == "network_lost":
+        assert PROVIDERS["codex"].cut_of(said, status) == cut, "an unreachable API reads the same on every CLI"
+
+
+@pytest.mark.parametrize(("provider", "given", "wait", "expected"), [
+    ("claude", {}, 12.5, "12500"),                                         # waits the time asked for galaius's tools
+    ("claude", {"CLAUDE_CODE_MCP_STARTUP_WAIT_MS": "0"}, 12.5, "0"),      # a caller's own choice stands
+    ("claude", {}, 0.0, None),                                             # 0: never waits
+    ("codex", {}, 12.5, None),                                             # a CLI with no such variable gets none
+])
+def test_a_turn_waits_for_its_mcp_servers(provider, given, wait, expected):
+    child = PROVIDERS[provider].child_environment({"PATH": "/usr/bin", **given}, mcp_wait_seconds=wait)
+    assert child.get("CLAUDE_CODE_MCP_STARTUP_WAIT_MS") == expected

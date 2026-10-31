@@ -24,7 +24,7 @@ from galaius.agents import registry as reg
 from galaius.agents.catalog.community import CommunityAgent, quote
 from galaius.agents.catalog.relations import live, one_read, owed
 from galaius.agents.spawn_line import SpawnLine
-from galaius.config import Config
+from galaius.config.settings import Config
 from galaius.host.paths import UserPaths
 from galaius.host.private_files import PRIVATE_FILES
 

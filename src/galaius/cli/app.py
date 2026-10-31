@@ -1,6 +1,5 @@
 """Lightweight root command registry; implementations resolve only when selected."""
 
-import importlib
 import sys
 
 from cyclopts import App, CycloptsError, CycloptsPanel
@@ -69,10 +68,6 @@ app.command(
 app.command(
     "galaius.cli.app_commands:doctor", name="doctor",
     help="Diagnose the environment and optionally deliver fixes.",
-)
-app.command(
-    "galaius.install_migration:migrate", name="migrate",
-    help="Move this computer's former interact install (folders, settings, service, MCP registrations) to galaius.",
 )
 app.command(
     "galaius.cli.app_commands:refresh_live_data", name="refresh",
@@ -157,55 +152,7 @@ def main() -> None:
         raise SystemExit(EXIT_UPGRADE) from None
 
 
-_DEFERRED_EXPORTS = frozenset({
-    "_bare_model_name",
-    "_mask",
-    "_per_vendor",
-    "_print_media_transport",
-    "_print_ollama",
-    "_print_resolved_models",
-    "_print_sandboxes",
-    "_print_stale_servers",
-    "_run_agent_for_cli",
-    "agents_clear",
-    "agents_console",
-    "agents_criterion",
-    "agents_definitions",
-    "agents_discovered",
-    "agents_events",
-    "agents_list",
-    "agents_models",
-    "agents_modes",
-    "agents_policy",
-    "agents_providers",
-    "agents_run",
-    "agents_send",
-    "agents_spawn",
-    "agents_stop",
-    "agents_sync",
-    "agents_variables",
-    "config_app",
-    "config_get",
-    "config_list",
-    "config_path",
-    "config_set",
-    "config_unset",
-    "dashboard",
-    "doctor",
-    "install",
-    "providers",
-    "refresh_live_data",
-    "report",
-    "status",
-})
 
-
-def __getattr__(name: str):
-    """Resolve legacy direct imports without loading command dependencies at startup."""
-    if name not in _DEFERRED_EXPORTS:
-        raise AttributeError(name)
-    commands = importlib.import_module("galaius.cli.app_commands")
-    return getattr(commands, name)
 
 
 __all__ = ["app", "main", "version"]

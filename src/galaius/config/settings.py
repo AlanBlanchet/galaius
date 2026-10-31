@@ -13,7 +13,7 @@ from galaius.account.caller import Caller
 from galaius_core import CompactAt
 from galaius_core.tool_settings import VLM_MIN_DIM_DEFAULT, VLM_MAX_DIM_DEFAULT
 
-from galaius.agents.limits.providers import MEDIA_PROVIDERS
+from galaius.agents.providers import MEDIA_PROVIDERS
 from galaius.catalog.criteria import Criteria, CriteriaError
 from galaius.models import CircuitBreaker, Model, ModelRole
 
