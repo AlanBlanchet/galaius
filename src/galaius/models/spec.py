@@ -1,12 +1,8 @@
 """Model and provider configuration: which model plays which role, and where its provider lives."""
 
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
 from pydantic import BaseModel, Field
-
-
-if TYPE_CHECKING:
-    pass
 
 
 ModelRole = Literal["image", "component", "video", "audio"]

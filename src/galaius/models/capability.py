@@ -1,12 +1,6 @@
 """What a model can take in: the capability flags and the family checks for video, audio and transcription-only models."""
 
 from enum import StrEnum
-from typing import TYPE_CHECKING
-
-
-
-if TYPE_CHECKING:
-    pass
 
 
 class ModelCapability(StrEnum):

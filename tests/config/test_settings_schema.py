@@ -82,8 +82,8 @@ def test_nested_default_and_numeric_constraints_have_one_declarative_owner() -> 
         projected = next(item for item in json.loads(exported.read_text())["settings"]
                          if item["key"] == "desktop.nestedSize")
         assert projected["pattern"] == size.pattern
-    assert properties["galaius.browser.manager.viewportWidth"]["minimum"] == 1
-    assert properties["galaius.browser.manager.viewportHeight"]["minimum"] == 1
+    assert properties["galaius.browser.viewportWidth"]["minimum"] == 1
+    assert properties["galaius.browser.viewportHeight"]["minimum"] == 1
 
 
 @pytest.mark.parametrize("field,key", [
@@ -158,3 +158,15 @@ async def test_tui_renders_a_widget_for_every_setting(tmp_path, monkeypatch):
         await pilot.pause()
         missing = [s.key for s in SETTINGS if not app.query(f"#{_field_id(s)}")]
         assert not missing, missing
+
+
+#: Settings only the extension reads (no `SettingSpec`): the manifest's one other owner.
+EXTENSION_ONLY = {"galaius.display.currency", "galaius.projectPath"}
+
+
+def test_manifest_declares_exactly_the_schema_keys() -> None:
+    """The schema owns every setting name: a key renamed in the manifest alone (a bulk module
+    rename once turned `galaius.browser.*` into `galaius.browser.manager.*`) is a setting nothing reads."""
+    configuration = json.loads((REPO / "clients" / "vscode" / "package.json").read_text())["contributes"]["configuration"]
+    declared = {key for section in (configuration if isinstance(configuration, list) else [configuration]) for key in section["properties"]}
+    assert declared - EXTENSION_ONLY == {f"galaius.{spec.key}" for spec in SETTINGS}

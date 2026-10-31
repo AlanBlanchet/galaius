@@ -1,12 +1,6 @@
 """Cooldown for models that just failed: a tripped model is skipped until its TTL passes."""
 
 import time
-from typing import TYPE_CHECKING
-
-
-
-if TYPE_CHECKING:
-    pass
 
 
 class CircuitBreaker:

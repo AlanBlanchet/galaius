@@ -162,12 +162,12 @@
           "default": "",
           "description": "Requirement for transcribe (falls back to cap.audio). Claude subscription sessions do not hear audio; galaius.media.billing must allow this separate path."
         },
-        "galaius.browser.manager.headless": {
+        "galaius.browser.headless": {
           "type": "boolean",
           "default": true,
           "description": "Run browser in headless mode"
         },
-        "galaius.browser.manager.type": {
+        "galaius.browser.type": {
           "type": "string",
           "default": "chromium",
           "enum": [
@@ -177,24 +177,24 @@
           ],
           "description": "Browser engine"
         },
-        "galaius.browser.manager.viewportWidth": {
+        "galaius.browser.viewportWidth": {
           "type": "number",
           "default": 1280,
           "minimum": 1,
           "description": "Browser viewport width"
         },
-        "galaius.browser.manager.viewportHeight": {
+        "galaius.browser.viewportHeight": {
           "type": "number",
           "default": 720,
           "minimum": 1,
           "description": "Browser viewport height"
         },
-        "galaius.browser.manager.slowMo": {
+        "galaius.browser.slowMo": {
           "type": "number",
           "default": 0,
           "description": "Slow down browser actions by this many milliseconds (useful for observing automation)"
         },
-        "galaius.browser.manager.profileDir": {
+        "galaius.browser.profileDir": {
           "type": "string",
           "default": "",
           "description": "When set, browser sessions keep their cookies/login on disk here (under <dir>/<session>) so you log in once and stay authenticated across restarts. Blank = ephemeral (logged out every launch)."

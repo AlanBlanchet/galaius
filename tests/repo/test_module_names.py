@@ -13,7 +13,11 @@ from tests.support.paths import REPO
 SUFFIXES = (".py", ".sh", ".ps1", ".md", ".toml", ".yml", ".yaml", ".ts", ".json")
 # Names a test writes on purpose as gone (a stale hook the code must clean up), with the test.
 GONE = {"galaius.session_stop_hook": "tests/agents/turns/test_session_stops.py: a stale hook entry to remove"}
-NAMED = re.compile(r"(?:\bfrom\s+(galaius(?:\.\w+)*)\s+import\s+(\w+)|(?:-m\s+|\bimport\s+)(galaius(?:\.\w+)+))")
+NAMED = re.compile(
+    r"\bfrom\s+(galaius(?:\.\w+)*)\s+import\s+\(?\s*(\w+)"  # from galaius.<mod> import <name> / import (<name>,
+    r"|(?:-m\s+|[\"']-m[\"']\s*,\s*[\"']|\bimport\s+)(galaius(?:\.\w+)+)"  # -m galaius.<mod>, ["-m", "galaius.<mod>"], import galaius.<mod>
+    r"|(?:__import__|import_module)\(\s*[\"'](galaius(?:\.\w+)*)[\"']"  # __import__("galaius.<mod>"), import_module("galaius.<mod>")
+)
 
 
 def _named_modules() -> dict[str, set[str]]:
@@ -23,8 +27,8 @@ def _named_modules() -> dict[str, set[str]]:
         if not path.endswith(SUFFIXES) or not (REPO / path).is_file():
             continue
         for match in NAMED.finditer((REPO / path).read_text(errors="replace")):
-            package, name, module = match.groups()
-            found.setdefault(module or f"{package}:{name}", set()).add(path)
+            package, name, module, dynamic = match.groups()
+            found.setdefault(module or dynamic or f"{package}:{name}", set()).add(path)
     return found
 
 
